@@ -8,12 +8,14 @@ import {
 const owner = '11111111-1111-4111-8111-111111111111';
 const approval = '22222222-2222-4222-8222-222222222222';
 const updatedAtText = '2026-09-12 12:34:56.123456';
+const rotationUpperText = '2026-09-12 12:35:00.654321';
 
 function row(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     user_id: owner,
     approval_id: approval,
     updated_at_text: updatedAtText,
+    rotation_upper_text: rotationUpperText,
     ...overrides,
   };
 }
@@ -102,10 +104,13 @@ describe('Gmail archive recovery candidate discovery', () => {
     expect(sql).toContain(
       '(barrier.updated_at, barrier.idempotency_key) > ($4::TIMESTAMPTZ, $5::STRING)',
     );
-    expect(sql).toContain('LIMIT $6');
+    expect(sql).toContain(
+      'barrier.updated_at <= COALESCE($6::TIMESTAMPTZ, statement_timestamp())',
+    );
+    expect(sql).toContain('LIMIT $7');
     expect(sql).toContain("lease.observation_state = 'started'");
     expect(sql).not.toContain('FOR UPDATE');
-    expect(params).toEqual(['gmail_inbox_mutation_v1', 300, false, null, null, 25]);
+    expect(params).toEqual(['gmail_inbox_mutation_v1', 300, false, null, null, null, 25]);
   });
 
   const malformedRows: unknown[][] = [
@@ -113,6 +118,15 @@ describe('Gmail archive recovery candidate discovery', () => {
     [row({ extra: true })],
     [row(), row()],
     [row({ updated_at_text: '2026-09-12 12:34:56.1234567' })],
+    [row({ rotation_upper_text: '2026-09-12 12:34:55.123456' })],
+    [
+      row(),
+      row({
+        approval_id: '33333333-3333-4333-8333-333333333333',
+        updated_at_text: '2026-09-12 12:34:57.123456',
+        rotation_upper_text: '2026-09-12 12:36:00.654321',
+      }),
+    ],
     Array.from({ length: 26 }, (_, index) => row({
       approval_id: `${String(index + 1).padStart(8, '0')}-2222-4222-8222-222222222222`,
     })),
@@ -185,6 +199,7 @@ describe('Gmail archive recovery candidate discovery', () => {
       true,
       '2026-09-12T12:34:56.123456Z',
       approval,
+      '2026-09-12T12:35:00.654321Z',
       1,
     ]);
   });
@@ -210,12 +225,14 @@ describe('Gmail archive recovery candidate discovery', () => {
       updatedAt: '2026-09-12T12:34:56.123456Z',
       approvalId: approval,
       remaining: 99,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
     });
     expect(first.resumeCursor).not.toBeNull();
     expect(gmailArchiveRecoveryCandidateTestHooks.parseCursor(first.resumeCursor)).toEqual({
       updatedAt: '2026-09-12T12:34:56.123456Z',
       approvalId: approval,
       remaining: 100,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
     });
     expect(Object.keys(first.candidates[0]!).sort()).toEqual(['approvalId', 'userId']);
 
@@ -234,6 +251,7 @@ describe('Gmail archive recovery candidate discovery', () => {
       true,
       '2026-09-12T12:34:56.123456Z',
       approval,
+      '2026-09-12T12:35:00.654321Z',
       1,
     ]);
   });
@@ -243,24 +261,34 @@ describe('Gmail archive recovery candidate discovery', () => {
       updatedAt: '2026-09-12T12:34:56.123456Z',
       approvalId: approval,
       remaining: 75,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
     });
     const tampered = `${valid.slice(0, -1)}${valid.endsWith('A') ? 'B' : 'A'}`;
     const noncanonical = `${valid}=`;
-    const staleVersion = valid.replace('gmail_archive_recovery_v2', 'gmail_archive_recovery_v1');
+    const staleVersion = valid.replace('gmail_archive_recovery_v3', 'gmail_archive_recovery_v2');
     const noncanonicalTimestamp = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
       updatedAt: '2026-09-12T12:34:56.123000Z',
       approvalId: approval,
       remaining: 75,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
     });
     const exhausted = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
       updatedAt: '2026-09-12T12:34:56.123456Z',
       approvalId: approval,
       remaining: 0,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
     });
     const overBudget = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
       updatedAt: '2026-09-12T12:34:56.123456Z',
       approvalId: approval,
       remaining: 101,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
+    });
+    const invertedRotation = gmailArchiveRecoveryCandidateTestHooks.encodeCursor({
+      updatedAt: '2026-09-12T12:34:56.123456Z',
+      approvalId: approval,
+      remaining: 75,
+      rotationUpper: '2026-09-12T12:34:55.654321Z',
     });
     const query = vi.fn();
     for (const cursor of [
@@ -270,6 +298,7 @@ describe('Gmail archive recovery candidate discovery', () => {
       noncanonicalTimestamp,
       exhausted,
       overBudget,
+      invertedRotation,
     ]) {
       await expect(gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
         { limit: 25, cursor } as never,
@@ -284,6 +313,7 @@ describe('Gmail archive recovery candidate discovery', () => {
       updatedAt: '2026-09-12T12:34:55.123456Z',
       approvalId: '99999999-9999-4999-8999-999999999999',
       remaining: 1,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
     });
     const query = vi.fn().mockResolvedValue({ rows: [row()] });
     const result = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
@@ -300,8 +330,55 @@ describe('Gmail archive recovery candidate discovery', () => {
       updatedAt: '2026-09-12T12:34:56.123456Z',
       approvalId: approval,
       remaining: 100,
+      rotationUpper: '2026-09-12T12:35:00.654321Z',
     });
-    expect(query.mock.calls[0]![1]?.[5]).toBe(1);
+    expect(query.mock.calls[0]![1]?.[6]).toBe(1);
+  });
+
+  it('keeps a finite DB-clock rotation upper bound until wrap', async () => {
+    const first = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+      { limit: 1 },
+      vi.fn().mockResolvedValue({ rows: [row()] }),
+    );
+    if (!first.ok || first.resumeCursor === null) throw new Error('expected rotation cursor');
+
+    const continuedQuery = vi.fn().mockResolvedValue({ rows: [] });
+    const exhaustedRotation = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+      { limit: 1, cursor: first.resumeCursor },
+      continuedQuery,
+    );
+    expect(exhaustedRotation).toEqual({
+      ok: true,
+      candidates: [],
+      nextCursor: null,
+      resumeCursor: null,
+    });
+    expect(continuedQuery.mock.calls[0]![1]).toEqual([
+      'gmail_inbox_mutation_v1',
+      300,
+      true,
+      '2026-09-12T12:34:56.123456Z',
+      approval,
+      '2026-09-12T12:35:00.654321Z',
+      1,
+    ]);
+
+    // With no continuation, the next call starts a new rotation. A previously
+    // hidden older hint can now lead even if rows newer than the old upper bound
+    // kept arriving while the prior rotation advanced.
+    const newlyEligibleOlderApproval = '11111111-2222-4222-8222-222222222222';
+    const wrapped = await gmailArchiveRecoveryCandidateTestHooks.listWithQuery(
+      { limit: 1 },
+      vi.fn().mockResolvedValue({ rows: [row({
+        approval_id: newlyEligibleOlderApproval,
+        updated_at_text: '2026-09-12 12:34:55.123456',
+        rotation_upper_text: '2026-09-12 12:36:00.654321',
+      })] }),
+    );
+    expect(wrapped).toMatchObject({
+      ok: true,
+      candidates: [{ userId: owner, approvalId: newlyEligibleOlderApproval }],
+    });
   });
 
   it('does not convert an infrastructure failure into scheduling authority', async () => {

@@ -6622,10 +6622,38 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
     );
   });
 
-  it('rotates beyond 100 acquisition-invalid older hints to a healthy later owner', async () => {
+  it('wraps past a finite upper bound so a delayed older hint survives a continuous tail', async () => {
+    const delayedOwner = await seedRecoveryOwner(75);
     const corruptOwner = await seedRecoveryOwner(76);
     const healthyOwner = await seedRecoveryOwner(77);
     const corrupt: Array<{ approvalId: string; barrierId: string; candidateId: string }> = [];
+
+    const delayed = await createProposal(
+      1999,
+      delayedOwner.ownerUserId,
+      delayedOwner.ownerAccountId,
+    );
+    const delayedResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: delayedOwner.ownerUserId,
+      approvalId: delayed.approval.id,
+      action: 'approve',
+    });
+    if (!delayedResponse.ok || !delayedResponse.response.reservedBarrier) {
+      throw new Error('Delayed pagination fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1969-01-01T00:00:00.000Z',
+              updated_at = '1969-01-01T00:00:00.000Z'
+        WHERE id = $1`,
+      [delayedResponse.response.reservedBarrier.id],
+    );
+    const delayedLease = await gmailArchiveRecoveryLeaseRepository.acquire({
+      userId: delayedOwner.ownerUserId,
+      approvalId: delayed.approval.id,
+      leaseMs: 60_000,
+    });
+    expect(delayedLease).toMatchObject({ ok: true, status: 'acquired' });
 
     for (let index = 0; index < 101; index++) {
       const proposal = await createProposal(
@@ -6715,21 +6743,84 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       leaseMs: 60_000,
     })).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
     if (nextSweepCursor === null) throw new Error('Missing next-sweep high-water cursor.');
-    const nextSweep = await gmailArchiveRecoveryCandidateRepository.list({
-      limit: 25,
+    const rotation = gmailArchiveRecoveryCandidateTestHooks.parseCursor(nextSweepCursor);
+    if (!rotation) throw new Error('Next-sweep cursor was not canonical.');
+
+    const lastCorruptPage = await gmailArchiveRecoveryCandidateRepository.list({
+      limit: 1,
       cursor: nextSweepCursor,
     });
-    expect(nextSweep).toMatchObject({ ok: true, nextCursor: null, resumeCursor: null });
-    if (!nextSweep.ok) throw new Error('Next scheduled sweep failed.');
-    expect(nextSweep.candidates).toHaveLength(2);
-    expect(nextSweep.candidates[0]).toMatchObject({ userId: corruptOwner.ownerUserId });
-    expect(nextSweep.candidates[1]).toEqual({
+    if (!lastCorruptPage.ok || lastCorruptPage.nextCursor === null) {
+      throw new Error('Rotation did not reach the final corrupt hint.');
+    }
+    expect(lastCorruptPage.candidates).toEqual([
+      expect.objectContaining({ userId: corruptOwner.ownerUserId }),
+    ]);
+
+    const healthyPage = await gmailArchiveRecoveryCandidateRepository.list({
+      limit: 1,
+      cursor: lastCorruptPage.nextCursor,
+    });
+    if (!healthyPage.ok || healthyPage.nextCursor === null) {
+      throw new Error('Rotation did not reach the healthy hint.');
+    }
+    expect(healthyPage.candidates).toEqual([{
       userId: healthyOwner.ownerUserId,
       approvalId: healthy.approval.id,
-    });
-    expect(nextSweep.candidates).not.toContainEqual({
+    }]);
+    expect(healthyPage.candidates).not.toContainEqual({
       userId: corruptOwner.ownerUserId,
       approvalId: healthy.approval.id,
+    });
+
+    // Make the skipped, older row eligible only after the cursor has passed it.
+    // Also add a newly eligible row strictly beyond this rotation's DB-clock
+    // upper bound. Without the bound, a continuous tail can keep every page full
+    // forever and prevent the cursor from wrapping to the delayed row.
+    await getPool().query(
+      `UPDATE gmail_archive_recovery_leases
+          SET expires_at = statement_timestamp()
+        WHERE admission_id = $1`,
+      [delayedResponse.response.reservedBarrier.id],
+    );
+    const tail = await createProposal(
+      2201,
+      healthyOwner.ownerUserId,
+      healthyOwner.ownerAccountId,
+    );
+    const tailResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: healthyOwner.ownerUserId,
+      approvalId: tail.approval.id,
+      action: 'approve',
+    });
+    if (!tailResponse.ok || !tailResponse.response.reservedBarrier) {
+      throw new Error('Tail pagination fixture did not reserve a barrier.');
+    }
+    await getPool().query(
+      `UPDATE pre_effect_barriers
+          SET created_at = '1972-01-01T00:00:00.000Z',
+              updated_at = $2::TIMESTAMPTZ + INTERVAL '1 microsecond'
+        WHERE id = $1`,
+      [tailResponse.response.reservedBarrier.id, rotation.rotationUpper],
+    );
+
+    const exhaustedRotation = await gmailArchiveRecoveryCandidateRepository.list({
+      limit: 1,
+      cursor: healthyPage.nextCursor,
+    });
+    expect(exhaustedRotation).toEqual({
+      ok: true,
+      candidates: [],
+      nextCursor: null,
+      resumeCursor: null,
+    });
+    const wrapped = await gmailArchiveRecoveryCandidateRepository.list({ limit: 1 });
+    expect(wrapped).toMatchObject({
+      ok: true,
+      candidates: [{
+        userId: delayedOwner.ownerUserId,
+        approvalId: delayed.approval.id,
+      }],
     });
 
     await getPool().query(
@@ -6737,7 +6828,9 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
           SET created_at = statement_timestamp(), updated_at = statement_timestamp()
         WHERE id = ANY($1::UUID[])`,
       [[...corrupt.map((candidate) => candidate.barrierId),
-        healthyResponse.response.reservedBarrier.id]],
+        delayedResponse.response.reservedBarrier.id,
+        healthyResponse.response.reservedBarrier.id,
+        tailResponse.response.reservedBarrier.id]],
     );
   }, 300_000);
 
