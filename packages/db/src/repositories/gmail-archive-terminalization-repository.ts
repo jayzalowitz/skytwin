@@ -666,6 +666,7 @@ export async function loadGmailArchiveStableState(
   client: PoolClient,
   authority: TerminalAuthority,
   lockRows = true,
+  allowMissingExecutionPlan = false,
 ): Promise<GmailArchiveTerminalStableState | null> {
   const lock = lockRows ? ' FOR UPDATE' : '';
   const approval = (await client.query<ApprovalRequestRow>(
@@ -710,7 +711,8 @@ export async function loadGmailArchiveStableState(
         AND auto_executed = false AND requires_approval = true`,
     [decision.id, candidate.id],
   )).rows;
-  if (outcomes.length !== 1 || outcomes[0]!.execution_plan_id === null ||
+  if (outcomes.length !== 1 ||
+      (!allowMissingExecutionPlan && outcomes[0]!.execution_plan_id === null) ||
       outcomes[0]!.escalation_reason !== GMAIL_ARCHIVE_PROPOSAL_REASON ||
       outcomes[0]!.explanation !== GMAIL_ARCHIVE_PROPOSAL_REASON) return null;
   const proposalBarriers = (await client.query<PreEffectBarrierRow>(

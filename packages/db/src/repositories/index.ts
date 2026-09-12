@@ -67,6 +67,10 @@ export {
   GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
   gmailArchiveRecoveryRepository,
 } from './gmail-archive-recovery-repository.js';
+export {
+  GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
+  gmailArchiveRecoveryLeaseRepository,
+} from './gmail-archive-recovery-lease-repository.js';
 export { gmailInboxObservationTargetRepository } from './gmail-inbox-observation-target-repository.js';
 export type { GmailInboxObservationTarget } from './gmail-inbox-observation-target-repository.js';
 export {
@@ -99,6 +103,14 @@ export {
 export type {
   QueryAbandonedGmailArchiveInput,
   QueryAbandonedGmailArchiveResult,
+  AcquireGmailArchiveRecoveryLeaseInput,
+  AcquireGmailArchiveRecoveryLeaseResult,
+  BeginGmailArchiveRecoveryObservationResult,
+  GmailArchiveRecoveryLease,
+  GmailArchiveRecoveryLeaseFence,
+  GmailArchiveRecoveryObservationPermit,
+  RecordGmailArchiveRecoveryObservationInput,
+  RecordGmailArchiveRecoveryObservationResult,
 } from '@skytwin/shared-types';
 export type {
   GmailArchiveTerminalEvidence,
