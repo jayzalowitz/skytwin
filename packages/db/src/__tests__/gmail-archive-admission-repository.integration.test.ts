@@ -30,6 +30,11 @@ import {
   loadCanonicalGmailArchiveApprovalState,
 } from '../repositories/gmail-archive-approval-response-repository.js';
 import {
+  applyGmailArchiveApprovalFeedbackOnce,
+  gmailArchiveFeedbackApplicationRepository,
+  gmailArchiveFeedbackApplicationTestHooks,
+} from '../repositories/gmail-archive-feedback-application-repository.js';
+import {
   canonicalGmailArchiveCandidate,
   gmailArchivePreparationRepository,
 } from '../repositories/gmail-archive-preparation-repository.js';
@@ -7293,5 +7298,262 @@ describe.runIf(cockroachAvailable)('Gmail archive approval and preparation repos
       ok: true,
       candidates: [{ userId: laterOwner.ownerUserId, approvalId: later.proposal.approval.id }],
     });
+  }, 120_000);
+
+  it('applies causal archive feedback once under concurrent replay and rejects digest corruption', async () => {
+    const owner = await seedRecoveryOwner(90);
+    const proposal = await createProposal(3000, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      action: 'approve',
+      reason: 'Archive messages like this.',
+    });
+    if (!response.ok) throw new Error('Feedback projection fixture was not approved.');
+    const profileId = id('10', 3000);
+    const inferenceTime = '2026-09-01T00:00:00.000Z';
+    await getPool().query(
+      `INSERT INTO twin_profiles (id, user_id, inferences)
+       VALUES ($1, $2, $3)`,
+      [
+        profileId,
+        owner.ownerUserId,
+        JSON.stringify([
+          {
+            id: 'causal-email', domain: 'email', key: 'archive_newsletters', value: true,
+            confidence: 'low', supportingEvidenceIds: [proposal.decision.signal_id],
+            contradictingEvidenceIds: [], reasoning: 'Causal Gmail evidence.',
+            createdAt: inferenceTime, updatedAt: inferenceTime,
+          },
+          {
+            id: 'unrelated-email', domain: 'email', key: 'reply_quickly', value: true,
+            confidence: 'high', supportingEvidenceIds: ['unrelated-signal'],
+            contradictingEvidenceIds: [], reasoning: 'Different evidence.',
+            createdAt: inferenceTime, updatedAt: inferenceTime,
+          },
+          {
+            id: 'wrong-domain', domain: 'calendar', key: 'morning_meetings', value: true,
+            confidence: 'high', supportingEvidenceIds: [proposal.decision.signal_id],
+            contradictingEvidenceIds: [], reasoning: 'Same id but unrelated domain.',
+            createdAt: inferenceTime, updatedAt: inferenceTime,
+          },
+        ]),
+      ],
+    );
+    const input = { userId: owner.ownerUserId, feedbackEventId: response.response.feedback.id };
+    const results = await Promise.all([
+      applyGmailArchiveApprovalFeedbackOnce(input),
+      applyGmailArchiveApprovalFeedbackOnce(input),
+    ]);
+    expect(results.filter((result) => result.ok && result.created)).toHaveLength(1);
+    expect(results.filter((result) => result.ok && !result.created)).toHaveLength(1);
+    expect(results[0]).toMatchObject({ ok: true, application: { changed: true } });
+    expect(results[1]).toMatchObject({ ok: true, application: { changed: true } });
+    if (!results[0]!.ok || !results[1]!.ok) throw new Error('Concurrent application failed.');
+    expect(results[0]!.application.id).toBe(results[1]!.application.id);
+
+    const durable = await getPool().query<{
+      version: string;
+      inferences: Array<{ id: string; confidence: string }>;
+      applications: string;
+      versions: string;
+    }>(
+      `SELECT profile.version, profile.inferences,
+              (SELECT count(*) FROM twin_feedback_applications
+                WHERE feedback_event_id = $2) AS applications,
+              (SELECT count(*) FROM twin_profile_versions
+                WHERE profile_id = profile.id) AS versions
+         FROM twin_profiles profile WHERE profile.id = $1`,
+      [profileId, response.response.feedback.id],
+    );
+    expect(durable.rows[0]).toMatchObject({ version: '2', applications: '1', versions: '1' });
+    expect(durable.rows[0]?.inferences.map(({ id: inferenceId, confidence }) =>
+      [inferenceId, confidence])).toEqual([
+      ['causal-email', 'moderate'],
+      ['unrelated-email', 'high'],
+      ['wrong-domain', 'high'],
+    ]);
+
+    await getPool().query(
+      `UPDATE twin_feedback_applications SET output_digest = $2 WHERE feedback_event_id = $1`,
+      [response.response.feedback.id, 'b'.repeat(64)],
+    );
+    await expect(applyGmailArchiveApprovalFeedbackOnce(input)).resolves.toEqual({
+      ok: false,
+      error: 'integrity_conflict',
+    });
+    await expect(applyGmailArchiveApprovalFeedbackOnce({
+      userId: userId,
+      feedbackEventId: response.response.feedback.id,
+    })).resolves.toEqual({ ok: false, error: 'not_found' });
+  }, 120_000);
+
+  it('rolls profile and history back if application-marker persistence never happens', async () => {
+    const owner = await seedRecoveryOwner(91);
+    const proposal = await createProposal(3001, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId,
+      approvalId: proposal.approval.id,
+      action: 'reject',
+    });
+    if (!response.ok) throw new Error('Feedback rollback fixture was not rejected.');
+    const profileId = id('10', 3001);
+    await getPool().query(
+      `INSERT INTO twin_profiles (id, user_id, inferences) VALUES ($1, $2, $3)`,
+      [profileId, owner.ownerUserId, JSON.stringify([{
+        id: 'rollback-causal', domain: 'email', key: 'archive_updates', value: true,
+        confidence: 'high', supportingEvidenceIds: [proposal.decision.signal_id],
+        contradictingEvidenceIds: [], reasoning: 'Causal Gmail evidence.',
+        createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z',
+      }])],
+    );
+    const input = { userId: owner.ownerUserId, feedbackEventId: response.response.feedback.id };
+    await expect(gmailArchiveFeedbackApplicationTestHooks.applyWithTransition(
+      input,
+      gmailArchiveFeedbackApplicationTestHooks.transition,
+      withTransaction,
+      { afterProfileWrite: () => { throw new Error('forced post-profile failure'); } },
+    )).rejects.toThrow('forced post-profile failure');
+    const afterFailure = await getPool().query<{
+      version: string;
+      confidence: string;
+      applications: string;
+      versions: string;
+    }>(
+      `SELECT profile.version,
+              profile.inferences->0->>'confidence' AS confidence,
+              (SELECT count(*) FROM twin_feedback_applications
+                WHERE feedback_event_id = $2) AS applications,
+              (SELECT count(*) FROM twin_profile_versions
+                WHERE profile_id = profile.id) AS versions
+         FROM twin_profiles profile WHERE profile.id = $1`,
+      [profileId, response.response.feedback.id],
+    );
+    expect(afterFailure.rows[0]).toEqual({
+      version: '1', confidence: 'high', applications: '0', versions: '0',
+    });
+    await expect(applyGmailArchiveApprovalFeedbackOnce(input)).resolves.toMatchObject({
+      ok: true,
+      created: true,
+      application: { changed: true, inputProfileVersion: 1, outputProfileVersion: 2 },
+    });
+  }, 120_000);
+
+  it('serializes two different feedback events on one profile without lost updates', async () => {
+    const owner = await seedRecoveryOwner(92);
+    const first = await createProposal(3002, owner.ownerUserId, owner.ownerAccountId);
+    const second = await createProposal(3003, owner.ownerUserId, owner.ownerAccountId);
+    const firstResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId, approvalId: first.approval.id, action: 'approve',
+    });
+    const secondResponse = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId, approvalId: second.approval.id, action: 'reject',
+    });
+    if (!firstResponse.ok || !secondResponse.ok) throw new Error('Two-event fixture failed.');
+    const profileId = id('10', 3002);
+    await getPool().query(
+      `INSERT INTO twin_profiles (id, user_id, inferences) VALUES ($1, $2, $3)`,
+      [profileId, owner.ownerUserId, JSON.stringify([{
+        id: 'two-event-causal', domain: 'email', key: 'archive_updates', value: true,
+        confidence: 'moderate',
+        supportingEvidenceIds: [first.decision.signal_id, second.decision.signal_id],
+        contradictingEvidenceIds: [], reasoning: 'Two causal Gmail messages.',
+        createdAt: '2026-09-01T00:00:00.000Z', updatedAt: '2026-09-01T00:00:00.000Z',
+      }])],
+    );
+    const inputs = [
+      { userId: owner.ownerUserId, feedbackEventId: firstResponse.response.feedback.id },
+      { userId: owner.ownerUserId, feedbackEventId: secondResponse.response.feedback.id },
+    ] as const;
+    const applied = await Promise.all(inputs.map(applyGmailArchiveApprovalFeedbackOnce));
+    expect(applied.every((result) => result.ok && result.created && result.application.changed)).toBe(true);
+    const stored = await getPool().query<{
+      version: string;
+      confidence: string;
+      applications: string;
+      versions: string;
+    }>(
+      `SELECT profile.version, profile.inferences->0->>'confidence' AS confidence,
+              (SELECT count(*) FROM twin_feedback_applications
+                WHERE profile_id = profile.id) AS applications,
+              (SELECT count(*) FROM twin_profile_versions
+                WHERE profile_id = profile.id) AS versions
+         FROM twin_profiles profile WHERE profile.id = $1`,
+      [profileId],
+    );
+    expect(stored.rows[0]).toEqual({
+      version: '3', confidence: 'moderate', applications: '2', versions: '2',
+    });
+    for (const input of inputs) {
+      await expect(applyGmailArchiveApprovalFeedbackOnce(input)).resolves.toMatchObject({
+        ok: true, created: false,
+      });
+    }
+  }, 120_000);
+
+  it('records no-related-inference feedback as a durable no-op without a version row', async () => {
+    const owner = await seedRecoveryOwner(93);
+    const proposal = await createProposal(3004, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId, approvalId: proposal.approval.id, action: 'approve',
+    });
+    if (!response.ok) throw new Error('No-op feedback fixture failed.');
+    const input = { userId: owner.ownerUserId, feedbackEventId: response.response.feedback.id };
+    await expect(applyGmailArchiveApprovalFeedbackOnce(input)).resolves.toMatchObject({
+      ok: true,
+      created: true,
+      application: { changed: false, inputProfileVersion: 1, outputProfileVersion: 1 },
+    });
+    const durable = await getPool().query<{ profiles: string; versions: string; applications: string }>(
+      `SELECT
+         (SELECT count(*) FROM twin_profiles WHERE user_id = $1) AS profiles,
+         (SELECT count(*) FROM twin_profile_versions history
+           JOIN twin_profiles profile ON profile.id = history.profile_id
+          WHERE profile.user_id = $1) AS versions,
+         (SELECT count(*) FROM twin_feedback_applications WHERE feedback_event_id = $2) AS applications`,
+      [owner.ownerUserId, response.response.feedback.id],
+    );
+    expect(durable.rows[0]).toEqual({ profiles: '1', versions: '0', applications: '1' });
+
+    const page = await gmailArchiveFeedbackApplicationRepository.listPending({ limit: 25 });
+    expect(page).toMatchObject({ ok: true });
+    if (!page.ok) throw new Error('Pending selector failed.');
+    expect(page.candidates.every((candidate) =>
+      Object.keys(candidate).sort().join(',') === 'feedbackEventId,userId')).toBe(true);
+    expect(page.candidates).not.toContainEqual({
+      userId: owner.ownerUserId,
+      feedbackEventId: response.response.feedback.id,
+    });
+  }, 120_000);
+
+  it('enforces application owner relationships and reruns migration 087', async () => {
+    const owner = await seedRecoveryOwner(94);
+    const proposal = await createProposal(3005, owner.ownerUserId, owner.ownerAccountId);
+    const response = await gmailArchiveApprovalResponseRepository.respond({
+      userId: owner.ownerUserId, approvalId: proposal.approval.id, action: 'approve',
+    });
+    if (!response.ok) throw new Error('Relationship fixture failed.');
+    const profileId = id('10', 3005);
+    await getPool().query('INSERT INTO twin_profiles (id, user_id) VALUES ($1, $2)', [
+      profileId, owner.ownerUserId,
+    ]);
+    await expect(getPool().query(
+      `INSERT INTO twin_feedback_applications (
+         id, feedback_event_id, user_id, decision_id, profile_id,
+         input_profile_version, output_profile_version, changed, output_digest, applied_at
+       ) VALUES ($1, $2, $3, $4, $5, 1, 1, false, $6, now())`,
+      [
+        id('12', 3005), response.response.feedback.id, userId,
+        proposal.decision.id, profileId, 'a'.repeat(64),
+      ],
+    )).rejects.toMatchObject({ code: expect.stringMatching(/23503|23514/) });
+
+    const migration = readFileSync(
+      new URL('../migrations/087-gmail-archive-feedback-projection.sql', import.meta.url),
+      'utf8',
+    );
+    for (const statement of splitSqlStatements(migration)) {
+      await getPool().query(statement);
+    }
   }, 120_000);
 });
