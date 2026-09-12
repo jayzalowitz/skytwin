@@ -62,13 +62,18 @@ export type {
   ClaimPreparedGmailArchiveInput,
   ClaimPreparedGmailArchiveResult,
 } from './gmail-archive-claim-repository.js';
+export { gmailArchiveDispatchGateRepository } from './gmail-archive-dispatch-gate-repository.js';
 export {
   buildGmailArchiveTerminalResultEnvelope,
+  gmailArchiveResultAllowedForAttemptPhase,
   gmailArchiveTerminalizationRepository,
+  parseGmailArchiveTerminalEvidence,
+  parseGmailArchiveTerminalExplanationBinding,
   parseGmailArchiveTerminalExplanationEvidence,
   parseGmailArchiveTerminalResultEnvelope,
 } from './gmail-archive-terminalization-repository.js';
 export type {
+  GmailArchiveTerminalEvidence,
   GmailArchiveTerminalResultEnvelope,
   GmailArchiveTerminalizationBundle,
   TerminalizeGmailArchiveInput,

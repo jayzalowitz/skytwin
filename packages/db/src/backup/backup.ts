@@ -55,7 +55,8 @@ import type { PoolClient } from 'pg';
 import { decisionReceiptRowArtifactV1 } from '../repositories/decision-receipt-artifacts.js';
 import {
   gmailArchiveTerminalExplanationSemantics,
-  parseGmailArchiveTerminalExplanationEvidence,
+  gmailArchiveResultAllowedForAttemptPhase,
+  parseGmailArchiveTerminalExplanationBinding,
 } from '../repositories/gmail-archive-terminalization-repository.js';
 
 /** Bumped when the JSON shape changes in a non-back-compatible way. */
@@ -521,12 +522,16 @@ export function validateBackupData(value: unknown): string[] {
             ? candidateById.get(tail.candidateAction.id)
             : undefined;
           if (terminalCandidate?.action_type === 'archive_email') {
-            const result = parseGmailArchiveTerminalExplanationEvidence(row?.evidence_used);
+            const binding = parseGmailArchiveTerminalExplanationBinding(row?.evidence_used);
+            const result = binding?.result;
             const expectedDisposition = result?.outcome === 'confirmed' ? 'succeeded'
               : result?.outcome === 'known_failure' ? 'failed'
                 : result?.outcome === 'unknown' ? 'unknown' : null;
             const semantics = result ? gmailArchiveTerminalExplanationSemantics(result) : null;
-            if (!row || !result || expectedDisposition !== tail.executionDisposition ||
+            if (!row || !result ||
+                (binding?.attemptPhase !== null && binding?.attemptPhase !== undefined &&
+                  !gmailArchiveResultAllowedForAttemptPhase(result, binding.attemptPhase)) ||
+                expectedDisposition !== tail.executionDisposition ||
                 expectedDisposition !== tail.disposition ||
                 row.what_happened !== semantics?.whatHappened ||
                 row.confidence_reasoning !== semantics?.confidenceReasoning ||

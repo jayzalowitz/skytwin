@@ -20,9 +20,16 @@ export {
 // Direct execution adapter: local handler dispatch (fallback when IronClaw is unavailable)
 export { DirectExecutionAdapter } from './direct-execution-adapter.js';
 export { GmailInboxMutationService } from './gmail-inbox-mutation-port.js';
-export { GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA } from '@skytwin/shared-types';
+export {
+  GMAIL_ARCHIVE_ATTEMPT_SCHEMA,
+  GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
+} from '@skytwin/shared-types';
 export type {
+  GmailArchiveAttemptPhase,
+  GmailArchiveAttemptStateV1,
   GmailInboxMutationCommand,
+  GmailInboxMutationDispatchGate,
+  GmailInboxMutationDispatchGateResult,
   GmailInboxMutationPort,
   GmailInboxMutationResult,
 } from '@skytwin/shared-types';

@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const resolveTargetMock = vi.fn();
 const refreshIfExpiredMock = vi.fn();
 const tokenStoreConstructorMock = vi.fn();
+const dispatchGateEnterMock = vi.fn();
 
 vi.mock('@skytwin/db', () => ({
   GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA: 'gmail_inbox_mutation_v1',
@@ -50,6 +51,7 @@ function jsonResponse(value: unknown, status = 200): Response {
 function service(fetchMock: ReturnType<typeof vi.fn>, timeoutMs = 1_000) {
   return new GmailInboxMutationService({
     googleOAuthConfig: { clientId: 'client', clientSecret: '', redirectUri: 'http://localhost' },
+    dispatchGate: { enter: dispatchGateEnterMock },
     fetch: fetchMock as unknown as (input: string, init?: RequestInit) => Promise<Response>,
     timeoutMs,
   });
@@ -77,6 +79,7 @@ describe('GmailInboxMutationService', () => {
       scopes: [MODIFY_SCOPE],
       provider: 'google',
     });
+    dispatchGateEnterMock.mockResolvedValue({ status: 'entered' });
   });
 
   it('rejects non-canonical commands before any authority or network read', async () => {
@@ -312,6 +315,52 @@ describe('GmailInboxMutationService', () => {
     expect(result).toEqual({ outcome: 'known_failure', code: 'not_admitted', compensationAvailable: false });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls.some((call) => call[1]?.method === 'POST')).toBe(false);
+    expect(dispatchGateEnterMock).not.toHaveBeenCalled();
+  });
+
+  it('awaits the durable dispatch gate after preflight and revalidation before the sole POST', async () => {
+    let releaseGate: ((value: { status: 'entered' }) => void) | undefined;
+    dispatchGateEnterMock.mockImplementationOnce(() => new Promise((resolve) => { releaseGate = resolve; }));
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ labelIds: ['INBOX'] }))
+      .mockResolvedValueOnce(jsonResponse({ labelIds: [] }));
+    admitForPost();
+
+    const pending = service(fetchMock).mutate(command);
+    await vi.waitFor(() => expect(dispatchGateEnterMock).toHaveBeenCalledTimes(1));
+    expect(resolveTargetMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+    expect(dispatchGateEnterMock).toHaveBeenCalledWith(command);
+
+    releaseGate?.({ status: 'entered' });
+    await expect(pending).resolves.toMatchObject({ outcome: 'confirmed', effect: 'changed' });
+    expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(1);
+  });
+
+  it.each([
+    [{ status: 'not_admitted' }, 'not_admitted'],
+    [{ status: 'conflict' }, 'admission_unavailable'],
+  ] as const)('maps dispatch gate $status to %s and sends no POST', async (gateResult, code) => {
+    dispatchGateEnterMock.mockResolvedValueOnce(gateResult);
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ labelIds: ['INBOX'] }));
+    admitForPost();
+
+    await expect(service(fetchMock).mutate(command)).resolves.toEqual({
+      outcome: 'known_failure', code, compensationAvailable: false,
+    });
+    expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+  });
+
+  it('maps a thrown or commit-ambiguous gate to admission_unavailable and sends no POST', async () => {
+    dispatchGateEnterMock.mockRejectedValueOnce(Object.assign(new Error('commit response lost'), { code: '08006' }));
+    const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ labelIds: ['INBOX'] }));
+    admitForPost();
+
+    await expect(service(fetchMock).mutate(command)).resolves.toEqual({
+      outcome: 'known_failure', code: 'admission_unavailable', compensationAvailable: false,
+    });
+    expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
   });
 
   it('classifies an unavailable pre-POST admission revalidation without dispatch', async () => {
@@ -340,6 +389,7 @@ describe('GmailInboxMutationService', () => {
         outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false,
       });
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(dispatchGateEnterMock).not.toHaveBeenCalled();
     },
   );
 
@@ -392,6 +442,7 @@ describe('GmailInboxMutationService', () => {
     });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(resolveTargetMock).toHaveBeenCalledTimes(2);
+    expect(dispatchGateEnterMock).toHaveBeenCalledTimes(1);
   });
 
   it('reconciles a retryable mutation response with one read and never retries POST', async () => {

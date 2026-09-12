@@ -1,6 +1,7 @@
 import { DbTokenStore, type GoogleOAuthConfig } from '@skytwin/connectors';
 import type {
   GmailInboxMutationCommand,
+  GmailInboxMutationDispatchGate,
   GmailInboxMutationPort,
   GmailInboxMutationResult,
 } from '@skytwin/shared-types';
@@ -24,6 +25,7 @@ type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
 export interface GmailInboxMutationServiceOptions {
   googleOAuthConfig: GoogleOAuthConfig;
+  dispatchGate: GmailInboxMutationDispatchGate;
   keyCache?: KeyCacheLike;
   fetch?: FetchLike;
   timeoutMs?: number;
@@ -186,6 +188,23 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
       currentTarget.providerMessageId !== initialTarget.providerMessageId
     ) {
       return { outcome: 'known_failure', code: 'not_admitted', compensationAvailable: false };
+    }
+
+    // This durable transition is the uncertainty boundary. If it does not
+    // commit successfully, no provider mutation request is permitted. A thrown
+    // commit ambiguity is classified conservatively but still precedes POST.
+    let gateResult: Awaited<ReturnType<GmailInboxMutationDispatchGate['enter']>>;
+    try {
+      gateResult = await this.options.dispatchGate.enter(command);
+    } catch {
+      return { outcome: 'known_failure', code: 'admission_unavailable', compensationAvailable: false };
+    }
+    if (gateResult.status !== 'entered') {
+      return {
+        outcome: 'known_failure',
+        code: gateResult.status === 'not_admitted' ? 'not_admitted' : 'admission_unavailable',
+        compensationAvailable: false,
+      };
     }
 
     const mutation = await this.request(
