@@ -228,9 +228,12 @@ function buildTerminalResultEnvelope(
 ): GmailArchiveTerminalResultEnvelope {
   const result = snapshotMutationResult(value);
   if (!result) throw new TypeError('cannot build a terminal envelope from an invalid result');
-  const header = attemptPhase === null
-    ? { schema: TERMINAL_RESULT_SCHEMA_V1 as const }
-    : { schema: TERMINAL_RESULT_SCHEMA_V2 as const, attemptPhase };
+  const header: { schema: typeof TERMINAL_RESULT_SCHEMA_V1 } | {
+    schema: typeof TERMINAL_RESULT_SCHEMA_V2;
+    attemptPhase: GmailArchiveAttemptPhase;
+  } = attemptPhase === null
+    ? { schema: TERMINAL_RESULT_SCHEMA_V1 }
+    : { schema: TERMINAL_RESULT_SCHEMA_V2, attemptPhase };
   return result.outcome === 'confirmed' ? {
     ...header,
     outcome: result.outcome,
