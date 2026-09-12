@@ -21,12 +21,14 @@ export type GmailInboxMutationResult =
     }
   | {
       outcome: 'known_failure';
-      code: 'invalid_command' | 'not_admitted' | 'credentials_unavailable' | 'remote_rejected';
+      code: 'invalid_command' | 'not_admitted' | 'admission_unavailable' |
+        'credentials_unavailable' | 'preflight_unavailable' | 'remote_rejected';
       compensationAvailable: false;
     }
   | {
       outcome: 'unknown';
-      code: 'admission_unavailable' | 'preflight_unavailable' | 'remote_outcome_unknown';
+      /** Reserved for a mutation POST whose external effect cannot be proven. */
+      code: 'remote_outcome_unknown';
       compensationAvailable: false;
     };
 

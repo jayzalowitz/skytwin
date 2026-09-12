@@ -198,7 +198,7 @@ describe('GmailInboxMutationService', () => {
     const result = await service(fetchMock).mutate(command);
 
     expect(result).toEqual({
-      outcome: 'unknown', code: 'admission_unavailable', compensationAvailable: false,
+      outcome: 'known_failure', code: 'admission_unavailable', compensationAvailable: false,
     });
     expect(refreshIfExpiredMock).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -322,7 +322,7 @@ describe('GmailInboxMutationService', () => {
     const result = await service(fetchMock).mutate(command);
 
     expect(result).toEqual({
-      outcome: 'unknown', code: 'admission_unavailable', compensationAvailable: false,
+      outcome: 'known_failure', code: 'admission_unavailable', compensationAvailable: false,
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls.some((call) => call[1]?.method === 'POST')).toBe(false);
@@ -344,7 +344,7 @@ describe('GmailInboxMutationService', () => {
   );
 
   it.each([408, 429, 500, 503])(
-    'maps retryable preflight %i to unknown without POST',
+    'maps unavailable preflight %i to a known failure without POST',
     async (status) => {
       const fetchMock = vi.fn().mockResolvedValueOnce(jsonResponse({ error: 'redacted' }, status));
       admitOnce();
@@ -352,12 +352,32 @@ describe('GmailInboxMutationService', () => {
       const result = await service(fetchMock).mutate(command);
 
       expect(result).toEqual({
-        outcome: 'unknown', code: 'preflight_unavailable', compensationAvailable: false,
+        outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false,
       });
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(resolveTargetMock).toHaveBeenCalledTimes(1);
     },
   );
+
+  it.each([
+    ['missing labels', { id: 'message' }],
+    ['wrong label shape', { labelIds: 'INBOX' }],
+    ['invalid JSON', null],
+  ] as const)('maps malformed preflight %s to a known failure without POST', async (_label, body) => {
+    const response = body === null
+      ? new Response('not-json', { status: 200 })
+      : jsonResponse(body);
+    const fetchMock = vi.fn().mockResolvedValueOnce(response);
+    admitOnce();
+
+    const result = await service(fetchMock).mutate(command);
+
+    expect(result).toEqual({
+      outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false,
+    });
+    expect(fetchMock.mock.calls.filter((call) => call[1]?.method === 'POST')).toHaveLength(0);
+    expect(resolveTargetMock).toHaveBeenCalledTimes(1);
+  });
 
   it('maps a deterministic mutation rejection to known failure without reconciliation', async () => {
     const fetchMock = vi.fn()
@@ -423,7 +443,7 @@ describe('GmailInboxMutationService', () => {
     expect(resolveTargetMock).toHaveBeenCalledTimes(2);
   });
 
-  it('uses an owned AbortController and classifies preflight timeout as unknown', async () => {
+  it('uses an owned AbortController and classifies preflight timeout as a known failure', async () => {
     let capturedSignal: AbortSignal | undefined;
     const fetchMock = vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       capturedSignal = init?.signal ?? undefined;
@@ -434,7 +454,7 @@ describe('GmailInboxMutationService', () => {
     const result = await service(fetchMock, 1).mutate(command);
 
     expect(result).toEqual({
-      outcome: 'unknown', code: 'preflight_unavailable', compensationAvailable: false,
+      outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false,
     });
     expect(capturedSignal).toBeDefined();
     expect(capturedSignal?.aborted).toBe(true);

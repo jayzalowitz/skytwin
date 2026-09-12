@@ -116,7 +116,7 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
     try {
       initialTarget = await gmailMessageRefRepository.resolveInboxMutationTarget(command);
     } catch {
-      return { outcome: 'unknown', code: 'admission_unavailable', compensationAvailable: false };
+      return { outcome: 'known_failure', code: 'admission_unavailable', compensationAvailable: false };
     }
     if (!initialTarget) {
       return { outcome: 'known_failure', code: 'not_admitted', compensationAvailable: false };
@@ -146,19 +146,19 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
       'GET',
     );
     if (preflight.failed) {
-      return { outcome: 'unknown', code: 'preflight_unavailable', compensationAvailable: false };
+      return { outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false };
     }
     if (preflight.status !== undefined && deterministicClientFailure(preflight.status)) {
       return { outcome: 'known_failure', code: 'remote_rejected', compensationAvailable: false };
     }
     if (!preflight.ok) {
-      return { outcome: 'unknown', code: 'preflight_unavailable', compensationAvailable: false };
+      return { outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false };
     }
 
     const desiredInbox = false;
     const preflightInbox = preflight.inbox;
     if (preflightInbox === null) {
-      return { outcome: 'unknown', code: 'preflight_unavailable', compensationAvailable: false };
+      return { outcome: 'known_failure', code: 'preflight_unavailable', compensationAvailable: false };
     }
     if (preflightInbox === desiredInbox) {
       return this.confirm(
@@ -178,7 +178,7 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
     try {
       currentTarget = await gmailMessageRefRepository.resolveInboxMutationTarget(command);
     } catch {
-      return { outcome: 'unknown', code: 'admission_unavailable', compensationAvailable: false };
+      return { outcome: 'known_failure', code: 'admission_unavailable', compensationAvailable: false };
     }
     if (
       !currentTarget ||
