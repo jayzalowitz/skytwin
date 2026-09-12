@@ -87,7 +87,6 @@ function dependencySet(overrides: Record<string, unknown> = {}) {
       executionExplanation: {},
       revision: revision('succeeded'),
     }),
-    canonicalBlockedTimestamps: vi.fn().mockResolvedValue(true),
     canonicalTerminalTimestamps: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
@@ -355,17 +354,14 @@ describe('gmailArchiveTerminalStatusRepository', () => {
     expect(statusGetter).not.toHaveBeenCalled();
   });
 
-  it('fails closed when exact terminal artifact timestamps are not millisecond-canonical', async () => {
-    for (const [status, overrides] of [
-      ['blocked', { canonicalBlockedTimestamps: vi.fn().mockResolvedValue(false) }],
-      ['succeeded', { canonicalTerminalTimestamps: vi.fn().mockResolvedValue(false) }],
-    ] as const) {
-      await expect(gmailArchiveTerminalStatusTestHooks.readTransition(
-        clientWithBarriers([barrier(status)]),
-        input,
-        dependencySet(overrides) as never,
-      )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
-    }
+  it('fails closed when exact r7 terminal artifact timestamps are not millisecond-canonical', async () => {
+    await expect(gmailArchiveTerminalStatusTestHooks.readTransition(
+      clientWithBarriers([barrier('succeeded')]),
+      input,
+      dependencySet({
+        canonicalTerminalTimestamps: vi.fn().mockResolvedValue(false),
+      }) as never,
+    )).resolves.toEqual({ ok: false, error: 'integrity_conflict' });
   });
 
   it('retries the complete snapshot transaction twice for 40001 only', async () => {
