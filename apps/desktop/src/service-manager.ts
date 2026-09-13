@@ -247,6 +247,7 @@ export class ServiceManager {
   private registeredWorkerGeneration: ApiGeneration | null = null;
   private nextApiGeneration = 0;
   private healthCheckInFlight = false;
+  private workerStartInFlight: Promise<void> | null = null;
   private readonly terminatingProcesses = new WeakMap<ChildProcess, Promise<void>>();
 
   constructor() {
@@ -1604,9 +1605,25 @@ export class ServiceManager {
     }
   }
 
-  private async startWorker(
+  private startWorker(
     startup: CockroachStartResult | null = null,
     apiGeneration: ApiGeneration | null = null,
+  ): Promise<void> {
+    if (this.workerStartInFlight) return this.workerStartInFlight;
+    const operation = this.startWorkerOwned(startup, apiGeneration);
+    let latched!: Promise<void>;
+    latched = operation.finally(() => {
+      if (this.workerStartInFlight === latched) {
+        this.workerStartInFlight = null;
+      }
+    });
+    this.workerStartInFlight = latched;
+    return latched;
+  }
+
+  private async startWorkerOwned(
+    startup: CockroachStartResult | null,
+    apiGeneration: ApiGeneration | null,
   ): Promise<void> {
     if (this.worker.process) {
       throw new ChildTerminationError('worker');
@@ -1622,6 +1639,7 @@ export class ServiceManager {
         await this.registerWorkerGenerationAuthority(apiGeneration, startup);
       }
     }
+    if (this.paused) return;
     this.worker.status = 'starting';
     this.emitStatus();
 
@@ -1639,6 +1657,7 @@ export class ServiceManager {
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (this.paused) return;
     if (!this.guardServiceDatabase(startup, 'while resolving the worker bundle')) return;
     if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
     // See apiEntry comment above — same reasoning for worker.
@@ -1680,7 +1699,15 @@ export class ServiceManager {
             console.log(`[worker] Restarting in ${delay}ms (attempt ${this.worker.restartCount})...`);
             setTimeout(() => {
               if (this.guardServiceDatabase(startup, 'before delayed worker restart')) {
-                void this.startWorker(startup, apiGeneration);
+                void this.startWorker(startup, apiGeneration).catch((error) => {
+                  if (error instanceof ChildTerminationError && error.serviceName === 'worker') {
+                    console.info('[worker] Delayed restart skipped because a worker child is already retained.');
+                    return;
+                  }
+                  console.error('[worker] Delayed restart failed:', error);
+                  this.worker.status = 'error';
+                  this.emitStatus();
+                });
               }
             }, delay);
           }
