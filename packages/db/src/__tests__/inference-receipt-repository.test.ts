@@ -170,6 +170,8 @@ describe('inferenceReceiptRepository', () => {
 
   it('fails the transaction when any receipt cannot link to the owned explanation', async () => {
     mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'decision' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
       .mockResolvedValueOnce({ rows: [{ id: 'first' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
     const first = fixture();
@@ -184,13 +186,54 @@ describe('inferenceReceiptRepository', () => {
   });
 
   it('writes a completion marker in the same transaction even when no call completed', async () => {
-    mockTransactionQuery.mockResolvedValue({ rows: [{ decision_id: 'decision' }], rowCount: 1 });
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'decision' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ decision_id: 'decision' }], rowCount: 1 });
     const rows = await inferenceReceiptRepository.createManyForUser('user', [], {
       decisionId: 'decision', explanationId: 'explanation',
     });
     expect(rows).toEqual([]);
-    expect(mockTransactionQuery).toHaveBeenCalledOnce();
-    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('inference_receipt_completions');
+    expect(mockTransactionQuery).toHaveBeenCalledTimes(3);
+    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('FOR UPDATE OF d');
+    expect(mockTransactionQuery.mock.calls[2]![0]).toContain('inference_receipt_completions');
+  });
+
+  it('rejects a second capture after serializing on an existing completion', async () => {
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'decision' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ explanation_id: 'explanation' }], rowCount: 1 });
+
+    await expect(inferenceReceiptRepository.createManyForUser('user', [], {
+      decisionId: 'decision', explanationId: 'explanation',
+    })).rejects.toThrow(/already finalized/);
+
+    expect(mockTransactionQuery).toHaveBeenCalledTimes(2);
+  });
+
+  it('persists the batch snapshot that passed trust verification', async () => {
+    const bundle = fixture();
+    const hostileTrustMap = { get: () => {
+      bundle.receipt.model = 'changed-during-trust-lookup';
+      return publicKeyPem;
+    } } as unknown as ReadonlyMap<string, string>;
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: bundle.receipt.decisionId }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: bundle.receipt.id }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ decision_id: bundle.receipt.decisionId }], rowCount: 1 });
+
+    await inferenceReceiptRepository.createManyForUser(bundle.receipt.userId, [{
+      bundle,
+      trustedRecorderKeys: hostileTrustMap,
+    }], {
+      decisionId: bundle.receipt.decisionId,
+      explanationId: bundle.receipt.explanationId,
+    });
+
+    const receiptInsertArgs = mockTransactionQuery.mock.calls[2]![1] as unknown[];
+    expect(JSON.parse(receiptInsertArgs[6] as string)).toMatchObject({ model: 'model' });
+    expect(bundle.receipt.model).toBe('changed-during-trust-lookup');
   });
 
   it('scopes reads and deletion through the decision owner', async () => {

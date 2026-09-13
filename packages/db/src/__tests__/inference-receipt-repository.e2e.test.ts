@@ -170,6 +170,40 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       .rejects.toMatchObject({ code: '23505' });
   });
 
+  it('admits exactly one immutable receipt batch under concurrent finalization', async () => {
+    const owner = await createGraph('concurrent-completion');
+    const first = receiptBundle(owner);
+    const second = receiptBundle(owner);
+    const input = (bundle: InferenceReceiptExportV1) => [{
+      bundle,
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }];
+    const completion = {
+      decisionId: owner.decisionId,
+      explanationId: owner.explanationId,
+    };
+
+    const settled = await Promise.allSettled([
+      inferenceReceiptRepository.createManyForUser(owner.userId, input(first), completion),
+      inferenceReceiptRepository.createManyForUser(owner.userId, input(second), completion),
+    ]);
+
+    expect(settled.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    expect(settled.filter((result) => result.status === 'rejected')).toHaveLength(1);
+    const rows = await pool.query<{ id: string; version: number }>(
+      `SELECT id, version::INT4 AS version
+         FROM inference_receipts WHERE decision_id = $1`,
+      [owner.decisionId],
+    );
+    expect(rows.rows).toHaveLength(1);
+    expect(typeof rows.rows[0]?.version).toBe('number');
+    const completions = await pool.query(
+      `SELECT 1 FROM inference_receipt_completions WHERE decision_id = $1`,
+      [owner.decisionId],
+    );
+    expect(completions.rows).toHaveLength(1);
+  });
+
   it('round-trips a schema-v2 receipt backup as canonical untrusted metadata', async () => {
     const owner = await createGraph('backup-owner');
     const bundle = receiptBundle(owner);

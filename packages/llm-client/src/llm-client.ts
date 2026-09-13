@@ -82,10 +82,73 @@ function getCircuitBreaker(userId: string, providerName: string): CircuitBreaker
 }
 
 interface ChainEntry {
-  provider: ProviderEntry;
+  provider: Readonly<ProviderEntry>;
   generateFn: ProviderGenerateFn;
   streamFn: ProviderStreamFn;
   circuitBreaker: CircuitBreaker;
+}
+
+function snapshotProvider(provider: ProviderEntry): Readonly<ProviderEntry> {
+  const name = provider.name;
+  const apiKey = provider.apiKey;
+  const model = provider.model;
+  const baseUrl = provider.baseUrl;
+  const reasoningMode = provider.reasoningMode;
+  const verifier = provider.confidentialVerifier;
+  const verify = verifier?.verify;
+  return Object.freeze({
+    name,
+    apiKey,
+    model,
+    baseUrl,
+    reasoningMode,
+    ...(verifier && typeof verify === 'function'
+      ? { confidentialVerifier: Object.freeze({ verify: verify.bind(verifier) }) }
+      : {}),
+  });
+}
+
+function snapshotPrompt(prompt: string | ChatMessage[]): string | ChatMessage[] {
+  if (typeof prompt === 'string') return prompt;
+  return Object.freeze(prompt.map((message) => Object.freeze({
+    role: message.role,
+    content: message.content,
+  }))) as unknown as ChatMessage[];
+}
+
+function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOptions> {
+  return Object.freeze({
+    temperature: options.temperature,
+    maxTokens: options.maxTokens,
+    systemPrompt: options.systemPrompt,
+    timeoutMs: options.timeoutMs,
+  });
+}
+
+function snapshotVerification(result: ConfidentialVerificationResult): ConfidentialVerificationResult {
+  if (result.outcome !== 'verified') {
+    return Object.freeze({
+      outcome: result.outcome,
+      verifierVersion: result.verifierVersion,
+      reason: result.reason,
+    });
+  }
+  return Object.freeze({
+    outcome: result.outcome,
+    inferenceId: result.inferenceId,
+    attestationPolicyVersion: result.attestationPolicyVersion,
+    verifierVersion: result.verifierVersion,
+    evidence: Uint8Array.from(result.evidence),
+    measurementIdentity: result.measurementIdentity,
+    responseSignature: Object.freeze({
+      algorithm: result.responseSignature.algorithm,
+      keyId: result.responseSignature.keyId,
+      publicKeyPem: result.responseSignature.publicKeyPem,
+      signatureBase64: result.responseSignature.signatureBase64,
+    }),
+    verifiedAt: result.verifiedAt,
+    freshUntil: result.freshUntil,
+  });
 }
 
 const DEFAULT_ENDPOINTS: Record<AIProviderName, string> = {
@@ -146,17 +209,23 @@ export class AllProvidersFailedError extends Error {
  * automatically falls through to the next provider in priority order.
  */
 export class LlmClient {
-  private readonly chain: ChainEntry[];
+  private readonly chain: readonly ChainEntry[];
   private readonly options: LlmClientOptions;
 
   constructor(providers: ProviderEntry[], userId?: string, options: LlmClientOptions = {}) {
-    this.options = options;
+    this.options = Object.freeze({
+      onInferenceTrace: options.onInferenceTrace,
+      now: options.now,
+    });
     const cbOwner = userId ?? 'shared';
-    this.chain = providers.map((p) => ({
-      provider: p,
-      generateFn: PROVIDER_FNS[p.name],
-      streamFn: PROVIDER_STREAM_FNS[p.name],
-      circuitBreaker: getCircuitBreaker(cbOwner, p.name),
+    this.chain = Object.freeze(providers.map((candidate) => {
+      const provider = snapshotProvider(candidate);
+      return Object.freeze({
+        provider,
+        generateFn: PROVIDER_FNS[provider.name],
+        streamFn: PROVIDER_STREAM_FNS[provider.name],
+        circuitBreaker: getCircuitBreaker(cbOwner, provider.name),
+      });
     }));
   }
 
@@ -171,6 +240,9 @@ export class LlmClient {
    * chain translates the array to its native chat-completion shape.
    */
   async generate(prompt: string | ChatMessage[], options: GenerateOptions = {}): Promise<LlmResponse> {
+    const invocationPrompt = snapshotPrompt(prompt);
+    const invocationOptions = snapshotGenerateOptions(options);
+    const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
     let confidentialFallbackReason: string | undefined;
 
@@ -189,11 +261,11 @@ export class LlmClient {
         const content = await generateFn(
           provider.apiKey,
           provider.model,
-          prompt,
-          { ...options, baseUrl: provider.baseUrl },
+          invocationPrompt,
+          Object.freeze({ ...invocationOptions, baseUrl: provider.baseUrl }),
         );
         const recorded = await this.recordSuccessfulInference(
-          provider, prompt, options, content, confidentialFallbackReason,
+          provider, logicalRequest, content, confidentialFallbackReason,
         );
         if (!recorded.accepted) {
           confidentialFallbackReason = recorded.failureReason;
@@ -243,6 +315,9 @@ export class LlmClient {
     prompt: string | ChatMessage[],
     options: GenerateOptions = {},
   ): AsyncIterable<LlmStreamEvent> {
+    const invocationPrompt = snapshotPrompt(prompt);
+    const invocationOptions = snapshotGenerateOptions(options);
+    const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
     let confidentialFallbackReason: string | undefined;
 
@@ -263,8 +338,8 @@ export class LlmClient {
         for await (const chunk of streamFn(
           provider.apiKey,
           provider.model,
-          prompt,
-          { ...options, baseUrl: provider.baseUrl },
+          invocationPrompt,
+          Object.freeze({ ...invocationOptions, baseUrl: provider.baseUrl }),
         )) {
           if (chunk.length === 0) continue;
           collected.push(chunk);
@@ -278,7 +353,7 @@ export class LlmClient {
         }
         const content = collected.join('');
         const recorded = await this.recordSuccessfulInference(
-          provider, prompt, options, content, confidentialFallbackReason,
+          provider, logicalRequest, content, confidentialFallbackReason,
         );
         if (!recorded.accepted) {
           confidentialFallbackReason = recorded.failureReason;
@@ -318,14 +393,13 @@ export class LlmClient {
   }
 
   private async recordSuccessfulInference(
-    provider: ProviderEntry,
-    prompt: string | ChatMessage[],
-    options: GenerateOptions,
+    provider: Readonly<ProviderEntry>,
+    logicalRequest: Uint8Array,
     content: string,
     fallbackReason?: string,
   ): Promise<{ accepted: boolean; failureReason?: string }> {
     const mode = modeFor(provider);
-    const request = canonicalLogicalInputBytes(prompt, options);
+    const request = Uint8Array.from(logicalRequest);
     const response = Buffer.from(content, 'utf8');
     const endpoint = endpointIdentity(provider);
     let verification: ConfidentialVerificationResult | undefined;
@@ -333,13 +407,13 @@ export class LlmClient {
     if (mode === 'verified_confidential') {
       try {
         verification = provider.confidentialVerifier
-          ? await provider.confidentialVerifier.verify({
+          ? snapshotVerification(await provider.confidentialVerifier.verify({
               provider: provider.name,
               model: provider.model,
               endpointIdentity: endpoint,
-              request,
-              response,
-            })
+              request: Uint8Array.from(request),
+              response: Uint8Array.from(response),
+            }))
           : {
               outcome: 'verification_unavailable',
               verifierVersion: 'unconfigured',

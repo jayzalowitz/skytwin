@@ -113,6 +113,54 @@ describe('LlmClient', () => {
       expect(traces[0]).not.toHaveProperty('verification');
     });
 
+    it('binds receipt input and provider identity before the provider await', async () => {
+      const { LlmClient } = await freshImport();
+      let resolveProvider: ((value: string) => void) | undefined;
+      mockOpenaiGenerate.mockImplementation(() => new Promise<string>((resolve) => {
+        resolveProvider = resolve;
+      }));
+      const provider: ProviderEntry = {
+        ...openaiProvider,
+        model: 'bound-model',
+        baseUrl: 'https://bound.example/v1',
+      };
+      const prompt = [{ role: 'user' as const, content: 'bound prompt' }];
+      const options = { maxTokens: 12, systemPrompt: 'bound system' };
+      const traces: import('../types.js').InferenceTrace[] = [];
+      const client = new LlmClient([provider], 'snapshot-user', {
+        onInferenceTrace: (trace) => traces.push(trace),
+      });
+
+      const pending = client.generate(prompt, options);
+      provider.model = 'swapped-model';
+      provider.baseUrl = 'https://swapped.example';
+      prompt[0]!.content = 'swapped prompt';
+      options.maxTokens = 999;
+      options.systemPrompt = 'swapped system';
+      resolveProvider?.('bound response');
+      await pending;
+
+      expect(mockOpenaiGenerate).toHaveBeenCalledWith(
+        'sk-test',
+        'bound-model',
+        [{ role: 'user', content: 'bound prompt' }],
+        expect.objectContaining({
+          baseUrl: 'https://bound.example/v1',
+          maxTokens: 12,
+          systemPrompt: 'bound system',
+        }),
+      );
+      expect(traces[0]).toMatchObject({
+        model: 'bound-model',
+        endpointIdentity: 'https://bound.example/v1',
+      });
+      expect(Buffer.from(traces[0]!.request).toString()).toBe(JSON.stringify({
+        prompt: [{ role: 'user', content: 'bound prompt' }],
+        systemPrompt: 'bound system',
+        maxTokens: 12,
+      }));
+    });
+
     it('records zero-cost on-device inference without attestation fields', async () => {
       const { LlmClient } = await freshImport();
       mockOllamaGenerate.mockResolvedValue('local response');
