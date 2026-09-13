@@ -216,4 +216,31 @@ describe('CockroachManager', () => {
     first.emit('exit', 0, null);
     expect(mgr.isManagedStartCurrent(current)).toBe(true);
   });
+
+  it('serializes overlapping starts onto one attested child generation', async () => {
+    const child = fakeChild(4107);
+    const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+      writeOwnedMarkers(child, args);
+      return child;
+    }) as unknown as typeof spawn;
+    const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+      CockroachManagerInternals;
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    let releaseReadiness: ((value: boolean) => void) | undefined;
+    mgr.isCrdbResponding = vi
+      .fn()
+      .mockResolvedValueOnce(false)
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => (releaseReadiness = resolve)))
+      .mockResolvedValue(true);
+    mgr.ensureDatabase = vi.fn().mockResolvedValue(undefined);
+
+    const first = mgr.start();
+    await vi.waitFor(() => expect(spawnImpl).toHaveBeenCalledOnce());
+    const second = mgr.start();
+    releaseReadiness?.(true);
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toEqual(secondResult);
+    expect(spawnImpl).toHaveBeenCalledOnce();
+  });
 });
