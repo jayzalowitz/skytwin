@@ -253,6 +253,10 @@ export async function ingestPackagedSampleSignals(options: {
             clearTimeout(timer);
             reject(new NonRetryableSampleIngestError('sample ingest launch authority was revoked'));
           };
+          if (options.signal.aborted) {
+            abort();
+            return;
+          }
           options.signal.addEventListener('abort', abort, { once: true });
         });
       }

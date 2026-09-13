@@ -193,6 +193,25 @@ describe('packaged sample safety', () => {
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
+  it('aborts a pending retry delay when launch authority is revoked', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 503 });
+    const ingestion = ingestPackagedSampleSignals({
+      apiUrl: 'http://127.0.0.1:3100',
+      serviceToken: 'local-secret',
+      fetchImpl,
+      signal: controller.signal,
+      authorizeRequest: async () => true,
+      maxAttempts: 3,
+      retryDelayMs: 5_000,
+    });
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    controller.abort();
+
+    await expect(ingestion).rejects.toThrow(/authority was revoked/);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it('re-authorizes the concrete listener before every token-bearing POST', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 202 });
     const authorizeRequest = vi.fn(async () => fetchImpl.mock.calls.length === 0);
