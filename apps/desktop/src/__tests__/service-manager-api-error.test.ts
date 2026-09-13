@@ -75,6 +75,8 @@ interface ManagerInternals {
   };
   apiGeneration: ApiGenerationForTest | null;
   readyApiGeneration: ApiGenerationForTest | null;
+  webApiGeneration: ApiGenerationForTest | null;
+  workerApiGeneration: ApiGenerationForTest | null;
   registeredWorkerGeneration: ApiGenerationForTest | null;
   paused: boolean;
   serviceLifecycleTail: Promise<void>;
@@ -107,6 +109,14 @@ interface ManagerInternals {
     delayMs: number,
   ): Promise<void>;
   stopDataServicesOwned(): Promise<void>;
+  stopDataServicesForApiGeneration(
+    generation: ApiGenerationForTest,
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+  ): Promise<void>;
   registerWorkerGenerationAuthority(
     generation: ApiGenerationForTest,
     startup: {
@@ -145,6 +155,11 @@ interface ManagerInternals {
     dataDir: string;
     generation: number;
   }): void;
+  resume(): Promise<void>;
+  stopAll(): Promise<void>;
+  startAll(): Promise<void>;
+  stopAllOwned(): Promise<void>;
+  startAllOwned(): Promise<void>;
   runHealthCheck(startup: {
     ownership: "managed-child";
     dataDir: string;
@@ -238,6 +253,7 @@ describe("ServiceManager API error lifecycle", () => {
 
     const generation = await manager.startApi(startup);
     expect(generation).not.toBeNull();
+    manager.workerApiGeneration = generation;
     processState.child?.emit("error", new Error("spawn channel failed"));
 
     expect(generation?.controller.signal.aborted).toBe(true);
@@ -295,6 +311,8 @@ describe("ServiceManager API error lifecycle", () => {
       | undefined;
     expect(generation?.ingestCredential).toBe(forkEnvironment?.["SKYTWIN_SERVICE_TOKEN"]);
     manager.registeredWorkerGeneration = generation;
+    manager.workerApiGeneration = generation;
+    manager.webApiGeneration = generation;
     expect(manager.workerEnv(generation!)["SKYTWIN_SERVICE_TOKEN"]).toBe(
       generation?.ingestCredential,
     );
@@ -330,6 +348,7 @@ describe("ServiceManager API error lifecycle", () => {
     const first = { process: generationWorker(), controller: new AbortController(), ingestCredential: "first" };
     const second = { process: generationWorker(), controller: new AbortController(), ingestCredential: "second" };
     manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.stopDataServicesForApiGeneration = vi.fn().mockResolvedValue(undefined);
     manager.startApi = vi.fn()
       .mockResolvedValueOnce(null)
       .mockImplementationOnce(async () => {
@@ -346,8 +365,14 @@ describe("ServiceManager API error lifecycle", () => {
     manager.waitForApi = vi.fn()
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);
-    manager.startWeb = vi.fn().mockResolvedValue(undefined);
-    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+    manager.startWeb = vi.fn().mockImplementation(async (_startup, generation) => {
+      manager.web.process = generationWorker();
+      manager.webApiGeneration = generation;
+    });
+    manager.startWorker = vi.fn().mockImplementation(async (_startup, generation) => {
+      manager.worker.process = generationWorker();
+      manager.workerApiGeneration = generation;
+    });
     manager.startHealthMonitoring = vi.fn();
 
     manager.scheduleApiRestart(startup, "initial API exit");
@@ -373,6 +398,7 @@ describe("ServiceManager API error lifecycle", () => {
     manager.activeDatabaseStartup = startup;
     manager.api.failureTimestamps = Array.from({ length: 3 }, () => Date.now());
     manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.stopDataServicesForApiGeneration = vi.fn().mockResolvedValue(undefined);
     manager.startApi = vi.fn().mockResolvedValue({
       process: generationWorker(),
       controller: new AbortController(),
@@ -391,7 +417,8 @@ describe("ServiceManager API error lifecycle", () => {
     expect(manager.startApi).toHaveBeenCalledOnce();
     expect(manager.api.failureTimestamps).toHaveLength(5);
     expect(manager.api.status).toBe("error");
-    expect(manager.stopDataServicesOwned).toHaveBeenCalledTimes(3);
+    expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce();
+    expect(manager.stopDataServicesForApiGeneration).toHaveBeenCalledTimes(2);
     expect(manager.startWeb).not.toHaveBeenCalled();
     expect(manager.startWorker).not.toHaveBeenCalled();
   });
@@ -407,6 +434,7 @@ describe("ServiceManager API error lifecycle", () => {
     manager.activeDatabaseStartup = startup;
     manager.api.restartCount = 1;
     manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.stopDataServicesForApiGeneration = vi.fn().mockResolvedValue(undefined);
     manager.startApi = vi.fn().mockResolvedValue({
       process: generationWorker(),
       controller: new AbortController(),
@@ -440,6 +468,7 @@ describe("ServiceManager API error lifecycle", () => {
     manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
     manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
     manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.stopDataServicesForApiGeneration = vi.fn().mockResolvedValue(undefined);
     manager.registerWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
     manager.waitForApi = vi.fn().mockImplementation(async () => {
       processState.child?.emit("error", new Error("replacement channel failed"));
@@ -452,7 +481,11 @@ describe("ServiceManager API error lifecycle", () => {
       .rejects.toThrow("Replacement API generation could not prove listener ownership");
     await vi.waitFor(() => expect(manager.scheduleApiRestart).toHaveBeenCalledOnce());
 
-    expect(manager.scheduleApiRestart).toHaveBeenCalledWith(startup, "child process error");
+    expect(manager.scheduleApiRestart).toHaveBeenCalledWith(
+      startup,
+      "child process error",
+      expect.objectContaining({ process: processState.child }),
+    );
     expect(processState.fork).toHaveBeenCalledOnce();
   });
 
@@ -479,6 +512,82 @@ describe("ServiceManager API error lifecycle", () => {
     expect(generation?.controller.signal.aborted).toBe(false);
     expect(manager.apiGeneration).toBe(generation);
     expect(manager.api.status).toBe("running");
+  });
+
+  it("suppresses a queued replacement when pause begins during its backoff", async () => {
+    vi.useFakeTimers();
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    const realStartApi = manager.startApi.bind(manager);
+    manager.startApi = vi.fn().mockResolvedValue(null);
+
+    manager.scheduleApiRestart(startup, "initial API exit");
+    await vi.waitFor(() => expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce());
+    manager.paused = true;
+    await vi.runAllTimersAsync();
+    await manager.serviceLifecycleTail;
+
+    expect(manager.startApi).not.toHaveBeenCalled();
+    expect(manager.api.restartCount).toBe(1);
+    expect(manager.api.failureTimestamps).toHaveLength(1);
+
+    vi.useRealTimers();
+    const replacementApi = generationWorker();
+    const replacementWeb = generationWorker();
+    const replacementWorker = generationWorker();
+    processState.fork.mockReset();
+    processState.fork
+      .mockReturnValueOnce(replacementApi)
+      .mockReturnValueOnce(replacementWeb)
+      .mockReturnValueOnce(replacementWorker);
+    manager.startApi = realStartApi;
+    manager.waitForApi = vi.fn().mockResolvedValue(true);
+    manager.registerWorkerGenerationAuthority = vi.fn().mockImplementation(async (next) => {
+      manager.registeredWorkerGeneration = next;
+    });
+
+    await manager.resume();
+
+    expect(manager.api.restartCount).toBe(0);
+    expect(manager.api.failureTimestamps).toHaveLength(0);
+    expect(manager.readyApiGeneration).toBe(manager.apiGeneration);
+    expect(manager.web.process).toBe(replacementWeb);
+    expect(manager.worker.process).toBe(replacementWorker);
+    expect(processState.fork).toHaveBeenCalledTimes(3);
+  });
+
+  it("suppresses a queued replacement when pause wins at the lifecycle boundary", async () => {
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue(null);
+    let releaseLifecycle: (() => void) | undefined;
+    manager.serviceLifecycleTail = new Promise<void>((resolve) => {
+      releaseLifecycle = resolve;
+    });
+
+    manager.scheduleApiRestart(startup, "initial API exit");
+    manager.paused = true;
+    releaseLifecycle?.();
+    await manager.serviceLifecycleTail;
+
+    expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce();
+    expect(manager.startApi).not.toHaveBeenCalled();
+    expect(manager.api.restartCount).toBe(1);
+    expect(manager.api.failureTimestamps).toHaveLength(1);
   });
 
   it("contains sibling services without restarting when the API exits while paused", async () => {
@@ -509,6 +618,8 @@ describe("ServiceManager API error lifecycle", () => {
     manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
     const generation = await manager.startApi(startup);
     expect(generation).not.toBeNull();
+    manager.workerApiGeneration = generation;
+    manager.webApiGeneration = generation;
     manager.registeredWorkerGeneration = generation;
     manager.paused = true;
     const revokeAuthority = vi.fn().mockResolvedValue(undefined);
@@ -525,6 +636,27 @@ describe("ServiceManager API error lifecycle", () => {
     expect(manager.registeredWorkerGeneration).toBeNull();
     expect(revokeAuthority).toHaveBeenCalledWith(generation, startup);
     expect(processState.fork).toHaveBeenCalledOnce();
+
+    const replacementApi = generationWorker();
+    const replacementWeb = generationWorker();
+    const replacementWorker = generationWorker();
+    processState.fork.mockReset();
+    processState.fork
+      .mockReturnValueOnce(replacementApi)
+      .mockReturnValueOnce(replacementWeb)
+      .mockReturnValueOnce(replacementWorker);
+    manager.waitForApi = vi.fn().mockResolvedValue(true);
+    manager.registerWorkerGenerationAuthority = vi.fn().mockImplementation(async (next) => {
+      manager.registeredWorkerGeneration = next;
+    });
+
+    await manager.resume();
+
+    expect(manager.readyApiGeneration).toBe(manager.apiGeneration);
+    expect(manager.web.process).toBe(replacementWeb);
+    expect(manager.worker.process).toBe(replacementWorker);
+    expect(manager.paused).toBe(false);
+    expect(processState.fork).toHaveBeenCalledTimes(3);
   });
 
   it("continues packaged API identity monitoring while worker execution is paused", async () => {
@@ -538,18 +670,155 @@ describe("ServiceManager API error lifecycle", () => {
     manager.activeDatabaseStartup = startup;
     manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
     manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    processState.child = generationWorker();
+    const originalWeb = generationWorker();
+    const originalWorker = generationWorker();
     const generation = await manager.startApi(startup);
     expect(generation).not.toBeNull();
     manager.readyApiGeneration = generation;
+    manager.web = {
+      process: originalWeb,
+      status: "running",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.worker = {
+      process: originalWorker,
+      status: "paused",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.webApiGeneration = generation;
+    manager.workerApiGeneration = generation;
+    manager.registeredWorkerGeneration = generation;
     manager.paused = true;
-    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.revokeWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
     const fetchImpl = vi.fn().mockRejectedValue(new Error("connection refused"));
     vi.stubGlobal("fetch", fetchImpl);
 
     await manager.runHealthCheck(startup);
-    await vi.waitFor(() => expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce());
+    await manager.serviceLifecycleTail;
 
     expect(fetchImpl).toHaveBeenCalledOnce();
     expect(generation?.controller.signal.aborted).toBe(true);
+    expect(manager.api.process).toBeNull();
+    expect(manager.web.process).toBeNull();
+    expect(manager.worker.process).toBeNull();
+
+    const replacementApi = generationWorker();
+    const replacementWeb = generationWorker();
+    const replacementWorker = generationWorker();
+    processState.fork.mockReset();
+    processState.fork
+      .mockReturnValueOnce(replacementApi)
+      .mockReturnValueOnce(replacementWeb)
+      .mockReturnValueOnce(replacementWorker);
+    manager.waitForApi = vi.fn().mockResolvedValue(true);
+    manager.registerWorkerGenerationAuthority = vi.fn().mockImplementation(async (next) => {
+      manager.registeredWorkerGeneration = next;
+    });
+
+    await manager.resume();
+
+    expect(manager.readyApiGeneration).toBe(manager.apiGeneration);
+    expect(manager.web.process).toBe(replacementWeb);
+    expect(manager.worker.process).toBe(replacementWorker);
+    expect(manager.paused).toBe(false);
+  });
+
+  it.each([
+    ["explicit lifecycle queued before containment", true],
+    ["containment queued before explicit lifecycle", false],
+  ])("does not let stale paused-exit cleanup stop a successor: %s", async (_label, lifecycleFirst) => {
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    const originalGeneration = await manager.startApi(startup);
+    expect(originalGeneration).not.toBeNull();
+    const originalWeb = generationWorker();
+    const originalWorker = generationWorker();
+    manager.web = {
+      process: originalWeb,
+      status: "running",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.worker = {
+      process: originalWorker,
+      status: "paused",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.webApiGeneration = originalGeneration;
+    manager.workerApiGeneration = originalGeneration;
+    manager.registeredWorkerGeneration = originalGeneration;
+    manager.paused = true;
+    manager.revokeWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
+
+    const successorApi = generationWorker();
+    const successorWeb = generationWorker();
+    const successorWorker = generationWorker();
+    const successorGeneration = {
+      process: successorApi,
+      controller: new AbortController(),
+      ingestCredential: "successor",
+    };
+    manager.stopAllOwned = vi.fn().mockImplementation(async () => {
+      manager.web.process = null;
+      manager.worker.process = null;
+      manager.webApiGeneration = null;
+      manager.workerApiGeneration = null;
+      manager.registeredWorkerGeneration = null;
+    });
+    manager.startAllOwned = vi.fn().mockImplementation(async () => {
+      manager.api.process = successorApi;
+      manager.api.status = "running";
+      manager.apiGeneration = successorGeneration;
+      manager.readyApiGeneration = successorGeneration;
+      manager.web.process = successorWeb;
+      manager.web.status = "running";
+      manager.worker.process = successorWorker;
+      manager.worker.status = "running";
+      manager.webApiGeneration = successorGeneration;
+      manager.workerApiGeneration = successorGeneration;
+      manager.registeredWorkerGeneration = successorGeneration;
+      manager.paused = false;
+    });
+
+    let stopping: Promise<void>;
+    let starting: Promise<void>;
+    if (lifecycleFirst) {
+      stopping = manager.stopAll();
+      starting = manager.startAll();
+      if (processState.child) processState.child.exitCode = 1;
+      processState.child?.emit("exit", 1);
+    } else {
+      if (processState.child) processState.child.exitCode = 1;
+      processState.child?.emit("exit", 1);
+      stopping = manager.stopAll();
+      starting = manager.startAll();
+    }
+
+    await Promise.all([stopping, starting]);
+    await manager.serviceLifecycleTail;
+
+    expect(manager.apiGeneration).toBe(successorGeneration);
+    expect(manager.api.process).toBe(successorApi);
+    expect(manager.web.process).toBe(successorWeb);
+    expect(manager.worker.process).toBe(successorWorker);
+    expect(manager.registeredWorkerGeneration).toBe(successorGeneration);
+    expect(successorApi.kill).not.toHaveBeenCalled();
+    expect(successorWeb.kill).not.toHaveBeenCalled();
+    expect(successorWorker.kill).not.toHaveBeenCalled();
   });
 });

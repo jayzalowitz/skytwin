@@ -245,6 +245,8 @@ export class ServiceManager {
   private invalidatedDatabaseStartup: CockroachStartResult | null = null;
   private apiGeneration: ApiGeneration | null = null;
   private readyApiGeneration: ApiGeneration | null = null;
+  private webApiGeneration: ApiGeneration | null = null;
+  private workerApiGeneration: ApiGeneration | null = null;
   private registeredWorkerGeneration: ApiGeneration | null = null;
   private nextApiGeneration = 0;
   private healthCheckInFlight = false;
@@ -302,6 +304,45 @@ export class ServiceManager {
     if (this.registeredWorkerGeneration === registeredGeneration) {
       this.registeredWorkerGeneration = null;
     }
+    if (this.web.process === null) this.webApiGeneration = null;
+    if (this.worker.process === null) this.workerApiGeneration = null;
+  }
+
+  private async stopDataServicesForApiGeneration(
+    generation: ApiGeneration,
+    startup: CockroachStartResult | null,
+  ): Promise<void> {
+    const registered = this.registeredWorkerGeneration === generation;
+    const workerProcess = this.workerApiGeneration === generation ? this.worker.process : null;
+    const webProcess = this.webApiGeneration === generation ? this.web.process : null;
+    const apiProcess = this.api.process === generation.process ? generation.process : null;
+    const canRevokeDurably =
+      registered &&
+      startup?.ownership === 'managed-child' &&
+      this.cockroach.isManagedStartCurrent(startup);
+    const results = await Promise.allSettled([
+      canRevokeDurably && startup
+        ? this.revokeWorkerGenerationAuthority(generation, startup)
+        : Promise.resolve(),
+      workerProcess && this.worker.process === workerProcess
+        ? this.stopProcess(this.worker, 'worker')
+        : Promise.resolve(),
+      webProcess && this.web.process === webProcess
+        ? this.stopProcess(this.web, 'web')
+        : Promise.resolve(),
+      apiProcess && this.api.process === apiProcess
+        ? this.stopProcess(this.api, 'api')
+        : Promise.resolve(),
+    ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
+    if (this.registeredWorkerGeneration === generation) this.registeredWorkerGeneration = null;
+    if (this.workerApiGeneration === generation && this.worker.process === null) {
+      this.workerApiGeneration = null;
+    }
+    if (this.webApiGeneration === generation && this.web.process === null) {
+      this.webApiGeneration = null;
+    }
   }
 
   private clearInvalidatedDatabaseStartup(startup: CockroachStartResult): void {
@@ -347,7 +388,7 @@ export class ServiceManager {
 
   private async requireApiGenerationCurrent(generation: ApiGeneration, phase: string): Promise<void> {
     if (this.isApiGenerationCurrent(generation)) return;
-    await this.stopDataServicesOwned();
+    await this.stopDataServicesForApiGeneration(generation, this.activeDatabaseStartup);
     throw new Error(`API process generation changed ${phase}`);
   }
 
@@ -1312,12 +1353,13 @@ export class ServiceManager {
     reason: string,
   ): void {
     if (!app.isPackaged || !generation || !this.isApiGenerationCurrent(generation)) return;
+    if (!this.claimApiGenerationRecovery(generation)) return;
     this.revokeApiGeneration(generation);
     this.api.status = 'error';
     this.emitStatus();
     void this.runServiceLifecycle(async () => {
       console.error(`[api] ${reason}; stopping packaged data services.`);
-      await this.stopDataServicesOwned();
+      await this.stopDataServicesForApiGeneration(generation, startup);
       if (startup) this.guardServiceDatabase(startup, 'after API listener identity loss');
     }).catch((error) => {
       console.error('[api] Failed to stop services after listener identity loss:', error);
@@ -1466,7 +1508,7 @@ export class ServiceManager {
         this.api.process = null;
         this.api.status = 'stopped';
         this.emitStatus();
-        this.scheduleApiRestart(startup, reason);
+        this.scheduleApiRestart(startup, reason, generation);
       };
       apiProcess.on('error', (error) => {
         console.error('[api] Child process error:', error);
@@ -1496,7 +1538,11 @@ export class ServiceManager {
     }
   }
 
-  private scheduleApiRestart(startup: CockroachStartResult | null, reason: string): void {
+  private scheduleApiRestart(
+    startup: CockroachStartResult | null,
+    reason: string,
+    failedGeneration: ApiGeneration | null = null,
+  ): void {
     if (!this.guardServiceDatabase(startup, 'before API restart')) return;
     if (this.paused) {
       if (app.isPackaged) {
@@ -1504,7 +1550,11 @@ export class ServiceManager {
         // durable worker authority must not survive the API generation whose
         // service credential they were bound to.
         void this.runServiceLifecycle(async () => {
-          await this.stopDataServicesOwned();
+          if (failedGeneration) {
+            await this.stopDataServicesForApiGeneration(failedGeneration, startup);
+          } else {
+            await this.stopDataServicesOwned();
+          }
           if (startup) this.guardServiceDatabase(startup, 'after paused API exit containment');
         }).catch((error) => {
           console.error('[api] Failed to contain services after paused API exit:', error);
@@ -1517,7 +1567,11 @@ export class ServiceManager {
     if (this.api.failureTimestamps.length >= MAX_RESTARTS) {
       if (app.isPackaged) {
         void this.runServiceLifecycle(async () => {
-          await this.stopDataServicesOwned();
+          if (failedGeneration) {
+            await this.stopDataServicesForApiGeneration(failedGeneration, startup);
+          } else {
+            await this.stopDataServicesOwned();
+          }
           if (startup) this.guardServiceDatabase(startup, 'after API restart budget exhaustion');
         }).catch((error) => {
           console.error('[api] Failed to contain services after restart budget exhaustion:', error);
@@ -1527,7 +1581,7 @@ export class ServiceManager {
     }
     const delay = this.getRestartDelay(this.api.restartCount);
     console.log(`[api] ${reason}; restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
-    void this.restartDataServicesAfterApiExit(startup, delay).catch((error) => {
+    void this.restartDataServicesAfterApiExit(startup, delay, failedGeneration).catch((error) => {
       console.error('[api] Safe restart failed:', error);
     });
   }
@@ -1546,13 +1600,14 @@ export class ServiceManager {
     // worker's abortable admission shutdown immediately, but do not assume
     // signal delivery ran synchronously: retain each exact handle and start no
     // replacement until every child yields exit/close proof.
-    await this.stopDataServicesOwned();
-    this.scheduleApiRestart(startup, 'child process error');
+    await this.stopDataServicesForApiGeneration(generation, startup);
+    this.scheduleApiRestart(startup, 'child process error', generation);
   }
 
   private restartDataServicesAfterApiExit(
     startup: CockroachStartResult | null,
     delayMs: number,
+    failedGeneration: ApiGeneration | null = null,
   ): Promise<void> {
     return this.runServiceLifecycle(async () => {
       if (!app.isPackaged) {
@@ -1560,24 +1615,76 @@ export class ServiceManager {
         await this.startApi(startup);
         return;
       }
+      // An explicit lifecycle operation may have established a successor
+      // before this queued recovery reaches the barrier. Cleanup and retry
+      // authority belong only to the failed generation.
+      if (
+        failedGeneration &&
+        this.apiGeneration &&
+        this.apiGeneration !== failedGeneration
+      ) {
+        return;
+      }
       const restartCountAtAttempt = this.api.restartCount;
       let generation: ApiGeneration | null = null;
       try {
-        await this.stopDataServicesOwned();
+        if (failedGeneration) {
+          await this.stopDataServicesForApiGeneration(failedGeneration, startup);
+        } else {
+          await this.stopDataServicesOwned();
+        }
+        if (this.paused) return;
         await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (this.paused) return;
         if (!this.guardServiceDatabase(startup, 'before API generation restart')) return;
         generation = await this.startApi(startup);
+        if (this.paused) {
+          if (generation) await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
         if (startup && generation) {
           await this.registerWorkerGenerationAuthority(generation, startup);
         }
+        if (this.paused) {
+          if (generation) await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
         if (!generation || !(await this.waitForApi(10_000, startup, generation))) {
           throw new Error('Replacement API generation could not prove listener ownership');
+        }
+        if (this.paused) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
         }
         if (!this.markApiGenerationReady(generation)) {
           throw new Error('Replacement API generation changed after proving listener ownership');
         }
         await this.startWeb(startup, generation);
+        if (this.paused) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
+        if (startup) await this.requireServiceDatabaseCurrent(startup, 'during replacement web startup');
+        if (
+          !this.isApiGenerationReady(generation) ||
+          !this.web.process ||
+          this.webApiGeneration !== generation
+        ) {
+          throw new Error('Replacement web service did not retain exact API generation authority');
+        }
         await this.startWorker(startup, generation);
+        if (this.paused) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+          return;
+        }
+        if (startup) await this.requireServiceDatabaseCurrent(startup, 'during replacement worker startup');
+        if (
+          !this.isApiGenerationReady(generation) ||
+          !this.worker.process ||
+          this.workerApiGeneration !== generation
+        ) {
+          throw new Error('Replacement worker did not retain exact API generation authority');
+        }
         this.startHealthMonitoring(startup);
         const sampleSignal = this.sampleAbortController?.signal;
         if (
@@ -1588,7 +1695,12 @@ export class ServiceManager {
           this.startPackagedSampleIngest(startup, this.sampleLaunchEpoch, sampleSignal);
         }
       } catch (error) {
-        await this.stopDataServicesOwned();
+        if (generation) {
+          await this.stopDataServicesForApiGeneration(generation, startup);
+        } else if (!failedGeneration) {
+          await this.stopDataServicesOwned();
+        }
+        if (this.paused) return;
         // A replacement child that exits on its own schedules the next attempt
         // from its exit handler. Deliberate cleanup is fenced by
         // terminatingProcesses, so only schedule here when that handler did
@@ -1600,6 +1712,7 @@ export class ServiceManager {
           this.scheduleApiRestart(
             startup,
             error instanceof Error ? error.message : 'replacement API startup failed',
+            generation ?? failedGeneration,
           );
         }
         throw error;
@@ -1639,6 +1752,7 @@ export class ServiceManager {
         stdio: 'pipe',
       });
       this.web.process = webProcess;
+      this.webApiGeneration = apiGeneration;
 
       webProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[web] ${data.toString().trim()}`);
@@ -1652,6 +1766,7 @@ export class ServiceManager {
         if (this.web.process !== webProcess) return;
         if (this.terminatingProcesses.has(webProcess)) return;
         this.web.process = null;
+        if (this.webApiGeneration === apiGeneration) this.webApiGeneration = null;
         this.web.status = 'stopped';
         this.emitStatus();
         if (
@@ -1778,6 +1893,7 @@ export class ServiceManager {
         stdio: 'pipe',
       });
       this.worker.process = workerProcess;
+      this.workerApiGeneration = apiGeneration;
 
       workerProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);
@@ -1791,6 +1907,7 @@ export class ServiceManager {
         if (this.worker.process !== workerProcess) return;
         if (this.terminatingProcesses.has(workerProcess)) return;
         this.worker.process = null;
+        if (this.workerApiGeneration === apiGeneration) this.workerApiGeneration = null;
         this.worker.status = 'stopped';
         this.emitStatus();
         if (
@@ -1866,29 +1983,118 @@ export class ServiceManager {
   /**
    * Resume the twin — restarts the worker.
    */
-  async resume(): Promise<void> {
-    if (this.worker.process) throw new ChildTerminationError('worker');
+  resume(): Promise<void> {
+    return this.runServiceLifecycle(() => this.resumeOwned());
+  }
+
+  private async preparePackagedResume(
+    startup: CockroachStartResult,
+  ): Promise<ApiGeneration> {
+    let generation = this.apiGeneration;
+    const reusableGeneration =
+      generation !== null &&
+      this.isApiGenerationReady(generation) &&
+      this.registeredWorkerGeneration === generation &&
+      (!this.web.process ||
+        (this.webApiGeneration === generation &&
+          this.web.status === 'running' &&
+          !childHasExited(this.web.process)));
+
+    if (!reusableGeneration) {
+      await this.stopDataServicesOwned();
+      generation = null;
+      try {
+        await this.requireServiceDatabaseCurrent(startup, 'before explicit resume recovery');
+        generation = await this.startApi(startup);
+        if (!generation || !this.isApiGenerationCurrent(generation)) {
+          throw new Error('Packaged resume could not establish an owned API generation');
+        }
+        await this.registerWorkerGenerationAuthority(generation, startup);
+        if (!(await this.waitForApi(10_000, startup, generation))) {
+          throw new Error('Packaged resume API generation could not prove listener ownership');
+        }
+        await this.requireServiceDatabaseCurrent(startup, 'during explicit resume readiness');
+        if (!this.markApiGenerationReady(generation)) {
+          throw new Error('Packaged resume API generation changed after proving listener ownership');
+        }
+      } catch (error) {
+        if (generation) {
+          try {
+            await this.stopDataServicesForApiGeneration(generation, startup);
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              'Packaged resume recovery and containment both failed',
+            );
+          }
+        }
+        throw error;
+      }
+    }
+
+    if (!generation || !this.isApiGenerationReady(generation)) {
+      throw new Error('Packaged resume requires a ready API generation');
+    }
+    if (!this.web.process) await this.startWeb(startup, generation);
+    await this.requireServiceDatabaseCurrent(startup, 'during explicit resume web startup');
     if (
-      app.isPackaged &&
-      (!this.isServiceDatabaseCurrent(this.activeDatabaseStartup) ||
-        !this.apiGeneration ||
-        !this.isApiGenerationReady(this.apiGeneration) ||
-        this.registeredWorkerGeneration !== this.apiGeneration)
+      !this.isApiGenerationReady(generation) ||
+      !this.web.process ||
+      this.web.status !== 'running' ||
+      childHasExited(this.web.process) ||
+      this.webApiGeneration !== generation
     ) {
-      throw new Error('Packaged resume requires the current proven service generation');
+      await this.stopDataServicesForApiGeneration(generation, startup);
+      throw new Error('Packaged resume could not establish the generation web service');
+    }
+    return generation;
+  }
+
+  private async resumeOwned(): Promise<void> {
+    if (this.worker.process) throw new ChildTerminationError('worker');
+    let generation = this.apiGeneration;
+    if (app.isPackaged) {
+      this.paused = true;
+      const startup = this.activeDatabaseStartup;
+      if (!startup || !this.isServiceDatabaseCurrent(startup)) {
+        throw new Error('Packaged resume requires the current owned database generation');
+      }
+      // Explicit resume is the sole authority to rebuild services while
+      // paused. Keep worker execution paused until API readiness, durable
+      // authority, and the web proxy are all bound to one exact generation.
+      generation = await this.preparePackagedResume(startup);
+      this.api.restartCount = 0;
+      this.api.failureTimestamps = [];
     }
     this.worker.restartCount = 0;
     this.worker.failureTimestamps = [];
     this.paused = false;
     try {
-      await this.startWorker(this.activeDatabaseStartup, this.apiGeneration);
-      if (app.isPackaged && !this.worker.process) {
+      await this.startWorker(this.activeDatabaseStartup, generation);
+      if (
+        app.isPackaged &&
+        (!generation ||
+          !this.isApiGenerationReady(generation) ||
+          !this.worker.process ||
+          childHasExited(this.worker.process) ||
+          this.workerApiGeneration !== generation)
+      ) {
         throw new Error('Packaged worker did not establish a managed child');
       }
     } catch (error) {
       this.paused = true;
       this.worker.status = 'error';
       this.emitStatus();
+      if (app.isPackaged && generation && !this.isApiGenerationReady(generation)) {
+        try {
+          await this.stopDataServicesForApiGeneration(generation, this.activeDatabaseStartup);
+        } catch (containmentError) {
+          throw new AggregateError(
+            [error, containmentError],
+            'Worker resume and generation containment both failed',
+          );
+        }
+      }
       throw error;
     }
   }
@@ -1963,7 +2169,11 @@ export class ServiceManager {
       }
     }
 
-    if (managed.process === proc) managed.process = null;
+    if (managed.process === proc) {
+      managed.process = null;
+      if (managed === this.web) this.webApiGeneration = null;
+      if (managed === this.worker) this.workerApiGeneration = null;
+    }
     managed.status = 'stopped';
   }
 

@@ -63,6 +63,11 @@ interface ManagerInternals {
     status: string;
     external: boolean;
   };
+  web: {
+    process: ChildProcess | null;
+    status: string;
+    external: boolean;
+  };
   worker: {
     process: ChildProcess | null;
     status: string;
@@ -72,6 +77,8 @@ interface ManagerInternals {
   };
   apiGeneration: TestApiGeneration | null;
   readyApiGeneration: TestApiGeneration | null;
+  webApiGeneration: TestApiGeneration | null;
+  workerApiGeneration: TestApiGeneration | null;
   registeredWorkerGeneration: TestApiGeneration | null;
   paused: boolean;
   cockroachStatus: string;
@@ -130,6 +137,7 @@ function authorize(manager: ManagerInternals): {
     generation: 1,
   };
   const apiProcess = child(8100);
+  const webProcess = child(8101);
   const generation: TestApiGeneration = {
     generation: 1,
     process: apiProcess,
@@ -142,8 +150,12 @@ function authorize(manager: ManagerInternals): {
   manager.activeDatabaseStartup = startup;
   manager.api.process = apiProcess;
   manager.api.external = false;
+  manager.web.process = webProcess;
+  manager.web.status = "running";
+  manager.web.external = false;
   manager.apiGeneration = generation;
   manager.readyApiGeneration = generation;
+  manager.webApiGeneration = generation;
   manager.registeredWorkerGeneration = generation;
   manager.paused = false;
   manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
@@ -411,9 +423,12 @@ describe("ServiceManager worker start serialization", () => {
     expect(manager.readyApiGeneration).toBeNull();
 
     await manager.pause();
-    await expect(manager.resume()).rejects.toThrow(
-      "Packaged resume requires the current proven service generation",
-    );
+    let resumeSettled = false;
+    const resuming = manager.resume().finally(() => {
+      resumeSettled = true;
+    });
+    await Promise.resolve();
+    expect(resumeSettled).toBe(false);
     expect(processState.fork).not.toHaveBeenCalled();
 
     releaseReadiness?.(true);
@@ -422,7 +437,7 @@ describe("ServiceManager worker start serialization", () => {
     expect(processState.fork).toHaveBeenCalledOnce();
     expect(manager.worker.process).toBeNull();
 
-    await manager.resume();
+    await resuming;
     expect(processState.fork).toHaveBeenCalledTimes(2);
     expect(manager.worker.process).toBe(worker);
   });
@@ -444,9 +459,6 @@ describe("ServiceManager worker start serialization", () => {
 
     await manager.startWeb(startup, generation);
     await manager.startWorker(startup, generation);
-    await expect(manager.resume()).rejects.toThrow(
-      "Packaged resume requires the current proven service generation",
-    );
 
     expect(processState.fork).not.toHaveBeenCalled();
     expect(manager.worker.process).toBeNull();
