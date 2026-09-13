@@ -4,6 +4,7 @@ import {
   existsSync,
   fstatSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -119,6 +120,28 @@ export async function writeFileHandleFully(
       throw new Error("managed_artifact_write_made_no_progress");
     }
     written += result.bytesWritten;
+  }
+}
+
+/** Unlink only while a path still names the descriptor-verified inode. */
+export function unlinkIfSameRegularFile(
+  path: string,
+  expected: { dev: bigint; ino: bigint; nlink: bigint },
+): boolean {
+  try {
+    const current = lstatSync(path, { bigint: true });
+    if (
+      !current.isFile() ||
+      current.dev !== expected.dev ||
+      current.ino !== expected.ino ||
+      current.nlink !== expected.nlink
+    ) {
+      return false;
+    }
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -378,15 +401,10 @@ async function reconcileOrphanedPublicationLink(
           ) {
             throw new Error("orphaned_publication_link_changed");
           }
-          unlinkSync(quarantine);
+          if (!unlinkIfSameRegularFile(quarantine, quarantined))
+            throw new Error("orphaned_publication_link_changed");
         } catch (error) {
-          if (!existsSync(candidate) && existsSync(quarantine)) {
-            try {
-              renameSync(quarantine, candidate);
-            } catch {
-              /* retain an unverified path rather than delete it */
-            }
-          }
+          // Leave any path that failed the final identity proof untouched.
           throw error;
         } finally {
           await quarantineHandle?.close();
