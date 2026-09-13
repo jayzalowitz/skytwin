@@ -46,8 +46,9 @@ class FakeChild extends EventEmitter {
   connected = true;
   killed = false;
   autoAck = true;
+  asyncSendError: Error | null = null;
   onKill: ((signal: NodeJS.Signals) => void) | null = null;
-  send(value: unknown) {
+  send(value: unknown, callback?: (error: Error | null) => void) {
     this.sent.push(value);
     const message = value as Record<string, unknown>;
     if (this.autoAck && message['type'] === 'skytwin:vault:lock') {
@@ -59,6 +60,13 @@ class FakeChild extends EventEmitter {
         userId: message['userId'],
         generation: message['generation'],
       }));
+    }
+    if (this.asyncSendError) {
+      const error = this.asyncSendError;
+      queueMicrotask(() => {
+        if (callback) callback(error);
+        else this.emit('error', error);
+      });
     }
     return true;
   }
@@ -443,6 +451,32 @@ describe('DesktopKeyBroker', () => {
       error: 'vault_broker_unavailable',
       generation: 2,
     });
+  });
+
+  it('contains asynchronous IPC delivery errors without satisfying the lock barrier', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 5,
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.asyncSendError = new Error('IPC channel closed asynchronously');
+    child.onKill = () => { /* Signal accepted without proven termination. */ };
+
+    expect(broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId]),
+    )).toBe(true);
+    await tick();
+
+    expect(await broker.lock(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+      generation: 2,
+    });
+    expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
   });
 
   it('does not report locked when clock expiry reaches an unproven child barrier first', async () => {

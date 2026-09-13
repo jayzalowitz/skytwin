@@ -1228,7 +1228,10 @@ export class DesktopKeyBroker {
   ): boolean {
     try {
       if (child.connected === false || !child.send) return false;
-      return child.send(message) !== false;
+      return child.send(message, () => {
+        // Delivery errors are contained by the callback. They never prove a
+        // lock acknowledgement or release the child from the barrier.
+      }) !== false;
     } catch {
       return false;
     }

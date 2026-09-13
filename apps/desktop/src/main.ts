@@ -131,7 +131,7 @@ function createMainWindow(): BrowserWindow {
 
   // The preload carries privileged local APIs. Never retain it after a
   // navigation away from the loopback dashboard.
-  installVaultNavigationGuards(win.webContents);
+  installVaultNavigationGuards(win.webContents, destination => shell.openExternal(destination));
 
   // Restore maximized state
   if (saved.isMaximized) {

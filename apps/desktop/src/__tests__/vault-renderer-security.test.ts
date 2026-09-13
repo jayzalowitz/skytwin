@@ -18,14 +18,54 @@ describe('vault renderer navigation security', () => {
       on: vi.fn((name: string, listener: (event: { preventDefault(): void }, url: string) => void) => { listeners.set(name, listener); }),
       setWindowOpenHandler: vi.fn(),
     };
-    installVaultNavigationGuards(target);
+    const openExternal = vi.fn();
+    installVaultNavigationGuards(target, openExternal);
     const preventDefault = vi.fn();
     listeners.get(eventName)!({ preventDefault }, 'https://example.com/');
     expect(preventDefault).toHaveBeenCalledOnce();
     preventDefault.mockClear();
     listeners.get(eventName)!({ preventDefault }, 'http://localhost:3200/dashboard');
     expect(preventDefault).not.toHaveBeenCalled();
-    expect(target.setWindowOpenHandler.mock.calls[0]![0]()).toEqual({ action: 'deny' });
+    expect(target.setWindowOpenHandler.mock.calls[0]![0]({ url: 'mailto:test@example.com' }))
+      .toEqual({ action: 'deny' });
+    expect(openExternal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['http://example.com/setup?source=desktop', 'http://example.com/setup?source=desktop'],
+    ['https://accounts.google.com/o/oauth2/auth#consent', 'https://accounts.google.com/o/oauth2/auth#consent'],
+  ])('opens web-only new-window destination %s in the system browser', (url, expected) => {
+    const target = { on: vi.fn(), setWindowOpenHandler: vi.fn() };
+    const openExternal = vi.fn();
+    installVaultNavigationGuards(target, openExternal);
+
+    const handler = target.setWindowOpenHandler.mock.calls[0]![0];
+    expect(handler({ url })).toEqual({ action: 'deny' });
+    expect(openExternal).toHaveBeenCalledWith(expected);
+  });
+
+  it.each(['mailto:test@example.com', 'javascript:alert(1)', 'not a url'])(
+    'denies non-web or malformed new-window destination %s',
+    url => {
+      const target = { on: vi.fn(), setWindowOpenHandler: vi.fn() };
+      const openExternal = vi.fn();
+      installVaultNavigationGuards(target, openExternal);
+
+      const handler = target.setWindowOpenHandler.mock.calls[0]![0];
+      expect(handler({ url })).toEqual({ action: 'deny' });
+      expect(openExternal).not.toHaveBeenCalled();
+    },
+  );
+
+  it('contains rejected system-browser opens while denying the Electron window', async () => {
+    const target = { on: vi.fn(), setWindowOpenHandler: vi.fn() };
+    const openExternal = vi.fn().mockRejectedValue(new Error('system browser unavailable'));
+    installVaultNavigationGuards(target, openExternal);
+
+    const handler = target.setWindowOpenHandler.mock.calls[0]![0];
+    expect(handler({ url: 'https://example.com/setup' })).toEqual({ action: 'deny' });
+    await Promise.resolve();
+    expect(openExternal).toHaveBeenCalledOnce();
   });
 
   it('does not expose source-key custody through preload or renderer IPC', () => {
