@@ -4,13 +4,12 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 
 /**
- * `getEnv()` is the single place the desktop composes the environment for the
- * API, the worker, headless mode, and the idle-miner. Two invariants are
- * load-bearing for a packaged build and are pinned here:
+ * `getEnv()` composes the common child environment. Managed API/worker pairs
+ * replace its persisted service-token fallback with a generation-scoped
+ * in-memory credential. Two base invariants are pinned here:
  *
  *  1. `SKYTWIN_SERVICE_TOKEN` is minted per install, persisted 0600, and stable
- *     across calls — it is the only credential the worker / idle-miner have for
- *     the API's `sessionAuth`-guarded `/api/events/ingest`.
+ *     across calls for source-development and operator-managed services.
  *  2. `SKYTWIN_DEV_AUTH_BYPASS` is pinned to `'false'` AFTER the
  *     `...process.env` spread, so a developer's shell bypass can never be
  *     inherited into a packaged build.
@@ -74,8 +73,7 @@ describe('ServiceManager.getEnv()', () => {
     // Owner read/write only — the token authenticates as the local service.
     expect(statSync(secretFile).mode & 0o777).toBe(0o600);
 
-    // Stable across calls: the API (verifier) and the worker (presenter) are
-    // forked from separate getEnv() calls and must agree.
+    // Stable fallback for separately managed source-development services.
     expect(envOf(new ServiceManager())['SKYTWIN_SERVICE_TOKEN']).toBe(first);
   });
 

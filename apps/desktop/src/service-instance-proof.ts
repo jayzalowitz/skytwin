@@ -2,15 +2,15 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 const PROOF_PATTERN = /^[a-f0-9]{64}$/;
 
-function proofFor(serviceToken: string, challenge: string): string {
-  return createHmac("sha256", serviceToken)
+function proofFor(instanceCapability: string, challenge: string): string {
+  return createHmac("sha256", instanceCapability)
     .update(`skytwin-api-instance-v1.${challenge}`)
     .digest("hex");
 }
 
-/** Verify that a health responder holds this install's service credential. */
+/** Verify that a health responder holds this spawn's instance capability. */
 export function verifyServiceInstanceProof(
-  serviceToken: string,
+  instanceCapability: string,
   challenge: string,
   presentedProof: unknown,
 ): boolean {
@@ -20,7 +20,7 @@ export function verifyServiceInstanceProof(
   ) {
     return false;
   }
-  const expected = Buffer.from(proofFor(serviceToken, challenge), "hex");
+  const expected = Buffer.from(proofFor(instanceCapability, challenge), "hex");
   const presented = Buffer.from(presentedProof, "hex");
   return timingSafeEqual(expected, presented);
 }

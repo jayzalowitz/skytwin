@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const cockroachMockState = vi.hoisted(() => ({
@@ -21,9 +22,11 @@ vi.mock("../cockroach-manager.js", () => ({
         "postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable",
       getDataDir: () => "/tmp/skytwin-sample-test/crdb-data",
       isManagedStartCurrent: vi.fn().mockReturnValue(true),
-      setAuthorityLossHandler: vi.fn((handler: (generation: number) => void) => {
-        cockroachMockState.authorityLossHandler = handler;
-      }),
+      setAuthorityLossHandler: vi.fn(
+        (handler: (generation: number) => void) => {
+          cockroachMockState.authorityLossHandler = handler;
+        },
+      ),
       stop: vi.fn().mockResolvedValue(undefined),
     };
   }),
@@ -37,8 +40,13 @@ interface SampleManagerInternals {
   sampleLaunchEpoch: number;
   sampleAbortController: AbortController | null;
   activeDatabaseStartup: SampleStartup | null;
-  api: { process: ChildProcess | null; external: boolean };
-  cockroach: { isManagedStartCurrent: ReturnType<typeof vi.fn> };
+  api: { process: ChildProcess | null; external: boolean; status?: string };
+  apiGeneration: TestApiGeneration | null;
+  healthCheckInFlight: boolean;
+  cockroach: {
+    isManagedStartCurrent: ReturnType<typeof vi.fn>;
+    stop: ReturnType<typeof vi.fn>;
+  };
   ensureEmbeddedRoot(): Promise<string>;
   waitForExternalApi(timeoutMs: number): Promise<boolean>;
   startCockroach(): Promise<{
@@ -54,10 +62,20 @@ interface SampleManagerInternals {
     epoch: number,
     signal: AbortSignal,
   ): Promise<void>;
-  startApi(startup?: SampleStartup | null): Promise<void>;
-  waitForApi(timeoutMs: number, startup?: SampleStartup | null): Promise<boolean>;
-  startWeb(startup?: SampleStartup | null): Promise<void>;
-  startWorker(startup?: SampleStartup | null): Promise<void>;
+  startApi(startup?: SampleStartup | null): Promise<TestApiGeneration | null>;
+  waitForApi(
+    timeoutMs: number,
+    startup?: SampleStartup | null,
+    generation?: TestApiGeneration | null,
+  ): Promise<boolean>;
+  startWeb(
+    startup?: SampleStartup | null,
+    generation?: TestApiGeneration | null,
+  ): Promise<void>;
+  startWorker(
+    startup?: SampleStartup | null,
+    generation?: TestApiGeneration | null,
+  ): Promise<void>;
   startHealthMonitoring(startup?: SampleStartup | null): void;
   runHealthCheck(startup?: SampleStartup | null): Promise<void>;
   stopDataServicesOwned(): Promise<void>;
@@ -67,20 +85,44 @@ interface SampleManagerInternals {
     signal: AbortSignal,
   ): void;
   verifyOwnedApi(
-    process?: ChildProcess,
+    generation: TestApiGeneration,
     epoch?: number,
     signal?: AbortSignal,
+    timeoutMs?: number,
   ): Promise<boolean>;
   ingestPackagedSample(
     startup: SampleStartup,
     epoch: number,
     signal: AbortSignal,
-    process: ChildProcess,
+    generation: TestApiGeneration,
+  ): Promise<void>;
+  revokeApiGeneration(generation?: TestApiGeneration): void;
+  stopProcess(
+    process: {
+      process: ChildProcess | null;
+      status: string;
+      external: boolean;
+    },
+    name: string,
   ): Promise<void>;
   revokeSampleLaunch(): void;
   beginSampleLaunch(): { epoch: number; signal: AbortSignal };
   stopAll(): Promise<void>;
   getEnv(): Record<string, string>;
+  apiEnv(
+    instanceCapability: string,
+    ingestCredential: string,
+  ): Record<string, string>;
+  workerEnv(generation: TestApiGeneration | null): Record<string, string>;
+  webEnv(): Record<string, string>;
+}
+
+interface TestApiGeneration {
+  generation: number;
+  process: ChildProcess;
+  instanceCapability: string;
+  ingestCredential: string;
+  controller: AbortController;
 }
 
 interface SampleStartup {
@@ -90,13 +132,33 @@ interface SampleStartup {
 }
 
 function fakeProcess(): ChildProcess {
-  return { exitCode: null } as ChildProcess;
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, {
+    exitCode: null,
+    signalCode: null,
+    connected: true,
+    kill: vi.fn(() => true),
+  });
+  return child;
+}
+
+function apiGeneration(
+  process = fakeProcess(),
+  generation = 1,
+): TestApiGeneration {
+  return {
+    generation,
+    process,
+    instanceCapability: `instance-capability-${generation}`,
+    ingestCredential: `ingest-credential-${generation}`,
+    controller: new AbortController(),
+  };
 }
 
 function authorize(manager: ServiceManager & SampleManagerInternals): {
   startup: SampleStartup;
   controller: AbortController;
-  process: ChildProcess;
+  generation: TestApiGeneration;
 } {
   const startup: SampleStartup = {
     ownership: "managed-child",
@@ -104,14 +166,15 @@ function authorize(manager: ServiceManager & SampleManagerInternals): {
     generation: 1,
   };
   const controller = new AbortController();
-  const process = fakeProcess();
+  const generation = apiGeneration();
   manager.sampleLaunchEpoch = 1;
   manager.sampleAbortController = controller;
   manager.sampleBootstrapAllowedThisLaunch = true;
-  manager.api.process = process;
+  manager.api.process = generation.process;
   manager.api.external = false;
+  manager.apiGeneration = generation;
   manager.cockroach.isManagedStartCurrent.mockReturnValue(true);
-  return { startup, controller, process };
+  return { startup, controller, generation };
 }
 
 function internals(): ServiceManager & SampleManagerInternals {
@@ -133,8 +196,7 @@ describe("packaged sample startup sequencing", () => {
     if (previousToken === undefined)
       delete process.env["SKYTWIN_SERVICE_TOKEN"];
     else process.env["SKYTWIN_SERVICE_TOKEN"] = previousToken;
-    if (previousDatabaseUrl === undefined)
-      delete process.env["DATABASE_URL"];
+    if (previousDatabaseUrl === undefined) delete process.env["DATABASE_URL"];
     else process.env["DATABASE_URL"] = previousDatabaseUrl;
   });
 
@@ -146,6 +208,51 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.getEnv()["DATABASE_URL"]).toBe(
       "postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable",
     );
+  });
+
+  it("shares generation-scoped ingest credentials only with the API and its worker", () => {
+    const manager = internals();
+    const { generation } = authorize(manager);
+
+    expect(manager.getEnv()["SKYTWIN_SERVICE_TOKEN"]).toBeUndefined();
+    expect(
+      manager.apiEnv(
+        generation.instanceCapability,
+        generation.ingestCredential,
+      ),
+    ).toMatchObject({
+      SKYTWIN_API_INSTANCE_CAPABILITY: generation.instanceCapability,
+      SKYTWIN_SERVICE_TOKEN: generation.ingestCredential,
+      API_BASE_URL: "http://127.0.0.1:3100",
+    });
+    expect(manager.workerEnv(generation)["SKYTWIN_SERVICE_TOKEN"]).toBe(
+      generation.ingestCredential,
+    );
+    expect(
+      manager.workerEnv(generation)["SKYTWIN_API_INSTANCE_CAPABILITY"],
+    ).toBeUndefined();
+    expect(manager.webEnv()["SKYTWIN_SERVICE_TOKEN"]).toBeUndefined();
+    expect(manager.webEnv()["SKYTWIN_API_INSTANCE_CAPABILITY"]).toBeUndefined();
+  });
+
+  it("fails closed before database or web startup if packaged external detection ever succeeds", async () => {
+    const manager = internals();
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.waitForExternalApi = vi.fn().mockResolvedValue(true);
+    manager.startCockroach = vi.fn().mockResolvedValue(null);
+    manager.startApi = vi.fn().mockResolvedValue(null);
+    manager.startWeb = vi.fn().mockResolvedValue(undefined);
+    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+
+    await expect(manager.startAll()).rejects.toThrow(
+      /refused an external API listener/,
+    );
+
+    expect(manager.cockroachStatus).toBe("error");
+    expect(manager.startCockroach).not.toHaveBeenCalled();
+    expect(manager.startApi).not.toHaveBeenCalled();
+    expect(manager.startWeb).not.toHaveBeenCalled();
+    expect(manager.startWorker).not.toHaveBeenCalled();
   });
 
   it("does not await background sample ingestion before starting owner services", async () => {
@@ -162,7 +269,10 @@ describe("packaged sample startup sequencing", () => {
     manager.provisionPackagedSample = vi.fn().mockImplementation(async () => {
       manager.sampleBootstrapAllowedThisLaunch = true;
     });
-    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    const generation = apiGeneration();
+    manager.api.process = generation.process;
+    manager.apiGeneration = generation;
+    manager.startApi = vi.fn().mockResolvedValue(generation);
     manager.waitForApi = vi.fn().mockResolvedValue(true);
     manager.startWeb = vi.fn().mockResolvedValue(undefined);
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
@@ -186,6 +296,40 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.startPackagedSampleIngest).toHaveBeenCalledOnce();
   });
 
+  it("does not start web or worker when the API generation cannot prove readiness", async () => {
+    const manager = internals();
+    manager.cockroachStatus = "running";
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.waitForExternalApi = vi.fn().mockResolvedValue(false);
+    const startup: SampleStartup = {
+      ownership: "managed-child",
+      dataDir: "/tmp/skytwin-sample-test/crdb-data",
+      generation: 1,
+    };
+    manager.startCockroach = vi.fn().mockResolvedValue(startup);
+    manager.runMigrations = vi.fn().mockResolvedValue(true);
+    manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
+    const generation = apiGeneration();
+    manager.api.process = generation.process;
+    manager.apiGeneration = generation;
+    manager.startApi = vi.fn().mockResolvedValue(generation);
+    manager.waitForApi = vi.fn().mockResolvedValue(false);
+    manager.startWeb = vi.fn().mockResolvedValue(undefined);
+    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+    manager.stopDataServicesOwned = vi.fn().mockImplementation(async () => {
+      manager.revokeApiGeneration(generation);
+    });
+
+    await expect(manager.startAll()).rejects.toThrow(
+      /could not authenticate the desktop-owned API listener/,
+    );
+
+    expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce();
+    expect(generation.controller.signal.aborted).toBe(true);
+    expect(manager.startWeb).not.toHaveBeenCalled();
+    expect(manager.startWorker).not.toHaveBeenCalled();
+  });
+
   it("refuses packaged services when a foreign CockroachDB owns the port", async () => {
     const manager = internals();
     manager.cockroachStatus = "running";
@@ -198,7 +342,7 @@ describe("packaged sample startup sequencing", () => {
     });
     manager.runMigrations = vi.fn().mockResolvedValue(true);
     manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
-    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue(null);
     manager.waitForApi = vi.fn().mockResolvedValue(true);
     manager.startWeb = vi.fn().mockResolvedValue(undefined);
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
@@ -270,7 +414,7 @@ describe("packaged sample startup sequencing", () => {
       .mockReturnValue(false);
     manager.runMigrations = vi.fn().mockResolvedValue(true);
     manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
-    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue(null);
     manager.waitForApi = vi.fn().mockResolvedValue(false);
     manager.startWeb = vi.fn().mockResolvedValue(undefined);
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
@@ -299,7 +443,7 @@ describe("packaged sample startup sequencing", () => {
     });
     manager.runMigrations = vi.fn().mockResolvedValue(false);
     manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
-    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue(null);
     manager.startWeb = vi.fn().mockResolvedValue(undefined);
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
     manager.startHealthMonitoring = vi.fn();
@@ -329,7 +473,10 @@ describe("packaged sample startup sequencing", () => {
     manager.provisionPackagedSample = vi.fn().mockImplementation(async () => {
       manager.sampleBootstrapAllowedThisLaunch = true;
     });
-    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    const generation = apiGeneration();
+    manager.api.process = generation.process;
+    manager.apiGeneration = generation;
+    manager.startApi = vi.fn().mockResolvedValue(generation);
     let launchSignal: AbortSignal | undefined;
     manager.waitForApi = vi.fn().mockImplementation(async () => {
       launchSignal = manager.sampleAbortController?.signal;
@@ -339,8 +486,13 @@ describe("packaged sample startup sequencing", () => {
     manager.startWeb = vi.fn().mockResolvedValue(undefined);
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
     manager.startHealthMonitoring = vi.fn();
+    manager.stopDataServicesOwned = vi.fn().mockImplementation(async () => {
+      manager.revokeApiGeneration(generation);
+    });
 
-    await expect(manager.startAll()).rejects.toThrow(/ownership changed during API readiness/);
+    await expect(manager.startAll()).rejects.toThrow(
+      /ownership changed during API readiness/,
+    );
 
     expect(manager.startApi).toHaveBeenCalledExactlyOnceWith(startup);
     expect(manager.startWeb).not.toHaveBeenCalled();
@@ -366,7 +518,9 @@ describe("packaged sample startup sequencing", () => {
 
     expect(cockroachMockState.authorityLossHandler).not.toBeNull();
     cockroachMockState.authorityLossHandler?.(7);
-    await vi.waitFor(() => expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce(),
+    );
 
     expect(manager.activeDatabaseStartup).toBeNull();
     expect(controller.signal.aborted).toBe(true);
@@ -383,7 +537,9 @@ describe("packaged sample startup sequencing", () => {
     manager.cockroach.isManagedStartCurrent.mockReturnValue(false);
 
     await manager.runHealthCheck(startup);
-    await vi.waitFor(() => expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce(),
+    );
 
     expect(controller.signal.aborted).toBe(true);
     expect(manager.activeDatabaseStartup).toBeNull();
@@ -460,7 +616,7 @@ describe("packaged sample startup sequencing", () => {
 
   it("rechecks launch authority after deferred embedded-module discovery", async () => {
     const manager = internals();
-    const { startup, controller, process } = authorize(manager);
+    const { startup, controller, generation } = authorize(manager);
     let finishDiscovery: ((value: string) => void) | undefined;
     manager.ensureEmbeddedRoot = vi.fn(
       () =>
@@ -475,7 +631,7 @@ describe("packaged sample startup sequencing", () => {
       startup,
       1,
       controller.signal,
-      process,
+      generation,
     );
     manager.revokeSampleLaunch();
     finishDiscovery?.("/tmp/embedded");
@@ -484,13 +640,41 @@ describe("packaged sample startup sequencing", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("rechecks API-generation authority after deferred embedded-module discovery", async () => {
+    const manager = internals();
+    const { startup, controller, generation } = authorize(manager);
+    let finishDiscovery: ((value: string) => void) | undefined;
+    manager.ensureEmbeddedRoot = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finishDiscovery = resolve;
+        }),
+    );
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const ingestion = manager.ingestPackagedSample(
+      startup,
+      1,
+      controller.signal,
+      generation,
+    );
+    manager.revokeApiGeneration(generation);
+    finishDiscovery?.("/tmp/embedded");
+    await ingestion;
+
+    expect(generation.controller.signal.aborted).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("authenticates the concrete API listener by challenge-response", async () => {
     const manager = internals();
+    const { generation } = authorize(manager);
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: URL) => {
         const challenge = input.searchParams.get("challenge") ?? "";
-        const proof = createHmac("sha256", "service-token")
+        const proof = createHmac("sha256", generation.instanceCapability)
           .update(`skytwin-api-instance-v1.${challenge}`)
           .digest("hex");
         return new Response(
@@ -504,11 +688,12 @@ describe("packaged sample startup sequencing", () => {
       }),
     );
 
-    await expect(manager.verifyOwnedApi()).resolves.toBe(true);
+    await expect(manager.verifyOwnedApi(generation)).resolves.toBe(true);
   });
 
   it("rejects a generic or forged listener before privileged ingest", async () => {
     const manager = internals();
+    const { generation } = authorize(manager);
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(
@@ -523,6 +708,141 @@ describe("packaged sample startup sequencing", () => {
       ),
     );
 
-    await expect(manager.verifyOwnedApi()).resolves.toBe(false);
+    await expect(manager.verifyOwnedApi(generation)).resolves.toBe(false);
+  });
+
+  it("rejects a proof made with a stale API generation capability", async () => {
+    const manager = internals();
+    const { generation } = authorize(manager);
+    const stale = apiGeneration(fakeProcess(), generation.generation - 1);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: URL) => {
+        const challenge = input.searchParams.get("challenge") ?? "";
+        return new Response(
+          JSON.stringify({
+            service: "skytwin-api",
+            challenge,
+            proof: createHmac("sha256", stale.instanceCapability)
+              .update(`skytwin-api-instance-v1.${challenge}`)
+              .digest("hex"),
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }),
+    );
+
+    await expect(manager.verifyOwnedApi(generation)).resolves.toBe(false);
+  });
+
+  it("bounds a listener that never returns response headers", async () => {
+    const manager = internals();
+    const { generation } = authorize(manager);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => undefined)),
+    );
+
+    await expect(
+      manager.verifyOwnedApi(generation, undefined, undefined, 10),
+    ).resolves.toBe(false);
+  });
+
+  it("bounds a listener that sends headers but never completes its proof body", async () => {
+    const manager = internals();
+    const { generation } = authorize(manager);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: () => new Promise<unknown>(() => undefined),
+      }),
+    );
+
+    await expect(
+      manager.verifyOwnedApi(generation, undefined, undefined, 10),
+    ).resolves.toBe(false);
+  });
+
+  it("prevents overlapping health probes and aborts the in-flight proof on generation revoke", async () => {
+    const manager = internals();
+    const { startup, generation } = authorize(manager);
+    manager.activeDatabaseStartup = startup;
+    manager.api.status = "running";
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const first = manager.runHealthCheck(startup);
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+    await manager.runHealthCheck(startup);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+
+    manager.revokeApiGeneration(generation);
+    await first;
+    expect(generation.controller.signal.aborted).toBe(true);
+    expect(manager.healthCheckInFlight).toBe(false);
+  });
+
+  it("retains an unproven child handle and reports a typed fatal stop failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = internals();
+      const process = fakeProcess();
+      const managed = { process, status: "running", external: false };
+      const stopped = manager.stopProcess(managed, "api");
+      const assertion = expect(stopped).rejects.toMatchObject({
+        code: "CHILD_TERMINATION_UNPROVEN",
+        serviceName: "api",
+      });
+
+      await vi.runAllTimersAsync();
+      await assertion;
+      expect(process.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
+      expect(process.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+      expect(managed.process).toBe(process);
+      expect(managed.status).toBe("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("waits for forced child close before reporting a service stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = internals();
+      const process = fakeProcess();
+      (process.kill as ReturnType<typeof vi.fn>).mockImplementation(
+        (signal: NodeJS.Signals) => {
+          if (signal === "SIGKILL")
+            queueMicrotask(() => process.emit("close", null, "SIGKILL"));
+          return true;
+        },
+      );
+      const managed = { process, status: "running", external: false };
+
+      const stopped = manager.stopProcess(managed, "worker");
+      await vi.advanceTimersByTimeAsync(5_000);
+      await stopped;
+
+      expect(process.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+      expect(managed.process).toBeNull();
+      expect(managed.status).toBe("stopped");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the proven database listener up when a data-service exit cannot be proven", async () => {
+    const manager = internals();
+    manager.stopDataServicesOwned = vi.fn().mockRejectedValue(
+      Object.assign(new Error("api child termination could not be proven"), {
+        code: "CHILD_TERMINATION_UNPROVEN",
+      }),
+    );
+
+    await expect(manager.stopAll()).rejects.toMatchObject({
+      code: "CHILD_TERMINATION_UNPROVEN",
+    });
+    expect(manager.cockroach.stop).not.toHaveBeenCalled();
   });
 });

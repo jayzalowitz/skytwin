@@ -225,9 +225,9 @@ app.get('/api/health/ready', async (_req, res) => {
   });
 });
 
-// Challenge-response used by the packaged desktop before it presents the
-// privileged loopback service credential to an API process. The credential
-// itself never crosses this unauthenticated boundary.
+// Challenge-response used by the packaged desktop before it trusts this exact
+// API spawn. The unpersisted capability is distinct from the ingest credential
+// and never crosses this unauthenticated boundary.
 app.get('/api/health/instance', (req, res) => {
   const challenge = req.query['challenge'];
   if (
@@ -237,8 +237,8 @@ app.get('/api/health/instance', (req, res) => {
     res.status(400).json({ error: 'A 64-character hex challenge is required.' });
     return;
   }
-  const serviceToken = process.env['SKYTWIN_SERVICE_TOKEN'];
-  if (!serviceToken) {
+  const instanceCapability = process.env['SKYTWIN_API_INSTANCE_CAPABILITY'];
+  if (!instanceCapability) {
     res.status(503).json({ error: 'Service identity is not configured.' });
     return;
   }
@@ -246,7 +246,7 @@ app.get('/api/health/instance', (req, res) => {
   res.json({
     service: 'skytwin-api',
     challenge,
-    proof: createServiceInstanceProof(serviceToken, challenge),
+    proof: createServiceInstanceProof(instanceCapability, challenge),
   });
 });
 

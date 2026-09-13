@@ -61,6 +61,7 @@ interface ManagedAuthority {
   readonly dataDir: string;
   readonly pidFile: string;
   readonly listeningUrlFile: string;
+  revoked: boolean;
 }
 
 const DEFAULT_SQL_PORT = 26257;
@@ -73,6 +74,39 @@ const DEFAULT_START_TIMEOUT_MS = 60_000;
 // CRDB's drain can take 30s+ under load (WAL flush, replication completion).
 // 5s SIGKILL would corrupt mid-flush.
 const GRACEFUL_STOP_TIMEOUT_MS = 30_000;
+const FORCED_STOP_TIMEOUT_MS = 2_000;
+
+export class CockroachTerminationError extends Error {
+  readonly code = 'COCKROACH_TERMINATION_UNPROVEN';
+
+  constructor() {
+    super('CockroachDB child termination could not be proven');
+    this.name = 'CockroachTerminationError';
+  }
+}
+
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode != null || child.signalCode != null;
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      child.off('close', onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+    child.once('exit', onExit);
+    child.once('close', onExit);
+  });
+}
 
 export class CockroachManager {
   private process: ChildProcess | null = null;
@@ -221,7 +255,9 @@ export class CockroachManager {
     this.process.on('exit', (code, signal) => {
       console.log(`[crdb] Exited code=${code} signal=${signal}`);
       const lostGeneration =
-        this.authority?.process === spawnedProcess ? this.authority.generation : null;
+        this.authority?.process === spawnedProcess && !this.authority.revoked
+          ? this.authority.generation
+          : null;
       const wasCurrent = this.process === spawnedProcess || this.authority?.process === spawnedProcess;
       if (this.process === spawnedProcess) this.process = null;
       if (this.authority?.process === spawnedProcess) this.authority = null;
@@ -236,6 +272,7 @@ export class CockroachManager {
       dataDir: canonicalDataDir,
       pidFile,
       listeningUrlFile,
+      revoked: false,
     };
     try {
       await this.waitForOwnedReady(authority, () => spawnError);
@@ -260,8 +297,7 @@ export class CockroachManager {
     if (!this.process) return;
     const proc = this.process;
     const authority = this.authority;
-    this.process = null;
-    if (authority?.process === proc) this.authority = null;
+    if (authority?.process === proc) authority.revoked = true;
     ++this.lifecycleGeneration;
     await this.terminateProcess(proc, GRACEFUL_STOP_TIMEOUT_MS);
     if (authority) this.removeRuntimeFiles(authority.pidFile, authority.listeningUrlFile);
@@ -273,6 +309,7 @@ export class CockroachManager {
     return (
       startup.ownership === 'managed-child' &&
       authority !== null &&
+      !authority.revoked &&
       startup.generation === authority.generation &&
       startup.dataDir === authority.dataDir &&
       this.isAuthorityCurrent(authority)
@@ -291,7 +328,8 @@ export class CockroachManager {
     if (
       this.authority !== authority ||
       this.process !== authority.process ||
-      authority.process.exitCode !== null ||
+      authority.revoked ||
+      childHasExited(authority.process) ||
       authority.process.pid === undefined
     ) {
       return false;
@@ -320,7 +358,7 @@ export class CockroachManager {
     while (Date.now() < deadline) {
       const spawnError = getSpawnError();
       if (spawnError) throw spawnError;
-      if (this.process !== authority.process || authority.process.exitCode !== null) {
+      if (this.process !== authority.process || childHasExited(authority.process)) {
         throw new Error('CockroachDB managed child exited before ownership was established');
       }
       // Cockroach itself writes both files only after successful startup. The
@@ -329,7 +367,7 @@ export class CockroachManager {
       if (this.hasValidStartupProof(authority) && (await this.isCrdbResponding())) {
         if (
           this.process === authority.process &&
-          authority.process.exitCode === null &&
+          !childHasExited(authority.process) &&
           this.hasValidStartupProof(authority)
         )
           return;
@@ -344,32 +382,32 @@ export class CockroachManager {
   }
 
   private async terminateProcess(proc: ChildProcess, timeoutMs = 5_000): Promise<void> {
-    if (this.process === proc) this.process = null;
-    if (this.authority?.process === proc) this.authority = null;
-    if (proc.exitCode !== null) return;
+    const clearProvenExit = (): void => {
+      if (this.process === proc) this.process = null;
+      if (this.authority?.process === proc) this.authority = null;
+    };
+    if (childHasExited(proc)) {
+      clearProvenExit();
+      return;
+    }
     try {
       proc.kill('SIGTERM');
     } catch {
+      /* the final exit check remains authoritative */
+    }
+    if (await waitForChildExit(proc, timeoutMs)) {
+      clearProvenExit();
       return;
     }
-    await new Promise<void>((resolve) => {
-      if (proc.exitCode !== null) {
-        resolve();
-        return;
-      }
-      const timer = setTimeout(() => {
-        try {
-          proc.kill('SIGKILL');
-        } catch {
-          /* already dead */
-        }
-        resolve();
-      }, timeoutMs);
-      proc.once('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+    try {
+      proc.kill('SIGKILL');
+    } catch {
+      /* the final exit check remains authoritative */
+    }
+    if (!(await waitForChildExit(proc, FORCED_STOP_TIMEOUT_MS))) {
+      throw new CockroachTerminationError();
+    }
+    clearProvenExit();
   }
 
   private removeRuntimeFiles(...paths: string[]): void {

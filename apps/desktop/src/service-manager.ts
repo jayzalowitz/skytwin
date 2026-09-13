@@ -25,10 +25,126 @@ interface ManagedProcess {
   external: boolean;
 }
 
+interface ApiGeneration {
+  readonly generation: number;
+  readonly process: ChildProcess;
+  readonly instanceCapability: string;
+  readonly ingestCredential: string;
+  readonly controller: AbortController;
+}
+
+export class ChildTerminationError extends Error {
+  readonly code = 'CHILD_TERMINATION_UNPROVEN';
+
+  constructor(readonly serviceName: string) {
+    super(`${serviceName} child termination could not be proven`);
+    this.name = 'ChildTerminationError';
+  }
+}
+
 const MAX_RESTARTS = 5;
 const FAILURE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const HEALTH_CHECK_INTERVAL_MS = 5000;
+const HEALTH_REQUEST_TIMEOUT_MS = 2_000;
+const SERVICE_TERM_TIMEOUT_MS = 5_000;
+const SERVICE_KILL_TIMEOUT_MS = 2_000;
 const RESTART_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
+
+function childHasExited(child: ChildProcess): boolean {
+  return child.exitCode != null || child.signalCode != null;
+}
+
+function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (childHasExited(child)) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.off('exit', onExit);
+      child.off('close', onExit);
+      resolve(exited);
+    };
+    const onExit = (): void => finish(true);
+    const timer = setTimeout(() => finish(childHasExited(child)), timeoutMs);
+    child.once('exit', onExit);
+    child.once('close', onExit);
+  });
+}
+
+async function fetchBounded(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  timeoutMs: number,
+  authoritySignals: readonly AbortSignal[] = [],
+): Promise<Response> {
+  const controller = new AbortController();
+  let rejectAuthority: ((error: Error) => void) | null = null;
+  const authorityLost = new Promise<never>((_resolve, reject) => {
+    rejectAuthority = reject;
+  });
+  const abort = (): void => {
+    controller.abort();
+    rejectAuthority?.(new Error('request authority was revoked'));
+  };
+  for (const signal of authoritySignals) signal.addEventListener('abort', abort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('request timed out'));
+      }, timeoutMs);
+    });
+    if (authoritySignals.some((signal) => signal.aborted)) abort();
+    return await Promise.race([
+      fetch(input, { ...init, signal: controller.signal }),
+      timeout,
+      authorityLost,
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    for (const signal of authoritySignals) signal.removeEventListener('abort', abort);
+  }
+}
+
+async function fetchJsonBounded<T>(
+  input: Parameters<typeof fetch>[0],
+  init: RequestInit,
+  timeoutMs: number,
+  authoritySignals: readonly AbortSignal[] = [],
+): Promise<{ response: Response; payload: T | null }> {
+  const controller = new AbortController();
+  let rejectAuthority: ((error: Error) => void) | null = null;
+  const authorityLost = new Promise<never>((_resolve, reject) => {
+    rejectAuthority = reject;
+  });
+  const abort = (): void => {
+    controller.abort();
+    rejectAuthority?.(new Error('request authority was revoked'));
+  };
+  for (const signal of authoritySignals) signal.addEventListener('abort', abort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        reject(new Error('request timed out'));
+      }, timeoutMs);
+    });
+    if (authoritySignals.some((signal) => signal.aborted)) abort();
+    const request = (async (): Promise<{ response: Response; payload: T | null }> => {
+      const response = await fetch(input, { ...init, signal: controller.signal });
+      const payload = (await response.json().catch(() => null)) as T | null;
+      return { response, payload };
+    })();
+    return await Promise.race([request, timeout, authorityLost]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    for (const signal of authoritySignals) signal.removeEventListener('abort', abort);
+  }
+}
 
 /**
  * Google OAuth `client_id` baked into the desktop bundle.
@@ -109,6 +225,10 @@ export class ServiceManager {
   private sampleAbortController: AbortController | null = null;
   private serviceLifecycleTail: Promise<void> = Promise.resolve();
   private activeDatabaseStartup: CockroachStartResult | null = null;
+  private apiGeneration: ApiGeneration | null = null;
+  private nextApiGeneration = 0;
+  private healthCheckInFlight = false;
+  private readonly terminatingProcesses = new WeakMap<ChildProcess, Promise<void>>();
 
   constructor() {
     this.cockroach.setAuthorityLossHandler((generation) => {
@@ -139,11 +259,13 @@ export class ServiceManager {
   }
 
   private async stopDataServicesOwned(): Promise<void> {
-    await Promise.all([
+    const results = await Promise.allSettled([
       this.stopProcess(this.api, 'api'),
       this.stopProcess(this.worker, 'worker'),
       this.stopProcess(this.web, 'web'),
     ]);
+    const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (failed) throw failed.reason;
   }
 
   private schedulePackagedDatabaseLoss(startup: CockroachStartResult, reason: string): void {
@@ -167,6 +289,12 @@ export class ServiceManager {
     if (this.isServiceDatabaseCurrent(startup)) return true;
     if (startup) this.schedulePackagedDatabaseLoss(startup, `ownership changed ${phase}`);
     return false;
+  }
+
+  private async requireApiGenerationCurrent(generation: ApiGeneration, phase: string): Promise<void> {
+    if (this.isApiGenerationCurrent(generation)) return;
+    await this.stopDataServicesOwned();
+    throw new Error(`API process generation changed ${phase}`);
   }
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
@@ -353,17 +481,16 @@ export class ServiceManager {
   }
 
   /**
-   * Read or generate the per-installation loopback service token handed to
-   * every managed child process as `SKYTWIN_SERVICE_TOKEN`.
+   * Read or generate the per-installation loopback service token used by
+   * developer-managed services as `SKYTWIN_SERVICE_TOKEN`.
    *
    * The desktop pins `NODE_ENV=production` for all children, which turns the
    * API's localhost auth bypass OFF. Before this existed, the worker's
    * `forwardSignalToApi()` and the idle-miner's ingest emitter posted to
    * `/api/events/ingest` with no credential at all, so every packaged install
-   * 401'd on every signal and ingested nothing. Same mint, same file
-   * conventions as the session secret — one value covers the API (verifier)
-   * and the worker + idle-miner (presenters), because they all read the env
-   * produced by `getEnv()`.
+   * 401'd on every signal and ingested nothing. Packaged API generations
+   * replace this fallback with a fresh in-memory credential shared only with
+   * the worker spawned for that generation.
    */
   private getOrCreateServiceToken(): string {
     return this.getOrCreateSecret('service-token');
@@ -397,8 +524,13 @@ export class ServiceManager {
     const envOverride = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'];
     const bundledGoogleClientId =
       envOverride !== undefined && envOverride !== '' ? envOverride : BUNDLED_GOOGLE_CLIENT_ID || '';
+    const inheritedEnv = { ...process.env } as Record<string, string>;
+    if (app.isPackaged) {
+      delete inheritedEnv['SKYTWIN_API_INSTANCE_CAPABILITY'];
+      delete inheritedEnv['SKYTWIN_SERVICE_TOKEN'];
+    }
     return {
-      ...(process.env as Record<string, string>),
+      ...inheritedEnv,
       DESKTOP_MODE: 'true',
       // The desktop bundle ships without an IronClaw deployment; the
       // execution-router falls back to Direct/OpenClaw based on the
@@ -410,7 +542,7 @@ export class ServiceManager {
       SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: bundledGoogleClientId,
       API_PORT: '3100',
       WORKER_PORT: '3101',
-      API_BASE_URL: 'http://localhost:3100',
+      API_BASE_URL: 'http://127.0.0.1:3100',
       // A packaged desktop is a local-data product: its services must use
       // the exact database child this launch attested. Shell inheritance is
       // useful in development, but it is not authority to redirect a signed
@@ -424,11 +556,41 @@ export class ServiceManager {
       // Pinned AFTER the `...process.env` spread on purpose: a packaged build
       // must never inherit a developer's shell bypass. Real auth, always.
       SKYTWIN_DEV_AUTH_BYPASS: 'false',
-      // Loopback service credential. The API verifies it; the worker and the
-      // idle-miner present it on `/api/events/ingest`. Without it, a packaged
-      // install (NODE_ENV=production, bypass off) 401s every ingest POST.
-      SKYTWIN_SERVICE_TOKEN: process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
+      // Developer fallback. Packaged API/worker generations receive a fresh
+      // in-memory ingest credential instead; web children never receive one.
+      ...(app.isPackaged
+        ? {}
+        : {
+            SKYTWIN_SERVICE_TOKEN:
+              process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
+          }),
     };
+  }
+
+  private apiEnv(instanceCapability: string, ingestCredential: string): Record<string, string> {
+    return {
+      ...this.getEnv(),
+      SKYTWIN_API_INSTANCE_CAPABILITY: instanceCapability,
+      SKYTWIN_SERVICE_TOKEN: ingestCredential,
+    };
+  }
+
+  private workerEnv(apiGeneration: ApiGeneration | null): Record<string, string> {
+    const env = this.getEnv();
+    if (apiGeneration && this.isApiGenerationCurrent(apiGeneration)) {
+      env['SKYTWIN_SERVICE_TOKEN'] = apiGeneration.ingestCredential;
+    } else if (app.isPackaged) {
+      throw new Error('Packaged worker startup requires the current API generation');
+    }
+    delete env['SKYTWIN_API_INSTANCE_CAPABILITY'];
+    return env;
+  }
+
+  private webEnv(): Record<string, string> {
+    const env = this.getEnv();
+    delete env['SKYTWIN_API_INSTANCE_CAPABILITY'];
+    delete env['SKYTWIN_SERVICE_TOKEN'];
+    return env;
   }
 
   /**
@@ -552,17 +714,30 @@ export class ServiceManager {
     return this.sampleBootstrapAllowedThisLaunch && this.isSampleLaunchCurrent(epoch, signal, startup);
   }
 
-  private isOwnedApiProcessCurrent(expectedProcess: ChildProcess): boolean {
-    return !this.api.external && this.api.process === expectedProcess && expectedProcess.exitCode === null;
+  private isApiGenerationCurrent(expected: ApiGeneration): boolean {
+    return (
+      !this.api.external &&
+      this.apiGeneration === expected &&
+      this.api.process === expected.process &&
+      !expected.controller.signal.aborted &&
+      !childHasExited(expected.process)
+    );
+  }
+
+  private revokeApiGeneration(expected?: ApiGeneration): void {
+    const current = this.apiGeneration;
+    if (!current || (expected && current !== expected)) return;
+    current.controller.abort();
+    this.apiGeneration = null;
   }
 
   private isSampleIngestCurrent(
     startup: CockroachStartResult,
     epoch: number,
     signal: AbortSignal,
-    apiProcess: ChildProcess,
+    apiGeneration: ApiGeneration,
   ): boolean {
-    return this.isSampleAuthorityCurrent(epoch, signal, startup) && this.isOwnedApiProcessCurrent(apiProcess);
+    return this.isSampleAuthorityCurrent(epoch, signal, startup) && this.isApiGenerationCurrent(apiGeneration);
   }
 
   /**
@@ -643,12 +818,12 @@ export class ServiceManager {
     startup: CockroachStartResult,
     epoch: number,
     signal: AbortSignal,
-    apiProcess: ChildProcess,
+    apiGeneration: ApiGeneration,
   ): Promise<void> {
-    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
+    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
 
     const embeddedRoot = await this.ensureEmbeddedRoot();
-    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
+    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
     const moduleSymlink = join(
       embeddedRoot,
       'api',
@@ -670,82 +845,76 @@ export class ServiceManager {
         }) => Promise<{ ingested: number; total: number }>;
       }>;
       const mod = await nativeImport(moduleUrl);
-      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
-      const env = this.getEnv();
-      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
+      const requestSignal = AbortSignal.any([signal, apiGeneration.controller.signal]);
+      if (!this.isSampleIngestCurrent(startup, epoch, requestSignal, apiGeneration)) return;
       const result = await mod.ingestPackagedSampleSignals({
         // Keep the privileged request on the exact origin authenticated by
         // verifyOwnedApi(); localhost could resolve to another IPv6 listener.
         apiUrl: 'http://127.0.0.1:3100',
-        serviceToken: env['SKYTWIN_SERVICE_TOKEN'] ?? '',
-        signal,
+        serviceToken: apiGeneration.ingestCredential,
+        signal: requestSignal,
         authorizeRequest: async () =>
-          this.isSampleIngestCurrent(startup, epoch, signal, apiProcess) &&
-          (await this.verifyOwnedApi(apiProcess, epoch, signal)),
+          this.isSampleIngestCurrent(startup, epoch, requestSignal, apiGeneration) &&
+          (await this.verifyOwnedApi(apiGeneration, epoch, requestSignal)),
       });
-      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
+      if (!this.isSampleIngestCurrent(startup, epoch, requestSignal, apiGeneration)) return;
       console.log(`[sample] Ingested ${result.ingested}/${result.total} sample signals.`);
     } catch (err) {
       console.error('[sample] Signal ingestion incomplete:', err);
     }
   }
 
-  /** Prove that the API listener holds this install's service credential. */
+  /** Prove that the API listener holds this exact spawn's capability. */
   private async verifyOwnedApi(
-    expectedProcess?: ChildProcess,
+    expected: ApiGeneration,
     epoch?: number,
     launchSignal?: AbortSignal,
+    timeoutMs = HEALTH_REQUEST_TIMEOUT_MS,
   ): Promise<boolean> {
     if (
       launchSignal?.aborted ||
       (epoch !== undefined && epoch !== this.sampleLaunchEpoch) ||
-      (expectedProcess && !this.isOwnedApiProcessCurrent(expectedProcess))
+      !this.isApiGenerationCurrent(expected)
     )
       return false;
-    const serviceToken = this.getEnv()['SKYTWIN_SERVICE_TOKEN'];
-    if (!serviceToken) return false;
     const challenge = randomBytes(32).toString('hex');
-    const controller = new AbortController();
-    const abortForLaunch = (): void => controller.abort();
-    launchSignal?.addEventListener('abort', abortForLaunch, { once: true });
-    const timer = setTimeout(() => controller.abort(), 2_000);
     try {
       const url = new URL('http://127.0.0.1:3100/api/health/instance');
       url.searchParams.set('challenge', challenge);
-      const response = await fetch(url, { signal: controller.signal });
-      if (!response.ok) return false;
-      const payload = (await response.json().catch(() => null)) as {
+      const authoritySignals = launchSignal
+        ? [launchSignal, expected.controller.signal]
+        : [expected.controller.signal];
+      const { response, payload } = await fetchJsonBounded<{
         service?: unknown;
         challenge?: unknown;
         proof?: unknown;
-      } | null;
+      }>(url, {}, timeoutMs, authoritySignals);
+      if (!response.ok) return false;
       return (
         !launchSignal?.aborted &&
         (epoch === undefined || epoch === this.sampleLaunchEpoch) &&
-        (!expectedProcess || this.isOwnedApiProcessCurrent(expectedProcess)) &&
+        this.isApiGenerationCurrent(expected) &&
         payload?.service === 'skytwin-api' &&
         payload.challenge === challenge &&
-        verifyServiceInstanceProof(serviceToken, challenge, payload.proof)
+        verifyServiceInstanceProof(expected.instanceCapability, challenge, payload.proof)
       );
     } catch {
       return false;
-    } finally {
-      clearTimeout(timer);
-      launchSignal?.removeEventListener('abort', abortForLaunch);
     }
   }
 
   /** Run sample ingestion in the background after proving API ownership. */
   private startPackagedSampleIngest(startup: CockroachStartResult, epoch: number, signal: AbortSignal): void {
-    const apiProcess = this.api.process;
-    if (!apiProcess || !this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
+    const apiGeneration = this.apiGeneration;
+    if (!apiGeneration || !this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
     void (async () => {
-      if (!(await this.verifyOwnedApi(apiProcess, epoch, signal))) {
+      if (!(await this.verifyOwnedApi(apiGeneration, epoch, signal))) {
         console.warn('[sample] Signal ingestion skipped: API instance could not be authenticated.');
         return;
       }
-      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
-      await this.ingestPackagedSample(startup, epoch, signal, apiProcess);
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
+      await this.ingestPackagedSample(startup, epoch, signal, apiGeneration);
     })().catch((err) => {
       console.error('[sample] Background signal ingestion failed:', err);
     });
@@ -776,6 +945,11 @@ export class ServiceManager {
       }
     }
     if (await this.waitForExternalApi(10000)) {
+      if (app.isPackaged) {
+        this.cockroachStatus = 'error';
+        this.emitStatus();
+        throw new Error('Packaged startup refused an external API listener');
+      }
       console.log('[crdb] External API detected on :3100 — skipping local CockroachDB startup.');
       // In monorepo dev, the external API owns the DB connection and
       // migrations. Treat the dependency as satisfied for tray/status
@@ -829,18 +1003,32 @@ export class ServiceManager {
       }
     }
     if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'before API startup');
-    await this.startApi(startup);
+    const apiGeneration = await this.startApi(startup);
     if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API startup');
-    const apiReady = await this.waitForApi(10000, startup);
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) {
+      await this.stopDataServicesOwned();
+      throw new Error('Packaged startup requires the desktop-owned API process');
+    }
+    const apiReady = await this.waitForApi(10000, startup, apiGeneration);
     if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API readiness');
+    if (app.isPackaged && !apiReady) {
+      await this.stopDataServicesOwned();
+      throw new Error('Packaged startup could not authenticate the desktop-owned API listener');
+    }
     if (apiReady) {
       this.api.restartCount = 0;
       this.api.failureTimestamps = [];
     }
-    await this.startWeb(startup);
+    await this.startWeb(startup, apiGeneration);
     if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during web startup');
-    await this.startWorker(startup);
+    if (app.isPackaged && apiGeneration) {
+      await this.requireApiGenerationCurrent(apiGeneration, 'during web startup');
+    }
+    await this.startWorker(startup, apiGeneration);
     if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during worker startup');
+    if (app.isPackaged && apiGeneration) {
+      await this.requireApiGenerationCurrent(apiGeneration, 'during worker startup');
+    }
     setTimeout(() => {
       if (this.worker.status === 'running') {
         this.worker.restartCount = 0;
@@ -856,30 +1044,65 @@ export class ServiceManager {
 
   private startHealthMonitoring(startup: CockroachStartResult | null): void {
     if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
-    this.healthCheckTimer = setInterval(() => this.runHealthCheck(startup), HEALTH_CHECK_INTERVAL_MS);
+    this.healthCheckTimer = setInterval(() => void this.runHealthCheck(startup), HEALTH_CHECK_INTERVAL_MS);
   }
 
   private async runHealthCheck(startup: CockroachStartResult | null): Promise<void> {
-    if (!this.guardServiceDatabase(startup, 'during health monitoring')) return;
-    if (this.paused) return;
+    if (this.healthCheckInFlight) return;
+    this.healthCheckInFlight = true;
+    try {
+      if (!this.guardServiceDatabase(startup, 'during health monitoring')) return;
+      if (this.paused) return;
 
-    // Check API health
-    if (this.api.status === 'running') {
-      try {
-        const response = await fetch('http://localhost:3100/api/health');
-        if (!this.guardServiceDatabase(startup, 'during API health check')) return;
-        if (!response.ok) {
-          this.recordFailure(this.api, 'api');
+      // A packaged health response must prove the exact API generation, not
+      // merely that some process has occupied the well-known port.
+      if (this.api.status === 'running') {
+        if (app.isPackaged) {
+          const generation = this.apiGeneration;
+          if (!generation || !(await this.verifyOwnedApi(generation))) {
+            this.schedulePackagedApiIdentityLoss(startup, generation, 'API listener identity changed');
+            return;
+          }
+        } else {
+          try {
+            const response = await fetchBounded(
+              'http://localhost:3100/api/health',
+              {},
+              HEALTH_REQUEST_TIMEOUT_MS,
+            );
+            if (!this.guardServiceDatabase(startup, 'during API health check')) return;
+            if (!response.ok) this.recordFailure(this.api, 'api');
+          } catch {
+            this.recordFailure(this.api, 'api');
+          }
         }
-      } catch {
-        this.recordFailure(this.api, 'api');
       }
-    }
 
-    // Check worker is still alive (process-level check)
-    if (this.worker.status === 'running' && this.worker.process && !this.worker.process.connected) {
-      this.recordFailure(this.worker, 'worker');
+      // Check worker is still alive (process-level check)
+      if (this.worker.status === 'running' && this.worker.process && !this.worker.process.connected) {
+        this.recordFailure(this.worker, 'worker');
+      }
+    } finally {
+      this.healthCheckInFlight = false;
     }
+  }
+
+  private schedulePackagedApiIdentityLoss(
+    startup: CockroachStartResult | null,
+    generation: ApiGeneration | null,
+    reason: string,
+  ): void {
+    if (!app.isPackaged || !generation || !this.isApiGenerationCurrent(generation)) return;
+    this.revokeApiGeneration(generation);
+    this.api.status = 'error';
+    this.emitStatus();
+    void this.runServiceLifecycle(async () => {
+      console.error(`[api] ${reason}; stopping packaged data services.`);
+      await this.stopDataServicesOwned();
+      if (startup) this.guardServiceDatabase(startup, 'after API listener identity loss');
+    }).catch((error) => {
+      console.error('[api] Failed to stop services after listener identity loss:', error);
+    });
   }
 
   private recordFailure(managed: ManagedProcess, name: string): void {
@@ -918,6 +1141,10 @@ export class ServiceManager {
     } catch (err) {
       console.error('[crdb] Failed to start:', err);
       this.cockroachStatus = 'error';
+      if ((err as { code?: unknown } | null)?.code === 'COCKROACH_TERMINATION_UNPROVEN') {
+        this.emitStatus();
+        throw err;
+      }
     }
     this.emitStatus();
     return startup;
@@ -953,24 +1180,27 @@ export class ServiceManager {
     return false;
   }
 
-  private async startApi(startup: CockroachStartResult | null = null): Promise<void> {
-    if (!this.guardServiceDatabase(startup, 'before API spawn')) return;
+  private async startApi(startup: CockroachStartResult | null = null): Promise<ApiGeneration | null> {
+    if (!this.guardServiceDatabase(startup, 'before API spawn')) return null;
+    if (this.apiGeneration && this.isApiGenerationCurrent(this.apiGeneration)) return this.apiGeneration;
+    this.revokeApiGeneration();
+    if (this.api.process) await this.stopProcess(this.api, 'api');
     this.api.status = 'starting';
     this.emitStatus();
 
     if (await this.detectExternalApi()) {
-      if (!this.guardServiceDatabase(startup, 'while detecting the API listener')) return;
+      if (!this.guardServiceDatabase(startup, 'while detecting the API listener')) return null;
       console.log('[api] External API detected on :3100 — using existing instance, not forking.');
       this.api.external = true;
       this.api.status = 'running';
       this.emitStatus();
-      return;
+      return null;
     }
     this.api.external = false;
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
-    if (!this.guardServiceDatabase(startup, 'while resolving the API bundle')) return;
+    if (!this.guardServiceDatabase(startup, 'while resolving the API bundle')) return null;
     // Packaged path uses the pnpm-deployed self-contained bundle —
     // since v0.6.58, extracted to <userData>/embedded/ on first launch
     // from the bundled apps.tar.gz (see ensureEmbeddedRoot). The earlier
@@ -981,12 +1211,23 @@ export class ServiceManager {
       ? join(embeddedRoot, 'api', 'dist', 'index.js')
       : join(base, 'apps', 'api', 'dist', 'index.js');
 
+    let generation: ApiGeneration | null = null;
     try {
+      const instanceCapability = randomBytes(32).toString('hex');
+      const ingestCredential = randomBytes(32).toString('hex');
       const apiProcess = fork(apiEntry, [], {
-        env: this.getEnv(),
+        env: this.apiEnv(instanceCapability, ingestCredential),
         stdio: 'pipe',
       });
       this.api.process = apiProcess;
+      generation = {
+        generation: ++this.nextApiGeneration,
+        process: apiProcess,
+        instanceCapability,
+        ingestCredential,
+        controller: new AbortController(),
+      };
+      this.apiGeneration = generation;
 
       apiProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
@@ -995,41 +1236,90 @@ export class ServiceManager {
         console.error(`[api] ${data.toString().trim()}`);
       });
 
-      apiProcess.on('exit', (code) => {
-        console.log(`[api] Process exited with code ${code}`);
+      const handleApiLoss = (reason: string): void => {
         if (this.api.process !== apiProcess) return;
+        if (this.terminatingProcesses.has(apiProcess)) return;
+        if (generation) this.revokeApiGeneration(generation);
         this.api.process = null;
         this.api.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused && this.guardServiceDatabase(startup, 'before API restart')) {
+        if (!this.paused && this.guardServiceDatabase(startup, 'before API restart')) {
           this.api.restartCount++;
           this.recordFailure(this.api, 'api');
           if ((this.api.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.api.restartCount);
-            console.log(`[api] Restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
-            setTimeout(() => {
-              if (this.guardServiceDatabase(startup, 'before delayed API restart')) {
-                void this.startApi(startup);
-              }
-            }, delay);
+            console.log(
+              `[api] ${reason}; restarting in ${delay}ms (attempt ${this.api.restartCount})...`,
+            );
+            void this.restartDataServicesAfterApiExit(startup, delay).catch((error) => {
+              console.error('[api] Safe restart failed:', error);
+            });
           }
         }
+      };
+      apiProcess.on('error', (error) => {
+        console.error('[api] Child process error:', error);
+        handleApiLoss('child process error');
+      });
+      apiProcess.on('exit', (code) => {
+        console.log(`[api] Process exited with code ${code}`);
+        handleApiLoss(`process exited with code ${code}`);
       });
 
       this.api.status = 'running';
       this.emitStatus();
       if (!this.guardServiceDatabase(startup, 'after API spawn')) {
         void this.stopProcess(this.api, 'api');
+        return null;
       }
+      return generation;
     } catch (err) {
+      if (generation) this.revokeApiGeneration(generation);
       console.error('[api] Failed to start:', err);
       this.api.status = 'error';
       this.emitStatus();
+      return null;
     }
   }
 
-  private async startWeb(startup: CockroachStartResult | null = null): Promise<void> {
+  private restartDataServicesAfterApiExit(
+    startup: CockroachStartResult | null,
+    delayMs: number,
+  ): Promise<void> {
+    return this.runServiceLifecycle(async () => {
+      if (!app.isPackaged) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        await this.startApi(startup);
+        return;
+      }
+      await this.stopDataServicesOwned();
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+      if (!this.guardServiceDatabase(startup, 'before API generation restart')) return;
+      const generation = await this.startApi(startup);
+      if (!generation || !(await this.waitForApi(10_000, startup, generation))) {
+        await this.stopDataServicesOwned();
+        throw new Error('Replacement API generation could not prove listener ownership');
+      }
+      await this.startWeb(startup, generation);
+      await this.startWorker(startup, generation);
+      this.startHealthMonitoring(startup);
+      const sampleSignal = this.sampleAbortController?.signal;
+      if (
+        startup?.ownership === 'managed-child' &&
+        sampleSignal &&
+        this.isSampleAuthorityCurrent(this.sampleLaunchEpoch, sampleSignal, startup)
+      ) {
+        this.startPackagedSampleIngest(startup, this.sampleLaunchEpoch, sampleSignal);
+      }
+    });
+  }
+
+  private async startWeb(
+    startup: CockroachStartResult | null = null,
+    apiGeneration: ApiGeneration | null = null,
+  ): Promise<void> {
     if (!this.guardServiceDatabase(startup, 'before web spawn')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
     this.web.status = 'starting';
     this.emitStatus();
 
@@ -1045,13 +1335,14 @@ export class ServiceManager {
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
     if (!this.guardServiceDatabase(startup, 'while resolving the web bundle')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
     const webEntry = app.isPackaged
       ? join(embeddedRoot, 'web', 'dist', 'index.js')
       : join(base, 'apps', 'web', 'dist', 'index.js');
 
     try {
       const webProcess = fork(webEntry, [], {
-        env: { ...this.getEnv(), WEB_PORT: '3200' },
+        env: { ...this.webEnv(), WEB_PORT: '3200' },
         stdio: 'pipe',
       });
       this.web.process = webProcess;
@@ -1066,10 +1357,16 @@ export class ServiceManager {
       webProcess.on('exit', (code) => {
         console.log(`[web] Process exited with code ${code}`);
         if (this.web.process !== webProcess) return;
+        if (this.terminatingProcesses.has(webProcess)) return;
         this.web.process = null;
         this.web.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused && this.guardServiceDatabase(startup, 'before web restart')) {
+        if (
+          code !== 0 &&
+          !this.paused &&
+          this.guardServiceDatabase(startup, 'before web restart') &&
+          (!app.isPackaged || (apiGeneration && this.isApiGenerationCurrent(apiGeneration)))
+        ) {
           this.web.restartCount++;
           this.recordFailure(this.web, 'web');
           if ((this.web.status as ProcessState) !== 'error') {
@@ -1077,7 +1374,7 @@ export class ServiceManager {
             console.log(`[web] Restarting in ${delay}ms (attempt ${this.web.restartCount})...`);
             setTimeout(() => {
               if (this.guardServiceDatabase(startup, 'before delayed web restart')) {
-                void this.startWeb(startup);
+                void this.startWeb(startup, apiGeneration);
               }
             }, delay);
           }
@@ -1086,7 +1383,10 @@ export class ServiceManager {
 
       this.web.status = 'running';
       this.emitStatus();
-      if (!this.guardServiceDatabase(startup, 'after web spawn')) {
+      if (
+        !this.guardServiceDatabase(startup, 'after web spawn') ||
+        (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration)))
+      ) {
         void this.stopProcess(this.web, 'web');
       }
     } catch (err) {
@@ -1096,8 +1396,12 @@ export class ServiceManager {
     }
   }
 
-  private async startWorker(startup: CockroachStartResult | null = null): Promise<void> {
+  private async startWorker(
+    startup: CockroachStartResult | null = null,
+    apiGeneration: ApiGeneration | null = null,
+  ): Promise<void> {
     if (!this.guardServiceDatabase(startup, 'before worker spawn')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
     this.worker.status = 'starting';
     this.emitStatus();
 
@@ -1116,6 +1420,7 @@ export class ServiceManager {
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
     if (!this.guardServiceDatabase(startup, 'while resolving the worker bundle')) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
     // See apiEntry comment above — same reasoning for worker.
     const workerEntry = app.isPackaged
       ? join(embeddedRoot, 'worker', 'dist', 'index.js')
@@ -1123,7 +1428,7 @@ export class ServiceManager {
 
     try {
       const workerProcess = fork(workerEntry, [], {
-        env: this.getEnv(),
+        env: this.workerEnv(apiGeneration),
         stdio: 'pipe',
       });
       this.worker.process = workerProcess;
@@ -1138,10 +1443,16 @@ export class ServiceManager {
       workerProcess.on('exit', (code) => {
         console.log(`[worker] Process exited with code ${code}`);
         if (this.worker.process !== workerProcess) return;
+        if (this.terminatingProcesses.has(workerProcess)) return;
         this.worker.process = null;
         this.worker.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused && this.guardServiceDatabase(startup, 'before worker restart')) {
+        if (
+          code !== 0 &&
+          !this.paused &&
+          this.guardServiceDatabase(startup, 'before worker restart') &&
+          (!app.isPackaged || (apiGeneration && this.isApiGenerationCurrent(apiGeneration)))
+        ) {
           this.worker.restartCount++;
           this.recordFailure(this.worker, 'worker');
           if ((this.worker.status as ProcessState) !== 'error') {
@@ -1149,7 +1460,7 @@ export class ServiceManager {
             console.log(`[worker] Restarting in ${delay}ms (attempt ${this.worker.restartCount})...`);
             setTimeout(() => {
               if (this.guardServiceDatabase(startup, 'before delayed worker restart')) {
-                void this.startWorker(startup);
+                void this.startWorker(startup, apiGeneration);
               }
             }, delay);
           }
@@ -1158,7 +1469,10 @@ export class ServiceManager {
 
       this.worker.status = 'running';
       this.emitStatus();
-      if (!this.guardServiceDatabase(startup, 'after worker spawn')) {
+      if (
+        !this.guardServiceDatabase(startup, 'after worker spawn') ||
+        (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration)))
+      ) {
         void this.stopProcess(this.worker, 'worker');
       }
     } catch (err) {
@@ -1185,19 +1499,37 @@ export class ServiceManager {
     this.paused = false;
     this.worker.restartCount = 0;
     this.worker.failureTimestamps = [];
-    await this.startWorker(this.activeDatabaseStartup);
+    await this.startWorker(this.activeDatabaseStartup, this.apiGeneration);
   }
 
   isPaused(): boolean {
     return this.paused;
   }
 
-  private async stopProcess(managed: ManagedProcess, name: string): Promise<void> {
-    if (!managed.process) return;
+  private stopProcess(managed: ManagedProcess, name: string): Promise<void> {
+    if (!managed.process) return Promise.resolve();
 
     const proc = managed.process;
-    managed.process = null;
+    const existing = this.terminatingProcesses.get(proc);
+    if (existing) return existing;
+    if (managed === this.api && this.apiGeneration?.process === proc) {
+      this.revokeApiGeneration(this.apiGeneration);
+    }
+    let termination!: Promise<void>;
+    termination = this.stopProcessOwned(managed, name, proc).finally(() => {
+      if (this.terminatingProcesses.get(proc) === termination) {
+        this.terminatingProcesses.delete(proc);
+      }
+    });
+    this.terminatingProcesses.set(proc, termination);
+    return termination;
+  }
 
+  private async stopProcessOwned(
+    managed: ManagedProcess,
+    name: string,
+    proc: ChildProcess,
+  ): Promise<void> {
     if (process.platform === 'win32') {
       // Windows: SIGTERM is unreliable, use taskkill for force termination
       try {
@@ -1206,40 +1538,38 @@ export class ServiceManager {
           console.log(`[${name}] Terminated via taskkill (PID ${proc.pid})`);
         }
       } catch {
-        // Process may already be dead
-        console.warn(`[${name}] taskkill failed — process may have already exited`);
+        // The final exit check below remains authoritative.
+        console.warn(`[${name}] taskkill failed — awaiting process exit proof`);
       }
 
-      // Wait briefly for the exit event to propagate
-      await new Promise<void>((resolve) => {
-        const exitTimer = setTimeout(() => resolve(), 2000);
-        proc.on('exit', () => {
-          clearTimeout(exitTimer);
-          resolve();
-        });
-      });
+      if (!(await waitForChildExit(proc, SERVICE_KILL_TIMEOUT_MS))) {
+        managed.status = 'error';
+        this.emitStatus();
+        throw new ChildTerminationError(name);
+      }
     } else {
       // Unix (macOS/Linux): graceful SIGTERM then force SIGKILL
-      proc.kill('SIGTERM');
-
-      await new Promise<void>((resolve) => {
-        const forceKillTimer = setTimeout(() => {
-          try {
-            proc.kill('SIGKILL');
-            console.warn(`[${name}] Force-killed after 5s timeout`);
-          } catch {
-            // Already dead
-          }
-          resolve();
-        }, 5000);
-
-        proc.on('exit', () => {
-          clearTimeout(forceKillTimer);
-          resolve();
-        });
-      });
+      try {
+        proc.kill('SIGTERM');
+      } catch {
+        // The final exit check below remains authoritative.
+      }
+      if (!(await waitForChildExit(proc, SERVICE_TERM_TIMEOUT_MS))) {
+        try {
+          proc.kill('SIGKILL');
+          console.warn(`[${name}] Force-killed after 5s timeout`);
+        } catch {
+          // The final exit check below remains authoritative.
+        }
+        if (!(await waitForChildExit(proc, SERVICE_KILL_TIMEOUT_MS))) {
+          managed.status = 'error';
+          this.emitStatus();
+          throw new ChildTerminationError(name);
+        }
+      }
     }
 
+    if (managed.process === proc) managed.process = null;
     managed.status = 'stopped';
   }
 
@@ -1259,12 +1589,23 @@ export class ServiceManager {
     // we bring down CockroachDB — otherwise CRDB logs a flurry of "client
     // disconnected" messages and the API logs "connection reset" on the
     // last in-flight query, both of which are noise for the user.
-    await this.stopDataServicesOwned();
+    try {
+      await this.stopDataServicesOwned();
+    } catch (error) {
+      // Keep the database endpoint occupied by its proven child while an API
+      // or worker may still be alive. Releasing the SQL port here could let a
+      // replacement listener receive reconnects from that unproven process.
+      this.emitStatus();
+      throw error;
+    }
     try {
       await this.cockroach.stop();
       this.cockroachStatus = 'stopped';
     } catch (err) {
       console.error('[crdb] stop failed:', err);
+      this.cockroachStatus = 'error';
+      this.emitStatus();
+      throw err;
     }
     this.emitStatus();
   }
@@ -1318,21 +1659,41 @@ export class ServiceManager {
   private async waitForApi(
     timeoutMs: number,
     startup: CockroachStartResult | null = null,
+    expectedGeneration: ApiGeneration | null = null,
   ): Promise<boolean> {
-    const start = Date.now();
-    while (Date.now() - start < timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
       if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
-      try {
-        const response = await fetch('http://localhost:3100/api/health');
-        if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
-        if (response.ok) return true;
-      } catch {
-        // API not ready yet
+      const remainingMs = Math.max(1, deadline - Date.now());
+      if (app.isPackaged) {
+        if (!expectedGeneration || !this.isApiGenerationCurrent(expectedGeneration)) return false;
+        if (
+          await this.verifyOwnedApi(
+            expectedGeneration,
+            undefined,
+            undefined,
+            Math.min(HEALTH_REQUEST_TIMEOUT_MS, remainingMs),
+          )
+        ) {
+          return true;
+        }
+      } else {
+        try {
+          const response = await fetchBounded(
+            'http://localhost:3100/api/health',
+            {},
+            Math.min(HEALTH_REQUEST_TIMEOUT_MS, remainingMs),
+          );
+          if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
+          if (response.ok) return true;
+        } catch {
+          // API not ready yet
+        }
       }
-      await new Promise((r) => setTimeout(r, 500));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(500, Math.max(0, deadline - Date.now()))));
       if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
     }
-    console.warn('[api] Health check timed out, starting worker anyway');
+    console.warn('[api] Authenticated readiness check timed out');
     return false;
   }
 }

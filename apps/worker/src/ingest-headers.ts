@@ -7,9 +7,9 @@
  * there an unauthenticated POST 401s, `withRetry` does not retry 401, and the
  * throw trips the per-user circuit breaker, so the install ingests nothing.
  *
- * `SKYTWIN_SERVICE_TOKEN` is the per-install loopback credential the desktop
- * `ServiceManager` mints and hands to the API (verifier) and to the worker and
- * the idle-miner (presenters).
+ * `SKYTWIN_SERVICE_TOKEN` is a loopback credential. The packaged desktop gives
+ * each managed API/worker generation a fresh in-memory value; self-hosted and
+ * source-development services may use an operator-configured persistent value.
  */
 
 /**

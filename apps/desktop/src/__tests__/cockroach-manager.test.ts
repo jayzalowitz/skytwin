@@ -23,6 +23,12 @@ const { CockroachManager } = await import('../cockroach-manager.js');
 interface CockroachManagerInternals {
   isCrdbResponding(): Promise<boolean>;
   ensureDatabase(): Promise<void>;
+  process: ChildProcess | null;
+  authority: {
+    process: ChildProcess;
+    revoked: boolean;
+  } | null;
+  terminateProcess(process: ChildProcess, timeoutMs?: number): Promise<void>;
 }
 
 interface FakeChild extends ChildProcess {
@@ -39,6 +45,24 @@ function fakeChild(pid: number, emitExitOnKill = true): FakeChild {
     kill: vi.fn(() => {
       child.exitCode = 0;
       if (emitExitOnKill) queueMicrotask(() => child.emit('exit', 0, null));
+      return true;
+    }),
+  });
+  return child;
+}
+
+function stubbornChild(pid: number, closeOnKill = false): FakeChild {
+  const child = new EventEmitter() as FakeChild;
+  Object.assign(child, {
+    pid,
+    exitCode: null,
+    signalCode: null,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn((signal: NodeJS.Signals) => {
+      if (closeOnKill && signal === 'SIGKILL') {
+        queueMicrotask(() => child.emit('close', null, 'SIGKILL'));
+      }
       return true;
     }),
   });
@@ -263,5 +287,60 @@ describe('CockroachManager', () => {
 
     expect(firstResult).toEqual(secondResult);
     expect(spawnImpl).toHaveBeenCalledOnce();
+  });
+
+  it('retains an unproven Cockroach child and authority after TERM and KILL time out', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = stubbornChild(4110);
+      const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+        writeOwnedMarkers(child, args);
+        return child;
+      }) as unknown as typeof spawn;
+      const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+        CockroachManagerInternals;
+      mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+      mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+      const startup = await mgr.start();
+      const authority = mgr.authority;
+
+      const stopped = mgr.stop();
+      const assertion = expect(stopped).rejects.toMatchObject({
+        code: 'COCKROACH_TERMINATION_UNPROVEN',
+      });
+      await Promise.resolve();
+      expect(mgr.isManagedStartCurrent(startup)).toBe(false);
+      await vi.runAllTimersAsync();
+      await assertion;
+
+      expect(child.kill).toHaveBeenNthCalledWith(1, 'SIGTERM');
+      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+      expect(mgr.process).toBe(child);
+      expect(mgr.authority).toBe(authority);
+      expect(mgr.authority?.revoked).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not clear a Cockroach child until forced close is observed', async () => {
+    vi.useFakeTimers();
+    try {
+      const child = stubbornChild(4111, true);
+      const mgr = new CockroachManager() as InstanceType<typeof CockroachManager> &
+        CockroachManagerInternals;
+      mgr.process = child;
+      mgr.authority = { process: child, revoked: true };
+
+      const stopped = mgr.terminateProcess(child, 10);
+      await vi.advanceTimersByTimeAsync(10);
+      await stopped;
+
+      expect(child.kill).toHaveBeenNthCalledWith(2, 'SIGKILL');
+      expect(mgr.process).toBeNull();
+      expect(mgr.authority).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

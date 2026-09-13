@@ -8,8 +8,8 @@ describe("service instance proof", () => {
   it("uses the canonical proof domain and validates challenge shape", () => {
     const challenge = "a".repeat(64);
     expect(SERVICE_INSTANCE_CHALLENGE_PATTERN.test(challenge)).toBe(true);
-    expect(createServiceInstanceProof("service-token", challenge)).toBe(
-      "e55dbe2a3b9f99d95a0582a4c8b22ac22c65ac06d8b9469cdb19a4c2f8ec3ed8",
+    expect(createServiceInstanceProof("instance-capability", challenge)).toBe(
+      "66936c3fc3d1f40b2aac076eb9cfba4c68616144d57ef2909ee86b0f29540016",
     );
     expect(SERVICE_INSTANCE_CHALLENGE_PATTERN.test("not-a-challenge")).toBe(
       false,
