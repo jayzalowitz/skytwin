@@ -41,9 +41,13 @@ Enabling the provider requires a packaged transport backed by a pinned,
 independently reviewed verifier that can keep attestation and inference on one
 TLS connection; validate TDX, NVIDIA, nonce, `report_data`, SPKI, deployment
 measurement, and signer bindings; and retrieve and validate the direct model's
-signature record deterministically. That transport does not exist in this
-repository. It also requires live endpoint access and credentials/credits to
-exercise the protocol.
+signature record deterministically. Upstream verifier issue
+[#33](https://github.com/nearai/nearai-cloud-verifier/issues/33) currently tracks
+cases where direct signature lookup can reach a route that does not hold the
+completion's cached record, so a production adapter must demonstrate stable
+completion-to-signature routing rather than treating a retrying lookup as a
+security proof. That transport does not exist in this repository. It also
+requires live endpoint access and credentials/credits to exercise the protocol.
 Until those prerequisites are present, `UnavailableConfidentialTransport`
 fails before transmitting prompts.
 
