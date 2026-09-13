@@ -134,6 +134,65 @@ describe('DesktopKeyBroker', () => {
     expect(winner).toBeDefined();
   });
 
+  it('rejects a syntactically valid persisted canary mutation during initialization', async () => {
+    let persisted: WrappedUserKey | undefined;
+    const store: WrappedKeyStore = {
+      get: () => persisted,
+      create: (_id, row) => {
+        persisted = structuredClone(row);
+        persisted.canary = {
+          ...persisted.canary,
+          ciphertext: Buffer.alloc(
+            Buffer.from(persisted.canary.ciphertext, 'base64').length,
+            7,
+          ).toString('base64'),
+        };
+        return true;
+      },
+      deleteIfMatch: (_id, row) => {
+        if (JSON.stringify(persisted) !== JSON.stringify(row)) return false;
+        persisted = undefined;
+        return true;
+      },
+    };
+    const broker = new DesktopKeyBroker(store);
+
+    expect(await broker.initialize(context.userId, 'correct horse battery staple')).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+    expect(persisted).toBeDefined();
+    expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+  });
+
+  it('rejects and retains a different valid durable wrapper winner', async () => {
+    const winnerStore = new MemoryStore();
+    const winnerBroker = new DesktopKeyBroker(winnerStore);
+    await winnerBroker.initialize(context.userId, 'correct horse battery staple');
+    const winner = structuredClone(winnerStore.rows.get(context.userId)!);
+    let persisted: WrappedUserKey | undefined;
+    const store: WrappedKeyStore = {
+      get: () => persisted,
+      create: () => {
+        persisted = structuredClone(winner);
+        return true;
+      },
+      deleteIfMatch: (_id, row) => {
+        if (JSON.stringify(persisted) !== JSON.stringify(row)) return false;
+        persisted = undefined;
+        return true;
+      },
+    };
+    const broker = new DesktopKeyBroker(store);
+
+    expect(await broker.initialize(context.userId, 'correct horse battery staple')).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+    expect(persisted).toEqual(winner);
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
+  });
+
   it('does not reopen when lock completes during initialization', async () => {
     const store = new DeferredGetStore(), broker = new DesktopKeyBroker(store);
     const initialize = broker.initialize(context.userId, 'correct horse battery staple');
@@ -353,6 +412,37 @@ describe('DesktopKeyBroker', () => {
     });
     expect(await locking).toMatchObject({ success: true });
     expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
+  });
+
+  it('rejects duplicate child attachment without completing its pending lock barrier', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 50,
+      childExitTimeoutMs: 5,
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.onKill = () => { /* Signal accepted without proven termination. */ };
+    expect(broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId]),
+    )).toBe(true);
+    const messageListeners = child.listenerCount('message');
+    const locking = broker.lock(context.userId);
+    await tick();
+
+    expect(broker.attachChild(
+      child as unknown as ChildProcess,
+      'worker',
+      new Set([context.userId]),
+    )).toBe(false);
+    expect(child.listenerCount('message')).toBe(messageListeners);
+    expect(await locking).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+      generation: 2,
+    });
   });
 
   it('waits for delayed child exit after the acknowledgement deadline', async () => {

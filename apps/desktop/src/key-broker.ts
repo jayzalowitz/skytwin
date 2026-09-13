@@ -497,6 +497,7 @@ export class DesktopKeyBroker {
     const salt = randomBytes(SALT_BYTES);
     let wrap: Buffer | null = null;
     let created: WrappedUserKey | null = null;
+    let persistedRoot: Buffer | null = null;
     try {
       wrap = await wrappingKey(passphrase, salt);
       const iv = randomBytes(IV_BYTES);
@@ -525,17 +526,27 @@ export class DesktopKeyBroker {
       if (!await this.store.create(userId, created)) {
         return { success: false, error: 'already_initialized' };
       }
-      const reread = parseWrappedUserKey(await this.store.get(userId));
-      const check = reread && await this.unwrap(userId, passphrase, reread);
-      if (!check) {
+      const rereadRaw = await this.store.get(userId);
+      const reread = parseWrappedUserKey(rereadRaw);
+      if (!reread || !sameWrappedUserKey(rereadRaw, created)) {
         const rolledBack = await this.store.deleteIfMatch(userId, created);
         return {
           success: false,
           error: rolledBack ? 'ciphertext_invalid' : 'vault_broker_unavailable',
         };
       }
-      check.fill(0);
-      await this.cache(userId, root, 1, operationEpoch);
+      persistedRoot = await this.unwrap(userId, passphrase, reread);
+      const canary = persistedRoot
+        ? this.decryptWith(persistedRoot, canaryContext, reread.keyVersion, reread.canary)
+        : null;
+      if (!persistedRoot || !canary?.success || canary.plaintext !== 'skytwin-canary') {
+        const rolledBack = await this.store.deleteIfMatch(userId, created);
+        return {
+          success: false,
+          error: rolledBack ? 'ciphertext_invalid' : 'vault_broker_unavailable',
+        };
+      }
+      await this.cache(userId, persistedRoot, reread.keyVersion, operationEpoch);
       return { success: true };
     } catch {
       if (created) {
@@ -550,6 +561,7 @@ export class DesktopKeyBroker {
       return { success: false, error: 'vault_broker_unavailable' };
     } finally {
       this.initializing.delete(userId);
+      persistedRoot?.fill(0);
       wrap?.fill(0);
       root.fill(0);
       salt.fill(0);
@@ -838,14 +850,14 @@ export class DesktopKeyBroker {
       : { success: false, error: 'vault_locked' };
   }
 
-  attachChild(child: ChildProcess, role: BrokerRole, authorizedUsers: ReadonlySet<string>): void {
+  attachChild(
+    child: ChildProcess,
+    role: BrokerRole,
+    authorizedUsers: ReadonlySet<string>,
+  ): boolean {
+    if (this.children.has(child)) return false;
     const capability = randomBytes(KEY_BYTES);
     const users = new Set([...authorizedUsers].filter(isValidVaultUserId));
-    const previous = this.children.get(child);
-    if (previous) {
-      previous.capability.fill(0);
-      for (const ack of previous.lockAcks.values()) ack.finish();
-    }
     const binding: Binding = {
       role,
       capability,
@@ -861,7 +873,7 @@ export class DesktopKeyBroker {
     })) {
       capability.fill(0);
       this.children.delete(child);
-      return;
+      return false;
     }
     child.on('message', message => {
       void this.handle(child, message).catch(() => {
@@ -874,6 +886,7 @@ export class DesktopKeyBroker {
       });
     });
     child.once('exit', () => this.releaseChild(child, binding));
+    return true;
   }
 
   private async handle(child: ChildProcess, raw: unknown): Promise<void> {
