@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyRequest,
   isPrecached,
+  isQueuedWriteEligible,
   isReplayable,
   serializeWrite,
   decideReplayOutcome,
@@ -102,7 +103,7 @@ describe('classifyRequest', () => {
 
 describe('precache list', () => {
   it('advances the shell cache and includes the auth-state dependency', () => {
-    expect(CACHE_VERSION).toBe('v2');
+    expect(CACHE_VERSION).toBe('v3');
     expect(PRECACHE_URLS).toContain('/js/sample-session.js');
   });
   it('includes the shell entrypoints', () => {
@@ -129,6 +130,23 @@ describe('isReplayable', () => {
     expect(isReplayable('/api/assistant/messages')).toBe(false);
     expect(isReplayable('/api/v1/demo/simulation/commands')).toBe(false);
     expect(isReplayable('/API/V1/DEMO/SIMULATION/COMMANDS')).toBe(false);
+  });
+});
+
+describe('isQueuedWriteEligible', () => {
+  it('revalidates persisted writes under the current case-insensitive policy', () => {
+    expect(
+      isQueuedWriteEligible(
+        { method: 'POST', url: `${ORIGIN}/api/feedback` },
+        ORIGIN,
+      ),
+    ).toBe(true);
+    expect(
+      isQueuedWriteEligible(
+        { method: 'POST', url: `${ORIGIN}/API/V1/DEMO/SIMULATION/COMMANDS` },
+        ORIGIN,
+      ),
+    ).toBe(false);
   });
 });
 

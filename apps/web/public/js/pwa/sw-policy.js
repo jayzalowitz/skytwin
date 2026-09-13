@@ -18,7 +18,7 @@
 
 /** Bump this whenever the precache list or shell strategy changes — old
  * caches are pruned on `activate` by name prefix. */
-export const CACHE_VERSION = 'v2';
+export const CACHE_VERSION = 'v3';
 export const SHELL_CACHE = `skytwin-shell-${CACHE_VERSION}`;
 export const RUNTIME_CACHE = `skytwin-runtime-${CACHE_VERSION}`;
 
@@ -141,6 +141,14 @@ export function isPrecached(pathname) {
 export function isReplayable(pathname) {
   const normalizedPathname = String(pathname).toLowerCase();
   return !NON_REPLAYABLE_PREFIXES.some((p) => normalizedPathname.startsWith(p));
+}
+
+/** Revalidate a persisted write under the current routing policy before send. */
+export function isQueuedWriteEligible(write, origin) {
+  return classifyRequest(
+    { method: write?.method, url: write?.url },
+    origin,
+  ) === 'queueable-write';
 }
 
 /**
