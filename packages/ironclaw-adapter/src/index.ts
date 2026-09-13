@@ -21,7 +21,12 @@ export {
 export { DirectExecutionAdapter } from './direct-execution-adapter.js';
 export { ActionHandlerRegistry } from './handler-registry.js';
 export { DbCredentialProvider, NoopCredentialProvider } from './credential-provider.js';
-export type { CredentialProvider } from './credential-provider.js';
+export type {
+  CredentialDispatchInput,
+  CredentialDispatchOutcome,
+  CredentialDispatchResult,
+  CredentialProvider,
+} from './credential-provider.js';
 
 // Action handlers (used by DirectExecutionAdapter, not by RealIronClawAdapter)
 export { EmailActionHandler } from './handlers/email-action-handler.js';

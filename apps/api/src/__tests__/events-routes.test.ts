@@ -23,6 +23,7 @@ const {
   mockClaimExecution,
   mockIsExecutionDispatchable,
   mockMarkExecutionTerminal,
+  mockMarkExecutionFailedBeforeDispatch,
   mockMarkNonEffect,
   mockGetExplanation,
   mockEmitReceipt,
@@ -58,6 +59,7 @@ const {
   mockClaimExecution: vi.fn(),
   mockIsExecutionDispatchable: vi.fn(),
   mockMarkExecutionTerminal: vi.fn(),
+  mockMarkExecutionFailedBeforeDispatch: vi.fn(),
   mockMarkNonEffect: vi.fn(),
   mockGetExplanation: vi.fn(),
   mockEmitReceipt: vi.fn(),
@@ -114,7 +116,10 @@ vi.mock('@skytwin/db', () => ({
   },
   oauthRepository: { getToken: mockGetOAuthToken },
   executionRepository: mockExecutionRepository,
-  userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
+  userRepository: { findById: vi.fn().mockResolvedValue({
+    id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer',
+    ironclaw_channel: 'skytwin', execution_authority_revision: 'authority-revision-1',
+  }) },
   aiProviderRepository: { getEnabledForUser: mockGetProviders },
   inferenceReceiptRepository: {
     createManyForUser: mockCreateReceipts,
@@ -122,6 +127,7 @@ vi.mock('@skytwin/db', () => ({
     claimExecutionForDecision: mockClaimExecution,
     isExecutionDispatchableForDecision: mockIsExecutionDispatchable,
     markExecutionTerminalForDecision: mockMarkExecutionTerminal,
+    markExecutionFailedBeforeDispatchForDecision: mockMarkExecutionFailedBeforeDispatch,
     markNonEffectForDecision: mockMarkNonEffect,
   },
   emailLabelRepository: {
@@ -160,6 +166,7 @@ vi.mock('@skytwin/db', () => ({
   },
   explanationRepositoryAdapter: { getByDecisionId: mockGetExplanation },
   policyRepositoryAdapter: { getAllPolicies: mockGetAllPolicies },
+  getPolicyAuthorityRevision: vi.fn().mockResolvedValue('policy-authority-revision-1'),
 }));
 
 vi.mock('@skytwin/llm-client', () => ({
@@ -333,6 +340,7 @@ describe('Events API routes', () => {
     mockClaimExecution.mockResolvedValue({ id: 'plan-1' });
     mockIsExecutionDispatchable.mockResolvedValue(true);
     mockMarkExecutionTerminal.mockResolvedValue(true);
+    mockMarkExecutionFailedBeforeDispatch.mockResolvedValue(true);
     mockMarkNonEffect.mockResolvedValue(true);
     mockGetExplanation.mockResolvedValue(null);
     mockEmitReceipt.mockReturnValue({ exportVersion: 1, receipt: { id: 'receipt-1' } });
@@ -482,11 +490,10 @@ describe('Events API routes', () => {
     expect(capturedAction.parameters).not.toHaveProperty('executionPlanId');
     expect(claimedAction).toEqual(capturedAction);
     expect((executed!['parameters'] as Record<string, unknown>)).toMatchObject({
-      accessToken: 'secret-token', executionPlanId: 'plan-1',
+      executionPlanId: 'plan-1',
     });
-    expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
-      mockGetOAuthToken.mock.invocationCallOrder[0]!,
-    );
+    expect((executed!['parameters'] as Record<string, unknown>)).not.toHaveProperty('accessToken');
+    expect(mockGetOAuthToken).not.toHaveBeenCalled();
     if (actionType === 'draft_email') {
       expect(mockReevaluate).toHaveBeenCalledTimes(1);
       expect(capturedAction.actionType).toBe('send_reply');
@@ -1182,11 +1189,12 @@ describe('Events API routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+      expect((res.body as { execution: { status: string } }).execution.status).toBe('failed');
       expect(mockClaimExecution).toHaveBeenCalledOnce();
       expect(mockIsExecutionDispatchable).not.toHaveBeenCalled();
       expect(stream).not.toHaveBeenCalled();
       expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
+      expect(mockMarkExecutionFailedBeforeDispatch).toHaveBeenCalledOnce();
     });
 
     it('never resumes a ready execution after a fail-closed approval exists', async () => {
@@ -1363,9 +1371,8 @@ describe('Events API routes', () => {
 
   it('redacts echoed credentials and arbitrary adapter bodies from event, result, and SSE evidence', async () => {
     const secret = 'rotated-event-token';
-    mockGetOAuthToken.mockResolvedValueOnce({ access_token: secret });
     const stream = vi.fn(async function* (candidate: Record<string, unknown>) {
-      expect((candidate['parameters'] as Record<string, unknown>)['accessToken']).toBe(secret);
+      expect(candidate['parameters']).not.toHaveProperty('accessToken');
       yield {
         planId: 'plan-1',
         eventType: 'plan_completed',
@@ -1388,11 +1395,9 @@ describe('Events API routes', () => {
 
     expect(res.status).toBe(200);
     expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
-      mockGetOAuthToken.mock.invocationCallOrder[0]!,
-    );
-    expect(mockGetOAuthToken.mock.invocationCallOrder[0]).toBeLessThan(
       stream.mock.invocationCallOrder[0]!,
     );
+    expect(mockGetOAuthToken).not.toHaveBeenCalled();
     const stepSse = mockSseManager.emit.mock.calls.find((call) => call[1] === 'decision:step');
     const evidence = JSON.stringify({
       events: mockExecutionRepository.createEvent.mock.calls,
@@ -1403,12 +1408,33 @@ describe('Events API routes', () => {
     expect(evidence).not.toContain(secret);
     expect(evidence).not.toContain('?access_token=');
     expect(evidence).not.toContain('echoed');
-    expect(evidence).toContain('[redacted:credential]');
-    expect(evidence).toContain('[redacted:unapproved-field]');
+    expect(evidence).toContain('[redacted:unapproved-evidence]');
+    const storedPayload = mockExecutionRepository.createEvent.mock.calls[0]![0].payload;
+    const ssePayload = (stepSse![2] as { payload: unknown }).payload;
+    expect(ssePayload).toEqual(storedPayload);
   });
 
-  it('does not carry a credential through a disconnect that completes at the final lookup', async () => {
-    mockGetOAuthToken.mockResolvedValueOnce(null);
+  it('does not persist or emit an adapter-authored token-shaped step identity', async () => {
+    const stream = vi.fn(async function* () {
+      yield {
+        planId: 'plan-1', stepId: 'ya29.adapter-secret',
+        eventType: 'step_started', timestamp: new Date(), payload: {},
+      };
+    });
+    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+    expect(mockExecutionRepository.createEvent).not.toHaveBeenCalled();
+    expect(mockSseManager.emit.mock.calls.some((call) =>
+      JSON.stringify(call).includes('ya29.adapter-secret'))).toBe(false);
+  });
+
+  it('delegates credential lookup to the streaming adapter boundary', async () => {
     const stream = vi.fn(async function* (candidate: Record<string, unknown>) {
       expect(candidate['parameters']).not.toHaveProperty('accessToken');
       yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
@@ -1420,10 +1446,31 @@ describe('Events API routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
-      mockGetOAuthToken.mock.invocationCallOrder[0]!,
-    );
+    expect(mockGetOAuthToken).not.toHaveBeenCalled();
     expect(stream).toHaveBeenCalledOnce();
+  });
+
+  it('records a terminal no-effect failure when the exact gate refuses before router invocation', async () => {
+    const stream = vi.fn(async function* () {
+      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+    });
+    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+    mockIsExecutionDispatchable.mockResolvedValueOnce(false);
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(stream).not.toHaveBeenCalled();
+    expect(mockMarkExecutionFailedBeforeDispatch).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      'decision-1',
+      'plan-1',
+      'Execution owner or receipt authority was revoked before dispatch',
+    );
+    expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('failed');
   });
 
   it('rejects a terminal event from a different execution plan', async () => {

@@ -47,7 +47,8 @@ export class DirectExecutionAdapter implements IronClawAdapter {
       timeout: 30000,
     };
 
-    const rollbackSteps: ExecutionStep[] = action.reversible
+    const handler = this.registry.getHandler(action.actionType);
+    const rollbackSteps: ExecutionStep[] = action.reversible && handler?.supportsRollback !== false
       ? [
           {
             id: `step_${planId}_rollback_1`,
@@ -106,12 +107,14 @@ export class DirectExecutionAdapter implements IronClawAdapter {
           await this.executeRollbackSteps(plan);
         }
 
+        result.output = { ...result.output, rollback_available: plan.rollbackSteps.length > 0 };
         return result;
       }
 
       result.output = { ...result.output, ...stepResult.output };
     }
 
+    result.output = { ...result.output, rollback_available: plan.rollbackSteps.length > 0 };
     result.status = 'completed';
     result.completedAt = new Date();
     this.planStatuses.set(plan.id, 'completed');
@@ -174,7 +177,7 @@ export class DirectExecutionAdapter implements IronClawAdapter {
           planId: plan.id,
           eventType: 'plan_failed',
           timestamp: new Date(),
-          payload: { error: result.error },
+          payload: { error: result.error, rollback_available: plan.rollbackSteps.length > 0 },
         };
         return;
       }
@@ -194,7 +197,11 @@ export class DirectExecutionAdapter implements IronClawAdapter {
       planId: plan.id,
       eventType: 'plan_completed',
       timestamp: new Date(),
-      payload: { output: result.output ?? {}, adapter: 'direct' },
+      payload: {
+        output: result.output ?? {},
+        adapter: 'direct',
+        rollback_available: plan.rollbackSteps.length > 0,
+      },
     };
   }
 

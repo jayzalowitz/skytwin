@@ -15,6 +15,10 @@ export async function cleanupLegacyFlatDecisions(
     `SELECT id FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`;
 
   await client.query(
+    `DELETE FROM credential_dispatch_leases WHERE execution_plan_id IN (${flatPlanFilter})`,
+    [userId],
+  );
+  await client.query(
     `DELETE FROM execution_admission_barriers WHERE decision_id IN (${flatDecisionFilter})`,
     [userId],
   );

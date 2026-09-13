@@ -28,6 +28,13 @@ The backup is scoped to the data that *is* your twin:
   and exporting them in the clear would be a credential-leak hazard. Connectors
   (Gmail, Calendar, …) **re-authorize on the restored install** — the same one
   re-auth you do on any new device.
+- **Credential dispatch leases.** These machine-local request-start fences are
+  bound to exact OAuth rows and execution authority. They are never restored or
+  resumed; restored effect continuations remain non-replay tombstones.
+- **OAuth callback fences.** Account-unknown sign-in rows and account-revocation
+  tombstones are machine-local, TTL-managed authority records and are never
+  exported. They store only keyed digests of resolved account/owner identity,
+  not an email address, provider token, or OAuth grant.
 - **Sessions, recovery codes, device-pairing state.** These are machine-local,
   not "your data."
 
@@ -95,6 +102,11 @@ To restore over an existing install, delete the user first (the
 **Delete my data** flow / `userPurgeRepository`) and then restore. The
 delete-then-restore pairing is intentional and mirrors the GDPR data-management
 story.
+
+Deletion removes the user's raw account identifiers. A keyed, non-reversible
+OAuth authority digest may remain briefly in CockroachDB's TTL queue (15-minute
+expiry) solely to reject a callback that was issued before deletion; it cannot
+restore the account and contains neither the email nor an OAuth grant.
 
 The schema version is checked before any write: an archive produced by a newer
 build (higher `BACKUP_SCHEMA_VERSION`) is rejected with `unsupported_schema`

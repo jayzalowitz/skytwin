@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildExecutableActionPlan } from '@skytwin/shared-types';
 
+const SYNTHETIC_AWS_ACCESS_KEY = ['AK', 'IAIOSFODNN7EXAMPLE'].join('');
+const SYNTHETIC_GITHUB_TOKEN = ['gh', 'p_abcdefghijklmnopqrstuvwxyz1234567890'].join('');
+
 const mockQuery = vi.fn();
 
 vi.mock('../connection.js', () => ({
@@ -78,6 +81,104 @@ describe('memoryActionOpportunityRepository', () => {
     expect(params[14]).toBe('user_originated');
   });
 
+  it('bounds direct suggestion columns and rebuilds a typed canonical action plan', async () => {
+    const huge = 'x'.repeat(100_000);
+    mockQuery.mockResolvedValue({ rows: [ROW], rowCount: 1 });
+    await memoryActionOpportunityRepository.upsertFromSuggestion({
+      userId: ROW.user_id,
+      fingerprint: ROW.fingerprint,
+      provenance: 'untrusted_external',
+      suggestion: {
+        id: ROW.suggestion_id,
+        title: `Bearer opaque-secret ${huge}`,
+        reason: 'https://example.test/path?access_token=opaque-secret',
+        suggestedAction: huge,
+        sourceRefs: ['valid-ref', 'ya29.source-secret', 'sk-proj-abc123xyz', huge, 'bad ref'],
+        memoryRefs: ['page-a', 'ya29.memory-secret', SYNTHETIC_GITHUB_TOKEN],
+        sourceTypes: ['gmail', 'eyJheader.payload.signature', SYNTHETIC_AWS_ACCESS_KEY],
+        novelty: 'connection',
+        confidence: 20,
+        actionPlan: {
+          ...ROW.action_plan,
+          label: huge,
+          adapterRationale: 'Bearer should-not-survive',
+          runtimeVersion: {
+            ...ROW.action_plan.runtimeVersion,
+            stableUrl: 'https://attacker.test/?refresh_token=should-not-survive',
+          },
+        },
+      },
+    });
+
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(String(params[3]).startsWith('Bearer [redacted:credential] ')).toBe(true);
+    expect(String(params[3])).toHaveLength(1_000);
+    expect(params[4]).toBe('[redacted:url]');
+    expect(String(params[5])).toHaveLength(1_000);
+    expect(params[9]).toEqual([
+      'valid-ref', '[redacted:credential]', '[redacted:credential]',
+    ]);
+    expect(params[10]).toEqual([
+      'page-a', '[redacted:credential]', '[redacted:credential]',
+    ]);
+    expect(params[11]).toEqual([
+      'gmail', '[redacted:credential]', '[redacted:credential]',
+    ]);
+    expect(params[13]).toBe(1);
+    expect(JSON.parse(String(params[8]))).toEqual(buildExecutableActionPlan('draft_email', 'x'.repeat(1_000)));
+    expect(JSON.stringify(params)).not.toContain('opaque-secret');
+    expect(JSON.stringify(params)).not.toContain('should-not-survive');
+    expect(JSON.stringify(params)).not.toContain('source-secret');
+    expect(JSON.stringify(params)).not.toContain('refresh-secret');
+    expect(JSON.stringify(params)).not.toContain('eyJheader');
+  });
+
+  it('refuses a credential-shaped opportunity identity before persistence', async () => {
+    await expect(memoryActionOpportunityRepository.upsertFromSuggestion({
+      userId: ROW.user_id,
+      fingerprint: 'sk-proj-abc123xyz',
+      provenance: 'untrusted_external',
+      suggestion: {
+        id: ROW.suggestion_id,
+        title: ROW.title,
+        reason: ROW.reason,
+        suggestedAction: ROW.suggested_action,
+        sourceRefs: [], memoryRefs: [], sourceTypes: [],
+        novelty: 'connection', confidence: 0.5,
+        actionPlan: ROW.action_plan,
+      },
+    })).rejects.toThrow(/identity is malformed/);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('redacts credential-shaped references read from legacy rows', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{
+        ...ROW,
+        action_type: SYNTHETIC_AWS_ACCESS_KEY,
+        decision_id: 'sk-proj-abc123xyz',
+        approval_request_id: SYNTHETIC_GITHUB_TOKEN,
+        execution_plan_id: 'ya29.plan-secret',
+        source_refs: ['sk-proj-legacysecret'],
+        memory_refs: ['safe-page', SYNTHETIC_GITHUB_TOKEN],
+        source_types: [SYNTHETIC_AWS_ACCESS_KEY],
+      }],
+      rowCount: 1,
+    });
+
+    const rows = await memoryActionOpportunityRepository.claimDueForUser(ROW.user_id);
+    expect(rows[0]?.sourceRefs).toEqual(['[redacted:credential]']);
+    expect(rows[0]?.memoryRefs).toEqual(['safe-page', '[redacted:credential]']);
+    expect(rows[0]?.sourceTypes).toEqual(['[redacted:credential]']);
+    expect(rows[0]?.actionType).toBe('unknown');
+    expect(rows[0]?.decisionId).toBeNull();
+    expect(rows[0]?.approvalRequestId).toBeNull();
+    expect(rows[0]?.executionPlanId).toBeNull();
+    expect(JSON.stringify(rows)).not.toContain('legacy-secret');
+    expect(JSON.stringify(rows)).not.toContain('ghp_');
+    expect(JSON.stringify(rows)).not.toContain('AKIA');
+  });
+
   it('claims only retryable due rows with a bounded limit', async () => {
     mockQuery.mockResolvedValue({ rows: [ROW], rowCount: 1 });
     const rows = await memoryActionOpportunityRepository.claimDueForUser(ROW.user_id, {
@@ -146,7 +247,7 @@ describe('memoryActionOpportunityRepository', () => {
     expect(row?.status).toBe('queued_approval');
     const [sql, params] = mockQuery.mock.calls[0]!;
     expect(sql).toContain('last_report = $3');
-    expect(params[2]).toBe(JSON.stringify(report));
+    expect(JSON.parse(String(params[2]))).toEqual(report);
     expect(params[3]).toBe(report.decisionId);
   });
 
@@ -170,6 +271,36 @@ describe('memoryActionOpportunityRepository', () => {
     const [sql] = mockQuery.mock.calls[0]!;
     expect(sql).toContain('last_report IS NOT NULL');
     expect(sql).toContain('ORDER BY last_attempted_at DESC NULLS LAST');
+  });
+
+  it('bounds and normalizes every direct memory scalar column before SQL', async () => {
+    const huge = 'x'.repeat(100_000);
+    const report = {
+      opportunityId: ROW.id,
+      status: 'execution_ambiguous' as const,
+      title: ROW.title,
+      actionType: ROW.action_type,
+      actionLabel: ROW.action_label,
+      summary: 'ambiguous',
+      nextStep: huge,
+      attemptedAt: '2026-06-25T12:05:00.000Z',
+    };
+    await memoryActionOpportunityRepository.markStatus({
+      id: ROW.id,
+      status: 'execution_ambiguous',
+      report,
+      adapterName: 'invalid adapter with spaces',
+      policyReason: 'Bearer opaque-secret',
+      routeReason: 'See https://example.test/failure?access_token=opaque-secret',
+      nextStep: huge,
+    });
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(params[6]).toBeNull();
+    expect(params[7]).toBe('Bearer [redacted:credential]');
+    expect(params[8]).toBe('See [redacted:url]');
+    expect(params[9]).toBe('x'.repeat(1_000));
+    expect(JSON.stringify(params)).not.toContain('opaque-secret');
+    expect(JSON.stringify(params).length).toBeLessThan(3_000);
   });
 
   it('treats noted_awareness as terminal — excluded from the retryable claim set', async () => {

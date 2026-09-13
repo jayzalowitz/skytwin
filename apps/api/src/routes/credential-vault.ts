@@ -187,10 +187,10 @@ export function createCredentialVaultRouter(): Router {
       const derivedKey = await deriveKey(body.passphrase, salt);
       const passphraseHash = hashDerivedKey(derivedKey);
 
-      await credentialVaultMetaRepository.create(userId, salt, passphraseHash);
+      const created = await credentialVaultMetaRepository.create(userId, salt, passphraseHash);
 
       // Cache the key immediately — user is implicitly "unlocked" after init
-      sharedKeyCache.set(userId, derivedKey);
+      sharedKeyCache.set(userId, derivedKey, created.vault_generation);
 
       log.info('Credential vault initialised', { userId });
 
@@ -248,7 +248,16 @@ export function createCredentialVaultRouter(): Router {
 
       // Derive the key and cache it
       const derivedKey = await deriveKey(body.passphrase, meta.passphrase_salt);
-      sharedKeyCache.set(userId, derivedKey);
+      const generation = await credentialVaultMetaRepository.unlockIfCurrent(
+        userId,
+        meta.vault_generation,
+      );
+      if (!generation) {
+        derivedKey.fill(0);
+        res.status(409).json({ error: 'Credential vault state changed during unlock' });
+        return;
+      }
+      sharedKeyCache.set(userId, derivedKey, generation);
 
       log.info('Credential vault unlocked', { userId });
 
@@ -261,7 +270,7 @@ export function createCredentialVaultRouter(): Router {
   // ── POST /lock ─────────────────────────────────────────────────────────────
   // Evicts the derived key for this user from KeyCache.
   // Returns 200 always (idempotent — locking an already-locked vault is fine).
-  router.post('/lock', (req, res, next) => {
+  router.post('/lock', async (req, res, next) => {
     try {
       const userId = getUserId(req);
       if (!userId) {
@@ -269,6 +278,11 @@ export function createCredentialVaultRouter(): Router {
         return;
       }
 
+      // Commit the cross-process credential-generation fence before evicting
+      // this process's key. A token materialized before this transaction can
+      // no longer win a later lease; a lease that won first is already the
+      // request-start linearization point and remains explicitly tracked.
+      await oauthRepository.fenceVaultLock(userId);
       sharedKeyCache.evict(userId);
       log.info('Credential vault locked', { userId });
 
@@ -290,7 +304,8 @@ export function createCredentialVaultRouter(): Router {
 
       const meta = await credentialVaultMetaRepository.getForUser(userId);
       const initialized = meta !== null;
-      const unlocked = sharedKeyCache.has(userId);
+      const unlocked = meta?.vault_state === 'unlocked' && sharedKeyCache.has(userId) &&
+        sharedKeyCache.getGeneration(userId) === meta.vault_generation;
 
       // Expose keyVersion + lastRotated so the UI can render passphrase-age
       // badges. The vault settings page reads these; previously it bound to
@@ -387,10 +402,12 @@ export function createCredentialVaultRouter(): Router {
       const newHash = hashDerivedKey(newKey);
 
       let tokensReencrypted = 0;
-      let newKeyVersion: number;
+      let rotatedMeta: { keyVersion: number; vaultGeneration: string };
 
       try {
-        newKeyVersion = await withTransaction(async (client) => {
+        rotatedMeta = await withTransaction(async (client) => {
+          const owner = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+          if (!owner.rows[0]) throw new Error('Credential vault owner is unavailable.');
           // SELECT all encrypted rows for this user — inside the transaction
           // so a concurrent token write between SELECT and UPDATE cannot be
           // silently overwritten.
@@ -425,7 +442,7 @@ export function createCredentialVaultRouter(): Router {
               newRtPacked = packEncrypted(encrypt(refreshToken, newKey));
             }
 
-            await oauthRepository.rotateEncrypted(
+            const rotated = await oauthRepository.rotateEncrypted(
               row.id,
               {
                 encryptedAccessToken: newAtPacked,
@@ -434,6 +451,9 @@ export function createCredentialVaultRouter(): Router {
               },
               client,
             );
+            if (!rotated) {
+              throw new Error('Credential rotation is blocked by an active or changed dispatch.');
+            }
             tokensReencrypted += 1;
           }
 
@@ -466,7 +486,7 @@ export function createCredentialVaultRouter(): Router {
       }
 
       // Commit succeeded — update in-memory KeyCache
-      sharedKeyCache.set(userId, newKey);
+      sharedKeyCache.set(userId, newKey, rotatedMeta.vaultGeneration);
 
       // Defense-in-depth: zero the old key buffer now it's no longer needed
       oldKey.fill(0);
@@ -474,13 +494,13 @@ export function createCredentialVaultRouter(): Router {
       log.info('Credential vault passphrase rotated', {
         userId,
         tokensReencrypted,
-        newKeyVersion,
+        newKeyVersion: rotatedMeta.keyVersion,
       });
 
       res.status(200).json({
         status: 'rotated',
         tokensReencrypted,
-        keyVersion: newKeyVersion,
+        keyVersion: rotatedMeta.keyVersion,
       });
     } catch (err) {
       next(err);

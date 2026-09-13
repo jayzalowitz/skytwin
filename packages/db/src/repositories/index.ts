@@ -16,6 +16,7 @@ export type {
 } from './decision-repository.js';
 
 export { policyRepository } from './policy-repository.js';
+export { getPolicyAuthorityRevision } from './policy-repository.js';
 export type { CreatePolicyInput, UpdatePolicyInput } from './policy-repository.js';
 
 export { explanationRepository } from './explanation-repository.js';
@@ -26,7 +27,25 @@ export type { CreateInferenceReceiptInput } from './inference-receipt-repository
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
 
-export { oauthRepository } from './oauth-repository.js';
+export {
+  oauthRepository,
+  CredentialDispatchConflictError,
+  CredentialDisconnectInProgressError,
+  CredentialVaultLockedError,
+  CredentialConnectionAuthorityError,
+} from './oauth-repository.js';
+export type { BeginCredentialDisconnectResult } from './oauth-repository.js';
+export {
+  credentialDispatchLeaseRepository,
+  expireCredentialDispatchLeasesWithClient,
+  hasActiveCredentialDispatchWithClient,
+} from './credential-dispatch-lease-repository.js';
+export type {
+  CredentialDispatchGrant,
+  CredentialDispatchTerminalState,
+  StartCredentialDispatchInput,
+  StartCredentialDispatchResult,
+} from './credential-dispatch-lease-repository.js';
 export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
 export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';

@@ -1,4 +1,10 @@
-import { normalizeExecutionRecord, type MemoryActionLoopReport } from '@skytwin/shared-types';
+import {
+  normalizeExecutionObservation,
+  normalizeExecutionPlanSteps,
+  normalizeMemoryActionReport,
+  normalizeMemoryActionText,
+  type MemoryActionLoopReport,
+} from '@skytwin/shared-types';
 import { query, withTransaction } from '../connection.js';
 import type { CreateExplanationInput } from './explanation-repository.js';
 import type { ExecutionPlanRow } from '../types.js';
@@ -34,8 +40,23 @@ export interface ExecutionAdmissionRow {
   outcome_snapshot: Record<string, unknown>;
   status: ExecutionAdmissionStatus;
   observed_result: Record<string, unknown>;
+  evidence_schema_version: number;
   created_at: Date;
   updated_at: Date;
+}
+
+function normalizeBarrierRow(row: ExecutionAdmissionRow): ExecutionAdmissionRow {
+  if (row.status === 'in_progress') {
+    return { ...row, observed_result: {} };
+  }
+  return {
+    ...row,
+    observed_result: normalizeExecutionObservation({
+      ...row.observed_result,
+      planId: row.execution_plan_id,
+      status: row.status,
+    }),
+  };
 }
 
 interface AdmitExecutionInput {
@@ -66,7 +87,7 @@ function assertExactAdmission(
   plan: ExecutionPlanRow,
   input: AdmitExecutionInput,
 ): void {
-  const persistedSteps = JSON.parse(JSON.stringify(input.steps)) as unknown[];
+  const persistedSteps = normalizeExecutionPlanSteps(input.steps);
   const persistedRisk = JSON.parse(JSON.stringify(input.riskSnapshot)) as Record<string, unknown>;
   const persistedPolicy = JSON.parse(JSON.stringify(input.policySnapshot)) as Record<string, unknown>;
   const persistedAction = JSON.parse(JSON.stringify(input.actionSnapshot)) as Record<string, unknown>;
@@ -137,7 +158,7 @@ export const executionAdmissionRepository = {
        WHERE b.user_id = $1 AND b.scope = $2 AND b.idempotency_key = $3`,
       [userId, scope, idempotencyKey],
     );
-    const barrier = barrierResult.rows[0];
+    const barrier = barrierResult.rows[0] ? normalizeBarrierRow(barrierResult.rows[0]) : undefined;
     if (!barrier) return null;
     const planResult = await query<ExecutionPlanRow>(
       `SELECT * FROM execution_plans WHERE id = $1`,
@@ -155,6 +176,8 @@ export const executionAdmissionRepository = {
         input.policySnapshot['requiresApproval'] !== false) {
       throw new Error('Memory execution policy does not authorize automatic dispatch.');
     }
+    const report = normalizeMemoryActionReport(input.report);
+    const nextStep = normalizeMemoryActionText(report.nextStep) ?? 'Reconcile execution before retrying.';
     return withTransaction(async (client) => {
       const owner = await client.query(
         'SELECT id FROM users WHERE id = $1 FOR UPDATE',
@@ -169,13 +192,14 @@ export const executionAdmissionRepository = {
         [input.userId, input.opportunityId],
       );
       if (existing.rows[0]) {
+        const existingBarrier = normalizeBarrierRow(existing.rows[0]);
         const plan = await client.query<ExecutionPlanRow>(
           `SELECT * FROM execution_plans WHERE id = $1`,
-          [existing.rows[0].execution_plan_id],
+          [existingBarrier.execution_plan_id],
         );
         if (!plan.rows[0]) throw new Error('Execution admission plan is missing.');
-        assertExactAdmission(existing.rows[0], plan.rows[0], input);
-        return { barrier: existing.rows[0], plan: plan.rows[0], created: false };
+        assertExactAdmission(existingBarrier, plan.rows[0], input);
+        return { barrier: existingBarrier, plan: plan.rows[0], created: false };
       }
 
       const authority = await client.query<{ id: string; risk_assessment: Record<string, unknown> }>(
@@ -223,10 +247,10 @@ export const executionAdmissionRepository = {
       if (!explanationId) throw new Error('Memory pre-effect explanation could not be persisted.');
 
       const planResult = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps)
-         VALUES ($1, $2, 'running', $3::JSONB)
+        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, 'running', $3::JSONB, 1)
          RETURNING *`,
-        [input.decisionId, input.actionId, JSON.stringify(input.steps)],
+        [input.decisionId, input.actionId, JSON.stringify(normalizeExecutionPlanSteps(input.steps))],
       );
       const plan = planResult.rows[0];
       if (!plan) throw new Error('Memory execution plan could not be admitted.');
@@ -235,9 +259,9 @@ export const executionAdmissionRepository = {
         `INSERT INTO execution_admission_barriers
            (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
             outcome_id, explanation_id, risk_snapshot, policy_snapshot,
-            action_snapshot, outcome_snapshot)
+            action_snapshot, outcome_snapshot, evidence_schema_version)
          VALUES ($1, 'memory', $2, $3, $4, $5, $6, $7, $8::JSONB, $9::JSONB,
-                 $10::JSONB, $11::JSONB)
+                 $10::JSONB, $11::JSONB, 1)
          RETURNING *`,
         [input.userId, input.opportunityId, input.decisionId, input.actionId, plan.id,
           outcomeId, explanationId, JSON.stringify(input.riskSnapshot),
@@ -255,8 +279,8 @@ export const executionAdmissionRepository = {
              next_step = $6, updated_at = now()
          WHERE id = $1 AND user_id = $2
          RETURNING id`,
-        [input.opportunityId, input.userId, JSON.stringify(input.report),
-          input.decisionId, plan.id, input.report.nextStep],
+        [input.opportunityId, input.userId, JSON.stringify(report),
+          input.decisionId, plan.id, nextStep],
       );
       if (!frozen.rows[0]) throw new Error('Memory opportunity could not be frozen before execution.');
       return { barrier, plan, created: true };
@@ -284,13 +308,14 @@ export const executionAdmissionRepository = {
         [input.userId, scope, idempotencyKey],
       );
       if (existing.rows[0]) {
+        const existingBarrier = normalizeBarrierRow(existing.rows[0]);
         const plan = await client.query<ExecutionPlanRow>(
           `SELECT * FROM execution_plans WHERE id = $1`,
-          [existing.rows[0].execution_plan_id],
+          [existingBarrier.execution_plan_id],
         );
         if (!plan.rows[0]) throw new Error('Execution admission plan is missing.');
-        assertExactAdmission(existing.rows[0], plan.rows[0], input);
-        return { barrier: existing.rows[0], plan: plan.rows[0], created: false };
+        assertExactAdmission(existingBarrier, plan.rows[0], input);
+        return { barrier: existingBarrier, plan: plan.rows[0], created: false };
       }
 
       const authority = await client.query<{
@@ -336,10 +361,10 @@ export const executionAdmissionRepository = {
       if (!explanationId) throw new Error('Approval pre-effect explanation could not be persisted.');
 
       const planResult = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps)
-         VALUES ($1, $2, 'running', $3::JSONB)
+        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, 'running', $3::JSONB, 1)
          RETURNING *`,
-        [input.decisionId, input.actionId, JSON.stringify(input.steps)],
+        [input.decisionId, input.actionId, JSON.stringify(normalizeExecutionPlanSteps(input.steps))],
       );
       const plan = planResult.rows[0];
       if (!plan) throw new Error('Approval execution plan could not be admitted.');
@@ -348,9 +373,9 @@ export const executionAdmissionRepository = {
          `INSERT INTO execution_admission_barriers
            (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
             outcome_id, explanation_id, risk_snapshot, policy_snapshot,
-            action_snapshot, outcome_snapshot)
+            action_snapshot, outcome_snapshot, evidence_schema_version)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB, $10::JSONB,
-                 $11::JSONB, $12::JSONB)
+                 $11::JSONB, $12::JSONB, 1)
          RETURNING *`,
         [input.userId, scope, idempotencyKey, input.decisionId, input.actionId, plan.id,
           authority.rows[0].outcome_id, explanationId,
@@ -417,9 +442,86 @@ export const executionAdmissionRepository = {
         admission.barrier.idempotency_key, admission.plan.id,
         JSON.stringify(authority.riskSnapshot), JSON.stringify(authority.policySnapshot),
         JSON.stringify(authority.actionSnapshot), JSON.stringify(authority.outcomeSnapshot),
-        JSON.stringify(authority.steps)],
+        JSON.stringify(normalizeExecutionPlanSteps(authority.steps))],
     );
     return !!result.rows[0];
+  },
+
+  /**
+   * Atomically close an admitted plan when the caller has not invoked the
+   * router yet. This is deliberately separate from ambiguous observation:
+   * callers may use it only on a control-flow branch that proves no adapter
+   * or provider request could have started.
+   */
+  async failBeforeDispatch(input: {
+    admission: ExecutionAdmission;
+    userId: string;
+    error: string;
+  }): Promise<ExecutionAdmissionRow> {
+    const observed = normalizeExecutionObservation({
+      planId: input.admission.plan.id,
+      status: 'failed',
+      output: {},
+      error: input.error,
+    });
+    const safeError = typeof observed['error'] === 'string' ? observed['error'] : null;
+    return withTransaction(async (client) => {
+      const locked = await client.query<ExecutionAdmissionRow & { plan_status: string }>(
+        `SELECT b.*, ep.status AS plan_status
+           FROM execution_admission_barriers b
+           JOIN users u ON u.id = b.user_id
+           JOIN execution_plans ep ON ep.id = b.execution_plan_id
+             AND ep.decision_id = b.decision_id AND ep.action_id = b.action_id
+          WHERE b.id = $1 AND b.user_id = $2 AND b.execution_plan_id = $3
+          FOR UPDATE OF b, u, ep`,
+        [input.admission.barrier.id, input.userId, input.admission.plan.id],
+      );
+      const barrier = locked.rows[0];
+      if (!barrier) throw new Error('Execution admission is unavailable for pre-dispatch failure.');
+      if (barrier.status === 'failed' && barrier.plan_status === 'failed' &&
+          canonicalJson(barrier.observed_result) === canonicalJson(observed)) {
+        return barrier;
+      }
+      if (barrier.status !== 'in_progress' || barrier.plan_status !== 'running') {
+        throw new Error('Execution admission has already left its pre-dispatch state.');
+      }
+
+      await client.query(
+        `INSERT INTO execution_results
+           (plan_id, success, outputs, error, rollback_available, completed_at,
+            evidence_schema_version)
+         VALUES ($1, false, '{}'::JSONB, $2, false, now(), 1)
+         ON CONFLICT (plan_id) DO NOTHING`,
+        [input.admission.plan.id, safeError],
+      );
+      const result = await client.query<{
+        success: boolean;
+        outputs: Record<string, unknown>;
+        error: string | null;
+        rollback_available: boolean;
+      }>('SELECT success, outputs, error, rollback_available FROM execution_results WHERE plan_id = $1',
+        [input.admission.plan.id]);
+      const persisted = result.rows[0];
+      if (!persisted || persisted.success || canonicalJson(persisted.outputs) !== canonicalJson({}) ||
+          persisted.error !== safeError || persisted.rollback_available) {
+        throw new Error('Execution result conflicts with pre-dispatch no-effect truth.');
+      }
+      const plan = await client.query(
+        `UPDATE execution_plans SET status = 'failed', updated_at = now()
+          WHERE id = $1 AND status = 'running' RETURNING id`,
+        [input.admission.plan.id],
+      );
+      if (!plan.rows[0]) throw new Error('Execution plan could not record pre-dispatch failure.');
+      const terminal = await client.query<ExecutionAdmissionRow>(
+        `UPDATE execution_admission_barriers
+            SET status = 'failed', observed_result = $3::JSONB, updated_at = now()
+          WHERE id = $1 AND user_id = $2 AND status = 'in_progress'
+          RETURNING *`,
+        [input.admission.barrier.id, input.userId, JSON.stringify(observed)],
+      );
+      if (!terminal.rows[0]) throw new Error('Execution admission could not record pre-dispatch failure.');
+      return terminal.rows[0];
+    });
   },
 
   async observeTerminal(input: ObserveExecutionInput): Promise<ExecutionAdmissionRow> {
@@ -428,7 +530,7 @@ export const executionAdmissionRepository = {
           input.result['status'] !== input.status)) {
       throw new Error('Execution observation does not match its terminal status.');
     }
-    const observed = normalizeExecutionRecord(input.result);
+    const observed = normalizeExecutionObservation(input.result);
     const result = await query<ExecutionAdmissionRow>(
       `UPDATE execution_admission_barriers
        SET status = $3, observed_result = $4::JSONB, updated_at = now()

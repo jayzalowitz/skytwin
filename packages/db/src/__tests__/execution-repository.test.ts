@@ -176,6 +176,25 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(targets[0]!.adapterUsed).toBeNull();
     expect(targets[0]!.payload).toEqual({ reversible: false, irreversibleReason: 'sent' });
   });
+
+  it('preserves a bounded dynamic adapter name but redacts credential-shaped text', async () => {
+    const occurredAt = new Date();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ref_id: 'action-plugin', payload: {}, occurred_at: occurredAt,
+        execution_plan_id: 'plan-plugin', adapter_used: 'local-plugin-v2' }], rowCount: 1,
+    });
+    await expect(executionRepository.getRollbackTargetsByServer({
+      serverId: 'server-1', userId: 'user-1', since: new Date(),
+    })).resolves.toMatchObject([{ adapterUsed: 'local-plugin-v2' }]);
+
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ref_id: 'action-secret', payload: {}, occurred_at: occurredAt,
+        execution_plan_id: 'plan-secret', adapter_used: 'ya29.adapter-secret' }], rowCount: 1,
+    });
+    await expect(executionRepository.getRollbackTargetsByServer({
+      serverId: 'server-1', userId: 'user-1', since: new Date(),
+    })).resolves.toMatchObject([{ adapterUsed: '[redacted:credential]' }]);
+  });
 });
 
 describe('executionRepository.finalizeAdmittedPlan', () => {
@@ -251,7 +270,7 @@ describe('executionRepository execution evidence boundary', () => {
     expect(persisted).not.toContain(secret);
     expect(persisted).not.toContain('?access_token=');
     expect(persisted).not.toContain('echoed');
-    expect(persisted).toContain('[redacted:credential]');
+    expect(persisted).toContain('[redacted:unapproved-evidence]');
     expect(persisted).toContain('[redacted:execution-error]');
   });
 });

@@ -1,5 +1,13 @@
 import { query, withTransaction } from '../connection.js';
-import { normalizeExecutionError, normalizeExecutionRecord } from '@skytwin/shared-types';
+import {
+  normalizeAdapterOutput,
+  normalizeExecutionError,
+  normalizeExecutionEventPayload,
+  normalizeExecutionEventType,
+  normalizeExecutionIdentifier,
+  normalizeExecutionPlanSteps,
+  normalizeMemoryActionAdapterName,
+} from '@skytwin/shared-types';
 import type { ExecutionEventRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
 
 function canonicalJson(value: unknown): string {
@@ -11,6 +19,27 @@ function canonicalJson(value: unknown): string {
       .join(',')}}`;
   }
   return JSON.stringify(value) ?? 'undefined';
+}
+
+function normalizeResultRow(row: ExecutionResultRow): ExecutionResultRow {
+  return {
+    ...row,
+    outputs: normalizeAdapterOutput(row.outputs),
+    error: row.error ? normalizeExecutionError(row.error) : null,
+  };
+}
+
+function normalizeEventRow(row: ExecutionEventRow): ExecutionEventRow {
+  return {
+    ...row,
+    step_id: row.step_id ? normalizeExecutionIdentifier(row.step_id) : null,
+    event_type: normalizeExecutionEventType(row.event_type),
+    payload: normalizeExecutionEventPayload(row.payload),
+  };
+}
+
+function normalizePlanRow(row: ExecutionPlanRow): ExecutionPlanRow {
+  return { ...row, steps: normalizeExecutionPlanSteps(row.steps) };
 }
 
 /**
@@ -102,17 +131,17 @@ export const executionRepository = {
   async createPlan(input: CreateExecutionPlanInput): Promise<ExecutionPlanRow> {
     return withTransaction(async (client) => {
       const insertResult = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, $3, $4, 1)
          RETURNING *`,
         [
           input.decisionId || null,
           input.actionId || null,
           input.status ?? 'pending',
-          JSON.stringify(input.steps ?? []),
+          JSON.stringify(normalizeExecutionPlanSteps(input.steps ?? [])),
         ],
       );
-      const plan = insertResult.rows[0]!;
+      const plan = normalizePlanRow(insertResult.rows[0]!);
 
       if (input.decisionId) {
         // Link the matching outcome to this plan. "Latest plan wins" —
@@ -164,11 +193,12 @@ export const executionRepository = {
   async createResult(
     input: CreateExecutionResultInput,
   ): Promise<ExecutionResultRow> {
-    const outputs = normalizeExecutionRecord(input.outputs ?? {});
+    const outputs = normalizeAdapterOutput(input.outputs ?? {});
     const error = input.error ? normalizeExecutionError(input.error) : null;
     const result = await query<ExecutionResultRow>(
-      `INSERT INTO execution_results (plan_id, success, outputs, error, rollback_available, completed_at)
-       VALUES ($1, $2, $3, $4, $5, now())
+      `INSERT INTO execution_results (plan_id, success, outputs, error, rollback_available, completed_at,
+                                      evidence_schema_version)
+       VALUES ($1, $2, $3, $4, $5, now(), 1)
        RETURNING *`,
       [
         input.planId,
@@ -189,7 +219,7 @@ export const executionRepository = {
    */
   async finalizeAdmittedPlan(input: FinalizeAdmittedExecutionInput): Promise<ExecutionPlanRow> {
     return withTransaction(async (client) => {
-      const outputs = normalizeExecutionRecord(input.outputs ?? {});
+      const outputs = normalizeAdapterOutput(input.outputs ?? {});
       const error = input.error ? normalizeExecutionError(input.error) : null;
       const locked = await client.query<ExecutionPlanRow>(
         `SELECT ep.* FROM execution_plans ep
@@ -209,8 +239,9 @@ export const executionRepository = {
 
       await client.query(
         `INSERT INTO execution_results
-           (plan_id, success, outputs, error, rollback_available, completed_at)
-         VALUES ($1, $2, $3::JSONB, $4, $5, now())
+          (plan_id, success, outputs, error, rollback_available, completed_at,
+           evidence_schema_version)
+         VALUES ($1, $2, $3::JSONB, $4, $5, now(), 1)
          ON CONFLICT (plan_id) DO NOTHING`,
         [input.planId, input.success, JSON.stringify(outputs),
           error, input.rollbackAvailable ?? false],
@@ -264,7 +295,7 @@ export const executionRepository = {
       [decisionId],
     );
 
-    const plan = planResult.rows[0];
+    const plan = planResult.rows[0] ? normalizePlanRow(planResult.rows[0]) : undefined;
     if (!plan) return null;
 
     const resultResult = await query<ExecutionResultRow>(
@@ -274,7 +305,7 @@ export const executionRepository = {
 
     return {
       plan,
-      result: resultResult.rows[0] ?? null,
+      result: resultResult.rows[0] ? normalizeResultRow(resultResult.rows[0]) : null,
     };
   },
 
@@ -335,7 +366,7 @@ export const executionRepository = {
       payload: row.payload,
       occurredAt: row.occurred_at,
       executionPlanId: row.execution_plan_id,
-      adapterUsed: row.adapter_used,
+      adapterUsed: normalizeMemoryActionAdapterName(row.adapter_used),
     }));
   },
 
@@ -350,19 +381,24 @@ export const executionRepository = {
       'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY completed_at DESC LIMIT 1',
       [planId],
     );
-    return result.rows[0] ?? null;
+    return result.rows[0] ? normalizeResultRow(result.rows[0]) : null;
   },
 
   async createEvent(input: CreateExecutionEventInput): Promise<ExecutionEventRow> {
-    const payload = normalizeExecutionRecord(input.payload ?? {});
+    const payload = normalizeExecutionEventPayload(input.payload ?? {});
+    const eventType = normalizeExecutionEventType(input.eventType);
+    const stepId = input.stepId === undefined ? null : normalizeExecutionIdentifier(input.stepId);
+    if (eventType === 'unknown' || (input.stepId !== undefined && !stepId)) {
+      throw new Error('Execution event identity is malformed.');
+    }
     const result = await query<ExecutionEventRow>(
-      `INSERT INTO execution_events (plan_id, step_id, event_type, payload)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO execution_events (plan_id, step_id, event_type, payload, evidence_schema_version)
+       VALUES ($1, $2, $3, $4, 1)
        RETURNING *`,
       [
         input.planId,
-        input.stepId ?? null,
-        input.eventType,
+        stepId,
+        eventType,
         JSON.stringify(payload),
       ],
     );
@@ -374,6 +410,6 @@ export const executionRepository = {
       'SELECT * FROM execution_events WHERE plan_id = $1 ORDER BY created_at ASC',
       [planId],
     );
-    return result.rows;
+    return result.rows.map(normalizeEventRow);
   },
 };

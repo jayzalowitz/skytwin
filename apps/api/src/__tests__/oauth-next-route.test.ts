@@ -58,6 +58,18 @@ describe('OAuth post-callback next= routing', () => {
     expect(parsed.nextHash).toBeNull();
   });
 
+  it('preserves only a UUID-shaped durable connection generation', () => {
+    const expiresAt = Date.now() + _stateTtlMsForTests;
+    const generation = '11111111-1111-4111-8111-111111111111';
+    const valid = _signStatePayloadForTests(`user-1|cg=${generation}`, expiresAt);
+    const invalid = _signStatePayloadForTests('user-1|cg=not-a-uuid', expiresAt);
+
+    expect(_parseSignedStateForTests(valid).connectionGeneration).toBe(generation);
+    expect(_parseSignedStateForTests(invalid).connectionGeneration).toBeNull();
+    const provider = _signStatePayloadForTests(`new|ng=${generation}`, expiresAt);
+    expect(_parseSignedStateForTests(provider).newUserAuthorizationId).toBe(generation);
+  });
+
   it('state round-trip with an unknown next= value drops nextHash to null (not the unknown value)', () => {
     // Even if a state token somehow lands with `next=evil-site` (rolled
     // back deploy, manual fuzz), the parser must not surface a route the

@@ -28,6 +28,7 @@ export const TABLE_NAMES = {
   explanationRecords: 'explanation_records',
   feedbackEvents: 'feedback_events',
   oauthTokens: 'oauth_tokens',
+  credentialDispatchLeases: 'credential_dispatch_leases',
   connectorConfigs: 'connector_configs',
   behavioralPatterns: 'behavioral_patterns',
   crossDomainTraits: 'cross_domain_traits',

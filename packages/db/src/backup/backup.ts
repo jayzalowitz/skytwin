@@ -18,6 +18,8 @@
  *     a re-auth, not a restore. Exporting encrypted-at-rest tokens whose
  *     envelope key lives in a *different* keystore would export ciphertext the
  *     restore target can't read anyway. Connectors re-authorize on restore.
+ *   - Credential dispatch leases. They are machine-local request-start
+ *     authority tied to exact OAuth row revisions, not portable or resumable.
  *   - Sessions / recovery codes / pairing state — machine-local, not "my data".
  *
  * Reads go through the repository layer and `query` (CLAUDE.md: all DB access

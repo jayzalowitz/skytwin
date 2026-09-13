@@ -1,4 +1,7 @@
 import {
+  normalizeAdapterOutput,
+  normalizeExecutionError,
+  normalizeExecutionPlanSteps,
   snapshotInferenceReceiptExport,
   verifyInferenceReceiptExport,
   type AttestationVerificationInput,
@@ -532,10 +535,10 @@ export const inferenceReceiptRepository = {
       if (!locked.rows[0]) return null;
 
       const inserted = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps)
-         VALUES ($1, $2, 'running', $3::JSONB)
+        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, 'running', $3::JSONB, 1)
          RETURNING *`,
-        [decisionId, selectedAction.id, JSON.stringify(steps)],
+        [decisionId, selectedAction.id, JSON.stringify(normalizeExecutionPlanSteps(steps))],
       );
       const plan = inserted.rows[0];
       if (!plan) throw new Error('Execution plan could not be persisted with its claim');
@@ -609,7 +612,7 @@ export const inferenceReceiptRepository = {
          AND (u.autonomy_settings->>'paused') IS DISTINCT FROM 'true'`,
       [userId, decisionId, planId, JSON.stringify(refreshedPolicySnapshot),
         JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment),
-        JSON.stringify(outcome.policyVerdicts ?? {}), JSON.stringify(steps)],
+        JSON.stringify(outcome.policyVerdicts ?? {}), JSON.stringify(normalizeExecutionPlanSteps(steps))],
     );
     return !!result.rows[0];
   },
@@ -639,6 +642,70 @@ export const inferenceReceiptRepository = {
       [userId, decisionId, status, planId],
     );
     return !!result.rows[0];
+  },
+
+  /** Atomically records a known no-effect failure before router invocation. */
+  async markExecutionFailedBeforeDispatchForDecision(
+    userId: string,
+    decisionId: string,
+    planId: string,
+    error: string,
+  ): Promise<boolean> {
+    const outputs = normalizeAdapterOutput({ status: 'failed' });
+    const safeError = normalizeExecutionError(error);
+    return withTransaction(async (client) => {
+      const authority = await client.query(
+        `SELECT g.decision_id
+           FROM decision_ingest_guards g
+           JOIN users u ON u.id = $1
+           JOIN decisions d ON d.id = g.decision_id AND d.user_id = u.id
+           JOIN execution_plans ep ON ep.id = $3 AND ep.decision_id = g.decision_id
+             AND ep.action_id = g.selected_action_id
+           JOIN decision_outcomes o ON o.id = g.outcome_id
+             AND o.decision_id = g.decision_id AND o.selected_action_id = g.selected_action_id
+             AND o.execution_plan_id = ep.id
+          WHERE g.decision_id = $2 AND g.effect_state = 'running'
+            AND g.source_execution_plan_id = ep.id AND ep.status = 'running'
+          FOR UPDATE OF g, u, d, ep, o`,
+        [userId, decisionId, planId],
+      );
+      if (!authority.rows[0]) return false;
+      await client.query(
+        `INSERT INTO execution_results
+           (plan_id, success, outputs, error, rollback_available, completed_at,
+            evidence_schema_version)
+         VALUES ($1, false, $2::JSONB, $3, false, now(), 1)
+         ON CONFLICT (plan_id) DO NOTHING`,
+        [planId, JSON.stringify(outputs), safeError],
+      );
+      const result = await client.query<{
+        success: boolean;
+        outputs: Record<string, unknown>;
+        error: string | null;
+        rollback_available: boolean;
+      }>('SELECT success, outputs, error, rollback_available FROM execution_results WHERE plan_id = $1',
+        [planId]);
+      const persisted = result.rows[0];
+      if (!persisted || persisted.success ||
+          JSON.stringify(persisted.outputs) !== JSON.stringify(outputs) ||
+          persisted.error !== safeError || persisted.rollback_available) {
+        throw new Error('Execution result conflicts with pre-dispatch no-effect truth.');
+      }
+      const plan = await client.query(
+        `UPDATE execution_plans SET status = 'failed', updated_at = now()
+          WHERE id = $1 AND status = 'running' RETURNING id`, [planId]);
+      if (!plan.rows[0]) throw new Error('Execution plan could not record pre-dispatch failure.');
+      const guard = await client.query(
+        `UPDATE decision_ingest_guards
+            SET effect_state = 'failed', source_execution_status = 'failed', updated_at = now()
+          WHERE decision_id = $1 AND effect_state = 'running'
+            AND source_execution_plan_id = $2
+          RETURNING decision_id`,
+        [decisionId, planId],
+      );
+      if (!guard.rows[0]) throw new Error('Execution guard could not record pre-dispatch failure.');
+      return true;
+    });
   },
 
   async markNonEffectForDecision(userId: string, decisionId: string): Promise<boolean> {

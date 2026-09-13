@@ -62,9 +62,9 @@ function unpackEncrypted(packed: Buffer): { iv: Buffer; tag: Buffer; ciphertext:
  * Interface matching the @skytwin/db oauthRepository shape.
  * Defined here to avoid a direct dependency on the DB package from connectors.
  */
-interface OAuthRepositoryLike {
-  getToken(userId: string, provider: string): Promise<{
+interface OAuthCredentialRow {
     id?: string;
+    credential_revision?: string;
     access_token: string | null;
     refresh_token: string | null;
     expires_at: Date;
@@ -74,7 +74,10 @@ interface OAuthRepositoryLike {
     encryption_iv?: Buffer | null;
     encryption_tag?: Buffer | null;
     encryption_key_version?: number;
-  } | null>;
+}
+
+interface OAuthRepositoryLike {
+  getToken(userId: string, provider: string): Promise<OAuthCredentialRow | null>;
   saveToken(
     userId: string,
     provider: string,
@@ -90,30 +93,43 @@ interface OAuthRepositoryLike {
     accessToken: string,
     expiresAt: Date,
   ): Promise<unknown>;
-  /**
-   * Write encrypted columns and clear the plaintext columns.
-   * Optional — callers that do not pass this method will skip lazy migration.
-   */
-  updateEncrypted?: (
-    id: string,
-    input: {
-      encryptedAccessToken: Buffer;
-      encryptedRefreshToken: Buffer;
-      iv: Buffer;
-      tag: Buffer;
-      keyVersion: number;
-    },
-  ) => Promise<void>;
-  /**
-   * Update only the encrypted access token (for refresh-rotation when the
-   * row is stored encrypted). Leaves refresh token alone, NULLs the
-   * plaintext column so subsequent reads cannot fall back to the old value.
-   */
-  updateEncryptedAccessToken?: (
-    id: string,
-    encryptedAccessToken: Buffer,
-    expiresAt: Date,
-  ) => Promise<void>;
+  updateAccessTokenIfCurrent?(input: {
+    id: string;
+    userId: string;
+    provider: string;
+    expectedCredentialRevision: string;
+    accessToken: string;
+    expiresAt: Date;
+  }): Promise<boolean>;
+  /** Prove that this process's cached key still belongs to the live vault generation. */
+  validateVaultSession?(userId: string, vaultGeneration: string): Promise<boolean>;
+  /** Distinguish an uninitialized vault from a durable locked vault. */
+  getVaultAuthorityState?(userId: string): Promise<{
+    state: 'absent' | 'locked' | 'unlocked';
+    generation: string | null;
+    keyVersion: number | null;
+  }>;
+  updateEncryptedIfCurrent?: (input: {
+    id: string;
+    userId: string;
+    provider: string;
+    expectedCredentialRevision: string;
+    expectedVaultGeneration: string;
+    encryptedAccessToken: Buffer;
+    encryptedRefreshToken: Buffer;
+    iv: Buffer;
+    tag: Buffer;
+    keyVersion: number;
+  }) => Promise<boolean>;
+  updateEncryptedAccessTokenIfCurrent?: (input: {
+    id: string;
+    userId: string;
+    provider: string;
+    expectedCredentialRevision: string;
+    expectedVaultGeneration: string;
+    encryptedAccessToken: Buffer;
+    expiresAt: Date;
+  }) => Promise<boolean>;
 }
 
 /**
@@ -123,8 +139,9 @@ interface OAuthRepositoryLike {
  */
 export interface KeyCacheLike {
   get(userId: string): Buffer | null;
+  getGeneration(userId: string): string | null;
   has(userId: string): boolean;
-  set(userId: string, key: Buffer): void;
+  set(userId: string, key: Buffer, generation?: string | null): void;
 }
 
 /**
@@ -224,14 +241,32 @@ export class DbTokenStore implements OAuthTokenStore {
     const row = await this.repo.getToken(userId, provider);
     if (!row) return null;
 
-    const key = this.keyCache?.get(userId) ?? null;
+    return this.resolveTokenRow(userId, provider, row);
+  }
 
-    // Case 1: encrypted columns present AND vault is unlocked → decrypt
-    if (
-      row.encrypted_access_token &&
-      row.encrypted_refresh_token &&
-      key !== null
-    ) {
+  private async resolveTokenRow(
+    userId: string,
+    provider: string,
+    row: OAuthCredentialRow,
+    options: { lazyMigrate?: boolean } = {},
+  ): Promise<OAuthTokenSet | null> {
+
+    const key = this.keyCache?.get(userId) ?? null;
+    const vaultGeneration = this.keyCache?.getGeneration(userId) ?? null;
+    const vaultAuthority = this.repo.getVaultAuthorityState
+      ? await this.repo.getVaultAuthorityState(userId)
+      : null;
+    const vaultSessionValid = vaultAuthority?.state === 'unlocked' &&
+      vaultAuthority.generation === vaultGeneration && key !== null;
+
+    // Any encrypted representation is authoritative. Never fall through to
+    // leftover plaintext when the vault is locked or a partially migrated row
+    // is missing one encrypted half; that would silently downgrade the vault.
+    if (row.encrypted_access_token || row.encrypted_refresh_token) {
+      if (!row.encrypted_access_token || !row.encrypted_refresh_token ||
+          key === null || vaultGeneration === null || !vaultSessionValid) {
+        throw new Error('credentials unavailable; please unlock or repair the credential vault');
+      }
       const { iv: atIv, tag: atTag, ciphertext: atCipher } = unpackEncrypted(row.encrypted_access_token);
       const { iv: rtIv, tag: rtTag, ciphertext: rtCipher } = unpackEncrypted(row.encrypted_refresh_token);
 
@@ -280,17 +315,25 @@ export class DbTokenStore implements OAuthTokenStore {
 
     // Case 2: plaintext present AND vault is unlocked → lazy migrate
     if (row.access_token && row.refresh_token && key !== null) {
-      if (row.id && this.repo.updateEncrypted) {
+      if (vaultGeneration === null || !vaultSessionValid) {
+        throw new Error('credentials unavailable; cached credential-vault authority is stale');
+      }
+      if (options.lazyMigrate !== false && row.id && row.credential_revision &&
+          this.repo.updateEncryptedIfCurrent) {
         // Fire-and-forget migration — do not block the caller. Failures are
         // surfaced via createLogger.warn AND a counter so downstream
         // observability can detect a stuck migration loop.
         const rowId = row.id;
         this._lazyMigrate(
           rowId,
+          userId,
+          provider,
+          row.credential_revision,
           row.access_token,
           row.refresh_token,
-          row.encryption_key_version ?? 1,
+          vaultAuthority?.keyVersion ?? row.encryption_key_version ?? 1,
           key,
+          vaultGeneration,
         ).catch((err: unknown) => {
           lazyMigrationFailureCounter.count += 1;
           log.warn('Lazy credential-vault migration failed', {
@@ -312,6 +355,9 @@ export class DbTokenStore implements OAuthTokenStore {
 
     // Case 3: plaintext present AND vault is NOT unlocked → backward compat
     if (row.access_token && row.refresh_token) {
+      if (vaultAuthority && vaultAuthority.state !== 'absent') {
+        throw new Error('credentials unavailable; please unlock the credential vault');
+      }
       return {
         accessToken: row.access_token,
         refreshToken: row.refresh_token,
@@ -321,12 +367,7 @@ export class DbTokenStore implements OAuthTokenStore {
       };
     }
 
-    // Case 4: encrypted but vault locked
-    if (row.encrypted_access_token) {
-      throw new Error('credentials unavailable; please unlock the credential vault to continue');
-    }
-
-    // Case 5: no usable token
+    // Case 4: no usable token
     return null;
   }
 
@@ -336,12 +377,16 @@ export class DbTokenStore implements OAuthTokenStore {
    */
   private async _lazyMigrate(
     id: string,
+    userId: string,
+    provider: string,
+    expectedCredentialRevision: string,
     accessToken: string,
     refreshToken: string,
     keyVersion: number,
     key: Buffer,
-  ): Promise<void> {
-    if (!this.repo.updateEncrypted) return;
+    vaultGeneration: string,
+  ): Promise<boolean> {
+    if (!this.repo.updateEncryptedIfCurrent) return false;
 
     const atPacked = packEncrypted(encrypt(accessToken, key));
     const rtPacked = packEncrypted(encrypt(refreshToken, key));
@@ -350,7 +395,12 @@ export class DbTokenStore implements OAuthTokenStore {
     // the IV/tag are now embedded in each packed column. We pass small sentinel
     // buffers to satisfy NOT NULL constraints if any; the DB columns are NULL-able
     // per the migration, so we just use the sentinel value NULL via Buffer(0).
-    await this.repo.updateEncrypted(id, {
+    return this.repo.updateEncryptedIfCurrent({
+      id,
+      userId,
+      provider,
+      expectedCredentialRevision,
+      expectedVaultGeneration: vaultGeneration,
       encryptedAccessToken: atPacked,
       encryptedRefreshToken: rtPacked,
       // These legacy fields exist on the schema but are superseded by the
@@ -389,16 +439,57 @@ export class DbTokenStore implements OAuthTokenStore {
       throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
     }
 
-    const existing = await this.getToken(userId, provider);
+    const sourceRow = await this.repo.getToken(userId, provider);
     signal?.throwIfAborted();
-    if (!existing) {
+    if (!sourceRow) {
       throw new Error(`No OAuth token found for user ${userId} provider ${provider}`);
     }
+    // Do not launch the normal fire-and-forget lazy migration here. A refresh
+    // must own the exact source revision and atomically persist the refreshed
+    // access token with the encrypted refresh token under that same revision.
+    const existing = await this.resolveTokenRow(userId, provider, sourceRow, { lazyMigrate: false });
+    signal?.throwIfAborted();
+    if (!existing) throw new Error('Stored OAuth credential is unusable.');
 
-    // If not expired yet (with 60s buffer), return as-is
+    // If not expired yet (with 60s buffer), return only after a legacy
+    // plaintext row under an initialized vault has been durably migrated.
+    // Signal connectors call this method directly, so relying on getToken's
+    // fire-and-forget migration would otherwise leave live grants plaintext.
     const bufferMs = 60 * 1000;
     if (existing.expiresAt.getTime() > Date.now() + bufferMs) {
+      if (!sourceRow.encrypted_access_token && !sourceRow.encrypted_refresh_token &&
+          this.keyCache?.get(userId)) {
+        const key = this.keyCache.get(userId);
+        const vaultGeneration = this.keyCache.getGeneration(userId);
+        const vaultAuthority = this.repo.getVaultAuthorityState
+          ? await this.repo.getVaultAuthorityState(userId)
+          : null;
+        if (key === null || vaultGeneration === null || !sourceRow.id ||
+            !sourceRow.credential_revision || !sourceRow.access_token ||
+            !sourceRow.refresh_token || vaultAuthority?.state !== 'unlocked' ||
+            vaultAuthority.generation !== vaultGeneration ||
+            vaultAuthority.keyVersion === null) {
+          throw new Error('credentials unavailable; credential-vault authority changed during migration');
+        }
+        const migrated = await this._lazyMigrate(
+          sourceRow.id,
+          userId,
+          provider,
+          sourceRow.credential_revision,
+          sourceRow.access_token,
+          sourceRow.refresh_token,
+          vaultAuthority.keyVersion,
+          key,
+          vaultGeneration,
+        );
+        if (!migrated) {
+          throw new Error('OAuth credential changed while vault migration was in flight.');
+        }
+      }
       return existing;
+    }
+    if (!sourceRow.id || !sourceRow.credential_revision) {
+      throw new Error('OAuth credential is missing required revision identity.');
     }
 
     // Token is expired or about to expire — refresh it via the RIGHT
@@ -445,26 +536,65 @@ export class DbTokenStore implements OAuthTokenStore {
     // write the new token to the ENCRYPTED column — otherwise getToken
     // would keep returning the old, still-encrypted access token while
     // the new plaintext sat unread.
-    const row = await this.repo.getToken(userId, provider);
-    signal?.throwIfAborted();
     const key = this.keyCache?.get(userId) ?? null;
-    if (
-      row?.id
-      && row.encrypted_access_token
-      && key !== null
-      && this.repo.updateEncryptedAccessToken
-    ) {
+    const vaultGeneration = this.keyCache?.getGeneration(userId) ?? null;
+    let persisted = false;
+    if (sourceRow.encrypted_access_token || sourceRow.encrypted_refresh_token) {
+      if (!sourceRow.encrypted_access_token || !sourceRow.encrypted_refresh_token ||
+          key === null || vaultGeneration === null ||
+          !this.repo.validateVaultSession ||
+          !await this.repo.validateVaultSession(userId, vaultGeneration) ||
+          !this.repo.updateEncryptedAccessTokenIfCurrent) {
+        throw new Error('credentials unavailable; credential-vault authority changed during refresh');
+      }
       const packed = packEncrypted(encrypt(refreshed.accessToken, key));
       signal?.throwIfAborted();
-      await this.repo.updateEncryptedAccessToken(row.id, packed, refreshed.expiresAt);
-    } else {
-      signal?.throwIfAborted();
-      await this.repo.updateAccessToken(
+      persisted = await this.repo.updateEncryptedAccessTokenIfCurrent({
+        id: sourceRow.id,
         userId,
         provider,
-        refreshed.accessToken,
-        refreshed.expiresAt,
-      );
+        expectedCredentialRevision: sourceRow.credential_revision,
+        expectedVaultGeneration: vaultGeneration,
+        encryptedAccessToken: packed,
+        expiresAt: refreshed.expiresAt,
+      });
+    } else if (key !== null) {
+      const vaultAuthority = this.repo.getVaultAuthorityState
+        ? await this.repo.getVaultAuthorityState(userId)
+        : null;
+      if (vaultGeneration === null || vaultAuthority?.state !== 'unlocked' ||
+          vaultAuthority.generation !== vaultGeneration ||
+          vaultAuthority.keyVersion === null ||
+          !this.repo.updateEncryptedIfCurrent) {
+        throw new Error('credentials unavailable; credential-vault authority changed during refresh');
+      }
+      persisted = await this.repo.updateEncryptedIfCurrent({
+        id: sourceRow.id,
+        userId,
+        provider,
+        expectedCredentialRevision: sourceRow.credential_revision,
+        expectedVaultGeneration: vaultGeneration,
+        encryptedAccessToken: packEncrypted(encrypt(refreshed.accessToken, key)),
+        encryptedRefreshToken: packEncrypted(encrypt(existing.refreshToken, key)),
+        iv: Buffer.alloc(0),
+        tag: Buffer.alloc(0),
+        keyVersion: vaultAuthority.keyVersion,
+      });
+    } else {
+      if (!this.repo.updateAccessTokenIfCurrent) {
+        throw new Error('OAuth repository does not support revision-fenced refresh persistence.');
+      }
+      persisted = await this.repo.updateAccessTokenIfCurrent({
+        id: sourceRow.id,
+        userId,
+        provider,
+        expectedCredentialRevision: sourceRow.credential_revision,
+        accessToken: refreshed.accessToken,
+        expiresAt: refreshed.expiresAt,
+      });
+    }
+    if (!persisted) {
+      throw new Error('OAuth credential changed while refresh was in flight; refusing stale refresh result.');
     }
 
     // TODO(outlook-connector): persist a ROTATED Microsoft refresh token.

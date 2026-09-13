@@ -165,15 +165,33 @@ All notable changes to SkyTwin will be documented in this file.
   receipt-era policy, refreshed dispatch policy, canonical action/outcome, and
   execution-plan steps with the exact expected snapshots. A tampered field can
   no longer ride an otherwise valid owner/plan linkage into an adapter call.
-- Adapter results pass through one recursive allowlist-oriented evidence
-  boundary before admission, execution-result, event, memory, or SSE ledgers
-  persist them. Credential-shaped keys, authorization headers, URLs, arbitrary
-  response bodies, nested secrets, and free-form remote errors are redacted
-  while terminal status and one-shot reconciliation identity remain intact.
-- Approval and event execution resolve OAuth credentials only after the final
-  authority check and immediately before the sole adapter call. Google refresh
-  writes now compare-and-swap the exact token-row access and refresh grant, so
-  a late refresh cannot resurrect a disconnect or overwrite a newer rotation.
+- Durable adapter evidence now uses typed, per-context schemas rather than a
+  recursive key-name allowlist. Only enumerated routing and terminal facts
+  survive; primitive or nested content under generic result containers becomes
+  one bounded marker. Memory report and direct scalar columns are separately
+  bounded and normalized, and DB and SSE views use the same safe event payload.
+- Direct Gmail and Calendar dispatch now obtains its OAuth credential through a
+  durable request-start lease after routing and plan construction. The lease
+  binds the exact owner, account row and revision, action, decision, plan, and
+  admission/receipt authority while persisting no token or bearer capability.
+  Disconnect, reconnect, refresh, and rotation serialize on the credential row:
+  whichever wins first fences the other, and active/ambiguous requests produce
+  a typed pending response instead of a false completed disconnect. Plan replay
+  is refused and API admission snapshots never carry raw OAuth credentials.
+  Once request-start is committed, elapsed
+  time changes an overdue lease to durable ambiguity; it never authorizes a
+  retry or lets credential mutation treat a possibly-started request as absent.
+  Once a vault exists, direct execution migrates a complete legacy plaintext
+  grant under the exact live vault generation and key version before returning
+  or refreshing it. Vault initialization also fences provider responses that
+  began before initialization from writing a late plaintext token.
+- Account-unknown Google callbacks now use a one-shot, DB-timestamped pending
+  authority. After verified identity resolution, the claim is bound to the
+  exact owner generation and a provider/account tombstone before token storage.
+  Disconnect and deletion therefore fence callbacks paused before persistence
+  without a provider-global switch that could disrupt other users. Tombstones
+  contain only keyed digests and both pending rows and tombstones are managed by
+  short CockroachDB TTLs; user purge leaves no raw email in fence records.
 
 ## [0.6.102.0] - 2026-08-27
 

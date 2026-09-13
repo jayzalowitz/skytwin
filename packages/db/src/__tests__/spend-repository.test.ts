@@ -18,6 +18,7 @@ const { spendRepository } = await import('../repositories/spend-repository.js');
 describe('spendRepository — registry_id wiring (#323)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockClientQuery.mockImplementation((...args: unknown[]) => mockQuery(...args));
   });
 
   describe('create', () => {
@@ -30,7 +31,8 @@ describe('spendRepository — registry_id wiring (#323)', () => {
         estimatedCostCents: 50,
         registryId: 'gmail-mcp',
       });
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      const [sql, params] = mockClientQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('INSERT INTO spend_records'))!;
       expect(sql).toContain('INSERT INTO spend_records');
       expect(sql).toContain('registry_id');
       expect(params).toEqual(['u-1', 'a-1', 'd-1', 50, null, 'gmail-mcp']);
@@ -44,7 +46,8 @@ describe('spendRepository — registry_id wiring (#323)', () => {
         decisionId: 'd-2',
         estimatedCostCents: 100,
       });
-      const [, params] = mockQuery.mock.calls[0]!;
+      const [, params] = mockClientQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('INSERT INTO spend_records'))!;
       expect(params).toEqual(['u-2', 'a-2', 'd-2', 100, null, null]);
     });
   });
@@ -119,8 +122,10 @@ describe('spendRepository — registry_id wiring (#323)', () => {
   describe('checkAndRecordSpend', () => {
     it('writes registry_id when provided alongside the atomic insert', async () => {
       mockClientQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'u-1' }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ total: '100' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ id: 'r-3' }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ id: 'r-3' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       const result = await spendRepository.checkAndRecordSpend(
         {
@@ -135,10 +140,10 @@ describe('spendRepository — registry_id wiring (#323)', () => {
 
       expect(result.allowed).toBe(true);
       // First call reads current total (no registry param)
-      const [, readParams] = mockClientQuery.mock.calls[0]!;
+      const [, readParams] = mockClientQuery.mock.calls[1]!;
       expect(readParams).toEqual(['u-1', 24]);
       // Second call inserts including the registry_id
-      const [insertSql, insertParams] = mockClientQuery.mock.calls[1]!;
+      const [insertSql, insertParams] = mockClientQuery.mock.calls[2]!;
       expect(insertSql).toContain('INSERT INTO spend_records');
       expect(insertSql).toContain('registry_id');
       expect(insertParams).toEqual(['u-1', 'a-1', 'd-1', 50, null, 'slack-mcp']);
@@ -146,15 +151,17 @@ describe('spendRepository — registry_id wiring (#323)', () => {
 
     it('writes NULL registry_id on the atomic insert when not provided', async () => {
       mockClientQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'u-2' }], rowCount: 1 })
         .mockResolvedValueOnce({ rows: [{ total: '0' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [{ id: 'r-4' }], rowCount: 1 });
+        .mockResolvedValueOnce({ rows: [{ id: 'r-4' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       await spendRepository.checkAndRecordSpend(
         { userId: 'u-2', actionId: 'a-2', decisionId: 'd-2', estimatedCostCents: 100 },
         1000,
       );
 
-      const [, insertParams] = mockClientQuery.mock.calls[1]!;
+      const [, insertParams] = mockClientQuery.mock.calls[2]!;
       expect(insertParams).toEqual(['u-2', 'a-2', 'd-2', 100, null, null]);
     });
   });

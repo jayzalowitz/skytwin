@@ -8,7 +8,16 @@ import type {
   ExecutionEvent,
   RollbackResult,
 } from '@skytwin/shared-types';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import type {
+  CredentialDispatchInput,
+  CredentialProvider,
+  IronClawAdapter,
+} from '@skytwin/ironclaw-adapter';
+import {
+  ActionHandlerRegistry,
+  DirectExecutionAdapter,
+  EmailActionHandler,
+} from '@skytwin/ironclaw-adapter';
 import {
   ExecutionRouter,
   AmbiguousExecutionError,
@@ -65,6 +74,12 @@ function makeRiskAssessment(overrides: Partial<RiskAssessment> = {}): RiskAssess
   };
 }
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function createMockAdapter(name: string, skills?: Set<string>): IronClawAdapter {
   const skillSet = skills;
   return {
@@ -93,7 +108,7 @@ function createMockAdapter(name: string, skills?: Set<string>): IronClawAdapter 
     async execute(plan: ExecutionPlan): Promise<ExecutionResult> {
       return {
         planId: plan.id,
-        status: 'completed',
+        status: 'completed' as const,
         startedAt: new Date(),
         completedAt: new Date(),
         output: { adapter_used: name },
@@ -325,6 +340,68 @@ describe('ExecutionRouter', () => {
       expect(result.output?.['fallbacks_attempted']).toBe(0);
     });
 
+    it('replaces every adapter-supplied reserved output fact with router authority', async () => {
+      const hostile = createMockAdapter('ironclaw');
+      hostile.execute = vi.fn(async (plan): Promise<ExecutionResult> => ({
+        planId: plan.id,
+        status: 'completed' as const,
+        startedAt: new Date(),
+        completedAt: new Date(),
+        output: {
+          provider_result: 'retained until the persistence normalizer',
+          adapter_used: 'hostile',
+          routing_decision: 'hostile',
+          fallbacks_attempted: 99,
+          fallback_skipped_reason: 'previous adapter returned non-completed status, fallback unsafe',
+          adapter_plan_id: 'hostile-plan',
+          status: 'failed',
+          success: false,
+          rollback_available: true,
+        },
+      }));
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+
+      const result = await router.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1');
+
+      expect(result.output).toMatchObject({
+        provider_result: 'retained until the persistence normalizer',
+        adapter_used: 'ironclaw',
+        routing_decision: 'ironclaw',
+        fallbacks_attempted: 0,
+        adapter_plan_id: result.planId,
+        status: 'completed',
+        success: true,
+        rollback_available: false,
+      });
+      expect(result.output).not.toHaveProperty('fallback_skipped_reason');
+    });
+
+    it('replaces reserved output facts in the non-stream adapter streaming fallback', async () => {
+      const hostile = createMockAdapter('ironclaw');
+      hostile.execute = vi.fn(async (plan): Promise<ExecutionResult> => ({
+        planId: plan.id,
+        status: 'completed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        output: {
+          adapter_used: 'forged', adapter_plan_id: 'forged-plan',
+          status: 'failed', success: false, rollback_available: true,
+        },
+      }));
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+
+      const events: ExecutionEvent[] = [];
+      for await (const event of router.executeWithRoutingStreaming(
+        makeAction(), makeRiskAssessment(), 'user-1',
+      )) events.push(event);
+
+      expect(events).toHaveLength(1);
+      expect(events[0]!.payload).toMatchObject({
+        adapter_used: 'ironclaw', adapter_plan_id: 'ironclaw_plan_1',
+        status: 'completed', success: true, rollback_available: false,
+      });
+    });
+
     it('does not fall back after any adapter-originated exception', async () => {
       registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       const fallback = createMockAdapter('direct');
@@ -337,6 +414,37 @@ describe('ExecutionRouter', () => {
       await expect(router.executeWithRouting(action, risk, 'user-1'))
         .rejects.toThrow('ambiguous');
       expect(fallbackExecute).not.toHaveBeenCalled();
+    });
+
+    it('rejects terminal truth for a different built plan without fallback', async () => {
+      const hostile = createMockAdapter('ironclaw');
+      hostile.execute = vi.fn(async () => ({
+        planId: 'opaque-different-plan',
+        status: 'completed' as const,
+        startedAt: new Date(),
+        completedAt: new Date(),
+      }));
+      const fallback = createMockAdapter('direct');
+      const fallbackExecute = vi.spyOn(fallback, 'execute');
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      registry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+
+      await expect(router.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+        .rejects.toBeInstanceOf(AmbiguousExecutionError);
+      expect(fallbackExecute).not.toHaveBeenCalled();
+    });
+
+    it('rejects an adapter-built id that differs from the admitted plan before execute', async () => {
+      const hostile = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(hostile, 'execute');
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      const action = makeAction({
+        parameters: { executionPlanId: 'trusted-admitted-plan' },
+      });
+
+      await expect(router.executeWithRouting(action, makeRiskAssessment(), 'user-1'))
+        .rejects.toBeInstanceOf(AmbiguousExecutionError);
+      expect(execute).not.toHaveBeenCalled();
     });
 
     it.each(['pending', 'running'] as const)(
@@ -424,6 +532,73 @@ describe('ExecutionRouter', () => {
           // consume
         }
       })()).rejects.toThrow('without an explicit terminal event');
+    });
+
+    it('rejects a streaming event for a different built plan before publishing it', async () => {
+      const hostile = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      hostile.executeStreaming = async function* () {
+        yield { planId: 'opaque-different-plan', eventType: 'plan_completed', timestamp: new Date() };
+      };
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      const published: ExecutionEvent[] = [];
+
+      const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
+      await expect((async () => {
+        for await (const event of stream) published.push(event);
+      })()).rejects.toThrow('different execution plan');
+      expect(published).toEqual([]);
+    });
+
+    it('rejects a token-shaped adapter step id before publishing it', async () => {
+      const hostile = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      hostile.executeStreaming = async function* (plan) {
+        yield {
+          planId: plan.id,
+          stepId: 'ya29.adapter-secret',
+          eventType: 'step_started',
+          timestamp: new Date(),
+        };
+      };
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      const published: ExecutionEvent[] = [];
+
+      const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
+      await expect((async () => {
+        for await (const event of stream) published.push(event);
+      })()).rejects.toThrow('unbound step identity');
+      expect(published).toEqual([]);
+    });
+
+    it('rejects a valid later-step identity used for the current step', async () => {
+      const hostile = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      hostile.buildPlan = vi.fn(async (action: CandidateAction) => ({
+        id: 'ironclaw_plan_1', decisionId: action.decisionId, action,
+        steps: [1, 2].map((order) => ({
+          id: `adapter-step-${order}`, order, type: action.actionType,
+          description: action.description, parameters: action.parameters, timeout: 30_000,
+        })),
+        rollbackSteps: [], createdAt: new Date(),
+      }));
+      hostile.executeStreaming = async function* (plan) {
+        yield {
+          planId: plan.id,
+          stepId: plan.steps[1]!.id,
+          eventType: 'step_started',
+          timestamp: new Date(),
+        };
+      };
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+
+      const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
+      await expect((async () => {
+        for await (const _event of stream) { /* consume */ }
+      })()).rejects.toThrow('unbound step identity');
     });
 
     it('rejects conflicting terminal events without publishing either terminal result', async () => {
@@ -588,15 +763,15 @@ describe('ExecutionRouter', () => {
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
-      expect(out.result.message).toContain('boom');
+      expect(out.result.message).toBe('The recorded adapter rollback outcome is unavailable.');
       expect(out.adapterUsed).toBe('ironclaw');
     });
 
-    it('reports the adapter\'s own failure (e.g. no rollback steps) verbatim', async () => {
+    it('does not expose the adapter\'s own rollback failure text', async () => {
       const ironclaw = createMockAdapter('ironclaw');
       vi.spyOn(ironclaw, 'rollback').mockResolvedValue({
         success: false,
-        message: 'This action is not reversible. No rollback steps were defined.',
+        message: 'ya29.adapter-secret',
       });
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
 
@@ -604,7 +779,177 @@ describe('ExecutionRouter', () => {
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
-      expect(out.result.message).toContain('not reversible');
+      expect(out.result.message).toBe('The recorded adapter could not confirm rollback completion.');
+      expect(out.result.message).not.toContain('ya29.adapter-secret');
+    });
+  });
+
+  describe('credential request-start boundary', () => {
+    class PausingDirectAdapter extends DirectExecutionAdapter {
+      constructor(
+        handlers: ActionHandlerRegistry,
+        private readonly reached: { resolve: () => void },
+        private readonly release: Promise<void>,
+      ) {
+        super(handlers);
+      }
+
+      override async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
+        const plan = await super.buildPlan(action);
+        this.reached.resolve();
+        await this.release;
+        return plan;
+      }
+    }
+
+    function setupCredentialDispatch(initial: string) {
+      let state: string | null = initial;
+      let authorityRevision = 'authority-revision-1';
+      let policyAuthorityRevision = 'policy-revision-1';
+      const starts: CredentialDispatchInput[] = [];
+      const provider: CredentialProvider = {
+        async getAccessToken() {
+          return state
+            ? { success: true as const, accessToken: state }
+            : { success: false as const, error: 'disconnected' };
+        },
+        async startDispatch(input) {
+          starts.push(input);
+          return state && input.authorityRevision === authorityRevision &&
+              input.policyAuthorityRevision === policyAuthorityRevision
+            ? {
+                success: true as const,
+                accessToken: state,
+                capability: 'lease-capability',
+                leaseGeneration: 'lease-generation',
+                executionPlanId: input.executionPlanId,
+                userId: input.userId,
+              }
+            : { success: false as const, error: state ? 'authority changed' : 'disconnected' };
+        },
+        async terminalizeDispatch() { return true; },
+      };
+      return {
+        provider,
+        starts,
+        setState: (next: string | null) => { state = next; },
+        setAuthority: (next: string) => { authorityRevision = next; },
+        setPolicyAuthority: (next: string) => { policyAuthorityRevision = next; },
+      };
+    }
+
+    function directRouter(provider: CredentialProvider, reached: { resolve: () => void }, release: Promise<void>) {
+      const handlers = new ActionHandlerRegistry();
+      handlers.register(new EmailActionHandler(provider));
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register(
+        'direct',
+        new PausingDirectAdapter(handlers, reached, release),
+        DIRECT_TRUST_PROFILE,
+        new Set(['archive_email']),
+      );
+      return new ExecutionRouter(localRegistry);
+    }
+
+    it('binds the trusted owner and current token after an awaited build, then sends once', async () => {
+      const buildReached = deferred();
+      const buildRelease = deferred();
+      const credentials = setupCredentialDispatch('old-token');
+      const localRouter = directRouter(credentials.provider, buildReached, buildRelease.promise);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+      const action = makeAction({
+        id: '11111111-1111-4111-8111-111111111111',
+        decisionId: '22222222-2222-4222-8222-222222222222',
+        parameters: {
+          emailId: 'message-1',
+          executionPlanId: '33333333-3333-4333-8333-333333333333',
+          credentialAuthorityRevision: 'authority-revision-1',
+          credentialPolicyAuthorityRevision: 'policy-revision-1',
+          userId: 'spoofed-owner',
+          accessToken: 'stale-token',
+        },
+      });
+      const risk = makeRiskAssessment({ actionId: action.id });
+
+      const resultPromise = localRouter.executeWithRouting(action, risk, 'trusted-owner');
+      await buildReached.promise;
+      credentials.setState('new-token');
+      buildRelease.resolve();
+      await expect(resultPromise).resolves.toMatchObject({ status: 'completed' });
+
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]![1]).toMatchObject({
+        headers: { Authorization: 'Bearer new-token' },
+      });
+      expect(credentials.starts[0]).toMatchObject({
+        userId: 'trusted-owner',
+        actionId: action.id,
+        decisionId: action.decisionId,
+        executionPlanId: '33333333-3333-4333-8333-333333333333',
+      });
+      expect(action.parameters).toMatchObject({ userId: 'spoofed-owner', accessToken: 'stale-token' });
+      fetchSpy.mockRestore();
+    });
+
+    it.each(['trust', 'policy'] as const)(
+      'loses a %s-authority change during build without issuing an adapter request',
+      async (kind) => {
+        const buildReached = deferred();
+        const buildRelease = deferred();
+        const credentials = setupCredentialDispatch('old-token');
+        const localRouter = directRouter(credentials.provider, buildReached, buildRelease.promise);
+        const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+        const action = makeAction({
+          id: '11111111-1111-4111-8111-111111111111',
+          decisionId: '22222222-2222-4222-8222-222222222222',
+          parameters: {
+            emailId: 'message-1',
+            executionPlanId: '33333333-3333-4333-8333-333333333333',
+            credentialAuthorityRevision: 'authority-revision-1',
+            credentialPolicyAuthorityRevision: 'policy-revision-1',
+          },
+        });
+        const risk = makeRiskAssessment({ actionId: action.id });
+        const resultPromise = localRouter.executeWithRouting(action, risk, 'trusted-owner');
+        await buildReached.promise;
+        if (kind === 'trust') credentials.setAuthority('authority-revision-2');
+        else credentials.setPolicyAuthority('policy-revision-2');
+        buildRelease.resolve();
+
+        await expect(resultPromise).rejects.toThrow('authority changed');
+        expect(fetchSpy).not.toHaveBeenCalled();
+        fetchSpy.mockRestore();
+      },
+    );
+
+    it('loses a streaming disconnect race without issuing an adapter request', async () => {
+      const buildReached = deferred();
+      const buildRelease = deferred();
+      const credentials = setupCredentialDispatch('old-token');
+      const localRouter = directRouter(credentials.provider, buildReached, buildRelease.promise);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+      const action = makeAction({
+        id: '11111111-1111-4111-8111-111111111111',
+        decisionId: '22222222-2222-4222-8222-222222222222',
+        parameters: {
+          emailId: 'message-1',
+          executionPlanId: '33333333-3333-4333-8333-333333333333',
+          credentialAuthorityRevision: 'authority-revision-1',
+          credentialPolicyAuthorityRevision: 'policy-revision-1',
+        },
+      });
+      const risk = makeRiskAssessment({ actionId: action.id });
+      const collect = (async () => {
+        for await (const _event of localRouter.executeWithRoutingStreaming(
+          action, risk, 'trusted-owner',
+        )) { /* consume */ }
+      })();
+      await buildReached.promise;
+      credentials.setState(null);
+      buildRelease.resolve();
+      await expect(collect).rejects.toThrow('disconnected');
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
     });
   });
 });

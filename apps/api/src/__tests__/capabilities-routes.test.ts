@@ -11,6 +11,7 @@ const {
   mockMcpServerRepository,
   mockAppSuggestionRepository,
   mockExecutionRepository,
+  mockOauthRepository,
   mockGetExecutionRouter,
   mockRouterRollback,
   mockQuery,
@@ -36,6 +37,7 @@ const {
   mockExecutionRepository: {
     getRollbackTargetsByServer: vi.fn(),
   },
+  mockOauthRepository: { deleteById: vi.fn() },
   mockGetExecutionRouter: vi.fn(),
   mockRouterRollback: vi.fn(),
   mockQuery: vi.fn(),
@@ -45,6 +47,8 @@ vi.mock('@skytwin/db', () => ({
   mcpServerRepository: mockMcpServerRepository,
   appSuggestionRepository: mockAppSuggestionRepository,
   executionRepository: mockExecutionRepository,
+  oauthRepository: mockOauthRepository,
+  CredentialDispatchConflictError: class CredentialDispatchConflictError extends Error {},
   query: mockQuery,
 }));
 
@@ -396,7 +400,7 @@ describe('Capabilities API routes', () => {
       expect(mockMcpServerRepository.softDelete).not.toHaveBeenCalled();
     });
 
-    it('calls query to delete OAuth token when revokeOauth is true and token exists', async () => {
+    it('uses the fenced repository delete when revokeOauth is true and token exists', async () => {
       const tokenId = 'token-uuid-1111-1111-1111-111111111111';
       const server = makeMcpServer({ oauth_token_id: tokenId });
       mockMcpServerRepository.getById.mockResolvedValue(server);
@@ -410,12 +414,7 @@ describe('Capabilities API routes', () => {
         { revokeOauth: true },
       );
 
-      const callArgs = mockQuery.mock.calls;
-      const oauthDeleteCall = callArgs.find(
-        (args: unknown[]) =>
-          typeof args[0] === 'string' && (args[0] as string).includes('DELETE FROM oauth_tokens'),
-      );
-      expect(oauthDeleteCall).toBeDefined();
+      expect(mockOauthRepository.deleteById).toHaveBeenCalledWith(USER_ID, tokenId);
     });
 
     it('writes a capability_provenance_nodes row on successful uninstall', async () => {
@@ -548,7 +547,7 @@ describe('Capabilities API routes', () => {
       ]);
       // Adapter reports failure (e.g. no rollback steps / adapter gone).
       mockRouterRollback.mockResolvedValue({
-        result: { success: false, message: 'This action is not reversible.' },
+        result: { success: false, message: 'ya29.adapter-secret' },
         adapterUsed: 'openclaw',
         noAdapter: true,
       });
@@ -568,7 +567,11 @@ describe('Capabilities API routes', () => {
       expect(body.undone).toHaveLength(1);
       expect(body.undone[0]!.planId).toBe('plan-fail');
       expect(body.undone[0]!.result).toBe('rollback_failed');
-      expect(body.undone[0]!.message).toContain('not reversible');
+      expect(body.undone[0]!.message).toBe(
+        'The recorded execution adapter is unavailable for rollback.',
+      );
+      expect(JSON.stringify({ response: res.body, writes: mockQuery.mock.calls }))
+        .not.toContain('ya29.adapter-secret');
     });
 
     it('returns 403 when requester is not the owner', async () => {
