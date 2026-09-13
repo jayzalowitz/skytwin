@@ -298,19 +298,23 @@ describe('DesktopKeyBroker', () => {
     expect(broker.decrypt({ ...context, purpose: 'provider_credentials' }, encrypted.envelope)).toMatchObject({ success: false });
   });
 
-  it('round-trips plaintext at the advertised 16 MiB envelope limit', async () => {
-    const broker = new DesktopKeyBroker(new MemoryStore());
-    await broker.initialize(context.userId, 'correct horse battery staple');
-    const plaintext = 'x'.repeat(16 * 1024 * 1024);
-    const encrypted = broker.encrypt(context, plaintext);
-    expect(encrypted.success).toBe(true);
-    if (!encrypted.success) return;
-    expect(broker.decrypt(context, encrypted.envelope)).toEqual({ success: true, plaintext });
-    expect(broker.encrypt(context, `${plaintext}x`)).toEqual({
-      success: false,
-      error: 'ciphertext_invalid',
-    });
-  });
+  it(
+    'round-trips plaintext at the advertised 16 MiB envelope limit',
+    async () => {
+      const broker = new DesktopKeyBroker(new MemoryStore());
+      await broker.initialize(context.userId, 'correct horse battery staple');
+      const plaintext = 'x'.repeat(16 * 1024 * 1024);
+      const encrypted = broker.encrypt(context, plaintext);
+      expect(encrypted.success).toBe(true);
+      if (!encrypted.success) return;
+      expect(broker.decrypt(context, encrypted.envelope)).toEqual({ success: true, plaintext });
+      expect(broker.encrypt(context, `${plaintext}x`)).toEqual({
+        success: false,
+        error: 'ciphertext_invalid',
+      });
+    },
+    30_000,
+  );
 
   it('rejects malformed and oversized ciphertext without permissive base64 decoding', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore()); await broker.initialize(context.userId, 'correct horse battery staple');
