@@ -111,6 +111,8 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Build workspace dependencies for focused E2E imports
+        run: pnpm build --concurrency=1
       - name: Start disposable CockroachDB
         run: |
           # The image's shell entrypoint rejects wildcard listen addresses even
