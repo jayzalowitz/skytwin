@@ -47,6 +47,9 @@ function modePolicyError(
   mode: ReasoningMode,
   providers: readonly ProviderEntry[],
 ): string | null {
+  if (mode === 'verified_private_cloud') {
+    return 'Verified private cloud requires a verifier-owned provider adapter';
+  }
   if (providers.length === 0) return null;
   try {
     providersForReasoningMode(mode, providers);

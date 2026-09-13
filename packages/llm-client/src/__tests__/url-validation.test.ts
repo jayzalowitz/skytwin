@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
   fetchCustomProviderUrl,
   validateBaseUrl,
+  validateBaseUrlWithDns,
 } from '../url-validation.js';
 
 afterEach(() => {
@@ -222,6 +223,39 @@ describe('validateBaseUrl', () => {
       expect(() => validateBaseUrl('https://100.63.0.1', 'openai')).not.toThrow();
       expect(() => validateBaseUrl('https://100.128.0.1', 'openai')).not.toThrow();
     });
+  });
+});
+
+describe('validateBaseUrlWithDns', () => {
+  it('rejects public and mixed answers for localhost at save time', async () => {
+    const publicLookup = vi.fn().mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+    ]);
+    const mixedLookup = vi.fn().mockResolvedValue([
+      { address: '127.0.0.1', family: 4 },
+      { address: '93.184.216.34', family: 4 },
+    ]);
+
+    await expect(validateBaseUrlWithDns(
+      'http://localhost:11434', 'ollama', publicLookup,
+    )).rejects.toThrow('must resolve only to a loopback address');
+    await expect(validateBaseUrlWithDns(
+      'http://localhost:11434', 'ollama', mixedLookup,
+    )).rejects.toThrow('must resolve only to a loopback address');
+  });
+
+  it('accepts localhost only when every save-time answer is loopback', async () => {
+    const loopbackLookup = vi.fn().mockResolvedValue([
+      { address: '127.0.0.1', family: 4 },
+      { address: '::1', family: 6 },
+    ]);
+
+    await expect(validateBaseUrlWithDns(
+      'http://localhost:11434', 'ollama', loopbackLookup,
+    )).resolves.toBeUndefined();
+    expect(loopbackLookup).toHaveBeenCalledWith(
+      'localhost', { all: true, verbatim: true },
+    );
   });
 });
 

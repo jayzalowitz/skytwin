@@ -115,4 +115,40 @@ describe.skipIf(!E2E)('AI provider reasoning mutations on CockroachDB', () => {
     );
     expect(stored.rows).toEqual([{ mode: 'bring_your_own_provider' }]);
   });
+
+  it('binds an omitted Ollama credential to the literal runtime default', async () => {
+    const userId = await createUser();
+    await aiProviderRepository.replaceAllWithReasoningMode(
+      userId,
+      'on_device',
+      [{ provider: 'ollama', apiKey: 'stored-secret', model: 'qwen', priority: 0 }],
+    );
+
+    await aiProviderRepository.replaceAllWithReasoningMode(
+      userId,
+      'on_device',
+      [{
+        provider: 'ollama', model: 'qwen', baseUrl: 'http://127.0.0.1:11434', priority: 0,
+      }],
+    );
+    await aiProviderRepository.replaceAllWithReasoningMode(
+      userId,
+      'on_device',
+      [{ provider: 'ollama', model: 'qwen', priority: 0 }],
+    );
+
+    await expect(aiProviderRepository.replaceAllWithReasoningMode(
+      userId,
+      'on_device',
+      [{ provider: 'ollama', model: 'qwen', baseUrl: 'http://localhost:11434', priority: 0 }],
+    )).rejects.toMatchObject({ code: 'provider_credential_endpoint_changed' });
+
+    const state = await pool.query<{ api_key: string; base_url: string | null }>(
+      `SELECT api_key, base_url
+         FROM ai_provider_settings
+        WHERE user_id = $1 AND provider = 'ollama'`,
+      [userId],
+    );
+    expect(state.rows).toEqual([{ api_key: 'stored-secret', base_url: null }]);
+  });
 });
