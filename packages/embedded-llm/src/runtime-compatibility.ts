@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 /** Extract the numeric llama.cpp build from its official `--version` output. */
 export function parseLlamaCppBuild(output: string): number | null {
@@ -17,12 +17,15 @@ export function isLlamaCppBuildCompatible(
   minimumBuild: number,
 ): boolean {
   try {
-    const output = execFileSync(binaryPath, ["--version"], {
+    const result = spawnSync(binaryPath, ["--version"], {
       encoding: "utf8",
       timeout: 5_000,
       stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 1024 * 1024,
     });
-    const build = parseLlamaCppBuild(output);
+    if (result.error || result.status !== 0 || result.signal !== null)
+      return false;
+    const build = parseLlamaCppBuild(`${result.stdout}\n${result.stderr}`);
     return build !== null && build >= minimumBuild;
   } catch {
     return false;
