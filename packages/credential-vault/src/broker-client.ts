@@ -4,6 +4,8 @@ export type VaultBrokerRole = 'api' | 'worker';
 export type VaultBrokerPurpose = 'oauth' | 'provider_credentials' | 'mcp_config' | 'federation' | 'oauth_transient' | 'connector_cursor' | 'dxt_database';
 export type VaultBrokerFailure = 'vault_uninitialized' | 'vault_locked' | 'vault_broker_unavailable' | 'key_version_unavailable' | 'ciphertext_invalid' | 'grant_expired' | 'grant_revoked' | 'capability_mismatch';
 export interface VaultBrokerContext { userId: string; purpose: VaultBrokerPurpose; table: string; column: string; rowId: string }
+/** Exact API-session authority required for every user-originated secret operation. */
+export interface VaultBrokerSessionAuthority { sessionId: string }
 export interface VaultBrokerEnvelope { magic: 'skytwin-envelope'; version: 2; algorithm: 'aes-256-gcm'; ownerKind: 'user'; purpose: VaultBrokerPurpose; keyVersion: number; iv: string; tag: string; ciphertext: string }
 export type VaultBrokerResult =
   | { success: true; state: 'locked' | 'unlocked' | 'uninitialized' }
@@ -142,11 +144,12 @@ export class VaultBrokerClient {
     if (!this.validUserId(userId)) {
       return { success: false, error: 'vault_broker_unavailable' };
     }
-    // A standalone API that has never received an Electron capability has no
-    // broker authority or parent-held key to clean up. Preserve account-delete
-    // availability there; once a capability has existed, loss is ambiguous and
-    // must remain a retryable failure.
-    if (!this.capability && !this.capabilityIssued) return { success: true };
+    // Absence of a capability cannot prove that this machine has no native
+    // wrapper or remembered passphrase. The database purge is committed, but
+    // callers must report native cleanup as pending until Electron acknowledges.
+    if (!this.capability && !this.capabilityIssued) {
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
     if (!this.capability || this.role !== 'api') {
       return { success: false, error: 'vault_broker_unavailable' };
     }
@@ -185,16 +188,41 @@ export class VaultBrokerClient {
     return { success: true };
   }
 
-  async state(context: VaultBrokerContext): Promise<VaultBrokerResult> { return this.request('state', context); }
-  async encrypt(context: VaultBrokerContext, plaintext: string): Promise<VaultBrokerResult> { return this.request('encrypt', context, { plaintext }); }
-  async decrypt(context: VaultBrokerContext, envelope: VaultBrokerEnvelope): Promise<VaultBrokerResult> { return this.request('decrypt', context, { envelope }); }
+  async state(context: VaultBrokerContext, authority?: VaultBrokerSessionAuthority): Promise<VaultBrokerResult> { return this.request('state', context, {}, authority); }
+  async encrypt(context: VaultBrokerContext, plaintext: string, authority?: VaultBrokerSessionAuthority): Promise<VaultBrokerResult> { return this.request('encrypt', context, { plaintext }, authority); }
+  async decrypt(context: VaultBrokerContext, envelope: VaultBrokerEnvelope, authority?: VaultBrokerSessionAuthority): Promise<VaultBrokerResult> { return this.request('decrypt', context, { envelope }, authority); }
 
-  private async request(operation: 'encrypt' | 'decrypt' | 'state', context: VaultBrokerContext, extra: { plaintext?: string; envelope?: VaultBrokerEnvelope } = {}): Promise<VaultBrokerResult> {
+  private async request(
+    operation: 'encrypt' | 'decrypt' | 'state',
+    context: VaultBrokerContext,
+    extra: { plaintext?: string; envelope?: VaultBrokerEnvelope } = {},
+    authority?: VaultBrokerSessionAuthority,
+  ): Promise<VaultBrokerResult> {
     if (!this.capability || !this.grantedOwners.has(context.userId)) return { success: false, error: 'vault_broker_unavailable' };
+    let requestAuthority: { role: 'api'; authentication: 'session'; sessionId: string }
+      | { role: 'worker'; authentication: 'service' };
+    if (this.role === 'api') {
+      if (!authority || !this.validId(authority.sessionId)) {
+        return { success: false, error: 'vault_broker_unavailable' };
+      }
+      const grant = this.sessionGrants.get(context.userId)?.get(authority.sessionId);
+      if (!grant || grant.expiresAt <= Date.now()) {
+        this.removeSessionGrant(context.userId, authority.sessionId);
+        return { success: false, error: 'vault_broker_unavailable' };
+      }
+      requestAuthority = {
+        role: 'api', authentication: 'session', sessionId: authority.sessionId,
+      };
+    } else if (this.role === 'worker') {
+      requestAuthority = { role: 'worker', authentication: 'service' };
+    } else {
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
     const requestId = randomBytes(16).toString('hex');
     return this.exchange(requestId, context.userId, {
       type: 'skytwin:vault:request', requestId, capability: this.capability.toString('base64'),
-      generation: this.generations.get(context.userId) ?? 0, operation, context, ...extra,
+      generation: this.generations.get(context.userId) ?? 0, operation, context,
+      ...requestAuthority, ...extra,
     }, operation, context);
   }
 

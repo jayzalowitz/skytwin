@@ -39,4 +39,5 @@ export type {
   VaultBrokerPurpose,
   VaultBrokerResult,
   VaultBrokerRole,
+  VaultBrokerSessionAuthority,
 } from './broker-client.js';

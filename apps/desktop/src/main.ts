@@ -53,12 +53,6 @@ const deviceKeyStore: DeviceWrapperStore = {
   delete: (key) => electronDeviceKeyStore.delete(key),
   keys: () => Object.keys(electronDeviceKeyStore.store),
 };
-const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
-  deviceProtection: safeStorage,
-  deviceStore: deviceKeyStore,
-});
-const serviceManager = new ServiceManager(keyBroker);
-
 // Secure-device-backed "remember my vault passphrase" store (#401). Persists
 // safeStorage ciphertext only when a reviewed OS credential backend is active;
 // Linux `basic_text` is rejected. See passphrase-vault.ts.
@@ -77,6 +71,12 @@ const passphraseVault = new PassphraseVault(
   safeStorage as unknown as SafeStoragePort,
   passphraseStore,
 );
+const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
+  deviceProtection: safeStorage,
+  deviceStore: deviceKeyStore,
+  ownerSecretStore: { delete: (userId) => passphraseVault.forget(userId) },
+});
+const serviceManager = new ServiceManager(keyBroker);
 
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;

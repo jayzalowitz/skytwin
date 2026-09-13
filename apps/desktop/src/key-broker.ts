@@ -110,6 +110,11 @@ export interface DeviceWrapperStore {
   keys(): string[];
 }
 
+/** A separate native secret that must be erased with the owner's source keys. */
+export interface OwnerSecretStore {
+  delete(userId: string): void;
+}
+
 export interface DeviceProtectionPort extends SecureStorageBackendPort {
   encryptString(value: string): Buffer;
   decryptString(value: Buffer): string;
@@ -121,6 +126,9 @@ export interface BrokerRequest {
   capability: string;
   generation: number;
   operation: 'encrypt' | 'decrypt' | 'state';
+  role: BrokerRole;
+  authentication: 'session' | 'service';
+  sessionId?: string;
   context: BrokerContext;
   plaintext?: string;
   envelope?: BrokerEnvelope;
@@ -212,6 +220,8 @@ interface Binding {
   revokedSessions: Map<string, number>;
   inFlight: Map<string, number>;
   lockAcks: Map<string, PendingLockAck>;
+  messageListener?: (message: unknown) => void;
+  exitListener?: () => void;
 }
 
 interface StoredDeviceWrapper {
@@ -447,6 +457,7 @@ export class DesktopKeyBroker {
   private readonly platform: NodeJS.Platform;
   private readonly deviceProtection?: DeviceProtectionPort;
   private readonly deviceStore?: DeviceWrapperStore;
+  private readonly ownerSecretStore?: OwnerSecretStore;
 
   constructor(
     private readonly store: WrappedKeyStore,
@@ -458,6 +469,7 @@ export class DesktopKeyBroker {
       platform?: NodeJS.Platform;
       deviceProtection?: DeviceProtectionPort;
       deviceStore?: DeviceWrapperStore;
+      ownerSecretStore?: OwnerSecretStore;
     } = {},
   ) {
     this.now = options.now ?? Date.now;
@@ -467,6 +479,7 @@ export class DesktopKeyBroker {
     this.platform = options.platform ?? process.platform;
     this.deviceProtection = options.deviceProtection;
     this.deviceStore = options.deviceStore;
+    this.ownerSecretStore = options.ownerSecretStore;
   }
 
   async initialize(
@@ -755,6 +768,7 @@ export class DesktopKeyBroker {
       try {
         userIds = await this.store.listPendingDeletions();
       } catch {
+        await this.revokeAllChildAuthority();
         return { success: false, error: 'vault_broker_unavailable' };
       }
       if (userIds.length === 0) return { success: true, removed };
@@ -766,6 +780,25 @@ export class DesktopKeyBroker {
         removed += 1;
       }
     }
+  }
+
+  /**
+   * Remove every child capability and root key when the durable deletion set
+   * cannot be read. Without an authoritative set, retaining any owner would let
+   * a worker snapshot outlive an account deletion.
+   */
+  async revokeAllChildAuthority(): Promise<boolean> {
+    const userIds = new Set<string>([
+      ...this.unlocked.keys(),
+      ...this.generations.keys(),
+    ]);
+    for (const binding of this.children.values()) {
+      for (const userId of binding.users.keys()) userIds.add(userId);
+      for (const session of binding.apiSessions.values()) userIds.add(session.userId);
+    }
+    const results = await Promise.all([...userIds].map(userId => this.lock(userId)));
+    for (const [child, binding] of [...this.children]) this.releaseChild(child, binding);
+    return results.every(result => result.success);
   }
 
   async lock(userId: string): Promise<VaultLockResult> {
@@ -844,10 +877,7 @@ export class DesktopKeyBroker {
   attachChild(child: ChildProcess, role: BrokerRole): void {
     const capability = randomBytes(KEY_BYTES);
     const previous = this.children.get(child);
-    if (previous) {
-      previous.capability.fill(0);
-      for (const ack of previous.lockAcks.values()) ack.finish();
-    }
+    if (previous) this.releaseChild(child, previous);
     const binding: Binding = {
       role,
       capability,
@@ -867,7 +897,7 @@ export class DesktopKeyBroker {
       this.children.delete(child);
       return;
     }
-    child.on('message', message => {
+    const messageListener = (message: unknown) => {
       void this.handle(child, message).catch(() => {
         this.safeSend(child, {
           type: 'skytwin:vault:response',
@@ -877,8 +907,12 @@ export class DesktopKeyBroker {
           result: { success: false, error: 'vault_broker_unavailable' },
         });
       });
-    });
-    child.once('exit', () => this.releaseChild(child, binding));
+    };
+    const exitListener = () => this.releaseChild(child, binding);
+    binding.messageListener = messageListener;
+    binding.exitListener = exitListener;
+    child.on('message', messageListener);
+    child.once('exit', exitListener);
   }
 
   private async handle(child: ChildProcess, raw: unknown): Promise<void> {
@@ -1082,6 +1116,7 @@ export class DesktopKeyBroker {
       const requestId = raw['requestId'];
       const context = raw['context'];
       const requestGeneration = raw['generation'];
+      const requestSessionId = raw['sessionId'];
       const deny = (error: VaultFailureCode) => this.safeSend(child, {
         type: 'skytwin:vault:response',
         requestId,
@@ -1089,9 +1124,20 @@ export class DesktopKeyBroker {
         generation: validContext(context) ? this.generation(context.userId) : -1,
         result: { success: false, error },
       });
+      const authorityValid = validContext(context) && (
+        binding.role === 'api'
+          ? raw['role'] === 'api'
+            && raw['authentication'] === 'session'
+            && validId(requestSessionId, 128)
+            && this.hasActiveApiSession(binding, context.userId, requestSessionId)
+          : raw['role'] === 'worker'
+            && raw['authentication'] === 'service'
+            && requestSessionId === undefined
+            && this.hasActiveGrant(binding, context.userId)
+      );
       if (
         !validContext(context)
-        || !this.hasActiveGrant(binding, context.userId)
+        || !authorityValid
         || (this.lockDepth.get(context.userId) ?? 0) > 0
       ) {
         deny('vault_broker_unavailable');
@@ -1306,6 +1352,18 @@ export class DesktopKeyBroker {
     return true;
   }
 
+  private hasActiveApiSession(binding: Binding, userId: string, sessionId: string): boolean {
+    if (this.purgedOwners.has(userId)) return false;
+    const session = binding.apiSessions.get(sessionId);
+    if (!session || session.userId !== userId) return false;
+    if (session.expiresAt <= this.now()) {
+      binding.apiSessions.delete(sessionId);
+      this.refreshApiOwner(binding, userId);
+      return false;
+    }
+    return true;
+  }
+
   private refreshApiOwner(binding: Binding, userId: string): void {
     let latest = 0;
     for (const [sessionId, session] of binding.apiSessions) {
@@ -1330,7 +1388,8 @@ export class DesktopKeyBroker {
     }
     const locked = await this.lock(userId);
     const deviceRemoved = this.tryDeleteDevice(userId);
-    if (!locked.success || !deviceRemoved) return false;
+    const ownerSecretRemoved = this.tryDeleteOwnerSecret(userId);
+    if (!locked.success || !deviceRemoved || !ownerSecretRemoved) return false;
     try {
       await this.store.completeDeletion?.(userId);
       return true;
@@ -1438,6 +1497,8 @@ export class DesktopKeyBroker {
   private releaseChild(child: ChildProcess, expected: Binding): void {
     if (this.children.get(child) !== expected) return;
     this.children.delete(child);
+    if (expected.messageListener) child.removeListener('message', expected.messageListener);
+    if (expected.exitListener) child.removeListener('exit', expected.exitListener);
     expected.capability.fill(0);
     for (const ack of [...expected.lockAcks.values()]) ack.finish();
   }
@@ -1458,6 +1519,16 @@ export class DesktopKeyBroker {
     if (!this.deviceStore) return true;
     try {
       this.deviceStore.delete(userId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private tryDeleteOwnerSecret(userId: string): boolean {
+    if (!this.ownerSecretStore) return true;
+    try {
+      this.ownerSecretStore.delete(userId);
       return true;
     } catch {
       return false;

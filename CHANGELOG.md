@@ -38,9 +38,17 @@ All notable changes to SkyTwin will be documented in this file.
   of being surfaced as an uninitialized vault.
 - **Broker grants now preserve exact session and deletion lifecycles.** Each API
   session keeps its own database-proven expiry and revocation timer; one session
-  cannot borrow another session's deadline. Account deletion records durable
-  local cleanup in the purge transaction, fences paused API and worker grants,
-  drains child work, and removes in-memory and device-wrapped key material.
+  cannot borrow another session's deadline or authorize another session's
+  request. Account deletion records durable local cleanup in the purge
+  transaction, fences paused API and worker grants, drains child work, and
+  removes in-memory keys, device-wrapped keys, and remembered passphrases.
+- **Deletion cleanup now gates service authority and reports pending work
+  truthfully.** Startup retries an unreadable or incomplete cleanup ledger before
+  accepting an external API or attaching a managed one, revokes existing child
+  capabilities when the authoritative ledger cannot be read, and periodically
+  reconciles deletions initiated through an external development API. A
+  brokerless API reports committed database deletion with native cleanup pending
+  instead of manufacturing a cleanup acknowledgement.
 - **Transient worker discovery failures preserve the prior authority snapshot.**
   Only a complete database result replaces the worker owner set, while connector
   startup failures no longer masquerade as authoritative owner removal.

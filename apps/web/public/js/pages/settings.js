@@ -1352,17 +1352,19 @@ async function deleteMyData(userId, btn) {
       `/api/users/${encodeURIComponent(userId)}?confirm=delete-my-data`,
       { method: 'DELETE' },
     );
-    if (!res.ok) {
+    const body = await res.json().catch(() => null);
+    if (!res.ok || body?.deleted !== true) {
       let detail = `HTTP ${res.status}`;
-      try { detail = (await res.json())?.message || detail; } catch { /* leave default */ }
+      detail = body?.message || detail;
       throw new Error(detail);
     }
-    const body = await res.json();
     const totalRows = body?.totalRows ?? 0;
     if (status) {
-      status.textContent =
-        `Done — removed ${totalRows} row${totalRows === 1 ? '' : 's'} ` +
-        'across your account. Reloading to a fresh sign-in…';
+      status.textContent = body?.cleanupPending === true
+        ? `Account data removed (${totalRows} row${totalRows === 1 ? '' : 's'}). ` +
+          'Finishing native secret cleanup in the desktop…'
+        : `Done — removed ${totalRows} row${totalRows === 1 ? '' : 's'} ` +
+          'across your account. Reloading to a fresh sign-in…';
     }
     // Clear every localStorage key we own — the user's session and
     // KEY_ONBOARDED would otherwise hint at a state that no longer

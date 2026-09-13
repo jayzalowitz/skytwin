@@ -33,6 +33,7 @@ interface ManagedProcess {
 const MAX_RESTARTS = 5;
 const FAILURE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const HEALTH_CHECK_INTERVAL_MS = 5000;
+const DELETION_CLEANUP_RETRY_MS = 1000;
 const RESTART_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
 
 /**
@@ -90,8 +91,19 @@ export class ServiceManager {
   private onExtractProgress: ((progress: ExtractionProgress) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
+  private deletionCleanupInFlight: Promise<boolean> | null = null;
+  private deletionBoundaryFailed = false;
+  private readonly deletionCleanupRetryMs: number;
+  private readonly forkProcess: typeof fork;
 
-  constructor(private readonly keyBroker: DesktopKeyBroker | null = null) {}
+  constructor(
+    private readonly keyBroker: DesktopKeyBroker | null = null,
+    options: { deletionCleanupRetryMs?: number; forkProcess?: typeof fork } = {},
+  ) {
+    this.deletionCleanupRetryMs = options.deletionCleanupRetryMs
+      ?? DELETION_CLEANUP_RETRY_MS;
+    this.forkProcess = options.forkProcess ?? fork;
+  }
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
     this.onStatusChange = handler;
@@ -492,6 +504,14 @@ export class ServiceManager {
   private async runHealthCheck(): Promise<void> {
     if (this.paused) return;
 
+    // External development APIs cannot send native purge IPC. Poll the durable
+    // intent ledger so their truthful `cleanupPending` response still converges
+    // while the desktop remains open. A read failure also revokes child broker
+    // authority inside DesktopKeyBroker before this returns false.
+    if (!await this.reconcileDeletionBoundary()) {
+      console.warn('[vault] Pending owner cleanup remains fail closed; retrying');
+    }
+
     // Check API health
     if (this.api.status === 'running') {
       try {
@@ -581,13 +601,19 @@ export class ServiceManager {
     this.api.status = 'starting';
     this.emitStatus();
 
-    // A user purge and native device-store deletion cannot share a database
-    // transaction. Drain durable deletion intents before using an external API
-    // or issuing a capability to a fresh managed process, including restarts.
-    const pendingDeletionCleanup = await this.keyBroker?.reconcilePendingDeletions();
-    if (pendingDeletionCleanup && !pendingDeletionCleanup.success) {
-      console.warn('[vault] Pending owner cleanup remains fail closed');
+    // A user purge and native secret deletion cannot share a database
+    // transaction. Do not recognize an external API or start/attach a managed
+    // one until the authoritative intent ledger is readable and fully drained.
+    // Retrying here also covers API-only crashes while a worker remains alive.
+    while (!this.paused && !await this.reconcileDeletionBoundary()) {
+      this.api.status = 'error';
+      this.emitStatus();
+      console.warn('[vault] Pending owner cleanup remains fail closed; retrying before API start');
+      await new Promise(resolve => setTimeout(resolve, this.deletionCleanupRetryMs));
+      this.api.status = 'starting';
+      this.emitStatus();
     }
+    if (this.paused) return;
 
     if (await this.detectExternalApi()) {
       console.log('[api] External API detected on :3100 — using existing instance, not forking.');
@@ -611,7 +637,7 @@ export class ServiceManager {
       : join(base, 'apps', 'api', 'dist', 'index.js');
 
     try {
-      this.api.process = fork(apiEntry, [], {
+      this.api.process = this.forkProcess(apiEntry, [], {
         env: this.getEnv(),
         stdio: 'pipe',
       });
@@ -652,6 +678,34 @@ export class ServiceManager {
     }
   }
 
+  private async reconcileDeletionBoundary(): Promise<boolean> {
+    if (!this.keyBroker) return true;
+    if (this.deletionCleanupInFlight) return await this.deletionCleanupInFlight;
+    this.deletionCleanupInFlight = this.keyBroker.reconcilePendingDeletions()
+      .then(result => {
+        if (!result.success) {
+          this.deletionBoundaryFailed = true;
+          return false;
+        }
+        if (this.deletionBoundaryFailed) {
+          // A ledger-read failure destroyed all prior capabilities. Restore only
+          // empty bindings after reconciliation succeeds; API sessions and the
+          // worker's complete discovery snapshot must grant owners again.
+          if (this.api.process?.connected) this.keyBroker?.attachChild(this.api.process, 'api');
+          if (this.worker.process?.connected) this.keyBroker?.attachChild(this.worker.process, 'worker');
+        }
+        this.deletionBoundaryFailed = false;
+        return true;
+      })
+      .catch(async () => {
+        this.deletionBoundaryFailed = true;
+        await this.keyBroker?.revokeAllChildAuthority().catch(() => false);
+        return false;
+      })
+      .finally(() => { this.deletionCleanupInFlight = null; });
+    return await this.deletionCleanupInFlight;
+  }
+
   private async startWeb(): Promise<void> {
     this.web.status = 'starting';
     this.emitStatus();
@@ -672,7 +726,7 @@ export class ServiceManager {
       : join(base, 'apps', 'web', 'dist', 'index.js');
 
     try {
-      this.web.process = fork(webEntry, [], {
+      this.web.process = this.forkProcess(webEntry, [], {
         env: { ...this.getEnv(), WEB_PORT: '3200' },
         stdio: 'pipe',
       });
@@ -733,7 +787,7 @@ export class ServiceManager {
       : join(base, 'apps', 'worker', 'dist', 'index.js');
 
     try {
-      this.worker.process = fork(workerEntry, [], {
+      this.worker.process = this.forkProcess(workerEntry, [], {
         env: this.getEnv(),
         stdio: 'pipe',
       });

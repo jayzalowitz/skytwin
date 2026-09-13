@@ -511,14 +511,14 @@ export function createUsersRouter(): Router {
       // removed the optional device wrapper.
       const brokerCleanup = await apiVaultBroker.purgeOwner(targetUserId);
       if (!brokerCleanup.success) {
-        res.status(503).json({
+        res.status(202).json({
           deleted: true,
           userId: targetUserId,
           counts: result.counts,
           totalRows: result.total,
           cleanupPending: true,
-          error: 'vault_broker_unavailable',
-          message: 'User data was deleted; local key cleanup is still pending.',
+          cleanupState: 'pending',
+          message: 'User data was deleted; native secret cleanup is queued for the desktop.',
         });
         return;
       }

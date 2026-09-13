@@ -22,8 +22,14 @@ describe('VaultBrokerClient', () => {
     expect(request).toMatchObject({ type: 'skytwin:vault:grant', role: 'api', authentication: 'session', userId: context.userId, sessionId });
     ipc.emit('message', { type: 'skytwin:vault:response', requestId: request['requestId'], contextUserId: context.userId, generation: 4, result: { success: true, state: 'unlocked' } });
     expect(await grant).toEqual({ success: true });
-    const state = client.state(context);
-    expect(ipc.sent.at(-1)).toMatchObject({ type: 'skytwin:vault:request', generation: 4, operation: 'state' });
+    const sentBeforeUnbound = ipc.sent.length;
+    expect(await client.state(context)).toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(ipc.sent).toHaveLength(sentBeforeUnbound);
+    const state = client.state(context, { sessionId });
+    expect(ipc.sent.at(-1)).toMatchObject({
+      type: 'skytwin:vault:request', generation: 4, operation: 'state',
+      role: 'api', authentication: 'session', sessionId,
+    });
     ipc.emit('message', { type: 'skytwin:vault:response', requestId: ipc.sent.at(-1)!['requestId'], contextUserId: context.userId, generation: 4, result: { success: true, state: 'unlocked' } });
     expect(await state).toEqual({ success: true, state: 'unlocked' });
     client.close();
@@ -36,6 +42,10 @@ describe('VaultBrokerClient', () => {
     ipc.emit('message', { type: 'skytwin:vault:response', requestId: grantMessage['requestId'], contextUserId: 'worker-set', generation: 0, result: { success: true, state: 'locked' } });
     expect(await grant).toEqual({ success: true });
     const pending = client.decrypt(context, { magic: 'skytwin-envelope', version: 2, algorithm: 'aes-256-gcm', ownerKind: 'user', purpose: 'oauth', keyVersion: 1, iv: '', tag: '', ciphertext: '' });
+    expect(ipc.sent.at(-1)).toMatchObject({
+      type: 'skytwin:vault:request', role: 'worker', authentication: 'service',
+    });
+    expect(ipc.sent.at(-1)).not.toHaveProperty('sessionId');
     ipc.emit('message', { type: 'skytwin:vault:lock', lockId: 'lock-1', userId: context.userId, generation: 2 });
     expect(await pending).toEqual({ success: false, error: 'vault_locked' });
     expect(ipc.sent.at(-1)).toMatchObject({ type: 'skytwin:vault:lock-ack', lockId: 'lock-1', userId: context.userId, generation: 2 });
@@ -73,7 +83,7 @@ describe('VaultBrokerClient', () => {
     const grant = client.grantAuthenticatedSession(context.userId, sessionId, new Date(Date.now() + 60_000)), message = ipc.sent.at(-1)!;
     ipc.emit('message', { type: 'skytwin:vault:response', requestId: message['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'locked' } }); await grant;
     ipc.emit('message', { type: 'skytwin:vault:generation', userId: context.userId, generation: 3 });
-    void client.state(context); expect(ipc.sent.at(-1)).toMatchObject({ generation: 3 }); client.close();
+    void client.state(context, { sessionId }); expect(ipc.sent.at(-1)).toMatchObject({ generation: 3 }); client.close();
   });
 
   it('clears local owner authority but retains the bootstrap capability after a transient revoke failure', async () => {
@@ -137,8 +147,14 @@ describe('VaultBrokerClient', () => {
     const revokeMessage = ipc.sent.at(-1)!;
     ipc.emit('message', { type: 'skytwin:vault:response', requestId: revokeMessage['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'unlocked' } });
     await revoke;
-    void client.state(context);
-    expect(ipc.sent.at(-1)).toMatchObject({ type: 'skytwin:vault:request', operation: 'state' });
+    const beforeRevokedRequest = ipc.sent.length;
+    expect(await client.state(context, { sessionId: 'session-a' }))
+      .toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(ipc.sent).toHaveLength(beforeRevokedRequest);
+    void client.state(context, { sessionId: 'session-b' });
+    expect(ipc.sent.at(-1)).toMatchObject({
+      type: 'skytwin:vault:request', operation: 'state', sessionId: 'session-b',
+    });
     client.close();
   });
 
@@ -156,8 +172,14 @@ describe('VaultBrokerClient', () => {
       }
       await vi.advanceTimersByTimeAsync(101);
       expect(ipc.sent.some(message => message['type'] === 'skytwin:vault:revoke' && message['sessionId'] === 'session-short')).toBe(true);
-      void client.state(context);
-      expect(ipc.sent.at(-1)).toMatchObject({ type: 'skytwin:vault:request', operation: 'state' });
+      const beforeExpiredRequest = ipc.sent.length;
+      expect(await client.state(context, { sessionId: 'session-short' }))
+        .toEqual({ success: false, error: 'vault_broker_unavailable' });
+      expect(ipc.sent).toHaveLength(beforeExpiredRequest);
+      void client.state(context, { sessionId: 'session-long' });
+      expect(ipc.sent.at(-1)).toMatchObject({
+        type: 'skytwin:vault:request', operation: 'state', sessionId: 'session-long',
+      });
       client.close();
     } finally {
       vi.useRealTimers();
@@ -180,9 +202,11 @@ describe('VaultBrokerClient', () => {
     client.close();
   });
 
-  it('keeps standalone account deletion available but requires acknowledgement after capability issuance', async () => {
+  it('reports brokerless native cleanup as pending and requires acknowledgement after capability issuance', async () => {
     const standalone = new VaultBrokerClient(new EventEmitter() as FakeIpc, 20);
-    await expect(standalone.purgeOwner(context.userId)).resolves.toEqual({ success: true });
+    await expect(standalone.purgeOwner(context.userId)).resolves.toEqual({
+      success: false, error: 'vault_broker_unavailable',
+    });
     standalone.close();
 
     const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 50);

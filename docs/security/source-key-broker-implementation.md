@@ -28,13 +28,21 @@ authoritative set; connector startup success does not define key ownership.
 
 API grants retain the exact session nonce and database-proven expiry rather than
 collapsing multiple sessions into one owner deadline. Revoking or expiring one
-session preserves any independently valid session. Account deletion commits a
+session preserves any independently valid session, but every API secret request
+also carries its originating nonce and the parent requires that exact grant to
+remain live; a paused request cannot borrow a second session's authority.
+Worker requests use a separate service-authenticated request shape and complete
+database owner snapshot. Account deletion commits a
 content-free cleanup intent in the same transaction as the database purge. The
 parent then fences that owner across API and worker children, drains in-flight
-work, drops the in-memory key, deletes the optional device wrapper, and marks the
-intent complete. Pending intents are replayed before a replacement API child is
-given a capability, so a process exit between database and native-store cleanup
-converges safely.
+work, drops the in-memory key, deletes the optional device wrapper and remembered
+vault passphrase, and marks the intent complete. Pending intents are replayed
+before an external API is accepted or a replacement API child is started and
+given a capability. An unreadable ledger revokes all existing child capabilities
+and locks all cached roots before startup retries. Periodic desktop reconciliation
+also completes cleanup initiated through an external development API. A
+brokerless API truthfully returns `cleanupPending` because capability absence
+cannot prove that native secrets are absent.
 
 Lock and unlock close admission, request a capability-authenticated child
 acknowledgement, and wait for in-flight calls. A child that does not acknowledge

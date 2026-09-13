@@ -256,10 +256,10 @@ describe('DELETE /users/:userId (#376)', () => {
     const { status, body } = await request(
       makeApp(), 'DELETE', `/users/${USER_ID}?confirm=delete-my-data`,
     );
-    expect(status).toBe(503);
+    expect(status).toBe(202);
     expect(body).toMatchObject({
       deleted: true, cleanupPending: true, userId: USER_ID,
-      error: 'vault_broker_unavailable',
+      cleanupState: 'pending',
     });
   });
 
