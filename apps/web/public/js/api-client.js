@@ -208,11 +208,34 @@ export async function fetchJSON(
     return fetchJSON(url, options, true, allowDemoRenewal);
   }
 
+  // Keep the exact sample authority used by this request. Parallel dashboard
+  // reads can receive staggered 401s after one of them has already renewed the
+  // session; those older responses must reuse the successor instead of
+  // replacing (and revoking) it again.
+  const currentSampleToken = isSampleMode()
+    ? readSampleSession().token
+    : null;
+  const authTokenAtRequest = getEffectiveAuthToken();
+  const { headers: optionHeaders = {}, ...requestOptions } = options;
+  const requestHeaders = {
+    'Content-Type': 'application/json',
+    ...(authTokenAtRequest
+      ? { Authorization: `Bearer ${authTokenAtRequest}` }
+      : {}),
+    ...optionHeaders,
+  };
+  const requestAuthorization = Object.entries(requestHeaders).find(
+    ([name]) => name.toLowerCase() === 'authorization',
+  )?.[1];
+  const sampleTokenAtRequest = currentSampleToken &&
+    requestAuthorization === `Bearer ${currentSampleToken}`
+    ? currentSampleToken
+    : null;
   let res;
   try {
     res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options.headers },
-      ...options,
+      ...requestOptions,
+      headers: requestHeaders,
     });
   } catch (cause) {
     // Network unreachable (no DNS, no route, browser offline, etc.)
@@ -231,8 +254,13 @@ export async function fetchJSON(
       allowDemoRenewal &&
       !demoRenewed &&
       url !== `${API}/v1/demo/session` &&
+      sampleTokenAtRequest &&
       isSampleMode()
     ) {
+      const currentSampleToken = readSampleSession().token;
+      if (currentSampleToken && currentSampleToken !== sampleTokenAtRequest) {
+        return fetchJSON(url, options, true, allowDemoRenewal);
+      }
       await startDemoSession();
       return fetchJSON(url, options, true, allowDemoRenewal);
     }

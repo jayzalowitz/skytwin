@@ -92,6 +92,57 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe('Bearer renewed-token');
   });
 
+  it('reuses one successor when parallel reads receive staggered 401s', async () => {
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'old-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2030-01-01T00:00:00.000Z');
+
+    let releaseFirstRequest;
+    const firstRequest = new Promise((resolve) => {
+      releaseFirstRequest = resolve;
+    });
+    let sessionRequests = 0;
+    const fetchMock = vi.fn(async (url, options) => {
+      if (url === '/api/v1/demo/session') {
+        sessionRequests += 1;
+        return new Response(JSON.stringify({
+          token: `renewed-token-${sessionRequests}`,
+          userId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+        }), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      }
+      if (options.headers.Authorization === 'Bearer old-token') {
+        if (url === '/api/users/first') return firstRequest;
+        return new Response('{}', { status: 401 });
+      }
+      return new Response(JSON.stringify({ id: url }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const first = fetchJSON('/api/users/first');
+    const second = fetchJSON('/api/users/second');
+    await vi.waitFor(() => expect(sessionRequests).toBe(1));
+    await expect(second).resolves.toEqual({ id: '/api/users/second' });
+
+    releaseFirstRequest(new Response('{}', { status: 401 }));
+    await expect(first).resolves.toEqual({ id: '/api/users/first' });
+
+    expect(sessionRequests).toBe(1);
+    const renewedReads = fetchMock.mock.calls.filter(
+      ([url, options]) =>
+        url !== '/api/v1/demo/session' &&
+        options.headers.Authorization === 'Bearer renewed-token-1',
+    );
+    expect(renewedReads).toHaveLength(2);
+  });
+
   it('never replaces a real session when a stale sample marker survives', async () => {
     sampleValues.set(KEY_TOUR_MODE, '1');
     sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
@@ -107,6 +158,27 @@ describe('api client', () => {
     await expect(fetchJSON('/api/users/real-user')).rejects.toMatchObject({ status: 401 });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(values.get(KEY_SESSION_TOKEN)).toBe('real-token');
+  });
+
+  it('keeps authentication when a caller supplies additional headers', async () => {
+    values.set(KEY_SESSION_TOKEN, 'real-token');
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('{}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await fetchJSON('/api/protected', {
+      headers: { 'X-Request-Mode': 'test' },
+    });
+
+    expect(fetchMock.mock.calls[0][1].headers).toMatchObject({
+      Authorization: 'Bearer real-token',
+      'Content-Type': 'application/json',
+      'X-Request-Mode': 'test',
+    });
   });
 
   it('deletes disposable state with the original token without renewal', async () => {
