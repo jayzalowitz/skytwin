@@ -465,6 +465,8 @@ CREATE TABLE IF NOT EXISTS execution_admission_barriers (
   explanation_id UUID NOT NULL,
   risk_snapshot JSONB NOT NULL,
   policy_snapshot JSONB NOT NULL,
+  action_snapshot JSONB NOT NULL,
+  outcome_snapshot JSONB NOT NULL,
   status STRING NOT NULL DEFAULT 'in_progress'
     CHECK (status IN ('in_progress', 'completed', 'failed', 'ambiguous')),
   observed_result JSONB NOT NULL DEFAULT '{}'::JSONB,

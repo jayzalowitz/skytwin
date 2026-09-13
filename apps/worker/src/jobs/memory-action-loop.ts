@@ -355,7 +355,7 @@ async function processOpportunity(
     return report;
   }
 
-  return executeAllowedOpportunity(userId, attempted, candidate, riskAssessment, deps, policyDecision);
+  return executeAllowedOpportunity(userId, attempted, candidate, riskAssessment, deps);
 }
 
 async function executeAllowedOpportunity(
@@ -364,17 +364,53 @@ async function executeAllowedOpportunity(
   candidate: CandidateAction,
   riskAssessment: RiskAssessment,
   deps: MemoryActionLoopJobDeps,
-  policyDecision: PolicyDecision,
 ): Promise<MemoryActionLoopReport> {
   requireJobAdmission(deps.signal);
   const getRouter = deps.getExecutionRouter ?? getWorkerExecutionRouter;
   let routing: Awaited<ReturnType<Awaited<ReturnType<typeof getRouter>>['route']>>;
   let admissionAttempted = false;
   const admittedSteps = [{ type: candidate.actionType, status: 'pending' }];
+  const actionSnapshot = serializeCandidate(candidate);
+  let admissionAuthority: {
+    userId: string;
+    decisionId: string;
+    actionId: string;
+    steps: typeof admittedSteps;
+    riskSnapshot: Record<string, unknown>;
+    policySnapshot: Record<string, unknown>;
+    actionSnapshot: Record<string, unknown>;
+    outcomeSnapshot: Record<string, unknown>;
+  } | null = null;
+
+  const evaluateCurrentPolicy = async (): Promise<PolicyDecision> => {
+    const currentUser = await userRepository.findById(userId);
+    if (!currentUser) {
+      return {
+        allowed: false,
+        requiresApproval: true,
+        reason: 'Execution owner no longer exists.',
+      };
+    }
+    const evaluator = deps.policyEvaluator ?? new PolicyEvaluator(policyRepositoryAdapter);
+    const policies = deps.loadPolicies
+      ? await deps.loadPolicies()
+      : await policyRepositoryAdapter.getEnabledPolicies();
+    return evaluator.evaluate(
+      candidate,
+      policies,
+      parseTrustTier(currentUser.trust_tier),
+      riskAssessment,
+      readAutonomy(currentUser.autonomy_settings),
+    );
+  };
   try {
     const router = await runAdmitted(deps.signal, getRouter);
     routing = await runAdmitted(deps.signal, () =>
       router.route(candidate, riskAssessment, userId));
+    const admissionPolicy = await runAdmitted(deps.signal, evaluateCurrentPolicy);
+    if (!admissionPolicy.allowed || admissionPolicy.requiresApproval) {
+      throw new Error(`Current policy no longer permits automatic admission: ${admissionPolicy.reason}`);
+    }
     const admittedReport = buildReport(
       opportunity,
       'execution_ambiguous',
@@ -387,17 +423,29 @@ async function executeAllowedOpportunity(
         routeReason: routing.reasoning,
       },
     );
+    const preEffectReason = `Admitted after policy evaluation and before adapter dispatch. ${admissionPolicy.reason}`;
+    const outcomeSnapshot = {
+      decisionId: candidate.decisionId,
+      selectedAction: actionSnapshot,
+      autoExecute: true,
+      requiresApproval: false,
+      reasoning: preEffectReason,
+    };
+    admissionAuthority = {
+      userId,
+      decisionId: candidate.decisionId,
+      actionId: candidate.id,
+      steps: admittedSteps,
+      riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
+      policySnapshot: admissionPolicy as unknown as Record<string, unknown>,
+      actionSnapshot,
+      outcomeSnapshot,
+    };
     admissionAttempted = true;
-    const preEffectReason = `Admitted after policy evaluation and before adapter dispatch. ${policyDecision.reason}`;
     const admission = await runAdmitted(deps.signal, () =>
       executionAdmissionRepository.admitMemoryExecution({
-        userId,
+        ...admissionAuthority!,
         opportunityId: opportunity.id,
-        decisionId: candidate.decisionId,
-        actionId: candidate.id,
-        steps: admittedSteps,
-        riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
-        policySnapshot: policyDecision as unknown as Record<string, unknown>,
         preEffectOutcome: {
           explanation: preEffectReason,
           confidence: riskTierToConfidence(riskAssessment.overallTier),
@@ -421,7 +469,17 @@ async function executeAllowedOpportunity(
     if (!admission.created) {
       return reportForExistingAdmission(opportunity, admission, deps.now);
     }
-    if (!await executionAdmissionRepository.isDispatchable(admission)) {
+    const dispatchPolicy = await runAdmitted(deps.signal, evaluateCurrentPolicy);
+    const actionUnchanged =
+      JSON.stringify(serializeCandidate(candidate)) === JSON.stringify(actionSnapshot);
+    const dispatchable = actionUnchanged && dispatchPolicy.allowed && !dispatchPolicy.requiresApproval
+      ? await runAdmitted(deps.signal, () =>
+        executionAdmissionRepository.isDispatchable(admission, {
+          ...admissionAuthority,
+          policySnapshot: dispatchPolicy as unknown as Record<string, unknown>,
+        }))
+      : false;
+    if (!dispatchable) {
       throw new AmbiguousExecutionError('Execution owner or admitted graph was revoked before dispatch.');
     }
 
@@ -538,16 +596,11 @@ async function executeAllowedOpportunity(
   } catch (err) {
     if (admissionAttempted) {
       const message = err instanceof Error ? err.message : String(err);
-      const recovered = await executionAdmissionRepository
+      const recovered = admissionAuthority ? await executionAdmissionRepository
         .findByScope(userId, 'memory', opportunity.id, {
-          userId,
-          decisionId: candidate.decisionId,
-          actionId: candidate.id,
-          steps: admittedSteps,
-          riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
-          policySnapshot: policyDecision as unknown as Record<string, unknown>,
+          ...admissionAuthority,
         })
-        .catch(() => null);
+        .catch(() => null) : null;
       if (recovered) {
         return reportForExistingAdmission(opportunity, recovered, deps.now);
       }
@@ -911,7 +964,7 @@ function serializeCandidate(candidate: CandidateAction): Record<string, unknown>
     actionType: candidate.actionType,
     description: candidate.description,
     domain: candidate.domain,
-    parameters: candidate.parameters,
+    parameters: structuredClone(candidate.parameters),
     estimatedCostCents: candidate.estimatedCostCents,
     costZeroIntent: candidate.costZeroIntent,
     reversible: candidate.reversible,

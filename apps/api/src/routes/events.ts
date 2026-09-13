@@ -774,15 +774,37 @@ export function createEventsRouter(): Router {
             throw new Error('Execution guard could not be converted to manual approval');
           }
         } else {
+          const evaluateCurrentExecutionPolicy = async () => {
+            const currentUser = await userRepository.findById(userId);
+            if (!currentUser) return {
+              allowed: false,
+              requiresApproval: true,
+              reason: 'Execution owner no longer exists.',
+            };
+            const currentPolicies = await policyRepositoryAdapter.getAllPolicies();
+            return new PolicyEvaluator(policyRepositoryAdapter).evaluate(
+              outcome.selectedAction!,
+              currentPolicies,
+              currentUser.trust_tier as TrustTier,
+              riskAssessment,
+              parseAutonomySettings(currentUser.autonomy_settings),
+            );
+          };
+
+          // Receipt capture proves what policy said then; it is not a lease on
+          // future authority. Re-evaluate current user/operator pause and all
+          // current policies immediately before consuming ready authority.
+          const claimPolicy = await evaluateCurrentExecutionPolicy();
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
           let savedPlan: { id: string } | null = null;
-          try {
+          if (claimPolicy.allowed && !claimPolicy.requiresApproval) try {
             savedPlan = await inferenceReceiptRepository.claimExecutionForDecision(
               userId,
               decision.id,
               { outcome, explanation },
               [{ type: outcome.selectedAction.actionType, status: 'pending' }],
+              claimPolicy as unknown as Record<string, unknown>,
             );
           } catch (error) {
             // A commit may have succeeded even when its response was lost.
@@ -823,10 +845,15 @@ export function createEventsRouter(): Router {
           let terminalPayload: Record<string, unknown> = {};
 
           try {
+            const dispatchPolicy = await evaluateCurrentExecutionPolicy();
+            if (!dispatchPolicy.allowed || dispatchPolicy.requiresApproval) {
+              throw new Error(`Current policy no longer permits automatic dispatch: ${dispatchPolicy.reason}`);
+            }
             if (!await inferenceReceiptRepository.isExecutionDispatchableForDecision(
               userId,
               decision.id,
               savedPlan.id,
+              dispatchPolicy as unknown as Record<string, unknown>,
             )) {
               throw new Error('Execution owner or receipt authority was revoked before dispatch');
             }

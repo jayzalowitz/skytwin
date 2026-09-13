@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS decision_ingest_guards (
   outcome_requires_approval BOOLEAN,
   risk_snapshot JSONB,
   policy_snapshot JSONB,
+  dispatch_policy_snapshot JSONB,
   continuation_snapshot JSONB,
   continuation_kind STRING NOT NULL,
   confirmation_level STRING,

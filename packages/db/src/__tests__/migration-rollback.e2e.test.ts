@@ -291,6 +291,27 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     const expectedColumns = await columnDefinitions();
     const expectedConstraints = await semanticConstraints();
     const expectedIndexes = await indexDefinitions();
+    await pool.query(`
+      CREATE TABLE operator_fk_sentinel (
+        id UUID PRIMARY KEY,
+        skytwin_user_id UUID REFERENCES users(id)
+      );
+      CREATE VIEW operator_user_view AS SELECT id FROM users;
+    `);
+    await expect(down()).rejects.toThrow(/operator-owned objects depend on SkyTwin tables/);
+    expect(await ownedTables()).toEqual(OWNED);
+    expect(await pool.query(
+      `SELECT 1 FROM information_schema.table_constraints
+       WHERE table_name = 'operator_fk_sentinel' AND constraint_type = 'FOREIGN KEY'`,
+    )).toMatchObject({ rowCount: 1 });
+    expect(await pool.query(
+      `SELECT 1 FROM information_schema.views WHERE table_name = 'operator_user_view'`,
+    )).toMatchObject({ rowCount: 1 });
+    await pool.query('DROP VIEW operator_user_view');
+    await pool.query('DROP TABLE operator_fk_sentinel');
+    // This name belonged to an old SkyTwin migration, but is no longer in the
+    // current manifest. Reuse by an operator must not be mistaken for ownership.
+    await pool.query('CREATE TABLE capability_recipes (operator_value STRING)');
     expect(await stackForeignKeys()).toEqual(EXPECTED_STACK_FOREIGN_KEYS);
     expect(await admissionForeignKeys()).toEqual(expect.arrayContaining([
       { column_name: 'outcome_id', foreign_table_name: 'decision_outcomes', delete_rule: 'NO ACTION' },
@@ -309,6 +330,10 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     expect(await pool.query(
       `SELECT 1 FROM information_schema.tables
        WHERE table_schema = 'public' AND table_name = 'operator_rollback_sentinel'`,
+    )).toMatchObject({ rowCount: 1 });
+    expect(await pool.query(
+      `SELECT 1 FROM information_schema.tables
+       WHERE table_schema = 'public' AND table_name = 'capability_recipes'`,
     )).toMatchObject({ rowCount: 1 });
 
     await up();
@@ -329,8 +354,11 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
       { column_name: 'user_id', foreign_table_name: 'users', delete_rule: 'CASCADE' },
     ]);
     } finally {
+      await pool.query('DROP VIEW IF EXISTS operator_user_view');
+      await pool.query('DROP TABLE IF EXISTS operator_fk_sentinel');
       await down();
       await pool.query('DROP TABLE IF EXISTS operator_rollback_sentinel');
+      await pool.query('DROP TABLE IF EXISTS capability_recipes');
     }
   }, 600_000);
 });

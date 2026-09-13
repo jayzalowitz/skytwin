@@ -4,6 +4,7 @@ import type { CreateExplanationInput } from './explanation-repository.js';
 import type { ExecutionPlanRow } from '../types.js';
 
 function canonicalJson(value: unknown): string {
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
     return `{${Object.entries(value as Record<string, unknown>)
@@ -29,6 +30,8 @@ export interface ExecutionAdmissionRow {
   explanation_id: string;
   risk_snapshot: Record<string, unknown>;
   policy_snapshot: Record<string, unknown>;
+  action_snapshot: Record<string, unknown>;
+  outcome_snapshot: Record<string, unknown>;
   status: ExecutionAdmissionStatus;
   observed_result: Record<string, unknown>;
   created_at: Date;
@@ -42,6 +45,20 @@ interface AdmitExecutionInput {
   steps: unknown[];
   riskSnapshot: Record<string, unknown>;
   policySnapshot: Record<string, unknown>;
+  actionSnapshot: Record<string, unknown>;
+  outcomeSnapshot: Record<string, unknown>;
+}
+
+function assertSnapshotAuthority(input: AdmitExecutionInput): void {
+  if (input.actionSnapshot['id'] !== input.actionId ||
+      input.actionSnapshot['decisionId'] !== input.decisionId ||
+      input.riskSnapshot['actionId'] !== input.actionId ||
+      input.outcomeSnapshot['decisionId'] !== input.decisionId ||
+      input.outcomeSnapshot['autoExecute'] !== true ||
+      input.outcomeSnapshot['requiresApproval'] !== false ||
+      canonicalJson(input.outcomeSnapshot['selectedAction']) !== canonicalJson(input.actionSnapshot)) {
+    throw new Error('Execution admission snapshots conflict with requested authority.');
+  }
 }
 
 function assertExactAdmission(
@@ -52,6 +69,8 @@ function assertExactAdmission(
   const persistedSteps = JSON.parse(JSON.stringify(input.steps)) as unknown[];
   const persistedRisk = JSON.parse(JSON.stringify(input.riskSnapshot)) as Record<string, unknown>;
   const persistedPolicy = JSON.parse(JSON.stringify(input.policySnapshot)) as Record<string, unknown>;
+  const persistedAction = JSON.parse(JSON.stringify(input.actionSnapshot)) as Record<string, unknown>;
+  const persistedOutcome = JSON.parse(JSON.stringify(input.outcomeSnapshot)) as Record<string, unknown>;
   if (
     barrier.user_id !== input.userId ||
     barrier.execution_plan_id !== plan.id ||
@@ -61,6 +80,8 @@ function assertExactAdmission(
     plan.action_id !== input.actionId ||
     canonicalJson(barrier.risk_snapshot) !== canonicalJson(persistedRisk) ||
     canonicalJson(barrier.policy_snapshot) !== canonicalJson(persistedPolicy) ||
+    canonicalJson(barrier.action_snapshot) !== canonicalJson(persistedAction) ||
+    canonicalJson(barrier.outcome_snapshot) !== canonicalJson(persistedOutcome) ||
     canonicalJson(plan.steps) !== canonicalJson(persistedSteps)
   ) {
     throw new Error('Existing execution admission conflicts with requested authority.');
@@ -80,6 +101,8 @@ export interface AdmitMemoryExecutionInput extends AdmitExecutionInput {
 export interface AdmitApprovalExecutionInput extends AdmitExecutionInput {
   approvalId: string;
   memoryOpportunityId?: string;
+  sourceRiskSnapshot: Record<string, unknown>;
+  preEffectExplanation: Omit<CreateExplanationInput, 'decisionId'>;
 }
 
 export interface ExecutionAdmission {
@@ -107,6 +130,7 @@ export const executionAdmissionRepository = {
     idempotencyKey: string,
     authority: AdmitExecutionInput,
   ): Promise<ExecutionAdmission | null> {
+    assertSnapshotAuthority(authority);
     const barrierResult = await query<ExecutionAdmissionRow>(
       `SELECT b.* FROM execution_admission_barriers b
        JOIN users u ON u.id = b.user_id
@@ -126,6 +150,11 @@ export const executionAdmissionRepository = {
   },
 
   async admitMemoryExecution(input: AdmitMemoryExecutionInput): Promise<ExecutionAdmission> {
+    assertSnapshotAuthority(input);
+    if (input.policySnapshot['allowed'] !== true ||
+        input.policySnapshot['requiresApproval'] !== false) {
+      throw new Error('Memory execution policy does not authorize automatic dispatch.');
+    }
     return withTransaction(async (client) => {
       const owner = await client.query(
         'SELECT id FROM users WHERE id = $1 FOR UPDATE',
@@ -205,12 +234,15 @@ export const executionAdmissionRepository = {
       const barrierResult = await client.query<ExecutionAdmissionRow>(
         `INSERT INTO execution_admission_barriers
            (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
-            outcome_id, explanation_id, risk_snapshot, policy_snapshot)
-         VALUES ($1, 'memory', $2, $3, $4, $5, $6, $7, $8::JSONB, $9::JSONB)
+            outcome_id, explanation_id, risk_snapshot, policy_snapshot,
+            action_snapshot, outcome_snapshot)
+         VALUES ($1, 'memory', $2, $3, $4, $5, $6, $7, $8::JSONB, $9::JSONB,
+                 $10::JSONB, $11::JSONB)
          RETURNING *`,
         [input.userId, input.opportunityId, input.decisionId, input.actionId, plan.id,
           outcomeId, explanationId, JSON.stringify(input.riskSnapshot),
-          JSON.stringify(input.policySnapshot)],
+          JSON.stringify(input.policySnapshot), JSON.stringify(input.actionSnapshot),
+          JSON.stringify(input.outcomeSnapshot)],
       );
       const barrier = barrierResult.rows[0];
       if (!barrier) throw new Error('Memory execution barrier could not be admitted.');
@@ -232,6 +264,10 @@ export const executionAdmissionRepository = {
   },
 
   async admitApprovalExecution(input: AdmitApprovalExecutionInput): Promise<ExecutionAdmission> {
+    assertSnapshotAuthority(input);
+    if (input.policySnapshot['allowed'] !== true) {
+      throw new Error('Approval execution policy does not authorize dispatch.');
+    }
     return withTransaction(async (client) => {
       const owner = await client.query(
         'SELECT id FROM users WHERE id = $1 FOR UPDATE',
@@ -260,19 +296,13 @@ export const executionAdmissionRepository = {
       const authority = await client.query<{
         id: string;
         outcome_id: string;
-        explanation_id: string;
         risk_assessment: Record<string, unknown>;
       }>(
-        `SELECT ar.id, o.id AS outcome_id, e.id AS explanation_id, a.risk_assessment
+        `SELECT ar.id, o.id AS outcome_id, a.risk_assessment
          FROM approval_requests ar
          JOIN decisions d ON d.id = ar.decision_id AND d.user_id = $1
          JOIN candidate_actions a ON a.id = $4 AND a.decision_id = d.id
          JOIN decision_outcomes o ON o.decision_id = d.id AND o.selected_action_id = a.id
-         JOIN LATERAL (
-           SELECT er.id FROM explanation_records er
-           WHERE er.decision_id = d.id
-           ORDER BY er.created_at DESC, er.id DESC LIMIT 1
-         ) e ON true
          WHERE ar.id = $2 AND ar.user_id = $1 AND ar.decision_id = $3
            AND ar.status = 'approved' AND ar.candidate_action->>'id' = $4::STRING
            AND ($5::UUID IS NULL OR EXISTS (
@@ -285,9 +315,25 @@ export const executionAdmissionRepository = {
           input.memoryOpportunityId ?? null],
       );
       if (!authority.rows[0]) throw new Error('Approval execution admission authority is unavailable.');
-      if (canonicalJson(authority.rows[0].risk_assessment) !== canonicalJson(input.riskSnapshot)) {
-        throw new Error('Approval execution risk snapshot conflicts with persisted authority.');
+      if (canonicalJson(authority.rows[0].risk_assessment) !== canonicalJson(input.sourceRiskSnapshot)) {
+        throw new Error('Approval source risk snapshot conflicts with persisted authority.');
       }
+      const explanation = input.preEffectExplanation;
+      const explanationResult = await client.query<{ id: string }>(
+        `INSERT INTO explanation_records (
+           decision_id, what_happened, evidence_used, preferences_invoked,
+           confidence_reasoning, action_rationale, escalation_rationale,
+           correction_guidance, capability_provenance_node_id
+         ) VALUES ($1, $2, $3::JSONB, $4, $5, $6, $7, $8, $9)
+         RETURNING id`,
+        [input.decisionId, explanation.whatHappened,
+          JSON.stringify(explanation.evidenceUsed ?? []), explanation.preferencesInvoked ?? [],
+          explanation.confidenceReasoning, explanation.actionRationale,
+          explanation.escalationRationale ?? null, explanation.correctionGuidance,
+          explanation.capabilityProvenanceNodeId ?? null],
+      );
+      const explanationId = explanationResult.rows[0]?.id;
+      if (!explanationId) throw new Error('Approval pre-effect explanation could not be persisted.');
 
       const planResult = await client.query<ExecutionPlanRow>(
         `INSERT INTO execution_plans (decision_id, action_id, status, steps)
@@ -301,12 +347,15 @@ export const executionAdmissionRepository = {
       const barrierResult = await client.query<ExecutionAdmissionRow>(
          `INSERT INTO execution_admission_barriers
            (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
-            outcome_id, explanation_id, risk_snapshot, policy_snapshot)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB, $10::JSONB)
+            outcome_id, explanation_id, risk_snapshot, policy_snapshot,
+            action_snapshot, outcome_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB, $10::JSONB,
+                 $11::JSONB, $12::JSONB)
          RETURNING *`,
         [input.userId, scope, idempotencyKey, input.decisionId, input.actionId, plan.id,
-          authority.rows[0].outcome_id, authority.rows[0].explanation_id,
-          JSON.stringify(input.riskSnapshot), JSON.stringify(input.policySnapshot)],
+          authority.rows[0].outcome_id, explanationId,
+          JSON.stringify(input.riskSnapshot), JSON.stringify(input.policySnapshot),
+          JSON.stringify(input.actionSnapshot), JSON.stringify(input.outcomeSnapshot)],
       );
       const barrier = barrierResult.rows[0];
       if (!barrier) throw new Error('Approval execution barrier could not be admitted.');
@@ -337,7 +386,12 @@ export const executionAdmissionRepository = {
   },
 
   /** Re-check exact owner and graph authority immediately before adapter dispatch. */
-  async isDispatchable(admission: ExecutionAdmission): Promise<boolean> {
+  async isDispatchable(
+    admission: ExecutionAdmission,
+    authority: AdmitExecutionInput,
+  ): Promise<boolean> {
+    assertSnapshotAuthority(authority);
+    assertExactAdmission(admission.barrier, admission.plan, authority);
     const result = await query(
       `SELECT b.id
        FROM execution_admission_barriers b
@@ -352,7 +406,8 @@ export const executionAdmissionRepository = {
          AND er.decision_id = b.decision_id
        WHERE b.id = $1 AND b.user_id = $2 AND b.scope = $3
          AND b.idempotency_key = $4 AND b.status = 'in_progress'
-         AND b.execution_plan_id = $5 AND ep.status = 'running'`,
+         AND b.execution_plan_id = $5 AND ep.status = 'running'
+         AND (u.autonomy_settings->>'paused') IS DISTINCT FROM 'true'`,
       [admission.barrier.id, admission.barrier.user_id, admission.barrier.scope,
         admission.barrier.idempotency_key, admission.plan.id],
     );

@@ -444,6 +444,121 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(candidate['costZeroIntent']).toBe('unknown');
   });
 
+  it('binds an edited draft conversion and its fresh irreversible risk to admission and dispatch', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'draft_email',
+      description: 'Draft reply',
+      domain: 'email',
+      parameters: { to: 'friend@example.test', draftBody: 'old draft' },
+      estimatedCostCents: 0,
+      costZeroIntent: 'verified_zero',
+      reversible: true,
+      confidence: 'high',
+      reasoning: 'draft for review',
+      provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'approved', responded_at: new Date(),
+      confirmation_level: 'single',
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID, editedBody: 'send exactly this body',
+    });
+
+    expect(res.status).toBe(200);
+    const admission = fakeExecutionAdmissionRepo.admitApprovalExecution.mock.calls[0]![0];
+    expect(admission).toMatchObject({
+      sourceRiskSnapshot: { reasoning: 'test assessment' },
+      actionSnapshot: {
+        actionType: 'send_reply',
+        reversible: false,
+        parameters: {
+          to: 'friend@example.test',
+          draftBody: expect.stringContaining('send exactly this body'),
+        },
+      },
+      outcomeSnapshot: {
+        selectedAction: { actionType: 'send_reply', reversible: false },
+        autoExecute: true,
+        requiresApproval: false,
+      },
+      preEffectExplanation: expect.objectContaining({
+        whatHappened: expect.stringContaining('exact user-approved action'),
+      }),
+    });
+    expect(admission.riskSnapshot).not.toEqual(admission.sourceRiskSnapshot);
+    const [executedAction, executedRisk] = fakeExecutionRouter.executeWithRouting.mock.calls[0]!;
+    expect(executedAction).toMatchObject({
+      actionType: 'send_reply',
+      reversible: false,
+      parameters: { draftBody: expect.stringContaining('send exactly this body') },
+    });
+    expect(executedRisk).toEqual(admission.riskSnapshot);
+  });
+
+  it('rechecks current pause authority after an edited draft becomes an irreversible send', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'draft_email', description: 'Draft reply', domain: 'email',
+      parameters: { to: 'outside@example.test', draftBody: 'old' },
+      estimatedCostCents: 0, reversible: true, confidence: 'high',
+      reasoning: 'inbound request', provenance: 'untrusted_external',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+    });
+    fakeUserRepo.findById.mockResolvedValue({
+      id: USER_ID,
+      trust_tier: 'moderate_autonomy',
+      autonomy_settings: { paused: true },
+      ironclaw_channel: 'skytwin',
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID, editedBody: 'send this externally',
+    });
+
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({
+      error: 'Action blocked by current policy.',
+      reason: expect.stringMatching(/paused by user/i),
+    });
+    expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+    expect(fakeExecutionAdmissionRepo.admitApprovalExecution).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+  });
+
+  it('refuses dispatch if admitted canonical parameters are tampered before the final fence', async () => {
+    fakeExecutionAdmissionRepo.admitApprovalExecution.mockImplementationOnce(async (input) => {
+      const snapshot = input.actionSnapshot as { parameters: Record<string, unknown> };
+      snapshot.parameters['target'] = 'tampered-after-admission';
+      return {
+        created: true,
+        barrier: { id: '55555555-5555-4555-8555-555555555555', status: 'in_progress', observed_result: {} },
+        plan: { id: '44444444-4444-4444-8444-444444444444' },
+      };
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: { status: 'ambiguous', error: 'Execution authority was revoked before dispatch' },
+    });
+    expect(fakeExecutionAdmissionRepo.isDispatchable).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+  });
+
   it('approve updates memory action opportunity status after execution attempt', async () => {
     const storedAction = {
       id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',

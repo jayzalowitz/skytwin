@@ -377,6 +377,42 @@ describe('runMemoryActionLoopJob', () => {
     expect(summary.executionAmbiguous).toBe(1);
   });
 
+  it('rechecks a stored opportunity and fences a pause that lands after admission', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy',
+      autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn()
+        .mockResolvedValueOnce({ allowed: true, requiresApproval: false, reason: 'initially allowed' })
+        .mockResolvedValueOnce({ allowed: true, requiresApproval: false, reason: 'allowed at admission' })
+        .mockResolvedValueOnce({ allowed: false, requiresApproval: true, reason: 'operator paused' }),
+    };
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {},
+        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'direct',
+      }),
+      executeWithRouting: vi.fn(),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(policyEvaluator.evaluate).toHaveBeenCalledTimes(3);
+    expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledOnce();
+    expect(mockExecutionAdmissionRepository.isDispatchable).not.toHaveBeenCalled();
+    expect(router.executeWithRouting).not.toHaveBeenCalled();
+    expect(summary.executionAmbiguous).toBe(1);
+  });
+
   it('records an ambiguous adapter outcome without a failed plan or retryable failure state', async () => {
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);

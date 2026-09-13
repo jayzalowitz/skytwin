@@ -485,6 +485,7 @@ export const inferenceReceiptRepository = {
     decisionId: string,
     suppliedContinuation: DecisionContinuation,
     steps: unknown[],
+    refreshedPolicySnapshot: Record<string, unknown>,
   ): Promise<ExecutionPlanRow | null> {
     const continuation = snapshotContinuation(suppliedContinuation);
     const outcome = continuation?.outcome;
@@ -493,7 +494,9 @@ export const inferenceReceiptRepository = {
     if (!continuation || !outcome || !explanation || !selectedAction ||
         outcome.decisionId !== decisionId || explanation.decisionId !== decisionId ||
         !outcome.autoExecute || outcome.requiresApproval ||
-        outcome.policyVerdicts?.[selectedAction.id] !== 'allowed') {
+        outcome.policyVerdicts?.[selectedAction.id] !== 'allowed' ||
+        refreshedPolicySnapshot['allowed'] !== true ||
+        refreshedPolicySnapshot['requiresApproval'] !== false) {
       return null;
     }
 
@@ -519,11 +522,10 @@ export const inferenceReceiptRepository = {
            AND o.auto_executed IS TRUE AND o.requires_approval IS FALSE
            AND COALESCE(o.escalation_reason, o.explanation) = $6
            AND g.continuation_snapshot = $7::JSONB
-           AND g.risk_snapshot = $8::JSONB AND g.policy_snapshot = $9::JSONB
+           AND g.risk_snapshot = $8::JSONB
          FOR UPDATE OF g, d, o`,
         [userId, decisionId, outcome.id, explanation.id, selectedAction.id,
-          outcome.reasoning, JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment),
-          JSON.stringify(outcome.policyVerdicts)],
+          outcome.reasoning, JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment)],
       );
       if (!locked.rows[0]) return null;
 
@@ -549,11 +551,13 @@ export const inferenceReceiptRepository = {
 
       const claimed = await client.query(
         `UPDATE decision_ingest_guards
-         SET effect_state = 'running', source_execution_plan_id = $2, updated_at = now()
+         SET effect_state = 'running', source_execution_plan_id = $2,
+             dispatch_policy_snapshot = $6::JSONB, updated_at = now()
          WHERE decision_id = $1 AND effect_state = 'ready' AND outcome_id = $3
            AND selected_action_id = $4 AND receipt_explanation_id = $5
          RETURNING decision_id`,
-        [decisionId, plan.id, outcome.id, selectedAction.id, explanation.id],
+        [decisionId, plan.id, outcome.id, selectedAction.id, explanation.id,
+          JSON.stringify(refreshedPolicySnapshot)],
       );
       if (!claimed.rows[0]) throw new Error('Execution guard claim could not bind to its plan');
       return plan;
@@ -565,6 +569,7 @@ export const inferenceReceiptRepository = {
     userId: string,
     decisionId: string,
     planId: string,
+    refreshedPolicySnapshot: Record<string, unknown>,
   ): Promise<boolean> {
     const result = await query(
       `SELECT g.decision_id
@@ -579,8 +584,10 @@ export const inferenceReceiptRepository = {
        JOIN execution_plans ep ON ep.id = $3 AND ep.decision_id = g.decision_id
          AND ep.action_id = g.selected_action_id AND ep.status = 'running'
        WHERE g.decision_id = $2 AND g.effect_state = 'running'
-         AND g.source_execution_plan_id = $3`,
-      [userId, decisionId, planId],
+         AND g.source_execution_plan_id = $3
+         AND g.dispatch_policy_snapshot = $4::JSONB
+         AND (u.autonomy_settings->>'paused') IS DISTINCT FROM 'true'`,
+      [userId, decisionId, planId, JSON.stringify(refreshedPolicySnapshot)],
     );
     return !!result.rows[0];
   },
