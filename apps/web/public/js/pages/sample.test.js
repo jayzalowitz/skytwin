@@ -7,7 +7,7 @@ import {
   KEY_TOUR_MODE,
   KEY_USER_ID,
 } from '../storage-keys.js';
-import { skyTwinExitTour } from './dashboard-view.js';
+import { setTourExitPending, skyTwinExitTour } from './dashboard-view.js';
 import {
   renderSampleEmpty,
   renderSampleError,
@@ -266,6 +266,45 @@ describe('interactive sample page states', () => {
     expect(shell.hasAttribute('aria-busy')).toBe(false);
     expect(operationStatus).toBeNull();
     expect(buttons.every((button) => !button.disabled)).toBe(true);
+  });
+
+  it('announces and disables the dashboard exit while discard is pending', () => {
+    const attributes = new Map();
+    const button = { disabled: false };
+    let operationStatus = null;
+    const region = {
+      setAttribute: (key, value) => attributes.set(key, value),
+      removeAttribute: (key) => attributes.delete(key),
+      querySelector: (selector) =>
+        selector === '[data-action="exit-tour"]' ? button : operationStatus,
+      append: (node) => {
+        operationStatus = node;
+      },
+    };
+    const trigger = { closest: () => region };
+    const statusAttributes = new Map();
+    const statusNode = {
+      className: '',
+      textContent: '',
+      setAttribute: (key, value) => statusAttributes.set(key, value),
+      remove: () => {
+        operationStatus = null;
+      },
+    };
+    vi.spyOn(document, 'createElement').mockReturnValue(statusNode);
+
+    setTourExitPending(trigger, true);
+
+    expect(attributes.get('aria-busy')).toBe('true');
+    expect(button.disabled).toBe(true);
+    expect(statusAttributes.get('role')).toBe('status');
+    expect(statusAttributes.get('aria-live')).toBe('polite');
+    expect(statusNode.textContent).toMatch(/discarding/i);
+
+    setTourExitPending(trigger, false);
+    expect(attributes.has('aria-busy')).toBe(false);
+    expect(button.disabled).toBe(false);
+    expect(operationStatus).toBeNull();
   });
 
   it('discards server state before removing all sample credentials on exit', async () => {

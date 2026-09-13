@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 
 /**
@@ -29,9 +30,21 @@ function mockReq(overrides: Partial<Request> = {}): Request {
 }
 
 function mockRes(): Response {
+  const headers = new Map<string, string>();
   const res = {
+    statusCode: 200,
+    headersSent: false,
     status: vi.fn().mockReturnThis(),
     json: vi.fn().mockReturnThis(),
+    write: vi.fn(() => true),
+    end: vi.fn().mockReturnThis(),
+    writeHead: vi.fn().mockReturnThis(),
+    setHeader: vi.fn((name: string, value: string) => {
+      headers.set(name.toLowerCase(), String(value));
+    }),
+    removeHeader: vi.fn((name: string) => {
+      headers.delete(name.toLowerCase());
+    }),
   } as unknown as Response;
   return res;
 }
@@ -265,6 +278,166 @@ describe('sessionAuth middleware', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(401);
+    });
+
+    it.each([
+      ['GET', 'discard', 'json-then-end'],
+      ['HEAD', 'replacement', 'json'],
+      ['GET', 'replacement', 'error'],
+    ] as const)(
+      'does not return an asynchronous %s decision read after concurrent %s (%s)',
+      async (method, revocationKind, responseKind) => {
+        const mod = await loadDemoAuth();
+        const demo = await import('../auth/demo-session.js');
+        const { createDemoSimulationRouter } = await import(
+          '../routes/demo-simulation.js'
+        );
+        let markRouteStarted!: () => void;
+        let releaseRoute!: () => void;
+        const routeStarted = new Promise<void>((resolve) => {
+          markRouteStarted = resolve;
+        });
+        const routeRelease = new Promise<void>((resolve) => {
+          releaseRoute = resolve;
+        });
+        const app = express();
+        app.get(
+          `/api/decisions/${demo.DEMO_USER_ID}`,
+          mod.sessionAuth,
+          async (_req, res, next) => {
+            markRouteStarted();
+            await routeRelease;
+            if (responseKind === 'error') {
+              next(new Error('late downstream failure'));
+              return;
+            }
+            res.json({ decisions: [{ id: 'late-fictional-decision' }] });
+            if (responseKind === 'json-then-end') res.end();
+          },
+        );
+        app.use(
+          '/api/v1/demo/simulation',
+          createDemoSimulationRouter(),
+        );
+        app.use(
+          (
+            error: Error,
+            _req: Request,
+            res: Response,
+            _next: NextFunction,
+          ) => {
+            res.status(503).json({ error: error.message });
+          },
+        );
+        const server = app.listen(0, '127.0.0.1');
+        await new Promise<void>((resolve) => server.once('listening', resolve));
+        const address = server.address();
+        if (!address || typeof address === 'string') {
+          server.close();
+          throw new Error('Could not determine test server port.');
+        }
+        const issued = mod.issueDemoSession();
+
+        try {
+          const pending = fetch(
+            `http://127.0.0.1:${address.port}/api/decisions/${demo.DEMO_USER_ID}`,
+            {
+              method,
+              headers: { Authorization: `Bearer ${issued.token}` },
+            },
+          );
+          await routeStarted;
+          if (revocationKind === 'discard') {
+            const discard = await fetch(
+              `http://127.0.0.1:${address.port}/api/v1/demo/simulation`,
+              {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${issued.token}` },
+              },
+            );
+            expect(discard.status).toBe(204);
+          } else {
+            demo.issueDemoSession(Date.now(), issued.token);
+          }
+          releaseRoute();
+
+          const response = await pending;
+          expect(response.status).toBe(401);
+          expect(response.headers.get('cache-control')).toBe('no-store');
+          if (method === 'GET') {
+            await expect(response.json()).resolves.toMatchObject({
+              error: expect.stringMatching(/unavailable/i),
+            });
+          } else {
+            expect(await response.text()).toBe('');
+          }
+        } finally {
+          releaseRoute();
+          await new Promise<void>((resolve, reject) =>
+            server.close((error) => (error ? reject(error) : resolve())),
+          );
+        }
+      },
+    );
+
+    it('preserves active downstream status, headers, and error handling', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (req, res, next) => {
+        if (req.query['fail'] === '1') {
+          next(new Error('expected downstream failure'));
+          return;
+        }
+        res.status(206).set('X-Sample-Test', 'preserved').json({ ok: true });
+      });
+      app.use(
+        (
+          error: Error,
+          _req: Request,
+          res: Response,
+          _next: NextFunction,
+        ) => {
+          res
+            .status(503)
+            .set('X-Sample-Error', 'preserved')
+            .json({ error: error.message });
+        },
+      );
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') {
+        server.close();
+        throw new Error('Could not determine test server port.');
+      }
+      const issued = mod.issueDemoSession();
+      const headers = { Authorization: `Bearer ${issued.token}` };
+
+      try {
+        const success = await fetch(
+          `http://127.0.0.1:${address.port}${path}`,
+          { headers },
+        );
+        expect(success.status).toBe(206);
+        expect(success.headers.get('x-sample-test')).toBe('preserved');
+        await expect(success.json()).resolves.toEqual({ ok: true });
+
+        const failure = await fetch(
+          `http://127.0.0.1:${address.port}${path}?fail=1`,
+          { headers },
+        );
+        expect(failure.status).toBe(503);
+        expect(failure.headers.get('x-sample-error')).toBe('preserved');
+        await expect(failure.json()).resolves.toEqual({
+          error: 'expected downstream failure',
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
     });
 
     it('rejects mutations and non-allowlisted reads without falling through to DB sessions', async () => {

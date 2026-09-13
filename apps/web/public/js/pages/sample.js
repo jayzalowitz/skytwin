@@ -233,7 +233,7 @@ export function setSampleOperationPending(
     shell.querySelector('[data-sample-operation-status]')?.remove();
     shell
       .querySelectorAll(
-        '[data-action="sample-command"], [data-action="sample-reset"], [data-action="sample-restart"], [data-action="api-retry"]',
+        '[data-action="sample-command"], [data-action="sample-reset"], [data-action="sample-restart"], [data-action="api-retry"], [data-action="exit-tour"]',
       )
       .forEach((button) => {
         button.disabled = false;
@@ -243,7 +243,7 @@ export function setSampleOperationPending(
   shell.setAttribute('aria-busy', 'true');
   shell
     .querySelectorAll(
-      '[data-action="sample-command"], [data-action="sample-reset"], [data-action="sample-restart"], [data-action="api-retry"]',
+      '[data-action="sample-command"], [data-action="sample-reset"], [data-action="sample-restart"], [data-action="api-retry"], [data-action="exit-tour"]',
     )
     .forEach((button) => {
       button.disabled = true;
@@ -451,7 +451,23 @@ export function initSampleGlobals() {
         _sampleRenderGeneration += 1;
         invalidateSampleOperations();
         _sampleBusy = true;
-        await skyTwinExitTour();
+        const container = document.getElementById('page-content');
+        if (container) {
+          setSampleOperationPending(
+            container,
+            true,
+            'Discarding the sample and opening your setup…',
+          );
+        }
+        try {
+          await skyTwinExitTour();
+        } finally {
+          // Production reloads on success. This restores an actionable state
+          // for tests and for any environment that suppresses navigation.
+          if (container) setSampleOperationPending(container, false);
+          _sampleExitPending = false;
+          _sampleBusy = false;
+        }
       }
     }
   });

@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   _resetDemoSessionLifecycleForTests,
+  _demoSessionLifecycleSizeForTests,
+  canonicalLocalDemoAddress,
   DEMO_USER_ID,
+  DEMO_SESSION_LIFECYCLE_LIMIT,
+  DemoSessionCapacityError,
   isDemoReadRequest,
   isLocalDemoAddress,
   isLocalDemoRequest,
@@ -85,12 +89,66 @@ describe('demo session credential', () => {
     expect(firstClaims?.sessionKey).not.toContain(first.token);
   });
 
+  it('fails closed at the lifecycle cap without evicting active sessions or tombstones', () => {
+    const now = 1_800_000_000_000;
+    const tombstoned = issueDemoSession(now);
+    revokeDemoSession(tombstoned.token, now + 1);
+    const active = Array.from(
+      { length: DEMO_SESSION_LIFECYCLE_LIMIT - 1 },
+      () => issueDemoSession(now + 2),
+    );
+
+    expect(() => issueDemoSession(now + 3)).toThrow(DemoSessionCapacityError);
+    expect(() =>
+      issueDemoSession(now + 3, active[0]!.token),
+    ).toThrow(DemoSessionCapacityError);
+    expect(inspectDemoSession(tombstoned.token, now + 3)).toBeNull();
+    expect(inspectDemoSession(active[0]!.token, now + 3)).not.toBeNull();
+    expect(inspectDemoSession(active.at(-1)!.token, now + 3)).not.toBeNull();
+
+    // Elapsed entries may be pruned; live or tombstoned authority may not.
+    expect(() =>
+      issueDemoSession(tombstoned.expiresAt.getTime()),
+    ).not.toThrow();
+  });
+
+  it('does not exceed the lifecycle cap for a signed token from an earlier process', () => {
+    const priorProcessToken = issueDemoSession().token;
+    _resetDemoSessionLifecycleForTests();
+    const active = Array.from(
+      { length: DEMO_SESSION_LIFECYCLE_LIMIT },
+      () => issueDemoSession(),
+    );
+
+    expect(revokeDemoSession(priorProcessToken)).toBe(true);
+    expect(_demoSessionLifecycleSizeForTests()).toBe(
+      DEMO_SESSION_LIFECYCLE_LIMIT,
+    );
+    expect(inspectDemoSession(active[0]!.token)).not.toBeNull();
+    expect(inspectDemoSession(priorProcessToken)).toBeNull();
+  });
+
   it('recognizes only loopback addresses for the packaged sample', () => {
     expect(isLocalDemoAddress('127.0.0.1')).toBe(true);
     expect(isLocalDemoAddress('::1')).toBe(true);
     expect(isLocalDemoAddress('::ffff:127.0.0.1')).toBe(true);
     expect(isLocalDemoAddress('203.0.113.8')).toBe(false);
     expect(isLocalDemoAddress(undefined)).toBe(false);
+  });
+
+  it('canonicalizes every accepted loopback spelling and IPv6 zone to one rate key', () => {
+    for (const address of [
+      '127.0.0.1',
+      '::1',
+      '::1%lo0',
+      '::1%attacker-controlled-zone',
+      '::ffff:127.0.0.1',
+      '::ffff:7f00:1',
+      '0:0:0:0:0:ffff:7f00:1',
+    ]) {
+      expect(canonicalLocalDemoAddress(address)).toBe('loopback');
+    }
+    expect(canonicalLocalDemoAddress('203.0.113.8%lo0')).toBeNull();
   });
 });
 

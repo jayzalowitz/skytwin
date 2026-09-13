@@ -6,6 +6,11 @@ export const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
 const DEMO_TOKEN_PREFIX = 'skytwin-demo-v1';
 const DEMO_SESSION_DURATION_MS = 4 * 60 * 60 * 1000;
+/**
+ * Absolute process-local bound independent of the HTTP issuer's rate limiter.
+ * Active entries and revocation tombstones are never evicted before expiry.
+ */
+export const DEMO_SESSION_LIFECYCLE_LIMIT = 1_000;
 const UUID_PATH_SEGMENT = UUID_REGEX.source.replace(/^\^|\$$/g, '');
 
 export interface IssuedDemoSession {
@@ -37,6 +42,13 @@ interface DemoSessionLifecycle {
 
 const demoSessionLifecycle = new Map<string, DemoSessionLifecycle>();
 let nextDemoSessionGeneration = 0;
+
+export class DemoSessionCapacityError extends Error {
+  constructor() {
+    super('The sample session registry is at capacity.');
+    this.name = 'DemoSessionCapacityError';
+  }
+}
 
 function dropElapsedSessionLifecycles(nowMs: number): void {
   for (const [sessionKey, lifecycle] of demoSessionLifecycle) {
@@ -73,13 +85,20 @@ export function issueDemoSession(
   nowMs = Date.now(),
   replacesToken?: string,
 ): IssuedDemoSession {
+  dropElapsedSessionLifecycles(nowMs);
+  // Replacement must retain the previous credential as a tombstone, so it
+  // needs a new slot too. Refuse admission before revoking the old authority;
+  // a full registry must not strand a still-valid caller or evict a safety
+  // tombstone to make room.
+  if (demoSessionLifecycle.size >= DEMO_SESSION_LIFECYCLE_LIMIT) {
+    throw new DemoSessionCapacityError();
+  }
   if (replacesToken) revokeDemoSession(replacesToken, nowMs);
   const expiresAt = new Date(nowMs + DEMO_SESSION_DURATION_MS);
   const nonce = randomBytes(18).toString('base64url');
   const payload = `${DEMO_TOKEN_PREFIX}.${expiresAt.getTime()}.${nonce}`;
   const token = `${payload}.${signature(payload)}`;
   const sessionKey = createHash('sha256').update(token).digest('hex');
-  dropElapsedSessionLifecycles(nowMs);
   demoSessionLifecycle.set(sessionKey, {
     expiresAtMs: expiresAt.getTime(),
     generation: ++nextDemoSessionGeneration,
@@ -166,6 +185,13 @@ export function revokeDemoSessionByKey(
   dropElapsedSessionLifecycles(nowMs);
   if (expiresAtMs <= nowMs) return true;
   const existing = demoSessionLifecycle.get(sessionKey);
+  // A signed token from a previous process generation is already unusable
+  // because inspection requires a live registry entry. At capacity, keep it
+  // absent rather than exceeding the hard bound merely to add a redundant
+  // tombstone. Existing entries can always be converted in place.
+  if (!existing && demoSessionLifecycle.size >= DEMO_SESSION_LIFECYCLE_LIMIT) {
+    return true;
+  }
   existing?.controller.abort();
   demoSessionLifecycle.set(sessionKey, {
     expiresAtMs,
@@ -201,6 +227,10 @@ export function _resetDemoSessionLifecycleForTests(): void {
   nextDemoSessionGeneration = 0;
 }
 
+export function _demoSessionLifecycleSizeForTests(): number {
+  return demoSessionLifecycle.size;
+}
+
 export function verifyDemoSession(token: string, nowMs = Date.now()): boolean {
   return inspectDemoSession(token, nowMs) !== null;
 }
@@ -211,14 +241,24 @@ export function verifyDemoSession(token: string, nowMs = Date.now()): boolean {
  * disposable surface from becoming a remotely mintable public principal.
  */
 export function isLocalDemoAddress(address: string | undefined): boolean {
+  return canonicalLocalDemoAddress(address) !== null;
+}
+
+/**
+ * Collapse every accepted spelling (including IPv6 zone text) to one key.
+ * Rate-limit maps must never use the attacker-controlled raw address string.
+ */
+export function canonicalLocalDemoAddress(
+  address: string | undefined,
+): 'loopback' | null {
   const normalized = address?.split('%')[0]?.toLowerCase();
-  return (
-    normalized === '127.0.0.1' ||
+  return normalized === '127.0.0.1' ||
     normalized === '::1' ||
     normalized === '::ffff:127.0.0.1' ||
     normalized === '::ffff:7f00:1' ||
     normalized === '0:0:0:0:0:ffff:7f00:1'
-  );
+    ? 'loopback'
+    : null;
 }
 
 /**

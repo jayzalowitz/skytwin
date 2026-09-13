@@ -37,6 +37,8 @@ vi.mock('@skytwin/policy-engine', () => ({
 import { createDemoRouter, _resetDemoCacheForTests } from '../routes/demo.js';
 import {
   _resetDemoSessionLifecycleForTests,
+  DEMO_SESSION_LIFECYCLE_LIMIT,
+  issueDemoSession,
   verifyDemoSession,
 } from '../auth/demo-session.js';
 
@@ -255,6 +257,50 @@ describe('demo routes', () => {
       const limited = await request(app, 'POST', '/api/v1/demo/session');
       expect(limited.status).toBe(429);
       expect(limited.headers['retry-after']).toBeDefined();
+    });
+
+    it('cannot split the issuance bucket with attacker-controlled IPv6 zones', async () => {
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
+      const app = buildApp();
+      app.set('trust proxy', 1);
+      for (let index = 0; index < 12; index += 1) {
+        const issued = await request(
+          app,
+          'POST',
+          '/api/v1/demo/session',
+          undefined,
+          { 'X-Forwarded-For': `::1%zone-${index}` },
+        );
+        expect(issued.status).toBe(201);
+      }
+      const limited = await request(
+        app,
+        'POST',
+        '/api/v1/demo/session',
+        undefined,
+        { 'X-Forwarded-For': '::1%one-more-zone' },
+      );
+      expect(limited.status).toBe(429);
+      expect(limited.headers['retry-after']).toBeDefined();
+    });
+
+    it('maps lifecycle capacity refusal to a retryable 429 without evicting authority', async () => {
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
+      const sessions = Array.from(
+        { length: DEMO_SESSION_LIFECYCLE_LIMIT },
+        () => issueDemoSession(),
+      );
+
+      const limited = await request(
+        buildApp(),
+        'POST',
+        '/api/v1/demo/session',
+      );
+
+      expect(limited.status).toBe(429);
+      expect(limited.headers['retry-after']).toBeDefined();
+      expect(verifyDemoSession(sessions[0]!.token)).toBe(true);
+      expect(verifyDemoSession(sessions.at(-1)!.token)).toBe(true);
     });
   });
 

@@ -10,6 +10,7 @@ import {
   isDemoReadRequest,
   revokeDemoSessionByKey,
 } from '../auth/demo-session.js';
+import type { VerifiedDemoSession } from '../auth/demo-session.js';
 
 const log = createLogger('api:auth');
 
@@ -48,6 +49,80 @@ const DEV_AUTH_BYPASS =
     (process.env['NODE_ENV'] === 'development' ? 'true' : 'false')) === 'true';
 
 let bypassWarned = false;
+
+/**
+ * Hold the exact demo authority through the first response boundary.
+ *
+ * Express does not await downstream middleware after `next()`, so checking only
+ * before `next()` leaves every asynchronous repository route able to return
+ * after this credential is discarded, replaced, or expires. Guard the Node
+ * response primitives instead: `json`, `send`, HEAD handling, errors, and
+ * streamed responses all reach writeHead/write/end before committing bytes.
+ */
+function fenceDemoResponse(
+  res: Response,
+  session: VerifiedDemoSession,
+): void {
+  const originalWrite = res.write.bind(res);
+  const originalEnd = res.end.bind(res);
+  const originalWriteHead = res.writeHead.bind(res);
+  let boundary: 'pending' | 'allowed' | 'denying' | 'denied' = 'pending';
+
+  const deny = (): void => {
+    if (boundary === 'denying' || boundary === 'denied') return;
+    boundary = 'denying';
+    const body = JSON.stringify({
+      error: 'Sample session unavailable',
+      message: 'Restart the sample tour to continue.',
+    });
+    res.statusCode = 401;
+    res.removeHeader('Content-Encoding');
+    res.removeHeader('Content-Length');
+    res.removeHeader('ETag');
+    res.removeHeader('Last-Modified');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.setHeader('Content-Length', String(Buffer.byteLength(body)));
+    // originalEnd may implicitly invoke the guarded writeHead. The `denying`
+    // state lets that one internal call through with the replacement headers.
+    Reflect.apply(originalEnd, res, [body]);
+    boundary = 'denied';
+  };
+
+  const admit = (): boolean => {
+    if (boundary === 'allowed') return true;
+    if (boundary !== 'pending') return false;
+    if (isDemoSessionActive(session)) {
+      boundary = 'allowed';
+      return true;
+    }
+    deny();
+    return false;
+  };
+
+  res.writeHead = function guardedDemoWriteHead(
+    ...args: unknown[]
+  ): Response {
+    if (boundary === 'denying') {
+      return Reflect.apply(originalWriteHead, res, args) as Response;
+    }
+    if (!admit()) return res;
+    return Reflect.apply(originalWriteHead, res, args) as Response;
+  } as Response['writeHead'];
+
+  res.write = function guardedDemoWrite(...args: unknown[]): boolean {
+    if (!admit()) return false;
+    return Reflect.apply(originalWrite, res, args) as boolean;
+  } as Response['write'];
+
+  res.end = function guardedDemoEnd(...args: unknown[]): Response {
+    if (boundary === 'denying') {
+      return Reflect.apply(originalEnd, res, args) as Response;
+    }
+    if (!admit()) return res;
+    return Reflect.apply(originalEnd, res, args) as Response;
+  } as Response['end'];
+}
 
 /**
  * Hash a raw token with HMAC-SHA256 so we never store the raw token server-side.
@@ -192,6 +267,7 @@ export async function sessionAuth(
     }
     req.authenticatedUserId = DEMO_USER_ID;
     req.demoAuthenticated = true;
+    fenceDemoResponse(res, demoSession);
     next();
     return;
   }

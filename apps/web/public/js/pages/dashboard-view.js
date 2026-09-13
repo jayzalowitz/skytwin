@@ -488,7 +488,7 @@ export function handleTryRecipe(userId, situation) {
 
 export function renderTourBanner() {
   return `
-    <div class="card" style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+    <div class="card" data-tour-banner style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
       <div class="card-header">
         <span class="card-title">You're exploring with a sample profile</span>
       </div>
@@ -504,6 +504,30 @@ export function renderTourBanner() {
       </div>
     </div>
   `;
+}
+
+/** Make the dashboard tour-exit wait visible and announced to assistive tech. */
+export function setTourExitPending(trigger, pending) {
+  const region = trigger?.closest?.('[data-tour-banner]');
+  if (!region) return;
+  const button = region.querySelector('[data-action="exit-tour"]');
+  if (button) button.disabled = pending;
+  if (!pending) {
+    region.removeAttribute('aria-busy');
+    region.querySelector('[data-tour-exit-status]')?.remove();
+    return;
+  }
+  region.setAttribute('aria-busy', 'true');
+  let status = region.querySelector('[data-tour-exit-status]');
+  if (!status) {
+    status = document.createElement('p');
+    status.className = 'sample-operation-status';
+    status.setAttribute('data-tour-exit-status', '');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    region.append(status);
+  }
+  status.textContent = 'Discarding the sample and opening your setup…';
 }
 
 export async function skyTwinExitTour() {
@@ -757,7 +781,14 @@ export function initDashboardGlobals() {
       const uid = askInput?.getAttribute('data-user-id');
       if (uid && situation) handleTryRecipe(uid, situation);
     } else if (action === 'exit-tour') {
-      await skyTwinExitTour();
+      setTourExitPending(el, true);
+      try {
+        await skyTwinExitTour();
+      } finally {
+        // Production reloads on success; restore the control if navigation is
+        // suppressed or fails in an embedded/test environment.
+        setTourExitPending(el, false);
+      }
     } else if (action === 'connect-google') {
       const uid = el.getAttribute('data-user-id');
       if (uid) handleConnectGoogleFromDashboard(uid);

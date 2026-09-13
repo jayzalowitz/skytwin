@@ -18,7 +18,9 @@ import type { DecisionRepositoryPort } from '@skytwin/decision-engine';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import {
+  canonicalLocalDemoAddress,
   DEMO_USER_ID,
+  DemoSessionCapacityError,
   isLocalDemoRequest,
   issueDemoSession,
 } from '../auth/demo-session.js';
@@ -193,7 +195,16 @@ export function createDemoRouter(): Router {
           .json({ error: 'Demo profile not available on this server.' });
         return;
       }
-      const limit = checkSampleSessionRate(ip ?? 'unknown');
+      // isLocalDemoRequest above proved this address is loopback. Collapse all
+      // accepted IPv4/IPv6 spellings and zone suffixes into one rate bucket.
+      const rateIdentity = canonicalLocalDemoAddress(ip);
+      if (!rateIdentity) {
+        res.status(403).json({
+          error: 'The packaged sample is available from this device only.',
+        });
+        return;
+      }
+      const limit = checkSampleSessionRate(rateIdentity);
       if (!limit.allowed) {
         res.set(
           'Retry-After',
@@ -219,6 +230,13 @@ export function createDemoRouter(): Router {
       };
       res.status(201).json(response);
     } catch (error) {
+      if (error instanceof DemoSessionCapacityError) {
+        res.set('Retry-After', '60');
+        res.status(429).json({
+          error: 'Too many active sample sessions. Try again after older sessions expire.',
+        });
+        return;
+      }
       next(error);
     }
   });
