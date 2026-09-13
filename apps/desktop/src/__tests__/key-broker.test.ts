@@ -445,6 +445,32 @@ describe('DesktopKeyBroker', () => {
     });
   });
 
+  it('does not report locked when clock expiry reaches an unproven child barrier first', async () => {
+    let now = 1_000;
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      now: () => now,
+      ttlMs: 60_000,
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 5,
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.onKill = () => { /* Signal accepted without proven termination. */ };
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    now += 60_001;
+
+    expect(await broker.state(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+    expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(await broker.state(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+  });
+
   it('waits for delayed child exit after the acknowledgement deadline', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore(), {
       lockAckTimeoutMs: 5,

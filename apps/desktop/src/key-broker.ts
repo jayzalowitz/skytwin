@@ -819,7 +819,17 @@ export class DesktopKeyBroker {
       (this.lockDepth.get(userId) ?? 0) > 0
       || this.containmentFailures.has(userId)
     ) return { success: false, error: 'vault_broker_unavailable' };
-    return { success: true, state: this.active(userId) ? 'unlocked' : 'locked' };
+    const unlocked = this.unlocked.get(userId);
+    if (
+      (this.lockDepth.get(userId) ?? 0) > 0
+      || this.containmentFailures.has(userId)
+    ) return { success: false, error: 'vault_broker_unavailable' };
+    if (!unlocked) return { success: true, state: 'locked' };
+    if (unlocked.expiresAt > this.now()) return { success: true, state: 'unlocked' };
+    const locked = await this.lock(userId);
+    return locked.success
+      ? { success: true, state: 'locked' }
+      : { success: false, error: 'vault_broker_unavailable' };
   }
 
   encrypt(
