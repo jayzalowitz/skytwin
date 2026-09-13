@@ -8,7 +8,10 @@ import {
   isLocalDemoRequest,
   revokeDemoSessionByKey,
 } from '../auth/demo-session.js';
-import type { VerifiedDemoSession } from '../auth/demo-session.js';
+import type {
+  DemoFixtureIncarnation,
+  VerifiedDemoSession,
+} from '../auth/demo-session.js';
 import {
   parseSampleSimulationCommand,
   SampleSimulationCommandError,
@@ -20,11 +23,14 @@ interface AuthenticatedSampleRequest extends Request {
     sessionKey: VerifiedDemoSession['sessionKey'];
     expiresAtMs: VerifiedDemoSession['expiresAtMs'];
     generation: VerifiedDemoSession['generation'];
+    fixtureIncarnation: VerifiedDemoSession['fixtureIncarnation'];
     signal: VerifiedDemoSession['signal'];
   };
 }
 
-type SampleAvailabilityCheck = () => Promise<boolean>;
+type SampleAvailabilityCheck = (
+  expected: DemoFixtureIncarnation,
+) => Promise<boolean>;
 
 function requireSampleSimulationSession(
   req: AuthenticatedSampleRequest,
@@ -71,7 +77,7 @@ export function createDemoSimulationRouter(
       if (session) service.discard(session.sessionKey);
       throw new SampleSimulationCommandError('Sample session is no longer active.', 401);
     }
-    const available = await isSampleAvailable();
+    const available = await isSampleAvailable(session.fixtureIncarnation);
     // The availability check is asynchronous (a DB query in production).
     // Revalidate the exact generation after it so discard/replacement/expiry
     // cannot return a late response or advance into the simulation service.

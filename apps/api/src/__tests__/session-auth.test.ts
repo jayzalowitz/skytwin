@@ -216,6 +216,11 @@ describe('sessionAuth middleware', () => {
   });
 
   describe('read-only sample credential', () => {
+    const fixtureIncarnation = {
+      userId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+      revision: 'demo-fixture-v1',
+    } as const;
+
     async function loadDemoAuth() {
       process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
       process.env['SESSION_SECRET'] = 'test-demo-session-secret-that-is-long-enough';
@@ -226,8 +231,13 @@ describe('sessionAuth middleware', () => {
         id: demo.DEMO_USER_ID,
         is_demo: true,
         created_at: new Date('2026-01-01T00:00:00.000Z'),
+        demo_authority_revision: fixtureIncarnation.revision,
       });
-      return { sessionAuth: auth.sessionAuth, issueDemoSession: demo.issueDemoSession };
+      return {
+        sessionAuth: auth.sessionAuth,
+        issueDemoSession: (nowMs?: number, replacesToken?: string) =>
+          demo.issueDemoSession(fixtureIncarnation, nowMs, replacesToken),
+      };
     }
 
     it('binds an allowlisted read to the reserved sample identity', async () => {
@@ -248,11 +258,44 @@ describe('sessionAuth middleware', () => {
       expect(req.demoAuthenticated).toBe(true);
     });
 
+    it.each([
+      ['the reserved row is deleted and recreated', 'demo-fixture-v2'],
+      ['the marker is cleared and re-enabled', 'demo-fixture-v3'],
+    ])('rejects an issued credential before its first read when %s', async (_scenario, revision) => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const db = await import('@skytwin/db');
+      const issued = mod.issueDemoSession();
+      (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: demo.DEMO_USER_ID,
+        is_demo: true,
+        demo_authority_revision: revision,
+      });
+      const req = mockReq({
+        method: 'GET',
+        originalUrl: `/api/decisions/${demo.DEMO_USER_ID}`,
+        headers: { authorization: `Bearer ${issued.token}` },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      await mod.sessionAuth(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(demo.inspectDemoSession(issued.token)).toBeNull();
+    });
+
     it('does not pass authority revoked during the sample marker lookup', async () => {
       const mod = await loadDemoAuth();
       const demo = await import('../auth/demo-session.js');
       const db = await import('@skytwin/db');
-      let releaseLookup!: (value: { id: string; is_demo: boolean; created_at: Date }) => void;
+      let releaseLookup!: (value: {
+        id: string;
+        is_demo: boolean;
+        created_at: Date;
+        demo_authority_revision: string;
+      }) => void;
       (
         db.userRepository.findDemoById as ReturnType<typeof vi.fn>
       ).mockReturnValueOnce(
@@ -278,6 +321,7 @@ describe('sessionAuth middleware', () => {
         id: demo.DEMO_USER_ID,
         is_demo: true,
         created_at: new Date('2026-01-01T00:00:00.000Z'),
+        demo_authority_revision: fixtureIncarnation.revision,
       });
       await pending;
 
@@ -362,7 +406,11 @@ describe('sessionAuth middleware', () => {
             );
             expect(discard.status).toBe(204);
           } else {
-            demo.issueDemoSession(Date.now(), issued.token);
+            demo.issueDemoSession(
+              fixtureIncarnation,
+              Date.now(),
+              issued.token,
+            );
           }
           releaseRoute();
 
@@ -387,12 +435,9 @@ describe('sessionAuth middleware', () => {
 
     it.each([
       ['marker is cleared', null],
-      ['reserved row is replaced', {
-        id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
-        is_demo: true,
-        created_at: new Date('2026-01-02T00:00:00.000Z'),
-      }],
-    ])('does not emit a paused allowlisted read after the database %s', async (_scenario, replacement) => {
+      ['reserved row is replaced', 'demo-fixture-v2'],
+      ['marker is cleared and re-enabled', 'demo-fixture-v3'],
+    ])('does not emit a paused allowlisted read after the database %s', async (_scenario, revision) => {
       const mod = await loadDemoAuth();
       const demo = await import('../auth/demo-session.js');
       const db = await import('@skytwin/db');
@@ -400,8 +445,14 @@ describe('sessionAuth middleware', () => {
         id: demo.DEMO_USER_ID,
         is_demo: true,
         created_at: new Date('2026-01-01T00:00:00.000Z'),
+        demo_authority_revision: fixtureIncarnation.revision,
       };
-      let current: typeof original | null = original;
+      let current: {
+        id: string;
+        is_demo: boolean;
+        created_at: Date;
+        demo_authority_revision: string;
+      } | null = original;
       (db.userRepository.findDemoById as ReturnType<typeof vi.fn>)
         .mockImplementation(async () => current);
       let markRouteStarted!: () => void;
@@ -425,7 +476,9 @@ describe('sessionAuth middleware', () => {
           headers: { Authorization: `Bearer ${issued.token}` },
         });
         await routeStarted;
-        current = replacement;
+        current = revision
+          ? { ...original, demo_authority_revision: revision }
+          : null;
         releaseRoute();
         const response = await pending;
         expect(response.status).toBe(401);
@@ -534,6 +587,182 @@ describe('sessionAuth middleware', () => {
       }
     });
 
+    it('runs buffered write callbacks exactly once after final authority proof', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const callbacks = [vi.fn(), vi.fn()];
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (_req, res) => {
+        res.write('', callbacks[0]);
+        res.end('ok', callbacks[1]);
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        expect(response.status).toBe(200);
+        await expect(response.text()).resolves.toBe('ok');
+        await vi.waitFor(() => {
+          expect(callbacks[0]).toHaveBeenCalledOnce();
+          expect(callbacks[1]).toHaveBeenCalledOnce();
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
+        );
+      }
+    });
+
+    it('fails closed when many zero-length writes exceed the entry bound', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (_req, res) => {
+        for (let index = 0; index < 1_025; index += 1) res.write('');
+        res.end('must-not-escape');
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        expect(response.status).toBe(401);
+        expect(await response.text()).not.toContain('must-not-escape');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
+        );
+      }
+    });
+
+    it('fails closed before retaining a response beyond the byte bound', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (_req, res) => {
+        res.end(Buffer.alloc(16 * 1024 * 1024 + 1));
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        expect(response.status).toBe(401);
+        await expect(response.json()).resolves.toMatchObject({
+          error: expect.stringMatching(/unavailable/i),
+        });
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
+        );
+      }
+    });
+
+    it('bounds callbacks and rejects accepted callbacks exactly once on denial', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const callbacks = Array.from({ length: 257 }, () => vi.fn());
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (_req, res) => {
+        for (const callback of callbacks) res.write('', callback);
+        res.end('must-not-escape');
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        expect(response.status).toBe(401);
+        await vi.waitFor(() => expect(callbacks[0]).toHaveBeenCalledOnce());
+        for (const callback of callbacks) {
+          expect(callback).toHaveBeenCalledOnce();
+          expect(callback.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+        }
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
+        );
+      }
+    });
+
+    it('fails closed on unsupported buffered response chunks', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (_req, res) => {
+        (res.write as unknown as (chunk: unknown) => boolean)({ unsupported: true });
+        res.end('must-not-escape');
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        expect(response.status).toBe(401);
+        expect(await response.text()).not.toContain('must-not-escape');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
+        );
+      }
+    });
+
+    it('fails closed on unsupported buffered header shapes', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (_req, res) => {
+        (res.writeHead as unknown as (...args: unknown[]) => Response)(
+          200,
+          new Date(),
+        );
+        res.end('must-not-escape');
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        expect(response.status).toBe(401);
+        expect(await response.text()).not.toContain('must-not-escape');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
+        );
+      }
+    });
+
     it('rejects mutations and non-allowlisted reads without falling through to DB sessions', async () => {
       const mod = await loadDemoAuth();
       const issued = mod.issueDemoSession();
@@ -567,13 +796,17 @@ describe('sessionAuth middleware', () => {
       const db = await import('@skytwin/db');
       (
         db.userRepository.findDemoById as ReturnType<typeof vi.fn>
-      ).mockResolvedValue({ id: demo.DEMO_USER_ID, is_demo: true });
+      ).mockResolvedValue({
+        id: demo.DEMO_USER_ID,
+        is_demo: true,
+        demo_authority_revision: fixtureIncarnation.revision,
+      });
       const req = mockReq({
         ip: '127.0.0.1',
         method: 'POST',
         originalUrl: '/api/feedback',
         headers: {
-          authorization: `Bearer ${demo.issueDemoSession().token}`,
+          authorization: `Bearer ${demo.issueDemoSession(fixtureIncarnation).token}`,
         },
       });
       const res = mockRes();
@@ -598,6 +831,7 @@ describe('sessionAuth middleware', () => {
         const token =
           kind === 'expired'
             ? demo.issueDemoSession(
+                fixtureIncarnation,
                 Date.now() - 4 * 60 * 60 * 1000 - 1,
               ).token
             : 'skytwin-demo-v1';

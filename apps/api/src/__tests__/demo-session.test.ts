@@ -17,6 +17,11 @@ import {
   verifyDemoSession,
 } from '../auth/demo-session.js';
 
+const TEST_FIXTURE = {
+  userId: DEMO_USER_ID,
+  revision: 'demo-fixture-test-v1',
+} as const;
+
 describe('demo session credential', () => {
   const previousSecret = process.env['SESSION_SECRET'];
 
@@ -28,15 +33,15 @@ describe('demo session credential', () => {
 
   it('retains discarded and replacement tombstones through signed expiry', () => {
     const now = 1_800_000_000_000;
-    const discarded = issueDemoSession(now);
+    const discarded = issueDemoSession(TEST_FIXTURE, now);
     const claims = inspectDemoSession(discarded.token, now + 1)!;
     expect(isDemoSessionActive(claims, now + 1)).toBe(true);
     expect(revokeDemoSession(discarded.token, now + 2)).toBe(true);
     expect(claims.signal.aborted).toBe(true);
     expect(inspectDemoSession(discarded.token, now + 3)).toBeNull();
 
-    const previous = issueDemoSession(now + 4);
-    const replacement = issueDemoSession(now + 5, previous.token);
+    const previous = issueDemoSession(TEST_FIXTURE, now + 4);
+    const replacement = issueDemoSession(TEST_FIXTURE, now + 5, previous.token);
     expect(inspectDemoSession(previous.token, now + 6)).toBeNull();
     expect(inspectDemoSession(replacement.token, now + 6)).not.toBeNull();
   });
@@ -53,9 +58,22 @@ describe('demo session credential', () => {
   });
 
   it('verifies an issued token before expiry', () => {
-    const issued = issueDemoSession(1_800_000_000_000);
+    const issued = issueDemoSession(TEST_FIXTURE, 1_800_000_000_000);
     expect(verifyDemoSession(issued.token, 1_800_000_000_001)).toBe(true);
+    expect(
+      inspectDemoSession(issued.token, 1_800_000_000_001)?.fixtureIncarnation,
+    ).toEqual(TEST_FIXTURE);
     expect(issued.expiresAt.getTime()).toBe(1_800_014_400_000);
+  });
+
+  it('freezes the fixture incarnation captured at issuance', () => {
+    const mutableProof = { ...TEST_FIXTURE, revision: 'fixture-before-mutation' };
+    const issued = issueDemoSession(mutableProof);
+    mutableProof.revision = 'fixture-after-mutation';
+
+    expect(inspectDemoSession(issued.token)?.fixtureIncarnation.revision).toBe(
+      'fixture-before-mutation',
+    );
   });
 
   it('requires the resolved client and raw socket peer to both be loopback', () => {
@@ -65,7 +83,7 @@ describe('demo session credential', () => {
   });
 
   it('rejects expired, malformed, and tampered tokens', () => {
-    const issued = issueDemoSession(1_800_000_000_000);
+    const issued = issueDemoSession(TEST_FIXTURE, 1_800_000_000_000);
     expect(verifyDemoSession(issued.token, issued.expiresAt.getTime())).toBe(
       false,
     );
@@ -80,8 +98,8 @@ describe('demo session credential', () => {
   });
 
   it('derives distinct one-way state keys for independently issued sessions', () => {
-    const first = issueDemoSession(1_800_000_000_000);
-    const second = issueDemoSession(1_800_000_000_000);
+    const first = issueDemoSession(TEST_FIXTURE, 1_800_000_000_000);
+    const second = issueDemoSession(TEST_FIXTURE, 1_800_000_000_000);
     const firstClaims = inspectDemoSession(first.token, 1_800_000_000_001);
     const secondClaims = inspectDemoSession(second.token, 1_800_000_000_001);
     expect(firstClaims?.sessionKey).toMatch(/^[a-f0-9]{64}$/);
@@ -91,16 +109,16 @@ describe('demo session credential', () => {
 
   it('fails closed at the lifecycle cap without evicting active sessions or tombstones', () => {
     const now = 1_800_000_000_000;
-    const tombstoned = issueDemoSession(now);
+    const tombstoned = issueDemoSession(TEST_FIXTURE, now);
     revokeDemoSession(tombstoned.token, now + 1);
     const active = Array.from(
       { length: DEMO_SESSION_LIFECYCLE_LIMIT - 1 },
-      () => issueDemoSession(now + 2),
+      () => issueDemoSession(TEST_FIXTURE, now + 2),
     );
 
-    expect(() => issueDemoSession(now + 3)).toThrow(DemoSessionCapacityError);
+    expect(() => issueDemoSession(TEST_FIXTURE, now + 3)).toThrow(DemoSessionCapacityError);
     expect(() =>
-      issueDemoSession(now + 3, active[0]!.token),
+      issueDemoSession(TEST_FIXTURE, now + 3, active[0]!.token),
     ).toThrow(DemoSessionCapacityError);
     expect(inspectDemoSession(tombstoned.token, now + 3)).toBeNull();
     expect(inspectDemoSession(active[0]!.token, now + 3)).not.toBeNull();
@@ -108,16 +126,16 @@ describe('demo session credential', () => {
 
     // Elapsed entries may be pruned; live or tombstoned authority may not.
     expect(() =>
-      issueDemoSession(tombstoned.expiresAt.getTime()),
+      issueDemoSession(TEST_FIXTURE, tombstoned.expiresAt.getTime()),
     ).not.toThrow();
   });
 
   it('does not exceed the lifecycle cap for a signed token from an earlier process', () => {
-    const priorProcessToken = issueDemoSession().token;
+    const priorProcessToken = issueDemoSession(TEST_FIXTURE).token;
     _resetDemoSessionLifecycleForTests();
     const active = Array.from(
       { length: DEMO_SESSION_LIFECYCLE_LIMIT },
-      () => issueDemoSession(),
+      () => issueDemoSession(TEST_FIXTURE),
     );
 
     expect(revokeDemoSession(priorProcessToken)).toBe(true);

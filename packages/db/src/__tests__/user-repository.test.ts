@@ -76,14 +76,18 @@ describe('userRepository', () => {
 
   describe('findDemoById', () => {
     it('requires the database sample marker as well as the reserved id', async () => {
-      const row = fakeUserRow();
+      const row = {
+        ...fakeUserRow(),
+        demo_authority_revision: '1777777777.0000000000',
+      };
       mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
 
       const result = await userRepository.findDemoById('u-001');
 
       expect(result).toEqual(row);
       expect(mockQuery).toHaveBeenCalledWith(
-        'SELECT * FROM users WHERE id = $1 AND is_demo = true',
+        `SELECT *, crdb_internal_mvcc_timestamp::STRING AS demo_authority_revision
+       FROM users WHERE id = $1 AND is_demo = true`,
         ['u-001'],
       );
     });

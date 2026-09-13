@@ -6,17 +6,26 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SampleSimulationStateResponse } from '@skytwin/shared-types';
 import {
   _resetDemoSessionLifecycleForTests,
+  DEMO_USER_ID,
   inspectDemoSession,
   inspectDemoSessionForDiscard,
   issueDemoSession,
   revokeDemoSession,
 } from '../auth/demo-session.js';
+import type { DemoFixtureIncarnation } from '../auth/demo-session.js';
 import { createDemoSimulationRouter } from '../routes/demo-simulation.js';
 import { SampleSimulationService } from '../services/sample-simulation.js';
 
+const TEST_FIXTURE = {
+  userId: DEMO_USER_ID,
+  revision: 'demo-fixture-test-v1',
+} as const;
+
 function buildApp(
   service = new SampleSimulationService(),
-  isSampleAvailable: () => Promise<boolean> = async () => true,
+  isSampleAvailable: (
+    expected: DemoFixtureIncarnation,
+  ) => Promise<boolean> = async () => true,
 ): Express {
   const app = express();
   app.use(express.json());
@@ -111,7 +120,7 @@ describe('isolated sample simulation', () => {
       app,
       'GET',
       '/api/v1/demo/simulation',
-      issueDemoSession().token,
+      issueDemoSession(TEST_FIXTURE).token,
     );
     expect(valid.status).toBe(200);
     expect(valid.cacheControl).toBe('no-store');
@@ -131,12 +140,40 @@ describe('isolated sample simulation', () => {
       app,
       'GET',
       '/api/v1/demo/simulation',
-      issueDemoSession().token,
+      issueDemoSession(TEST_FIXTURE).token,
     );
     expect(denied.status).toBe(401);
     expect(denied.body).toMatchObject({
       error: expect.stringMatching(/no longer available/i),
     });
+  });
+
+  it.each([
+    ['the reserved row is deleted and recreated', 'demo-fixture-test-v2'],
+    ['the marker is cleared and re-enabled', 'demo-fixture-test-v3'],
+  ])('rejects an issued credential before its first simulation request when %s', async (_scenario, revision) => {
+    let currentRevision: string = TEST_FIXTURE.revision;
+    const observedProofs: DemoFixtureIncarnation[] = [];
+    const service = new SampleSimulationService();
+    const app = buildApp(service, async (expected) => {
+      observedProofs.push(expected);
+      return expected.revision === currentRevision;
+    });
+    const issued = issueDemoSession(TEST_FIXTURE);
+    const identity = inspectDemoSessionForDiscard(issued.token)!;
+    currentRevision = revision;
+
+    const denied = await request(
+      app,
+      'GET',
+      '/api/v1/demo/simulation',
+      issued.token,
+    );
+
+    expect(denied.status).toBe(401);
+    expect(observedProofs).toEqual([TEST_FIXTURE]);
+    expect(inspectDemoSession(issued.token)).toBeNull();
+    expect(service.hasSessionForTests(identity.sessionKey)).toBe(false);
   });
 
   it('discards state when sample authority disappears during response preparation', async () => {
@@ -151,7 +188,7 @@ describe('isolated sample simulation', () => {
         return checks === 1;
       }),
     );
-    const issued = issueDemoSession();
+    const issued = issueDemoSession(TEST_FIXTURE);
     const identity = inspectDemoSessionForDiscard(issued.token)!;
 
     const denied = await request(
@@ -175,7 +212,7 @@ describe('isolated sample simulation', () => {
       if (failFinalCheck && checks === 2) throw new Error('transient final fixture check');
       return true;
     });
-    const issued = issueDemoSession();
+    const issued = issueDemoSession(TEST_FIXTURE);
     const session = inspectDemoSession(issued.token)!;
     const command = { type: 'approve' as const, proposalId: 'calendar-focus' as const };
     const failed = await request(
@@ -201,7 +238,7 @@ describe('isolated sample simulation', () => {
     let checks = 0;
     let failFinalCheck = true;
     const service = new SampleSimulationService();
-    const issued = issueDemoSession();
+    const issued = issueDemoSession(TEST_FIXTURE);
     const session = inspectDemoSession(issued.token)!;
     await service.command(
       session.sessionKey,
@@ -244,7 +281,7 @@ describe('isolated sample simulation', () => {
   it('keeps a discarded credential tombstoned instead of recreating its state', async () => {
     const service = new SampleSimulationService();
     const app = buildApp(service);
-    const issued = issueDemoSession();
+    const issued = issueDemoSession(TEST_FIXTURE);
     expect(
       (await request(app, 'GET', '/api/v1/demo/simulation', issued.token))
         .status,
@@ -282,7 +319,7 @@ describe('isolated sample simulation', () => {
         return true;
       }),
     );
-    const issued = issueDemoSession();
+    const issued = issueDemoSession(TEST_FIXTURE);
     const pending = request(
       app,
       'GET',
@@ -318,7 +355,7 @@ describe('isolated sample simulation', () => {
     const service = new SampleSimulationService({
       evaluate: vi.fn(() => policyResult),
     });
-    const issued = issueDemoSession();
+    const issued = issueDemoSession(TEST_FIXTURE);
     const session = inspectDemoSession(issued.token)!;
     const pending = service.command(
       session.sessionKey,
@@ -349,7 +386,7 @@ describe('isolated sample simulation', () => {
     );
     const service = new SampleSimulationService();
     const app = buildApp(service);
-    const token = issueDemoSession().token;
+    const token = issueDemoSession(TEST_FIXTURE).token;
 
     const initial = asState(
       (await request(app, 'GET', '/api/v1/demo/simulation', token)).body,
@@ -464,7 +501,7 @@ describe('isolated sample simulation', () => {
 
   it('fails missing provenance safe and exposes no approval path for containment', async () => {
     const app = buildApp();
-    const token = issueDemoSession().token;
+    const token = issueDemoSession(TEST_FIXTURE).token;
     const state = asState(
       (await request(app, 'GET', '/api/v1/demo/simulation', token)).body,
     );
@@ -496,7 +533,7 @@ describe('isolated sample simulation', () => {
 
   it('rejects unenumerated commands, corrections, fields, and repeated transitions', async () => {
     const app = buildApp();
-    const token = issueDemoSession().token;
+    const token = issueDemoSession(TEST_FIXTURE).token;
     for (const body of [
       { type: 'execute', proposalId: 'calendar-focus' },
       { type: 'approve', proposalId: 'not-in-catalog' },
@@ -537,7 +574,7 @@ describe('isolated sample simulation', () => {
 
   it('serializes simultaneous approvals into one transition', async () => {
     const app = buildApp();
-    const token = issueDemoSession().token;
+    const token = issueDemoSession(TEST_FIXTURE).token;
     const responses = await Promise.all([
       request(app, 'POST', '/api/v1/demo/simulation/commands', token, {
         type: 'approve',
@@ -790,8 +827,8 @@ describe('isolated sample simulation', () => {
   it('maps state-creation capacity exhaustion to HTTP 429 on GET', async () => {
     const service = new SampleSimulationService(undefined, 1);
     const app = buildApp(service);
-    const first = issueDemoSession().token;
-    const second = issueDemoSession().token;
+    const first = issueDemoSession(TEST_FIXTURE).token;
+    const second = issueDemoSession(TEST_FIXTURE).token;
     expect(
       (await request(app, 'GET', '/api/v1/demo/simulation', first)).status,
     ).toBe(200);
@@ -832,8 +869,8 @@ describe('isolated sample simulation', () => {
   it('isolates learning by credential and removes it on reset, exit, and expiry cleanup', async () => {
     const service = new SampleSimulationService();
     const app = buildApp(service);
-    const first = issueDemoSession();
-    const second = issueDemoSession();
+    const first = issueDemoSession(TEST_FIXTURE);
+    const second = issueDemoSession(TEST_FIXTURE);
     await request(
       app,
       'POST',
@@ -876,7 +913,7 @@ describe('isolated sample simulation', () => {
     );
     expect(exited.status).toBe(204);
 
-    const expired = issueDemoSession(Date.now() - 4 * 60 * 60 * 1000 - 1);
+    const expired = issueDemoSession(TEST_FIXTURE, Date.now() - 4 * 60 * 60 * 1000 - 1);
     const expiredIdentity = inspectDemoSessionForDiscard(expired.token)!;
     await service.getState(expiredIdentity.sessionKey, Date.now() + 60_000);
     expect(service.hasSessionForTests(expiredIdentity.sessionKey)).toBe(true);

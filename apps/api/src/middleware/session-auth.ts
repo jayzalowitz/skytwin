@@ -1,7 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
+import { validateHeaderName, validateHeaderValue } from 'node:http';
 import type { Request, Response, NextFunction } from 'express';
 import { sessionRepository, userRepository } from '@skytwin/db';
-import type { UserRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import {
   DEMO_USER_ID,
@@ -9,6 +9,7 @@ import {
   isDemoSessionActive,
   isDemoSessionTokenCandidate,
   isDemoReadRequest,
+  matchesDemoFixtureIncarnation,
   revokeDemoSessionByKey,
 } from '../auth/demo-session.js';
 import type { VerifiedDemoSession } from '../auth/demo-session.js';
@@ -52,37 +53,122 @@ const DEV_AUTH_BYPASS =
 let bypassWarned = false;
 
 const MAX_BUFFERED_DEMO_RESPONSE_BYTES = 16 * 1024 * 1024;
+const MAX_BUFFERED_DEMO_RESPONSE_ENTRIES = 1_024;
+const MAX_BUFFERED_DEMO_RESPONSE_CALLBACKS = 256;
 
-interface DemoAuthorityProof {
-  id: string;
-  createdAtMs: number;
+type ResponseCallback = (error?: Error | null) => void;
+
+interface ParsedBodyCall {
+  bytes: number;
+  callback: ResponseCallback | null;
 }
 
-function makeDemoAuthorityProof(user: UserRow): DemoAuthorityProof | null {
-  if (!(user.created_at instanceof Date)) return null;
-  const createdAtMs = user.created_at.getTime();
-  if (!Number.isFinite(createdAtMs)) return null;
-  return { id: user.id, createdAtMs };
-}
+function parseBufferedBodyCall(
+  args: unknown[],
+  allowEmpty: boolean,
+): ParsedBodyCall | null {
+  if (args.length === 0) return allowEmpty ? { bytes: 0, callback: null } : null;
+  if (args.length > 3) return null;
 
-function matchesDemoAuthorityProof(
-  user: UserRow | null,
-  expected: DemoAuthorityProof,
-): boolean {
-  if (!user) return false;
-  const current = makeDemoAuthorityProof(user);
-  return current?.id === expected.id && current.createdAtMs === expected.createdAtMs;
-}
-
-function responseChunkBytes(args: unknown[]): number {
-  const chunk = args[0];
-  if (chunk === undefined || chunk === null) return 0;
-  if (typeof chunk === 'string') {
-    const encoding = typeof args[1] === 'string' ? args[1] : 'utf8';
-    return Buffer.byteLength(chunk, encoding as BufferEncoding);
+  const [chunk, second, third] = args;
+  if (typeof chunk === 'function') {
+    return allowEmpty && args.length === 1
+      ? { bytes: 0, callback: chunk as ResponseCallback }
+      : null;
   }
-  if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) return chunk.byteLength;
-  return 0;
+  if ((chunk === undefined || chunk === null) && allowEmpty) {
+    if (args.length === 1) return { bytes: 0, callback: null };
+    if (args.length === 2 && typeof second === 'function') {
+      return { bytes: 0, callback: second as ResponseCallback };
+    }
+    return null;
+  }
+  if (
+    typeof chunk !== 'string' &&
+    !Buffer.isBuffer(chunk) &&
+    !(chunk instanceof Uint8Array)
+  ) {
+    return null;
+  }
+
+  let encoding: BufferEncoding = 'utf8';
+  let callback: ResponseCallback | null = null;
+  if (typeof second === 'string') {
+    if (!Buffer.isEncoding(second)) return null;
+    encoding = second;
+    if (third !== undefined) {
+      if (typeof third !== 'function') return null;
+      callback = third as ResponseCallback;
+    }
+  } else if (second !== undefined) {
+    if (typeof second !== 'function' || third !== undefined) return null;
+    callback = second as ResponseCallback;
+  }
+
+  return {
+    bytes:
+      typeof chunk === 'string'
+        ? Buffer.byteLength(chunk, encoding)
+        : chunk.byteLength,
+    callback,
+  };
+}
+
+function isBufferedWriteHeadCall(args: unknown[]): boolean {
+  if (args.length < 1 || args.length > 3) return false;
+  const [statusCode, second, third] = args;
+  if (
+    typeof statusCode !== 'number' ||
+    !Number.isInteger(statusCode) ||
+    statusCode < 100 ||
+    statusCode > 999
+  ) {
+    return false;
+  }
+  if (args.length === 1) return true;
+  if (typeof second === 'string') {
+    if (!/^[\t\x20-\x7e\x80-\xff]*$/.test(second)) return false;
+    return args.length === 2 || (args.length === 3 && isHeaderShape(third));
+  }
+  return args.length === 2 && isHeaderShape(second);
+}
+
+function isHeaderShape(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  try {
+    if (Array.isArray(value)) {
+      if (value.length % 2 !== 0) return false;
+      for (let index = 0; index < value.length; index += 2) {
+        const name = value[index];
+        const headerValue = value[index + 1];
+        if (typeof name !== 'string' || typeof headerValue !== 'string') {
+          return false;
+        }
+        validateHeaderName(name);
+        validateHeaderValue(name, headerValue);
+      }
+      return true;
+    }
+    const prototype = Object.getPrototypeOf(value) as unknown;
+    if (prototype !== Object.prototype && prototype !== null) return false;
+    for (const [name, headerValue] of Object.entries(value)) {
+      validateHeaderName(name);
+      if (Array.isArray(headerValue)) {
+        if (!headerValue.every((item) => typeof item === 'string')) return false;
+        for (const item of headerValue) validateHeaderValue(name, item);
+      } else if (
+        typeof headerValue === 'string' ||
+        typeof headerValue === 'number'
+      ) {
+        validateHeaderValue(name, String(headerValue));
+      } else {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -98,20 +184,45 @@ function responseChunkBytes(args: unknown[]): number {
 function fenceDemoResponse(
   res: Response,
   session: VerifiedDemoSession,
-  authorityProof: DemoAuthorityProof,
 ): void {
   const originalWrite = res.write.bind(res);
   const originalEnd = res.end.bind(res);
   const originalWriteHead = res.writeHead.bind(res);
   let boundary: 'pending' | 'verifying' | 'allowed' | 'denied' = 'pending';
   let bufferedBytes = 0;
+  let bufferedEntries = 0;
   let bufferedHead: unknown[] | null = null;
   const bufferedWrites: unknown[][] = [];
   let bufferedEnd: unknown[] | null = null;
+  const bufferedCallbacks: ResponseCallback[] = [];
 
-  const deny = (): void => {
+  const rejectResponseCallback = (
+    callback: ResponseCallback,
+    error: Error,
+  ): void => {
+    queueMicrotask(() => {
+      try {
+        callback(error);
+      } catch (callbackError) {
+        log.warn('Sample response callback failed after denial', {
+          error:
+            callbackError instanceof Error
+              ? callbackError.message
+              : String(callbackError),
+        });
+      }
+    });
+  };
+
+  const rejectBufferedCallbacks = (error: Error): void => {
+    const callbacks = bufferedCallbacks.splice(0);
+    for (const callback of callbacks) rejectResponseCallback(callback, error);
+  };
+
+  const deny = (reason = 'Sample response authority was revoked.'): void => {
     if (boundary === 'denied' || boundary === 'allowed') return;
     boundary = 'denied';
+    rejectBufferedCallbacks(new Error(reason));
     const body = JSON.stringify({
       error: 'Sample session unavailable',
       message: 'Restart the sample tour to continue.',
@@ -121,12 +232,14 @@ function fenceDemoResponse(
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Length', String(Buffer.byteLength(body)));
+    Reflect.apply(originalWriteHead, res, [401]);
     Reflect.apply(originalEnd, res, [body]);
   };
 
   const flush = (): void => {
     if (boundary !== 'verifying' || !bufferedEnd) return;
     boundary = 'allowed';
+    bufferedCallbacks.length = 0;
     if (bufferedHead) Reflect.apply(originalWriteHead, res, bufferedHead);
     for (const args of bufferedWrites) Reflect.apply(originalWrite, res, args);
     Reflect.apply(originalEnd, res, bufferedEnd);
@@ -139,7 +252,10 @@ function fenceDemoResponse(
         return;
       }
       const currentDemoUser = await userRepository.findDemoById(DEMO_USER_ID);
-      const authorityMatches = matchesDemoAuthorityProof(currentDemoUser, authorityProof);
+      const authorityMatches = matchesDemoFixtureIncarnation(
+        currentDemoUser,
+        session.fixtureIncarnation,
+      );
       if (!authorityMatches || !isDemoSessionActive(session)) {
         if (!authorityMatches) {
           revokeDemoSessionByKey(session.sessionKey, session.expiresAtMs);
@@ -156,32 +272,89 @@ function fenceDemoResponse(
     }
   };
 
-  const appendBytes = (args: unknown[]): boolean => {
-    bufferedBytes += responseChunkBytes(args);
-    if (bufferedBytes <= MAX_BUFFERED_DEMO_RESPONSE_BYTES) return true;
-    deny();
-    return false;
+  const appendEntry = (parsed: ParsedBodyCall): boolean => {
+    const nextEntries = bufferedEntries + 1;
+    const nextBytes = bufferedBytes + parsed.bytes;
+    const nextCallbacks = bufferedCallbacks.length + (parsed.callback ? 1 : 0);
+    if (
+      nextEntries > MAX_BUFFERED_DEMO_RESPONSE_ENTRIES ||
+      nextBytes > MAX_BUFFERED_DEMO_RESPONSE_BYTES ||
+      nextCallbacks > MAX_BUFFERED_DEMO_RESPONSE_CALLBACKS
+    ) {
+      const error = new Error('Sample response exceeded its bounded buffer.');
+      deny(error.message);
+      if (parsed.callback) rejectResponseCallback(parsed.callback, error);
+      return false;
+    }
+    bufferedEntries = nextEntries;
+    bufferedBytes = nextBytes;
+    if (parsed.callback) bufferedCallbacks.push(parsed.callback);
+    return true;
   };
 
   res.writeHead = function guardedDemoWriteHead(
     ...args: unknown[]
   ): Response {
-    if (boundary === 'allowed' || boundary === 'denied') {
+    if (boundary === 'allowed') {
       return Reflect.apply(originalWriteHead, res, args) as Response;
     }
-    if (boundary !== 'pending') return res;
+    if (
+      boundary !== 'pending' ||
+      bufferedHead ||
+      !isBufferedWriteHeadCall(args) ||
+      !appendEntry({ bytes: 0, callback: null })
+    ) {
+      if (boundary === 'pending') deny('Sample response used an unsupported header shape.');
+      return res;
+    }
     bufferedHead = args;
     return res;
   } as Response['writeHead'];
 
   res.write = function guardedDemoWrite(...args: unknown[]): boolean {
-    if (boundary !== 'pending' || !appendBytes(args)) return false;
+    if (boundary === 'allowed') {
+      return Reflect.apply(originalWrite, res, args) as boolean;
+    }
+    if (boundary !== 'pending') {
+      const callback = parseBufferedBodyCall(args, false)?.callback;
+      if (callback) {
+        rejectResponseCallback(
+          callback,
+          new Error('Sample response is no longer writable.'),
+        );
+      }
+      return false;
+    }
+    const parsed = parseBufferedBodyCall(args, false);
+    if (!parsed) {
+      deny('Sample response used an unsupported write shape.');
+      return false;
+    }
+    if (!appendEntry(parsed)) return false;
     bufferedWrites.push(args);
     return true;
   } as Response['write'];
 
   res.end = function guardedDemoEnd(...args: unknown[]): Response {
-    if (boundary !== 'pending' || !appendBytes(args)) return res;
+    if (boundary === 'allowed') {
+      return Reflect.apply(originalEnd, res, args) as Response;
+    }
+    if (boundary !== 'pending') {
+      const callback = parseBufferedBodyCall(args, true)?.callback;
+      if (callback) {
+        rejectResponseCallback(
+          callback,
+          new Error('Sample response is no longer writable.'),
+        );
+      }
+      return res;
+    }
+    const parsed = parseBufferedBodyCall(args, true);
+    if (!parsed) {
+      deny('Sample response used an unsupported end shape.');
+      return res;
+    }
+    if (!appendEntry(parsed)) return res;
     bufferedEnd = args;
     boundary = 'verifying';
     void verifyAndFlush();
@@ -305,9 +478,9 @@ export async function sessionAuth(
       });
       return;
     }
-    // The database marker is the revocation boundary for this stateless
-    // credential. Re-check it for every read so removing `is_demo`, deleting
-    // the fixture, or replacing the reserved row takes effect immediately.
+    // The database row incarnation is the revocation boundary for this signed
+    // credential. Re-check it for every read so clearing `is_demo`, deleting
+    // the fixture, or replacing the reserved row invalidates prior issuance.
     const demoUser = await userRepository.findDemoById(DEMO_USER_ID);
     if (!demoUser) {
       revokeDemoSessionByKey(
@@ -320,8 +493,7 @@ export async function sessionAuth(
       });
       return;
     }
-    const authorityProof = makeDemoAuthorityProof(demoUser);
-    if (!authorityProof) {
+    if (!matchesDemoFixtureIncarnation(demoUser, demoSession.fixtureIncarnation)) {
       revokeDemoSessionByKey(demoSession.sessionKey, demoSession.expiresAtMs);
       res.status(401).json({
         error: 'Sample session unavailable',
@@ -341,7 +513,7 @@ export async function sessionAuth(
     }
     req.authenticatedUserId = DEMO_USER_ID;
     req.demoAuthenticated = true;
-    fenceDemoResponse(res, demoSession, authorityProof);
+    fenceDemoResponse(res, demoSession);
     next();
     return;
   }

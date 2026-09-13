@@ -23,6 +23,7 @@ import {
   DemoSessionCapacityError,
   isLocalDemoRequest,
   issueDemoSession,
+  makeDemoFixtureIncarnation,
 } from '../auth/demo-session.js';
 
 /**
@@ -195,6 +196,11 @@ export function createDemoRouter(): Router {
           .json({ error: 'Demo profile not available on this server.' });
         return;
       }
+      const fixtureIncarnation = makeDemoFixtureIncarnation(user);
+      if (!fixtureIncarnation) {
+        res.status(503).json({ error: 'Demo profile authority is unavailable.' });
+        return;
+      }
       // isLocalDemoRequest above proved this address is loopback. Collapse all
       // accepted IPv4/IPv6 spellings and zone suffixes into one rate bucket.
       const rateIdentity = canonicalLocalDemoAddress(ip);
@@ -222,7 +228,11 @@ export function createDemoRouter(): Router {
       // Browser renewal presents the credential it is replacing. Retire that
       // exact authority before minting the successor so delayed requests from
       // the previous session cannot recreate disposable state.
-      const session = issueDemoSession(Date.now(), replacedToken);
+      const session = issueDemoSession(
+        fixtureIncarnation,
+        Date.now(),
+        replacedToken,
+      );
       const response: DemoSessionResponse = {
         token: session.token,
         userId: DEMO_USER_ID,

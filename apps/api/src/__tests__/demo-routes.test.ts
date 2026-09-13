@@ -43,6 +43,10 @@ import {
 } from '../auth/demo-session.js';
 
 const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+const TEST_FIXTURE = {
+  userId: DEMO_USER_ID,
+  revision: 'demo-fixture-routes-v1',
+} as const;
 
 function buildApp(): Express {
   const app = express();
@@ -110,6 +114,7 @@ const SEEDED_USER = {
   autonomy_settings: {},
   created_at: new Date(),
   updated_at: new Date(),
+  demo_authority_revision: TEST_FIXTURE.revision,
 };
 
 const SUCCESSFUL_PREDICTION = {
@@ -203,6 +208,18 @@ describe('demo routes', () => {
       });
     });
 
+    it('fails closed when the database cannot provide a fixture revision', async () => {
+      const { demo_authority_revision: _revision, ...unversionedUser } = SEEDED_USER;
+      mockUserRepository.findDemoById.mockResolvedValueOnce(unversionedUser);
+
+      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({
+        error: expect.stringMatching(/authority is unavailable/i),
+      });
+    });
+
     it('retires the credential presented during replacement issuance', async () => {
       mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       const app = buildApp();
@@ -288,7 +305,7 @@ describe('demo routes', () => {
       mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
       const sessions = Array.from(
         { length: DEMO_SESSION_LIFECYCLE_LIMIT },
-        () => issueDemoSession(),
+        () => issueDemoSession(TEST_FIXTURE),
       );
 
       const limited = await request(

@@ -18,12 +18,45 @@ export interface IssuedDemoSession {
   expiresAt: Date;
 }
 
+export interface DemoFixtureIncarnation {
+  readonly userId: typeof DEMO_USER_ID;
+  readonly revision: string;
+}
+
+export interface DemoFixtureAuthorityRow {
+  id: string;
+  demo_authority_revision: string;
+}
+
+export function makeDemoFixtureIncarnation(
+  row: DemoFixtureAuthorityRow,
+): DemoFixtureIncarnation | null {
+  if (
+    row.id !== DEMO_USER_ID ||
+    typeof row.demo_authority_revision !== 'string' ||
+    row.demo_authority_revision.length === 0
+  ) {
+    return null;
+  }
+  return { userId: DEMO_USER_ID, revision: row.demo_authority_revision };
+}
+
+export function matchesDemoFixtureIncarnation(
+  row: DemoFixtureAuthorityRow | null,
+  expected: DemoFixtureIncarnation,
+): boolean {
+  const current = row ? makeDemoFixtureIncarnation(row) : null;
+  return current?.userId === expected.userId && current.revision === expected.revision;
+}
+
 export interface VerifiedDemoSession {
   /** One-way key suitable for session-local, disposable server state. */
   sessionKey: string;
   expiresAtMs: number;
   /** Changes for every issued credential; used to fence asynchronous work. */
   generation: number;
+  /** Immutable database row version captured when this credential was issued. */
+  fixtureIncarnation: DemoFixtureIncarnation;
   /** Aborted as soon as this credential is replaced, discarded, or revoked. */
   signal: AbortSignal;
 }
@@ -38,6 +71,7 @@ interface DemoSessionLifecycle {
   generation: number;
   active: boolean;
   controller: AbortController;
+  fixtureIncarnation: DemoFixtureIncarnation | null;
 }
 
 const demoSessionLifecycle = new Map<string, DemoSessionLifecycle>();
@@ -84,9 +118,16 @@ function constantTimeEqual(left: string, right: string): boolean {
  * it to select an identity, and sessionAuth applies a strict read allowlist.
  */
 export function issueDemoSession(
+  fixtureIncarnation: DemoFixtureIncarnation,
   nowMs = Date.now(),
   replacesToken?: string,
 ): IssuedDemoSession {
+  if (
+    fixtureIncarnation.userId !== DEMO_USER_ID ||
+    fixtureIncarnation.revision.length === 0
+  ) {
+    throw new Error('A valid sample fixture incarnation is required.');
+  }
   dropElapsedSessionLifecycles(nowMs);
   // Replacement must retain the previous credential as a tombstone, so it
   // needs a new slot too. Refuse admission before revoking the old authority;
@@ -106,6 +147,7 @@ export function issueDemoSession(
     generation: ++nextDemoSessionGeneration,
     active: true,
     controller: new AbortController(),
+    fixtureIncarnation: Object.freeze({ ...fixtureIncarnation }),
   });
   return {
     token,
@@ -126,6 +168,7 @@ export function inspectDemoSession(
     !lifecycle ||
     !lifecycle.active ||
     lifecycle.expiresAtMs !== signed.expiresAtMs ||
+    !lifecycle.fixtureIncarnation ||
     lifecycle.controller.signal.aborted
   ) {
     return null;
@@ -133,6 +176,7 @@ export function inspectDemoSession(
   return {
     ...signed,
     generation: lifecycle.generation,
+    fixtureIncarnation: lifecycle.fixtureIncarnation,
     signal: lifecycle.controller.signal,
   };
 }
@@ -200,6 +244,7 @@ export function revokeDemoSessionByKey(
     generation: existing?.generation ?? ++nextDemoSessionGeneration,
     active: false,
     controller: existing?.controller ?? new AbortController(),
+    fixtureIncarnation: existing?.fixtureIncarnation ?? null,
   });
   demoSessionLifecycle.get(sessionKey)?.controller.abort();
   return true;
@@ -216,6 +261,8 @@ export function isDemoSessionActive(
     current?.active &&
       !current.controller.signal.aborted &&
       current.generation === session.generation &&
+      current.fixtureIncarnation?.userId === session.fixtureIncarnation.userId &&
+      current.fixtureIncarnation?.revision === session.fixtureIncarnation.revision &&
       current.expiresAtMs === session.expiresAtMs,
   );
 }

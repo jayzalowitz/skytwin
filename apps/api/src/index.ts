@@ -62,7 +62,10 @@ import { recoverOnBoot as recoverEmbeddedLlmDownloads } from './embedded-llm/dow
 import { getExecutionRouter } from './execution-setup.js';
 import { startMdnsAdvertisement, stopMdnsAdvertisement } from './mdns.js';
 import { closePool, mcpServerMetricsRepository, userRepository } from '@skytwin/db';
-import { DEMO_USER_ID } from './auth/demo-session.js';
+import {
+  DEMO_USER_ID,
+  matchesDemoFixtureIncarnation,
+} from './auth/demo-session.js';
 import { MetricsRollupService, sharedMetricsCollector } from '@skytwin/observability';
 
 const config = loadConfig();
@@ -376,7 +379,11 @@ app.use(
   '/api/v1/demo/simulation',
   createDemoSimulationRouter(
     undefined,
-    async () => (await userRepository.findDemoById(DEMO_USER_ID)) !== null,
+    async (expected) =>
+      matchesDemoFixtureIncarnation(
+        await userRepository.findDemoById(DEMO_USER_ID),
+        expected,
+      ),
   ),
 ); // signed, sample-identity-bound, session-local fictional commands
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
