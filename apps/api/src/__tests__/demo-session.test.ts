@@ -54,9 +54,6 @@ describe('demo read allowlist', () => {
       true,
     );
     expect(
-      isDemoReadRequest('GET', `/api/events/stream/${DEMO_USER_ID}?token=x`),
-    ).toBe(true);
-    expect(
       isDemoReadRequest('GET', `/api/connectors/${DEMO_USER_ID}/status`),
     ).toBe(true);
     expect(
@@ -108,12 +105,23 @@ describe('demo read allowlist', () => {
     expect(isDemoReadRequest('GET', '/api/about-me?userId=other')).toBe(false);
     expect(
       isDemoReadRequest('GET', `/api/about-me?userId=${DEMO_USER_ID}`),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       isDemoReadRequest(
         'GET',
         '/api/twin-briefings/lifebook/Health/latest?userId=other',
       ),
     ).toBe(false);
+  });
+
+  it('rejects paid, externally-backed, and long-lived streaming surfaces', () => {
+    for (const path of [
+      `/api/capabilities/recipes?userId=${DEMO_USER_ID}`,
+      `/api/about-me?userId=${DEMO_USER_ID}`,
+      `/api/search?userId=${DEMO_USER_ID}&q=invoice`,
+      `/api/events/stream/${DEMO_USER_ID}?token=x`,
+    ]) {
+      expect(isDemoReadRequest('GET', path)).toBe(false);
+    }
   });
 });

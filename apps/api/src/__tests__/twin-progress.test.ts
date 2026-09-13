@@ -11,9 +11,17 @@ import type { Express } from 'express';
 const {
   mockUserRepository,
   mockFeedbackRepository,
+  mockTwinService,
 } = vi.hoisted(() => ({
   mockUserRepository: { findById: vi.fn() },
   mockFeedbackRepository: { findByUser: vi.fn() },
+  mockTwinService: {
+    exportTwin: vi.fn(),
+    exportTwinIfExists: vi.fn(),
+    formatAsMarkdown: vi.fn(),
+    getProfile: vi.fn(),
+    getOrCreateProfile: vi.fn(),
+  },
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -25,10 +33,7 @@ vi.mock('@skytwin/db', () => ({
 
 vi.mock('@skytwin/twin-model', () => ({
   TwinService: vi.fn(function TwinService() {
-    return {
-    exportTwin: vi.fn(),
-    formatAsMarkdown: vi.fn(),
-    };
+    return mockTwinService;
   }),
 }));
 
@@ -47,6 +52,16 @@ function buildApp(): Express {
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(500).json({ error: err.message });
   });
+  return app;
+}
+
+function buildDemoApp(): Express {
+  const app = express();
+  app.use((req, _res, next) => {
+    req.demoAuthenticated = true;
+    next();
+  });
+  app.use('/api/twin', createTwinRouter());
   return app;
 }
 
@@ -136,5 +151,29 @@ describe('GET /api/twin/:userId/progress — consecutiveApprovals', () => {
     expect(res.body.nextTierThreshold).toBe(null);
     expect(res.body.nextTier).toBe(null);
     expect(res.body.threshold).toBe(null);
+  });
+});
+
+describe('demo twin reads', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTwinService.getProfile.mockResolvedValue(null);
+    mockTwinService.exportTwinIfExists.mockResolvedValue(null);
+  });
+
+  it('does not create a profile for profile or learned GETs', async () => {
+    for (const suffix of ['', '/learned']) {
+      const res = await getJson(buildDemoApp(), `/api/twin/${USER_ID}${suffix}`);
+      expect(res.status).toBe(404);
+    }
+    expect(mockTwinService.getProfile).toHaveBeenCalledTimes(2);
+    expect(mockTwinService.getOrCreateProfile).not.toHaveBeenCalled();
+  });
+
+  it('does not create a profile for export GETs', async () => {
+    const res = await getJson(buildDemoApp(), `/api/twin/export/${USER_ID}`);
+    expect(res.status).toBe(404);
+    expect(mockTwinService.exportTwinIfExists).toHaveBeenCalledOnce();
+    expect(mockTwinService.exportTwin).not.toHaveBeenCalled();
   });
 });

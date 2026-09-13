@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { sessionRepository } from '@skytwin/db';
+import { sessionRepository, userRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import {
   DEMO_USER_ID,
@@ -171,6 +171,17 @@ export async function sessionAuth(
       res.status(403).json({
         error: 'Sample mode is read-only',
         message: 'Start your own twin to make changes.',
+      });
+      return;
+    }
+    // The database marker is the revocation boundary for this stateless
+    // credential. Re-check it for every read so removing `is_demo`, deleting
+    // the fixture, or replacing the reserved row takes effect immediately.
+    const demoUser = await userRepository.findDemoById(DEMO_USER_ID);
+    if (!demoUser) {
+      res.status(401).json({
+        error: 'Sample session unavailable',
+        message: 'Restart the sample tour to continue.',
       });
       return;
     }

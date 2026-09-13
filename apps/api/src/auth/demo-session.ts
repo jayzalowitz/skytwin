@@ -115,7 +115,6 @@ export function isDemoReadRequest(
     `/api/lifebooks/${DEMO_USER_ID}/all`,
     `/api/connectors/${DEMO_USER_ID}/status`,
     `/api/promotion-offers/${DEMO_USER_ID}`,
-    `/api/events/stream/${DEMO_USER_ID}`,
   ];
   if (exactUserPaths.some((candidate) => pathIs(path, candidate))) return true;
 
@@ -140,16 +139,13 @@ export function isDemoReadRequest(
   if (queryHasDemoUser(url)) {
     if (pathIs(path, '/api/capabilities')) return true;
     if (pathIs(path, '/api/capabilities/suggestions')) return true;
-    if (pathIs(path, '/api/capabilities/recipes')) return true;
     if (pathIs(path, '/api/capabilities/dependency-graph')) return true;
     if (pathIs(path, '/api/capabilities/provenance-graph')) return true;
     if (pathIs(path, '/api/risk-profile')) return true;
-    if (pathIs(path, '/api/about-me')) return true;
     if (pathIs(path, '/api/twin-briefings')) return true;
     if (pathIs(path, '/api/twin-briefings/latest')) return true;
     if (/^\/api\/twin-briefings\/lifebook\/[^/]+\/latest$/.test(path))
       return true;
-    if (pathIs(path, '/api/search')) return true;
     if (/^\/api\/oauth\/[^/]+\/status$/.test(path)) return true;
     if (
       new RegExp(

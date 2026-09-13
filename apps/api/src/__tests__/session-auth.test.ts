@@ -15,6 +15,7 @@ vi.mock('@skytwin/db', () => ({
     refreshExpiry: vi.fn(),
     touchLastActive: vi.fn(),
   },
+  userRepository: { findDemoById: vi.fn() },
 }));
 
 function mockReq(overrides: Partial<Request> = {}): Request {
@@ -59,6 +60,7 @@ describe('sessionAuth middleware', () => {
         refreshExpiry: vi.fn(),
         touchLastActive: vi.fn(),
       },
+      userRepository: { findDemoById: vi.fn() },
     }));
   });
 
@@ -206,6 +208,11 @@ describe('sessionAuth middleware', () => {
       process.env['SESSION_SECRET'] = 'test-demo-session-secret-that-is-long-enough';
       const auth = await import('../middleware/session-auth.js');
       const demo = await import('../auth/demo-session.js');
+      const db = await import('@skytwin/db');
+      (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: demo.DEMO_USER_ID,
+        is_demo: true,
+      });
       return { sessionAuth: auth.sessionAuth, issueDemoSession: demo.issueDemoSession };
     }
 
@@ -249,6 +256,26 @@ describe('sessionAuth middleware', () => {
         expect(res.status).toHaveBeenCalledWith(403);
       }
       expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+    });
+
+    it('revokes an issued sample credential when the database marker disappears', async () => {
+      const mod = await loadDemoAuth();
+      const issued = mod.issueDemoSession();
+      const db = await import('@skytwin/db');
+      (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const req = mockReq({
+        method: 'GET',
+        originalUrl: '/api/decisions/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        headers: { authorization: `Bearer ${issued.token}` },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      await mod.sessionAuth(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(req.authenticatedUserId).toBeUndefined();
     });
   });
 

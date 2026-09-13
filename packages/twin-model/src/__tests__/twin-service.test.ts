@@ -64,6 +64,16 @@ describe('TwinService', () => {
   });
 
   describe('Profile creation', () => {
+    it('can read a missing profile without creating persistent state', async () => {
+      await expect(service.getProfile('user_missing')).resolves.toBeNull();
+      expect(repo.createProfile).not.toHaveBeenCalled();
+    });
+
+    it('does not create a profile for an absent read-only export', async () => {
+      await expect(service.exportTwinIfExists('user_missing', 'json')).resolves.toBeNull();
+      expect(repo.createProfile).not.toHaveBeenCalled();
+    });
+
     it('should create a default profile when none exists', async () => {
       const profile = await service.getOrCreateProfile('user_new');
 
