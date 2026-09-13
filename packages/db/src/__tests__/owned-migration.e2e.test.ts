@@ -7,13 +7,21 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Client } from "pg";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { upOwned } from "../migrations/001-initial.js";
+import {
+  closePool,
+  query,
+  setWorkerGenerationAuthorityLossHandler,
+  withTransaction,
+  WorkerGenerationAuthorityError,
+} from "../connection.js";
 
 const COCKROACH_BINARY = process.env["COCKROACH_BINARY"];
 const RUN_E2E = process.env["E2E"] === "true" && Boolean(COCKROACH_BINARY);
@@ -134,17 +142,171 @@ describe.skipIf(!RUN_E2E)(
           `SELECT table_name
            FROM information_schema.tables
           WHERE table_schema = 'public'
-            AND table_name IN ('users', 'twin_profiles', 'watch_runs')
+            AND table_name IN ('users', 'twin_profiles', 'watch_runs', 'worker_generation_authority')
           ORDER BY table_name`,
         );
         expect(users.rows.map((row) => row.table_name)).toEqual([
           "twin_profiles",
           "users",
           "watch_runs",
+          "worker_generation_authority",
         ]);
       } finally {
         await client.end();
       }
     }, 300_000);
+
+    it("serializes revocation with an in-flight fenced write and rejects the next write", async () => {
+      const generationId = "93c89fcc-2fa4-49a4-8510-171193973983";
+      const secretHash = "b".repeat(64);
+      const setup = new Client({ connectionString: targetUrl });
+      await setup.connect();
+      await setup.query(
+        `CREATE TABLE IF NOT EXISTS worker_generation_fence_probe (
+           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+           value STRING NOT NULL
+         )`,
+      );
+      await setup.query(
+        `INSERT INTO worker_generation_authority (id, secret_hash, active)
+         VALUES ($1, $2, true)
+         ON CONFLICT (id) DO UPDATE SET secret_hash = excluded.secret_hash, active = true`,
+        [generationId, secretHash],
+      );
+      await setup.end();
+
+      const worker = new Client({ connectionString: targetUrl });
+      const revoker = new Client({ connectionString: targetUrl });
+      await Promise.all([worker.connect(), revoker.connect()]);
+      try {
+        await worker.query("BEGIN");
+        const authorized = await worker.query(
+          `SELECT id FROM worker_generation_authority
+            WHERE id = $1 AND secret_hash = $2 AND active = true
+            FOR UPDATE`,
+          [generationId, secretHash],
+        );
+        expect(authorized.rowCount).toBe(1);
+        await worker.query(
+          "INSERT INTO worker_generation_fence_probe (value) VALUES ('before-revocation')",
+        );
+
+        let revocationCommitted = false;
+        const revoke = revoker
+          .query(
+            `UPDATE worker_generation_authority
+              SET active = false, revoked_at = now()
+            WHERE id = $1 AND secret_hash = $2 AND active = true`,
+            [generationId, secretHash],
+          )
+          .then(() => {
+            revocationCommitted = true;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(revocationCommitted).toBe(false);
+
+        await worker.query("COMMIT");
+        await revoke;
+
+        await worker.query("BEGIN");
+        const stale = await worker.query(
+          `SELECT id FROM worker_generation_authority
+            WHERE id = $1 AND secret_hash = $2 AND active = true
+            FOR UPDATE`,
+          [generationId, secretHash],
+        );
+        expect(stale.rowCount).toBe(0);
+        await worker.query("ROLLBACK");
+
+        const writes = await revoker.query<{ value: string }>(
+          "SELECT value FROM worker_generation_fence_probe ORDER BY value",
+        );
+        expect(writes.rows.map((row) => row.value)).toEqual([
+          "before-revocation",
+        ]);
+      } finally {
+        await worker.query("ROLLBACK").catch(() => undefined);
+        await Promise.all([worker.end(), revoker.end()]);
+      }
+    }, 30_000);
+
+    it("fences repository transactions and synchronously revokes admission after durable revocation", async () => {
+      const generationId = "18c9b067-b50d-4abb-af80-ef38014d9615";
+      const generationSecret = "c".repeat(64);
+      const secretHash = createHash("sha256")
+        .update(generationSecret)
+        .digest("hex");
+      const control = new Client({ connectionString: targetUrl });
+      await control.connect();
+      await control.query(
+        `INSERT INTO worker_generation_authority (id, secret_hash, active)
+         VALUES ($1, $2, true)
+         ON CONFLICT (id) DO UPDATE SET secret_hash = excluded.secret_hash, active = true`,
+        [generationId, secretHash],
+      );
+      process.env["DATABASE_URL"] = targetUrl;
+      process.env["SKYTWIN_WORKER_GENERATION_ID"] = generationId;
+      process.env["SKYTWIN_WORKER_GENERATION_SECRET"] = generationSecret;
+      let releaseWrite: (() => void) | undefined;
+      let writeStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => {
+        writeStarted = resolve;
+      });
+      const release = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+
+      try {
+        const write = withTransaction(async (client) => {
+          await client.query(
+            "INSERT INTO worker_generation_fence_probe (value) VALUES ('repository-write')",
+          );
+          writeStarted?.();
+          await release;
+        });
+        await started;
+
+        let revocationCommitted = false;
+        const revoke = control
+          .query(
+            `UPDATE worker_generation_authority
+                SET active = false, revoked_at = now()
+              WHERE id = $1 AND secret_hash = $2 AND active = true`,
+            [generationId, secretHash],
+          )
+          .then(() => {
+            revocationCommitted = true;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        expect(revocationCommitted).toBe(false);
+        releaseWrite?.();
+        await write;
+        await revoke;
+
+        const onLoss = vi.fn();
+        setWorkerGenerationAuthorityLossHandler(onLoss);
+        await expect(
+          query(
+            "INSERT INTO worker_generation_fence_probe (value) VALUES ('after-revocation')",
+          ),
+        ).rejects.toBeInstanceOf(WorkerGenerationAuthorityError);
+        expect(onLoss).toHaveBeenCalledOnce();
+
+        const values = await control.query<{ value: string }>(
+          "SELECT value FROM worker_generation_fence_probe ORDER BY value",
+        );
+        expect(values.rows.map((row) => row.value)).not.toContain(
+          "after-revocation",
+        );
+      } finally {
+        releaseWrite?.();
+        setWorkerGenerationAuthorityLossHandler(null);
+        delete process.env["SKYTWIN_WORKER_GENERATION_ID"];
+        delete process.env["SKYTWIN_WORKER_GENERATION_SECRET"];
+        delete process.env["DATABASE_URL"];
+        await closePool();
+        await control.end();
+      }
+    }, 30_000);
   },
 );

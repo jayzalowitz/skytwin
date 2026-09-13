@@ -45,6 +45,7 @@ interface SampleManagerInternals {
   activeDatabaseStartup: SampleStartup | null;
   api: { process: ChildProcess | null; external: boolean; status?: string };
   apiGeneration: TestApiGeneration | null;
+  registeredWorkerGeneration: TestApiGeneration | null;
   healthCheckInFlight: boolean;
   cockroach: {
     isManagedStartCurrent: ReturnType<typeof vi.fn>;
@@ -82,6 +83,24 @@ interface SampleManagerInternals {
   startHealthMonitoring(startup?: SampleStartup | null): void;
   runHealthCheck(startup?: SampleStartup | null): Promise<void>;
   stopDataServicesOwned(): Promise<void>;
+  workerGenerationAuthorityModule(): Promise<{
+    registerWorkerGenerationAuthority(options: {
+      connectionString: string;
+      generationId: string;
+      generationSecret: string;
+      authorize: () => boolean;
+    }): Promise<void>;
+    revokeWorkerGenerationAuthority(options: {
+      connectionString: string;
+      generationId: string;
+      generationSecret: string;
+      authorize: () => boolean;
+    }): Promise<void>;
+  }>;
+  registerWorkerGenerationAuthority(
+    generation: TestApiGeneration,
+    startup: SampleStartup,
+  ): Promise<void>;
   startPackagedSampleIngest(
     startup: SampleStartup,
     epoch: number,
@@ -133,6 +152,8 @@ interface TestApiGeneration {
   process: ChildProcess;
   instanceCapability: string;
   ingestCredential: string;
+  workerAuthorityId: string;
+  workerAuthoritySecret: string;
   controller: AbortController;
 }
 
@@ -162,6 +183,8 @@ function apiGeneration(
     process,
     instanceCapability: `instance-capability-${generation}`,
     ingestCredential: `ingest-credential-${generation}`,
+    workerAuthorityId: `93c89fcc-2fa4-49a4-8510-${String(generation).padStart(12, "0")}`,
+    workerAuthoritySecret: String(generation).padStart(64, "0"),
     controller: new AbortController(),
   };
 }
@@ -188,8 +211,21 @@ function authorize(manager: ServiceManager & SampleManagerInternals): {
   return { startup, controller, generation };
 }
 
-function internals(): ServiceManager & SampleManagerInternals {
-  return new ServiceManager() as ServiceManager & SampleManagerInternals;
+function internals(
+  realWorkerAuthority = false,
+): ServiceManager & SampleManagerInternals {
+  const manager = new ServiceManager() as ServiceManager &
+    SampleManagerInternals;
+  if (!realWorkerAuthority) {
+    manager.registerWorkerGenerationAuthority = vi.fn(async (generation) => {
+      manager.registeredWorkerGeneration = generation;
+    });
+    manager.workerGenerationAuthorityModule = vi.fn().mockResolvedValue({
+      registerWorkerGenerationAuthority: vi.fn().mockResolvedValue(undefined),
+      revokeWorkerGenerationAuthority: vi.fn().mockResolvedValue(undefined),
+    });
+  }
+  return manager;
 }
 
 describe("packaged sample startup sequencing", () => {
@@ -224,6 +260,7 @@ describe("packaged sample startup sequencing", () => {
   it("shares generation-scoped ingest credentials only with the API and its worker", () => {
     const manager = internals();
     const { generation } = authorize(manager);
+    manager.registeredWorkerGeneration = generation;
 
     expect(manager.getEnv()["SKYTWIN_SERVICE_TOKEN"]).toBeUndefined();
     expect(
@@ -239,11 +276,67 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.workerEnv(generation)["SKYTWIN_SERVICE_TOKEN"]).toBe(
       generation.ingestCredential,
     );
+    expect(manager.workerEnv(generation)).toMatchObject({
+      SKYTWIN_WORKER_GENERATION_ID: generation.workerAuthorityId,
+      SKYTWIN_WORKER_GENERATION_SECRET: generation.workerAuthoritySecret,
+    });
     expect(
       manager.workerEnv(generation)["SKYTWIN_API_INSTANCE_CAPABILITY"],
     ).toBeUndefined();
     expect(manager.webEnv()["SKYTWIN_SERVICE_TOKEN"]).toBeUndefined();
     expect(manager.webEnv()["SKYTWIN_API_INSTANCE_CAPABILITY"]).toBeUndefined();
+  });
+
+  it("registers and durably revokes the exact worker generation", async () => {
+    const manager = internals(true);
+    const { startup, generation } = authorize(manager);
+    manager.activeDatabaseStartup = startup;
+    const register = vi.fn().mockResolvedValue(undefined);
+    const revoke = vi.fn().mockResolvedValue(undefined);
+    manager.workerGenerationAuthorityModule = vi.fn().mockResolvedValue({
+      registerWorkerGenerationAuthority: register,
+      revokeWorkerGenerationAuthority: revoke,
+    });
+
+    await manager.registerWorkerGenerationAuthority(generation, startup);
+    expect(register).toHaveBeenCalledOnce();
+    const registration = register.mock.calls[0]![0];
+    expect(registration).toMatchObject({
+      generationId: generation.workerAuthorityId,
+      generationSecret: generation.workerAuthoritySecret,
+      connectionString:
+        "postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable",
+    });
+    expect(registration.authorize()).toBe(true);
+    expect(manager.registeredWorkerGeneration).toBe(generation);
+
+    manager.api.process = null;
+    await manager.stopDataServicesOwned();
+    expect(revoke).toHaveBeenCalledOnce();
+    expect(revoke.mock.calls[0]![0]).toMatchObject({
+      generationId: generation.workerAuthorityId,
+      generationSecret: generation.workerAuthoritySecret,
+    });
+    expect(manager.registeredWorkerGeneration).toBeNull();
+  });
+
+  it("retains worker authority state when durable revocation cannot be proven", async () => {
+    const manager = internals();
+    const { startup, generation } = authorize(manager);
+    manager.activeDatabaseStartup = startup;
+    manager.registeredWorkerGeneration = generation;
+    manager.api.process = null;
+    manager.workerGenerationAuthorityModule = vi.fn().mockResolvedValue({
+      registerWorkerGenerationAuthority: vi.fn(),
+      revokeWorkerGenerationAuthority: vi
+        .fn()
+        .mockRejectedValue(new Error("revocation unproven")),
+    });
+
+    await expect(manager.stopDataServicesOwned()).rejects.toThrow(
+      "revocation unproven",
+    );
+    expect(manager.registeredWorkerGeneration).toBe(generation);
   });
 
   it("fails closed before database or web startup if packaged external detection ever succeeds", async () => {
@@ -305,6 +398,20 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.startWeb).toHaveBeenCalledOnce();
     expect(manager.startWorker).toHaveBeenCalledOnce();
     expect(manager.startPackagedSampleIngest).toHaveBeenCalledOnce();
+    expect(
+      (manager.registerWorkerGenerationAuthority as ReturnType<typeof vi.fn>)
+        .mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      (manager.waitForApi as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+    expect(
+      (manager.registerWorkerGenerationAuthority as ReturnType<typeof vi.fn>)
+        .mock.invocationCallOrder[0],
+    ).toBeLessThan(
+      (manager.startWeb as ReturnType<typeof vi.fn>).mock
+        .invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
   });
 
   it("does not start web or worker when the API generation cannot prove readiness", async () => {

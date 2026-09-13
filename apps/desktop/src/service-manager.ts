@@ -1,6 +1,6 @@
 import { fork, spawn, execSync, type ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { randomBytes } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
@@ -30,7 +30,24 @@ interface ApiGeneration {
   readonly process: ChildProcess;
   readonly instanceCapability: string;
   readonly ingestCredential: string;
+  readonly workerAuthorityId: string;
+  readonly workerAuthoritySecret: string;
   readonly controller: AbortController;
+}
+
+interface WorkerGenerationAuthorityModule {
+  registerWorkerGenerationAuthority(options: {
+    connectionString: string;
+    generationId: string;
+    generationSecret: string;
+    authorize: () => boolean;
+  }): Promise<void>;
+  revokeWorkerGenerationAuthority(options: {
+    connectionString: string;
+    generationId: string;
+    generationSecret: string;
+    authorize: () => boolean;
+  }): Promise<void>;
 }
 
 export class ChildTerminationError extends Error {
@@ -226,6 +243,7 @@ export class ServiceManager {
   private serviceLifecycleTail: Promise<void> = Promise.resolve();
   private activeDatabaseStartup: CockroachStartResult | null = null;
   private apiGeneration: ApiGeneration | null = null;
+  private registeredWorkerGeneration: ApiGeneration | null = null;
   private nextApiGeneration = 0;
   private healthCheckInFlight = false;
   private readonly terminatingProcesses = new WeakMap<ChildProcess, Promise<void>>();
@@ -259,13 +277,21 @@ export class ServiceManager {
   }
 
   private async stopDataServicesOwned(): Promise<void> {
+    const registeredGeneration = this.registeredWorkerGeneration;
+    const startup = this.activeDatabaseStartup;
     const results = await Promise.allSettled([
+      registeredGeneration && startup
+        ? this.revokeWorkerGenerationAuthority(registeredGeneration, startup)
+        : Promise.resolve(),
       this.stopProcess(this.worker, 'worker'),
       this.stopProcess(this.web, 'web'),
       this.stopProcess(this.api, 'api'),
     ]);
     const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failed) throw failed.reason;
+    if (this.registeredWorkerGeneration === registeredGeneration) {
+      this.registeredWorkerGeneration = null;
+    }
   }
 
   private schedulePackagedDatabaseLoss(startup: CockroachStartResult, reason: string): void {
@@ -528,6 +554,8 @@ export class ServiceManager {
     if (app.isPackaged) {
       delete inheritedEnv['SKYTWIN_API_INSTANCE_CAPABILITY'];
       delete inheritedEnv['SKYTWIN_SERVICE_TOKEN'];
+      delete inheritedEnv['SKYTWIN_WORKER_GENERATION_ID'];
+      delete inheritedEnv['SKYTWIN_WORKER_GENERATION_SECRET'];
     }
     return {
       ...inheritedEnv,
@@ -568,17 +596,28 @@ export class ServiceManager {
   }
 
   private apiEnv(instanceCapability: string, ingestCredential: string): Record<string, string> {
-    return {
+    const env: Record<string, string> = {
       ...this.getEnv(),
       SKYTWIN_API_INSTANCE_CAPABILITY: instanceCapability,
       SKYTWIN_SERVICE_TOKEN: ingestCredential,
     };
+    delete env['SKYTWIN_WORKER_GENERATION_ID'];
+    delete env['SKYTWIN_WORKER_GENERATION_SECRET'];
+    return env;
   }
 
   private workerEnv(apiGeneration: ApiGeneration | null): Record<string, string> {
     const env = this.getEnv();
-    if (apiGeneration && this.isApiGenerationCurrent(apiGeneration)) {
+    if (
+      apiGeneration &&
+      this.isApiGenerationCurrent(apiGeneration) &&
+      (!app.isPackaged || this.registeredWorkerGeneration === apiGeneration)
+    ) {
       env['SKYTWIN_SERVICE_TOKEN'] = apiGeneration.ingestCredential;
+      if (app.isPackaged) {
+        env['SKYTWIN_WORKER_GENERATION_ID'] = apiGeneration.workerAuthorityId;
+        env['SKYTWIN_WORKER_GENERATION_SECRET'] = apiGeneration.workerAuthoritySecret;
+      }
     } else if (app.isPackaged) {
       throw new Error('Packaged worker startup requires the current API generation');
     }
@@ -590,6 +629,8 @@ export class ServiceManager {
     const env = this.getEnv();
     delete env['SKYTWIN_API_INSTANCE_CAPABILITY'];
     delete env['SKYTWIN_SERVICE_TOKEN'];
+    delete env['SKYTWIN_WORKER_GENERATION_ID'];
+    delete env['SKYTWIN_WORKER_GENERATION_SECRET'];
     return env;
   }
 
@@ -683,6 +724,74 @@ export class ServiceManager {
       console.error('[migrate] failed:', err);
       return false;
     }
+  }
+
+  private async workerGenerationAuthorityModule(): Promise<WorkerGenerationAuthorityModule> {
+    const base = this.getResourcePath();
+    const embeddedRoot = await this.ensureEmbeddedRoot();
+    const modulePath = app.isPackaged
+      ? join(
+          embeddedRoot,
+          'api',
+          'node_modules',
+          '@skytwin',
+          'db',
+          'dist',
+          'worker-generation-authority.js',
+        )
+      : join(base, 'packages', 'db', 'dist', 'worker-generation-authority.js');
+    if (!existsSync(modulePath)) {
+      throw new Error(`Worker generation authority module is missing: ${modulePath}`);
+    }
+    const nativeImport = new Function('p', 'return import(p)') as (
+      path: string,
+    ) => Promise<{
+      registerWorkerGenerationAuthority?: unknown;
+      revokeWorkerGenerationAuthority?: unknown;
+    }>;
+    const loaded = await nativeImport(pathToFileURL(realpathSync(modulePath)).href);
+    if (
+      typeof loaded.registerWorkerGenerationAuthority !== 'function' ||
+      typeof loaded.revokeWorkerGenerationAuthority !== 'function'
+    ) {
+      throw new Error('Worker generation authority module has an invalid contract');
+    }
+    return loaded as WorkerGenerationAuthorityModule;
+  }
+
+  private async registerWorkerGenerationAuthority(
+    generation: ApiGeneration,
+    startup: CockroachStartResult,
+  ): Promise<void> {
+    if (!app.isPackaged) return;
+    const authority = await this.workerGenerationAuthorityModule();
+    await authority.registerWorkerGenerationAuthority({
+      connectionString: this.cockroach.getConnectionString(),
+      generationId: generation.workerAuthorityId,
+      generationSecret: generation.workerAuthoritySecret,
+      authorize: () =>
+        this.isServiceDatabaseCurrent(startup) && this.isApiGenerationCurrent(generation),
+    });
+    // From this point the durable row may be active. Retain the exact
+    // capability before local revalidation so any API-side failure can revoke
+    // it through stopDataServicesOwned instead of orphaning active authority.
+    this.registeredWorkerGeneration = generation;
+    await this.requireServiceDatabaseCurrent(startup, 'after worker authority registration');
+    await this.requireApiGenerationCurrent(generation, 'after worker authority registration');
+  }
+
+  private async revokeWorkerGenerationAuthority(
+    generation: ApiGeneration,
+    startup: CockroachStartResult,
+  ): Promise<void> {
+    if (!app.isPackaged) return;
+    const authority = await this.workerGenerationAuthorityModule();
+    await authority.revokeWorkerGenerationAuthority({
+      connectionString: this.cockroach.getConnectionString(),
+      generationId: generation.workerAuthorityId,
+      generationSecret: generation.workerAuthoritySecret,
+      authorize: () => this.cockroach.isManagedStartCurrent(startup),
+    });
   }
 
   private beginSampleLaunch(): { epoch: number; signal: AbortSignal } {
@@ -1022,6 +1131,9 @@ export class ServiceManager {
       await this.stopDataServicesOwned();
       throw new Error('Packaged startup requires the desktop-owned API process');
     }
+    if (app.isPackaged && startup && apiGeneration) {
+      await this.registerWorkerGenerationAuthority(apiGeneration, startup);
+    }
     const apiReady = await this.waitForApi(10000, startup, apiGeneration);
     if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API readiness');
     if (app.isPackaged && !apiReady) {
@@ -1238,6 +1350,8 @@ export class ServiceManager {
         process: apiProcess,
         instanceCapability,
         ingestCredential,
+        workerAuthorityId: randomUUID(),
+        workerAuthoritySecret: randomBytes(32).toString('hex'),
         controller: new AbortController(),
       };
       this.apiGeneration = generation;
@@ -1329,6 +1443,9 @@ export class ServiceManager {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
       if (!this.guardServiceDatabase(startup, 'before API generation restart')) return;
       const generation = await this.startApi(startup);
+      if (startup && generation) {
+        await this.registerWorkerGenerationAuthority(generation, startup);
+      }
       if (!generation || !(await this.waitForApi(10_000, startup, generation))) {
         await this.stopDataServicesOwned();
         throw new Error('Replacement API generation could not prove listener ownership');
@@ -1435,6 +1552,14 @@ export class ServiceManager {
   ): Promise<void> {
     if (!this.guardServiceDatabase(startup, 'before worker spawn')) return;
     if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
+    if (app.isPackaged) {
+      if (!startup || !apiGeneration) {
+        throw new Error('Packaged worker startup requires database and API generation authority');
+      }
+      if (this.registeredWorkerGeneration !== apiGeneration) {
+        await this.registerWorkerGenerationAuthority(apiGeneration, startup);
+      }
+    }
     this.worker.status = 'starting';
     this.emitStatus();
 
@@ -1611,7 +1736,6 @@ export class ServiceManager {
 
   stopAll(): Promise<void> {
     this.revokeSampleLaunch();
-    this.activeDatabaseStartup = null;
     return this.runServiceLifecycle(() => this.stopAllOwned());
   }
 
@@ -1634,6 +1758,7 @@ export class ServiceManager {
       this.emitStatus();
       throw error;
     }
+    this.activeDatabaseStartup = null;
     try {
       await this.cockroach.stop();
       this.cockroachStatus = 'stopped';
