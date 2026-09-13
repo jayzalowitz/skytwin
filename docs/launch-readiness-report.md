@@ -75,7 +75,7 @@ Recorded launch blockers include:
 | 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ connected-account development pipeline verified; the read-only sample queue is not evidence for this criterion |
 | 6 | Understand *why* each decision was made | ✅ development/connected flow verified; current packaged-sample source can inspect allowlisted decision and explanation views |
 | 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; the packaged sample foundation cannot submit approvals or feedback |
-| 8 | Find a "pause everything" button | ✅ connected/development product exposes global **Pause everything** + Settings **Pause auto-execution** (#379); Settings is outside packaged-sample authority |
+| 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |
 | 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
 | 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
 
@@ -133,14 +133,14 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | ✅ closed | done | yes | Shipped + closed: resumable chunked voice upload end-to-end — `voice-chunker.ts` + `transcribeChunked()` (per-chunk retry, progress, cancel) + server `/upload/session`/`/chunk`/finalize + 3 test files. Only the airplane-mode manual smoke is device-only. |
 | [#387](https://github.com/jayzalowitz/skytwin/issues/387) | 🟡 partial | — | yes | Deep-link routing slice shipped + wired (tap → specific approval, scrolled into view; `deep-link.ts` + `App.tsx` + `ApprovalsScreen.tsx`, tested). Remaining: native inline Approve/Reject actions (iOS NSE + Android actions + EAS dev build — gated on #360/#404). |
 | [#399](https://github.com/jayzalowitz/skytwin/issues/399) | ⬜ not started | — | yes | Opt-in crash reporting (P3) |
-| [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ⬜ not started | — | yes | Backup/restore CLI (P3) |
+| [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ✅ closed | done | yes | Backup/restore CLI shipped with an encrypted authenticated archive and atomic fresh-user restore. |
 | [#401](https://github.com/jayzalowitz/skytwin/issues/401) | ⬜ not started | — | yes | OS-keychain for vault passphrase (P3) — pairs with #374 |
 | [#402](https://github.com/jayzalowitz/skytwin/issues/402) | 🟡 partial | — | yes | axe-core CI on web routes is code-fixable; full manual a11y is post-launch |
 | [#403](https://github.com/jayzalowitz/skytwin/issues/403) | ⬜ not started | — | yes | PWA manifest + service worker (P3) |
 | [#404](https://github.com/jayzalowitz/skytwin/issues/404) | ⬜ not started | — | — | EAS TestFlight/Play internal (P3, needs accounts) |
 | [#405](https://github.com/jayzalowitz/skytwin/issues/405) | ⬜ not started | — | yes | Demo recipe library (P3) |
 | [#406](https://github.com/jayzalowitz/skytwin/issues/406) | ⬜ not started | — | yes | Native macOS menu bar (P3) |
-| [#407](https://github.com/jayzalowitz/skytwin/issues/407) | ⬜ not started | — | yes | Worker dead-letter queue (P3) |
+| [#407](https://github.com/jayzalowitz/skytwin/issues/407) | ✅ closed | done | yes | Worker dead-letter queue shipped with durable failure records, operator inspection, and replayed/discarded resolution; the normal cadence reruns eligible jobs. |
 | [#408](https://github.com/jayzalowitz/skytwin/issues/408) | ⬜ not started | — | yes | AsyncLocalStorage request context (P3) |
 | [#409](https://github.com/jayzalowitz/skytwin/issues/409) | ⛔ external | — | — | Designer-made mobile icon/splash set |
 | [#410](https://github.com/jayzalowitz/skytwin/issues/410) | ⬜ not started | — | — | Pricing experiment (P3, business) |

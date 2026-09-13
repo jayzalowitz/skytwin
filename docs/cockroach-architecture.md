@@ -103,7 +103,8 @@ memory_rooms
 | `brain_episodes` | Episodes recorded via the MemoryPort surface | Per-approval feedback | Memory-feeds-decisions boost |
 | `brain_signals` | Lossless RawSignal mirror (port export/import) | Per inbound signal | gbrain MemoryRecord round-trips |
 | `brain_settings` | Per-user backend choice (gbrain / hybrid / mempalace) + hybrid notice dismissal | On dashboard switch | Backend factory in `apps/api/src/memory-setup.ts` |
-| `brain_embedding_jobs` | Durable queue for async embedding (FOR UPDATE SKIP LOCKED) | When write-path embedding fails | Worker drain every 30s |
+| `brain_embedding_jobs` | Durable queue for async embedding with an exact five-minute lease token and three-attempt cap | When write-path embedding fails | `FOR UPDATE SKIP LOCKED`; expired claims are reclaimable, late completion is fenced, and page update + completion commit atomically |
+| `worker_generation_authority` | Durable admission boundary for one packaged worker generation; stores only a secret hash | Packaged worker registration, revocation, and resume | Every protected write transaction locks and validates the active row; API/database containment revokes it |
 
 ### Primary Keys
 

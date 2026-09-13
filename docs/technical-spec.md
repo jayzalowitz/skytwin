@@ -280,12 +280,25 @@ Apps:
   web             → depends on shared-types, api client
   desktop         → depends on api client (Electron shell)
   mobile          → depends on api client (React Native + Expo)
+  idle-miner-runner → depends on idle-miner, core (desktop-managed child)
   openclaw-bridge → depends on llm-client (bridges OpenClaw to local Ollama)
+  twin-mcp-server → depends on db, shared-types (read-only external MCP surface)
 ```
 
 ## API Endpoints
 
-> **Note:** routes verified against `apps/api/src/index.ts` post-Tier-2-polish. Most live under `/api/...` (no `/v1/` prefix); the `/api/v1/...` namespace is reserved today for the Ask, Briefings, and Skill-Gaps routers that pre-dated the API consolidation. New routes go under `/api/...` unless they explicitly version a public contract.
+> **Note:** routes verified against `apps/api/src/index.ts` post-Tier-2-polish. Most live under `/api/...` (no `/v1/` prefix). Ask, Briefings, Skill-Gaps, and the account-free Sample API retain explicit `/api/v1/...` contracts; new routes otherwise go under `/api/...` unless they deliberately version a public contract.
+
+### Account-free Sample API (`apps/api/src/routes/demo.ts`)
+
+```
+GET    /api/v1/demo/info                          # Public availability check; no sample credential required
+POST   /api/v1/demo/session                       # Public mint route for a four-hour credential fixed to the sample identity
+GET    /api/v1/demo/recipes                       # Public static fictional recipes; independent of sample-session authority
+POST   /api/v1/demo/preview                       # Public optional rate-limited preview; separately kill-switchable
+```
+
+The sample credential is a distinct principal, not a user session. `apps/api/src/auth/demo-session.ts` permits only `GET`/`HEAD` requests on an explicit route allowlist bound to the reserved `is_demo` user. Mutations, settings, credentials, search, long-lived SSE, cross-user reads, and execution remain outside that authority. The database marker is revalidated on every request, so occupying the reserved UUID with a non-sample account fails closed.
 
 ### Decision + Events + Approvals API (`apps/api/src/routes/{decisions,events,approvals}.ts`)
 
@@ -426,6 +439,32 @@ The worker uses a simple polling loop against CockroachDB:
 ```
 
 CockroachDB's serializable transactions ensure that concurrent workers won't double-process jobs. This is simpler than introducing a message broker at MVP stage, and CockroachDB handles the contention well.
+
+### Packaged Worker and Recovery Authority
+
+Packaged startup establishes one generation in order: an attested bundled database, an API child with a fresh in-memory instance proof, authenticated readiness for that exact child, web, then a worker carrying a separate unpersisted secret. Before worker spawn, the desktop manager registers that secret's hash in `worker_generation_authority`; the worker presents the capability and write transactions lock and validate the active row. Revocation is therefore a durable commit boundary even when an already-started provider request returns late.
+
+```
+attested DB → API spawn → exact authenticated readiness → web
+                         → durable worker authority → worker
+
+web/worker crash → bounded replacement inside the ready API generation
+API/DB authority loss → revoke worker authority → contain dependents
+normal pause → stop worker + suppress replacement → safe reuse or ordered rebuild on resume
+pause during recovery → cancel recovery → contain partial generation
+```
+
+Connector polling stages its remote cursor and advances the durable cursor only after every signal has been accepted by the API. A failed forward leaves the cursor unchanged so the next generation can replay without skipping mail or calendar changes.
+
+```
+staged cursor → forward all signals → exact generation still active → commit cursor
+lease token → compute embedding → atomic page update + exact-lease completion
+                           ↘ expiry/reclaim rejects stale completion
+```
+
+API or database authority loss revokes the worker generation and contains dependent services. An isolated web or worker crash retains the ready API generation and uses bounded, generation-scoped recovery. Normal tray pause stops the worker and suppresses delayed replacement while an exact ready API/web generation may remain available. A concurrent or newer pause cancels resume/recovery and contains a partial or failed generation. Resume reuses exact ready API/web when safe or reconstructs the ordered generation when it is not, then starts the worker. Stale cleanup is identity-checked so it cannot terminate a healthy successor.
+
+Embedding backfill has a second fencing boundary. A claim returns the exact five-minute lease timestamp as a token; completion requires that still-active token and commits the page embedding plus job completion atomically. An expired lease can be reclaimed, late completion is rejected, and the third abandoned or failed attempt becomes terminal instead of retrying forever.
 
 ### Retry Strategy
 

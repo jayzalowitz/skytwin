@@ -200,26 +200,30 @@ Click **Settings** in the sidebar. Three cards worth pointing out:
 
 ---
 
-## Step 7 — Hit the "pause everything" button (30 seconds)
+## Step 7 — Pause automatic action (30 seconds)
 
-**Goal:** close the demo on the panic button — the thing the user needs to
-trust before they leave the app running.
+**Goal:** close the demo on the automatic-action control, with its scope
+stated plainly before the user leaves the app running.
 
-Two ways to pause, both visible from Settings:
+Two controls share the same auto-execution semantics, but only one is in
+Settings:
 
 - **Per-user pause** — "Pause auto-execution" card. Click, confirm,
   optionally drop a reason. Every subsequent decision routes to manual
   approval until you resume. A sticky red banner appears at the top of
   every page reminding you you're paused; the Resume button lives on the
   banner so a panicked future-you doesn't have to navigate to find it.
-- **Operator kill switch** — `SKYTWIN_AUTO_EXECUTE_DISABLED=true` env
+- **Operator-only switch** — `SKYTWIN_AUTO_EXECUTE_DISABLED=true` env
   var on the API/worker process. Same semantics, controlled at the
   process level, can't be cleared from the UI. For self-hosters who
-  need a way to silence the system without rebooting it.
+  need a way to stop automatic action without rebooting it.
 
-End the demo here. Tell the viewer: *"If at any point I'm uncomfortable
-with what it's doing, that button is on every page."* That's what they
-remember.
+Do not call either one a whole-system pause: signal sync continues. The
+global "Pause everything" button is a separate MCP-capability control and
+does not pause the email/calendar path. Packaged desktop also has a tray
+control that pauses worker background processing while the ready API/web
+may remain available. End by showing Settings → Pause auto-execution and
+saying exactly that actions now require review.
 
 ---
 

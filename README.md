@@ -253,18 +253,19 @@ machine to verify the platform-specific bits (Homebrew, NSIS, etc.).
 ### Running Tests
 
 ```bash
-pnpm test   # 3,800+ tests across 307 test files in 29 packages + 7 apps
+pnpm test   # 4,800+ tests across 400+ files in 30 packages + 8 apps
 ```
 
 ## Architecture
 
-SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 29 packages and 7 apps:
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 30 packages and 8 apps:
 
 ```
 apps/
   api/                HTTP API — decisions, user management, webhooks, /api/voice/*
   web/                Dashboard — review decisions, manage preferences, configure policies
   worker/             Background jobs — async execution, briefing generation, memory action loop, tier backfill
+  idle-miner-runner/  Desktop-managed child that scans approved project roots only while the machine is idle
   desktop/            Electron app — macOS (.dmg), Windows (.exe), Linux (.AppImage)
   mobile/             React Native (Expo) — QR pairing, push notifications, SSE, voice capture
   openclaw-bridge/    OpenClaw proxy — bridges local API to OpenClaw execution service
@@ -314,7 +315,7 @@ packages/
 | Build | Turborepo |
 | Desktop | Electron + electron-builder |
 | Mobile | React Native + Expo |
-| Testing | Vitest (3,800+ tests) |
+| Testing | Vitest (4,800+ tests) |
 | CI/CD | GitHub Actions |
 | Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and a Direct fallback — trust-ranked with automatic failover |
 
@@ -410,7 +411,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 | [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
 | [Launch-Readiness Report](./docs/launch-readiness-report.md) | Current launch-blocker status: what's code-done vs. external |
-| [Release Procedure](./docs/release-procedure.md) | How to cut a release (tag → build.yml → draft → publish) + the signing/auto-update gaps |
+| [Release Procedure](./docs/release-procedure.md) | How to cut a release (tag → build.yml → draft → publish) + signing and clean-artifact verification gates |
 
 ## Project Status
 
@@ -434,7 +435,7 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - Embedded local LLM stack: llama.cpp text, whisper.cpp STT, Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`) — runs entirely on-device when binaries + models are present
 - SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
-- 3,800+ tests with CI/CD on GitHub Actions
+- 4,800+ tests with CI/CD on GitHub Actions
 
 **What's next:**
 - More connectors (Slack, Notion, bank feeds)
