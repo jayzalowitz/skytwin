@@ -91,6 +91,11 @@ All notable changes to SkyTwin will be documented in this file.
 
 - Adversarial coverage includes source/target symlinks, staged hard links, a partial swapped between checkpoint restore and descriptor open, tampering, digest/length/content-type mismatches, redirect and DNS restrictions, concurrent crash-tail reservation, checkpoint disagreement, stalled transfer, state-transition races, CRDB `INT8` string normalization, bounded authoritative-read recovery retries, legacy diagnostic sanitization, runtime cache invalidation, serialized descriptor hashing, and per-row recovery isolation.
 
+### Fixed (post-/review)
+
+- **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
+- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 now describes the actual checkpoint and boot-reconciliation contract, and the reviewed SQL-corpus digest advances without changing the 92-table, 866-column classification baseline.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

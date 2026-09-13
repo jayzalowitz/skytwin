@@ -142,14 +142,15 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 Grab the installer for your OS, double-click, and you're in. No terminal, Docker,
 Ollama, or `.env` is required to open the app. CockroachDB ships inside the bundle
-as a hash-verified native binary. A local model and the `llama.cpp` runtime are not
-bundled: SkyTwin recommends a maintained artifact for the machine and downloads it
-only after the user starts the install. A compatible runtime remains a separate
-prerequisite, while a cloud provider remains an explicit opt-in.
+as a hash-verified native binary. Check the release notes for the exact features in
+that artifact. In builds from current source, a local model and the `llama.cpp`
+runtime are not bundled: SkyTwin recommends a maintained artifact for the machine
+and downloads it only after the user starts the install. A compatible runtime
+remains a separate prerequisite, while a cloud provider remains an explicit opt-in.
 
 > **Release boundary:** published installers currently predate the guarded,
-> account-free sample session in this source tree. Check the release notes for
-> the exact features in an artifact. Desktop builds produced from current source
+> account-free sample session and verified managed-model delivery in this source
+> tree. Check the release notes for the exact features in an artifact. Desktop builds produced from current source
 > can open a short-lived sample whose database-backed surface remains read-only;
 > approve, reject, correct, and learn interactions run only in a separate,
 > session-local simulation that cannot reach providers or execution adapters.
@@ -165,7 +166,7 @@ prerequisite, while a cloud provider remains an explicit opt-in.
 > - **macOS:** right-click the app → **Open** → **Open** (clears Gatekeeper once).
 > - **Windows:** SmartScreen → **More info** → **Run anyway**.
 >
-> Signing lands before the public launch; until then this is the expected first-run experience.
+> Signing is required before a public launch; until then this is the expected first-run experience.
 
 ### Build from source (one-command, macOS / Linux / WSL)
 
@@ -188,7 +189,7 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
 ### Advanced env vars
 
-The defaults give you a working SkyTwin without any LLM API keys or Docker. Power users can opt into:
+The defaults start SkyTwin without any LLM API keys or Docker. Local inference still requires both a verified model artifact and a compatible llama.cpp runtime. Power users can opt into:
 
 | Env var | Effect |
 |---------|--------|
