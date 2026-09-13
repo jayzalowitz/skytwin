@@ -244,11 +244,13 @@ export class ServiceManager {
   private activeDatabaseStartup: CockroachStartResult | null = null;
   private invalidatedDatabaseStartup: CockroachStartResult | null = null;
   private apiGeneration: ApiGeneration | null = null;
+  private readyApiGeneration: ApiGeneration | null = null;
   private registeredWorkerGeneration: ApiGeneration | null = null;
   private nextApiGeneration = 0;
   private healthCheckInFlight = false;
   private workerStartInFlight: Promise<void> | null = null;
   private readonly terminatingProcesses = new WeakMap<ChildProcess, Promise<void>>();
+  private readonly recoveringApiGenerations = new WeakSet<ApiGeneration>();
 
   constructor() {
     this.cockroach.setAuthorityLossHandler((generation) => {
@@ -890,7 +892,20 @@ export class ServiceManager {
     const current = this.apiGeneration;
     if (!current || (expected && current !== expected)) return;
     current.controller.abort();
+    if (this.readyApiGeneration === current) this.readyApiGeneration = null;
     this.apiGeneration = null;
+  }
+
+  private claimApiGenerationRecovery(generation: ApiGeneration): boolean {
+    if (this.recoveringApiGenerations.has(generation)) return false;
+    this.recoveringApiGenerations.add(generation);
+    return true;
+  }
+
+  private markApiGenerationReady(generation: ApiGeneration): boolean {
+    if (!this.isApiGenerationCurrent(generation)) return false;
+    this.readyApiGeneration = generation;
+    return true;
   }
 
   private isSampleIngestCurrent(
@@ -1201,7 +1216,10 @@ export class ServiceManager {
     }
     const apiReady = await this.waitForApi(10000, startup, apiGeneration);
     if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API readiness');
-    if (app.isPackaged && !apiReady) {
+    if (
+      app.isPackaged &&
+      (!apiReady || !apiGeneration || !this.markApiGenerationReady(apiGeneration))
+    ) {
       await this.stopDataServicesOwned();
       throw new Error('Packaged startup could not authenticate the desktop-owned API listener');
     }
@@ -1249,7 +1267,16 @@ export class ServiceManager {
       if (this.api.status === 'running') {
         if (app.isPackaged) {
           const generation = this.apiGeneration;
-          if (!generation || !(await this.verifyOwnedApi(generation))) {
+          if (!generation) {
+            this.schedulePackagedApiIdentityLoss(startup, generation, 'API listener identity changed');
+            return;
+          }
+          // startApi marks the child running before its authenticated
+          // readiness proof completes. A timer retained from the previous
+          // generation must not classify that expected startup interval as
+          // listener identity loss.
+          if (this.readyApiGeneration !== generation) return;
+          if (!(await this.verifyOwnedApi(generation))) {
             this.schedulePackagedApiIdentityLoss(startup, generation, 'API listener identity changed');
             return;
           }
@@ -1432,6 +1459,7 @@ export class ServiceManager {
       const handleApiExit = (reason: string): void => {
         if (this.api.process !== apiProcess) return;
         if (this.terminatingProcesses.has(apiProcess)) return;
+        if (!generation || !this.claimApiGenerationRecovery(generation)) return;
         if (generation) this.revokeApiGeneration(generation);
         this.api.process = null;
         this.api.status = 'stopped';
@@ -1494,6 +1522,7 @@ export class ServiceManager {
     startup: CockroachStartResult | null,
   ): Promise<void> {
     if (this.api.process !== apiProcess || this.terminatingProcesses.has(apiProcess)) return;
+    if (!this.claimApiGenerationRecovery(generation)) return;
     this.revokeApiGeneration(generation);
     this.api.status = 'error';
     this.emitStatus();
@@ -1516,16 +1545,20 @@ export class ServiceManager {
         return;
       }
       const restartCountAtAttempt = this.api.restartCount;
+      let generation: ApiGeneration | null = null;
       try {
         await this.stopDataServicesOwned();
         await new Promise((resolve) => setTimeout(resolve, delayMs));
         if (!this.guardServiceDatabase(startup, 'before API generation restart')) return;
-        const generation = await this.startApi(startup);
+        generation = await this.startApi(startup);
         if (startup && generation) {
           await this.registerWorkerGenerationAuthority(generation, startup);
         }
         if (!generation || !(await this.waitForApi(10_000, startup, generation))) {
           throw new Error('Replacement API generation could not prove listener ownership');
+        }
+        if (!this.markApiGenerationReady(generation)) {
+          throw new Error('Replacement API generation changed after proving listener ownership');
         }
         await this.startWeb(startup, generation);
         await this.startWorker(startup, generation);
@@ -1544,7 +1577,10 @@ export class ServiceManager {
         // from its exit handler. Deliberate cleanup is fenced by
         // terminatingProcesses, so only schedule here when that handler did
         // not already advance the budget.
-        if (this.api.restartCount === restartCountAtAttempt) {
+        const ownsRecovery = generation
+          ? this.claimApiGenerationRecovery(generation)
+          : this.api.restartCount === restartCountAtAttempt;
+        if (ownsRecovery && this.api.restartCount === restartCountAtAttempt) {
           this.scheduleApiRestart(
             startup,
             error instanceof Error ? error.message : 'replacement API startup failed',

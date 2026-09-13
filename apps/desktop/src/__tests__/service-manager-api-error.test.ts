@@ -74,6 +74,7 @@ interface ManagerInternals {
     external: boolean;
   };
   apiGeneration: ApiGenerationForTest | null;
+  readyApiGeneration: ApiGenerationForTest | null;
   registeredWorkerGeneration: ApiGenerationForTest | null;
   serviceLifecycleTail: Promise<void>;
   getResourcePath(): string;
@@ -143,6 +144,11 @@ interface ManagerInternals {
     dataDir: string;
     generation: number;
   }): void;
+  runHealthCheck(startup: {
+    ownership: "managed-child";
+    dataDir: string;
+    generation: number;
+  }): Promise<void>;
   startApi(startup: {
     ownership: "managed-child";
     dataDir: string;
@@ -325,8 +331,16 @@ describe("ServiceManager API error lifecycle", () => {
     manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
     manager.startApi = vi.fn()
       .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce(first)
-      .mockResolvedValueOnce(second);
+      .mockImplementationOnce(async () => {
+        manager.apiGeneration = first;
+        manager.api.process = first.process;
+        return first;
+      })
+      .mockImplementationOnce(async () => {
+        manager.apiGeneration = second;
+        manager.api.process = second.process;
+        return second;
+      });
     manager.registerWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
     manager.waitForApi = vi.fn()
       .mockResolvedValueOnce(false)
@@ -410,5 +424,59 @@ describe("ServiceManager API error lifecycle", () => {
 
     expect(manager.api.restartCount).toBe(2);
     expect(manager.scheduleApiRestart).not.toHaveBeenCalled();
+  });
+
+  it("claims replacement recovery once when a child error races failed readiness", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.api.restartCount = 1;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.registerWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
+    manager.waitForApi = vi.fn().mockImplementation(async () => {
+      processState.child?.emit("error", new Error("replacement channel failed"));
+      await Promise.resolve();
+      return false;
+    });
+    manager.scheduleApiRestart = vi.fn();
+
+    await expect(manager.restartDataServicesAfterApiExit(startup, 0))
+      .rejects.toThrow("Replacement API generation could not prove listener ownership");
+    await vi.waitFor(() => expect(manager.scheduleApiRestart).toHaveBeenCalledOnce());
+
+    expect(manager.scheduleApiRestart).toHaveBeenCalledWith(startup, "child process error");
+    expect(processState.fork).toHaveBeenCalledOnce();
+  });
+
+  it("does not health-check a packaged API generation before readiness", async () => {
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("connection refused"));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const generation = await manager.startApi(startup);
+    expect(generation).not.toBeNull();
+    expect(manager.readyApiGeneration).toBeNull();
+
+    await manager.runHealthCheck(startup);
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(generation?.controller.signal.aborted).toBe(false);
+    expect(manager.apiGeneration).toBe(generation);
+    expect(manager.api.status).toBe("running");
   });
 });

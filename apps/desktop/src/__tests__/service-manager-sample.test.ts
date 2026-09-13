@@ -55,6 +55,7 @@ interface SampleManagerInternals {
     failureTimestamps: number[];
   };
   apiGeneration: TestApiGeneration | null;
+  readyApiGeneration: TestApiGeneration | null;
   registeredWorkerGeneration: TestApiGeneration | null;
   healthCheckInFlight: boolean;
   cockroach: {
@@ -217,6 +218,7 @@ function authorize(manager: ServiceManager & SampleManagerInternals): {
   manager.api.process = generation.process;
   manager.api.external = false;
   manager.apiGeneration = generation;
+  manager.readyApiGeneration = generation;
   manager.cockroach.isManagedStartCurrent.mockReturnValue(true);
   return { startup, controller, generation };
 }
