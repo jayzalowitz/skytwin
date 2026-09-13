@@ -19,9 +19,10 @@ All notable changes to SkyTwin will be documented in this file.
 - **The encryption inventory follows the packaged worker-generation boundary.**
   Migration 071's installation-scoped authority table retains only lifecycle
   metadata and a one-way verifier for its random generation credential. The
-  validator now proves both migration entry points use the shared ordered
-  schema-plus-SQL flow and fails if that authority becomes recoverable source,
-  global state, or an unreviewed SQL callsite.
+  validator pins the exact migration runner and schema-plus-sorted-migration
+  corpus, proves both migration entry points use the shared ordered flow, and
+  fails if that authority becomes recoverable source, global state, or an
+  unreviewed SQL callsite.
 
 ### Fixed (post-/review)
 
@@ -32,6 +33,13 @@ All notable changes to SkyTwin will be documented in this file.
   passphrase persisted by Linux `basic_text` cannot survive the hardened
   boundary. The credential-vault plaintext warning also uses the design
   system's security-alert color.
+
+- **The encryption inventory gate now fails closed across platforms and schema
+  evolution.** Repository callsites use stable forward-slash paths on Windows,
+  migration entry points cannot execute an unreviewed SQL path, and unsupported
+  CockroachDB table DDL—including implicit-column forms—stops validation rather
+  than producing an incomplete field list. Mutation tests bind the exact runner,
+  migration corpus, supported DDL, and 92-table/866-column inventory.
 
 ## [Unreleased] — Account-free interactive sample
 
@@ -47,6 +55,7 @@ All notable changes to SkyTwin will be documented in this file.
 - **Loopback restrictions now survive the dashboard proxy boundary.** The web server rejects remote peers and non-loopback API upstreams before forwarding sample-info, session, or simulation requests, while the API requires both the resolved client and direct socket peer to be loopback.
 - **Expired simulations cannot return a late asynchronous result.** The simulation checks its signed deadline both before creating state and after policy/explanation work. Exit may present the original signed credential solely to delete the state bound to that credential; it cannot read, renew, or mutate the simulation.
 - **Sample authority is isolated to one browser tab and excluded from offline persistence.** The sample credential, reserved identity, expiry, and onboarding state live in `sessionStorage`; real sign-in authority always takes precedence and clears the tab's sample state. Generation fences prevent late renewal or exit responses from resurrecting a closed sample, including when another tab signs in or out. Concurrent reads now share one renewal, and a late 401 from an older credential reuses the current successor instead of replacing it. The API client also preserves authentication when a caller supplies additional request headers. The service worker applies the API server's case-insensitive path semantics and bypasses every `/api/v1/demo` request. It also bypasses normal product routes whenever they carry the sample bearer credential or EventSource query token, so sample credentials and responses are never cached or queued. Before sending any stored write, the worker reapplies the current policy and deletes entries that are no longer eligible; this prevents an older worker's queue from replaying sample traffic after an update. See [`sample-session.js`](apps/web/public/js/sample-session.js), [`api-client.js`](apps/web/public/js/api-client.js), [`sw-policy.js`](apps/web/public/js/pwa/sw-policy.js), and [`sw.js`](apps/web/public/sw.js).
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

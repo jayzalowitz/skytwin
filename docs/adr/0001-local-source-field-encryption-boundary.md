@@ -132,14 +132,16 @@ the inventory in the same PR.
 Ownership is a strict enum: `user`, `user_child` (resolved through a repository
 join to its parent), `installation`, or `system_global`. Current and target
 repository boundaries are also enums. Every table carries `auditedCallsites`, a
-repository-relative list from a conservative scan of SQL-shaped string and
-template literals in files that execute database queries, plus validated
-annotations for the known dynamic seed SQL helpers. The seed helper's annotation
-is bound to its runtime table allowlist. The list includes direct API/worker
-queries, backup code, and seeds.
-Empty lists are explicit `no_runtime_sql_found`, not an assertion that the table
-is unused. A new dynamic SQL helper must declare its finite table set with the
-validator's annotation contract or the check fails.
+repository-relative list from a conservative scan of supported literal SQL
+string and template shapes in `.ts`, `.js`, and `.mjs` files under `packages/`
+and `apps/`, plus validated annotations for the recognized dynamic seed
+patterns. The scan covers files containing `query(...)` calls and literal table
+references following its supported SQL verbs; the `seedUpsert` annotation is
+bound to its runtime allowlist. Matches include direct API/worker queries,
+backup code, and seeds. Empty lists mean `no_runtime_sql_found` by those
+supported patterns, not that the table is unused. The validator requires finite
+annotations for the dynamic template and seed forms it recognizes; differently
+assembled SQL must extend the validator and inventory in the same change.
 
 Randomized envelopes cannot preserve SQL equality, uniqueness, range, or prefix
 queries. The inventory's `searchableDerivatives` arrays name only separate
@@ -675,14 +677,15 @@ git diff --check
 
 The validator proves structural facts only: table and column coverage derived in
 the production migration runner's declared order, strict enum membership,
-realpath-contained regular-file references with symlinks rejected, completeness
-against its conservative SQL scan and validated dynamic-SQL annotations,
-resolvable declared derivatives, and that the reviewed per-field semantic
-manifest still matches a hardcoded SHA-256 baseline. Changing an owner, class,
-boundary, stage, protection statement, rationale, derivative, or documented
-operational dependency therefore requires an explicit validator-baseline diff.
-Critical credential/DLQ invariants and metadata dependency resolutions are also
-hardcoded and mutation-tested.
+realpath-contained regular-file references with symlinks rejected, exact
+agreement with its conservative scan's supported matches and validated dynamic
+SQL annotations, and resolvable declared derivatives. Reviewed SHA-256 baselines
+pin the exact migration runner, schema-plus-sorted-migration corpus, and
+per-field semantic manifest. Changing runtime migration flow or SQL, or an
+owner, class, boundary, stage, protection statement, rationale, derivative, or
+documented operational dependency, therefore requires an explicit baseline
+diff. Critical credential/DLQ invariants and metadata dependency resolutions are
+also hardcoded and mutation-tested.
 
 It does **not** prove that a human classification is correct, that a repository
 is safe, or that every runtime query was found. The callsite scan includes seeds
