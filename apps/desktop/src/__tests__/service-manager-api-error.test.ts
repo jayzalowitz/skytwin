@@ -88,6 +88,61 @@ interface ManagerInternals {
   ): Promise<void>;
   workerEnv(generation: ApiGenerationForTest): Record<string, string>;
   webEnv(): Record<string, string>;
+  scheduleApiRestart(
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+    reason: string,
+  ): void;
+  restartDataServicesAfterApiExit(
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+    delayMs: number,
+  ): Promise<void>;
+  stopDataServicesOwned(): Promise<void>;
+  registerWorkerGenerationAuthority(
+    generation: ApiGenerationForTest,
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+  ): Promise<void>;
+  waitForApi(
+    timeoutMs: number,
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+    generation: ApiGenerationForTest,
+  ): Promise<boolean>;
+  startWeb(
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+    generation: ApiGenerationForTest,
+  ): Promise<void>;
+  startWorker(
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+    generation: ApiGenerationForTest,
+  ): Promise<void>;
+  startHealthMonitoring(startup: {
+    ownership: "managed-child";
+    dataDir: string;
+    generation: number;
+  }): void;
   startApi(startup: {
     ownership: "managed-child";
     dataDir: string;
@@ -253,5 +308,107 @@ describe("ServiceManager API error lifecycle", () => {
     expect(manager.registeredWorkerGeneration).toBeNull();
     expect(revokeAuthority).toHaveBeenCalledWith(generation, startup);
     expect(processState.fork).toHaveBeenCalledOnce();
+  });
+
+  it("continues the bounded restart sequence after replacement start and readiness failures", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    const first = { process: generationWorker(), controller: new AbortController(), ingestCredential: "first" };
+    const second = { process: generationWorker(), controller: new AbortController(), ingestCredential: "second" };
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(first)
+      .mockResolvedValueOnce(second);
+    manager.registerWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
+    manager.waitForApi = vi.fn()
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    manager.startWeb = vi.fn().mockResolvedValue(undefined);
+    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+    manager.startHealthMonitoring = vi.fn();
+
+    manager.scheduleApiRestart(startup, "initial API exit");
+    await vi.runAllTimersAsync();
+    await manager.serviceLifecycleTail;
+
+    expect(manager.startApi).toHaveBeenCalledTimes(3);
+    expect(manager.waitForApi).toHaveBeenCalledTimes(2);
+    expect(manager.startWeb).toHaveBeenCalledOnce();
+    expect(manager.startWorker).toHaveBeenCalledOnce();
+    expect(manager.api.failureTimestamps).toHaveLength(3);
+  });
+
+  it("contains services when failed replacement readiness exhausts the budget", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.api.failureTimestamps = Array.from({ length: 3 }, () => Date.now());
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue({
+      process: generationWorker(),
+      controller: new AbortController(),
+      ingestCredential: "replacement",
+    });
+    manager.registerWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
+    manager.waitForApi = vi.fn().mockResolvedValue(false);
+    manager.startWeb = vi.fn().mockResolvedValue(undefined);
+    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+    manager.startHealthMonitoring = vi.fn();
+
+    manager.scheduleApiRestart(startup, "initial API exit");
+    await vi.runAllTimersAsync();
+    await manager.serviceLifecycleTail;
+
+    expect(manager.startApi).toHaveBeenCalledOnce();
+    expect(manager.api.failureTimestamps).toHaveLength(5);
+    expect(manager.api.status).toBe("error");
+    expect(manager.stopDataServicesOwned).toHaveBeenCalledTimes(3);
+    expect(manager.startWeb).not.toHaveBeenCalled();
+    expect(manager.startWorker).not.toHaveBeenCalled();
+  });
+
+  it("does not double-schedule when the replacement child exit already advanced the budget", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.api.restartCount = 1;
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue({
+      process: generationWorker(),
+      controller: new AbortController(),
+      ingestCredential: "replacement",
+    });
+    manager.registerWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
+    manager.waitForApi = vi.fn().mockImplementation(async () => {
+      // The real child exit handler increments this through scheduleApiRestart.
+      manager.api.restartCount++;
+      return false;
+    });
+    manager.scheduleApiRestart = vi.fn();
+
+    await expect(manager.restartDataServicesAfterApiExit(startup, 0))
+      .rejects.toThrow("Replacement API generation could not prove listener ownership");
+
+    expect(manager.api.restartCount).toBe(2);
+    expect(manager.scheduleApiRestart).not.toHaveBeenCalled();
   });
 });

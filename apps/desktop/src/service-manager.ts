@@ -1470,7 +1470,7 @@ export class ServiceManager {
     if (this.paused || !this.guardServiceDatabase(startup, 'before API restart')) return;
     this.api.restartCount++;
     this.recordFailure(this.api, 'api');
-    if ((this.api.status as ProcessState) === 'error') {
+    if (this.api.failureTimestamps.length >= MAX_RESTARTS) {
       if (app.isPackaged) {
         void this.runServiceLifecycle(async () => {
           await this.stopDataServicesOwned();
@@ -1515,27 +1515,42 @@ export class ServiceManager {
         await this.startApi(startup);
         return;
       }
-      await this.stopDataServicesOwned();
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
-      if (!this.guardServiceDatabase(startup, 'before API generation restart')) return;
-      const generation = await this.startApi(startup);
-      if (startup && generation) {
-        await this.registerWorkerGenerationAuthority(generation, startup);
-      }
-      if (!generation || !(await this.waitForApi(10_000, startup, generation))) {
+      const restartCountAtAttempt = this.api.restartCount;
+      try {
         await this.stopDataServicesOwned();
-        throw new Error('Replacement API generation could not prove listener ownership');
-      }
-      await this.startWeb(startup, generation);
-      await this.startWorker(startup, generation);
-      this.startHealthMonitoring(startup);
-      const sampleSignal = this.sampleAbortController?.signal;
-      if (
-        startup?.ownership === 'managed-child' &&
-        sampleSignal &&
-        this.isSampleAuthorityCurrent(this.sampleLaunchEpoch, sampleSignal, startup)
-      ) {
-        this.startPackagedSampleIngest(startup, this.sampleLaunchEpoch, sampleSignal);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (!this.guardServiceDatabase(startup, 'before API generation restart')) return;
+        const generation = await this.startApi(startup);
+        if (startup && generation) {
+          await this.registerWorkerGenerationAuthority(generation, startup);
+        }
+        if (!generation || !(await this.waitForApi(10_000, startup, generation))) {
+          throw new Error('Replacement API generation could not prove listener ownership');
+        }
+        await this.startWeb(startup, generation);
+        await this.startWorker(startup, generation);
+        this.startHealthMonitoring(startup);
+        const sampleSignal = this.sampleAbortController?.signal;
+        if (
+          startup?.ownership === 'managed-child' &&
+          sampleSignal &&
+          this.isSampleAuthorityCurrent(this.sampleLaunchEpoch, sampleSignal, startup)
+        ) {
+          this.startPackagedSampleIngest(startup, this.sampleLaunchEpoch, sampleSignal);
+        }
+      } catch (error) {
+        await this.stopDataServicesOwned();
+        // A replacement child that exits on its own schedules the next attempt
+        // from its exit handler. Deliberate cleanup is fenced by
+        // terminatingProcesses, so only schedule here when that handler did
+        // not already advance the budget.
+        if (this.api.restartCount === restartCountAtAttempt) {
+          this.scheduleApiRestart(
+            startup,
+            error instanceof Error ? error.message : 'replacement API startup failed',
+          );
+        }
+        throw error;
       }
     });
   }

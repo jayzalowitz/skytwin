@@ -4,9 +4,8 @@ import {
   OpenAiEmbeddingProvider,
   type EmbeddingProvider,
   leaseEmbeddingJob,
-  markJobDone,
+  completeEmbeddingJob,
   markJobFailed,
-  updatePageEmbedding,
   pendingEmbeddingJobs,
 } from '@skytwin/memory-gbrain-crdb-adapter';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
@@ -109,9 +108,9 @@ export async function runEmbeddingBackfillJob(
 
     try {
       const embedding = await runAdmitted(opts.signal, () => provider.embed(job.pageContent));
-      await runAdmitted(opts.signal, () => updatePageEmbedding(job.pageId, embedding, provider.model));
-      await runAdmitted(opts.signal, () => markJobDone(job.id));
-      succeeded++;
+      const completed = await runAdmitted(opts.signal, () =>
+        completeEmbeddingJob(job.id, job.leaseToken, embedding, provider.model));
+      if (completed) succeeded++;
     } catch (err) {
       requireJobAdmission(opts.signal);
       failed++;
@@ -120,7 +119,7 @@ export async function runEmbeddingBackfillJob(
         jobId: job.id,
         error: message,
       });
-      await markJobFailed(job.id, message).catch((markErr) => {
+      await markJobFailed(job.id, job.leaseToken, message).catch((markErr) => {
         log.error('markJobFailed itself failed', {
           jobId: job.id,
           error: markErr instanceof Error ? markErr.message : String(markErr),
