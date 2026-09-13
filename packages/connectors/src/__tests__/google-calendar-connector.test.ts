@@ -253,6 +253,7 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     const conn = new GoogleCalendarConnector('user-1', tokenStore, cursor);
     await conn.connect();
     const signals = await conn.poll();
+    await conn.commitCursor();
 
     expect(signals).toHaveLength(1);
     expect(lastUrl).toContain('timeMin=');
@@ -280,6 +281,7 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     const conn = new GoogleCalendarConnector('user-1', tokenStore, cursor);
     await conn.connect();
     await conn.poll();
+    await conn.commitCursor();
 
     expect(lastUrl).toContain('syncToken=sync-token-1');
     expect(cursor.snapshot['user-1:google_calendar:sync_token']).toBe('sync-token-2');
@@ -307,9 +309,44 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     const conn = new GoogleCalendarConnector('user-1', tokenStore, cursor);
     await conn.connect();
     await conn.poll();
+    await conn.commitCursor();
 
     expect(callCount).toBe(2);
     expect(cursor.snapshot['user-1:google_calendar:sync_token']).toBe('fresh-token');
+  });
+
+  it.each([401, 403])('replays an event in a new generation after downstream ingest returns %s', async () => {
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        items: [makeEvent({ id: 'replay-me' })],
+        nextSyncToken: 'uncommitted-token',
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        items: [makeEvent({ id: 'replay-me' })],
+        nextSyncToken: 'committed-token',
+      })) as typeof fetch);
+
+    const cursor = memoryCursor();
+    const tokenStore = makeStubStore({
+      accessToken: 'a',
+      refreshToken: 'r',
+      expiresAt: new Date(Date.now() + 60_000),
+    });
+    const firstGeneration = new GoogleCalendarConnector('user-1', tokenStore, cursor);
+    await firstGeneration.connect();
+    const first = await firstGeneration.poll();
+    // A 401/403 from downstream ingest means commitCursor is deliberately
+    // not called before this process generation is revoked.
+    await firstGeneration.disconnect();
+
+    const nextGeneration = new GoogleCalendarConnector('user-1', tokenStore, cursor);
+    await nextGeneration.connect();
+    const replay = await nextGeneration.poll();
+    await nextGeneration.commitCursor();
+
+    expect(first.map((signal) => signal.data.eventId)).toEqual(['replay-me']);
+    expect(replay.map((signal) => signal.data.eventId)).toEqual(['replay-me']);
+    expect(cursor.snapshot['user-1:google_calendar:sync_token']).toBe('committed-token');
   });
 
   it('back-compat: third arg as a string still sets calendarId, not the cursor', async () => {

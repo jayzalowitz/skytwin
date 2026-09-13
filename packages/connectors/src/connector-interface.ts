@@ -30,7 +30,7 @@ export interface SignalConnector {
    * Connect to the data source. This may involve authentication,
    * establishing WebSocket connections, or starting polling timers.
    */
-  connect(): Promise<void>;
+  connect(signal?: AbortSignal): Promise<void>;
 
   /**
    * Disconnect from the data source and clean up resources.

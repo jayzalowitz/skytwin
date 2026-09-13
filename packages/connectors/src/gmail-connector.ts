@@ -100,13 +100,16 @@ export class GmailConnector implements SignalConnector {
     this.labelObserver = labelObserver;
   }
 
-  async connect(): Promise<void> {
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google');
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google', signal);
+    signal?.throwIfAborted();
     if (!token) {
       throw new Error('No Google OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
       this.historyId = await this.cursorStore.get(this.userId, 'gmail', HISTORY_ID_KIND);
+      signal?.throwIfAborted();
     }
     this.connected = true;
   }

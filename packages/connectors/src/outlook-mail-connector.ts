@@ -79,6 +79,7 @@ export class OutlookMailConnector implements SignalConnector {
   private readonly cursorStore: CursorStore | null;
   /** In-memory mirror of the persisted delta/continuation link for this session. */
   private deltaLink: string | null = null;
+  private pendingDeltaLink: string | null = null;
 
   constructor(userId: string, tokenStore: OAuthTokenStore, cursorStore: CursorStore | null = null) {
     this.userId = userId;
@@ -86,13 +87,16 @@ export class OutlookMailConnector implements SignalConnector {
     this.cursorStore = cursorStore;
   }
 
-  async connect(): Promise<void> {
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft');
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal);
+    signal?.throwIfAborted();
     if (!token) {
       throw new Error('No Microsoft OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
       this.deltaLink = await this.cursorStore.get(this.userId, 'outlook', DELTA_LINK_KIND);
+      signal?.throwIfAborted();
     }
     this.connected = true;
   }
@@ -101,6 +105,7 @@ export class OutlookMailConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.deltaLink = null;
+    this.pendingDeltaLink = null;
   }
 
   onSignal(handler: SignalHandler): void {
@@ -196,23 +201,18 @@ export class OutlookMailConnector implements SignalConnector {
     }
 
     signal?.throwIfAborted();
-    if (nextCursor) await this.persistCursor(nextCursor);
-    signal?.throwIfAborted();
+    if (nextCursor) this.pendingDeltaLink = nextCursor;
     return signals;
   }
 
-  private async persistCursor(link: string): Promise<void> {
-    this.deltaLink = link;
+  async commitCursor(): Promise<void> {
+    const link = this.pendingDeltaLink;
+    if (link === null) return;
     if (this.cursorStore) {
-      try {
-        await this.cursorStore.save(this.userId, 'outlook', DELTA_LINK_KIND, link);
-      } catch (err) {
-        console.warn(
-          `[outlook] Failed to persist delta cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      await this.cursorStore.save(this.userId, 'outlook', DELTA_LINK_KIND, link);
     }
+    this.deltaLink = link;
+    this.pendingDeltaLink = null;
   }
 
   private headerValue(headers: GraphMessage['internetMessageHeaders'], name: string): string {

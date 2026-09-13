@@ -94,6 +94,7 @@ export class OutlookCalendarConnector implements SignalConnector {
   private handlers: SignalHandler[] = [];
   private connected = false;
   private deltaLink: string | null = null;
+  private pendingDeltaLink: string | null = null;
   private readonly userId: string;
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
@@ -104,13 +105,16 @@ export class OutlookCalendarConnector implements SignalConnector {
     this.cursorStore = cursorStore;
   }
 
-  async connect(): Promise<void> {
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft');
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal);
+    signal?.throwIfAborted();
     if (!token) {
       throw new Error('No Microsoft OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
       this.deltaLink = await this.cursorStore.get(this.userId, 'outlook_calendar', DELTA_LINK_KIND);
+      signal?.throwIfAborted();
     }
     this.connected = true;
   }
@@ -119,6 +123,7 @@ export class OutlookCalendarConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.deltaLink = null;
+    this.pendingDeltaLink = null;
   }
 
   onSignal(handler: SignalHandler): void {
@@ -200,8 +205,7 @@ export class OutlookCalendarConnector implements SignalConnector {
     }
 
     signal?.throwIfAborted();
-    if (nextCursor) await this.persistCursor(nextCursor);
-    signal?.throwIfAborted();
+    if (nextCursor) this.pendingDeltaLink = nextCursor;
 
     // Single emit pass over the collected events, with conflicts computed
     // across the whole set.
@@ -216,18 +220,14 @@ export class OutlookCalendarConnector implements SignalConnector {
     return signals;
   }
 
-  private async persistCursor(link: string): Promise<void> {
-    this.deltaLink = link;
+  async commitCursor(): Promise<void> {
+    const link = this.pendingDeltaLink;
+    if (link === null) return;
     if (this.cursorStore) {
-      try {
-        await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
-      } catch (err) {
-        console.warn(
-          `[outlook-calendar] Failed to persist delta cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
     }
+    this.deltaLink = link;
+    this.pendingDeltaLink = null;
   }
 
   private eventToSignal(event: GraphEvent, hasConflict: boolean): RawSignal {
