@@ -47,6 +47,7 @@ const POLL_INTERVAL_MS = 1000;
 
 let _pollTimer = null;
 let _activeDownloadId = null;
+let _activeDownloadStatus = null;
 
 /**
  * Estimate the user's RAM bracket. Browsers don't expose system RAM
@@ -225,16 +226,20 @@ async function renderCardInto(container, userId) {
 
   // Manage polling: poll while we have an active download.
   if (active && ACTIVE_STATUSES.has(active.status)) {
-    startPolling(container, userId, active.id);
+    startPolling(container, userId, active.id, active.status);
   } else {
     stopPolling();
   }
 }
 
-function startPolling(container, userId, downloadId) {
-  if (_activeDownloadId === downloadId && _pollTimer !== null) return;
+function startPolling(container, userId, downloadId, status) {
+  if (_activeDownloadId === downloadId && _pollTimer !== null) {
+    _activeDownloadStatus = status;
+    return;
+  }
   stopPolling();
   _activeDownloadId = downloadId;
+  _activeDownloadStatus = status;
   _pollTimer = setInterval(async () => {
     // Stop polling if the user navigated away from Settings or the
     // card container was detached/replaced (e.g. by a different
@@ -253,9 +258,9 @@ function startPolling(container, userId, downloadId) {
     try {
       const data = await fetchModelDownload(downloadId);
       const dl = data?.download;
-      if (!dl || !ACTIVE_STATUSES.has(dl.status)) {
-        // Status changed — re-render entire card (transitions to
-        // verifying / installing / complete / failed).
+      if (!dl || !ACTIVE_STATUSES.has(dl.status) || dl.status !== _activeDownloadStatus) {
+        // Any phase change needs a full render because status-specific
+        // controls differ even while both phases are active.
         await renderCardInto(container, userId);
         return;
       }
@@ -284,6 +289,7 @@ function stopPolling() {
     _pollTimer = null;
   }
   _activeDownloadId = null;
+  _activeDownloadStatus = null;
 }
 
 let _listenerWired = false;
@@ -327,7 +333,12 @@ function ensureListener() {
       const id = el.getAttribute('data-download-id');
       if (!id) return;
       try {
-        await pauseModelDownload(id);
+        const result = await pauseModelDownload(id);
+        if (result?.ok !== true) {
+          showErrorToast("Couldn't pause: the download is no longer pausable");
+          await renderCardInto(container, userId);
+          return;
+        }
         showSavedToast('Paused');
         await renderCardInto(container, userId);
       } catch (err) {
@@ -352,7 +363,12 @@ function ensureListener() {
       if (!id) return;
       if (!confirm('Cancel the download? The partial file will be deleted.')) return;
       try {
-        await cancelModelDownload(id);
+        const result = await cancelModelDownload(id);
+        if (result?.ok !== true) {
+          showErrorToast("Couldn't cancel: the download is no longer cancellable");
+          await renderCardInto(container, userId);
+          return;
+        }
         showSavedToast('Cancelled');
         await renderCardInto(container, userId);
       } catch (err) {
