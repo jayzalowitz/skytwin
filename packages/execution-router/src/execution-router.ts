@@ -252,8 +252,7 @@ export class ExecutionRouter {
 
     for (const adapterName of adapterChain) {
       // Guard against duplicate execution: if a previous adapter returned a
-      // non-'completed' status (rather than throwing), the action may have been
-      // partially executed. Only fall back on thrown errors, not on soft failures.
+      // non-'completed' status, the action may have been partially executed.
       if (firstAttemptCompleted) {
         break;
       }
@@ -293,12 +292,15 @@ export class ExecutionRouter {
             fallback_skipped_reason: 'previous adapter returned non-completed status, fallback unsafe',
           },
         };
-      } catch {
-        // Adapter threw before execution started — safe to try next in chain
+      } catch (error) {
+        // Once an adapter is invoked, its exception cannot prove whether an
+        // external effect committed. Never authorize a second adapter within
+        // this call; reconciliation must resolve the ambiguous first attempt.
+        throw error;
       }
     }
 
-    // All adapters failed (threw errors)
+    // No registered adapter was available in the selected chain.
     const gap = logSkillGap(
       action.actionType,
       action.description,
@@ -469,8 +471,11 @@ export class ExecutionRouter {
           },
         };
         return;
-      } catch {
-        // Adapter threw before execution started — safe to try next in chain.
+      } catch (error) {
+        // Adapter-originated stream/build/execute errors are all ambiguous.
+        // A marker thrown by adapter code is forgeable and cannot authorize
+        // another attempt.
+        throw error;
       }
     }
 

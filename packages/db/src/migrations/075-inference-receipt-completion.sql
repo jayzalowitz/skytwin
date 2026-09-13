@@ -1,6 +1,9 @@
 -- Receipt emission can produce more than one row per decision and explanation.
 -- Migration 074 may already have run, so evolve it here rather than rewriting
--- history. CockroachDB represents UNIQUE constraints as backing indexes.
+-- CockroachDB represents UNIQUE constraints as backing indexes and does not
+-- implement PostgreSQL's ALTER TABLE ... DROP CONSTRAINT form for them.
+-- DROP INDEX is idempotent and removes migration 074's one-per-decision
+-- foundation constraint before multi-call receipt emission is enabled.
 DROP INDEX IF EXISTS inference_receipts_decision_id_key CASCADE;
 
 CREATE INDEX IF NOT EXISTS inference_receipts_explanation_idx

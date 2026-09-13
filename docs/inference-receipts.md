@@ -118,9 +118,12 @@ Receipt completion and continuation authority are finalized in one transaction.
 The continuation guard binds the owner-scoped persisted outcome flags, selected
 action, risk and policy snapshot, and exact explanation. Re-ingestion consumes
 that single snapshot; it never joins guard authority to later-mutated outcome or
-explanation rows. An execution stream error without typed pre-dispatch proof
-remains `running`/ambiguous for reconciliation and is never recorded as a
-terminal failure merely because the response stream broke.
+explanation rows. An execution stream exception remains `running`/ambiguous for
+reconciliation and is never recorded as a terminal failure merely because the
+response stream broke. The ready-to-running
+claim creates and binds its execution plan in the same transaction; terminal
+state is accepted only when that exact plan has a matching persisted plan status
+and execution result.
 
 ## Security boundary
 

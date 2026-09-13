@@ -310,7 +310,7 @@ describe('Events API routes', () => {
       completion: { continuation: unknown },
     ) => ({ receipts: inputs, continuation: completion.continuation }));
     mockGetIngestState.mockResolvedValue(null);
-    mockClaimExecution.mockResolvedValue(true);
+    mockClaimExecution.mockResolvedValue({ id: 'plan-1' });
     mockMarkExecutionTerminal.mockResolvedValue(true);
     mockMarkNonEffect.mockResolvedValue(true);
     mockGetExplanation.mockResolvedValue(null);
@@ -416,6 +416,79 @@ describe('Events API routes', () => {
     expect(mockEvaluate).toHaveBeenCalledTimes(1);
     expect(mockCreateReceipts).toHaveBeenCalledTimes(1);
     expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('allows only the finalized continuation to proceed when concurrent routes evaluate distinct outcomes', async () => {
+    let saveCount = 0;
+    mockSaveDecision.mockImplementation(async (decision: unknown) => ({
+      decision,
+      created: saveCount++ === 0,
+    }));
+    const outcome = (suffix: string) => ({
+      id: `outcome-${suffix}`,
+      decisionId: 'decision-1',
+      autoExecute: false,
+      requiresApproval: true,
+      reasoning: `Needs approval ${suffix}`,
+      selectedAction: {
+        id: `action-${suffix}`, decisionId: 'decision-1', actionType: 'create_calendar_event',
+        description: `Create calendar event ${suffix}`, domain: 'calendar', parameters: {},
+        reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+      },
+      allCandidates: [],
+      riskAssessment: null,
+    });
+    mockEvaluate
+      .mockResolvedValueOnce(outcome('first'))
+      .mockResolvedValueOnce(outcome('second'));
+    mockGenerate
+      .mockResolvedValueOnce({
+        id: 'explanation-first', decisionId: 'decision-1', summary: 'First explanation',
+        riskTier: 'low', overallConfidence: 'high',
+      })
+      .mockResolvedValueOnce({
+        id: 'explanation-second', decisionId: 'decision-1', summary: 'Second explanation',
+        riskTier: 'low', overallConfidence: 'high',
+      });
+    let releaseFirstCapture!: () => void;
+    let signalFirstCapture!: () => void;
+    const firstCaptureStarted = new Promise<void>((resolve) => { signalFirstCapture = resolve; });
+    const secondCaptureStarted = new Promise<void>((resolve) => { releaseFirstCapture = resolve; });
+    let captureCount = 0;
+    mockCreateReceipts.mockImplementation(async (
+      _userId: unknown,
+      inputs: unknown[],
+      completion: { continuation: unknown },
+    ) => {
+      if (captureCount++ === 0) {
+        signalFirstCapture();
+        await secondCaptureStarted;
+        return { receipts: inputs, continuation: completion.continuation };
+      }
+      releaseFirstCapture();
+      return null;
+    });
+    mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-first' }, created: true });
+    const app = buildApp();
+    const body = {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    };
+
+    const firstRequest = request(app, 'POST', '/api/events/ingest', body);
+    await firstCaptureStarted;
+    const secondRequest = request(app, 'POST', '/api/events/ingest', body);
+    const [first, second] = await Promise.all([firstRequest, secondRequest]);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(500);
+    expect(mockEvaluate).toHaveBeenCalledTimes(2);
+    expect(mockCreateReceipts.mock.calls.map((call) =>
+      (call[2] as { continuation: { outcome: { reasoning: string } } }).continuation.outcome.reasoning,
+    )).toEqual(['Needs approval first', 'Needs approval second']);
+    expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
+    expect(mockApprovalCreate).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'Needs approval first',
+    }));
   });
 
   // ---------------------------------------------------------------------
@@ -891,7 +964,7 @@ describe('Events API routes', () => {
 
     it('resumes a committed ready execution with one claim and no repeated inference', async () => {
       async function* completedStream() {
-        yield { eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+        yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
       }
       mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
       mockGetOutcome.mockResolvedValue({
@@ -920,8 +993,9 @@ describe('Events API routes', () => {
       expect(mockCreateReceipts).not.toHaveBeenCalled();
       expect(mockClaimExecution).toHaveBeenCalledTimes(1);
       expect(mockClaimExecution.mock.invocationCallOrder[0]).toBeLessThan(
-        mockExecutionRepository.createPlan.mock.invocationCallOrder[0]!,
+        mockGetExecutionRouter.mock.invocationCallOrder[0]!,
       );
+      expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
       expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
       expect(mockMarkExecutionTerminal).toHaveBeenCalledWith(
         'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'decision-1', 'completed', 'plan-1',
@@ -980,7 +1054,7 @@ describe('Events API routes', () => {
   });
 
   it('does not dispatch when the ready execution claim is ambiguous or already consumed', async () => {
-    mockClaimExecution.mockResolvedValue(false);
+    mockClaimExecution.mockResolvedValue(null);
     mockGetIngestState.mockResolvedValue(ingestState('running'));
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
@@ -1012,7 +1086,7 @@ describe('Events API routes', () => {
     ['throw after commit', new Error('terminal response lost')],
   ] as const)('does not surface terminal truth after a %s', async (_label, terminalResponse) => {
     async function* completedStream() {
-      yield { eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
     }
     mockGetExecutionRouter.mockResolvedValue({
       executeWithRoutingStreaming: vi.fn(() => completedStream()),
@@ -1093,13 +1167,33 @@ describe('Events API routes', () => {
     expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
     expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
     expect(mockClaimExecution.mock.invocationCallOrder[0]).toBeLessThan(
-      mockExecutionRepository.createPlan.mock.invocationCallOrder[0]!,
+      mockGetExecutionRouter.mock.invocationCallOrder[0]!,
     );
+    expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
     const body = res.body as { execution: { status: string; planId: string } };
     expect(body.execution).toMatchObject({ status: 'ambiguous', planId: 'plan-1' });
   });
 
-  it('records a typed pre-dispatch invariant failure as terminal', async () => {
+  it('rejects a terminal event from a different execution plan', async () => {
+    async function* stalePlanStream() {
+      yield { planId: 'stale-plan', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+    }
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: vi.fn(() => stalePlanStream()),
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionRepository.createEvent).not.toHaveBeenCalled();
+    expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+  });
+
+  it('does not trust an exported error class as proof that no effect occurred', async () => {
     async function* rejectedBeforeDispatch() {
       throw new InvariantViolationError('risk binding failed before dispatch');
     }
@@ -1112,12 +1206,8 @@ describe('Events API routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(mockExecutionRepository.createResult).toHaveBeenCalledWith(expect.objectContaining({
-      planId: 'plan-1', success: false, error: 'risk binding failed before dispatch',
-    }));
-    expect(mockMarkExecutionTerminal).toHaveBeenCalledWith(
-      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'decision-1', 'failed', 'plan-1',
-    );
-    expect((res.body as { execution: { status: string } }).execution.status).toBe('failed');
+    expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
   });
 });

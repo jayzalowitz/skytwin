@@ -327,7 +327,7 @@ packages/
 | Mobile | React Native + Expo |
 | Testing | Vitest (4,800+ tests) |
 | CI/CD | GitHub Actions |
-| Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and a Direct fallback — trust-ranked with automatic failover |
+| Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and Direct execution — trust-ranked selection with ambiguous attempts held for reconciliation |
 
 ## Deployment
 

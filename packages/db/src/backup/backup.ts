@@ -374,7 +374,10 @@ export function validateBackupData(value: unknown): string[] {
             !effectStates.includes(state.effectState) ||
             (state.sourceEffectState !== null && !effectStates.includes(state.sourceEffectState)) ||
             !executionStatuses.includes(state.sourceExecutionStatus) ||
-            (state.sourceExecutionPlanId !== null && typeof state.sourceExecutionPlanId !== 'string') ||
+            (state.sourceExecutionPlanId !== null &&
+              (typeof state.sourceExecutionPlanId !== 'string' ||
+                !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+                  .test(state.sourceExecutionPlanId))) ||
             (state.receiptCaptureComplete &&
               (typeof state.receiptExplanationId !== 'string' ||
                 !explanationIds.has(state.receiptExplanationId))) ||
