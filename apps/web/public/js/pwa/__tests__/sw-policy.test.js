@@ -132,7 +132,7 @@ describe('classifyRequest', () => {
 
 describe('precache list', () => {
   it('advances the shell cache and includes the auth-state dependency', () => {
-    expect(CACHE_VERSION).toBe('v3');
+    expect(CACHE_VERSION).toBe('v4');
     expect(PRECACHE_URLS).toContain('/js/sample-session.js');
   });
   it('includes the shell entrypoints', () => {

@@ -18,7 +18,7 @@
 
 /** Bump this whenever the precache list or shell strategy changes — old
  * caches are pruned on `activate` by name prefix. */
-export const CACHE_VERSION = 'v3';
+export const CACHE_VERSION = 'v4';
 export const SHELL_CACHE = `skytwin-shell-${CACHE_VERSION}`;
 export const RUNTIME_CACHE = `skytwin-runtime-${CACHE_VERSION}`;
 
