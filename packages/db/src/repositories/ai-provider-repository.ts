@@ -1,6 +1,35 @@
 import { query, withTransaction } from '../connection.js';
 import type { AIProviderSettingsRow, ReasoningModeSettingsRow } from '../types.js';
-import type { ReasoningMode } from '@skytwin/shared-types';
+import {
+  hasSameProviderCredentialEndpoint,
+  type AIProviderName,
+  type ReasoningMode,
+} from '@skytwin/shared-types';
+
+class ProviderCredentialEndpointChangedError extends Error {
+  readonly code = 'provider_credential_endpoint_changed';
+
+  constructor(provider: string) {
+    super(`A fresh credential is required when changing the ${provider} endpoint authority`);
+    this.name = 'ProviderCredentialEndpointChangedError';
+  }
+}
+
+function credentialForReplacement(
+  provider: Omit<UpsertAIProviderInput, 'userId'>,
+  existing: AIProviderSettingsRow | undefined,
+): string {
+  if (provider.apiKey && provider.apiKey.length > 0) return provider.apiKey;
+  if (!existing || existing.api_key.length === 0) return '';
+  if (!hasSameProviderCredentialEndpoint(
+    provider.provider as AIProviderName,
+    existing.base_url,
+    provider.baseUrl,
+  )) {
+    throw new ProviderCredentialEndpointChangedError(provider.provider);
+  }
+  return existing.api_key;
+}
 
 /**
  * Input for creating or updating an AI provider setting.
@@ -110,20 +139,20 @@ export const aiProviderRepository = {
       // Read existing keys before deleting so we can preserve them
       // when the client sends an empty apiKey (it only has the masked preview).
       const existing = await client.query<AIProviderSettingsRow>(
-        'SELECT provider, api_key FROM ai_provider_settings WHERE user_id = $1',
+        'SELECT provider, api_key, base_url FROM ai_provider_settings WHERE user_id = $1',
         [userId],
       );
-      const existingKeys = new Map(existing.rows.map((r) => [r.provider, r.api_key]));
+      const existingProviders = new Map(existing.rows.map((row) => [row.provider, row]));
+      const replacements = providers.map((provider) => ({
+        provider,
+        apiKey: credentialForReplacement(provider, existingProviders.get(provider.provider)),
+      }));
 
       await client.query('DELETE FROM ai_provider_settings WHERE user_id = $1', [userId]);
 
       const rows: AIProviderSettingsRow[] = [];
-      for (const p of providers) {
-        // Preserve existing API key when client sends empty string
-        const apiKey = (p.apiKey && p.apiKey.length > 0)
-          ? p.apiKey
-          : (existingKeys.get(p.provider) ?? '');
-
+      for (const replacement of replacements) {
+        const { provider: p, apiKey } = replacement;
         const row = await client.query<AIProviderSettingsRow>(
           `INSERT INTO ai_provider_settings (user_id, provider, api_key, model, base_url, priority, enabled)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -153,17 +182,19 @@ export const aiProviderRepository = {
         [userId, mode],
       );
       const existing = await client.query<AIProviderSettingsRow>(
-        'SELECT provider, api_key FROM ai_provider_settings WHERE user_id = $1',
+        'SELECT provider, api_key, base_url FROM ai_provider_settings WHERE user_id = $1',
         [userId],
       );
-      const existingKeys = new Map(existing.rows.map((row) => [row.provider, row.api_key]));
+      const existingProviders = new Map(existing.rows.map((row) => [row.provider, row]));
+      const replacements = providers.map((provider) => ({
+        provider,
+        apiKey: credentialForReplacement(provider, existingProviders.get(provider.provider)),
+      }));
       await client.query('DELETE FROM ai_provider_settings WHERE user_id = $1', [userId]);
 
       const rows: AIProviderSettingsRow[] = [];
-      for (const provider of providers) {
-        const apiKey = provider.apiKey && provider.apiKey.length > 0
-          ? provider.apiKey
-          : (existingKeys.get(provider.provider) ?? '');
+      for (const replacement of replacements) {
+        const { provider, apiKey } = replacement;
         const inserted = await client.query<AIProviderSettingsRow>(
           `INSERT INTO ai_provider_settings
              (user_id, provider, api_key, model, base_url, priority, enabled)

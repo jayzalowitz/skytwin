@@ -1895,7 +1895,7 @@ function renderProviderChain(providers) {
           }
         </div>
         <div id="ai-test-result-${idx}" style="margin-top: 0.25rem;"></div>
-        <div style="margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); line-height: 1.4;">
+        <div data-region="provider-boundary" style="margin-top: 0.4rem; font-size: 0.7rem; color: var(--text-dim); line-height: 1.4;">
           ${renderProviderBoundary(p)}
         </div>
       </div>
@@ -1905,7 +1905,7 @@ function renderProviderChain(providers) {
 
 function renderProviderBoundary(provider) {
   const privacy = provider?.privacy;
-  if (!privacy) return 'Boundary details will be available after this provider is saved.';
+  if (!privacy) return 'Boundary details will be available after this endpoint is validated and saved.';
   const location = privacy.executionLocation === 'on_device' ? 'On device' : 'Remote service';
   const network = privacy.networkScope === 'none'
     ? 'no network'
@@ -1963,7 +1963,20 @@ window.aiToggleEnabled = function(idx, checked) {
 };
 
 window.aiUpdateField = function(idx, field, value) {
-  _aiChain[idx][field] = value;
+  if (!Number.isSafeInteger(idx) || idx < 0) return;
+  const provider = _aiChain[idx];
+  if (!provider) return;
+  provider[field] = value;
+  if (field !== 'baseUrl') return;
+
+  // Privacy metadata belongs to the persisted endpoint snapshot. Never keep
+  // showing it after the user edits the authority locally.
+  provider.privacy = null;
+  const card = document.querySelector(
+    `[data-region="ai-provider-card"][data-idx="${idx}"]`,
+  );
+  const boundary = card?.querySelector('[data-region="provider-boundary"]');
+  if (boundary) boundary.innerHTML = renderProviderBoundary(provider);
 };
 
 window.aiRemoveProvider = function(idx, userId) {

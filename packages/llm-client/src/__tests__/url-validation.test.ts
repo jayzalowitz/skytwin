@@ -1,5 +1,8 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { fetchCustomProviderUrl, validateBaseUrl } from '../url-validation.js';
+import {
+  fetchCustomProviderUrl,
+  validateBaseUrl,
+} from '../url-validation.js';
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -247,6 +250,54 @@ describe('fetchCustomProviderUrl', () => {
       'anthropic',
       { method: 'POST' },
       privateLookup,
+    )).rejects.toThrow('resolves to private address');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects public and mixed DNS answers for a locally admitted hostname', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const publicLookup = vi.fn().mockResolvedValue([
+      { address: '93.184.216.34', family: 4 },
+    ]);
+    const mixedLookup = vi.fn().mockResolvedValue([
+      { address: '127.0.0.1', family: 4 },
+      { address: '93.184.216.34', family: 4 },
+    ]);
+
+    await expect(fetchCustomProviderUrl(
+      'http://localhost:11434/api/chat', 'ollama', { method: 'POST' }, publicLookup,
+    )).rejects.toThrow('must resolve only to a loopback address');
+    await expect(fetchCustomProviderUrl(
+      'http://localhost:11434/api/chat', 'ollama', { method: 'POST' }, mixedLookup,
+    )).rejects.toThrow('must resolve only to a loopback address');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('accepts every resolved answer when a local hostname stays on loopback', async () => {
+    const response = new Response('{"ok":true}', { status: 200 });
+    const fetchMock = vi.fn().mockResolvedValue(response);
+    vi.stubGlobal('fetch', fetchMock);
+    const loopbackLookup = vi.fn().mockResolvedValue([
+      { address: '127.0.0.1', family: 4 },
+      { address: '::1', family: 6 },
+    ]);
+
+    const result = await fetchCustomProviderUrl(
+      'http://localhost:11434/api/chat', 'ollama', { method: 'POST' }, loopbackLookup,
+    );
+    expect(result.response).toBe(response);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await result.close();
+  });
+
+  it('does not grant the Ollama exemption to a remote hostname resolving to loopback', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const privateLookup = vi.fn().mockResolvedValue([{ address: '127.0.0.1', family: 4 }]);
+
+    await expect(fetchCustomProviderUrl(
+      'https://ollama.example/api/chat', 'ollama', { method: 'POST' }, privateLookup,
     )).rejects.toThrow('resolves to private address');
     expect(fetchMock).not.toHaveBeenCalled();
   });

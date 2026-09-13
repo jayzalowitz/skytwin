@@ -447,6 +447,25 @@ describe('reasoning-mode provider mutations', () => {
     expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
   });
 
+  it('reports an endpoint credential conflict without accepting the replacement', async () => {
+    mockAiProviderRepository.replaceAllWithReasoningMode.mockRejectedValueOnce(
+      Object.assign(new Error('must not expose repository details'), {
+        code: 'provider_credential_endpoint_changed',
+      }),
+    );
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'bring_your_own_provider',
+      providers: [{
+        provider: 'openai', model: 'gpt', baseUrl: 'https://new.example/v1', priority: 0,
+      }],
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: 'Enter a fresh API key when changing a provider endpoint.',
+    });
+  });
+
   it('tests a provider only through the persisted mode boundary', async () => {
     mockTestProviderForReasoningMode.mockResolvedValue({ latencyMs: 2, model: 'managed' });
     const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
@@ -473,6 +492,44 @@ describe('reasoning-mode provider mutations', () => {
     });
     expect(response.status).toBe(400);
     expect(mockTestProviderForReasoningMode).not.toHaveBeenCalled();
+  });
+
+  it('does not send a stored credential to a changed test endpoint authority', async () => {
+    mockReasoningModeRepository.getOrCreateForUser.mockResolvedValue({
+      mode: 'bring_your_own_provider', requires_confirmation: false,
+    });
+    mockAiProviderRepository.getForUser.mockResolvedValue([{
+      provider: 'openai', api_key: 'stored-secret', model: 'gpt',
+      base_url: 'https://gateway.example/v1', priority: 0, enabled: true,
+    }]);
+
+    const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'openai', model: 'gpt', baseUrl: 'https://other.example/v1',
+    });
+
+    expect(response.status).toBe(409);
+    expect(mockTestProviderForReasoningMode).not.toHaveBeenCalled();
+  });
+
+  it('may reuse a stored credential for another path on the same test authority', async () => {
+    mockReasoningModeRepository.getOrCreateForUser.mockResolvedValue({
+      mode: 'bring_your_own_provider', requires_confirmation: false,
+    });
+    mockAiProviderRepository.getForUser.mockResolvedValue([{
+      provider: 'openai', api_key: 'stored-secret', model: 'gpt',
+      base_url: 'https://gateway.example/v1', priority: 0, enabled: true,
+    }]);
+    mockTestProviderForReasoningMode.mockResolvedValue({ latencyMs: 2, model: 'gpt' });
+
+    const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'openai', model: 'gpt', baseUrl: 'https://gateway.example/v2',
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockTestProviderForReasoningMode).toHaveBeenCalledWith(
+      'bring_your_own_provider',
+      expect.objectContaining({ apiKey: 'stored-secret', baseUrl: 'https://gateway.example/v2' }),
+    );
   });
 
   it('does not test providers while a migrated chain awaits confirmation', async () => {

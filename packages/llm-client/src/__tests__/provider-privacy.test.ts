@@ -18,12 +18,14 @@ describe('provider privacy capabilities', () => {
       executionLocation: 'on_device',
       networkScope: 'none',
       confidentiality: 'device_local',
+      retention: { classification: 'local_runtime' },
       pricing: { kind: 'zero' },
     });
     expect(providerPrivacyCapabilities(ollama)).toMatchObject({
       executionLocation: 'on_device',
       networkScope: 'loopback',
       confidentiality: 'device_local',
+      retention: { classification: 'operator_unknown' },
       pricing: { kind: 'zero' },
     });
   });
@@ -89,9 +91,39 @@ describe('unattended pricing policy', () => {
 
 describe('reasoning-mode provider policy', () => {
   it('admits an explicitly local-only chain', () => {
-    expect(providersForReasoningMode('on_device', [embedded, ollama])).toEqual({
+    const admitted = providersForReasoningMode('on_device', [embedded, ollama]);
+    expect(admitted).toEqual({
       mode: 'on_device', providers: [embedded, ollama],
     });
+    expect(Object.isFrozen(admitted)).toBe(true);
+    expect(Object.isFrozen(admitted.providers)).toBe(true);
+    expect(admitted.providers.every(Object.isFrozen)).toBe(true);
+  });
+
+  it('snapshots every provider scalar exactly once before validation', () => {
+    const reads = { name: 0, apiKey: 0, model: 0, baseUrl: 0 };
+    const hostile = Object.defineProperties({}, {
+      name: { get: () => (++reads.name === 1 ? 'ollama' : 'openai') },
+      apiKey: { get: () => { reads.apiKey += 1; return ''; } },
+      model: { get: () => { reads.model += 1; return 'qwen'; } },
+      baseUrl: { get: () => { reads.baseUrl += 1; return 'http://127.0.0.1:11434'; } },
+    }) as ProviderEntry;
+
+    const admitted = providersForReasoningMode('on_device', [hostile]);
+
+    expect(admitted.providers[0]).toEqual({
+      name: 'ollama', apiKey: '', model: 'qwen', baseUrl: 'http://127.0.0.1:11434',
+    });
+    expect(reads).toEqual({ name: 1, apiKey: 1, model: 1, baseUrl: 1 });
+  });
+
+  it('does not retain mutable provider objects after admission', () => {
+    const mutable: ProviderEntry = { ...ollama };
+    const admitted = providersForReasoningMode('on_device', [mutable]);
+    mutable.name = 'openai';
+    mutable.apiKey = 'redirected-secret';
+    mutable.baseUrl = 'https://remote.example';
+    expect(admitted.providers[0]).toEqual(ollama);
   });
 
   it('rejects remote and non-loopback providers in on-device mode', () => {

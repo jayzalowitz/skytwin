@@ -10,6 +10,7 @@ import type { ProviderEntry } from './types.js';
 export type ProviderModePolicyErrorCode =
   | 'unknown_mode'
   | 'no_providers'
+  | 'invalid_provider'
   | 'cross_mode_provider'
   | 'non_loopback_local_endpoint'
   | 'verification_adapter_required';
@@ -40,15 +41,54 @@ function localCapabilities(provider: 'embedded' | 'ollama'): ProviderPrivacyCapa
     confidentiality: 'device_local',
     attestationPolicy: 'not_applicable',
     retention: {
-      classification: 'process_only',
+      classification: provider === 'embedded' ? 'local_runtime' : 'operator_unknown',
       summary: provider === 'embedded'
-        ? 'Prompt processing stays inside the SkyTwin process and its local model runtime.'
-        : 'Prompt processing is sent only to the user-configured loopback Ollama runtime.',
+        ? 'Prompt processing uses a model subprocess on this device; no remote-provider retention policy applies.'
+        : 'Prompt processing is sent over loopback to the configured Ollama service; its logging and retention depend on the local operator configuration.',
       policyUrl: null,
     },
     modalities: ['text'],
     pricing: { kind: 'zero', unit: 'nano_usd', source: 'local_runtime' },
   };
+}
+
+const PROVIDER_NAMES = new Set<AIProviderName>([
+  'anthropic', 'openai', 'google', 'ollama', 'embedded',
+]);
+
+function snapshotProvider(provider: ProviderEntry): ProviderEntry {
+  const name = provider.name;
+  const apiKey = provider.apiKey;
+  const model = provider.model;
+  const baseUrl = provider.baseUrl;
+  if (!PROVIDER_NAMES.has(name)
+      || typeof apiKey !== 'string'
+      || typeof model !== 'string'
+      || (baseUrl !== undefined && typeof baseUrl !== 'string')) {
+    throw new ProviderModePolicyError(
+      'invalid_provider',
+      'Provider configuration must contain only canonical scalar fields',
+      PROVIDER_NAMES.has(name) ? name : null,
+    );
+  }
+  return Object.freeze(baseUrl === undefined
+    ? { name, apiKey, model }
+    : { name, apiKey, model, baseUrl });
+}
+
+function snapshotProviders(providers: readonly ProviderEntry[]): readonly ProviderEntry[] {
+  const length = providers.length;
+  if (!Number.isSafeInteger(length) || length < 0) {
+    throw new ProviderModePolicyError(
+      'invalid_provider',
+      'Provider chain length is invalid',
+    );
+  }
+  const snapshot: ProviderEntry[] = [];
+  for (let index = 0; index < length; index += 1) {
+    snapshot.push(snapshotProvider(providers[index]!));
+  }
+  return Object.freeze(snapshot);
 }
 
 function isLoopbackOllama(provider: ProviderEntry): boolean {
@@ -158,12 +198,13 @@ function assertLocalProvider(provider: ProviderEntry): void {
 export function providersForReasoningMode(
   rawMode: unknown,
   providers: readonly ProviderEntry[],
-): { mode: ReasoningMode; providers: ProviderEntry[] } {
+): Readonly<{ mode: ReasoningMode; providers: readonly ProviderEntry[] }> {
   const mode = parseReasoningMode(rawMode);
   if (!mode) {
     throw new ProviderModePolicyError('unknown_mode', 'A canonical reasoning mode is required');
   }
-  if (providers.length === 0) {
+  const providerSnapshot = snapshotProviders(providers);
+  if (providerSnapshot.length === 0) {
     throw new ProviderModePolicyError('no_providers', `No providers are configured for ${mode}`);
   }
   if (mode === 'verified_private_cloud') {
@@ -173,7 +214,7 @@ export function providersForReasoningMode(
     );
   }
   if (mode === 'on_device') {
-    providers.forEach(assertLocalProvider);
+    providerSnapshot.forEach(assertLocalProvider);
   }
-  return { mode, providers: providers.slice() };
+  return Object.freeze({ mode, providers: providerSnapshot });
 }

@@ -59,14 +59,19 @@ export function validateBaseUrl(baseUrl: string, provider: string): void {
  * Extended validation that also resolves DNS to catch rebinding attacks
  * (e.g. 127.0.0.1.nip.io resolving to a private IP). Use at save time.
  */
-export async function validateBaseUrlWithDns(baseUrl: string, provider: string): Promise<void> {
+export async function validateBaseUrlWithDns(
+  baseUrl: string,
+  provider: string,
+): Promise<void> {
   // Run all synchronous checks first
   validateBaseUrl(baseUrl, provider);
 
   const hostname = normalizeHostname(new URL(baseUrl).hostname);
 
-  // Skip literal IPs and localhost — already validated above
-  if (hostname === 'localhost' || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname) || hostname.includes(':')) {
+  // Literal IPs were completely validated above. Hostnames, including
+  // localhost, must resolve now so a modified hosts file cannot turn a local
+  // endpoint into an external one.
+  if (isIP(hostname) !== 0) {
     return;
   }
 
@@ -202,9 +207,18 @@ function normalizeHostname(raw: string): string {
 }
 
 function assertResolvedAddressAllowed(address: string, hostname: string, provider: string): void {
+  if (provider === 'ollama' && isLoopbackHostname(hostname)) {
+    if (address === '127.0.0.1' || address === '::1') return;
+    throw new Error(
+      `DNS for local ${provider} endpoint ${hostname} must resolve only to a loopback address`,
+    );
+  }
   if (!isPrivateHost(address)) return;
-  if (provider === 'ollama' && (address === '127.0.0.1' || address === '::1')) return;
   throw new Error(`DNS for ${hostname} resolves to private address ${address}, not allowed for ${provider}`);
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 }
 
 function isPrivateHost(hostname: string): boolean {

@@ -7,7 +7,11 @@ import {
   reasoningModeRepository,
 } from '@skytwin/db';
 import type { DomainAutonomyPolicyRow, EscalationTriggerRow, AIProviderSettingsRow } from '@skytwin/db';
-import { parseReasoningMode, TrustTier } from '@skytwin/shared-types';
+import {
+  hasSameProviderCredentialEndpoint,
+  parseReasoningMode,
+  TrustTier,
+} from '@skytwin/shared-types';
 import type { AIProviderName, ReasoningMode } from '@skytwin/shared-types';
 import {
   SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
@@ -521,18 +525,29 @@ export function createSettingsRouter(): Router {
         return;
       }
 
-      const rows = await aiProviderRepository.replaceAllWithReasoningMode(
-        userId!,
-        targetMode,
-        providers.map((p) => ({
-          provider: p.provider,
-          apiKey: p.apiKey,
-          model: p.model,
-          baseUrl: p.baseUrl,
-          priority: p.priority,
-          enabled: p.enabled,
-        })),
-      );
+      let rows: AIProviderSettingsRow[];
+      try {
+        rows = await aiProviderRepository.replaceAllWithReasoningMode(
+          userId!,
+          targetMode,
+          providers.map((p) => ({
+            provider: p.provider,
+            apiKey: p.apiKey,
+            model: p.model,
+            baseUrl: p.baseUrl,
+            priority: p.priority,
+            enabled: p.enabled,
+          })),
+        );
+      } catch (error) {
+        if ((error as { code?: unknown } | null)?.code === 'provider_credential_endpoint_changed') {
+          res.status(409).json({
+            error: 'Enter a fresh API key when changing a provider endpoint.',
+          });
+          return;
+        }
+        throw error;
+      }
 
       res.json({
         reasoningMode: targetMode,
@@ -572,11 +587,29 @@ export function createSettingsRouter(): Router {
         return;
       }
 
-      // If no API key in request, fall back to the stored key for this provider
+      if (apiKey !== undefined && typeof apiKey !== 'string') {
+        res.status(400).json({ success: false, error: 'apiKey must be a string', provider });
+        return;
+      }
+
+      // A masked/omitted key can be reused only for the same network authority.
+      // Otherwise this endpoint would disclose a stored secret to a new host.
       let resolvedKey = apiKey ?? '';
       if (!resolvedKey && userId) {
         const rows = await aiProviderRepository.getForUser(userId);
         const stored = rows.find((r) => r.provider === provider);
+        if (stored?.api_key && !hasSameProviderCredentialEndpoint(
+          provider as AIProviderName,
+          stored.base_url,
+          baseUrl,
+        )) {
+          res.status(409).json({
+            success: false,
+            error: 'Enter a fresh API key when testing a different provider endpoint.',
+            provider,
+          });
+          return;
+        }
         resolvedKey = stored?.api_key ?? '';
       }
 
