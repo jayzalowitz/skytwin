@@ -34,7 +34,8 @@ export const inferenceReceiptRepository = {
        JOIN explanation_records er ON er.decision_id = d.id
        WHERE d.user_id = $1 AND d.id = $4 AND er.id = $5
          AND $1 = $8 AND $4 = $9 AND $5 = $10
-       RETURNING *`,
+       RETURNING id, version::INT4 AS version, decision_id, explanation_id,
+         status, receipt, trusted, created_at`,
       [userId, receipt.id, receipt.version, receipt.decisionId, receipt.explanationId,
         receipt.status, JSON.stringify(receipt), receipt.userId, receipt.decisionId, receipt.explanationId],
     );
@@ -43,7 +44,8 @@ export const inferenceReceiptRepository = {
 
   async findByIdForUser(userId: string, id: string): Promise<InferenceReceiptRow | null> {
     const result = await query<InferenceReceiptRow>(
-      `SELECT ir.* FROM inference_receipts ir
+      `SELECT ir.id, ir.version::INT4 AS version, ir.decision_id, ir.explanation_id,
+         ir.status, ir.receipt, ir.trusted, ir.created_at FROM inference_receipts ir
        JOIN decisions d ON d.id = ir.decision_id
        WHERE d.user_id = $1 AND ir.id = $2`, [userId, id],
     );
@@ -52,7 +54,8 @@ export const inferenceReceiptRepository = {
 
   async findByDecisionForUser(userId: string, decisionId: string): Promise<InferenceReceiptRow | null> {
     const result = await query<InferenceReceiptRow>(
-      `SELECT ir.* FROM inference_receipts ir
+      `SELECT ir.id, ir.version::INT4 AS version, ir.decision_id, ir.explanation_id,
+         ir.status, ir.receipt, ir.trusted, ir.created_at FROM inference_receipts ir
        JOIN decisions d ON d.id = ir.decision_id
        WHERE d.user_id = $1 AND ir.decision_id = $2`, [userId, decisionId],
     );
@@ -61,7 +64,8 @@ export const inferenceReceiptRepository = {
 
   async listForUser(userId: string, opts: PaginationOptions = {}): Promise<InferenceReceiptRow[]> {
     const result = await query<InferenceReceiptRow>(
-      `SELECT ir.* FROM inference_receipts ir
+      `SELECT ir.id, ir.version::INT4 AS version, ir.decision_id, ir.explanation_id,
+         ir.status, ir.receipt, ir.trusted, ir.created_at FROM inference_receipts ir
        JOIN decisions d ON d.id = ir.decision_id
        WHERE d.user_id = $1 ORDER BY ir.created_at DESC LIMIT $2 OFFSET $3`,
       [userId, opts.limit ?? 50, opts.offset ?? 0],

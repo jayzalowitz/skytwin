@@ -179,7 +179,9 @@ async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
     [decisionIds],
   );
   const receipts = await query<InferenceReceiptRow>(
-    'SELECT * FROM inference_receipts WHERE decision_id = ANY($1) ORDER BY created_at ASC',
+    `SELECT id, version::INT4 AS version, decision_id, explanation_id,
+       status, receipt, trusted, created_at
+       FROM inference_receipts WHERE decision_id = ANY($1) ORDER BY created_at ASC`,
     [decisionIds],
   );
 
