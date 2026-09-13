@@ -75,6 +75,7 @@ export class VaultBrokerClient {
 
   async revokeAuthenticatedOwner(userId: string): Promise<boolean> {
     const timer = this.grantTimers.get(userId); if (timer) clearTimeout(timer); this.grantTimers.delete(userId);
+    this.grantDeadlines.delete(userId);
     this.grantedOwners.delete(userId);
     if (!this.capability || !this.role || !this.validUserId(userId)) return false;
     const requestId = randomBytes(16).toString('hex');

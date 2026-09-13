@@ -607,9 +607,10 @@ export class ServiceManager {
         env: this.getEnv(),
         stdio: 'pipe',
       });
-      // User grants are populated by the authenticated broker client in the
-      // source-migration slice. An empty set is deliberately fail closed.
-      this.keyBroker?.attachChild(this.api.process, 'api', new Set());
+      // Children always attach without owners. The API can grant only after
+      // session authentication; the worker must reconcile its complete
+      // database-discovered owner set.
+      this.keyBroker?.attachChild(this.api.process, 'api');
 
       this.api.process.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
@@ -728,7 +729,7 @@ export class ServiceManager {
         env: this.getEnv(),
         stdio: 'pipe',
       });
-      this.keyBroker?.attachChild(this.worker.process, 'worker', new Set());
+      this.keyBroker?.attachChild(this.worker.process, 'worker');
 
       this.worker.process.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);

@@ -87,16 +87,16 @@ beforeEach(() => {
 
 describe('DELETE /api/sessions/:sessionId', () => {
   it('revokes broker ownership when the final active session is removed', async () => {
-    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }]).mockResolvedValueOnce([]);
+    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }]);
     const { status } = await request(makeApp(), 'DELETE', '/api/sessions/session-1', { userId: 'user-1' });
     expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedOwner).toHaveBeenCalledWith('user-1');
   });
 
-  it('keeps the broker grant while another active session remains', async () => {
-    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }, { id: 'session-2' }]).mockResolvedValueOnce([{ id: 'session-2', expires_at: new Date(Date.now() + 60_000) }]);
+  it('does not eagerly restore a grant from a potentially stale session snapshot', async () => {
+    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }, { id: 'session-2' }]);
     const { status } = await request(makeApp(), 'DELETE', '/api/sessions/session-1', { userId: 'user-1' });
     expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedOwner).toHaveBeenCalledWith('user-1');
-    expect(mockVaultBroker.grantAuthenticatedOwner).toHaveBeenCalledWith('user-1', expect.any(Date));
+    expect(mockVaultBroker.grantAuthenticatedOwner).not.toHaveBeenCalled();
   });
 });
 

@@ -33,7 +33,9 @@ describe('CockroachWrappedKeyStore', () => {
     const registry = new Registry(), store = new CockroachWrappedKeyStore(async () => registry);
     await expect(store.create('user-0002', wrapper)).rejects.toThrow('owner mismatch');
     registry.row = { user_id: wrapper.userId, key_version: 2, wrapper_version: 1, algorithm: 'aes-256-gcm', kdf_record: wrapper.kdf, recovery_wrapper: wrapper };
-    expect(await store.get(wrapper.userId)).toBeUndefined();
+    await expect(store.get(wrapper.userId)).rejects.toThrow('metadata mismatch');
+    registry.row = { user_id: wrapper.userId, key_version: 1, wrapper_version: 1, algorithm: 'aes-256-gcm', kdf_record: wrapper.kdf, recovery_wrapper: null };
+    await expect(store.get(wrapper.userId)).rejects.toThrow('wrapper is invalid');
   });
 
   it('does not delete a pre-existing registry row after a create collision', async () => {

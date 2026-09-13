@@ -28,6 +28,15 @@ All notable changes to SkyTwin will be documented in this file.
 - **Initialization rollback is bound to the exact recovery wrapper.** A failed
   read-back self-test can delete only the row value created by that attempt, so
   cleanup cannot remove a concurrent or replacement wrapper.
+- **Child authority now starts empty and session replacement cannot inherit a
+  revoked deadline.** Every API/worker owner must arrive through the explicit
+  grant or reconciliation protocol. Explicit revoke clears the cached deadline,
+  and session routes do not eagerly re-grant from a race-prone active-session
+  snapshot; another valid session restores access on its next authenticated
+  request.
+- **Corrupt registry state is distinguished from an absent wrapper.** Invalid
+  recovery-wrapper data or mismatched registry metadata now fails closed instead
+  of being surfaced as an uninitialized vault.
 - **Remembered vault passphrases now retain verifiable storage provenance.**
   New desktop records carry a format version and the exact secure OS backend
   that encrypted them. Startup deletes every legacy untagged, unsupported, or

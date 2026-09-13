@@ -83,6 +83,24 @@ describe('VaultBrokerClient', () => {
     expect(client.isAvailable()).toBe(false); expect(await client.state(context)).toEqual({ success: false, error: 'vault_broker_unavailable' }); client.close();
   });
 
+  it('does not carry a revoked session deadline into a replacement grant', async () => {
+    const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 50);
+    ipc.emit('message', { type: 'skytwin:vault:capability', capability, role: 'api' });
+    const later = new Date(Date.now() + 120_000);
+    const first = client.grantAuthenticatedOwner(context.userId, later);
+    const firstMessage = ipc.sent.at(-1)!;
+    ipc.emit('message', { type: 'skytwin:vault:response', requestId: firstMessage['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'unlocked' } });
+    await first;
+    const revoke = client.revokeAuthenticatedOwner(context.userId);
+    const revokeMessage = ipc.sent.at(-1)!;
+    ipc.emit('message', { type: 'skytwin:vault:response', requestId: revokeMessage['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'locked' } });
+    expect(await revoke).toBe(true);
+    const earlier = new Date(Date.now() + 60_000);
+    void client.grantAuthenticatedOwner(context.userId, earlier);
+    expect(ipc.sent.at(-1)).toMatchObject({ expiresAt: earlier.getTime() });
+    client.close();
+  });
+
   it('propagates a lost worker reconciliation and clears all local authority', async () => {
     const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 10);
     ipc.emit('message', { type: 'skytwin:vault:capability', capability, role: 'worker' });

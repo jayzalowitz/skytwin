@@ -179,12 +179,11 @@ export function createSessionsRouter(): Router {
       }
 
       await sessionRepository.revoke(sessionId);
-      const remaining = await sessionRepository.findActiveByUser(body.userId);
-      const revoked = await apiVaultBroker.revokeAuthenticatedOwner(body.userId);
-      if (revoked && remaining.length > 0) {
-        const latestExpiry = new Date(Math.max(...remaining.map(session => new Date(session.expires_at).getTime())));
-        await apiVaultBroker.grantAuthenticatedOwner(body.userId, latestExpiry);
-      }
+      // Revoke the owner grant unconditionally. Any remaining valid session
+      // re-establishes a deadline on its next authenticated request. Avoiding
+      // an eager re-grant prevents concurrent session revocations from
+      // restoring authority based on a stale active-session snapshot.
+      await apiVaultBroker.revokeAuthenticatedOwner(body.userId);
       res.json({ revoked: true });
     } catch (error) {
       next(error);

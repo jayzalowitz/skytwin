@@ -809,11 +809,8 @@ export class DesktopKeyBroker {
       : { success: false, error: 'vault_locked' };
   }
 
-  attachChild(child: ChildProcess, role: BrokerRole, authorizedUsers: ReadonlySet<string>): void {
+  attachChild(child: ChildProcess, role: BrokerRole): void {
     const capability = randomBytes(KEY_BYTES);
-    const users = new Map(
-      [...authorizedUsers].filter(isValidVaultUserId).map(userId => [userId, null] as const),
-    );
     const previous = this.children.get(child);
     if (previous) {
       previous.capability.fill(0);
@@ -822,7 +819,7 @@ export class DesktopKeyBroker {
     const binding: Binding = {
       role,
       capability,
-      users,
+      users: new Map(),
       inFlight: new Map(),
       lockAcks: new Map(),
     };
@@ -949,7 +946,7 @@ export class DesktopKeyBroker {
         type: 'skytwin:vault:response',
         requestId,
         contextUserId: validContext(context) ? context.userId : '',
-        generation: typeof requestGeneration === 'number' ? requestGeneration : -1,
+        generation: validContext(context) ? this.generation(context.userId) : -1,
         result: { success: false, error },
       });
       if (

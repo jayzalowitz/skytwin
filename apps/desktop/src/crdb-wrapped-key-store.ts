@@ -23,9 +23,14 @@ export class CockroachWrappedKeyStore implements WrappedKeyStore {
 
   async get(userId: string): Promise<WrappedUserKey | undefined> {
     const row = await (await this.port()).getCurrent(userId);
-    if (!row || !this.isWrappedUserKey(row.recovery_wrapper)) return undefined;
+    if (!row) return undefined;
+    if (!this.isWrappedUserKey(row.recovery_wrapper)) {
+      throw new Error('source-key registry wrapper is invalid');
+    }
     const wrapper = row.recovery_wrapper;
-    if (wrapper.userId !== row.user_id || wrapper.keyVersion !== row.key_version || wrapper.wrapperVersion !== row.wrapper_version || wrapper.algorithm !== row.algorithm || !this.kdfMatches(row.kdf_record, wrapper.kdf)) return undefined;
+    if (wrapper.userId !== row.user_id || wrapper.keyVersion !== row.key_version || wrapper.wrapperVersion !== row.wrapper_version || wrapper.algorithm !== row.algorithm || !this.kdfMatches(row.kdf_record, wrapper.kdf)) {
+      throw new Error('source-key registry metadata mismatch');
+    }
     return wrapper;
   }
 
