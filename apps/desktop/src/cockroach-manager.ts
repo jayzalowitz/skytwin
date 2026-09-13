@@ -79,6 +79,7 @@ export class CockroachManager {
   private authority: ManagedAuthority | null = null;
   private lifecycleGeneration = 0;
   private lifecycleTail: Promise<void> = Promise.resolve();
+  private authorityLossHandler: ((generation: number) => void) | null = null;
   private readonly sqlPort: number;
   private readonly httpPort: number;
   private readonly listenHost: string;
@@ -125,6 +126,10 @@ export class CockroachManager {
 
   getConnectionString(): string {
     return `postgresql://root@${this.listenHost}:${this.sqlPort}/skytwin?sslmode=disable`;
+  }
+
+  setAuthorityLossHandler(handler: (generation: number) => void): void {
+    this.authorityLossHandler = handler;
   }
 
   /**
@@ -215,11 +220,14 @@ export class CockroachManager {
     });
     this.process.on('exit', (code, signal) => {
       console.log(`[crdb] Exited code=${code} signal=${signal}`);
+      const lostGeneration =
+        this.authority?.process === spawnedProcess ? this.authority.generation : null;
       const wasCurrent = this.process === spawnedProcess || this.authority?.process === spawnedProcess;
       if (this.process === spawnedProcess) this.process = null;
       if (this.authority?.process === spawnedProcess) this.authority = null;
       if (wasCurrent) ++this.lifecycleGeneration;
       this.removeRuntimeFiles(pidFile, listeningUrlFile);
+      if (lostGeneration !== null) this.authorityLossHandler?.(lostGeneration);
     });
 
     const authority: ManagedAuthority = {

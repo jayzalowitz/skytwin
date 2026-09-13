@@ -2,6 +2,10 @@ import { createHmac } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const cockroachMockState = vi.hoisted(() => ({
+  authorityLossHandler: null as ((generation: number) => void) | null,
+}));
+
 vi.mock("electron", () => ({
   app: {
     getPath: () => "/tmp/skytwin-sample-test",
@@ -17,6 +21,9 @@ vi.mock("../cockroach-manager.js", () => ({
         "postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable",
       getDataDir: () => "/tmp/skytwin-sample-test/crdb-data",
       isManagedStartCurrent: vi.fn().mockReturnValue(true),
+      setAuthorityLossHandler: vi.fn((handler: (generation: number) => void) => {
+        cockroachMockState.authorityLossHandler = handler;
+      }),
       stop: vi.fn().mockResolvedValue(undefined),
     };
   }),
@@ -29,6 +36,7 @@ interface SampleManagerInternals {
   sampleBootstrapAllowedThisLaunch: boolean;
   sampleLaunchEpoch: number;
   sampleAbortController: AbortController | null;
+  activeDatabaseStartup: SampleStartup | null;
   api: { process: ChildProcess | null; external: boolean };
   cockroach: { isManagedStartCurrent: ReturnType<typeof vi.fn> };
   ensureEmbeddedRoot(): Promise<string>;
@@ -46,11 +54,13 @@ interface SampleManagerInternals {
     epoch: number,
     signal: AbortSignal,
   ): Promise<void>;
-  startApi(): Promise<void>;
-  waitForApi(timeoutMs: number): Promise<boolean>;
-  startWeb(): Promise<void>;
-  startWorker(): Promise<void>;
-  startHealthMonitoring(): void;
+  startApi(startup?: SampleStartup | null): Promise<void>;
+  waitForApi(timeoutMs: number, startup?: SampleStartup | null): Promise<boolean>;
+  startWeb(startup?: SampleStartup | null): Promise<void>;
+  startWorker(startup?: SampleStartup | null): Promise<void>;
+  startHealthMonitoring(startup?: SampleStartup | null): void;
+  runHealthCheck(startup?: SampleStartup | null): Promise<void>;
+  stopDataServicesOwned(): Promise<void>;
   startPackagedSampleIngest(
     startup: SampleStartup,
     epoch: number,
@@ -113,6 +123,7 @@ describe("packaged sample startup sequencing", () => {
   const previousDatabaseUrl = process.env["DATABASE_URL"];
 
   beforeEach(() => {
+    cockroachMockState.authorityLossHandler = null;
     delete process.env["DATABASE_URL"];
     process.env["SKYTWIN_SERVICE_TOKEN"] = "service-token";
   });
@@ -301,6 +312,82 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.startApi).not.toHaveBeenCalled();
     expect(manager.startWeb).not.toHaveBeenCalled();
     expect(manager.startWorker).not.toHaveBeenCalled();
+  });
+
+  it("stops startup when the owned database dies during API readiness", async () => {
+    const manager = internals();
+    manager.cockroachStatus = "running";
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.waitForExternalApi = vi.fn().mockResolvedValue(false);
+    const startup: SampleStartup = {
+      ownership: "managed-child",
+      dataDir: "/tmp/skytwin-sample-test/crdb-data",
+      generation: 1,
+    };
+    manager.startCockroach = vi.fn().mockResolvedValue(startup);
+    manager.runMigrations = vi.fn().mockResolvedValue(true);
+    manager.provisionPackagedSample = vi.fn().mockImplementation(async () => {
+      manager.sampleBootstrapAllowedThisLaunch = true;
+    });
+    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    let launchSignal: AbortSignal | undefined;
+    manager.waitForApi = vi.fn().mockImplementation(async () => {
+      launchSignal = manager.sampleAbortController?.signal;
+      manager.cockroach.isManagedStartCurrent.mockReturnValue(false);
+      return true;
+    });
+    manager.startWeb = vi.fn().mockResolvedValue(undefined);
+    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+    manager.startHealthMonitoring = vi.fn();
+
+    await expect(manager.startAll()).rejects.toThrow(/ownership changed during API readiness/);
+
+    expect(manager.startApi).toHaveBeenCalledExactlyOnceWith(startup);
+    expect(manager.startWeb).not.toHaveBeenCalled();
+    expect(manager.startWorker).not.toHaveBeenCalled();
+    expect(launchSignal?.aborted).toBe(true);
+    expect(manager.cockroachStatus).toBe("error");
+  });
+
+  it("revokes the launch and stops all services when the owned database exits", async () => {
+    const manager = internals();
+    const startup: SampleStartup = {
+      ownership: "managed-child",
+      dataDir: "/tmp/skytwin-sample-test/crdb-data",
+      generation: 7,
+    };
+    const controller = new AbortController();
+    manager.activeDatabaseStartup = startup;
+    manager.sampleAbortController = controller;
+    manager.sampleLaunchEpoch = 1;
+    manager.sampleBootstrapAllowedThisLaunch = true;
+    manager.cockroachStatus = "running";
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+
+    expect(cockroachMockState.authorityLossHandler).not.toBeNull();
+    cockroachMockState.authorityLossHandler?.(7);
+    await vi.waitFor(() => expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce());
+
+    expect(manager.activeDatabaseStartup).toBeNull();
+    expect(controller.signal.aborted).toBe(true);
+    expect(manager.sampleBootstrapAllowedThisLaunch).toBe(false);
+    expect(manager.cockroachStatus).toBe("error");
+  });
+
+  it("treats a replacement listener as database authority loss during health monitoring", async () => {
+    const manager = internals();
+    const { startup, controller } = authorize(manager);
+    manager.activeDatabaseStartup = startup;
+    manager.cockroachStatus = "running";
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.cockroach.isManagedStartCurrent.mockReturnValue(false);
+
+    await manager.runHealthCheck(startup);
+    await vi.waitFor(() => expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce());
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(manager.activeDatabaseStartup).toBeNull();
+    expect(manager.cockroachStatus).toBe("error");
   });
 
   it("revokes a deferred verifier before stop can hand the port to another listener", async () => {

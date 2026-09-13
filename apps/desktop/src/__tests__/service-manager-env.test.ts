@@ -28,7 +28,10 @@ vi.mock('electron', () => ({
 
 vi.mock('../cockroach-manager.js', () => ({
   CockroachManager: vi.fn(function CockroachManager() {
-    return { getConnectionString: (): string => 'postgresql://root@localhost:26257/skytwin' };
+    return {
+      getConnectionString: (): string => 'postgresql://root@localhost:26257/skytwin',
+      setAuthorityLossHandler: vi.fn(),
+    };
   }),
 }));
 

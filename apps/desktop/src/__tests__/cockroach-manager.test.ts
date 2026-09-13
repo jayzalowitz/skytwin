@@ -217,6 +217,27 @@ describe('CockroachManager', () => {
     expect(mgr.isManagedStartCurrent(current)).toBe(true);
   });
 
+  it('reports loss of the exact managed generation when its child exits', async () => {
+    const child = fakeChild(4108, false);
+    const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {
+      writeOwnedMarkers(child, args);
+      return child;
+    }) as unknown as typeof spawn;
+    const mgr = new CockroachManager({ spawnImpl }) as InstanceType<typeof CockroachManager> &
+      CockroachManagerInternals;
+    const onAuthorityLost = vi.fn();
+    mgr.setAuthorityLossHandler(onAuthorityLost);
+    mgr.getBinaryPath = vi.fn().mockReturnValue(process.execPath);
+    mgr.isCrdbResponding = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    const startup = await mgr.start();
+
+    child.exitCode = 1;
+    child.emit('exit', 1, null);
+
+    expect(onAuthorityLost).toHaveBeenCalledExactlyOnceWith(startup.generation);
+    expect(mgr.isManagedStartCurrent(startup)).toBe(false);
+  });
+
   it('serializes overlapping starts onto one attested child generation', async () => {
     const child = fakeChild(4107);
     const spawnImpl = vi.fn((_bin: string, args: readonly string[]) => {

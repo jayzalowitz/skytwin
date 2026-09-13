@@ -62,6 +62,29 @@ describe('owned desktop migration connection', () => {
     expect(target.query).not.toHaveBeenCalled();
     expect(target.end).toHaveBeenCalledOnce();
   });
+
+  it('rechecks authority before every statement on one fixed target client', async () => {
+    const admin = fakeMigrationClient();
+    const target = fakeMigrationClient();
+    const createClient = vi.fn()
+      .mockReturnValueOnce(admin)
+      .mockReturnValueOnce(target);
+    const authorize = vi.fn(() => target.query.mock.calls.length === 0);
+
+    await expect(
+      upOwned({
+        connectionString: 'postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable',
+        authorize,
+        createClient,
+      }),
+    ).rejects.toThrow(/ownership changed/);
+
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(target.connect).toHaveBeenCalledOnce();
+    expect(target.query).toHaveBeenCalledOnce();
+    expect(String(target.query.mock.calls[0]?.[0])).toContain('CREATE TABLE IF NOT EXISTS users');
+    expect(target.end).toHaveBeenCalledOnce();
+  });
 });
 
 describe('splitSqlStatements', () => {

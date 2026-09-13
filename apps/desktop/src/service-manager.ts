@@ -108,6 +108,66 @@ export class ServiceManager {
   private sampleLaunchEpoch = 0;
   private sampleAbortController: AbortController | null = null;
   private serviceLifecycleTail: Promise<void> = Promise.resolve();
+  private activeDatabaseStartup: CockroachStartResult | null = null;
+
+  constructor() {
+    this.cockroach.setAuthorityLossHandler((generation) => {
+      const startup = this.activeDatabaseStartup;
+      if (startup?.ownership === 'managed-child' && startup.generation === generation) {
+        this.schedulePackagedDatabaseLoss(startup, 'managed CockroachDB child exited');
+      }
+    });
+  }
+
+  private isServiceDatabaseCurrent(startup: CockroachStartResult | null): boolean {
+    if (!app.isPackaged) return true;
+    return (
+      startup?.ownership === 'managed-child' &&
+      this.activeDatabaseStartup === startup &&
+      this.cockroach.isManagedStartCurrent(startup)
+    );
+  }
+
+  private invalidatePackagedDatabase(startup: CockroachStartResult, reason: string): boolean {
+    if (!app.isPackaged || this.activeDatabaseStartup !== startup) return false;
+    console.error(`[crdb] ${reason}; stopping packaged services.`);
+    this.activeDatabaseStartup = null;
+    this.revokeSampleLaunch();
+    this.cockroachStatus = 'error';
+    this.emitStatus();
+    return true;
+  }
+
+  private async stopDataServicesOwned(): Promise<void> {
+    await Promise.all([
+      this.stopProcess(this.api, 'api'),
+      this.stopProcess(this.worker, 'worker'),
+      this.stopProcess(this.web, 'web'),
+    ]);
+  }
+
+  private schedulePackagedDatabaseLoss(startup: CockroachStartResult, reason: string): void {
+    if (!this.invalidatePackagedDatabase(startup, reason)) return;
+    void this.runServiceLifecycle(() => this.stopDataServicesOwned()).catch((error) => {
+      console.error('[crdb] Failed to stop services after database authority loss:', error);
+    });
+  }
+
+  private async requireServiceDatabaseCurrent(
+    startup: CockroachStartResult,
+    phase: string,
+  ): Promise<void> {
+    if (this.isServiceDatabaseCurrent(startup)) return;
+    this.invalidatePackagedDatabase(startup, `ownership changed ${phase}`);
+    await this.stopDataServicesOwned();
+    throw new Error(`CockroachDB ownership changed ${phase}`);
+  }
+
+  private guardServiceDatabase(startup: CockroachStartResult | null, phase: string): boolean {
+    if (this.isServiceDatabaseCurrent(startup)) return true;
+    if (startup) this.schedulePackagedDatabaseLoss(startup, `ownership changed ${phase}`);
+    return false;
+  }
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
     this.onStatusChange = handler;
@@ -697,6 +757,7 @@ export class ServiceManager {
 
   private async startAllOwned(): Promise<void> {
     this.paused = false;
+    this.activeDatabaseStartup = null;
     const { epoch, signal } = this.beginSampleLaunch();
     let startup: CockroachStartResult | null = null;
     // Extract the bundled embedded apps tarball before anything else so
@@ -731,6 +792,9 @@ export class ServiceManager {
         this.emitStatus();
         throw new Error('Packaged startup requires the desktop-owned CockroachDB instance');
       }
+      if (app.isPackaged && startup?.ownership === 'managed-child') {
+        this.activeDatabaseStartup = startup;
+      }
       // Migrations must complete after CRDB is up but before API starts;
       // otherwise API hits "relation does not exist" on first query and
       // crashlooks until restart-backoff exhausts.
@@ -743,29 +807,40 @@ export class ServiceManager {
         if (migrated && this.cockroach.isManagedStartCurrent(startup)) {
           await this.provisionPackagedSample(startup, epoch, signal);
           if (app.isPackaged && !this.cockroach.isManagedStartCurrent(startup)) {
+            this.activeDatabaseStartup = null;
+            this.revokeSampleLaunch();
             this.cockroachStatus = 'error';
             this.emitStatus();
             throw new Error('CockroachDB ownership changed before packaged services could start');
           }
         } else if (app.isPackaged) {
+          this.activeDatabaseStartup = null;
+          this.revokeSampleLaunch();
           this.cockroachStatus = 'error';
           this.emitStatus();
           throw new Error('Packaged startup requires migrations on the desktop-owned CockroachDB instance');
         }
       } else if (this.cockroachStatus === 'running' && app.isPackaged) {
+        this.activeDatabaseStartup = null;
+        this.revokeSampleLaunch();
         this.cockroachStatus = 'error';
         this.emitStatus();
         throw new Error('Packaged startup refused an unowned CockroachDB listener');
       }
     }
-    await this.startApi();
-    const apiReady = await this.waitForApi(10000);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'before API startup');
+    await this.startApi(startup);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API startup');
+    const apiReady = await this.waitForApi(10000, startup);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during API readiness');
     if (apiReady) {
       this.api.restartCount = 0;
       this.api.failureTimestamps = [];
     }
-    await this.startWeb();
-    await this.startWorker();
+    await this.startWeb(startup);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during web startup');
+    await this.startWorker(startup);
+    if (app.isPackaged && startup) await this.requireServiceDatabaseCurrent(startup, 'during worker startup');
     setTimeout(() => {
       if (this.worker.status === 'running') {
         this.worker.restartCount = 0;
@@ -773,24 +848,26 @@ export class ServiceManager {
       }
     }, 3000);
 
-    this.startHealthMonitoring();
+    this.startHealthMonitoring(startup);
     if (apiReady && startup?.ownership === 'managed-child' && this.isSampleAuthorityCurrent(epoch, signal, startup)) {
       this.startPackagedSampleIngest(startup, epoch, signal);
     }
   }
 
-  private startHealthMonitoring(): void {
+  private startHealthMonitoring(startup: CockroachStartResult | null): void {
     if (this.healthCheckTimer) clearInterval(this.healthCheckTimer);
-    this.healthCheckTimer = setInterval(() => this.runHealthCheck(), HEALTH_CHECK_INTERVAL_MS);
+    this.healthCheckTimer = setInterval(() => this.runHealthCheck(startup), HEALTH_CHECK_INTERVAL_MS);
   }
 
-  private async runHealthCheck(): Promise<void> {
+  private async runHealthCheck(startup: CockroachStartResult | null): Promise<void> {
+    if (!this.guardServiceDatabase(startup, 'during health monitoring')) return;
     if (this.paused) return;
 
     // Check API health
     if (this.api.status === 'running') {
       try {
         const response = await fetch('http://localhost:3100/api/health');
+        if (!this.guardServiceDatabase(startup, 'during API health check')) return;
         if (!response.ok) {
           this.recordFailure(this.api, 'api');
         }
@@ -876,11 +953,13 @@ export class ServiceManager {
     return false;
   }
 
-  private async startApi(): Promise<void> {
+  private async startApi(startup: CockroachStartResult | null = null): Promise<void> {
+    if (!this.guardServiceDatabase(startup, 'before API spawn')) return;
     this.api.status = 'starting';
     this.emitStatus();
 
     if (await this.detectExternalApi()) {
+      if (!this.guardServiceDatabase(startup, 'while detecting the API listener')) return;
       console.log('[api] External API detected on :3100 — using existing instance, not forking.');
       this.api.external = true;
       this.api.status = 'running';
@@ -891,6 +970,7 @@ export class ServiceManager {
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.guardServiceDatabase(startup, 'while resolving the API bundle')) return;
     // Packaged path uses the pnpm-deployed self-contained bundle —
     // since v0.6.58, extracted to <userData>/embedded/ on first launch
     // from the bundled apps.tar.gz (see ensureEmbeddedRoot). The earlier
@@ -902,36 +982,45 @@ export class ServiceManager {
       : join(base, 'apps', 'api', 'dist', 'index.js');
 
     try {
-      this.api.process = fork(apiEntry, [], {
+      const apiProcess = fork(apiEntry, [], {
         env: this.getEnv(),
         stdio: 'pipe',
       });
+      this.api.process = apiProcess;
 
-      this.api.process.stdout?.on('data', (data: Buffer) => {
+      apiProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
       });
-      this.api.process.stderr?.on('data', (data: Buffer) => {
+      apiProcess.stderr?.on('data', (data: Buffer) => {
         console.error(`[api] ${data.toString().trim()}`);
       });
 
-      this.api.process.on('exit', (code) => {
+      apiProcess.on('exit', (code) => {
         console.log(`[api] Process exited with code ${code}`);
+        if (this.api.process !== apiProcess) return;
         this.api.process = null;
         this.api.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused) {
+        if (code !== 0 && !this.paused && this.guardServiceDatabase(startup, 'before API restart')) {
           this.api.restartCount++;
           this.recordFailure(this.api, 'api');
           if ((this.api.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.api.restartCount);
             console.log(`[api] Restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
-            setTimeout(() => this.startApi(), delay);
+            setTimeout(() => {
+              if (this.guardServiceDatabase(startup, 'before delayed API restart')) {
+                void this.startApi(startup);
+              }
+            }, delay);
           }
         }
       });
 
       this.api.status = 'running';
       this.emitStatus();
+      if (!this.guardServiceDatabase(startup, 'after API spawn')) {
+        void this.stopProcess(this.api, 'api');
+      }
     } catch (err) {
       console.error('[api] Failed to start:', err);
       this.api.status = 'error';
@@ -939,7 +1028,8 @@ export class ServiceManager {
     }
   }
 
-  private async startWeb(): Promise<void> {
+  private async startWeb(startup: CockroachStartResult | null = null): Promise<void> {
+    if (!this.guardServiceDatabase(startup, 'before web spawn')) return;
     this.web.status = 'starting';
     this.emitStatus();
 
@@ -954,41 +1044,51 @@ export class ServiceManager {
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.guardServiceDatabase(startup, 'while resolving the web bundle')) return;
     const webEntry = app.isPackaged
       ? join(embeddedRoot, 'web', 'dist', 'index.js')
       : join(base, 'apps', 'web', 'dist', 'index.js');
 
     try {
-      this.web.process = fork(webEntry, [], {
+      const webProcess = fork(webEntry, [], {
         env: { ...this.getEnv(), WEB_PORT: '3200' },
         stdio: 'pipe',
       });
+      this.web.process = webProcess;
 
-      this.web.process.stdout?.on('data', (data: Buffer) => {
+      webProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[web] ${data.toString().trim()}`);
       });
-      this.web.process.stderr?.on('data', (data: Buffer) => {
+      webProcess.stderr?.on('data', (data: Buffer) => {
         console.error(`[web] ${data.toString().trim()}`);
       });
 
-      this.web.process.on('exit', (code) => {
+      webProcess.on('exit', (code) => {
         console.log(`[web] Process exited with code ${code}`);
+        if (this.web.process !== webProcess) return;
         this.web.process = null;
         this.web.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused) {
+        if (code !== 0 && !this.paused && this.guardServiceDatabase(startup, 'before web restart')) {
           this.web.restartCount++;
           this.recordFailure(this.web, 'web');
           if ((this.web.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.web.restartCount);
             console.log(`[web] Restarting in ${delay}ms (attempt ${this.web.restartCount})...`);
-            setTimeout(() => this.startWeb(), delay);
+            setTimeout(() => {
+              if (this.guardServiceDatabase(startup, 'before delayed web restart')) {
+                void this.startWeb(startup);
+              }
+            }, delay);
           }
         }
       });
 
       this.web.status = 'running';
       this.emitStatus();
+      if (!this.guardServiceDatabase(startup, 'after web spawn')) {
+        void this.stopProcess(this.web, 'web');
+      }
     } catch (err) {
       console.error('[web] Failed to start:', err);
       this.web.status = 'error';
@@ -996,7 +1096,8 @@ export class ServiceManager {
     }
   }
 
-  private async startWorker(): Promise<void> {
+  private async startWorker(startup: CockroachStartResult | null = null): Promise<void> {
+    if (!this.guardServiceDatabase(startup, 'before worker spawn')) return;
     this.worker.status = 'starting';
     this.emitStatus();
 
@@ -1014,42 +1115,52 @@ export class ServiceManager {
 
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.guardServiceDatabase(startup, 'while resolving the worker bundle')) return;
     // See apiEntry comment above — same reasoning for worker.
     const workerEntry = app.isPackaged
       ? join(embeddedRoot, 'worker', 'dist', 'index.js')
       : join(base, 'apps', 'worker', 'dist', 'index.js');
 
     try {
-      this.worker.process = fork(workerEntry, [], {
+      const workerProcess = fork(workerEntry, [], {
         env: this.getEnv(),
         stdio: 'pipe',
       });
+      this.worker.process = workerProcess;
 
-      this.worker.process.stdout?.on('data', (data: Buffer) => {
+      workerProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);
       });
-      this.worker.process.stderr?.on('data', (data: Buffer) => {
+      workerProcess.stderr?.on('data', (data: Buffer) => {
         console.error(`[worker] ${data.toString().trim()}`);
       });
 
-      this.worker.process.on('exit', (code) => {
+      workerProcess.on('exit', (code) => {
         console.log(`[worker] Process exited with code ${code}`);
+        if (this.worker.process !== workerProcess) return;
         this.worker.process = null;
         this.worker.status = 'stopped';
         this.emitStatus();
-        if (code !== 0 && !this.paused) {
+        if (code !== 0 && !this.paused && this.guardServiceDatabase(startup, 'before worker restart')) {
           this.worker.restartCount++;
           this.recordFailure(this.worker, 'worker');
           if ((this.worker.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.worker.restartCount);
             console.log(`[worker] Restarting in ${delay}ms (attempt ${this.worker.restartCount})...`);
-            setTimeout(() => this.startWorker(), delay);
+            setTimeout(() => {
+              if (this.guardServiceDatabase(startup, 'before delayed worker restart')) {
+                void this.startWorker(startup);
+              }
+            }, delay);
           }
         }
       });
 
       this.worker.status = 'running';
       this.emitStatus();
+      if (!this.guardServiceDatabase(startup, 'after worker spawn')) {
+        void this.stopProcess(this.worker, 'worker');
+      }
     } catch (err) {
       console.error('[worker] Failed to start:', err);
       this.worker.status = 'error';
@@ -1074,7 +1185,7 @@ export class ServiceManager {
     this.paused = false;
     this.worker.restartCount = 0;
     this.worker.failureTimestamps = [];
-    await this.startWorker();
+    await this.startWorker(this.activeDatabaseStartup);
   }
 
   isPaused(): boolean {
@@ -1134,6 +1245,7 @@ export class ServiceManager {
 
   stopAll(): Promise<void> {
     this.revokeSampleLaunch();
+    this.activeDatabaseStartup = null;
     return this.runServiceLifecycle(() => this.stopAllOwned());
   }
 
@@ -1147,11 +1259,7 @@ export class ServiceManager {
     // we bring down CockroachDB — otherwise CRDB logs a flurry of "client
     // disconnected" messages and the API logs "connection reset" on the
     // last in-flight query, both of which are noise for the user.
-    await Promise.all([
-      this.stopProcess(this.api, 'api'),
-      this.stopProcess(this.worker, 'worker'),
-      this.stopProcess(this.web, 'web'),
-    ]);
+    await this.stopDataServicesOwned();
     try {
       await this.cockroach.stop();
       this.cockroachStatus = 'stopped';
@@ -1207,16 +1315,22 @@ export class ServiceManager {
     this.onStatusChange?.(this.getStatus());
   }
 
-  private async waitForApi(timeoutMs: number): Promise<boolean> {
+  private async waitForApi(
+    timeoutMs: number,
+    startup: CockroachStartResult | null = null,
+  ): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+      if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
       try {
         const response = await fetch('http://localhost:3100/api/health');
+        if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
         if (response.ok) return true;
       } catch {
         // API not ready yet
       }
       await new Promise((r) => setTimeout(r, 500));
+      if (!this.guardServiceDatabase(startup, 'during API readiness')) return false;
     }
     console.warn('[api] Health check timed out, starting worker anyway');
     return false;
