@@ -24,6 +24,7 @@ import {
   serviceCredentialRepository,
   accessLogRepository,
   workerDeadLetterRepository,
+  setWorkerGenerationAuthorityLossHandler,
 } from '@skytwin/db';
 import { CircuitBreaker, createLogger } from '@skytwin/core';
 import { KeyCache } from '@skytwin/credential-vault';
@@ -59,6 +60,7 @@ import {
 } from './generation-admission.js';
 import { forwardSignalToApi as forwardSignalUnderAdmission } from './signal-forwarder.js';
 import { createWorkerLifecycle } from './worker-lifecycle.js';
+import { installGenerationFetch } from './generation-fetch.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -193,7 +195,11 @@ function getCircuitBreaker(userId: string): CircuitBreaker {
  */
 
 const generationAdmission = createWorkerGenerationAdmission();
+setWorkerGenerationAuthorityLossHandler((error) => {
+  generationAdmission.revoke(error.message);
+});
 const workerLifecycle = createWorkerLifecycle(generationAdmission);
+installGenerationFetch(generationAdmission);
 let lastIronClawToolRefreshAt = 0;
 const IRONCLAW_TOOL_REFRESH_MS = 15 * 60 * 1000;
 
@@ -460,6 +466,7 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
   const connectedUsers: UserConnectors[] = [];
 
   for (const uc of discovered) {
+    if (!generationAdmission.isActive()) break;
     const breaker = getCircuitBreaker(uc.userId);
     if (!breaker.canExecute()) {
       log.warn(`Skipping connector startup for user ${uc.userId} — circuit open, retry in ${Math.round(breaker.getTimeUntilRetryMs() / 1000)}s`, {
@@ -471,11 +478,14 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
     const connected: SignalConnector[] = [];
     let permanentOAuthFailure = false;
     for (const connector of uc.connectors) {
+      if (!generationAdmission.isActive()) break;
       try {
-        await connector.connect();
+        await connector.connect(generationAdmission.signal);
+        generationAdmission.requireActive();
         connected.push(connector);
         log.info(`Connected: ${connector.name} for user ${uc.userId}`);
       } catch (error) {
+        if (isWorkerGenerationRevoked(error) || !generationAdmission.isActive()) break;
         if (error instanceof OAuthRefreshError && error.permanent) {
           log.error(`Permanent OAuth failure for user ${uc.userId} on ${connector.name} — user must re-authorize`, {
             error: error.message,
@@ -794,25 +804,40 @@ async function main(): Promise<void> {
     // on every cycle (e.g. CRDB unreachable) is now routed to the DLQ after
     // the retry budget instead of crashing the loop on an unhandled throw.
     const nowMs = Date.now();
-    if (nowMs - lastMetricsRollupAt >= METRICS_ROLLUP_INTERVAL_MS) {
-      await deadLetterTracker.run('metrics-rollup', () => runMetricsRollupJob());
+    if (
+      generationAdmission.isActive() &&
+      nowMs - lastMetricsRollupAt >= METRICS_ROLLUP_INTERVAL_MS
+    ) {
+      await deadLetterTracker.run('metrics-rollup', () =>
+        runMetricsRollupJob({ signal: generationAdmission.signal }));
       lastMetricsRollupAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Sweep MCP server changelogs weekly (#184 AC#2).
     // Individual server errors are caught inside the job — never propagate here.
-    if (nowMs - lastChangelogPollAt >= CHANGELOG_POLL_INTERVAL_MS) {
-      await deadLetterTracker.run('changelog-poll', () => runChangelogPollJob());
+    if (
+      generationAdmission.isActive() &&
+      nowMs - lastChangelogPollAt >= CHANGELOG_POLL_INTERVAL_MS
+    ) {
+      await deadLetterTracker.run('changelog-poll', () =>
+        runChangelogPollJob({ signal: generationAdmission.signal }));
       lastChangelogPollAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Re-extract life domains weekly (#193 Child 1). The job no-ops when no
     // LlmClient is available — extraction is LLM-dependent. Per-user errors
     // are absorbed inside the job.
-    if (nowMs - lastDomainExtractionAt >= DOMAIN_EXTRACTION_INTERVAL_MS) {
-      await deadLetterTracker.run('domain-extraction', () => runDomainExtractionJob());
+    if (
+      generationAdmission.isActive() &&
+      nowMs - lastDomainExtractionAt >= DOMAIN_EXTRACTION_INTERVAL_MS
+    ) {
+      await deadLetterTracker.run('domain-extraction', () =>
+        runDomainExtractionJob({ signal: generationAdmission.signal }));
       lastDomainExtractionAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Infer which apps the twin should learn to support (#201/#202). Opt-in,
     // default off; advisory app_suggestions only. The pure gate is unit-tested
@@ -820,14 +845,16 @@ async function main(): Promise<void> {
     // verified without driving this loop.
     if (
       shouldRunCapabilityInference({
-        enabled: capabilityInferenceEnabled(),
+        enabled: generationAdmission.isActive() && capabilityInferenceEnabled(),
         nowMs,
         lastRunAt: lastCapabilityInferenceAt,
       })
     ) {
-      await deadLetterTracker.run('capability-inference', () => runCapabilityInferenceJob());
+      await deadLetterTracker.run('capability-inference', () =>
+        runCapabilityInferenceJob({ signal: generationAdmission.signal }));
       lastCapabilityInferenceAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Fire due no-code routines ("watches", #519). Opt-in, default off; each
     // firing is READ-ONLY (digest/notify) and writes a watch_run. The pure gate
@@ -835,36 +862,53 @@ async function main(): Promise<void> {
     // verified without driving this loop.
     if (
       shouldRunWatchScheduler({
-        enabled: watchSchedulerEnabled(),
+        enabled: generationAdmission.isActive() && watchSchedulerEnabled(),
         nowMs,
         lastRunAt: lastWatchSchedulerAt,
       })
     ) {
-      await deadLetterTracker.run('watch-scheduler', () => runWatchSchedulerJob());
+      await deadLetterTracker.run('watch-scheduler', () =>
+        runWatchSchedulerJob({ signal: generationAdmission.signal }));
       lastWatchSchedulerAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Push federation deltas to active peers hourly (#194 Child 1).
-    if (nowMs - lastFederationSyncAt >= FEDERATION_SYNC_INTERVAL_MS) {
-      await deadLetterTracker.run('federation-sync', () => runFederationSyncJob());
+    if (
+      generationAdmission.isActive() &&
+      nowMs - lastFederationSyncAt >= FEDERATION_SYNC_INTERVAL_MS
+    ) {
+      await deadLetterTracker.run('federation-sync', () =>
+        runFederationSyncJob({ signal: generationAdmission.signal }));
       lastFederationSyncAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Drain the brain_embedding_jobs queue every 30s (#197). The write path
     // queues jobs when synchronous embedding fails (rate limit, network);
     // this catches them up. SELECT FOR UPDATE SKIP LOCKED makes it safe
     // under multiple worker instances.
-    if (nowMs - lastEmbeddingBackfillAt >= EMBEDDING_BACKFILL_INTERVAL_MS) {
-      await deadLetterTracker.run('embedding-backfill', () => runEmbeddingBackfillJob());
+    if (
+      generationAdmission.isActive() &&
+      nowMs - lastEmbeddingBackfillAt >= EMBEDDING_BACKFILL_INTERVAL_MS
+    ) {
+      await deadLetterTracker.run('embedding-backfill', () =>
+        runEmbeddingBackfillJob({ signal: generationAdmission.signal }));
       lastEmbeddingBackfillAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // Backfill authoringTier on pre-Layer-1 pages (#251 follow-up).
     // Hourly; converges to no-op once the corpus is fully tagged.
-    if (nowMs - lastTierBackfillAt >= TIER_BACKFILL_INTERVAL_MS) {
-      await deadLetterTracker.run('tier-backfill', () => runTierBackfillJob());
+    if (
+      generationAdmission.isActive() &&
+      nowMs - lastTierBackfillAt >= TIER_BACKFILL_INTERVAL_MS
+    ) {
+      await deadLetterTracker.run('tier-backfill', () =>
+        runTierBackfillJob({ signal: generationAdmission.signal }));
       lastTierBackfillAt = nowMs;
     }
+    if (!generationAdmission.isActive()) break;
 
     // #282: kick off a daily relationship-tier backfill batch when one
     // is not already running and 24h has elapsed since the last START
@@ -881,6 +925,7 @@ async function main(): Promise<void> {
     // (even with per-user failures inside it) keeps the timestamp so
     // the cadence stays at one batch / 24h.
     if (
+      generationAdmission.isActive() &&
       !relationshipTierBackfillInFlight &&
       nowMs - lastRelationshipTierBackfillAt >= RELATIONSHIP_TIER_BACKFILL_INTERVAL_MS
     ) {
@@ -888,7 +933,7 @@ async function main(): Promise<void> {
       const previousLastAt = lastRelationshipTierBackfillAt;
       lastRelationshipTierBackfillAt = nowMs;
       const userIds = userConnectors.map((uc) => uc.userId);
-      void runRelationshipTierBackfillBatch(userIds)
+      void runRelationshipTierBackfillBatch(userIds, { signal: generationAdmission.signal })
         .then((batchSummary) => {
           log.info('Relationship-tier backfill batch complete', {
             users: userIds.length,
@@ -913,19 +958,21 @@ async function main(): Promise<void> {
           relationshipTierBackfillInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // Memory action loop: persist daily opportunities, then try to advance
     // them through policy + routing. Its 6h cadence gives the briefing
     // generator recent "queued approval / needs skill / executed" outcomes
     // to report instead of only raw suggestions.
     if (
+      generationAdmission.isActive() &&
       !memoryActionLoopInFlight &&
       nowMs - lastMemoryActionLoopAt >= MEMORY_ACTION_LOOP_INTERVAL_MS
     ) {
       memoryActionLoopInFlight = true;
       const previousLastAt = lastMemoryActionLoopAt;
       lastMemoryActionLoopAt = nowMs;
-      void runMemoryActionLoopJob()
+      void runMemoryActionLoopJob({ signal: generationAdmission.signal })
         .then((summary) => {
           if (summary.attempted > 0 || summary.opportunitiesUpserted > 0) {
             log.info('Memory action loop tick complete', { ...summary, reports: summary.reports.length });
@@ -943,6 +990,7 @@ async function main(): Promise<void> {
           memoryActionLoopInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // #304: briefing generation, daily and weekly. Two independent
     // single-flight guards because the cadences are different and a
@@ -954,13 +1002,17 @@ async function main(): Promise<void> {
     // adaptive-prose path can be wired once a worker-side LLM-per-user
     // path lands (separate follow-up).
     if (
+      generationAdmission.isActive() &&
       !briefingDailyInFlight &&
       nowMs - lastBriefingDailyAt >= BRIEFING_DAILY_INTERVAL_MS
     ) {
       briefingDailyInFlight = true;
       const previousLastAt = lastBriefingDailyAt;
       lastBriefingDailyAt = nowMs;
-      void runBriefingGeneratorJob({ cadence: 'daily' })
+      void runBriefingGeneratorJob({
+        cadence: 'daily',
+        signal: generationAdmission.signal,
+      })
         .then(() => {
           void deadLetterTracker.recordOutcome('briefing-generator-daily', null);
         })
@@ -977,15 +1029,20 @@ async function main(): Promise<void> {
           briefingDailyInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     if (
+      generationAdmission.isActive() &&
       !briefingWeeklyInFlight &&
       nowMs - lastBriefingWeeklyAt >= BRIEFING_WEEKLY_INTERVAL_MS
     ) {
       briefingWeeklyInFlight = true;
       const previousLastAt = lastBriefingWeeklyAt;
       lastBriefingWeeklyAt = nowMs;
-      void runBriefingGeneratorJob({ cadence: 'weekly' })
+      void runBriefingGeneratorJob({
+        cadence: 'weekly',
+        signal: generationAdmission.signal,
+      })
         .then(() => {
           void deadLetterTracker.recordOutcome('briefing-generator-weekly', null);
         })
@@ -1002,6 +1059,7 @@ async function main(): Promise<void> {
           briefingWeeklyInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // #310: promotion-eligibility check, daily. Idempotent — writes
     // are dedup'd by the partial unique index on (server_id,
@@ -1009,13 +1067,14 @@ async function main(): Promise<void> {
     // the same window adds no new rows. Revert-on-failure keeps the
     // cadence tight when a transient DB error stops a tick.
     if (
+      generationAdmission.isActive() &&
       !promotionEligibilityInFlight &&
       nowMs - lastPromotionEligibilityAt >= PROMOTION_ELIGIBILITY_INTERVAL_MS
     ) {
       promotionEligibilityInFlight = true;
       const previousLastAt = lastPromotionEligibilityAt;
       lastPromotionEligibilityAt = nowMs;
-      void runPromotionEligibilityCheckJob()
+      void runPromotionEligibilityCheckJob({ signal: generationAdmission.signal })
         .then((summary) => {
           if (summary.offered > 0 || summary.alreadyPending > 0) {
             log.info('Promotion eligibility tick complete', { ...summary });
@@ -1033,9 +1092,10 @@ async function main(): Promise<void> {
           promotionEligibilityInFlight = false;
         });
     }
+    if (!generationAdmission.isActive()) break;
 
     // Expire stale approval requests every 10 poll cycles
-    if (pollCount % 10 === 0) {
+    if (generationAdmission.isActive() && pollCount % 10 === 0) {
       try {
         const expired = await approvalRepository.expirePending();
         if (expired > 0) {
@@ -1050,6 +1110,7 @@ async function main(): Promise<void> {
       // Clean up expired escalations — separate try/catch so expiry failures
       // don't block cleanup and vice versa
       for (const uc of userConnectors) {
+        if (!generationAdmission.isActive()) break;
         try {
           const cleaned = await approvalRepository.deleteStaleEscalations(uc.userId);
           if (cleaned > 0) {
@@ -1080,11 +1141,15 @@ async function main(): Promise<void> {
         });
       }
     }
+    if (!generationAdmission.isActive()) break;
 
     // Re-discover users every 10 poll cycles to pick up new connections.
     // When no users are tracked yet, check every cycle so first-time
     // connections are picked up within one poll interval (~10s).
-    if (userConnectors.length === 0 || pollCount % 10 === 0) {
+    if (
+      generationAdmission.isActive() &&
+      (userConnectors.length === 0 || pollCount % 10 === 0)
+    ) {
       const newUserConnectors = await connectUserConnectors(await discoverUsers());
       const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
       const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));

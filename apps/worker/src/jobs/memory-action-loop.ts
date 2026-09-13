@@ -68,6 +68,7 @@ import {
   getUsersWithRecentMemory,
   type DailyMemorySuggestionBundle,
 } from './memory-suggestions.js';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:memory-action-loop');
 
@@ -110,6 +111,7 @@ export interface MemoryActionLoopJobDeps {
   policyEvaluator?: Pick<PolicyEvaluator, 'evaluate'>;
   loadPolicies?: () => Promise<ActionPolicy[]>;
   getExecutionRouter?: () => Promise<Pick<ExecutionRouter, 'route' | 'executeWithRouting'>>;
+  signal?: AbortSignal;
 }
 
 let workerExecutionRouter: ExecutionRouter | null = null;
@@ -117,7 +119,8 @@ let workerExecutionRouter: ExecutionRouter | null = null;
 export async function runMemoryActionLoopJob(
   deps: MemoryActionLoopJobDeps = {},
 ): Promise<MemoryActionLoopSummary> {
-  const userIds = deps.userIds ?? await getMemoryActionLoopUserIds();
+  requireJobAdmission(deps.signal);
+  const userIds = deps.userIds ?? await runAdmitted(deps.signal, getMemoryActionLoopUserIds);
   const summary: MemoryActionLoopSummary = {
     users: userIds.length,
     opportunitiesUpserted: 0,
@@ -138,9 +141,11 @@ export async function runMemoryActionLoopJob(
   const fetchBundle = deps.fetchBundle ?? fetchDailyMemorySuggestionBundle;
 
   for (const userId of userIds) {
+    requireJobAdmission(deps.signal);
     try {
-      const bundle = await fetchBundle(userId, maxSuggestions);
+      const bundle = await runAdmitted(deps.signal, () => fetchBundle(userId, maxSuggestions));
       for (const suggestion of bundle.suggestions) {
+        requireJobAdmission(deps.signal);
         const provenance = resolveSuggestionProvenance(suggestion, bundle.pagesById);
         await memoryActionOpportunityRepository.upsertFromSuggestion({
           userId,
@@ -148,6 +153,7 @@ export async function runMemoryActionLoopJob(
           suggestion,
           provenance,
         });
+        requireJobAdmission(deps.signal);
         summary.opportunitiesUpserted++;
       }
 
@@ -157,7 +163,9 @@ export async function runMemoryActionLoopJob(
       });
 
       for (const opportunity of due) {
+        requireJobAdmission(deps.signal);
         const report = await processOpportunity(userId, opportunity, deps);
+        requireJobAdmission(deps.signal);
         if (!report) {
           summary.skipped++;
           continue;
@@ -172,6 +180,7 @@ export async function runMemoryActionLoopJob(
         else if (report.status === 'execution_failed') summary.executionFailed++;
       }
     } catch (err) {
+      requireJobAdmission(deps.signal);
       log.warn('Memory action loop failed for user; continuing', {
         userId,
         error: err instanceof Error ? err.message : String(err),
@@ -198,16 +207,18 @@ async function processOpportunity(
   opportunity: MemoryActionOpportunitySnapshot,
   deps: MemoryActionLoopJobDeps,
 ): Promise<MemoryActionLoopReport | null> {
+  requireJobAdmission(deps.signal);
   const attempted = opportunity;
 
-  const user = await userRepository.findById(userId);
+  const user = await runAdmitted(deps.signal, () => userRepository.findById(userId));
   if (!user) {
     const report = buildReport(attempted, 'skipped', 'User no longer exists.', 'No action taken.', deps.now);
     await memoryActionOpportunityRepository.markStatus({ id: attempted.id, status: 'skipped', report });
     return report;
   }
 
-  const decision = await createDecisionForOpportunity(userId, attempted);
+  const decision = await runAdmitted(deps.signal, () =>
+    createDecisionForOpportunity(userId, attempted));
   const candidate = buildCandidateForOpportunity(attempted, decision.id, user.ironclaw_channel ?? undefined);
   const riskAssessment = new RiskAssessor().assess(candidate);
 
@@ -259,6 +270,7 @@ async function processOpportunity(
     riskAssessment,
     readAutonomy(user.autonomy_settings),
   );
+  requireJobAdmission(deps.signal);
 
   if (!policyDecision.allowed) {
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
@@ -349,11 +361,17 @@ async function executeAllowedOpportunity(
   deps: MemoryActionLoopJobDeps,
   policyDecision: PolicyDecision,
 ): Promise<MemoryActionLoopReport> {
+  requireJobAdmission(deps.signal);
   const getRouter = deps.getExecutionRouter ?? getWorkerExecutionRouter;
   try {
-    const router = await getRouter();
-    const routing = await router.route(candidate, riskAssessment, userId);
-    const result = await router.executeWithRouting(candidate, riskAssessment, userId);
+    const router = await runAdmitted(deps.signal, getRouter);
+    const routing = await runAdmitted(deps.signal, () =>
+      router.route(candidate, riskAssessment, userId));
+    // This is the account-affecting boundary. Do not begin execution after
+    // revocation; network calls inside adapters are also bound to the shared
+    // generation signal by the worker's fetch wrapper.
+    const result = await runAdmitted(deps.signal, () =>
+      router.executeWithRouting(candidate, riskAssessment, userId));
     const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
       autoExecuted: result.status === 'completed',
@@ -407,6 +425,7 @@ async function executeAllowedOpportunity(
     });
     return report;
   } catch (err) {
+    requireJobAdmission(deps.signal);
     const isGap = err instanceof NoAdapterError;
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
       autoExecuted: false,

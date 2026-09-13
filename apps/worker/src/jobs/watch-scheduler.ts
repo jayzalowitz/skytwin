@@ -1,4 +1,5 @@
 import { createLogger } from '@skytwin/core';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 import {
   watchRepository,
   watchRunRepository,
@@ -122,6 +123,7 @@ export interface WatchSchedulerDeps {
   runRepo?: Pick<typeof watchRunRepository, 'create'>;
   signalRepo?: Pick<typeof signalRepository, 'getRecent'>;
   userRepo?: Pick<typeof userRepository, 'getLocale'>;
+  signal?: AbortSignal;
 }
 
 /**
@@ -131,17 +133,19 @@ export interface WatchSchedulerDeps {
  * policy gate. Each watch is isolated so one failure can't stall the rest.
  */
 export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promise<void> {
+  requireJobAdmission(deps.signal);
   const now = deps.now ?? new Date();
   const watchRepo = deps.watchRepo ?? watchRepository;
   const runRepo = deps.runRepo ?? watchRunRepository;
   const signalRepo = deps.signalRepo ?? signalRepository;
   const userRepo = deps.userRepo ?? userRepository;
 
-  const due = await watchRepo.listDue(now);
+  const due = await runAdmitted(deps.signal, () => watchRepo.listDue(now));
   if (due.length === 0) return;
 
   let fired = 0;
   for (const watch of due) {
+    requireJobAdmission(deps.signal);
     try {
       if (!watch.nextRunAt) continue; // defensive: listDue only returns non-null
       const tz = (await userRepo.getLocale(watch.userId)).timezone ?? 'UTC';
@@ -172,6 +176,7 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
       if (!claimed) continue;
 
       if (evalResult.matchedCount > 0) {
+        requireJobAdmission(deps.signal);
         await runRepo.create({
           watchId: watch.id,
           userId: watch.userId,
@@ -180,14 +185,17 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
           summary: evalResult.summary,
           matchedRefs: evalResult.matchedRefs,
         });
+        requireJobAdmission(deps.signal);
         fired += 1;
       }
     } catch (err) {
+      requireJobAdmission(deps.signal);
       log.error(`Watch ${watch.id} failed to run`, {
         error: err instanceof Error ? err.message : String(err),
       });
     }
   }
 
+  requireJobAdmission(deps.signal);
   if (fired > 0) log.info(`Watch scheduler: ${fired} of ${due.length} due watch(es) produced a run`);
 }

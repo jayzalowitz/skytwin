@@ -9,6 +9,7 @@ import {
   updatePageEmbedding,
   pendingEmbeddingJobs,
 } from '@skytwin/memory-gbrain-crdb-adapter';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('embedding-backfill');
 
@@ -35,6 +36,7 @@ export interface EmbeddingBackfillOptions {
   batchSize?: number;
   /** Override the embedding provider; defaults to the env-driven one. */
   embedding?: EmbeddingProvider;
+  signal?: AbortSignal;
 }
 
 /**
@@ -85,6 +87,7 @@ export interface EmbeddingBackfillSummary {
 export async function runEmbeddingBackfillJob(
   opts: EmbeddingBackfillOptions = {},
 ): Promise<EmbeddingBackfillSummary> {
+  requireJobAdmission(opts.signal);
   const batchSize = opts.batchSize ?? 25;
   const provider = opts.embedding ?? getWorkerEmbeddingProvider();
 
@@ -93,7 +96,9 @@ export async function runEmbeddingBackfillJob(
   let failed = 0;
 
   for (let i = 0; i < batchSize; i++) {
-    const job = await leaseEmbeddingJob().catch((err) => {
+    requireJobAdmission(opts.signal);
+    const job = await runAdmitted(opts.signal, leaseEmbeddingJob).catch((err) => {
+      requireJobAdmission(opts.signal);
       log.warn('leaseEmbeddingJob failed; skipping cycle', {
         error: err instanceof Error ? err.message : String(err),
       });
@@ -103,11 +108,12 @@ export async function runEmbeddingBackfillJob(
     attempted++;
 
     try {
-      const embedding = await provider.embed(job.pageContent);
-      await updatePageEmbedding(job.pageId, embedding, provider.model);
-      await markJobDone(job.id);
+      const embedding = await runAdmitted(opts.signal, () => provider.embed(job.pageContent));
+      await runAdmitted(opts.signal, () => updatePageEmbedding(job.pageId, embedding, provider.model));
+      await runAdmitted(opts.signal, () => markJobDone(job.id));
       succeeded++;
     } catch (err) {
+      requireJobAdmission(opts.signal);
       failed++;
       const message = err instanceof Error ? err.message : String(err);
       log.warn('embedding job failed; will retry until attempts exhausted', {
@@ -123,7 +129,10 @@ export async function runEmbeddingBackfillJob(
     }
   }
 
-  const pendingAfter = await pendingEmbeddingJobs().catch(() => 0);
+  const pendingAfter = await runAdmitted(opts.signal, pendingEmbeddingJobs).catch(() => {
+    requireJobAdmission(opts.signal);
+    return 0;
+  });
 
   if (attempted > 0) {
     log.info('embedding backfill cycle complete', {

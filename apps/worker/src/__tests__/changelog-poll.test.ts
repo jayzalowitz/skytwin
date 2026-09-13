@@ -249,6 +249,36 @@ describe('runChangelogPollJob', () => {
     // server-2 should still be upserted
     expect(mockChangelogRepo.upsert).toHaveBeenCalledWith('server-2', expect.any(Object));
   });
+
+  it('does not fetch or persist after revocation during server installation', async () => {
+    const controller = new AbortController();
+    mockServerRepo.listActive.mockResolvedValue([makeServer()]);
+    mockChangelogRepo.getForServer.mockResolvedValue(null);
+    let releaseInstall: ((value: { success: true }) => void) | undefined;
+    const install = new Promise<{ success: true }>((resolve) => {
+      releaseInstall = resolve;
+    });
+    const mockHost = {
+      installServer: vi.fn(() => install),
+      fetchChangelog: vi.fn(),
+      listSkills: vi.fn(),
+      uninstallServer: vi.fn().mockResolvedValue({ success: true }),
+    };
+
+    const pending = runChangelogPollJob({
+      changelogRepo: mockChangelogRepo,
+      serverRepo: mockServerRepo as unknown as typeof import('@skytwin/db').mcpServerRepository,
+      mcpHostFactory: () => mockHost as unknown as McpHost,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(mockHost.installServer).toHaveBeenCalledOnce());
+    controller.abort(new Error('generation revoked'));
+    releaseInstall?.({ success: true });
+
+    await expect(pending).rejects.toThrow('generation revoked');
+    expect(mockHost.fetchChangelog).not.toHaveBeenCalled();
+    expect(mockChangelogRepo.upsert).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------

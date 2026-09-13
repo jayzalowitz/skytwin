@@ -27,9 +27,9 @@ describe('runRelationshipTierBackfillBatch (#282)', () => {
     const summary = await runRelationshipTierBackfillBatch(['u1', 'u2', 'u3']);
     expect(summary.succeeded).toBe(3);
     expect(mockRun).toHaveBeenCalledTimes(3);
-    expect(mockRun).toHaveBeenNthCalledWith(1, 'u1');
-    expect(mockRun).toHaveBeenNthCalledWith(2, 'u2');
-    expect(mockRun).toHaveBeenNthCalledWith(3, 'u3');
+    expect(mockRun).toHaveBeenNthCalledWith(1, 'u1', { signal: undefined });
+    expect(mockRun).toHaveBeenNthCalledWith(2, 'u2', { signal: undefined });
+    expect(mockRun).toHaveBeenNthCalledWith(3, 'u3', { signal: undefined });
   });
 
   it('respects the bounded concurrency limit', async () => {
@@ -103,6 +103,27 @@ describe('runRelationshipTierBackfillBatch (#282)', () => {
   it('exposes a sensible production timeout constant', () => {
     expect(RELATIONSHIP_TIER_BACKFILL_USER_TIMEOUT_MS).toBeGreaterThan(0);
     expect(RELATIONSHIP_TIER_BACKFILL_USER_TIMEOUT_MS).toBeLessThan(60 * 60 * 1000);
+  });
+
+  it('does not admit another user after generation revocation', async () => {
+    const controller = new AbortController();
+    let releaseFirst: (() => void) | undefined;
+    mockRun.mockImplementation(async () => {
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      return { attempted: 0, updated: 0, unchanged: 0, skipped: 0, failed: 0 };
+    });
+    const pending = runRelationshipTierBackfillBatch(['u1', 'u2'], {
+      concurrency: 1,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(mockRun).toHaveBeenCalledOnce());
+    controller.abort(new Error('generation revoked'));
+    releaseFirst?.();
+
+    await expect(pending).rejects.toThrow('generation revoked');
+    expect(mockRun).toHaveBeenCalledOnce();
   });
 
   it('worker-pool: a slow user does not block the rest from starting', async () => {

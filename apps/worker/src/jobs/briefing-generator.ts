@@ -4,6 +4,7 @@ import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
 import type { MemoryActionLoopReport, MemoryActionOpportunityStatus } from '@skytwin/shared-types';
 import { fetchDailyMemorySuggestions } from './memory-suggestions.js';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:briefing-generator');
 
@@ -61,6 +62,7 @@ export interface BriefingGeneratorJobDeps {
   userIds?: string[];
   /** Optional LlmClient for the adaptive briefing-prose path */
   llmClient?: LlmClient;
+  signal?: AbortSignal;
 }
 
 /**
@@ -474,6 +476,7 @@ async function generateBriefingProse(
 export async function runBriefingGeneratorJob(
   deps: BriefingGeneratorJobDeps = {},
 ): Promise<void> {
+  requireJobAdmission(deps.signal);
   const cadence = deps.cadence ?? 'daily';
   const { llmClient } = deps;
   log.info(`Running briefing generator (cadence=${cadence})`);
@@ -482,7 +485,7 @@ export async function runBriefingGeneratorJob(
   if (deps.userIds && deps.userIds.length > 0) {
     userIds = deps.userIds;
   } else {
-    userIds = await getActiveUserIds();
+    userIds = await runAdmitted(deps.signal, getActiveUserIds);
   }
 
   if (userIds.length === 0) {
@@ -496,13 +499,14 @@ export async function runBriefingGeneratorJob(
   let failed = 0;
 
   for (const userId of userIds) {
+    requireJobAdmission(deps.signal);
     try {
       // Gather once per user; share the bundle across global +
       // per-Lifebook briefings. Copilot round-2 on #258 flagged the
       // prior N+1 pattern (every per-Lifebook call hit
       // suggestion-repo, server-repo, and the promotion query
       // independently).
-      const sharedData = await gatherBriefingData(userId, cadence);
+      const sharedData = await runAdmitted(deps.signal, () => gatherBriefingData(userId, cadence));
 
       const { prose, sourceEventCount, llmProvider } = await generateBriefingProse(
         userId,
@@ -511,6 +515,7 @@ export async function runBriefingGeneratorJob(
         undefined,
         sharedData,
       );
+      requireJobAdmission(deps.signal);
       await briefingRepository.create({
         userId,
         cadence,
@@ -519,6 +524,7 @@ export async function runBriefingGeneratorJob(
         llmProvider,
         llmCostCents: undefined,
       });
+      requireJobAdmission(deps.signal);
       generated++;
 
       // #193 follow-up: emit per-Lifebook briefings for each visible
@@ -531,8 +537,10 @@ export async function runBriefingGeneratorJob(
         cadence,
         llmClient,
         sharedData,
+        deps.signal,
       );
     } catch (err) {
+      requireJobAdmission(deps.signal);
       failed++;
       log.warn('Failed to generate briefing for user', {
         error: err instanceof Error ? err.message : String(err),
@@ -540,6 +548,7 @@ export async function runBriefingGeneratorJob(
     }
   }
 
+  requireJobAdmission(deps.signal);
   log.info(
     `Briefing generator complete: ${generated} global, ${perDomainGenerated} per-Lifebook, ${failed} failed`,
   );
@@ -561,11 +570,13 @@ async function emitPerDomainBriefings(
   cadence: 'daily' | 'weekly',
   llmClient: LlmClient | undefined,
   sharedData: Awaited<ReturnType<typeof gatherBriefingData>>,
+  signal?: AbortSignal,
 ): Promise<number> {
   let lifebooks: Awaited<ReturnType<typeof lifebookRepository.listVisible>>;
   try {
-    lifebooks = await lifebookRepository.listVisible(userId);
+    lifebooks = await runAdmitted(signal, () => lifebookRepository.listVisible(userId));
   } catch (err) {
+    requireJobAdmission(signal);
     log.warn('Could not load lifebooks for per-domain briefings; skipping', {
       userId,
       error: err instanceof Error ? err.message : String(err),
@@ -576,6 +587,7 @@ async function emitPerDomainBriefings(
 
   let written = 0;
   for (const lb of lifebooks) {
+    requireJobAdmission(signal);
     try {
       const registryIds = new Set(
         Array.isArray(lb.suggested_capabilities) ? lb.suggested_capabilities : [],
@@ -592,6 +604,7 @@ async function emitPerDomainBriefings(
         { domainName: lb.domain_name, registryIds },
         sharedData,
       );
+      requireJobAdmission(signal);
 
       // Skip empty domains — "nothing happened in Health this week"
       // is noise, not a useful briefing. The user will see the
@@ -607,8 +620,10 @@ async function emitPerDomainBriefings(
         llmCostCents: undefined,
         domainName: lb.domain_name,
       });
+      requireJobAdmission(signal);
       written++;
     } catch (err) {
+      requireJobAdmission(signal);
       log.warn('Per-domain briefing failed for one lifebook; continuing', {
         userId,
         domain: lb.domain_name,
@@ -616,5 +631,6 @@ async function emitPerDomainBriefings(
       });
     }
   }
+  requireJobAdmission(signal);
   return written;
 }

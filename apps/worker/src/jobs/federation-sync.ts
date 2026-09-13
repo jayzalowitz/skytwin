@@ -1,4 +1,5 @@
 import { createLogger } from '@skytwin/core';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 import {
   federationPeerRepository,
   mcpServerRepository,
@@ -48,6 +49,7 @@ export interface FederationSyncDeps {
   fetcher?: (url: string, opts: RequestInit) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
   /** Override the peer-row updater (for tests). */
   markSyncResult?: typeof federationPeerRepository.markSyncResult;
+  signal?: AbortSignal;
 }
 
 export interface DeltaPayload {
@@ -156,7 +158,8 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
   pushed: number;
   failed: number;
 }> {
-  const peers = deps.peers ?? (await getActivePeersWithEndpoints());
+  requireJobAdmission(deps.signal);
+  const peers = deps.peers ?? (await runAdmitted(deps.signal, getActivePeersWithEndpoints));
   if (peers.length === 0) {
     log.info('No active peers with endpoints — federation-sync skipped');
     return { pushed: 0, failed: 0 };
@@ -170,10 +173,11 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
   let failed = 0;
 
   for (const peer of peers) {
+    requireJobAdmission(deps.signal);
     const endpoint = peer.endpoint_url;
     if (endpoint === null) continue;
     try {
-      const payload = await buildDeltaPayload(peer.user_id);
+      const payload = await runAdmitted(deps.signal, () => buildDeltaPayload(peer.user_id));
       const sealed = sealForPeer(payload, peer);
       const url = endpoint.replace(/\/$/, '') + '/api/federation/inbox';
       const res = await fetcher(url, {
@@ -185,6 +189,7 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
           ciphertext: sealed.ciphertextB64,
         }),
       });
+      requireJobAdmission(deps.signal);
       if (!res.ok) {
         const body = await res.text().catch(() => '');
         const errMsg = `peer responded ${res.status}: ${body.slice(0, 200)}`;
@@ -196,6 +201,7 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
       await markSyncResult({ peerId: peer.id, status: 'ok' });
       pushed++;
     } catch (err) {
+      requireJobAdmission(deps.signal);
       failed++;
       const msg = err instanceof Error ? err.message : String(err);
       try {

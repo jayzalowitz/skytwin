@@ -8,6 +8,7 @@ import {
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import type { TrustTier } from '@skytwin/shared-types';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:promotion-eligibility-check');
 
@@ -46,11 +47,14 @@ export interface PromotionEligibilityCheckResult {
   alreadyPending: number;
 }
 
-export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligibilityCheckResult> {
+export async function runPromotionEligibilityCheckJob(
+  deps: { signal?: AbortSignal } = {},
+): Promise<PromotionEligibilityCheckResult> {
+  requireJobAdmission(deps.signal);
   log.info('Running promotion eligibility check');
 
   // Fetch all active servers that have not been paused from auto-promotion
-  const activeServers = await mcpServerRepository.listActive();
+  const activeServers = await runAdmitted(deps.signal, () => mcpServerRepository.listActive());
   const now = new Date();
 
   const engine = new TrustTierEngine();
@@ -59,6 +63,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
   let alreadyPending = 0;
 
   for (const server of activeServers) {
+    requireJobAdmission(deps.signal);
     try {
       // Skip if auto-promotion ceremony is paused for this server
       if (server.auto_promote_paused_until && server.auto_promote_paused_until > now) {
@@ -124,6 +129,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
       });
 
       if (evaluation.shouldChange && evaluation.recommendedTier) {
+        requireJobAdmission(deps.signal);
         const created = await promotionOffersRepository.createIfPending({
           userId: server.user_id,
           serverId: server.id,
@@ -133,6 +139,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
           decisionsObservedCount: totalActions,
           approvedCount: approvedActions,
         });
+        requireJobAdmission(deps.signal);
         if (created) {
           offered++;
           log.info('Promotion ceremony offered', {
@@ -147,6 +154,7 @@ export async function runPromotionEligibilityCheckJob(): Promise<PromotionEligib
         }
       }
     } catch (err) {
+      requireJobAdmission(deps.signal);
       log.warn('Error checking promotion eligibility for server', {
         serverId: server.id,
         error: err instanceof Error ? err.message : String(err),
