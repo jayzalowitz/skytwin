@@ -37,7 +37,6 @@ const RETRYABLE_STATUSES: MemoryActionOpportunityStatus[] = [
   'suggested',
   'blocked_by_policy',
   'learning_needed',
-  'execution_failed',
 ];
 
 export const memoryActionOpportunityRepository = {

@@ -503,8 +503,12 @@ export class IronClawHttpClient {
   private parseDeclaredExecutionStatus(metadata: Record<string, unknown>): ExecutionStatus {
     const declared = this.readString(metadata, ['status']);
     const success = metadata['success'];
+    const error = metadata['error'];
     if (success !== undefined && typeof success !== 'boolean') {
       throw new Error('IronClaw execution success field is not boolean');
+    }
+    if (error !== undefined && error !== null && typeof error !== 'string') {
+      throw new Error('IronClaw execution error field is not a string');
     }
 
     let status: ExecutionStatus | null = null;
@@ -523,7 +527,7 @@ export class IronClawHttpClient {
         ((status === 'pending' || status === 'running') && success !== undefined)) {
       throw new Error('IronClaw response contained conflicting execution status fields');
     }
-    if (status === 'completed' && this.readString(metadata, ['error'])) {
+    if (status === 'completed' && typeof error === 'string' && error.length > 0) {
       throw new Error('IronClaw completed response also contained an error');
     }
     return status;

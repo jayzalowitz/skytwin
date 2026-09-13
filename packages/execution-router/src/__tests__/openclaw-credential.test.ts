@@ -324,6 +324,8 @@ describe('OpenClawAdapter credential_required handling', () => {
       { success: false, status: 'pending' },
       { success: true, error: 'conflicting error' },
       { status: 'completed', error: 'conflicting error' },
+      { status: 'failed', error: { message: 'malformed' } },
+      { status: 'completed', error: { message: 'malformed' } },
       { status: 'running' },
       { status: 'pending' },
     ])('rejects inconsistent or non-terminal response %# as ambiguous', async (body) => {

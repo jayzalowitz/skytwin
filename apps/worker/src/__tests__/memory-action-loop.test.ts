@@ -14,6 +14,7 @@ const {
   mockApprovalRepository,
   mockExplanationRepository,
   mockExecutionRepository,
+  mockExecutionAdmissionRepository,
   mockPolicyRepositoryAdapter,
   mockServiceCredentialRepository,
   mockCredentialRequirementRepository,
@@ -44,6 +45,12 @@ const {
   mockExecutionRepository: {
     createPlan: vi.fn(),
     createResult: vi.fn(),
+    finalizeAdmittedPlan: vi.fn(),
+  },
+  mockExecutionAdmissionRepository: {
+    admitMemoryExecution: vi.fn(),
+    findByScope: vi.fn(),
+    observeTerminal: vi.fn(),
   },
   mockPolicyRepositoryAdapter: {
     getEnabledPolicies: vi.fn(),
@@ -67,6 +74,7 @@ vi.mock('@skytwin/db', () => ({
   approvalRepository: mockApprovalRepository,
   explanationRepository: mockExplanationRepository,
   executionRepository: mockExecutionRepository,
+  executionAdmissionRepository: mockExecutionAdmissionRepository,
   policyRepositoryAdapter: mockPolicyRepositoryAdapter,
   serviceCredentialRepository: mockServiceCredentialRepository,
   credentialRequirementRepository: mockCredentialRequirementRepository,
@@ -161,6 +169,20 @@ function mockCommon(opportunity = makeOpportunity()) {
     id: '44444444-4444-4444-4444-444444444444',
   });
   mockExecutionRepository.createResult.mockResolvedValue({});
+  mockExecutionRepository.finalizeAdmittedPlan.mockResolvedValue({
+    id: '44444444-4444-4444-4444-444444444444',
+  });
+  mockExecutionAdmissionRepository.admitMemoryExecution.mockResolvedValue({
+    created: true,
+    barrier: {
+      id: '55555555-5555-4555-8555-555555555555',
+      status: 'in_progress',
+      decision_id: '22222222-2222-2222-2222-222222222222',
+    },
+    plan: { id: '44444444-4444-4444-4444-444444444444' },
+  });
+  mockExecutionAdmissionRepository.observeTerminal.mockResolvedValue({});
+  mockExecutionAdmissionRepository.findByScope.mockResolvedValue(null);
   mockSkillGapRepository.log.mockResolvedValue({
     id: 'skill-gap-1',
   });
@@ -300,11 +322,10 @@ describe('runMemoryActionLoopJob', () => {
       }),
     );
     expect(router.executeWithRouting).toHaveBeenCalledOnce();
-    expect(mockExecutionRepository.createPlan).toHaveBeenCalledWith(
+    expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledWith(
       expect.objectContaining({
         decisionId: '22222222-2222-2222-2222-222222222222',
         actionId: expect.any(String),
-        status: 'completed',
       }),
     );
     expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
@@ -352,8 +373,8 @@ describe('runMemoryActionLoopJob', () => {
 
     expect(summary.executionAmbiguous).toBe(1);
     expect(summary.executionFailed).toBe(0);
-    expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
-    expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledOnce();
+    expect(mockExecutionRepository.finalizeAdmittedPlan).not.toHaveBeenCalled();
     expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'execution_ambiguous',
@@ -371,6 +392,86 @@ describe('runMemoryActionLoopJob', () => {
         whatHappened: expect.stringContaining('terminal confirmation was unavailable'),
       }),
     );
+  });
+
+  it('preserves a returned completion when every secondary ledger write fails', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    mockExecutionAdmissionRepository.observeTerminal.mockRejectedValue(new Error('commit response lost'));
+    mockExecutionRepository.finalizeAdmittedPlan.mockRejectedValue(new Error('result DB unavailable'));
+    mockDecisionRepository.recordOutcome.mockRejectedValue(new Error('outcome DB unavailable'));
+    mockMemoryActionOpportunityRepository.markStatus.mockRejectedValue(new Error('opportunity DB unavailable'));
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
+        modifiedRiskAssessment: {}, reasoning: 'direct route',
+      }),
+      executeWithRouting: vi.fn().mockResolvedValue({
+        planId: 'adapter-plan-completed', status: 'completed', startedAt: new Date(),
+        completedAt: new Date(), output: { adapter_used: 'direct' },
+      }),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(summary.autoExecuted).toBe(1);
+    expect(summary.executionFailed).toBe(0);
+    expect(summary.executionAmbiguous).toBe(0);
+    expect(router.executeWithRouting).toHaveBeenCalledOnce();
+    expect(mockExecutionAdmissionRepository.observeTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'completed' }),
+    );
+  });
+
+  it('does not dispatch when the durable admission response is lost', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    mockExecutionAdmissionRepository.admitMemoryExecution.mockRejectedValue(
+      new Error('commit response lost'),
+    );
+    mockExecutionAdmissionRepository.findByScope.mockResolvedValueOnce({
+      created: false,
+      barrier: { status: 'in_progress' },
+      plan: { id: '44444444-4444-4444-4444-444444444444' },
+    });
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
+        modifiedRiskAssessment: {}, reasoning: 'direct route',
+      }),
+      executeWithRouting: vi.fn(),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(router.executeWithRouting).not.toHaveBeenCalled();
+    expect(summary.executionAmbiguous).toBe(1);
+    expect(summary.executionFailed).toBe(0);
+    expect(summary.reports[0]).toMatchObject({
+      executionPlanId: '44444444-4444-4444-4444-444444444444',
+    });
   });
 
   it('marks outbound email memory actions irreversible before policy evaluation', async () => {

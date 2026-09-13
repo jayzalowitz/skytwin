@@ -267,6 +267,8 @@ describe('RealIronClawAdapter (HTTP)', () => {
       { status: 'completed', success: false },
       { status: 'failed', success: true },
       { status: 'completed', error: 'conflicting error' },
+      { status: 'failed', error: { message: 'malformed' } },
+      { status: 'completed', error: { message: 'malformed' } },
       { status: 'running' },
     ])('rejects inconsistent or non-terminal webhook metadata %#', async (metadata) => {
       const adapter = makeAdapter();

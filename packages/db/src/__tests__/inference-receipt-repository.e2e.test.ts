@@ -22,6 +22,7 @@ import { closePool } from '../connection.js';
 import { collectBackup, restoreBackup } from '../backup/backup.js';
 import { inferenceReceiptRepository } from '../repositories/inference-receipt-repository.js';
 import { executionRepository } from '../repositories/execution-repository.js';
+import { executionAdmissionRepository } from '../repositories/execution-admission-repository.js';
 import { decisionRepository } from '../repositories/decision-repository.js';
 import { explanationRepositoryAdapter } from '../adapters/explanation-repository-adapter.js';
 import type { InferenceReceiptCompletionLinkage } from '../repositories/inference-receipt-repository.js';
@@ -197,8 +198,10 @@ async function deleteUserGraph(userId: string): Promise<void> {
   const ownedPlans = `SELECT ep.id FROM execution_plans ep
     JOIN decisions d ON d.id = ep.decision_id WHERE d.user_id = $1`;
   const ownedDecisions = 'SELECT id FROM decisions WHERE user_id = $1';
+  await pool.query('DELETE FROM execution_admission_barriers WHERE user_id = $1', [userId]);
   await pool.query(`DELETE FROM execution_results WHERE plan_id IN (${ownedPlans})`, [userId]);
   await pool.query(`DELETE FROM execution_events WHERE plan_id IN (${ownedPlans})`, [userId]);
+  await pool.query('DELETE FROM approval_requests WHERE user_id = $1', [userId]);
   await pool.query(`DELETE FROM decision_outcomes WHERE decision_id IN (${ownedDecisions})`, [userId]);
   await pool.query(`DELETE FROM execution_plans WHERE decision_id IN (${ownedDecisions})`, [userId]);
   await pool.query(`DELETE FROM candidate_actions WHERE decision_id IN (${ownedDecisions})`, [userId]);
@@ -510,6 +513,61 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     })).rejects.toThrow('immutable after receipt finalization');
   });
 
+  it('serializes an existing-id candidate upsert against guard finalization', async () => {
+    const owner = await createGraph('existing-candidate-race', 'auto_execute');
+    const blocker = await pool.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM decisions WHERE id = $1 FOR UPDATE', [owner.decisionId]);
+
+    const capture = inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle: receiptBundle(owner),
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(owner, 'auto_execute'));
+    const upsert = decisionRepository.addCandidateAction({
+      id: owner.actionId!,
+      decisionId: owner.decisionId,
+      actionType: 'changed_action',
+      description: 'Concurrent changed candidate',
+      parameters: { changed: true },
+      predictedUserPreference: 'low',
+      riskAssessment: riskSnapshot(owner.actionId!),
+      reversible: false,
+      estimatedCost: 99,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await blocker.query('COMMIT');
+    blocker.release();
+    const [captureResult, upsertResult] = await Promise.allSettled([capture, upsert]);
+    const stored = await pool.query<{
+      action_type: string;
+      description: string;
+      reversible: boolean;
+    }>('SELECT action_type, description, reversible FROM candidate_actions WHERE id = $1', [
+      owner.actionId,
+    ]);
+    const guard = await pool.query(
+      'SELECT 1 FROM decision_ingest_guards WHERE decision_id = $1',
+      [owner.decisionId],
+    );
+
+    if (captureResult.status === 'fulfilled') {
+      expect(upsertResult.status).toBe('rejected');
+      expect(guard.rows).toHaveLength(1);
+      expect(stored.rows[0]).toMatchObject({
+        action_type: 'test_action', description: 'Test action', reversible: true,
+      });
+    } else {
+      expect(upsertResult.status).toBe('fulfilled');
+      expect(guard.rows).toHaveLength(0);
+      expect(stored.rows[0]).toMatchObject({
+        action_type: 'changed_action',
+        description: 'Concurrent changed candidate',
+        reversible: false,
+      });
+    }
+  });
+
   it('serializes a concurrent candidate risk write against guard finalization', async () => {
     const owner = await createGraph('risk-race', 'auto_execute');
     const replacementRisk = riskSnapshot(owner.actionId!);
@@ -565,6 +623,123 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId, continuation, []),
     ]);
     expect(claims.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('durably admits one approved execution and reconciles its exact terminal plan', async () => {
+    const owner = await createGraph('approval-admission', 'approval');
+    const approval = await pool.query<{ id: string }>(
+      `INSERT INTO approval_requests
+         (user_id, decision_id, candidate_action, reason, urgency, status, responded_at)
+       VALUES ($1, $2, $3::JSONB, 'approved in e2e', 'normal', 'approved', now())
+       RETURNING id`,
+      [owner.userId, owner.decisionId, JSON.stringify({
+        id: owner.actionId, actionType: 'test_action', description: 'Test action',
+      })],
+    );
+
+    const admitted = await executionAdmissionRepository.admitApprovalExecution({
+      userId: owner.userId,
+      approvalId: approval.rows[0]!.id,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      steps: [{ type: 'test_action', status: 'pending' }],
+    });
+    expect(admitted).toMatchObject({ created: true, barrier: { status: 'in_progress' } });
+    const duplicate = await executionAdmissionRepository.admitApprovalExecution({
+      userId: owner.userId,
+      approvalId: approval.rows[0]!.id,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      steps: [],
+    });
+    expect(duplicate.created).toBe(false);
+    expect(duplicate.plan.id).toBe(admitted.plan.id);
+
+    const observed = {
+      planId: admitted.plan.id,
+      adapterPlanId: 'remote-plan',
+      adapterUsed: 'direct',
+      status: 'completed',
+      output: { adapter_used: 'direct' },
+      error: null,
+    };
+    await executionAdmissionRepository.observeTerminal({
+      id: admitted.barrier.id,
+      userId: owner.userId,
+      status: 'completed',
+      result: observed,
+    });
+    await executionRepository.finalizeAdmittedPlan({
+      userId: owner.userId,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      planId: admitted.plan.id,
+      status: 'completed',
+      success: true,
+      outputs: { adapter_used: 'direct', adapter_plan_id: 'remote-plan' },
+      rollbackAvailable: true,
+    });
+    await expect(executionAdmissionRepository.observeTerminal({
+      id: admitted.barrier.id,
+      userId: owner.userId,
+      status: 'failed',
+      result: { ...observed, status: 'failed' },
+    })).rejects.toThrow('conflicts with its observed result');
+
+    const linked = await pool.query<{ execution_plan_id: string }>(
+      'SELECT execution_plan_id FROM decision_outcomes WHERE id = $1',
+      [owner.outcomeId],
+    );
+    expect(linked.rows[0]!.execution_plan_id).toBe(admitted.plan.id);
+  });
+
+  it('freezes a memory opportunity into a non-replay state before dispatch', async () => {
+    const owner = await createGraph('memory-admission', 'auto_execute');
+    const opportunity = await pool.query<{ id: string }>(
+      `INSERT INTO memory_action_opportunities
+         (user_id, fingerprint, suggestion_id, title, reason, suggested_action,
+          action_type, action_label, action_plan, novelty, provenance, status, decision_id)
+       VALUES ($1, $2, 'suggestion-e2e', 'Memory action', 'Memory reason',
+         'Create the task', 'test_action', 'Test action', '{}'::JSONB,
+         'resurface', 'user_originated', 'suggested', $3)
+       RETURNING id`,
+      [owner.userId, `memory-${randomUUID()}`, owner.decisionId],
+    );
+    const report = {
+      opportunityId: opportunity.rows[0]!.id,
+      status: 'execution_ambiguous' as const,
+      title: 'Memory action', actionType: 'test_action', actionLabel: 'Test action',
+      summary: 'Execution admitted', nextStep: 'Reconcile',
+      attemptedAt: new Date().toISOString(),
+    };
+
+    const admitted = await executionAdmissionRepository.admitMemoryExecution({
+      userId: owner.userId,
+      opportunityId: opportunity.rows[0]!.id,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      steps: [{ type: 'test_action', status: 'pending' }],
+      report,
+    });
+    const duplicate = await executionAdmissionRepository.admitMemoryExecution({
+      userId: owner.userId,
+      opportunityId: opportunity.rows[0]!.id,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      steps: [],
+      report,
+    });
+    expect(duplicate.created).toBe(false);
+    expect(duplicate.plan.id).toBe(admitted.plan.id);
+
+    const frozen = await pool.query<{ status: string; execution_plan_id: string }>(
+      `SELECT status, execution_plan_id FROM memory_action_opportunities WHERE id = $1`,
+      [opportunity.rows[0]!.id],
+    );
+    expect(frozen.rows[0]).toEqual({
+      status: 'execution_ambiguous',
+      execution_plan_id: admitted.plan.id,
+    });
   });
 
   it('terminalizes only the exact owner, decision, selected action, and plan', async () => {

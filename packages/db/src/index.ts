@@ -157,6 +157,7 @@ export {
   accessLogRepository,
   watchRepository,
   watchRunRepository,
+  executionAdmissionRepository,
 } from './repositories/index.js';
 export type {
   ConnectorHealthRow,
@@ -179,8 +180,16 @@ export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
   CreateExecutionEventInput,
+  FinalizeAdmittedExecutionInput,
   ExecutionPlanWithResult,
   RollbackTarget,
+  AdmitApprovalExecutionInput,
+  AdmitMemoryExecutionInput,
+  ExecutionAdmission,
+  ExecutionAdmissionRow,
+  ExecutionAdmissionScope,
+  ExecutionAdmissionStatus,
+  ObserveExecutionInput,
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';

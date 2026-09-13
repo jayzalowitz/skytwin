@@ -177,3 +177,50 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(targets[0]!.payload).toEqual({ reversible: false, irreversibleReason: 'sent' });
   });
 });
+
+describe('executionRepository.finalizeAdmittedPlan', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('persists exact result truth before terminalizing the admitted plan', async () => {
+    const output = { adapter_plan_id: 'remote-plan', adapter_used: 'direct' };
+    mockClientQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'plan-1', status: 'running' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        plan_id: 'plan-1', success: true, outputs: output, error: null,
+        rollback_available: true,
+      }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'plan-1', status: 'completed' }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(executionRepository.finalizeAdmittedPlan({
+      userId: 'user-1', decisionId: 'decision-1', actionId: 'action-1',
+      planId: 'plan-1', status: 'completed', success: true, outputs: output,
+      rollbackAvailable: true,
+    })).resolves.toMatchObject({ id: 'plan-1', status: 'completed' });
+
+    expect(mockClientQuery.mock.calls[1]![0]).toContain('ON CONFLICT (plan_id) DO NOTHING');
+    expect(mockClientQuery.mock.calls[3]![0]).toContain('execution_results');
+    expect(mockClientQuery.mock.calls[0]![0]).toContain('execution_admission_barriers');
+    expect(mockClientQuery.mock.calls[4]![0]).toContain('UPDATE decision_outcomes');
+  });
+
+  it('rejects a stale terminal result instead of changing plan truth', async () => {
+    mockClientQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'plan-1', status: 'completed' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        plan_id: 'plan-1', success: true, outputs: {}, error: null,
+        rollback_available: false,
+      }] });
+
+    await expect(executionRepository.finalizeAdmittedPlan({
+      userId: 'user-1', decisionId: 'decision-1', actionId: 'action-1',
+      planId: 'plan-1', status: 'failed', success: false, outputs: {},
+      error: 'failed', rollbackAvailable: false,
+    })).rejects.toThrow('authority is unavailable');
+    expect(mockClientQuery).toHaveBeenCalledTimes(1);
+  });
+});
