@@ -26,6 +26,7 @@ import {
   AmbiguousExecutionError,
   NoRequestExecutionError,
 } from '@skytwin/execution-router';
+import type { ExecutionRouter, PreparedExecution } from '@skytwin/execution-router';
 import type {
   FeedbackEvent,
   CandidateAction,
@@ -480,8 +481,11 @@ export function createApprovalsRouter(): Router {
       > = null;
       let preflightCandidateId: string | null = null;
       let approvedCandidateAction: CandidateAction | null = null;
+      let approvedSourceRisk: ReturnType<RiskAssessor['assess']> | null = null;
       let approvedRiskAssessment: ReturnType<RiskAssessor['assess']> | null = null;
       let approvedPolicyResult: PolicyDecision | null = null;
+      let approvedPreparedExecution: PreparedExecution | null = null;
+      let approvedExecutionRouter: ExecutionRouter | null = null;
       let approvedActionSnapshot: Record<string, unknown> | null = null;
       let approvedOutcomeSnapshot: Record<string, unknown> | null = null;
       if (body.action === 'approve') {
@@ -533,7 +537,19 @@ export function createApprovalsRouter(): Router {
         applyDraftEditOverride(approvedCandidateAction, body.editedBody);
         const currentUser = await userRepository.findById(body.userId);
         prepareEmailActionForExecution(approvedCandidateAction, currentUser);
-        approvedRiskAssessment = new RiskAssessor().assess(approvedCandidateAction);
+        approvedSourceRisk = new RiskAssessor().assess(approvedCandidateAction);
+        approvedExecutionRouter = await getRouter();
+        approvedPreparedExecution = await approvedExecutionRouter.prepareExecution(
+          approvedCandidateAction,
+          approvedSourceRisk,
+          body.userId,
+          {
+            approved: true,
+            streaming: false,
+            ironclawChannel: currentUser?.ironclaw_channel ?? undefined,
+          },
+        );
+        approvedRiskAssessment = approvedPreparedExecution.riskAssessment;
         const currentPolicies = await policyRepositoryAdapter.getAllPolicies();
         const approvedPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
         approvedPolicyResult = await approvedPolicyEvaluator.evaluate(
@@ -698,6 +714,8 @@ export function createApprovalsRouter(): Router {
           userId: string;
           decisionId: string;
           actionId: string;
+          executionPlanId: string;
+          adapterName: string;
           steps: Array<{ type: string; status: string }>;
           riskSnapshot: Record<string, unknown>;
           policySnapshot: Record<string, unknown>;
@@ -705,10 +723,11 @@ export function createApprovalsRouter(): Router {
           outcomeSnapshot: Record<string, unknown>;
         } | null = null;
         try {
-          const executionRouter = await getRouter();
+          const executionRouter = approvedExecutionRouter!;
           executionAttempt: {
             const admissionUser = await userRepository.findById(body.userId);
-            const admissionRisk = new RiskAssessor().assess(candidateAction);
+            const prepared = approvedPreparedExecution!;
+            const admissionRisk = prepared.riskAssessment;
             const admissionPolicies = await policyRepositoryAdapter.getAllPolicies();
             const admissionPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
             const admissionPolicy = await admissionPolicyEvaluator.evaluate(
@@ -718,11 +737,38 @@ export function createApprovalsRouter(): Router {
               admissionRisk,
               readAutonomy(admissionUser),
             );
-            if (!admissionPolicy.allowed || executionIsPaused(admissionUser, admissionPolicyEvaluator) ||
-                (admissionPolicy.confirmationLevel === 'dual' && approval.confirmation_level !== 'dual')) {
+            const admissionPaused = executionIsPaused(admissionUser, admissionPolicyEvaluator);
+            const admissionDualMismatch = admissionPolicy.confirmationLevel === 'dual' &&
+              approval.confirmation_level !== 'dual';
+            if (!admissionPolicy.allowed || admissionPaused || admissionDualMismatch) {
+              const denialReason = admissionPaused
+                ? 'Execution is paused by current user or operator policy.'
+                : admissionDualMismatch
+                  ? 'The exact prepared action now requires dual confirmation.'
+                  : admissionPolicy.reason;
+              const denial = await executionAdmissionRepository.recordPolicyDenial({
+                scope: 'approval',
+                userId: body.userId,
+                decisionId: approval.decision_id,
+                actionId: candidateAction.id,
+                approvalId: approval.id,
+                adapterName: prepared.adapterName,
+                actionSnapshot,
+                riskSnapshot: admissionRisk as unknown as Record<string, unknown>,
+                policySnapshot: {
+                  ...admissionPolicy,
+                  allowed: false,
+                  dispatchDenied: true,
+                  denialReason,
+                },
+                reason: denialReason,
+              });
+              if (!denial) {
+                throw new Error('Approved execution denial evidence could not be persisted.');
+              }
               executionResult = {
-                status: 'ambiguous',
-                error: `Current policy no longer authorizes this exact approval: ${admissionPolicy.reason}`,
+                status: 'blocked',
+                error: denialReason,
               };
               break executionAttempt;
             }
@@ -734,6 +780,8 @@ export function createApprovalsRouter(): Router {
               userId: body.userId,
               decisionId: approval.decision_id,
               actionId: candidateAction.id,
+              executionPlanId: prepared.planId,
+              adapterName: prepared.adapterName,
               steps: [{ type: candidateAction.actionType, status: 'pending' }],
               riskSnapshot: admissionRisk as unknown as Record<string, unknown>,
               policySnapshot: admissionPolicy as unknown as Record<string, unknown>,
@@ -819,7 +867,7 @@ export function createApprovalsRouter(): Router {
               break executionAttempt;
             }
 
-            let result: Awaited<ReturnType<typeof executionRouter.executeWithRouting>>;
+            let result: Awaited<ReturnType<typeof executionRouter.executePrepared>>;
             try {
               // Approved-execution path: a human moved this through the approval
               // flow (and, for dual-confirmation actions, clicked twice — the
@@ -827,7 +875,8 @@ export function createApprovalsRouter(): Router {
               // `{ approved: true }` so the router's injection-guard backstop
               // lets the action through; the human already supplied the
               // confirmation the guard demanded.
-              result = await executionRouter.executeWithRouting(
+              result = await executionRouter.executePrepared(
+                prepared,
                 {
                   ...candidateAction,
                   parameters: {
@@ -994,6 +1043,10 @@ export function createApprovalsRouter(): Router {
         approval,
         action: body.action,
         executionResult,
+        ...(executionResult?.status === 'blocked' ? {
+          overrideStatus: 'blocked_by_policy' as const,
+          policyReason: executionResult.error,
+        } : {}),
         reason: body.reason,
       });
 

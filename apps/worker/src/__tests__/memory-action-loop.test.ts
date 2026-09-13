@@ -1,11 +1,35 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildExecutableActionPlan } from '@skytwin/shared-types';
-import { NoRequestExecutionError } from '@skytwin/execution-router';
+import { NoRequestExecutionError, type ExecutionRouter } from '@skytwin/execution-router';
 import type {
   DailyMemorySuggestion,
   DailyMemorySuggestionPage,
   MemoryActionOpportunitySnapshot,
 } from '@skytwin/shared-types';
+
+function asPreparedRouter(router: {
+  route: (...args: never[]) => unknown;
+  executeWithRouting: (...args: never[]) => unknown;
+}) {
+  return {
+    ...router,
+    prepareExecution: vi.fn(async (...args: unknown[]) => {
+      const routing = await (router.route as (...values: unknown[]) => unknown)(...args) as Record<string, unknown>;
+      const sourceRisk = args[1] as Record<string, unknown>;
+      const modified = routing['modifiedRiskAssessment'] as Record<string, unknown> | undefined;
+      return {
+        handle: {},
+        adapterName: routing['selectedAdapter'] as string,
+        planId: '44444444-4444-4444-4444-444444444444',
+        riskAssessment: modified?.['actionId'] ? modified : sourceRisk,
+        streaming: false,
+        routingDecision: routing,
+      };
+    }),
+    executePrepared: vi.fn(async (_prepared: unknown, ...args: unknown[]) =>
+      (router.executeWithRouting as (...values: unknown[]) => unknown)(...args)),
+  } as unknown as Pick<ExecutionRouter, 'prepareExecution' | 'executePrepared'>;
+}
 
 const {
   mockMemoryActionOpportunityRepository,
@@ -250,6 +274,124 @@ describe('runMemoryActionLoopJob', () => {
     );
   });
 
+  it('queues approval when the exact selected adapter raises risk across the autonomy boundary', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1',
+      trust_tier: 'moderate_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
+      execution_authority_revision: 'authority-revision-1',
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn(async (
+        _action: unknown,
+        _policies: unknown,
+        _trust: unknown,
+        risk?: { overallTier?: string },
+      ) => risk?.overallTier === 'critical'
+        ? {
+            allowed: true,
+            requiresApproval: true,
+            reason: 'The selected adapter raises this action above moderate risk.',
+            confirmationLevel: 'single' as const,
+          }
+        : { allowed: true, requiresApproval: false, reason: 'Source risk is auto-executable.' }),
+    };
+    const router = {
+      route: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
+        selectedAdapter: 'openclaw',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 1,
+        modifiedRiskAssessment: {
+          ...sourceRisk,
+          overallTier: 'critical',
+          reasoning: 'Adapter-adjusted critical risk.',
+        },
+        reasoning: 'OpenClaw is the exact ready adapter.',
+      })),
+      executeWithRouting: vi.fn(),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => asPreparedRouter(router),
+    });
+
+    expect(summary.approvalsQueued).toBe(1);
+    expect(mockApprovalRepository.create).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'The selected adapter raises this action above moderate risk.',
+      confirmationLevel: 'single',
+    }));
+    expect(mockExecutionAdmissionRepository.admitMemoryExecution).not.toHaveBeenCalled();
+    expect(router.executeWithRouting).not.toHaveBeenCalled();
+    expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'queued_approval', adapterName: 'openclaw' }),
+    );
+  });
+
+  it('records the prepared adapter risk when current policy blocks the exact path', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    const policyEvaluator = {
+      evaluate: vi.fn(async (
+        _action: unknown,
+        _policies: unknown,
+        _trust: unknown,
+        risk?: { overallTier?: string },
+      ) => risk?.overallTier === 'critical'
+        ? {
+            allowed: false,
+            requiresApproval: false,
+            reason: 'The prepared adapter exceeds the policy ceiling.',
+          }
+        : { allowed: true, requiresApproval: false, reason: 'Source risk is allowed.' }),
+    };
+    const router = {
+      route: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
+        selectedAdapter: 'openclaw',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 1,
+        modifiedRiskAssessment: {
+          ...sourceRisk,
+          overallTier: 'critical',
+          reasoning: 'Adapter-adjusted critical risk.',
+        },
+        reasoning: 'OpenClaw is the exact ready adapter.',
+      })),
+      executeWithRouting: vi.fn(),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => asPreparedRouter(router),
+    });
+
+    expect(summary.blocked).toBe(1);
+    expect(summary.executionFailed).toBe(0);
+    expect(mockExplanationRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({ confidenceReasoning: 'Adapter-adjusted critical risk.' }),
+    );
+    expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'blocked_by_policy',
+        adapterName: 'openclaw',
+        policyReason: 'The prepared adapter exceeds the policy ceiling.',
+      }),
+    );
+    expect(mockExecutionAdmissionRepository.admitMemoryExecution).not.toHaveBeenCalled();
+    expect(router.executeWithRouting).not.toHaveBeenCalled();
+  });
+
   it('records learning_needed for unknown action plans without queuing approval', async () => {
     const opportunity = makeOpportunity('invent_new_skill');
     mockCommon(opportunity);
@@ -290,7 +432,7 @@ describe('runMemoryActionLoopJob', () => {
         blockedDomains: [],
         requireApprovalForIrreversible: true,
       },
-      ironclaw_channel: null,
+      ironclaw_channel: 'trusted-channel',
     });
     const policyEvaluator = {
       evaluate: vi.fn().mockResolvedValue({
@@ -317,12 +459,13 @@ describe('runMemoryActionLoopJob', () => {
       }),
     };
 
+    const preparedRouter = asPreparedRouter(router);
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator,
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+      getExecutionRouter: async () => preparedRouter,
     });
 
     expect(summary.autoExecuted).toBe(1);
@@ -333,8 +476,17 @@ describe('runMemoryActionLoopJob', () => {
       }),
     );
     expect(router.executeWithRouting).toHaveBeenCalledOnce();
+    expect(preparedRouter.prepareExecution).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      'user-1',
+      { streaming: false, ironclawChannel: 'trusted-channel' },
+    );
     expect(router.executeWithRouting.mock.calls[0]![0]).toMatchObject({
       parameters: { executionPlanId: '44444444-4444-4444-4444-444444444444' },
+    });
+    expect(router.executeWithRouting.mock.calls[0]![3]).toEqual({
+      ironclawChannel: 'trusted-channel',
     });
     expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -382,7 +534,7 @@ describe('runMemoryActionLoopJob', () => {
         allowed: true, requiresApproval: false, reason: 'allowed',
       }) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).not.toHaveBeenCalled();
@@ -421,7 +573,7 @@ describe('runMemoryActionLoopJob', () => {
         allowed: true, requiresApproval: false, reason: 'allowed',
       }) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(mockExecutionAdmissionRepository.failBeforeDispatch).toHaveBeenCalledWith({
@@ -476,7 +628,7 @@ describe('runMemoryActionLoopJob', () => {
         if (policyReads === 2) channelChanged = true;
         return [];
       },
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).toHaveBeenCalledOnce();
@@ -519,7 +671,7 @@ describe('runMemoryActionLoopJob', () => {
         allowed: true, requiresApproval: false, reason: 'All policies passed.',
       }) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(summary.executionFailed).toBe(1);
@@ -562,7 +714,7 @@ describe('runMemoryActionLoopJob', () => {
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator,
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(policyEvaluator.evaluate).toHaveBeenCalledTimes(3);
@@ -600,7 +752,7 @@ describe('runMemoryActionLoopJob', () => {
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator,
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(summary.executionAmbiguous).toBe(1);
@@ -649,7 +801,7 @@ describe('runMemoryActionLoopJob', () => {
         allowed: true, requiresApproval: false, reason: 'All policies passed.',
       }) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(summary.autoExecuted).toBe(1);
@@ -690,7 +842,7 @@ describe('runMemoryActionLoopJob', () => {
         allowed: true, requiresApproval: false, reason: 'All policies passed.',
       }) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).not.toHaveBeenCalled();
@@ -730,7 +882,7 @@ describe('runMemoryActionLoopJob', () => {
         allowed: true, requiresApproval: false, reason: 'All policies passed.',
       }) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => router,
+getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).not.toHaveBeenCalled();

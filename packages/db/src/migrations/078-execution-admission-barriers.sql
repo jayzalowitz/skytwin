@@ -19,6 +19,15 @@ CREATE TABLE IF NOT EXISTS execution_policy_authority (
 );
 INSERT INTO execution_policy_authority (singleton) VALUES (true) ON CONFLICT (singleton) DO NOTHING;
 
+-- A current-policy denial after an approval response consumes the same
+-- one-shot execution authority as admission.  The approval remains an
+-- accurate record of the user's response while this terminal marker prevents
+-- any later process from turning it into executable authority.
+ALTER TABLE approval_requests
+  ADD COLUMN IF NOT EXISTS execution_denied_at TIMESTAMPTZ;
+ALTER TABLE approval_requests
+  ADD COLUMN IF NOT EXISTS execution_denial_explanation_id UUID;
+
 -- Known-owner OAuth redirects bind the per-user provider epoch. Account-unknown
 -- sign-in redirects use a DB-issued pending row and the resolved account
 -- tombstone below, avoiding a cross-tenant provider-wide invalidation switch.
@@ -62,6 +71,7 @@ CREATE TABLE IF NOT EXISTS execution_admission_barriers (
   execution_plan_id UUID NOT NULL,
   outcome_id UUID NOT NULL,
   explanation_id UUID NOT NULL,
+  adapter_name STRING NOT NULL,
   risk_snapshot JSONB NOT NULL,
   policy_snapshot JSONB NOT NULL,
   action_snapshot JSONB NOT NULL,
@@ -116,6 +126,8 @@ CREATE TABLE IF NOT EXISTS credential_dispatch_leases (
   credential_generation UUID,
   vault_generation UUID,
   adapter_name STRING NOT NULL,
+  risk_snapshot JSONB NOT NULL,
+  execution_channel STRING,
   mcp_server_id UUID,
   mcp_tool_name STRING,
   execution_authority_revision UUID NOT NULL,
@@ -169,10 +181,22 @@ ALTER TABLE credential_dispatch_leases
   ADD COLUMN IF NOT EXISTS execution_authority_revision UUID NOT NULL DEFAULT gen_random_uuid();
 ALTER TABLE credential_dispatch_leases
   ADD COLUMN IF NOT EXISTS authority_updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE credential_dispatch_leases
+  ADD COLUMN IF NOT EXISTS risk_snapshot JSONB NOT NULL DEFAULT '{}'::JSONB;
+ALTER TABLE credential_dispatch_leases
+  ADD COLUMN IF NOT EXISTS execution_channel STRING;
+ALTER TABLE execution_admission_barriers
+  ADD COLUMN IF NOT EXISTS adapter_name STRING NOT NULL DEFAULT 'unbound';
+ALTER TABLE decision_ingest_guards
+  ADD COLUMN IF NOT EXISTS dispatch_adapter_name STRING;
+ALTER TABLE decision_ingest_guards
+  ADD COLUMN IF NOT EXISTS dispatch_risk_snapshot JSONB;
 ALTER TABLE credential_dispatch_leases ALTER COLUMN adapter_name DROP DEFAULT;
 ALTER TABLE credential_dispatch_leases ALTER COLUMN execution_authority_revision DROP DEFAULT;
 ALTER TABLE credential_dispatch_leases ALTER COLUMN policy_authority_revision DROP DEFAULT;
 ALTER TABLE credential_dispatch_leases ALTER COLUMN authority_updated_at DROP DEFAULT;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN risk_snapshot DROP DEFAULT;
+ALTER TABLE execution_admission_barriers ALTER COLUMN adapter_name DROP DEFAULT;
 ALTER TABLE credential_dispatch_leases ALTER COLUMN oauth_token_id DROP NOT NULL;
 ALTER TABLE credential_dispatch_leases ALTER COLUMN provider DROP NOT NULL;
 ALTER TABLE credential_dispatch_leases ALTER COLUMN account_email DROP NOT NULL;

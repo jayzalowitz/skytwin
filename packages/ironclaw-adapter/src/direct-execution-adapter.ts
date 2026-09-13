@@ -8,8 +8,35 @@ import type {
   RollbackResult,
   StepResult,
 } from '@skytwin/shared-types';
-import { PreRequestExecutionError, type IronClawAdapter } from './ironclaw-adapter.js';
+import {
+  PreRequestExecutionError,
+  type ExecutionPlanBuildContext,
+  type ExecutionRequestPreparation,
+  type IronClawAdapter,
+} from './ironclaw-adapter.js';
 import type { ActionHandlerRegistry } from './handler-registry.js';
+
+interface PreparedActionHandler {
+  prepareRequestStart?(
+    step: ExecutionStep,
+    context?: ExecutionPlanBuildContext,
+  ): Promise<ExecutionRequestPreparation>;
+  execute(step: ExecutionStep, preparation?: ExecutionRequestPreparation): Promise<StepResult>;
+}
+
+interface DirectRequestStartProof {
+  planId: string;
+  streaming: boolean;
+  handler: PreparedActionHandler;
+  handlerPreparation?: ExecutionRequestPreparation;
+}
+
+const DIRECT_INTEGRATION_REQUIRED_ACTIONS = new Set([
+  'pay_bill', 'transfer_funds', 'summarize_document', 'schedule_social_post',
+  'respond_to_mention', 'share_content', 'assign_task', 'set_thermostat',
+  'toggle_lights', 'lock_door', 'set_alarm', 'run_routine', 'book_appointment',
+  'reschedule_appointment', 'flag_health_anomaly',
+]);
 
 /**
  * Direct execution adapter that dispatches actions to locally registered handlers.
@@ -25,6 +52,7 @@ import type { ActionHandlerRegistry } from './handler-registry.js';
 export class DirectExecutionAdapter implements IronClawAdapter {
   private readonly executedPlans = new Map<string, ExecutionPlan>();
   private readonly planStatuses = new Map<string, ExecutionStatus>();
+  private readonly requestStartProofs = new WeakSet<object>();
 
   constructor(private readonly registry: ActionHandlerRegistry) {}
 
@@ -32,6 +60,11 @@ export class DirectExecutionAdapter implements IronClawAdapter {
     if (!this.registry.getHandler(action.actionType)) {
       throw new PreRequestExecutionError(
         `No handler registered for action type: ${action.actionType}`,
+      );
+    }
+    if (DIRECT_INTEGRATION_REQUIRED_ACTIONS.has(action.actionType)) {
+      throw new PreRequestExecutionError(
+        `Direct execution for ${action.actionType} requires an external integration.`,
       );
     }
     const planId = (action.parameters['executionPlanId'] as string | undefined)
@@ -78,7 +111,53 @@ export class DirectExecutionAdapter implements IronClawAdapter {
     return plan;
   }
 
-  async execute(plan: ExecutionPlan): Promise<ExecutionResult> {
+  async prepareRequestStart(
+    plan: ExecutionPlan,
+    context?: ExecutionPlanBuildContext,
+  ): Promise<ExecutionRequestPreparation> {
+    const step = plan.steps[0];
+    if (!step) throw new PreRequestExecutionError('Direct execution plan has no executable step.');
+    const handler = this.registry.getHandler(step.type) as PreparedActionHandler | null;
+    if (!handler) {
+      throw new PreRequestExecutionError(`No handler registered for action type: ${step.type}`);
+    }
+    const handlerPreparation = await handler.prepareRequestStart?.(step, context);
+    const proof: DirectRequestStartProof = {
+      planId: plan.id,
+      streaming: context?.streaming === true,
+      handler,
+      handlerPreparation,
+    };
+    this.requestStartProofs.add(proof);
+    return {
+      proof,
+      ...(handlerPreparation?.credentialBinding
+        ? { credentialBinding: handlerPreparation.credentialBinding }
+        : {}),
+    };
+  }
+
+  private consumeRequestStartProof(
+    plan: ExecutionPlan,
+    preparation: ExecutionRequestPreparation | undefined,
+    streaming: boolean,
+  ): DirectRequestStartProof | undefined {
+    if (!preparation) return undefined;
+    const proof = preparation?.proof;
+    const valid = typeof proof === 'object' && proof !== null &&
+      this.requestStartProofs.has(proof) &&
+      (proof as DirectRequestStartProof).planId === plan.id &&
+      (proof as DirectRequestStartProof).streaming === streaming;
+    if (typeof proof === 'object' && proof !== null) this.requestStartProofs.delete(proof);
+    if (!valid) throw new Error('Direct request-start preparation proof is invalid or already consumed.');
+    return proof as DirectRequestStartProof;
+  }
+
+  async execute(
+    plan: ExecutionPlan,
+    preparation?: ExecutionRequestPreparation,
+  ): Promise<ExecutionResult> {
+    const prepared = this.consumeRequestStartProof(plan, preparation, false);
     this.executedPlans.set(plan.id, plan);
     this.planStatuses.set(plan.id, 'running');
 
@@ -99,7 +178,14 @@ export class DirectExecutionAdapter implements IronClawAdapter {
         );
       }
 
-      const stepResult = await this.executeStepWithTimeout(handler, step);
+      if (prepared && handler !== prepared.handler) {
+        throw new Error('Direct request-start preparation handler changed before dispatch.');
+      }
+      const stepResult = await this.executeStepWithTimeout(
+        handler as PreparedActionHandler,
+        step,
+        prepared?.handlerPreparation,
+      );
 
       if (!stepResult.success) {
         // Step failed — attempt rollback
@@ -126,16 +212,13 @@ export class DirectExecutionAdapter implements IronClawAdapter {
     return result;
   }
 
-  async *executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent> {
+  async *executeStreaming(
+    plan: ExecutionPlan,
+    preparation?: ExecutionRequestPreparation,
+  ): AsyncIterable<ExecutionEvent> {
+    const prepared = this.consumeRequestStartProof(plan, preparation, true);
     this.executedPlans.set(plan.id, plan);
     this.planStatuses.set(plan.id, 'running');
-
-    yield {
-      planId: plan.id,
-      eventType: 'plan_started',
-      timestamp: new Date(),
-      payload: { adapter: 'direct', steps: plan.steps.length },
-    };
 
     const result: ExecutionResult = {
       planId: plan.id,
@@ -151,6 +234,23 @@ export class DirectExecutionAdapter implements IronClawAdapter {
         );
       }
 
+      if (prepared && handler !== prepared.handler) {
+        throw new Error('Direct request-start preparation handler changed before dispatch.');
+      }
+      const stepResult = await this.executeStepWithTimeout(
+        handler as PreparedActionHandler,
+        step,
+        prepared?.handlerPreparation,
+      );
+      // The action provider request starts inside executeStepWithTimeout before
+      // this generator yields. A yielded progress event must never create a
+      // post-lease pause/policy race ahead of the external request boundary.
+      yield {
+        planId: plan.id,
+        eventType: 'plan_started',
+        timestamp: new Date(),
+        payload: { adapter: 'direct', steps: plan.steps.length },
+      };
       yield {
         planId: plan.id,
         stepId: step.id,
@@ -158,8 +258,6 @@ export class DirectExecutionAdapter implements IronClawAdapter {
         timestamp: new Date(),
         payload: { type: step.type, order: step.order, description: step.description },
       };
-
-      const stepResult = await this.executeStepWithTimeout(handler, step);
       if (!stepResult.success) {
         result.status = 'failed';
         result.completedAt = new Date();
@@ -285,15 +383,16 @@ export class DirectExecutionAdapter implements IronClawAdapter {
   }
 
   private async executeStepWithTimeout(
-    handler: { execute(step: ExecutionStep): Promise<StepResult> },
+    handler: PreparedActionHandler,
     step: ExecutionStep,
+    preparation?: ExecutionRequestPreparation,
   ): Promise<StepResult> {
     const timeoutMs = step.timeout > 0 ? step.timeout : 30_000;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
     try {
       return await Promise.race([
-        handler.execute(step),
+        handler.execute(step, preparation),
         new Promise<StepResult>((_resolve, reject) => {
           timer = setTimeout(() => {
             // ActionHandler has no cancellation/settlement contract. The

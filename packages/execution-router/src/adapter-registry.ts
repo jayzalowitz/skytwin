@@ -1,4 +1,7 @@
-import type { AdapterTrustProfile } from '@skytwin/shared-types';
+import {
+  normalizeMemoryActionAdapterName,
+  type AdapterTrustProfile,
+} from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { isIronClawEnhancedAdapter } from '@skytwin/ironclaw-adapter';
 
@@ -62,6 +65,8 @@ export const MCP_HOST_TRUST_PROFILE: AdapterTrustProfile = {
 export class AdapterRegistry {
   private readonly entries = new Map<string, AdapterEntry>();
   private readonly adapterSkills = new Map<string, Set<string>>();
+  private readonly entryRevisions = new Map<string, number>();
+  private nextRevision = 1;
 
   /**
    * Register an adapter with its trust profile.
@@ -72,9 +77,15 @@ export class AdapterRegistry {
     trustProfile: AdapterTrustProfile,
     skills?: Set<string>,
   ): void {
-    this.entries.set(name, { adapter, trustProfile });
+    if (normalizeMemoryActionAdapterName(name) !== name) {
+      throw new Error('Adapter name must be a canonical non-credential identifier.');
+    }
+    this.entries.set(name, { adapter, trustProfile: { ...trustProfile } });
+    this.entryRevisions.set(name, this.nextRevision++);
     if (skills) {
-      this.adapterSkills.set(name, skills);
+      this.adapterSkills.set(name, new Set(skills));
+    } else {
+      this.adapterSkills.delete(name);
     }
   }
 
@@ -82,14 +93,23 @@ export class AdapterRegistry {
    * Get an adapter entry by name.
    */
   get(name: string): AdapterEntry | undefined {
-    return this.entries.get(name);
+    const entry = this.entries.get(name);
+    return entry ? { adapter: entry.adapter, trustProfile: { ...entry.trustProfile } } : undefined;
+  }
+
+  /** Monotonic identity for the exact adapter/profile/skills registration. */
+  getRevision(name: string): number | undefined {
+    return this.entryRevisions.get(name);
   }
 
   /**
    * Get all registered adapter entries.
    */
   getAll(): Map<string, AdapterEntry> {
-    return new Map(this.entries);
+    return new Map([...this.entries].map(([name, entry]) => [name, {
+      adapter: entry.adapter,
+      trustProfile: { ...entry.trustProfile },
+    }]));
   }
 
   /**

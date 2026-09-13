@@ -4,7 +4,10 @@ import {
   didCredentialRequestStart,
   type CredentialProvider,
 } from '../credential-provider.js';
-import { PreRequestExecutionError } from '../ironclaw-adapter.js';
+import {
+  PreRequestExecutionError,
+  type ExecutionRequestPreparation,
+} from '../ironclaw-adapter.js';
 
 interface ResolvedCredential {
   accessToken: string;
@@ -26,6 +29,7 @@ export class EmailActionHandler implements ActionHandler {
   readonly actionType = 'email';
   readonly domain = 'email';
   readonly supportsRollback: boolean;
+  private readonly preparedCredentials = new WeakMap<object, ResolvedCredential>();
 
   constructor(private readonly credentialProvider?: CredentialProvider) {
     this.supportsRollback = !credentialProvider;
@@ -43,7 +47,45 @@ export class EmailActionHandler implements ActionHandler {
     ].includes(actionType);
   }
 
-  async execute(step: ExecutionStep): Promise<StepResult> {
+  async prepareRequestStart(step: ExecutionStep): Promise<ExecutionRequestPreparation> {
+    if (!this.credentialProvider) return {};
+    const userId = step.parameters['userId'];
+    if (typeof userId !== 'string') {
+      throw new PreRequestExecutionError('Credential dispatch owner is missing.');
+    }
+    const ready = await this.credentialProvider.getAccessToken(
+      userId,
+      'google',
+      typeof step.parameters['accountEmail'] === 'string'
+        ? step.parameters['accountEmail'] : undefined,
+    );
+    if (!ready.success) {
+      if (didCredentialRequestStart(ready) === false) {
+        throw new PreRequestExecutionError(ready.error);
+      }
+      throw new Error(ready.error);
+    }
+    if (!ready.oauthTokenId || !ready.credentialRevision) {
+      throw new PreRequestExecutionError('OAuth credential is missing required dispatch identity.');
+    }
+    const proof = {};
+    this.preparedCredentials.set(proof, { accessToken: ready.accessToken });
+    return {
+      proof,
+      credentialBinding: {
+        provider: 'google',
+        ...(ready.accountEmail ? { accountEmail: ready.accountEmail } : {}),
+        oauthTokenId: ready.oauthTokenId,
+        credentialRevision: ready.credentialRevision,
+        ...(ready.vaultGeneration ? { vaultGeneration: ready.vaultGeneration } : {}),
+      },
+    };
+  }
+
+  async execute(
+    step: ExecutionStep,
+    preparation?: ExecutionRequestPreparation,
+  ): Promise<StepResult> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
     const messageId = step.parameters['emailId'] as string | undefined;
 
@@ -71,13 +113,21 @@ export class EmailActionHandler implements ActionHandler {
       return { success: false, error: `Unknown email action: ${actionType}` };
     }
     let credential: ResolvedCredential;
-    try {
-      credential = await this.resolveAccessToken(step, true);
-    } catch (error) {
-      if (error instanceof PreRequestExecutionError) {
-        return { success: false, error: error.message };
+    if (this.credentialProvider) {
+      const proof = preparation?.proof;
+      if (typeof proof !== 'object' || proof === null) {
+        throw new Error('Prepared OAuth credential proof is missing.');
       }
-      throw error;
+      const prepared = this.preparedCredentials.get(proof);
+      this.preparedCredentials.delete(proof);
+      if (!prepared) throw new Error('Prepared OAuth credential proof is invalid or already consumed.');
+      credential = prepared;
+    } else {
+      const accessToken = step.parameters['accessToken'];
+      if (typeof accessToken !== 'string' || accessToken.length === 0) {
+        return { success: false, error: 'Missing accessToken — no OAuth token available for Gmail.' };
+      }
+      credential = { accessToken };
     }
     let result: StepResult;
 

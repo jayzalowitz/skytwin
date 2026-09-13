@@ -18,6 +18,11 @@ const INPUT = {
   actionId: '33333333-3333-4333-8333-333333333333',
   executionPlanId: '44444444-4444-4444-8444-444444444444',
   adapterName: 'ironclaw',
+  expectedRiskSnapshot: {
+    actionId: '33333333-3333-4333-8333-333333333333',
+    overallTier: 'low',
+    assessedAt: new Date('2026-09-13T09:59:00.000Z'),
+  },
   expectedAuthorityRevision: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
   expectedPolicyAuthorityRevision: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
   expectedAdmissionAuthorityId: AUTHORITY_ID,
@@ -28,6 +33,11 @@ const AUTHORITY = {
   authority_kind: 'admission',
   authority_id: AUTHORITY_ID,
   authority_updated_at: NOW,
+  adapter_name: INPUT.adapterName,
+  risk_snapshot: {
+    ...INPUT.expectedRiskSnapshot,
+    assessedAt: INPUT.expectedRiskSnapshot.assessedAt.toISOString(),
+  },
 };
 const TOKEN = {
   id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
@@ -43,7 +53,20 @@ const TOKEN = {
 };
 
 describe('executionDispatchLeaseRepository', () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => mockQuery.mockReset());
+
+  it.each([
+    ['sk-proj-', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+    ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+    ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
+    ['ya29.', 'a0AfH6SMBabcdefghijklmnopqrstuvwxyz'].join(''),
+  ])('refuses a credential-shaped durable adapter identity: %s', async (adapterName) => {
+    await expect(executionDispatchLeaseRepository.start({
+      ...INPUT,
+      adapterName,
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
 
   it('persists exact generic authority without storing the bearer capability', async () => {
     mockQuery
@@ -68,7 +91,7 @@ describe('executionDispatchLeaseRepository', () => {
     expect(persisted).toContain(INPUT.expectedAuthorityRevision);
     expect(persisted).toContain(INPUT.expectedPolicyAuthorityRevision);
     expect(persisted).not.toContain(result.grant.capability);
-    expect(String(insert[0])).not.toContain('oauth_token_id');
+    expect(String(insert[0])).toContain('risk_snapshot');
   });
 
   it('refuses a pause or revision change before creating request-start authority', async () => {
@@ -116,7 +139,7 @@ describe('executionDispatchLeaseRepository', () => {
       .mockResolvedValueOnce({ rows: [{ revision: INPUT.expectedPolicyAuthorityRevision }] })
       .mockResolvedValueOnce({ rows: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] })
       .mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [AUTHORITY] })
+      .mockResolvedValueOnce({ rows: [{ ...AUTHORITY, adapter_name: 'mcp-host' }] })
       .mockResolvedValueOnce({ rows: [{ id: 'lease-row' }] });
 
     await expect(executionDispatchLeaseRepository.start({
@@ -124,6 +147,7 @@ describe('executionDispatchLeaseRepository', () => {
       adapterName: 'mcp-host',
       mcpServerId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
       mcpToolName: 'send_email',
+      expectedRiskSnapshot: INPUT.expectedRiskSnapshot,
     })).resolves.toMatchObject({ success: true });
     const insert = mockQuery.mock.calls.find(([sql]) =>
       String(sql).includes('INSERT INTO credential_dispatch_leases'))!;
@@ -192,13 +216,15 @@ describe('executionDispatchLeaseRepository', () => {
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [] })
       .mockResolvedValueOnce({ rows: [{ revision: INPUT.expectedPolicyAuthorityRevision }] })
-      .mockResolvedValueOnce({ rows: [AUTHORITY] })
+      .mockResolvedValueOnce({ rows: [{ ...AUTHORITY, adapter_name: 'direct' }] })
       .mockResolvedValueOnce({ rows: [{ id: 'other-google-resolution' }] });
 
     await expect(executionDispatchLeaseRepository.start({
       ...INPUT,
       adapterName: 'direct',
       credentialProvider: 'google',
+      expectedOAuthTokenId: TOKEN.id,
+      expectedCredentialRevision: TOKEN.credential_revision,
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
     const providerFence = mockQuery.mock.calls.find(([sql]) =>
       String(sql).includes('provider = $2'))!;

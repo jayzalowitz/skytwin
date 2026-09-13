@@ -2,9 +2,12 @@ import {
   normalizeExecutionObservation,
   normalizeExecutionPlanSteps,
   normalizeMemoryActionReport,
+  normalizeMemoryActionAdapterName,
   normalizeMemoryActionText,
+  normalizeExecutionIdentifier,
   type MemoryActionLoopReport,
 } from '@skytwin/shared-types';
+import { createHash } from 'node:crypto';
 import { query, withTransaction } from '../connection.js';
 import type { CreateExplanationInput } from './explanation-repository.js';
 import type { ExecutionPlanRow } from '../types.js';
@@ -34,6 +37,7 @@ export interface ExecutionAdmissionRow {
   execution_plan_id: string;
   outcome_id: string;
   explanation_id: string;
+  adapter_name: string;
   risk_snapshot: Record<string, unknown>;
   policy_snapshot: Record<string, unknown>;
   action_snapshot: Record<string, unknown>;
@@ -63,6 +67,8 @@ interface AdmitExecutionInput {
   userId: string;
   decisionId: string;
   actionId: string;
+  executionPlanId: string;
+  adapterName: string;
   steps: unknown[];
   riskSnapshot: Record<string, unknown>;
   policySnapshot: Record<string, unknown>;
@@ -71,7 +77,8 @@ interface AdmitExecutionInput {
 }
 
 function assertSnapshotAuthority(input: AdmitExecutionInput): void {
-  if (input.actionSnapshot['id'] !== input.actionId ||
+  if (!input.executionPlanId || normalizeMemoryActionAdapterName(input.adapterName) !== input.adapterName ||
+      input.actionSnapshot['id'] !== input.actionId ||
       input.actionSnapshot['decisionId'] !== input.decisionId ||
       input.riskSnapshot['actionId'] !== input.actionId ||
       input.outcomeSnapshot['decisionId'] !== input.decisionId ||
@@ -97,8 +104,10 @@ function assertExactAdmission(
     barrier.execution_plan_id !== plan.id ||
     barrier.decision_id !== input.decisionId ||
     barrier.action_id !== input.actionId ||
+    barrier.adapter_name !== input.adapterName ||
     plan.decision_id !== input.decisionId ||
     plan.action_id !== input.actionId ||
+    plan.id !== input.executionPlanId ||
     canonicalJson(barrier.risk_snapshot) !== canonicalJson(persistedRisk) ||
     canonicalJson(barrier.policy_snapshot) !== canonicalJson(persistedPolicy) ||
     canonicalJson(barrier.action_snapshot) !== canonicalJson(persistedAction) ||
@@ -112,6 +121,7 @@ function assertExactAdmission(
 export interface AdmitMemoryExecutionInput extends AdmitExecutionInput {
   opportunityId: string;
   report: MemoryActionLoopReport;
+  sourceRiskSnapshot: Record<string, unknown>;
   preEffectOutcome: {
     explanation: string;
     confidence: number;
@@ -139,12 +149,184 @@ export interface ObserveExecutionInput {
   result: Record<string, unknown>;
 }
 
+export interface RecordExecutionPolicyDenialInput {
+  scope: 'receipt' | 'approval';
+  userId: string;
+  decisionId: string;
+  actionId: string;
+  approvalId?: string;
+  adapterName: string;
+  actionSnapshot: Record<string, unknown>;
+  riskSnapshot: Record<string, unknown>;
+  policySnapshot: Record<string, unknown>;
+  reason: string;
+}
+
+export interface ExecutionPolicyDenialRecord {
+  explanationId: string;
+  evidence: Record<string, unknown>;
+}
+
 /**
  * Durable one-shot authority for adapters that cannot deduplicate a replay.
  * The local running plan and its user-visible linkage land in the same
  * transaction as admission, before an adapter can be invoked.
  */
 export const executionAdmissionRepository = {
+  /** Atomically persists explanation-first truth for a proven pre-request denial. */
+  async recordPolicyDenial(
+    input: RecordExecutionPolicyDenialInput,
+  ): Promise<ExecutionPolicyDenialRecord | null> {
+    const adapterName = normalizeMemoryActionAdapterName(input.adapterName);
+    const reason = normalizeMemoryActionText(input.reason);
+    if (!adapterName || !reason || input.riskSnapshot['actionId'] !== input.actionId ||
+        input.actionSnapshot['id'] !== input.actionId ||
+        input.actionSnapshot['decisionId'] !== input.decisionId ||
+        (input.scope === 'approval' && !input.approvalId)) {
+      throw new Error('Execution policy denial evidence is incomplete.');
+    }
+    const persistedRisk = JSON.parse(JSON.stringify(input.riskSnapshot)) as Record<string, unknown>;
+    const persistedPolicy = JSON.parse(JSON.stringify(input.policySnapshot)) as Record<string, unknown>;
+    const actionSnapshotSha256 = createHash('sha256')
+      .update(canonicalJson(input.actionSnapshot), 'utf8')
+      .digest('hex');
+    const riskSnapshotSha256 = createHash('sha256')
+      .update(canonicalJson(persistedRisk), 'utf8')
+      .digest('hex');
+    const policySnapshotSha256 = createHash('sha256')
+      .update(canonicalJson(persistedPolicy), 'utf8')
+      .digest('hex');
+    const riskTier = normalizeExecutionIdentifier(persistedRisk['overallTier'], 32) ?? 'unknown';
+    const confirmationLevel = persistedPolicy['confirmationLevel'];
+    const evidence: Record<string, unknown> = {
+      schemaVersion: 1,
+      kind: 'execution_policy_denial',
+      scope: input.scope,
+      decisionId: input.decisionId,
+      actionId: input.actionId,
+      ...(input.approvalId ? { approvalId: input.approvalId } : {}),
+      adapterName,
+      actionSnapshotSha256,
+      riskSnapshotSha256,
+      policySnapshotSha256,
+      riskTier,
+      policyAllowed: persistedPolicy['allowed'] === true,
+      policyRequiresApproval: persistedPolicy['requiresApproval'] === true,
+      ...(confirmationLevel === 'single' || confirmationLevel === 'dual'
+        ? { confirmationLevel }
+        : {}),
+      reason,
+    };
+
+    return withTransaction(async (client) => {
+      const graph = await client.query(
+        `SELECT d.id
+           FROM users u
+           JOIN decisions d ON d.user_id = u.id
+           JOIN candidate_actions ca ON ca.decision_id = d.id
+          WHERE u.id = $1 AND d.id = $2 AND ca.id = $3
+          FOR UPDATE OF u, d, ca`,
+        [input.userId, input.decisionId, input.actionId],
+      );
+      if (!graph.rows[0]) return null;
+
+      const existing = await client.query<{
+        id: string;
+        evidence_used: unknown;
+      }>(
+        `SELECT id, evidence_used FROM explanation_records
+          WHERE decision_id = $1 AND type = 'execution_policy_denial'
+          ORDER BY created_at ASC LIMIT 1`,
+        [input.decisionId],
+      );
+      if (existing.rows[0]) {
+        if (canonicalJson(existing.rows[0].evidence_used) !== canonicalJson([evidence])) {
+          throw new Error('Existing execution policy denial conflicts with requested evidence.');
+        }
+        return { explanationId: existing.rows[0].id, evidence };
+      }
+
+      if (input.scope === 'receipt') {
+        const guard = await client.query(
+          `SELECT decision_id FROM decision_ingest_guards
+            WHERE decision_id = $1 AND selected_action_id = $2
+              AND effect_state = 'ready' FOR UPDATE`,
+          [input.decisionId, input.actionId],
+        );
+        if (!guard.rows[0]) return null;
+      } else {
+        const approval = await client.query(
+          `SELECT id FROM approval_requests
+            WHERE id = $1 AND user_id = $2 AND decision_id = $3
+              AND status = 'approved'
+              AND execution_denied_at IS NULL
+              AND execution_denial_explanation_id IS NULL
+              AND candidate_action->>'id' = $4
+            FOR UPDATE`,
+          [input.approvalId, input.userId, input.decisionId, input.actionId],
+        );
+        if (!approval.rows[0]) return null;
+        const admission = await client.query(
+          `SELECT id FROM execution_admission_barriers
+            WHERE user_id = $1 AND scope = 'approval' AND idempotency_key = $2`,
+          [input.userId, input.approvalId],
+        );
+        if (admission.rows[0]) return null;
+      }
+
+      const explanation = await client.query<{ id: string }>(
+        `INSERT INTO explanation_records (
+           decision_id, type, what_happened, evidence_used, preferences_invoked,
+           confidence_reasoning, action_rationale, escalation_rationale,
+           correction_guidance
+         ) VALUES (
+           $1, 'execution_policy_denial',
+           'SkyTwin deliberately did not execute this action after the exact prepared path was denied.',
+           $2::JSONB, ARRAY[]::STRING[],
+           'The current policy was evaluated against the adapter-adjusted risk before request start.',
+           'No adapter request was started because current execution authority denied the exact path.',
+           $3,
+           'Review the current policy, prepared adapter, and risk evidence before requesting a new action.'
+         ) RETURNING id`,
+        [input.decisionId, JSON.stringify([evidence]), reason],
+      );
+      const explanationId = explanation.rows[0]?.id;
+      if (!explanationId) throw new Error('Execution policy denial explanation was not persisted.');
+
+      if (input.scope === 'receipt') {
+        const closed = await client.query(
+          `UPDATE decision_ingest_guards
+              SET effect_state = 'non_effect',
+                  dispatch_adapter_name = $3,
+                  dispatch_risk_snapshot = $4::JSONB,
+                  dispatch_policy_snapshot = $5::JSONB,
+                  updated_at = now()
+            WHERE decision_id = $1 AND selected_action_id = $2
+              AND effect_state = 'ready'
+            RETURNING decision_id`,
+          [input.decisionId, input.actionId, adapterName,
+            JSON.stringify(persistedRisk), JSON.stringify(persistedPolicy)],
+        );
+        if (!closed.rows[0]) throw new Error('Receipt denial guard could not be closed.');
+      } else {
+        const consumed = await client.query(
+          `UPDATE approval_requests
+              SET execution_denied_at = now(),
+                  execution_denial_explanation_id = $3
+            WHERE id = $1 AND user_id = $2 AND status = 'approved'
+              AND execution_denied_at IS NULL
+              AND execution_denial_explanation_id IS NULL
+            RETURNING id`,
+          [input.approvalId, input.userId, explanationId],
+        );
+        if (!consumed.rows[0]) {
+          throw new Error('Approval denial authority could not be consumed.');
+        }
+      }
+      return { explanationId, evidence };
+    });
+  },
+
   async findByScope(
     userId: string,
     scope: ExecutionAdmissionScope,
@@ -213,7 +395,7 @@ export const executionAdmissionRepository = {
         [input.userId, input.opportunityId, input.decisionId, input.actionId],
       );
       if (!authority.rows[0]) throw new Error('Memory execution admission authority is unavailable.');
-      if (canonicalJson(authority.rows[0].risk_assessment) !== canonicalJson(input.riskSnapshot)) {
+      if (canonicalJson(authority.rows[0].risk_assessment) !== canonicalJson(input.sourceRiskSnapshot)) {
         throw new Error('Memory execution risk snapshot conflicts with persisted authority.');
       }
 
@@ -247,10 +429,11 @@ export const executionAdmissionRepository = {
       if (!explanationId) throw new Error('Memory pre-effect explanation could not be persisted.');
 
       const planResult = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
-         VALUES ($1, $2, 'running', $3::JSONB, 1)
+        `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, $3, 'running', $4::JSONB, 1)
          RETURNING *`,
-        [input.decisionId, input.actionId, JSON.stringify(normalizeExecutionPlanSteps(input.steps))],
+        [input.executionPlanId, input.decisionId, input.actionId,
+          JSON.stringify(normalizeExecutionPlanSteps(input.steps))],
       );
       const plan = planResult.rows[0];
       if (!plan) throw new Error('Memory execution plan could not be admitted.');
@@ -258,13 +441,13 @@ export const executionAdmissionRepository = {
       const barrierResult = await client.query<ExecutionAdmissionRow>(
         `INSERT INTO execution_admission_barriers
            (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
-            outcome_id, explanation_id, risk_snapshot, policy_snapshot,
+            outcome_id, explanation_id, adapter_name, risk_snapshot, policy_snapshot,
             action_snapshot, outcome_snapshot, evidence_schema_version)
-         VALUES ($1, 'memory', $2, $3, $4, $5, $6, $7, $8::JSONB, $9::JSONB,
-                 $10::JSONB, $11::JSONB, 1)
+         VALUES ($1, 'memory', $2, $3, $4, $5, $6, $7, $8, $9::JSONB, $10::JSONB,
+                 $11::JSONB, $12::JSONB, 1)
          RETURNING *`,
         [input.userId, input.opportunityId, input.decisionId, input.actionId, plan.id,
-          outcomeId, explanationId, JSON.stringify(input.riskSnapshot),
+          outcomeId, explanationId, input.adapterName, JSON.stringify(input.riskSnapshot),
           JSON.stringify(input.policySnapshot), JSON.stringify(input.actionSnapshot),
           JSON.stringify(input.outcomeSnapshot)],
       );
@@ -330,6 +513,8 @@ export const executionAdmissionRepository = {
          JOIN decision_outcomes o ON o.decision_id = d.id AND o.selected_action_id = a.id
          WHERE ar.id = $2 AND ar.user_id = $1 AND ar.decision_id = $3
            AND ar.status = 'approved' AND ar.candidate_action->>'id' = $4::STRING
+           AND ar.execution_denied_at IS NULL
+           AND ar.execution_denial_explanation_id IS NULL
            AND ($5::UUID IS NULL OR EXISTS (
              SELECT 1 FROM memory_action_opportunities m
              WHERE m.id = $5 AND m.user_id = $1 AND m.decision_id = $3
@@ -361,10 +546,11 @@ export const executionAdmissionRepository = {
       if (!explanationId) throw new Error('Approval pre-effect explanation could not be persisted.');
 
       const planResult = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
-         VALUES ($1, $2, 'running', $3::JSONB, 1)
+        `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, $3, 'running', $4::JSONB, 1)
          RETURNING *`,
-        [input.decisionId, input.actionId, JSON.stringify(normalizeExecutionPlanSteps(input.steps))],
+        [input.executionPlanId, input.decisionId, input.actionId,
+          JSON.stringify(normalizeExecutionPlanSteps(input.steps))],
       );
       const plan = planResult.rows[0];
       if (!plan) throw new Error('Approval execution plan could not be admitted.');
@@ -372,13 +558,13 @@ export const executionAdmissionRepository = {
       const barrierResult = await client.query<ExecutionAdmissionRow>(
          `INSERT INTO execution_admission_barriers
            (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
-            outcome_id, explanation_id, risk_snapshot, policy_snapshot,
+            outcome_id, explanation_id, adapter_name, risk_snapshot, policy_snapshot,
             action_snapshot, outcome_snapshot, evidence_schema_version)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB, $10::JSONB,
-                 $11::JSONB, $12::JSONB, 1)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::JSONB, $11::JSONB,
+                 $12::JSONB, $13::JSONB, 1)
          RETURNING *`,
         [input.userId, scope, idempotencyKey, input.decisionId, input.actionId, plan.id,
-          authority.rows[0].outcome_id, explanationId,
+          authority.rows[0].outcome_id, explanationId, input.adapterName,
           JSON.stringify(input.riskSnapshot), JSON.stringify(input.policySnapshot),
           JSON.stringify(input.actionSnapshot), JSON.stringify(input.outcomeSnapshot)],
       );
@@ -432,14 +618,15 @@ export const executionAdmissionRepository = {
        WHERE b.id = $1 AND b.user_id = $2 AND b.scope = $3
          AND b.idempotency_key = $4 AND b.status = 'in_progress'
          AND b.execution_plan_id = $5 AND ep.status = 'running'
-         AND b.risk_snapshot = $6::JSONB
-         AND b.policy_snapshot = $7::JSONB
-         AND b.action_snapshot = $8::JSONB
-         AND b.outcome_snapshot = $9::JSONB
-         AND ep.steps = $10::JSONB
+         AND b.adapter_name = $6
+         AND b.risk_snapshot = $7::JSONB
+         AND b.policy_snapshot = $8::JSONB
+         AND b.action_snapshot = $9::JSONB
+         AND b.outcome_snapshot = $10::JSONB
+         AND ep.steps = $11::JSONB
          AND (u.autonomy_settings->>'paused') IS DISTINCT FROM 'true'`,
       [admission.barrier.id, admission.barrier.user_id, admission.barrier.scope,
-        admission.barrier.idempotency_key, admission.plan.id,
+        admission.barrier.idempotency_key, admission.plan.id, authority.adapterName,
         JSON.stringify(authority.riskSnapshot), JSON.stringify(authority.policySnapshot),
         JSON.stringify(authority.actionSnapshot), JSON.stringify(authority.outcomeSnapshot),
         JSON.stringify(normalizeExecutionPlanSteps(authority.steps))],

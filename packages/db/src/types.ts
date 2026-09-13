@@ -195,6 +195,10 @@ export interface ApprovalRequestRow {
   /** One-time token issued on the first confirmation of a dual request;
    *  the second confirmation must present it. NULL until then. */
   confirmation_token: string | null;
+  /** Terminal current-policy refusal after the user's approval response. */
+  execution_denied_at: Date | null;
+  /** Explanation-first evidence linked to the terminal refusal. */
+  execution_denial_explanation_id: string | null;
 }
 
 // ============================================================================
@@ -370,6 +374,8 @@ export interface CredentialDispatchLeaseRow {
   credential_generation: string | null;
   vault_generation: string | null;
   adapter_name: string;
+  risk_snapshot: Record<string, unknown>;
+  execution_channel: string | null;
   mcp_server_id: string | null;
   mcp_tool_name: string | null;
   execution_authority_revision: string;

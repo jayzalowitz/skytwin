@@ -213,6 +213,8 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   responded_at TIMESTAMPTZ,
   response JSONB,
+  execution_denied_at TIMESTAMPTZ,
+  execution_denial_explanation_id UUID,
   INDEX (user_id, status)
 );
 
@@ -505,6 +507,7 @@ CREATE TABLE IF NOT EXISTS execution_admission_barriers (
   execution_plan_id UUID NOT NULL,
   outcome_id UUID NOT NULL,
   explanation_id UUID NOT NULL,
+  adapter_name STRING NOT NULL,
   risk_snapshot JSONB NOT NULL,
   policy_snapshot JSONB NOT NULL,
   action_snapshot JSONB NOT NULL,
@@ -543,6 +546,8 @@ CREATE TABLE IF NOT EXISTS credential_dispatch_leases (
   credential_generation UUID,
   vault_generation UUID,
   adapter_name STRING NOT NULL,
+  risk_snapshot JSONB NOT NULL,
+  execution_channel STRING,
   mcp_server_id UUID,
   mcp_tool_name STRING,
   execution_authority_revision UUID NOT NULL,

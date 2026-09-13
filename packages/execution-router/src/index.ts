@@ -7,6 +7,7 @@ export {
 } from './execution-router.js';
 export type {
   ExecutionContext,
+  PreparedExecution,
   RollbackRoutingResult,
   ExecutionDispatchAuthorityPort,
   ExecutionDispatchLeaseGrant,

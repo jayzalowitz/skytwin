@@ -245,6 +245,34 @@ describe('RealIronClawAdapter request preflight', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('resolves and binds the configured default channel before request start', async () => {
+    const adapter = new RealIronClawAdapter({
+      apiUrl: 'http://127.0.0.1:9999',
+      webhookSecret: 'test-secret',
+      ownerId: 'owner-1',
+      defaultChannel: 'configured-default-channel',
+    });
+    const client = (adapter as unknown as {
+      client: { ensureExecutionEndpointReady(streaming?: boolean): Promise<void> };
+    }).client;
+    vi.spyOn(client, 'ensureExecutionEndpointReady').mockResolvedValue();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      content: 'done', metadata: { status: 'completed', success: true },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const plan = await adapter.buildPlan(makeAction(), { streaming: false });
+    const preparation = await adapter.prepareRequestStart(plan, { streaming: false });
+    expect(preparation.executionChannel).toBe('configured-default-channel');
+    plan.executionChannel = preparation.executionChannel;
+    await adapter.execute(plan, preparation);
+
+    const request = fetchMock.mock.calls[0]![1] as RequestInit;
+    expect(JSON.parse(String(request.body))).toMatchObject({
+      channel: 'configured-default-channel',
+    });
+  });
+
   it('rejects a preflight proof used for the wrong execution mode before POST', async () => {
     const adapter = new RealIronClawAdapter({
       apiUrl: 'http://127.0.0.1:9999', webhookSecret: 'test-secret', ownerId: 'owner-1',

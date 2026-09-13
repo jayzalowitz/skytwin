@@ -104,6 +104,10 @@ interface CircuitBreakerState {
 }
 
 const MAX_CIRCUIT_COOLDOWN_MS = 20 * 60 * 1000;
+const MAX_SSE_RESPONSE_BYTES = 1_048_576;
+const MAX_SSE_CHUNK_BYTES = 262_144;
+const MAX_SSE_RECORD_CHARS = 262_144;
+const MAX_SSE_LINE_CHARS = 262_144;
 
 /**
  * HTTP client for communicating with an IronClaw server.
@@ -663,12 +667,25 @@ export class IronClawHttpClient {
     }
 
     const reader = body.getReader();
-    const decoder = new TextDecoder();
+    const decoder = new TextDecoder('utf-8', { fatal: true });
     let buffer = '';
+    let responseBytes = 0;
     // Per-chunk read timeout: if no data arrives within 2x the request timeout, abort.
     const chunkTimeoutMs = this.config.timeoutMs * 2;
 
     try {
+      const rejectOversizedStream = async (detail: string): Promise<never> => {
+        await reader.cancel(`IronClaw SSE limit exceeded: ${detail}`).catch(() => undefined);
+        throw new Error(`IronClaw SSE stream for ${contextId} exceeded its ${detail} limit`);
+      };
+      const validateRecord = async (record: string): Promise<void> => {
+        if (record.length > MAX_SSE_RECORD_CHARS) {
+          await rejectOversizedStream('record-size');
+        }
+        if (record.split('\n').some((line) => line.length > MAX_SSE_LINE_CHARS)) {
+          await rejectOversizedStream('line-size');
+        }
+      };
       while (true) {
         const readPromise = reader.read();
         let timerId: ReturnType<typeof setTimeout> | undefined;
@@ -682,19 +699,35 @@ export class IronClawHttpClient {
         });
         const { done, value } = await Promise.race([readPromise, timeoutPromise]);
         if (timerId !== undefined) clearTimeout(timerId);
-        if (done) break;
+        if (done) {
+          buffer += decoder.decode();
+          break;
+        }
+
+        if (value.byteLength > MAX_SSE_CHUNK_BYTES) {
+          await rejectOversizedStream('chunk-size');
+        }
+        responseBytes += value.byteLength;
+        if (responseBytes > MAX_SSE_RESPONSE_BYTES) {
+          await rejectOversizedStream('response-size');
+        }
 
         buffer += decoder.decode(value, { stream: true });
         const messages = buffer.split('\n\n');
         buffer = messages.pop() ?? '';
+        if (buffer.length > MAX_SSE_RECORD_CHARS) {
+          await rejectOversizedStream('record-size');
+        }
 
         for (const message of messages) {
+          await validateRecord(message);
           const parsed = this.parseSseMessage(message);
           if (parsed !== null) yield parsed;
         }
       }
 
       if (buffer.trim()) {
+        await validateRecord(buffer);
         const parsed = this.parseSseMessage(buffer);
         if (parsed !== null) yield parsed;
       }

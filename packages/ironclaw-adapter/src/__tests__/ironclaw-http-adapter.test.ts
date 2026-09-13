@@ -293,6 +293,36 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
       await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
     });
+
+    it('binds router-authored owner and channel in chat execution payloads', async () => {
+      const adapter = makeAdapter({ preferChatCompletions: true });
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'done' } }],
+        metadata: { status: 'completed', success: true },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      const plan = await adapter.buildPlan(makeAction({
+        parameters: {
+          userId: 'candidate-owner',
+          ironclawChannel: 'candidate-channel',
+          nested: { userId: 'nested-owner', ironclawChannel: 'nested-channel' },
+        },
+      }));
+      plan.executionOwnerId = 'trusted-user';
+      plan.executionChannel = 'trusted-channel';
+
+      await adapter.execute(plan);
+
+      const [, options] = getFetchCall(fetchMock, 0);
+      const body = JSON.parse(options.body as string) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const envelope = JSON.parse(body.messages[1]!.content) as Record<string, unknown>;
+      expect(envelope['trustedExecution']).toEqual({
+        userId: 'trusted-user', ownerId: 'test-owner', channel: 'trusted-channel',
+      });
+      const serialized = JSON.stringify(envelope);
+      expect(serialized).not.toMatch(/candidate-owner|candidate-channel|nested-owner|nested-channel/);
+    });
   });
 
   describe('executeStreaming terminal authority', () => {
@@ -341,6 +371,52 @@ describe('RealIronClawAdapter (HTTP)', () => {
       }));
 
       await expect(consume(makeAdapter())).rejects.toThrow('stream response lost');
+    });
+
+    it('cancels an oversized delimiter-free SSE record before unbounded accumulation', async () => {
+      const encoder = new TextEncoder();
+      let chunks = 0;
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunks += 1;
+          controller.enqueue(encoder.encode('x'.repeat(64 * 1024)));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      fetchMock.mockResolvedValueOnce(new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('record-size limit');
+      // Fetch streams may schedule one pull ahead of the consumer, but the
+      // parser cancels as soon as its bounded buffered record crosses the cap.
+      expect(chunks).toBeLessThanOrEqual(6);
+      expect(cancelled).toBe(true);
+    });
+
+    it('decodes a valid multibyte SSE record split inside a code point', async () => {
+      const bytes = new TextEncoder().encode(
+        'data: {"eventType":"plan_completed","payload":{"label":"done 🚀"}}\n\n',
+      );
+      const emojiStart = bytes.indexOf(0xf0);
+      const chunks = [bytes.slice(0, emojiStart + 2), bytes.slice(emojiStart + 2)];
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk) controller.enqueue(chunk);
+          else controller.close();
+        },
+      });
+      fetchMock.mockResolvedValueOnce(new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }));
+
+      await expect(consume(makeAdapter())).resolves.toEqual(['plan_completed']);
     });
   });
 
