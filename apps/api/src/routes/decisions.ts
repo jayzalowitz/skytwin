@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { decisionRepository, explanationRepository, inferenceReceiptRepository } from '@skytwin/db';
+import { snapshotInferenceReceipt, verifyInferenceReceiptSeal } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
@@ -164,9 +165,17 @@ export function createDecisionsRouter(): Router {
         res.status(404).json({ error: 'Inference receipt not found' });
         return;
       }
+      const receipt = snapshotInferenceReceipt(row.receipt);
+      if (!receipt || !verifyInferenceReceiptSeal(receipt) || receipt.id !== row.id ||
+          receipt.version !== row.version || receipt.userId !== userId ||
+          receipt.decisionId !== row.decision_id || receipt.decisionId !== decisionId ||
+          receipt.explanationId !== row.explanation_id || receipt.status !== row.status) {
+        res.status(409).json({ error: 'Stored inference receipt failed integrity validation' });
+        return;
+      }
       res.json({
-        receipt: row.receipt,
-        persistenceTrust: row.trusted === false ? 'imported_unverified' : 'trusted',
+        receipt,
+        persistenceTrust: row.trusted === true ? 'trusted' : 'imported_unverified',
       });
     } catch (error) {
       next(error);

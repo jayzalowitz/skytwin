@@ -75,6 +75,21 @@ describe('inferenceReceiptRepository', () => {
     expect(args[7]).toBe(bundle.receipt.userId);
   });
 
+  it('persists only the immutable snapshot that passed verification', async () => {
+    mockQuery.mockResolvedValue({ rows: [{ id: 'receipt-row' }], rowCount: 1 });
+    const bundle = fixture();
+    const hostileTrustMap = { get: () => {
+      bundle.receipt.model = 'changed-during-trust-lookup';
+      return publicKeyPem;
+    } } as unknown as ReadonlyMap<string, string>;
+    await inferenceReceiptRepository.createForUser(bundle.receipt.userId, {
+      bundle, trustedRecorderKeys: hostileTrustMap,
+    });
+    const args = mockQuery.mock.calls[0]![1] as unknown[];
+    expect(JSON.parse(args[6] as string)).toMatchObject({ model: 'model' });
+    expect(bundle.receipt.model).toBe('changed-during-trust-lookup');
+  });
+
   it('returns null when linked rows do not belong to the authenticated user', async () => {
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
     const bundle = fixture();

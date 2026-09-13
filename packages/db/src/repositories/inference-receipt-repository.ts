@@ -1,4 +1,5 @@
 import {
+  snapshotInferenceReceiptExport,
   verifyInferenceReceiptExport,
   type AttestationVerificationInput,
   type InferenceReceiptExportV1,
@@ -17,8 +18,10 @@ export interface CreateInferenceReceiptInput {
 /** All methods require the authenticated owner; ownership is checked by join. */
 export const inferenceReceiptRepository = {
   async createForUser(userId: string, input: CreateInferenceReceiptInput): Promise<InferenceReceiptRow | null> {
-    const receipt = input.bundle.receipt;
-    const verification = verifyInferenceReceiptExport(input.bundle, {
+    const bundle = snapshotInferenceReceiptExport(input.bundle);
+    if (!bundle) return null;
+    const receipt = bundle.receipt;
+    const verification = verifyInferenceReceiptExport(bundle, {
       trustedRecorderKeys: input.trustedRecorderKeys,
       trustedProviderKeys: input.trustedProviderKeys,
       verifyAttestation: input.verifyAttestation,

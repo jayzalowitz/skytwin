@@ -1,4 +1,5 @@
 import { createHash, sign, verify } from 'node:crypto';
+import { types as utilTypes } from 'node:util';
 
 export type InferenceReasoningMode =
   | 'on_device'
@@ -180,44 +181,146 @@ function fail(code: ReceiptVerificationCode, receiptId?: string): ReceiptVerific
 
 const MODES = new Set<InferenceReasoningMode>(['on_device', 'verified_confidential', 'conventional_cloud']);
 const STATUSES = new Set<InferenceReceiptStatus>(['on_device', 'verified', 'conventional', 'verification_failed', 'verification_unavailable', 'verification_stale', 'local_fallback']);
-function validCost(cost: unknown): cost is InferenceCostV1 {
-  if (!cost || typeof cost !== 'object') return false;
-  const c = cost as Record<string, unknown>;
-  if (Object.keys(c).some((key) => !['basis', 'currency', 'amountMinor', 'billingId'].includes(key))) return false;
-  if (c['basis'] !== 'exact' && c['basis'] !== 'unknown') return false;
-  if (c['billingId'] !== undefined && (typeof c['billingId'] !== 'string' || c['billingId'].length === 0)) return false;
-  if (c['basis'] === 'unknown') return c['currency'] === undefined && c['amountMinor'] === undefined;
-  return typeof c['currency'] === 'string' && c['currency'].length > 0 &&
-    Number.isSafeInteger(c['amountMinor']) && (c['amountMinor'] as number) >= 0;
+const RECEIPT_REQUIRED_FIELDS = ['version', 'id', 'userId', 'decisionId', 'explanationId', 'reasoningMode',
+  'provider', 'model', 'endpointIdentity', 'requestSha256', 'responseSha256', 'verifierVersion', 'cost',
+  'status', 'createdAt', 'seal'] as const;
+const RECEIPT_OPTIONAL_FIELDS = ['inferenceId', 'attestationPolicyVersion', 'evidenceSha256',
+  'measurementIdentity', 'responseSignature', 'verifiedAt', 'freshUntil', 'fallback'] as const;
+
+/** Materialize own data properties once so accessors and proxies cannot change a verified value. */
+function exactOwnRecord(value: unknown, required: readonly string[], optional: readonly string[] = []): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || utilTypes.isProxy(value) ||
+      Object.getPrototypeOf(value) !== Object.prototype) return null;
+  const allowed = new Set([...required, ...optional]);
+  const keys = Reflect.ownKeys(value);
+  if (keys.some((key) => typeof key !== 'string' || !allowed.has(key))) return null;
+  if (required.some((key) => !keys.includes(key))) return null;
+  const record: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (typeof key !== 'string') return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor || !descriptor.enumerable || !Object.hasOwn(descriptor, 'value') ||
+        descriptor.value === undefined) return null;
+    record[key] = descriptor.value;
+  }
+  return record;
 }
 
-function validSignature(value: unknown): value is ReceiptSignatureV1 {
-  if (!value || typeof value !== 'object') return false;
-  const s = value as Record<string, unknown>;
-  return Object.keys(s).every((key) => ['algorithm', 'keyId', 'publicKeyPem', 'signatureBase64'].includes(key)) &&
-    s['algorithm'] === 'Ed25519' && typeof s['keyId'] === 'string' && s['keyId'].length > 0 &&
-    typeof s['publicKeyPem'] === 'string' && s['publicKeyPem'].length > 0 &&
-    typeof s['signatureBase64'] === 'string' && decodeBase64(s['signatureBase64']) !== null;
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
 }
 
-function validShape(receipt: InferenceReceiptV1): boolean {
-  const allowed = new Set(['version', 'id', 'userId', 'decisionId', 'explanationId', 'reasoningMode',
-    'provider', 'model', 'endpointIdentity', 'requestSha256', 'responseSha256', 'inferenceId',
-    'attestationPolicyVersion', 'verifierVersion', 'evidenceSha256', 'measurementIdentity',
-    'responseSignature', 'verifiedAt', 'freshUntil', 'fallback', 'cost', 'status', 'createdAt', 'seal']);
-  if (Object.keys(receipt).some((key) => !allowed.has(key))) return false;
-  const strings = [receipt.id, receipt.userId, receipt.decisionId, receipt.explanationId, receipt.provider,
-    receipt.model, receipt.endpointIdentity, receipt.verifierVersion, receipt.createdAt];
-  const optionalStrings = [receipt.inferenceId, receipt.attestationPolicyVersion, receipt.evidenceSha256,
-    receipt.measurementIdentity, receipt.verifiedAt, receipt.freshUntil];
-  return strings.every((v) => typeof v === 'string' && v.length > 0) &&
-    optionalStrings.every((v) => v === undefined || (typeof v === 'string' && v.length > 0)) &&
-    MODES.has(receipt.reasoningMode) && STATUSES.has(receipt.status) && validCost(receipt.cost) &&
-    validSignature(receipt.seal) && (receipt.responseSignature === undefined || validSignature(receipt.responseSignature)) &&
-    (receipt.fallback === undefined || (Object.keys(receipt.fallback).every((key) => ['origin', 'destination', 'reason'].includes(key)) &&
-      receipt.fallback.origin === 'verified_confidential' && receipt.fallback.destination === 'on_device' &&
-      typeof receipt.fallback.reason === 'string' && receipt.fallback.reason.length > 0)) &&
-    Number.isFinite(new Date(receipt.createdAt).getTime());
+function snapshotSignature(value: unknown): ReceiptSignatureV1 | null {
+  const record = exactOwnRecord(value, ['algorithm', 'keyId', 'publicKeyPem', 'signatureBase64']);
+  if (!record || record['algorithm'] !== 'Ed25519' || !nonEmptyString(record['keyId']) ||
+      !nonEmptyString(record['publicKeyPem']) || !nonEmptyString(record['signatureBase64']) ||
+      decodeBase64(record['signatureBase64']) === null) return null;
+  return Object.freeze({ algorithm: 'Ed25519', keyId: record['keyId'], publicKeyPem: record['publicKeyPem'],
+    signatureBase64: record['signatureBase64'] });
+}
+
+function snapshotCost(value: unknown): InferenceCostV1 | null {
+  const record = exactOwnRecord(value, ['basis'], ['currency', 'amountMinor', 'billingId']);
+  if (!record) return null;
+  const billingId = record['billingId'];
+  if (billingId !== undefined && !nonEmptyString(billingId)) return null;
+  if (record['basis'] === 'unknown') {
+    if (record['currency'] !== undefined || record['amountMinor'] !== undefined) return null;
+    return Object.freeze({ basis: 'unknown', ...(billingId === undefined ? {} : { billingId }) });
+  }
+  if (record['basis'] !== 'exact' || !nonEmptyString(record['currency']) ||
+      !Number.isSafeInteger(record['amountMinor']) || (record['amountMinor'] as number) < 0) return null;
+  return Object.freeze({ basis: 'exact', currency: record['currency'], amountMinor: record['amountMinor'] as number,
+    ...(billingId === undefined ? {} : { billingId }) });
+}
+
+function snapshotFallback(value: unknown): InferenceFallbackV1 | null {
+  const record = exactOwnRecord(value, ['origin', 'destination', 'reason']);
+  if (!record || record['origin'] !== 'verified_confidential' || record['destination'] !== 'on_device' ||
+      !nonEmptyString(record['reason'])) return null;
+  return Object.freeze({ origin: 'verified_confidential', destination: 'on_device', reason: record['reason'] });
+}
+
+/** Strict, exact-own, immutable receipt snapshot for persistence and display boundaries. */
+export function snapshotInferenceReceipt(value: unknown): InferenceReceiptV1 | null {
+  try {
+    const record = exactOwnRecord(value, RECEIPT_REQUIRED_FIELDS, RECEIPT_OPTIONAL_FIELDS);
+    if (!record) return null;
+    const requiredStrings = ['id', 'userId', 'decisionId', 'explanationId', 'provider', 'model',
+      'endpointIdentity', 'requestSha256', 'responseSha256', 'verifierVersion', 'createdAt'] as const;
+    if (record['version'] !== 1 || requiredStrings.some((field) => !nonEmptyString(record[field])) ||
+        !MODES.has(record['reasoningMode'] as InferenceReasoningMode) ||
+        !STATUSES.has(record['status'] as InferenceReceiptStatus) ||
+        !Number.isFinite(new Date(record['createdAt'] as string).getTime())) return null;
+    const optionalStrings = ['inferenceId', 'attestationPolicyVersion', 'evidenceSha256',
+      'measurementIdentity', 'verifiedAt', 'freshUntil'] as const;
+    if (optionalStrings.some((field) => record[field] !== undefined && !nonEmptyString(record[field]))) return null;
+    const cost = snapshotCost(record['cost']);
+    const seal = snapshotSignature(record['seal']);
+    const responseSignature = record['responseSignature'] === undefined ? undefined : snapshotSignature(record['responseSignature']);
+    const fallback = record['fallback'] === undefined ? undefined : snapshotFallback(record['fallback']);
+    if (!cost || !seal || responseSignature === null || fallback === null) return null;
+    const snapshot: InferenceReceiptV1 = Object.freeze({
+      version: 1, id: record['id'] as string, userId: record['userId'] as string,
+      decisionId: record['decisionId'] as string, explanationId: record['explanationId'] as string,
+      reasoningMode: record['reasoningMode'] as InferenceReasoningMode, provider: record['provider'] as string,
+      model: record['model'] as string, endpointIdentity: record['endpointIdentity'] as string,
+      requestSha256: record['requestSha256'] as string, responseSha256: record['responseSha256'] as string,
+      ...(record['inferenceId'] === undefined ? {} : { inferenceId: record['inferenceId'] as string }),
+      ...(record['attestationPolicyVersion'] === undefined ? {} : { attestationPolicyVersion: record['attestationPolicyVersion'] as string }),
+      verifierVersion: record['verifierVersion'] as string,
+      ...(record['evidenceSha256'] === undefined ? {} : { evidenceSha256: record['evidenceSha256'] as string }),
+      ...(record['measurementIdentity'] === undefined ? {} : { measurementIdentity: record['measurementIdentity'] as string }),
+      ...(responseSignature === undefined ? {} : { responseSignature }),
+      ...(record['verifiedAt'] === undefined ? {} : { verifiedAt: record['verifiedAt'] as string }),
+      ...(record['freshUntil'] === undefined ? {} : { freshUntil: record['freshUntil'] as string }),
+      ...(fallback === undefined ? {} : { fallback }), cost,
+      status: record['status'] as InferenceReceiptStatus, createdAt: record['createdAt'] as string, seal,
+    });
+    return isSha256(snapshot.requestSha256) && isSha256(snapshot.responseSha256) &&
+      validReceiptStatusFields(snapshot) ? snapshot : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Verify metadata integrity only; the embedded key identity remains untrusted. */
+export function verifyInferenceReceiptSeal(value: unknown): boolean {
+  const receipt = snapshotInferenceReceipt(value);
+  if (!receipt) return false;
+  const { seal, ...unsigned } = receipt;
+  try {
+    return verify(null, receiptSealPayload(unsigned), seal.publicKeyPem, Buffer.from(seal.signatureBase64, 'base64'));
+  } catch {
+    return false;
+  }
+}
+
+/** Strictly snapshot an export before any trust callback or persistence call. */
+export function snapshotInferenceReceiptExport(value: unknown): InferenceReceiptExportV1 | null {
+  try {
+    const record = exactOwnRecord(value, ['exportVersion', 'receipt', 'requestBase64', 'responseBase64', 'disclosure'],
+      ['evidenceBase64']);
+    if (!record) return null;
+    const receipt = snapshotInferenceReceipt(record['receipt']);
+    if (record['exportVersion'] !== 1 || !receipt || typeof record['requestBase64'] !== 'string' ||
+        typeof record['responseBase64'] !== 'string' || !nonEmptyString(record['disclosure']) ||
+        (record['evidenceBase64'] !== undefined && typeof record['evidenceBase64'] !== 'string')) return null;
+    return Object.freeze({ exportVersion: 1, receipt, requestBase64: record['requestBase64'],
+      responseBase64: record['responseBase64'],
+      ...(record['evidenceBase64'] === undefined ? {} : { evidenceBase64: record['evidenceBase64'] as string }),
+      disclosure: record['disclosure'] });
+  } catch {
+    return null;
+  }
+}
+
+function hasUnsupportedReceiptVersion(value: unknown): boolean {
+  const bundle = exactOwnRecord(value, ['exportVersion', 'receipt', 'requestBase64', 'responseBase64', 'disclosure'],
+    ['evidenceBase64']);
+  if (!bundle) return false;
+  const receipt = exactOwnRecord(bundle['receipt'], RECEIPT_REQUIRED_FIELDS, RECEIPT_OPTIONAL_FIELDS);
+  return bundle['exportVersion'] !== 1 || (receipt !== null && receipt['version'] !== 1);
 }
 
 const VERIFIED_ONLY_FIELDS = [
@@ -225,17 +328,28 @@ const VERIFIED_ONLY_FIELDS = [
   'verifiedAt', 'freshUntil',
 ] as const;
 
-function validStatusShape(receipt: InferenceReceiptV1, evidenceBase64: unknown): boolean {
+function validReceiptStatusFields(receipt: InferenceReceiptV1): boolean {
+  const expectedMode: Record<InferenceReceiptStatus, InferenceReasoningMode> = {
+    on_device: 'on_device', conventional: 'conventional_cloud', verified: 'verified_confidential',
+    verification_failed: 'verified_confidential', verification_unavailable: 'verified_confidential',
+    verification_stale: 'verified_confidential', local_fallback: 'on_device',
+  };
+  if (expectedMode[receipt.status] !== receipt.reasoningMode) return false;
   if (receipt.status === 'verified') {
     return receipt.reasoningMode === 'verified_confidential' && receipt.fallback === undefined &&
-      VERIFIED_ONLY_FIELDS.every((field) => receipt[field] !== undefined) &&
-      typeof evidenceBase64 === 'string' && evidenceBase64.length > 0;
+      VERIFIED_ONLY_FIELDS.every((field) => receipt[field] !== undefined);
   }
-  if (VERIFIED_ONLY_FIELDS.some((field) => receipt[field] !== undefined) || evidenceBase64 !== undefined) return false;
+  if (VERIFIED_ONLY_FIELDS.some((field) => receipt[field] !== undefined)) return false;
   if (receipt.status === 'local_fallback') {
     return receipt.reasoningMode === 'on_device' && receipt.fallback !== undefined;
   }
   return receipt.fallback === undefined;
+}
+
+function validStatusShape(receipt: InferenceReceiptV1, evidenceBase64: unknown): boolean {
+  return validReceiptStatusFields(receipt) && (receipt.status === 'verified'
+    ? typeof evidenceBase64 === 'string' && evidenceBase64.length > 0
+    : evidenceBase64 === undefined);
 }
 
 function isSha256(value: unknown): value is string {
@@ -250,26 +364,13 @@ function decodeBase64(value: unknown): Buffer | null {
 }
 
 function verifyExport(
-  bundle: InferenceReceiptExportV1,
+  input: unknown,
   options: ReceiptVerificationOptions = {},
 ): ReceiptVerificationResult {
-  if (!bundle || typeof bundle !== 'object' || !bundle.receipt || typeof bundle.receipt !== 'object') {
-    return fail('INVALID_RECEIPT');
-  }
-  const bundleRecord = bundle as unknown as Record<string, unknown>;
-  const allowedBundleFields = new Set([
-    'exportVersion', 'receipt', 'requestBase64', 'responseBase64', 'evidenceBase64', 'disclosure',
-  ]);
-  if (Object.keys(bundleRecord).some((key) => !allowedBundleFields.has(key)) ||
-      typeof bundle.disclosure !== 'string' || bundle.disclosure.length === 0) {
-    return fail('INVALID_RECEIPT');
-  }
-  if (bundle.exportVersion !== 1 || bundle.receipt.version !== 1) return fail('UNSUPPORTED_VERSION');
+  const bundle = snapshotInferenceReceiptExport(input);
+  if (!bundle) return fail(hasUnsupportedReceiptVersion(input) ? 'UNSUPPORTED_VERSION' : 'INVALID_RECEIPT');
   const receipt = bundle.receipt;
-  if (!validShape(receipt)) return fail('INVALID_RECEIPT', receipt.id);
-  if (!receipt.seal || receipt.seal.algorithm !== 'Ed25519' ||
-      typeof receipt.seal.keyId !== 'string' || typeof receipt.seal.publicKeyPem !== 'string' ||
-      typeof receipt.seal.signatureBase64 !== 'string' || !isSha256(receipt.requestSha256) ||
+  if (!isSha256(receipt.requestSha256) ||
       !isSha256(receipt.responseSha256)) return fail('INVALID_RECEIPT', receipt.id);
   const request = decodeBase64(bundle.requestBase64);
   const response = decodeBase64(bundle.responseBase64);
@@ -283,12 +384,6 @@ function verifyExport(
     return fail('SEAL_SIGNATURE_INVALID', receipt.id);
   }
 
-  const expectedMode: Record<InferenceReceiptStatus, InferenceReasoningMode> = {
-    on_device: 'on_device', conventional: 'conventional_cloud', verified: 'verified_confidential',
-    verification_failed: 'verified_confidential', verification_unavailable: 'verified_confidential',
-    verification_stale: 'verified_confidential', local_fallback: 'on_device',
-  };
-  if (expectedMode[receipt.status] !== receipt.reasoningMode) return fail('INVALID_RECEIPT', receipt.id);
   if (!validStatusShape(receipt, bundle.evidenceBase64)) return fail('INVALID_RECEIPT', receipt.id);
   if (receipt.status === 'verified') {
     if (!bundle.evidenceBase64 || !receipt.evidenceSha256 || !receipt.attestationPolicyVersion ||
@@ -311,7 +406,7 @@ function verifyExport(
     const now = (options.now ?? new Date()).getTime();
     if (verifiedAt > now + (options.futureClockSkewMs ?? 60_000)) return fail('INVALID_RECEIPT', receipt.id);
     if (freshUntil - verifiedAt > (options.maxVerificationAgeMs ?? 7 * 24 * 60 * 60 * 1000)) return fail('INVALID_RECEIPT', receipt.id);
-    if (freshUntil < now) {
+    if (freshUntil <= now) {
       return fail('STALE_VERIFICATION', receipt.id);
     }
     if (options.integrityOnly === true) {
@@ -319,7 +414,8 @@ function verifyExport(
     }
     const providerKey = options.trustedProviderKeys?.get(receipt.responseSignature.keyId);
     if (!providerKey || providerKey !== receipt.responseSignature.publicKeyPem) return fail('UNTRUSTED_PROVIDER', receipt.id);
-    if (!options.verifyAttestation?.({ receipt, evidence, request, response })) return fail('ATTESTATION_REJECTED', receipt.id);
+    if (!options.verifyAttestation?.({ receipt, evidence: Buffer.from(evidence),
+      request: Buffer.from(request), response: Buffer.from(response) })) return fail('ATTESTATION_REJECTED', receipt.id);
   }
   if (options.integrityOnly === true) {
     return { valid: true, trusted: false, code: 'INTEGRITY_ONLY', receiptId: receipt.id };
@@ -332,7 +428,7 @@ function verifyExport(
 }
 
 export function verifyInferenceReceiptExport(
-  bundle: InferenceReceiptExportV1,
+  bundle: unknown,
   options: ReceiptVerificationOptions | Date = {},
 ): ReceiptVerificationResult {
   try {
