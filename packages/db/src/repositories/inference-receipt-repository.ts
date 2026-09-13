@@ -64,6 +64,10 @@ export interface DecisionContinuationBundle {
   continuation: DecisionContinuation | null;
 }
 
+export interface ClaimedExecutionPlan extends ExecutionPlanRow {
+  dispatchAuthorityUpdatedAt: Date;
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
   if (value && typeof value === 'object') {
@@ -489,7 +493,7 @@ export const inferenceReceiptRepository = {
     suppliedContinuation: DecisionContinuation,
     steps: unknown[],
     refreshedPolicySnapshot: Record<string, unknown>,
-  ): Promise<ExecutionPlanRow | null> {
+  ): Promise<ClaimedExecutionPlan | null> {
     const continuation = snapshotContinuation(suppliedContinuation);
     const outcome = continuation?.outcome;
     const explanation = continuation?.explanation;
@@ -554,18 +558,18 @@ export const inferenceReceiptRepository = {
       );
       if (!linked.rows[0]) throw new Error('Execution plan could not bind to its outcome authority');
 
-      const claimed = await client.query(
+      const claimed = await client.query<{ decision_id: string; updated_at: Date }>(
         `UPDATE decision_ingest_guards
          SET effect_state = 'running', source_execution_plan_id = $2,
              dispatch_policy_snapshot = $6::JSONB, updated_at = now()
          WHERE decision_id = $1 AND effect_state = 'ready' AND outcome_id = $3
            AND selected_action_id = $4 AND receipt_explanation_id = $5
-         RETURNING decision_id`,
+         RETURNING decision_id, updated_at`,
         [decisionId, plan.id, outcome.id, selectedAction.id, explanation.id,
           JSON.stringify(refreshedPolicySnapshot)],
       );
       if (!claimed.rows[0]) throw new Error('Execution guard claim could not bind to its plan');
-      return plan;
+      return { ...plan, dispatchAuthorityUpdatedAt: claimed.rows[0].updated_at };
     });
   },
 

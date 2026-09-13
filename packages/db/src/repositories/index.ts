@@ -37,12 +37,18 @@ export {
 export type { BeginCredentialDisconnectResult } from './oauth-repository.js';
 export {
   credentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository,
   expireCredentialDispatchLeasesWithClient,
   hasActiveCredentialDispatchWithClient,
 } from './credential-dispatch-lease-repository.js';
 export type {
   CredentialDispatchGrant,
   CredentialDispatchTerminalState,
+  ExecutionDispatchGrant,
+  StartExecutionDispatchInput,
+  StartExecutionDispatchResult,
+  BindCredentialDispatchInput,
+  BindCredentialDispatchResult,
   StartCredentialDispatchInput,
   StartCredentialDispatchResult,
 } from './credential-dispatch-lease-repository.js';

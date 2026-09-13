@@ -226,7 +226,9 @@ export const userRepository = {
   ): Promise<UserRow | null> {
     const result = await query<UserRow>(
       `UPDATE users
-       SET ironclaw_channel = $1, updated_at = now()
+       SET ironclaw_channel = $1,
+           execution_authority_revision = gen_random_uuid(),
+           updated_at = now()
        WHERE id = $2
        RETURNING *`,
       [channel, id],

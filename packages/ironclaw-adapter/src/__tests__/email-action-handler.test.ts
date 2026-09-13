@@ -3,7 +3,7 @@ import type { ExecutionStep } from '@skytwin/shared-types';
 import {
   SKYTWIN_EMAIL_ATTRIBUTION_TEXT,
 } from '@skytwin/shared-types';
-import type { CredentialProvider } from '../credential-provider.js';
+import { NoopCredentialProvider, type CredentialProvider } from '../credential-provider.js';
 import { EmailActionHandler } from '../handlers/email-action-handler.js';
 
 function makeStep(overrides: Partial<ExecutionStep> = {}): ExecutionStep {
@@ -32,8 +32,48 @@ function decodeRaw(raw: string): string {
 }
 
 describe('EmailActionHandler outbound sends', () => {
+  it('returns a known failed result when credential resolution proves no request started', async () => {
+    const handler = new EmailActionHandler(new NoopCredentialProvider());
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await handler.execute(makeStep({
+      type: 'send_email',
+      parameters: {
+        actionType: 'send_email', userId: 'user-1', to: 'alex@example.com', body: 'Hello',
+        credentialDecisionId: 'decision-1', credentialActionId: 'action-1',
+        credentialExecutionPlanId: 'plan-1', credentialAuthorityRevision: 'authority-1',
+        credentialPolicyAuthorityRevision: 'policy-1', dispatchCapability: 'capability-1',
+        dispatchLeaseGeneration: 'generation-1',
+      },
+    }));
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('No credential') });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it.each([
+    ['archive_email', { actionType: 'archive_email', accessToken: 'token-1' }, 'Missing emailId'],
+    ['send_email', { actionType: 'send_email', accessToken: 'token-1' }, 'Missing to'],
+    ['send_reply', {
+      actionType: 'send_reply', accessToken: 'token-1', emailId: 'msg-1', body: 'Reply',
+    }, 'Missing replyToFrom'],
+  ] as const)('returns a known failed result for malformed %s before any request', async (
+    actionType, parameters, expectedError,
+  ) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await new EmailActionHandler().execute(makeStep({
+      type: actionType,
+      parameters: { ...parameters },
+    }));
+
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining(expectedError) });
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('handles draft_email as a Gmail reply and appends the SkyTwin attribution', async () => {
@@ -158,15 +198,13 @@ describe('EmailActionHandler outbound sends', () => {
         credentialExecutionPlanId: 'plan-1',
         credentialAuthorityRevision: 'authority-revision-1',
         credentialPolicyAuthorityRevision: 'policy-revision-1',
+        dispatchCapability: 'dispatch-capability-1',
+        dispatchLeaseGeneration: 'dispatch-generation-1',
       },
     });
 
     await expect(handler.execute(step)).rejects.toThrow('outcome is ambiguous');
-    expect(terminalizeDispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ capability: 'capability-1' }),
-      'ambiguous',
-    );
-    expect(terminalizeDispatch).not.toHaveBeenCalledWith(expect.anything(), 'failed');
+    expect(terminalizeDispatch).not.toHaveBeenCalled();
 
     await expect(handler.execute(step)).rejects.toThrow('already exists');
     expect(fetchMock).toHaveBeenCalledTimes(1);

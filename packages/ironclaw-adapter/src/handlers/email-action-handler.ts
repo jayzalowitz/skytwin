@@ -1,13 +1,13 @@
 import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
 import { appendSkyTwinEmailAttribution } from '@skytwin/shared-types';
-import type {
-  CredentialDispatchResult,
-  CredentialProvider,
+import {
+  didCredentialRequestStart,
+  type CredentialProvider,
 } from '../credential-provider.js';
+import { PreRequestExecutionError } from '../ironclaw-adapter.js';
 
 interface ResolvedCredential {
   accessToken: string;
-  grant?: CredentialDispatchResult;
 }
 
 const GMAIL_API = 'https://gmail.googleapis.com/gmail/v1';
@@ -49,18 +49,18 @@ export class EmailActionHandler implements ActionHandler {
 
     if (['archive_email', 'label_email', 'send_reply', 'reply_email', 'draft_email', 'delete_email']
       .includes(actionType) && !messageId) {
-      throw new Error('Missing emailId in step parameters');
+      return { success: false, error: 'Missing emailId in step parameters' };
     }
     if (actionType === 'send_email') {
       const to = step.parameters['to'];
       if (typeof to !== 'string' || to.trim().length === 0) {
-        throw new Error('Missing to in step parameters');
+        return { success: false, error: 'Missing to in step parameters' };
       }
     }
     if (['send_reply', 'reply_email', 'draft_email'].includes(actionType)) {
       const replyTo = step.parameters['replyToFrom'];
       if (typeof replyTo !== 'string' || replyTo.trim().length === 0) {
-        throw new Error('Missing replyToFrom in step parameters');
+        return { success: false, error: 'Missing replyToFrom in step parameters' };
       }
     }
     const supported = new Set([
@@ -70,13 +70,20 @@ export class EmailActionHandler implements ActionHandler {
     if (!supported.has(actionType)) {
       return { success: false, error: `Unknown email action: ${actionType}` };
     }
-    const credential = await this.resolveAccessToken(step, true);
+    let credential: ResolvedCredential;
+    try {
+      credential = await this.resolveAccessToken(step, true);
+    } catch (error) {
+      if (error instanceof PreRequestExecutionError) {
+        return { success: false, error: error.message };
+      }
+      throw error;
+    }
     let result: StepResult;
 
-    try {
-      // No await occurs between the committed lease returned above and this
-      // call. Each branch invokes fetch synchronously before yielding.
-      switch (actionType) {
+    // No await occurs between the credential bind returned above and this
+    // call. The router owns the encompassing request-start lease.
+    switch (actionType) {
         case 'archive_email':
           result = await this.archiveEmail(credential.accessToken, messageId!);
           break;
@@ -100,12 +107,7 @@ export class EmailActionHandler implements ActionHandler {
           break;
         default:
           throw new Error('Validated email action was not dispatched.');
-      }
-    } catch (error) {
-      await this.finishDispatch(credential.grant, 'ambiguous');
-      throw error;
     }
-    await this.finishDispatch(credential.grant, result.success ? 'completed' : 'failed');
     return result;
   }
 
@@ -153,9 +155,13 @@ export class EmailActionHandler implements ActionHandler {
         const executionPlanId = step.parameters['credentialExecutionPlanId'];
         const authorityRevision = step.parameters['credentialAuthorityRevision'];
         const policyAuthorityRevision = step.parameters['credentialPolicyAuthorityRevision'];
+        const dispatchCapability = step.parameters['dispatchCapability'];
+        const dispatchLeaseGeneration = step.parameters['dispatchLeaseGeneration'];
         if (typeof decisionId !== 'string' || typeof actionId !== 'string' ||
             typeof executionPlanId !== 'string' || typeof authorityRevision !== 'string' ||
             typeof policyAuthorityRevision !== 'string' ||
+            typeof dispatchCapability !== 'string' ||
+            typeof dispatchLeaseGeneration !== 'string' ||
             !this.credentialProvider.startDispatch) {
           throw new Error('Credential dispatch authority is missing.');
         }
@@ -169,9 +175,16 @@ export class EmailActionHandler implements ActionHandler {
           executionPlanId,
           authorityRevision,
           policyAuthorityRevision,
+          dispatchCapability,
+          dispatchLeaseGeneration,
         });
-        if (!result.success) throw new Error(result.error);
-        return { accessToken: result.accessToken, grant: result };
+        if (!result.success) {
+          if (didCredentialRequestStart(result) === false) {
+            throw new PreRequestExecutionError(result.error);
+          }
+          throw new Error(result.error);
+        }
+        return { accessToken: result.accessToken };
       }
       const result = await this.credentialProvider.getAccessToken(userId, 'google');
       if (!result.success) throw new Error(result.error);
@@ -180,20 +193,9 @@ export class EmailActionHandler implements ActionHandler {
 
     const accessToken = step.parameters['accessToken'] as string | undefined;
     if (!accessToken) {
-      throw new Error('Missing accessToken — no OAuth token available for Gmail. Falling back to next adapter.');
+      throw new PreRequestExecutionError('Missing accessToken — no OAuth token available for Gmail.');
     }
     return { accessToken };
-  }
-
-  private async finishDispatch(
-    grant: CredentialDispatchResult | undefined,
-    state: 'completed' | 'failed' | 'ambiguous',
-  ): Promise<void> {
-    if (!grant) return;
-    const persisted = await this.credentialProvider?.terminalizeDispatch?.(grant, state);
-    if (!persisted) {
-      throw new Error('Credential dispatch terminal state could not be persisted.');
-    }
   }
 
   private async archiveEmail(accessToken: string, messageId: string): Promise<StepResult> {

@@ -22,7 +22,10 @@ import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
 import type { PolicyDecision } from '@skytwin/policy-engine';
 import { RiskAssessor } from '@skytwin/decision-engine';
-import { AmbiguousExecutionError } from '@skytwin/execution-router';
+import {
+  AmbiguousExecutionError,
+  NoRequestExecutionError,
+} from '@skytwin/execution-router';
 import type {
   FeedbackEvent,
   CandidateAction,
@@ -530,9 +533,6 @@ export function createApprovalsRouter(): Router {
         applyDraftEditOverride(approvedCandidateAction, body.editedBody);
         const currentUser = await userRepository.findById(body.userId);
         prepareEmailActionForExecution(approvedCandidateAction, currentUser);
-        if (currentUser?.ironclaw_channel) {
-          approvedCandidateAction.parameters['ironclawChannel'] = currentUser.ironclaw_channel;
-        }
         approvedRiskAssessment = new RiskAssessor().assess(approvedCandidateAction);
         const currentPolicies = await policyRepositoryAdapter.getAllPolicies();
         const approvedPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
@@ -835,11 +835,16 @@ export function createApprovalsRouter(): Router {
                     executionPlanId: admission.plan.id,
                     credentialAuthorityRevision: dispatchUser?.execution_authority_revision,
                     credentialPolicyAuthorityRevision: dispatchPolicyRevision,
+                    dispatchAuthorityId: admission.barrier.id,
+                    dispatchAuthorityUpdatedAt: admission.barrier.updated_at.toISOString(),
                   },
                 },
                 admissionRisk,
                 body.userId,
-                { approved: true },
+                {
+                  approved: true,
+                  ironclawChannel: dispatchUser?.ironclaw_channel ?? undefined,
+                },
               );
               if (result.status !== 'completed' && result.status !== 'failed') {
                 throw new AmbiguousExecutionError(
@@ -848,6 +853,27 @@ export function createApprovalsRouter(): Router {
               }
             } catch (dispatchError) {
               const errMsg = normalizeExecutionError(dispatchError);
+              if (dispatchError instanceof NoRequestExecutionError) {
+                try {
+                  await executionAdmissionRepository.failBeforeDispatch({
+                    admission,
+                    userId: body.userId,
+                    error: errMsg,
+                  });
+                  executionResult = {
+                    status: 'failed',
+                    planId: admission.plan.id,
+                    error: 'Execution was refused before request start',
+                  };
+                } catch {
+                  executionResult = {
+                    status: 'ambiguous',
+                    planId: admission.plan.id,
+                    error: 'Execution outcome requires reconciliation',
+                  };
+                }
+                break executionAttempt;
+              }
               await bestEffortApprovalLedger('record ambiguous approved execution admission', () =>
                 executionAdmissionRepository.observeTerminal({
                   id: admission.barrier.id,

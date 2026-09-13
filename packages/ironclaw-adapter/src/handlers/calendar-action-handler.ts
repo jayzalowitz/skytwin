@@ -1,9 +1,12 @@
 import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
-import type { CredentialDispatchResult, CredentialProvider } from '../credential-provider.js';
+import {
+  didCredentialRequestStart,
+  type CredentialProvider,
+} from '../credential-provider.js';
+import { PreRequestExecutionError } from '../ironclaw-adapter.js';
 
 interface ResolvedCredential {
   accessToken: string;
-  grant?: CredentialDispatchResult;
 }
 
 const CALENDAR_API = 'https://www.googleapis.com/calendar/v3';
@@ -49,11 +52,18 @@ export class CalendarActionHandler implements ActionHandler {
       return { success: false, error: `Unknown calendar action: ${actionType}` };
     }
 
-    const credential = await this.resolveAccessToken(step, true);
+    let credential: ResolvedCredential;
+    try {
+      credential = await this.resolveAccessToken(step, true);
+    } catch (error) {
+      if (error instanceof PreRequestExecutionError) {
+        return { success: false, error: error.message };
+      }
+      throw error;
+    }
     let result: StepResult;
 
-    try {
-      switch (actionType) {
+    switch (actionType) {
         case 'accept_invite':
           result = await this.respondToEvent(credential.accessToken, eventId, 'accepted');
           break;
@@ -68,12 +78,7 @@ export class CalendarActionHandler implements ActionHandler {
           break;
         default:
           throw new Error('Validated calendar action was not dispatched.');
-      }
-    } catch (error) {
-      await this.finishDispatch(credential.grant, 'ambiguous');
-      throw error;
     }
-    await this.finishDispatch(credential.grant, result.success ? 'completed' : 'failed');
     return result;
   }
 
@@ -107,9 +112,13 @@ export class CalendarActionHandler implements ActionHandler {
         const executionPlanId = step.parameters['credentialExecutionPlanId'];
         const authorityRevision = step.parameters['credentialAuthorityRevision'];
         const policyAuthorityRevision = step.parameters['credentialPolicyAuthorityRevision'];
+        const dispatchCapability = step.parameters['dispatchCapability'];
+        const dispatchLeaseGeneration = step.parameters['dispatchLeaseGeneration'];
         if (typeof decisionId !== 'string' || typeof actionId !== 'string' ||
             typeof executionPlanId !== 'string' || typeof authorityRevision !== 'string' ||
             typeof policyAuthorityRevision !== 'string' ||
+            typeof dispatchCapability !== 'string' ||
+            typeof dispatchLeaseGeneration !== 'string' ||
             !this.credentialProvider.startDispatch) {
           throw new Error('Credential dispatch authority is missing.');
         }
@@ -123,9 +132,16 @@ export class CalendarActionHandler implements ActionHandler {
           executionPlanId,
           authorityRevision,
           policyAuthorityRevision,
+          dispatchCapability,
+          dispatchLeaseGeneration,
         });
-        if (!result.success) throw new Error(result.error);
-        return { accessToken: result.accessToken, grant: result };
+        if (!result.success) {
+          if (didCredentialRequestStart(result) === false) {
+            throw new PreRequestExecutionError(result.error);
+          }
+          throw new Error(result.error);
+        }
+        return { accessToken: result.accessToken };
       }
       const result = await this.credentialProvider.getAccessToken(userId, 'google');
       if (!result.success) throw new Error(result.error);
@@ -134,18 +150,9 @@ export class CalendarActionHandler implements ActionHandler {
 
     const accessToken = step.parameters['accessToken'] as string | undefined;
     if (!accessToken) {
-      throw new Error('Missing accessToken — no OAuth token available for Google Calendar.');
+      throw new PreRequestExecutionError('Missing accessToken — no OAuth token available for Google Calendar.');
     }
     return { accessToken };
-  }
-
-  private async finishDispatch(
-    grant: CredentialDispatchResult | undefined,
-    state: 'completed' | 'failed' | 'ambiguous',
-  ): Promise<void> {
-    if (!grant) return;
-    const persisted = await this.credentialProvider?.terminalizeDispatch?.(grant, state);
-    if (!persisted) throw new Error('Credential dispatch terminal state could not be persisted.');
   }
 
   private async respondToEvent(

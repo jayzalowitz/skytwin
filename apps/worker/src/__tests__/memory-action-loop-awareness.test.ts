@@ -36,7 +36,11 @@ const {
     finalizeAdmittedPlan: vi.fn(async () => ({})),
     admitMemoryExecution: vi.fn(async () => ({
       created: true,
-      barrier: { id: 'barrier-1', status: 'in_progress' },
+      barrier: {
+        id: 'barrier-1',
+        status: 'in_progress',
+        updated_at: new Date('2026-09-13T00:00:00.000Z'),
+      },
       plan: { id: 'plan-1' },
     })),
     isDispatchable: vi.fn(async () => true),

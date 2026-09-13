@@ -292,6 +292,24 @@ describe('userRepository', () => {
     });
   });
 
+  describe('updateIronClawChannel', () => {
+    it('rotates execution authority with the trusted outbound channel', async () => {
+      const row = {
+        ...fakeUserRow(),
+        ironclaw_channel: 'telegram',
+        execution_authority_revision: 'new-authority-revision',
+      };
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      await expect(userRepository.updateIronClawChannel('u-001', 'telegram'))
+        .resolves.toEqual(row);
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('ironclaw_channel = $1');
+      expect(sql).toContain('execution_authority_revision = gen_random_uuid()');
+      expect(params).toEqual(['telegram', 'u-001']);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // updateLocale (#486)
   // -----------------------------------------------------------------------

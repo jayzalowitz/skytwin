@@ -1,7 +1,11 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import {
+  PreRequestExecutionError,
+  type ExecutionRequestPreparation,
+  type IronClawAdapter,
+} from '@skytwin/ironclaw-adapter';
 import type {
   CandidateAction,
   ExecutionPlan,
@@ -10,7 +14,7 @@ import type {
   ExecutionStep,
   RollbackResult,
 } from '@skytwin/shared-types';
-import { CircuitBreaker, CircuitOpenError, withRetry } from '@skytwin/core';
+import { CircuitBreaker, CircuitOpenError } from '@skytwin/core';
 import { createStdioTransport } from './stdio-runner.js';
 import { isDockerAvailable, spawnInDockerNoNetworkAsync } from './docker-spawn.js';
 import { DockerStdioTransport } from './docker-stdio-transport.js';
@@ -30,6 +34,12 @@ interface ServerEntry {
 }
 
 const MAX_TRACKED_EXECUTIONS = 1000;
+
+interface McpRequestStartProof {
+  planId: string;
+  serverId: string;
+  toolName: string;
+}
 
 const ROLLBACK_HEURISTICS: Array<(name: string) => string> = [
   (name) => `${name}_undo`,
@@ -133,6 +143,7 @@ function extractVersionFromChangelog(text: string): string | undefined {
 }
 
 export class McpHost implements IronClawAdapter {
+  private readonly requestStartProofs = new WeakSet<object>();
   private readonly servers = new Map<string, ServerEntry>();
   private readonly executions = new Map<string, McpExecutionLog>();
   private readonly onToolCall: ((event: McpHostToolCallEvent) => void) | undefined;
@@ -402,12 +413,47 @@ export class McpHost implements IronClawAdapter {
       (action.parameters['executionPlanId'] as string | undefined) ??
       `mcp_plan_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
-    const serverId =
-      (action.parameters['mcpServerId'] as string | undefined) ??
-      this.selectServerForAction(action);
+    const serverId = action.parameters['mcpServerId'];
+    if (typeof serverId !== 'string' || serverId.length === 0) {
+      throw new PreRequestExecutionError(
+        'MCP execution requires an explicitly admitted mcpServerId.',
+      );
+    }
 
-    const toolName =
-      (action.parameters['mcpToolName'] as string | undefined) ?? action.actionType;
+    const requestedTool = action.parameters['mcpToolName'];
+    if (requestedTool !== undefined &&
+        (typeof requestedTool !== 'string' || requestedTool.length === 0)) {
+      throw new PreRequestExecutionError(
+        'MCP execution requires mcpToolName to be a non-empty string when supplied.',
+      );
+    }
+    if (requestedTool !== undefined && requestedTool !== action.actionType) {
+      throw new PreRequestExecutionError(
+        'MCP tool identity must exactly match the policy-assessed actionType.',
+      );
+    }
+    const toolName = action.actionType;
+
+    const entry = this.servers.get(serverId);
+    if (!entry || entry.handle.status !== 'running') {
+      throw new PreRequestExecutionError(`MCP server '${serverId}' is not available`);
+    }
+    if (entry.circuit.getState() === 'open') {
+      throw new PreRequestExecutionError(`MCP server '${serverId}' circuit is open`);
+    }
+    if (this.checkPendingOptIn && isDestructiveSkill(toolName)) {
+      let blocked = true;
+      try {
+        blocked = await this.checkPendingOptIn(serverId, toolName);
+      } catch {
+        // A failed authorization lookup is a proven pre-request refusal.
+      }
+      if (blocked) {
+        throw new PreRequestExecutionError(
+          `Skill '${toolName}' requires explicit opt-in before it can be executed.`,
+        );
+      }
+    }
 
     const now = new Date();
 
@@ -453,9 +499,49 @@ export class McpHost implements IronClawAdapter {
     };
   }
 
-  async execute(plan: ExecutionPlan): Promise<ExecutionResult> {
+  async prepareRequestStart(plan: ExecutionPlan): Promise<ExecutionRequestPreparation> {
+    const step = plan.steps[0];
+    const serverId = step?.parameters['_mcpServerId'];
+    const toolName = step?.parameters['_mcpToolName'];
+    if (typeof serverId !== 'string' || typeof toolName !== 'string') {
+      throw new PreRequestExecutionError('MCP request preparation requires an exact server and tool.');
+    }
+    if (this.checkPendingOptIn && isDestructiveSkill(toolName)) {
+      let blocked = true;
+      try {
+        blocked = await this.checkPendingOptIn(serverId, toolName);
+      } catch {
+        // A failed authorization lookup is a proven pre-request refusal.
+      }
+      if (blocked) {
+        throw new PreRequestExecutionError(
+          `Skill '${toolName}' requires explicit opt-in before it can be executed.`,
+        );
+      }
+    }
+    const proof: McpRequestStartProof = { planId: plan.id, serverId, toolName };
+    this.requestStartProofs.add(proof);
+    return { proof };
+  }
+
+  async execute(
+    plan: ExecutionPlan,
+    preparation?: ExecutionRequestPreparation,
+  ): Promise<ExecutionResult> {
     const startedAt = new Date();
     this.evictOldExecutions();
+
+    const existing = this.executions.get(plan.id);
+    if (existing) {
+      return {
+        planId: existing.planId,
+        status: existing.status,
+        startedAt: existing.startedAt,
+        completedAt: existing.completedAt,
+        error: existing.error,
+        output: existing.output,
+      };
+    }
 
     const log: McpExecutionLog = {
       planId: plan.id,
@@ -485,41 +571,52 @@ export class McpHost implements IronClawAdapter {
     log.serverId = serverId;
     log.toolName = toolName;
 
-    // Hard rail (#184 AC#2): block execution if the user has not yet opted in
-    // to this destructive skill. The checkPendingOptIn callback is injected
-    // from the API layer to avoid a DB dependency in mcp-host.
-    if (this.checkPendingOptIn && isDestructiveSkill(toolName)) {
-      let blocked = false;
-      try {
-        blocked = await this.checkPendingOptIn(serverId, toolName);
-      } catch {
-        // If the opt-in check itself fails, fail safe: block execution.
-        blocked = true;
-      }
-      if (blocked) {
-        log.status = 'failed';
-        log.error = `Skill '${toolName}' requires explicit opt-in before it can be executed. Accept the pending opt-in prompt in the Capabilities dashboard.`;
-        return errorResult(plan.id, startedAt, log.error);
-      }
-    }
+    const proof = preparation?.proof;
+    const prepared = typeof proof === 'object' && proof !== null &&
+      this.requestStartProofs.has(proof) &&
+      (proof as McpRequestStartProof).planId === plan.id &&
+      (proof as McpRequestStartProof).serverId === serverId &&
+      (proof as McpRequestStartProof).toolName === toolName;
+    if (typeof proof === 'object' && proof !== null) this.requestStartProofs.delete(proof);
 
     const entry = this.servers.get(serverId);
     if (!entry) {
-      log.status = 'failed';
-      log.error = `MCP server '${serverId}' is not installed`;
-      return errorResult(plan.id, startedAt, log.error);
+      throw new PreRequestExecutionError(`MCP server '${serverId}' is not installed`);
+    }
+
+    // Direct/cached-plan callers have no router preparation proof, so they
+    // retain the public-boundary check. Routed execution performed this read
+    // before its durable request-start transaction, whose owner lock then
+    // orders later opt-in discovery without another post-lease await.
+    if (!prepared && this.checkPendingOptIn && isDestructiveSkill(toolName)) {
+      let blocked = true;
+      try {
+        blocked = await this.checkPendingOptIn(serverId, toolName);
+      } catch {
+        // Authorization lookup failure is a refusal, never permission.
+      }
+      if (blocked) {
+        throw new PreRequestExecutionError(
+          `Skill '${toolName}' requires explicit opt-in before it can be executed.`,
+        );
+      }
     }
 
     const toolArgs = buildToolArgs(step.parameters);
 
     try {
-      const callResult = await withRetry(
-        () =>
-          withCircuitBreakerGuard(entry.circuit, () =>
-            entry.client.callTool({ name: toolName, arguments: toolArgs }),
-          ),
-        { maxRetries: 2, baseDelayMs: 500, maxDelayMs: 5_000 },
+      // MCP has no universal tool-mutability or idempotency contract. Even a
+      // read-shaped name can front an effect-bearing implementation, and the
+      // protocol call here carries no independently verified idempotency key.
+      // Therefore a response loss or timeout after invocation can never be
+      // retried safely within this process.
+      const callResult = await withCircuitBreakerGuard(entry.circuit, () =>
+        entry.client.callTool({ name: toolName, arguments: toolArgs }),
       );
+      if (callResult && typeof callResult === 'object' &&
+          (callResult as { isError?: unknown }).isError === true) {
+        throw new Error('MCP tool returned an error result after request start.');
+      }
 
       const completedAt = new Date();
       log.status = 'completed';
@@ -546,26 +643,28 @@ export class McpHost implements IronClawAdapter {
         output: log.output,
       };
     } catch (err) {
-      const completedAt = new Date();
       const error = err instanceof Error ? err.message : String(err);
-      log.status = 'failed';
-      log.completedAt = completedAt;
-      log.error = error;
 
       if (err instanceof CircuitOpenError) {
-        entry.handle.status = 'failed';
-        entry.handle.lastError = error;
+        throw new PreRequestExecutionError(error, { cause: err });
       }
 
+      // callTool was invoked. A timeout, transport exception, response-body
+      // loss, or arbitrary server exception cannot prove the tool did not
+      // commit. Keep the plan unresolved so the execution router persists an
+      // ambiguous terminal observation and cannot fall back or replay it.
+      log.status = 'running';
+      log.error = 'MCP tool outcome is ambiguous and requires reconciliation.';
+      const observedAt = new Date();
       this.emitToolCall({
         serverId,
         toolName,
-        latencyMs: completedAt.getTime() - startedAt.getTime(),
+        latencyMs: observedAt.getTime() - startedAt.getTime(),
         success: false,
-        ts: completedAt,
+        ts: observedAt,
       });
 
-      return { planId: plan.id, status: 'failed', startedAt, completedAt, error };
+      return { planId: plan.id, status: 'running', startedAt, error: log.error };
     }
   }
 
@@ -630,15 +729,6 @@ export class McpHost implements IronClawAdapter {
     const maxLatency = results.reduce((max, r) => Math.max(max, r.latencyMs), 0);
 
     return { healthy: allHealthy, latencyMs: maxLatency };
-  }
-
-  private selectServerForAction(_action: CandidateAction): string {
-    for (const [id, entry] of this.servers) {
-      if (entry.handle.status === 'running') {
-        return id;
-      }
-    }
-    return '';
   }
 
   private async findUndoTool(entry: ServerEntry, toolName: string): Promise<string | null> {
@@ -707,9 +797,24 @@ async function pingServer(entry: ServerEntry): Promise<{ healthy: boolean; laten
 }
 
 function buildToolArgs(parameters: Record<string, unknown>): Record<string, unknown> {
+  const internalKeys = new Set([
+    'executionPlanId',
+    'mcpServerId',
+    'mcpToolName',
+    'userId',
+    'credentialActionId',
+    'credentialDecisionId',
+    'credentialExecutionPlanId',
+    'credentialAuthorityRevision',
+    'credentialPolicyAuthorityRevision',
+    'dispatchAuthorityId',
+    'dispatchAuthorityUpdatedAt',
+    'dispatchCapability',
+    'dispatchLeaseGeneration',
+  ]);
   const args: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(parameters)) {
-    if (key.startsWith('_mcp') || key === 'executionPlanId') continue;
+    if (key.startsWith('_mcp') || internalKeys.has(key)) continue;
     args[key] = value;
   }
   return args;

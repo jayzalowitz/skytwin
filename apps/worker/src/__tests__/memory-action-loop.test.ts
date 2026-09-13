@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildExecutableActionPlan } from '@skytwin/shared-types';
+import { NoRequestExecutionError } from '@skytwin/execution-router';
 import type {
   DailyMemorySuggestion,
   DailyMemorySuggestionPage,
@@ -185,6 +186,7 @@ function mockCommon(opportunity = makeOpportunity()) {
       id: '55555555-5555-4555-8555-555555555555',
       status: 'in_progress',
       decision_id: '22222222-2222-2222-2222-222222222222',
+      updated_at: new Date('2026-09-13T00:00:00.000Z'),
     },
     plan: { id: '44444444-4444-4444-4444-444444444444' },
   });
@@ -392,6 +394,94 @@ describe('runMemoryActionLoopJob', () => {
     expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'execution_failed' }),
     );
+    expect(summary.executionFailed).toBe(1);
+  });
+
+  it('durably closes a router-proven no-request refusal as failed', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {},
+      ironclaw_channel: 'trusted-channel', execution_authority_revision: 'authority-revision-1',
+    });
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {},
+        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'direct',
+      }),
+      executeWithRouting: vi.fn().mockRejectedValue(
+        new NoRequestExecutionError('request-start authority refused'),
+      ),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'allowed',
+      }) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(mockExecutionAdmissionRepository.failBeforeDispatch).toHaveBeenCalledWith({
+      admission: expect.objectContaining({ created: true }),
+      userId: 'user-1',
+      error: '[redacted:execution-error]',
+    });
+    expect(mockExecutionAdmissionRepository.observeTerminal).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'ambiguous' }),
+    );
+    expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'execution_failed' }),
+    );
+    expect(summary.executionFailed).toBe(1);
+  });
+
+  it('lets request-start refuse a channel revision changed during final worker awaits', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {},
+      ironclaw_channel: 'old-channel', execution_authority_revision: 'old-channel-revision',
+    });
+    let policyReads = 0;
+    let channelChanged = false;
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'ironclaw', fallbackChain: [], trustProfile: {},
+        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'ironclaw',
+      }),
+      executeWithRouting: vi.fn(async (
+        action: { parameters: Record<string, unknown> },
+        _risk: unknown,
+        _userId: string,
+        context: { ironclawChannel?: string },
+      ) => {
+        expect(channelChanged).toBe(true);
+        expect(action.parameters['credentialAuthorityRevision']).toBe('old-channel-revision');
+        expect(context.ironclawChannel).toBe('old-channel');
+        throw new NoRequestExecutionError('channel authority changed before request start');
+      }),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'allowed',
+      }) },
+      loadPolicies: async () => {
+        policyReads += 1;
+        if (policyReads === 2) channelChanged = true;
+        return [];
+      },
+      getExecutionRouter: async () => router,
+    });
+
+    expect(router.executeWithRouting).toHaveBeenCalledOnce();
+    expect(mockExecutionAdmissionRepository.failBeforeDispatch).toHaveBeenCalledOnce();
+    expect(mockExecutionAdmissionRepository.observeTerminal).not.toHaveBeenCalled();
     expect(summary.executionFailed).toBe(1);
   });
 

@@ -139,15 +139,21 @@ export class IronClawHttpClient {
   /**
    * Send a message to IronClaw's webhook endpoint.
    */
-  async sendMessage(message: IronClawMessage): Promise<IronClawResponse> {
-    const response = await this.sendWebhookRequest(message);
+  async sendMessage(
+    message: IronClawMessage,
+    opts: { preflighted?: boolean } = {},
+  ): Promise<IronClawResponse> {
+    const response = await this.sendWebhookRequest(message, opts.preflighted === true);
     return (await response.json()) as IronClawResponse;
   }
 
   /**
    * Send a webhook request and read IronClaw SSE execution progress.
    */
-  async *sendMessageStreaming(message: IronClawMessage): AsyncIterable<ExecutionEvent> {
+  async *sendMessageStreaming(
+    message: IronClawMessage,
+    opts: { preflighted?: boolean } = {},
+  ): AsyncIterable<ExecutionEvent> {
     const streamMessage: IronClawMessage = {
       ...message,
       metadata: {
@@ -155,7 +161,7 @@ export class IronClawHttpClient {
         stream: true,
       },
     };
-    const response = await this.sendWebhookRequest(streamMessage);
+    const response = await this.sendWebhookRequest(streamMessage, opts.preflighted === true);
     const planId = this.readPlanId(streamMessage);
     for await (const record of this.parseSseRecords(response.body, planId)) {
       // `[DONE]` closes an SSE transport; it is not an execution result.
@@ -191,7 +197,7 @@ export class IronClawHttpClient {
    */
   async sendChatCompletion(
     messages: ChatMessage[],
-    opts: { model?: string; stream?: boolean; allowRetry?: boolean } = {},
+    opts: { model?: string; stream?: boolean; allowRetry?: boolean; preflighted?: boolean } = {},
   ): Promise<ChatCompletionResponse> {
     const response = await this.fetchWithRetries('chat', `${this.config.apiUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -202,7 +208,7 @@ export class IronClawHttpClient {
         stream: false,
       }),
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw chat completion', opts.allowRetry ?? true);
+    }, 'IronClaw chat completion', opts.allowRetry ?? true, opts.preflighted === true);
 
     const payload = await response.json() as Record<string, unknown>;
     return this.parseChatCompletionResponse(payload, opts.model);
@@ -544,9 +550,19 @@ export class IronClawHttpClient {
     return this.getCircuitBreaker(endpoint).open;
   }
 
+  /** Resolve a known-open execution circuit before request-start is claimed. */
+  async ensureExecutionEndpointReady(streaming = false): Promise<void> {
+    await this.ensureEndpointReady(
+      streaming ? 'webhook' : (this.preferChatCompletions ? 'chat' : 'webhook'),
+    );
+  }
+
   // -- Webhook helpers -------------------------------------------------------
 
-  private async sendWebhookRequest(message: IronClawMessage): Promise<Response> {
+  private async sendWebhookRequest(
+    message: IronClawMessage,
+    preflighted = false,
+  ): Promise<Response> {
     const body = JSON.stringify(message);
     const signature = this.sign(body);
 
@@ -559,7 +575,7 @@ export class IronClawHttpClient {
       },
       body,
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw webhook', message.metadata['message_type'] === 'status');
+    }, 'IronClaw webhook', message.metadata['message_type'] === 'status', preflighted);
   }
 
   private readPlanId(message: IronClawMessage): string {
@@ -575,8 +591,9 @@ export class IronClawHttpClient {
     init: RequestInit,
     label: string,
     allowRetry = true,
+    preflighted = false,
   ): Promise<Response> {
-    await this.ensureEndpointReady(endpoint);
+    if (!preflighted) await this.ensureEndpointReady(endpoint);
 
     let lastError: Error | null = null;
 

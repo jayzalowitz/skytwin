@@ -1,5 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import { DirectExecutionAdapter } from '../direct-execution-adapter.js';
+import { RealIronClawAdapter } from '../real-adapter.js';
+import { PreRequestExecutionError } from '../ironclaw-adapter.js';
 import { ActionHandlerRegistry } from '../handler-registry.js';
 import type { CandidateAction, ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
 import { ConfidenceLevel } from '@skytwin/shared-types';
@@ -143,12 +145,11 @@ describe('DirectExecutionAdapter', () => {
     await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
   });
 
-  it('throws when no handler is registered (enables fallback chain)', async () => {
+  it('refuses during plan preflight when no handler is registered', async () => {
     const registry = new ActionHandlerRegistry(); // empty
     const adapter = new DirectExecutionAdapter(registry);
 
-    const plan = await adapter.buildPlan(makeAction());
-    await expect(adapter.execute(plan)).rejects.toThrow('No handler');
+    await expect(adapter.buildPlan(makeAction())).rejects.toThrow('No handler');
   });
 
   it('supports rollback for executed plans', async () => {
@@ -178,5 +179,141 @@ describe('DirectExecutionAdapter', () => {
 
     const health = await adapter.healthCheck();
     expect(health.healthy).toBe(false);
+  });
+});
+
+describe('RealIronClawAdapter request preflight', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('reports a known-unavailable execution circuit before building a plan', async () => {
+    const adapter = new RealIronClawAdapter({
+      apiUrl: 'http://127.0.0.1:9999',
+      webhookSecret: 'test-secret',
+      ownerId: 'owner-1',
+    });
+    const client = (adapter as unknown as {
+      client: { ensureExecutionEndpointReady(streaming?: boolean): Promise<void> };
+    }).client;
+    vi.spyOn(client, 'ensureExecutionEndpointReady').mockRejectedValueOnce(
+      new Error('known open circuit'),
+    );
+
+    await expect(adapter.buildPlan(makeAction())).rejects.toBeInstanceOf(
+      PreRequestExecutionError,
+    );
+  });
+
+  it('preflights the webhook endpoint for streaming execution', async () => {
+    const adapter = new RealIronClawAdapter({
+      apiUrl: 'http://127.0.0.1:9999', webhookSecret: 'test-secret', ownerId: 'owner-1',
+      preferChatCompletions: true,
+    });
+    const client = (adapter as unknown as {
+      client: { ensureExecutionEndpointReady(streaming?: boolean): Promise<void> };
+    }).client;
+    const preflight = vi.spyOn(client, 'ensureExecutionEndpointReady').mockResolvedValue();
+
+    await adapter.buildPlan(makeAction(), { streaming: true });
+    expect(preflight).toHaveBeenCalledWith(true);
+  });
+
+  it('uses its single-use preflight proof without another await before the effect POST', async () => {
+    const adapter = new RealIronClawAdapter({
+      apiUrl: 'http://127.0.0.1:9999', webhookSecret: 'test-secret', ownerId: 'owner-1',
+    });
+    const client = (adapter as unknown as {
+      client: { ensureExecutionEndpointReady(streaming?: boolean): Promise<void> };
+    }).client;
+    const preflight = vi.spyOn(client, 'ensureExecutionEndpointReady').mockResolvedValue();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      content: 'done', metadata: { status: 'completed', success: true },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const plan = await adapter.buildPlan(makeAction(), { streaming: false });
+    const preparation = await adapter.prepareRequestStart(plan, { streaming: false });
+    preflight.mockRejectedValue(new Error('post-lease circuit check must not run'));
+
+    await expect(adapter.execute(plan, preparation)).resolves.toMatchObject({
+      status: 'completed',
+    });
+    expect(preflight).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await expect(adapter.execute(plan, preparation)).rejects.toThrow(
+      'invalid or already consumed',
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a preflight proof used for the wrong execution mode before POST', async () => {
+    const adapter = new RealIronClawAdapter({
+      apiUrl: 'http://127.0.0.1:9999', webhookSecret: 'test-secret', ownerId: 'owner-1',
+    });
+    const client = (adapter as unknown as {
+      client: { ensureExecutionEndpointReady(streaming?: boolean): Promise<void> };
+    }).client;
+    vi.spyOn(client, 'ensureExecutionEndpointReady').mockResolvedValue();
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    const plan = await adapter.buildPlan(makeAction(), { streaming: true });
+    const preparation = await adapter.prepareRequestStart(plan, { streaming: true });
+    await expect(adapter.execute(plan, preparation)).rejects.toThrow(
+      'invalid or already consumed',
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('uses router-authored owner/channel only in the envelope', async () => {
+    const adapter = new RealIronClawAdapter({
+      apiUrl: 'http://127.0.0.1:9999', webhookSecret: 'test-secret', ownerId: 'owner-1',
+    });
+    const client = (adapter as unknown as {
+      client: { ensureExecutionEndpointReady(streaming?: boolean): Promise<void> };
+    }).client;
+    vi.spyOn(client, 'ensureExecutionEndpointReady').mockResolvedValue();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      content: 'done', metadata: { status: 'completed', success: true },
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const plan = await adapter.buildPlan(makeAction({
+      parameters: {
+        userId: 'candidate-owner', ironclawChannel: 'candidate-channel', value: 'safe',
+        nested: {
+          userId: 'nested-spoof',
+          accessToken: 'nested-access-secret',
+          note: 'Bearer nested-bearer-secret',
+        },
+        list: [
+          { Authorization: 'Bearer array-secret' },
+          'ya29.recognizable-token-secret',
+        ],
+      },
+    }));
+    plan.executionOwnerId = 'trusted-owner';
+    plan.executionChannel = 'trusted-channel';
+
+    await adapter.execute(plan);
+    const request = fetchMock.mock.calls[0]![1] as RequestInit;
+    const body = JSON.parse(request.body as string) as Record<string, unknown>;
+    expect(body['user_id']).toBe('trusted-owner');
+    expect(body['channel']).toBe('trusted-channel');
+    const metadata = body['metadata'] as Record<string, unknown>;
+    const action = metadata['action'] as Record<string, unknown>;
+    expect(action['parameters']).toMatchObject({
+      value: 'safe',
+      nested: {
+        accessToken_ref: '[managed-by-ironclaw]',
+        note: 'Bearer [managed-by-ironclaw]',
+      },
+      list: [
+        { Authorization_ref: '[managed-by-ironclaw]' },
+        '[managed-by-ironclaw]',
+      ],
+    });
+    expect((action['parameters'] as { nested: Record<string, unknown> }).nested)
+      .not.toHaveProperty('userId');
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toMatch(/candidate-owner|candidate-channel|nested-spoof|nested-access-secret|nested-bearer-secret|array-secret|ya29\./);
   });
 });

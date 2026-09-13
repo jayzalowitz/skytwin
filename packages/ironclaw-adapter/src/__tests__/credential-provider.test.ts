@@ -9,7 +9,7 @@ const { mockOauthRepository, mockCredentialDispatchLeaseRepository, mockCredenti
     updateEncryptedIfCurrent: vi.fn(),
   },
   mockCredentialDispatchLeaseRepository: {
-    start: vi.fn(),
+    bindCredential: vi.fn(),
     terminalize: vi.fn(),
   },
   mockCredentialVaultMetaRepository: { getForUser: vi.fn() },
@@ -24,7 +24,7 @@ const { mockOauthRepository, mockCredentialDispatchLeaseRepository, mockCredenti
 
 vi.mock('@skytwin/db', () => ({
   oauthRepository: mockOauthRepository,
-  credentialDispatchLeaseRepository: mockCredentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository: mockCredentialDispatchLeaseRepository,
   credentialVaultMetaRepository: mockCredentialVaultMetaRepository,
   serviceCredentialRepository: mockServiceCredentialRepository,
   readColumn: mockReadColumn,
@@ -58,7 +58,7 @@ describe('DbCredentialProvider', () => {
     mockOauthRepository.rotateTokenIfCurrent.mockReset();
     mockOauthRepository.rotateEncryptedTokenIfCurrent.mockReset();
     mockOauthRepository.updateEncryptedIfCurrent.mockReset();
-    mockCredentialDispatchLeaseRepository.start.mockReset();
+    mockCredentialDispatchLeaseRepository.bindCredential.mockReset();
     mockCredentialDispatchLeaseRepository.terminalize.mockReset();
     mockCredentialVaultMetaRepository.getForUser.mockReset();
     mockCredentialVaultMetaRepository.getForUser.mockResolvedValue(null);
@@ -482,13 +482,18 @@ describe('DbCredentialProvider', () => {
     });
   });
 
-  it('concurrent refresh requests for same user+provider return the same promise', async () => {
-    mockOauthRepository.getToken.mockResolvedValue({
+  it('coalesces implicit and explicit account aliases for one credential refresh', async () => {
+    const expired = {
+      id: 'token-row',
+      credential_revision: 'revision-1',
+      account_email: 'work@example.com',
       access_token: 'old-access',
       refresh_token: 'refresh-123',
       expires_at: new Date(Date.now() - 1000),
       scopes: ['email'],
-    });
+    };
+    mockOauthRepository.getToken.mockResolvedValue(expired);
+    mockOauthRepository.getTokenByAccount.mockResolvedValue(expired);
 
     let resolveRefresh!: (value: Response) => void;
     const pendingFetch = new Promise<Response>((resolve) => {
@@ -502,7 +507,7 @@ describe('DbCredentialProvider', () => {
 
     // Fire two concurrent requests
     const promise1 = provider.getAccessToken('user_1', 'google');
-    const promise2 = provider.getAccessToken('user_1', 'google');
+    const promise2 = provider.getAccessToken('user_1', 'google', 'work@example.com');
 
     // Resolve the single fetch call
     resolveRefresh({
@@ -633,7 +638,7 @@ describe('DbCredentialProvider', () => {
       expires_at: new Date(Date.now() + 120_000),
       scopes: ['email'],
     });
-    mockCredentialDispatchLeaseRepository.start.mockResolvedValue({
+    mockCredentialDispatchLeaseRepository.bindCredential.mockResolvedValue({
       success: true,
       grant: {
         accountEmail: 'a@example.com',
@@ -647,6 +652,7 @@ describe('DbCredentialProvider', () => {
       userId: 'user_1', provider: 'google', decisionId: 'decision_1',
       actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
       policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
     };
 
     await expect(provider.startDispatch(input)).resolves.toMatchObject({
@@ -654,18 +660,118 @@ describe('DbCredentialProvider', () => {
       accessToken: 'read-token',
       capability: 'capability',
     });
-    expect(mockCredentialDispatchLeaseRepository.start).toHaveBeenCalledWith({
-      ...input,
+    expect(mockCredentialDispatchLeaseRepository.bindCredential).toHaveBeenCalledWith({
+      userId: input.userId, provider: input.provider, decisionId: input.decisionId,
+      actionId: input.actionId, executionPlanId: input.executionPlanId,
+      capability: 'dispatch-capability', leaseGeneration: 'dispatch-generation',
       accountEmail: 'a@example.com',
       expectedOAuthTokenId: 'token-row',
       expectedCredentialRevision: 'revision-1',
-      expectedAuthorityRevision: 'authority-1',
-      expectedPolicyAuthorityRevision: 'policy-authority-1',
       expectedVaultGeneration: undefined,
     });
   });
 
-  it('terminalizes without dispatch when the vault key expires during lease start', async () => {
+  it('refreshes an expired token under its exact generic dispatch capability before binding', async () => {
+    mockOauthRepository.getToken.mockResolvedValue({
+      id: 'token-row', credential_revision: 'revision-1', account_email: 'a@example.com',
+      access_token: 'expired-access', refresh_token: 'refresh-123',
+      expires_at: new Date(Date.now() - 1_000), scopes: ['email'],
+    });
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'fresh-access', expires_in: 3600,
+    }), { status: 200 }));
+    mockOauthRepository.rotateTokenIfCurrent.mockResolvedValue({
+      id: 'token-row', credential_revision: 'revision-2', account_email: 'a@example.com',
+    });
+    mockCredentialDispatchLeaseRepository.bindCredential.mockResolvedValue({
+      success: true,
+      grant: {
+        accountEmail: 'a@example.com', oauthTokenId: 'token-row',
+        capability: 'dispatch-capability', leaseGeneration: 'dispatch-generation',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const input = {
+      userId: 'user_1', provider: 'google', decisionId: 'decision_1',
+      actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
+      policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
+    };
+
+    await expect(provider.startDispatch(input)).resolves.toMatchObject({
+      success: true, accessToken: 'fresh-access',
+    });
+    expect(mockOauthRepository.rotateTokenIfCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedCredentialRevision: 'revision-1',
+        dispatchProof: {
+          userId: 'user_1', provider: 'google', executionPlanId: 'plan_1',
+          capability: 'dispatch-capability', leaseGeneration: 'dispatch-generation',
+        },
+      }),
+    );
+    expect(mockCredentialDispatchLeaseRepository.bindCredential).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedCredentialRevision: 'revision-2' }),
+    );
+  });
+
+  it('migrates a legacy plaintext token under its exact generic dispatch capability', async () => {
+    provider = new DbCredentialProvider({
+      get: () => Buffer.alloc(32, 7),
+      getGeneration: () => 'vault-generation-1',
+    });
+    mockCredentialVaultMetaRepository.getForUser.mockResolvedValue({
+      current_key_version: 2, vault_state: 'unlocked', vault_generation: 'vault-generation-1',
+    });
+    mockOauthRepository.getToken
+      .mockResolvedValueOnce({
+        id: 'legacy-row', credential_revision: 'revision-1', account_email: 'a@example.com',
+        access_token: 'legacy-access', refresh_token: 'legacy-refresh',
+        encrypted_access_token: null, encrypted_refresh_token: null,
+        expires_at: new Date(Date.now() + 120_000), scopes: ['email'],
+      })
+      .mockResolvedValueOnce({
+        id: 'legacy-row', credential_revision: 'revision-2', account_email: 'a@example.com',
+        access_token: null, refresh_token: null,
+        encrypted_access_token: Buffer.from('ciphertext'),
+        encrypted_refresh_token: Buffer.from('refresh-ciphertext'),
+        expires_at: new Date(Date.now() + 120_000), scopes: ['email'],
+      });
+    mockOauthRepository.updateEncryptedIfCurrent.mockResolvedValue(true);
+    mockReadColumn.mockReturnValueOnce({ success: true, value: 'legacy-access' });
+    mockCredentialDispatchLeaseRepository.bindCredential.mockResolvedValue({
+      success: true,
+      grant: {
+        accountEmail: 'a@example.com', oauthTokenId: 'legacy-row',
+        capability: 'dispatch-capability', leaseGeneration: 'dispatch-generation',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const input = {
+      userId: 'user_1', provider: 'google', decisionId: 'decision_1',
+      actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
+      policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
+    };
+
+    await expect(provider.startDispatch(input)).resolves.toMatchObject({
+      success: true, accessToken: 'legacy-access',
+    });
+    expect(mockOauthRepository.updateEncryptedIfCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expectedCredentialRevision: 'revision-1',
+        dispatchProof: {
+          userId: 'user_1', provider: 'google', executionPlanId: 'plan_1',
+          capability: 'dispatch-capability', leaseGeneration: 'dispatch-generation',
+        },
+      }),
+    );
+    expect(mockCredentialDispatchLeaseRepository.bindCredential).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedCredentialRevision: 'revision-2' }),
+    );
+  });
+
+  it('fails closed when the vault key expires during credential binding', async () => {
     let keyLive = true;
     provider = new DbCredentialProvider({
       get: () => keyLive ? Buffer.alloc(32, 7) : null,
@@ -682,7 +788,7 @@ describe('DbCredentialProvider', () => {
       expires_at: new Date(Date.now() + 120_000), scopes: [],
     });
     mockReadColumn.mockReturnValueOnce({ success: true, value: 'decrypted-access' });
-    mockCredentialDispatchLeaseRepository.start.mockImplementation(async () => {
+    mockCredentialDispatchLeaseRepository.bindCredential.mockImplementation(async () => {
       keyLive = false;
       return {
         success: true,
@@ -698,16 +804,14 @@ describe('DbCredentialProvider', () => {
       userId: 'user_1', provider: 'google', decisionId: 'decision_1',
       actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
       policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
     };
 
     await expect(provider.startDispatch(input)).resolves.toEqual({
       success: false,
       error: 'OAuth credential is unavailable while the credential vault is locked.',
     });
-    expect(mockCredentialDispatchLeaseRepository.terminalize).toHaveBeenCalledWith({
-      userId: 'user_1', executionPlanId: 'plan_1', capability: 'capability',
-      leaseGeneration: 'generation', state: 'failed',
-    });
+    expect(mockCredentialDispatchLeaseRepository.terminalize).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -717,7 +821,7 @@ describe('DbCredentialProvider', () => {
       access_token: 'stale-token', refresh_token: 'refresh',
       expires_at: new Date(Date.now() + 120_000), scopes: [],
     });
-    mockCredentialDispatchLeaseRepository.start.mockResolvedValue({
+    mockCredentialDispatchLeaseRepository.bindCredential.mockResolvedValue({
       success: false,
       code: 'credential_unavailable',
       error: 'No active google credential is available for dispatch.',
@@ -727,6 +831,7 @@ describe('DbCredentialProvider', () => {
       userId: 'user_1', provider: 'google', decisionId: 'decision_1',
       actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
       policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
     })).resolves.toEqual({
       success: false,
       error: 'No active google credential is available for dispatch.',

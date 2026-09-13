@@ -26,6 +26,7 @@ import {
   ExecutionRouter,
   IRONCLAW_TRUST_PROFILE,
   NoAdapterError,
+  NoRequestExecutionError,
   OPENCLAW_SKILLS,
   OPENCLAW_TRUST_PROFILE,
   OpenClawAdapter,
@@ -37,6 +38,7 @@ import {
   decisionRepository,
   decisionRepositoryAdapter,
   executionAdmissionRepository,
+  executionDispatchLeaseRepository,
   executionRepository,
   explanationRepository,
   memoryActionOpportunityRepository,
@@ -229,7 +231,7 @@ async function processOpportunity(
 
   const decision = await runAdmitted(deps.signal, () =>
     createDecisionForOpportunity(userId, attempted));
-  const candidate = buildCandidateForOpportunity(attempted, decision.id, user.ironclaw_channel ?? undefined);
+  const candidate = buildCandidateForOpportunity(attempted, decision.id);
   const riskAssessment = new RiskAssessor().assess(candidate);
 
   await decisionRepository.addCandidateAction({
@@ -389,9 +391,11 @@ async function executeAllowedOpportunity(
 
   let currentAuthorityRevision: string | null = null;
   let currentPolicyAuthorityRevision: string | null = null;
+  let currentIronclawChannel: string | null = null;
   const evaluateCurrentPolicy = async (): Promise<PolicyDecision> => {
     currentAuthorityRevision = null;
     currentPolicyAuthorityRevision = null;
+    currentIronclawChannel = null;
     const currentUser = await userRepository.findById(userId);
     if (!currentUser) {
       return {
@@ -401,6 +405,7 @@ async function executeAllowedOpportunity(
       };
     }
     currentAuthorityRevision = currentUser.execution_authority_revision;
+    currentIronclawChannel = currentUser.ironclaw_channel;
     currentPolicyAuthorityRevision = await getPolicyAuthorityRevision();
     const evaluator = deps.policyEvaluator ?? new PolicyEvaluator(policyRepositoryAdapter);
     const policies = deps.loadPolicies
@@ -542,8 +547,12 @@ async function executeAllowedOpportunity(
             executionPlanId: admission.plan.id,
             credentialAuthorityRevision: currentAuthorityRevision,
             credentialPolicyAuthorityRevision: currentPolicyAuthorityRevision,
+            dispatchAuthorityId: admission.barrier.id,
+            dispatchAuthorityUpdatedAt: admission.barrier.updated_at.toISOString(),
           },
-        }, riskAssessment, userId));
+        }, riskAssessment, userId, {
+          ironclawChannel: currentIronclawChannel ?? undefined,
+        }));
       if (result.status !== 'completed' && result.status !== 'failed') {
         throw new AmbiguousExecutionError(
           `Memory action execution returned non-terminal status ${result.status}`,
@@ -551,6 +560,66 @@ async function executeAllowedOpportunity(
       }
     } catch (err) {
       const message = normalizeExecutionError(err);
+      if (err instanceof NoRequestExecutionError) {
+        try {
+          await executionAdmissionRepository.failBeforeDispatch({
+            admission,
+            userId,
+            error: message,
+          });
+        } catch {
+          const report = buildReport(
+            opportunity,
+            'execution_ambiguous',
+            'Execution refusal could not be durably reconciled.',
+            'Reconcile the admission before considering another execution.',
+            deps.now,
+            {
+              decisionId: candidate.decisionId,
+              executionPlanId: admission.plan.id,
+              adapterName: routing.selectedAdapter,
+              routeReason: message,
+            },
+          );
+          await bestEffortMemoryLedger('freeze unreconciled memory refusal', () =>
+            memoryActionOpportunityRepository.markStatus({
+              id: opportunity.id,
+              status: 'execution_ambiguous',
+              report,
+              decisionId: candidate.decisionId,
+              executionPlanId: admission.plan.id,
+              adapterName: routing.selectedAdapter,
+              routeReason: message,
+              nextStep: report.nextStep,
+            }));
+          return report;
+        }
+        const report = buildReport(
+          opportunity,
+          'execution_failed',
+          `Execution was refused before request start: ${message}`,
+          'Review current authority before creating another opportunity.',
+          deps.now,
+          {
+            decisionId: candidate.decisionId,
+            executionPlanId: admission.plan.id,
+            adapterName: routing.selectedAdapter,
+            routeReason: message,
+          },
+        );
+        await bestEffortMemoryLedger('record pre-request memory refusal', () =>
+          memoryActionOpportunityRepository.markStatus({
+            id: opportunity.id,
+            status: 'execution_failed',
+            report,
+            decisionId: candidate.decisionId,
+            executionPlanId: admission.plan.id,
+            adapterName: routing.selectedAdapter,
+            routeReason: message,
+            nextStep: report.nextStep,
+          }));
+        return report;
+      }
       await bestEffortMemoryLedger('record ambiguous execution admission', () =>
         executionAdmissionRepository.observeTerminal({
           id: admission.barrier.id,
@@ -852,7 +921,6 @@ async function createDecisionForOpportunity(
 function buildCandidateForOpportunity(
   opportunity: MemoryActionOpportunitySnapshot,
   decisionId: string,
-  ironclawChannel?: string,
 ): CandidateAction {
   const actionType = opportunity.actionType;
   const parameters: Record<string, unknown> = {
@@ -865,8 +933,6 @@ function buildCandidateForOpportunity(
     opportunityId: opportunity.id,
     actionPlan: opportunity.actionPlan,
   };
-  if (ironclawChannel) parameters['ironclawChannel'] = ironclawChannel;
-
   if (actionType === 'create_task' || actionType === 'set_reminder') {
     parameters['description'] = opportunity.reason;
     parameters['priority'] = opportunity.novelty === 'connection' ? 'high' : 'medium';
@@ -1157,7 +1223,7 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
     );
   }
 
-  return new ExecutionRouter(registry);
+  return new ExecutionRouter(registry, executionDispatchLeaseRepository);
 }
 
 async function getStoredCredentials(service: string): Promise<Record<string, string>> {

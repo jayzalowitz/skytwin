@@ -8,7 +8,7 @@ import type {
   RollbackResult,
   StepResult,
 } from '@skytwin/shared-types';
-import type { IronClawAdapter } from './ironclaw-adapter.js';
+import { PreRequestExecutionError, type IronClawAdapter } from './ironclaw-adapter.js';
 import type { ActionHandlerRegistry } from './handler-registry.js';
 
 /**
@@ -29,6 +29,11 @@ export class DirectExecutionAdapter implements IronClawAdapter {
   constructor(private readonly registry: ActionHandlerRegistry) {}
 
   async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
+    if (!this.registry.getHandler(action.actionType)) {
+      throw new PreRequestExecutionError(
+        `No handler registered for action type: ${action.actionType}`,
+      );
+    }
     const planId = (action.parameters['executionPlanId'] as string | undefined)
       ?? `plan_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = new Date();
@@ -89,7 +94,7 @@ export class DirectExecutionAdapter implements IronClawAdapter {
       if (!handler) {
         // Throw (not soft-fail) so the execution router's fallback chain
         // continues to the next adapter (e.g. OpenClaw).
-        throw new Error(
+        throw new PreRequestExecutionError(
           `No handler registered for action type: ${step.type} — falling back to next adapter`,
         );
       }
@@ -141,7 +146,7 @@ export class DirectExecutionAdapter implements IronClawAdapter {
     for (const step of plan.steps) {
       const handler = this.registry.getHandler(step.type);
       if (!handler) {
-        throw new Error(
+        throw new PreRequestExecutionError(
           `No handler registered for action type: ${step.type} — falling back to next adapter`,
         );
       }

@@ -17,6 +17,10 @@ interface DiscoveredAdapter {
   adapter: IronClawAdapter;
 }
 
+export const RESERVED_ADAPTER_NAMES = new Set([
+  'ironclaw', 'direct', 'openclaw', 'mcp-host',
+]);
+
 /**
  * Scan a directory for adapter plugin subdirectories and register them.
  *
@@ -67,8 +71,7 @@ export async function discoverAdapters(
       const { manifest } = result;
 
       // Block plugins that try to use reserved built-in adapter names
-      const RESERVED_NAMES = new Set(['ironclaw', 'direct', 'openclaw']);
-      if (RESERVED_NAMES.has(manifest.name)) {
+      if (RESERVED_ADAPTER_NAMES.has(manifest.name)) {
         console.warn(`[adapter-discovery] Plugin "${dirName}" tried to use reserved name "${manifest.name}" — skipped`);
         continue;
       }

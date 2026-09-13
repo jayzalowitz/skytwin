@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
-import { InvariantViolationError } from '@skytwin/execution-router';
+import { InvariantViolationError, NoRequestExecutionError } from '@skytwin/execution-router';
 
 const {
   mockInterpret,
@@ -31,6 +31,7 @@ const {
   mockGetOAuthToken,
   mockCurrentPolicyEvaluate,
   mockGetAllPolicies,
+  mockFindUser,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -67,6 +68,7 @@ const {
   mockGetOAuthToken: vi.fn(),
   mockCurrentPolicyEvaluate: vi.fn(),
   mockGetAllPolicies: vi.fn(),
+  mockFindUser: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -116,10 +118,7 @@ vi.mock('@skytwin/db', () => ({
   },
   oauthRepository: { getToken: mockGetOAuthToken },
   executionRepository: mockExecutionRepository,
-  userRepository: { findById: vi.fn().mockResolvedValue({
-    id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer',
-    ironclaw_channel: 'skytwin', execution_authority_revision: 'authority-revision-1',
-  }) },
+  userRepository: { findById: mockFindUser },
   aiProviderRepository: { getEnabledForUser: mockGetProviders },
   inferenceReceiptRepository: {
     createManyForUser: mockCreateReceipts,
@@ -326,6 +325,10 @@ describe('Events API routes', () => {
     mockGetProviders.mockResolvedValue([]);
     mockGetOAuthToken.mockResolvedValue(null);
     mockGetAllPolicies.mockResolvedValue([]);
+    mockFindUser.mockResolvedValue({
+      id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer',
+      ironclaw_channel: 'skytwin', execution_authority_revision: 'authority-revision-1',
+    });
     mockCurrentPolicyEvaluate.mockResolvedValue({
       allowed: true,
       requiresApproval: false,
@@ -337,7 +340,7 @@ describe('Events API routes', () => {
       completion: { continuation: unknown },
     ) => ({ receipts: inputs, continuation: completion.continuation }));
     mockGetIngestState.mockResolvedValue(null);
-    mockClaimExecution.mockResolvedValue({ id: 'plan-1' });
+    mockClaimExecution.mockResolvedValue({ id: 'plan-1', dispatchAuthorityUpdatedAt: new Date() });
     mockIsExecutionDispatchable.mockResolvedValue(true);
     mockMarkExecutionTerminal.mockResolvedValue(true);
     mockMarkExecutionFailedBeforeDispatch.mockResolvedValue(true);
@@ -469,7 +472,7 @@ describe('Events API routes', () => {
       continuation: typeof claimed,
     ) => {
       claimed = structuredClone(continuation!);
-      return { id: 'plan-1' };
+      return { id: 'plan-1', dispatchAuthorityUpdatedAt: new Date() };
     });
     let executed: Record<string, unknown> | undefined;
     mockGetExecutionRouter.mockResolvedValue({
@@ -1512,7 +1515,7 @@ describe('Events API routes', () => {
     expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
   });
 
-  it('does not trust an exported error class as proof that no effect occurred', async () => {
+  it('durably closes a router-authenticated no-request refusal as failed', async () => {
     async function* rejectedBeforeDispatch() {
       throw new InvariantViolationError('risk binding failed before dispatch');
     }
@@ -1525,8 +1528,49 @@ describe('Events API routes', () => {
     });
 
     expect(res.status).toBe(200);
-    expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect(mockMarkExecutionFailedBeforeDispatch).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      'decision-1',
+      'plan-1',
+      '[redacted:execution-error]',
+    );
     expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
-    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('failed');
+  });
+
+  it('lets request-start refuse a channel revision changed during final policy awaits', async () => {
+    let finalPolicyAwaited = false;
+    let policyReads = 0;
+    mockFindUser.mockResolvedValue({
+      id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer',
+      ironclaw_channel: 'old-channel', execution_authority_revision: 'old-channel-revision',
+    });
+    mockGetAllPolicies.mockImplementation(async () => {
+      policyReads += 1;
+      if (policyReads === 2) finalPolicyAwaited = true;
+      return [];
+    });
+    const stream = vi.fn(async function* (
+      action: { parameters: Record<string, unknown> },
+      _risk: unknown,
+      _userId: string,
+      context: { ironclawChannel?: string },
+    ) {
+      expect(finalPolicyAwaited).toBe(true);
+      expect(action.parameters['credentialAuthorityRevision']).toBe('old-channel-revision');
+      expect(context.ironclawChannel).toBe('old-channel');
+      throw new NoRequestExecutionError('channel authority changed before request start');
+    });
+    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(stream).toHaveBeenCalledOnce();
+    expect(mockMarkExecutionFailedBeforeDispatch).toHaveBeenCalledOnce();
+    expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('failed');
   });
 });

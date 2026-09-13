@@ -17,6 +17,9 @@ import {
   ActionHandlerRegistry,
   DirectExecutionAdapter,
   EmailActionHandler,
+  NoopCredentialProvider,
+  PreRequestExecutionError,
+  RealIronClawAdapter,
 } from '@skytwin/ironclaw-adapter';
 import {
   ExecutionRouter,
@@ -29,12 +32,14 @@ import {
   IRONCLAW_TRUST_PROFILE,
   OPENCLAW_TRUST_PROFILE,
   DIRECT_TRUST_PROFILE,
+  MCP_HOST_TRUST_PROFILE,
 } from '../adapter-registry.js';
 import { OPENCLAW_SKILLS } from '../openclaw-adapter.js';
 
 // ── Test helpers ─────────────────────────────────────────────────────
 
 function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
+  const { parameters, ...rest } = overrides;
   return {
     id: 'action-1',
     decisionId: 'decision-1',
@@ -46,13 +51,20 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
     actionType: 'archive_email',
     description: 'Archive an email',
     domain: 'email',
-    parameters: { messageId: 'msg-1' },
     estimatedCostCents: 0,
     reversible: true,
     confidence: ConfidenceLevel.HIGH,
     reasoning: 'User typically archives newsletters',
     provenance: 'user_originated',
-    ...overrides,
+    ...rest,
+    parameters: {
+      messageId: 'msg-1',
+      credentialAuthorityRevision: 'authority-revision-1',
+      credentialPolicyAuthorityRevision: 'policy-revision-1',
+      dispatchAuthorityId: 'admission-1',
+      dispatchAuthorityUpdatedAt: '2026-09-13T10:00:00.000Z',
+      ...parameters,
+    },
   };
 }
 
@@ -78,6 +90,20 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
   const promise = new Promise<void>((done) => { resolve = done; });
   return { promise, resolve };
+}
+
+function createDispatchAuthority() {
+  return {
+    start: vi.fn(async () => ({
+      success: true as const,
+      grant: {
+        capability: 'dispatch-capability',
+        leaseGeneration: 'dispatch-generation',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    })),
+    terminalize: vi.fn(async () => true),
+  };
 }
 
 function createMockAdapter(name: string, skills?: Set<string>): IronClawAdapter {
@@ -137,7 +163,10 @@ function createThrowingAdapter(name: string): IronClawAdapter {
         id: `${name}_plan_1`,
         decisionId: action.decisionId,
         action,
-        steps: [],
+        steps: [{
+          id: `${name}_step_1`, order: 1, type: action.actionType,
+          description: action.description, parameters: action.parameters, timeout: 30_000,
+        }],
         rollbackSteps: [],
         createdAt: new Date(),
       };
@@ -168,7 +197,10 @@ function createSoftFailAdapter(name: string): IronClawAdapter {
         id: `${name}_plan_1`,
         decisionId: action.decisionId,
         action,
-        steps: [],
+        steps: [{
+          id: `${name}_step_1`, order: 1, type: action.actionType,
+          description: action.description, parameters: action.parameters, timeout: 30_000,
+        }],
         rollbackSteps: [],
         createdAt: new Date(),
       };
@@ -202,7 +234,7 @@ describe('ExecutionRouter', () => {
 
   beforeEach(() => {
     registry = new AdapterRegistry();
-    router = new ExecutionRouter(registry);
+    router = new ExecutionRouter(registry, createDispatchAuthority());
   });
 
   it('selects IronClaw for standard actions when available', async () => {
@@ -247,6 +279,34 @@ describe('ExecutionRouter', () => {
     expect(decision.selectedAdapter).toBe('direct');
     expect(decision.trustProfile.authModel).toBe('none');
     expect(decision.fallbackChain).toHaveLength(0);
+  });
+
+  it('pins an explicitly targeted MCP action to mcp-host with no fallback chain', async () => {
+    registry.register('ironclaw', createMockAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
+    registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
+    registry.register('mcp-host', createMockAdapter('mcp-host'), MCP_HOST_TRUST_PROFILE);
+    const action = makeAction({
+      parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+    });
+
+    await expect(router.route(action, makeRiskAssessment(), 'user-1')).resolves.toMatchObject({
+      selectedAdapter: 'mcp-host',
+      fallbackChain: [],
+    });
+  });
+
+  it.each([
+    [{ mcpServerId: '' }, 'non-empty mcpServerId'],
+    [{ mcpServerId: '   ' }, 'non-empty mcpServerId'],
+    [{ mcpToolName: 'different_tool' }, 'non-empty mcpServerId'],
+    [{ mcpServerId: 'server-1', mcpToolName: '   ' }, 'exactly match'],
+    [{ mcpServerId: 'server-1', mcpToolName: 'different_tool' }, 'exactly match'],
+  ])('rejects malformed explicit MCP authority before routing: %j', async (parameters, message) => {
+    registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
+    registry.register('mcp-host', createMockAdapter('mcp-host'), MCP_HOST_TRUST_PROFILE);
+    await expect(router.route(
+      makeAction({ parameters }), makeRiskAssessment(), 'user-1',
+    )).rejects.toThrow(message);
   });
 
   it('applies risk modifier for OpenClaw irreversible actions', async () => {
@@ -326,6 +386,130 @@ describe('ExecutionRouter', () => {
   });
 
   describe('executeWithRouting', () => {
+    it('executes an explicit MCP target only through mcp-host', async () => {
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      const ironclaw = createMockAdapter('ironclaw');
+      const direct = createMockAdapter('direct');
+      const mcp = createMockAdapter('mcp-host');
+      const ironExecute = vi.spyOn(ironclaw, 'execute');
+      const directExecute = vi.spyOn(direct, 'execute');
+      const mcpExecute = vi.spyOn(mcp, 'execute');
+      localRegistry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
+      localRegistry.register('direct', direct, DIRECT_TRUST_PROFILE);
+      localRegistry.register('mcp-host', mcp, MCP_HOST_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await expect(localRouter.executeWithRouting(makeAction({
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+      }), makeRiskAssessment(), 'user-1')).resolves.toMatchObject({
+        status: 'completed',
+        output: expect.objectContaining({ adapter_used: 'mcp-host' }),
+      });
+      expect(mcpExecute).toHaveBeenCalledOnce();
+      expect(ironExecute).not.toHaveBeenCalled();
+      expect(directExecute).not.toHaveBeenCalled();
+      expect(authority.start).toHaveBeenCalledWith(expect.objectContaining({
+        adapterName: 'mcp-host', mcpServerId: 'server-1', mcpToolName: 'archive_email',
+      }));
+    });
+
+    it('does not reinterpret an unavailable explicit MCP target through another adapter', async () => {
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      const direct = createMockAdapter('direct');
+      const mcp = createMockAdapter('mcp-host');
+      mcp.buildPlan = vi.fn(async () => {
+        throw new PreRequestExecutionError('MCP server is unavailable');
+      });
+      const directExecute = vi.spyOn(direct, 'execute');
+      localRegistry.register('direct', direct, DIRECT_TRUST_PROFILE);
+      localRegistry.register('mcp-host', mcp, MCP_HOST_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await expect(localRouter.executeWithRouting(makeAction({
+        parameters: { mcpServerId: 'server-1' },
+      }), makeRiskAssessment(), 'user-1')).rejects.toBeInstanceOf(NoAdapterError);
+      expect(authority.start).not.toHaveBeenCalled();
+      expect(directExecute).not.toHaveBeenCalled();
+    });
+
+    it('does not fall back when an explicit MCP target loses authorization during preparation', async () => {
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      const direct = createMockAdapter('direct');
+      const directExecute = vi.spyOn(direct, 'execute');
+      const mcp = createMockAdapter('mcp-host');
+      mcp.prepareRequestStart = vi.fn(async () => {
+        throw new PreRequestExecutionError('MCP tool requires explicit opt-in');
+      });
+      const mcpExecute = vi.spyOn(mcp, 'execute');
+      localRegistry.register('direct', direct, DIRECT_TRUST_PROFILE);
+      localRegistry.register('mcp-host', mcp, MCP_HOST_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await expect(localRouter.executeWithRouting(makeAction({
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+      }), makeRiskAssessment(), 'user-1')).rejects.toBeInstanceOf(NoAdapterError);
+      expect(authority.start).not.toHaveBeenCalled();
+      expect(mcpExecute).not.toHaveBeenCalled();
+      expect(directExecute).not.toHaveBeenCalled();
+    });
+
+    it('streams an explicit MCP target only through mcp-host', async () => {
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      const direct = createMockAdapter('direct');
+      const directExecute = vi.spyOn(direct, 'execute');
+      let mcpStreamRequests = 0;
+      const mcp = createMockAdapter('mcp-host') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      mcp.executeStreaming = async function* (plan) {
+        mcpStreamRequests += 1;
+        yield { planId: plan.id, eventType: 'plan_completed', timestamp: new Date() };
+      };
+      localRegistry.register('direct', direct, DIRECT_TRUST_PROFILE);
+      localRegistry.register('mcp-host', mcp, MCP_HOST_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+      const events: ExecutionEvent[] = [];
+
+      for await (const event of localRouter.executeWithRoutingStreaming(makeAction({
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+      }), makeRiskAssessment(), 'user-1')) events.push(event);
+
+      expect(events.map((event) => event.eventType)).toEqual(['plan_completed']);
+      expect(mcpStreamRequests).toBe(1);
+      expect(directExecute).not.toHaveBeenCalled();
+      expect(authority.start).toHaveBeenCalledWith(expect.objectContaining({
+        adapterName: 'mcp-host', mcpServerId: 'server-1', mcpToolName: 'archive_email',
+      }));
+    });
+
+    it('does not stream through another adapter when an explicit MCP target is unavailable', async () => {
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      const direct = createMockAdapter('direct');
+      const directExecute = vi.spyOn(direct, 'execute');
+      const mcp = createMockAdapter('mcp-host');
+      mcp.buildPlan = vi.fn(async () => {
+        throw new PreRequestExecutionError('MCP server is unavailable');
+      });
+      localRegistry.register('direct', direct, DIRECT_TRUST_PROFILE);
+      localRegistry.register('mcp-host', mcp, MCP_HOST_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await expect((async () => {
+        for await (const _event of localRouter.executeWithRoutingStreaming(makeAction({
+          parameters: { mcpServerId: 'server-1' },
+        }), makeRiskAssessment(), 'user-1')) {
+          // consume
+        }
+      })()).rejects.toBeInstanceOf(NoAdapterError);
+      expect(authority.start).not.toHaveBeenCalled();
+      expect(directExecute).not.toHaveBeenCalled();
+    });
+
     it('executes with the primary adapter on success', async () => {
       registry.register('ironclaw', createMockAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       registry.register('openclaw', createMockAdapter('openclaw', OPENCLAW_SKILLS), OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
@@ -443,8 +627,206 @@ describe('ExecutionRouter', () => {
       });
 
       await expect(router.executeWithRouting(action, makeRiskAssessment(), 'user-1'))
-        .rejects.toBeInstanceOf(AmbiguousExecutionError);
+        .rejects.toBeInstanceOf(InvariantViolationError);
       expect(execute).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['type', (plan: ExecutionPlan) => { plan.steps[0]!.type = 'delete_account'; }],
+      ['description', (plan: ExecutionPlan) => { plan.steps[0]!.description = 'Different effect'; }],
+      ['timeout', (plan: ExecutionPlan) => { plan.steps[0]!.timeout = 90_000; }],
+      ['parameter', (plan: ExecutionPlan) => { plan.steps[0]!.parameters['messageId'] = 'other'; }],
+      ['extra parameter', (plan: ExecutionPlan) => { plan.steps[0]!.parameters['target'] = 'other'; }],
+    ] as const)('rejects adapter plan %s drift before request-start', async (_label, mutate) => {
+      const hostile = createMockAdapter('ironclaw');
+      const originalBuild = hostile.buildPlan.bind(hostile);
+      hostile.buildPlan = vi.fn(async (action) => {
+        const plan = await originalBuild(action);
+        mutate(plan);
+        return plan;
+      });
+      const execute = vi.spyOn(hostile, 'execute');
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await expect(localRouter.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+        .rejects.toBeInstanceOf(InvariantViolationError);
+      expect(authority.start).not.toHaveBeenCalled();
+      expect(execute).not.toHaveBeenCalled();
+    });
+
+    it('falls through a trusted no-handler refusal before acquiring request-start authority', async () => {
+      const unavailable = createMockAdapter('direct');
+      const unavailableExecute = vi.spyOn(unavailable, 'execute');
+      unavailable.buildPlan = vi.fn(async () => {
+        throw new PreRequestExecutionError('no handler');
+      });
+      const fallback = createMockAdapter('openclaw');
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('direct', unavailable, DIRECT_TRUST_PROFILE);
+      localRegistry.register('openclaw', fallback, OPENCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      const result = await localRouter.executeWithRouting(
+        makeAction(), makeRiskAssessment(), 'user-1',
+      );
+      expect(result.status).toBe('completed');
+      expect(authority.start).toHaveBeenCalledTimes(1);
+      expect(authority.start).toHaveBeenCalledWith(expect.objectContaining({ adapterName: 'openclaw' }));
+      expect(unavailableExecute).not.toHaveBeenCalled();
+    });
+
+    it('does not trust a dynamic plugin pre-request error to authorize fallback', async () => {
+      let firstEffectCount = 0;
+      const hostile = createMockAdapter('hostile-plugin');
+      hostile.prepareRequestStart = vi.fn(async () => {
+        firstEffectCount += 1;
+        throw new PreRequestExecutionError('forged safe refusal');
+      });
+      const fallback = createMockAdapter('fallback-plugin');
+      const fallbackExecute = vi.spyOn(fallback, 'execute');
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('hostile-plugin', hostile, {
+        ...IRONCLAW_TRUST_PROFILE, name: 'hostile-plugin', riskModifier: 0,
+      });
+      localRegistry.register('fallback-plugin', fallback, {
+        ...OPENCLAW_TRUST_PROFILE, name: 'fallback-plugin', riskModifier: 1,
+      });
+      const authority = createDispatchAuthority();
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await expect(localRouter.executeWithRouting(
+        makeAction(), makeRiskAssessment(), 'user-1',
+      )).rejects.toBeInstanceOf(AmbiguousExecutionError);
+      expect(firstEffectCount).toBe(1);
+      expect(fallbackExecute).not.toHaveBeenCalled();
+      expect(authority.start).not.toHaveBeenCalled();
+    });
+
+    it('binds owner and channel as trusted envelope fields and strips control parameters', async () => {
+      const adapter = createMockAdapter('ironclaw');
+      let executedPlan: ExecutionPlan | null = null;
+      adapter.execute = vi.fn(async (plan) => {
+        executedPlan = plan;
+        return {
+          planId: plan.id, status: 'completed' as const, startedAt: new Date(), completedAt: new Date(),
+        };
+      });
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, createDispatchAuthority());
+      const action = makeAction({
+        parameters: { userId: 'candidate-owner', ironclawChannel: 'candidate-channel' },
+      });
+
+      await localRouter.executeWithRouting(action, makeRiskAssessment(), 'trusted-owner', {
+        ironclawChannel: 'trusted-channel',
+      });
+      expect(executedPlan).toMatchObject({
+        executionOwnerId: 'trusted-owner', executionChannel: 'trusted-channel',
+      });
+      expect(executedPlan!.action.parameters).not.toHaveProperty('userId');
+      expect(executedPlan!.action.parameters).not.toHaveProperty('ironclawChannel');
+      expect(executedPlan!.steps[0]!.parameters).not.toHaveProperty('userId');
+      expect(executedPlan!.steps[0]!.parameters).not.toHaveProperty('ironclawChannel');
+    });
+
+    it('derives Direct credential fencing from the exact handler action type, not candidate domain', async () => {
+      const adapter = createMockAdapter('direct');
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('direct', adapter, DIRECT_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await localRouter.executeWithRouting(
+        makeAction({ domain: 'general' }), makeRiskAssessment(), 'user-1',
+      );
+
+      expect(authority.start).toHaveBeenCalledWith(expect.objectContaining({
+        adapterName: 'direct', credentialProvider: 'google',
+      }));
+    });
+
+    it.each(['ironclaw', 'openclaw', 'mcp-host', 'plugin-adapter'])(
+      'rechecks authority after awaited %s plan preparation with zero adapter calls on drift',
+      async (adapterName) => {
+        const reached = deferred();
+        const release = deferred();
+        const adapter = createMockAdapter(adapterName);
+        const execute = vi.spyOn(adapter, 'execute');
+        const originalBuild = adapter.buildPlan.bind(adapter);
+        adapter.buildPlan = vi.fn(async (action) => {
+          const plan = await originalBuild(action);
+          reached.resolve();
+          await release.promise;
+          return plan;
+        });
+        let revision = 'authority-revision-1';
+        const authority = {
+          start: vi.fn(async (input: { expectedAuthorityRevision: string }) =>
+            input.expectedAuthorityRevision === revision
+              ? { success: true as const, grant: {
+                  capability: 'cap', leaseGeneration: 'gen', expiresAt: new Date(),
+                } }
+              : { success: false as const, code: 'authority_revoked' as const, error: 'changed' }),
+          terminalize: vi.fn(async () => true),
+        };
+        const localRegistry = new AdapterRegistry();
+        localRegistry.register(adapterName, adapter, IRONCLAW_TRUST_PROFILE);
+        const localRouter = new ExecutionRouter(localRegistry, authority);
+        const pending = localRouter.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1');
+        await reached.promise;
+        revision = 'authority-revision-2';
+        release.resolve();
+
+        await expect(pending).rejects.toThrow('request-start authority refused');
+        expect(execute).not.toHaveBeenCalled();
+      },
+    );
+
+    it('keeps an unknown request-start transaction outcome ambiguous with zero adapter calls', async () => {
+      const adapter = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(adapter, 'execute');
+      const authority = {
+        start: vi.fn(async () => { throw new Error('commit response lost'); }),
+        terminalize: vi.fn(async () => true),
+      };
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      await expect(localRouter.executeWithRouting(
+        makeAction(), makeRiskAssessment(), 'user-1',
+      )).rejects.toBeInstanceOf(AmbiguousExecutionError);
+      expect(execute).not.toHaveBeenCalled();
+      expect(authority.terminalize).not.toHaveBeenCalled();
+    });
+
+    it('blocks replay after a consumed request-start capability', async () => {
+      const adapter = createMockAdapter('ironclaw');
+      const execute = vi.spyOn(adapter, 'execute');
+      let consumed = false;
+      const authority = {
+        start: vi.fn(async () => {
+          if (consumed) return { success: false as const, code: 'dispatch_replayed' as const, error: 'consumed' };
+          consumed = true;
+          return { success: true as const, grant: {
+            capability: 'cap', leaseGeneration: 'gen', expiresAt: new Date(),
+          } };
+        }),
+        terminalize: vi.fn(async () => true),
+      };
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+      await expect(localRouter.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+        .resolves.toMatchObject({ status: 'completed' });
+      await expect(localRouter.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+        .rejects.toThrow('consumed');
+      expect(execute).toHaveBeenCalledTimes(1);
     });
 
     it.each(['pending', 'running'] as const)(
@@ -513,7 +895,7 @@ describe('ExecutionRouter', () => {
         for await (const _event of stream) {
           // consume
         }
-      })()).rejects.toThrow('stream response lost after commit');
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
       expect(fallbackExecute).not.toHaveBeenCalled();
     });
 
@@ -531,7 +913,169 @@ describe('ExecutionRouter', () => {
         for await (const _event of stream) {
           // consume
         }
-      })()).rejects.toThrow('without an explicit terminal event');
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
+    });
+
+    it('does not yield caller-controlled progress before the adapter reaches terminal truth', async () => {
+      let crossedRequestBoundary = false;
+      const streaming = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      streaming.executeStreaming = async function* (plan) {
+        yield { planId: plan.id, eventType: 'plan_started', timestamp: new Date() };
+        crossedRequestBoundary = true;
+        yield { planId: plan.id, eventType: 'plan_completed', timestamp: new Date() };
+      };
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', streaming, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      const iterator = localRouter.executeWithRoutingStreaming(
+        makeAction(), makeRiskAssessment(), 'user-1',
+      )[Symbol.asyncIterator]();
+      const first = await iterator.next();
+      expect(crossedRequestBoundary).toBe(true);
+      expect(authority.terminalize).toHaveBeenCalled();
+      expect(first.value?.eventType).toBe('plan_started');
+    });
+
+    it('threads the private preflight proof through real IronClaw streaming dispatch', async () => {
+      const adapter = new RealIronClawAdapter({
+        apiUrl: 'http://127.0.0.1:9999', webhookSecret: 'test-secret', ownerId: 'owner-1',
+      });
+      const client = (adapter as unknown as {
+        client: { ensureExecutionEndpointReady(streaming?: boolean): Promise<void> };
+      }).client;
+      const preflight = vi.spyOn(client, 'ensureExecutionEndpointReady').mockResolvedValue();
+      const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+        const body = JSON.parse(init.body as string) as { metadata: { plan_id: string } };
+        return new Response(
+          `data: ${JSON.stringify({
+            planId: body.metadata.plan_id,
+            eventType: 'plan_completed',
+            timestamp: new Date().toISOString(),
+            payload: { status: 'completed' },
+          })}\n\n`,
+          { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+        );
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+      const published: ExecutionEvent[] = [];
+
+      try {
+        for await (const event of localRouter.executeWithRoutingStreaming(
+          makeAction(), makeRiskAssessment(), 'user-1',
+        )) published.push(event);
+      } finally {
+        vi.unstubAllGlobals();
+      }
+
+      expect(published.map((event) => event.eventType)).toEqual(['plan_completed']);
+      expect(preflight).toHaveBeenCalledTimes(1);
+      expect(preflight).toHaveBeenCalledWith(true);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(authority.terminalize).toHaveBeenCalledWith(
+        expect.objectContaining({ state: 'completed' }),
+      );
+    });
+
+    it('terminalizes ambiguous without publishing when a stream exceeds its event budget', async () => {
+      const streaming = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      streaming.executeStreaming = async function* (plan) {
+        for (let index = 0; index < 300; index += 1) {
+          yield {
+            planId: plan.id,
+            eventType: 'plan_started',
+            timestamp: new Date(),
+            payload: { index },
+          };
+        }
+        yield { planId: plan.id, eventType: 'plan_completed', timestamp: new Date() };
+      };
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', streaming, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+      const published: ExecutionEvent[] = [];
+
+      await expect((async () => {
+        for await (const event of localRouter.executeWithRoutingStreaming(
+          makeAction(), makeRiskAssessment(), 'user-1',
+        )) published.push(event);
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
+      expect(published).toEqual([]);
+      expect(authority.terminalize).toHaveBeenCalledTimes(1);
+      expect(authority.terminalize).toHaveBeenCalledWith(
+        expect.objectContaining({ state: 'ambiguous' }),
+      );
+    });
+
+    it('terminalizes ambiguous without publishing when a stream exceeds its byte budget', async () => {
+      const streaming = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      streaming.executeStreaming = async function* (plan) {
+        yield {
+          planId: plan.id,
+          eventType: 'plan_started',
+          timestamp: new Date(),
+          payload: { body: 'x'.repeat(400_000) },
+        };
+        yield { planId: plan.id, eventType: 'plan_completed', timestamp: new Date() };
+      };
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', streaming, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+      const published: ExecutionEvent[] = [];
+
+      await expect((async () => {
+        for await (const event of localRouter.executeWithRoutingStreaming(
+          makeAction(), makeRiskAssessment(), 'user-1',
+        )) published.push(event);
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
+      expect(published).toEqual([]);
+      expect(authority.terminalize).toHaveBeenCalledTimes(1);
+      expect(authority.terminalize).toHaveBeenCalledWith(
+        expect.objectContaining({ state: 'ambiguous' }),
+      );
+    });
+
+    it('applies the byte budget to a terminal event before publishing it', async () => {
+      const streaming = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      streaming.executeStreaming = async function* (plan) {
+        yield {
+          planId: plan.id,
+          eventType: 'plan_completed',
+          timestamp: new Date(),
+          payload: { body: 'x'.repeat(400_000) },
+        };
+      };
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', streaming, IRONCLAW_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+      const published: ExecutionEvent[] = [];
+
+      await expect((async () => {
+        for await (const event of localRouter.executeWithRoutingStreaming(
+          makeAction(), makeRiskAssessment(), 'user-1',
+        )) published.push(event);
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
+      expect(published).toEqual([]);
+      expect(authority.terminalize).toHaveBeenCalledTimes(1);
+      expect(authority.terminalize).toHaveBeenCalledWith(
+        expect.objectContaining({ state: 'ambiguous' }),
+      );
     });
 
     it('rejects a streaming event for a different built plan before publishing it', async () => {
@@ -547,7 +1091,7 @@ describe('ExecutionRouter', () => {
       const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
       await expect((async () => {
         for await (const event of stream) published.push(event);
-      })()).rejects.toThrow('different execution plan');
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
       expect(published).toEqual([]);
     });
 
@@ -569,11 +1113,11 @@ describe('ExecutionRouter', () => {
       const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
       await expect((async () => {
         for await (const event of stream) published.push(event);
-      })()).rejects.toThrow('unbound step identity');
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
       expect(published).toEqual([]);
     });
 
-    it('rejects a valid later-step identity used for the current step', async () => {
+    it('rejects extra executable steps before a later-step identity can be used', async () => {
       const hostile = createMockAdapter('ironclaw') as IronClawAdapter & {
         executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
       };
@@ -598,7 +1142,7 @@ describe('ExecutionRouter', () => {
       const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
       await expect((async () => {
         for await (const _event of stream) { /* consume */ }
-      })()).rejects.toThrow('unbound step identity');
+      })()).rejects.toThrow('exactly one admitted executable step');
     });
 
     it('rejects conflicting terminal events without publishing either terminal result', async () => {
@@ -615,7 +1159,7 @@ describe('ExecutionRouter', () => {
       const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
       await expect((async () => {
         for await (const event of stream) published.push(event);
-      })()).rejects.toThrow('event after terminal plan_completed');
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
       expect(published).toEqual([]);
     });
 
@@ -658,7 +1202,7 @@ describe('ExecutionRouter', () => {
     beforeEach(() => {
       const registry = new AdapterRegistry();
       registry.register('ironclaw', createMockAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
-      router = new ExecutionRouter(registry);
+      router = new ExecutionRouter(registry, createDispatchAuthority());
     });
 
     it('throws InvariantViolationError when executeWithRouting is called without a RiskAssessment', async () => {
@@ -848,8 +1392,39 @@ describe('ExecutionRouter', () => {
         DIRECT_TRUST_PROFILE,
         new Set(['archive_email']),
       );
-      return new ExecutionRouter(localRegistry);
+      return new ExecutionRouter(localRegistry, createDispatchAuthority());
     }
+
+    it('terminalizes malformed Direct email input as a known failure with zero provider requests', async () => {
+      const handlers = new ActionHandlerRegistry();
+      handlers.register(new EmailActionHandler(new NoopCredentialProvider()));
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register(
+        'direct', new DirectExecutionAdapter(handlers), DIRECT_TRUST_PROFILE,
+        new Set(['archive_email']),
+      );
+      const authority = createDispatchAuthority();
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+      const fetchSpy = vi.spyOn(globalThis, 'fetch');
+      const action = makeAction({
+        parameters: {
+          executionPlanId: '33333333-3333-4333-8333-333333333333',
+          credentialAuthorityRevision: 'authority-revision-1',
+          credentialPolicyAuthorityRevision: 'policy-revision-1',
+          dispatchAuthorityId: 'admission-1',
+          dispatchAuthorityUpdatedAt: '2026-09-13T10:00:00.000Z',
+        },
+      });
+
+      await expect(localRouter.executeWithRouting(
+        action, makeRiskAssessment(), 'trusted-owner',
+      )).resolves.toMatchObject({ status: 'failed' });
+      expect(authority.terminalize).toHaveBeenCalledWith(expect.objectContaining({
+        state: 'failed',
+      }));
+      expect(fetchSpy).not.toHaveBeenCalled();
+      fetchSpy.mockRestore();
+    });
 
     it('binds the trusted owner and current token after an awaited build, then sends once', async () => {
       const buildReached = deferred();
@@ -947,7 +1522,7 @@ describe('ExecutionRouter', () => {
       await buildReached.promise;
       credentials.setState(null);
       buildRelease.resolve();
-      await expect(collect).rejects.toThrow('disconnected');
+      await expect(collect).rejects.toBeInstanceOf(AmbiguousExecutionError);
       expect(fetchSpy).not.toHaveBeenCalled();
       fetchSpy.mockRestore();
     });

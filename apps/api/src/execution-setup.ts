@@ -30,7 +30,7 @@ import {
 import { McpHost } from '@skytwin/mcp-host';
 import { sharedMetricsCollector } from '@skytwin/observability';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
-import { accessLogRepository, credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository } from '@skytwin/db';
+import { accessLogRepository, credentialRequirementRepository, executionDispatchLeaseRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { sseManager } from './sse.js';
 import { sharedKeyCache } from './routes/credential-vault.js';
@@ -184,7 +184,7 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
     log.info(`Discovered ${discovered.length} plugin adapter(s) from ${config.adapterPluginDir}`);
   }
 
-  return new ExecutionRouter(registry);
+  return new ExecutionRouter(registry, executionDispatchLeaseRepository);
 }
 
 async function getStoredCredentials(service: string): Promise<Record<string, string>> {

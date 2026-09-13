@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExecutionStep } from '@skytwin/shared-types';
-import type { CredentialProvider } from '../credential-provider.js';
+import { NoopCredentialProvider, type CredentialProvider } from '../credential-provider.js';
 import { CalendarActionHandler } from '../handlers/calendar-action-handler.js';
 
 function makeStep(): ExecutionStep {
@@ -19,13 +19,25 @@ function makeStep(): ExecutionStep {
       credentialExecutionPlanId: 'plan-1',
       credentialAuthorityRevision: 'authority-revision-1',
       credentialPolicyAuthorityRevision: 'policy-revision-1',
+      dispatchCapability: 'dispatch-capability-1',
+      dispatchLeaseGeneration: 'dispatch-generation-1',
     },
   };
 }
 
 describe('CalendarActionHandler credential dispatch', () => {
+  it('returns a known failed result when credential resolution proves no request started', async () => {
+    const handler = new CalendarActionHandler(new NoopCredentialProvider());
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await handler.execute(makeStep());
+    expect(result).toMatchObject({ success: false, error: expect.stringContaining('No credential') });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it('keeps a started dispatch ambiguous on a provider timeout response and blocks replay', async () => {
@@ -53,11 +65,7 @@ describe('CalendarActionHandler credential dispatch', () => {
     const handler = new CalendarActionHandler(credentialProvider);
 
     await expect(handler.execute(makeStep())).rejects.toThrow('outcome is ambiguous');
-    expect(terminalizeDispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ capability: 'capability-1' }),
-      'ambiguous',
-    );
-    expect(terminalizeDispatch).not.toHaveBeenCalledWith(expect.anything(), 'failed');
+    expect(terminalizeDispatch).not.toHaveBeenCalled();
 
     await expect(handler.execute(makeStep())).rejects.toThrow('already exists');
     expect(fetchMock).toHaveBeenCalledTimes(1);

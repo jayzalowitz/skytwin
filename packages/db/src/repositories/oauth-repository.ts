@@ -3,8 +3,10 @@ import type { PoolClient } from 'pg';
 import { query, withTransaction } from '../connection.js';
 import type { OAuthTokenRow, OAuthTokenRowWithEncrypted } from '../types.js';
 import {
+  authorizeCredentialMutationWithClient,
   expireCredentialDispatchLeasesWithClient,
   hasActiveCredentialDispatchWithClient,
+  type CredentialMutationLeaseProof,
 } from './credential-dispatch-lease-repository.js';
 
 export class CredentialDispatchConflictError extends Error {
@@ -55,9 +57,26 @@ async function lockOwner(client: PoolClient, userId: string): Promise<boolean> {
   return !!owner.rows[0];
 }
 
-async function assertTokenIdle(client: PoolClient, row: OAuthTokenRow): Promise<void> {
+async function assertTokenIdle(
+  client: PoolClient,
+  row: OAuthTokenRow,
+  dispatchProof?: CredentialMutationLeaseProof,
+): Promise<void> {
+  if (dispatchProof) {
+    const own = await authorizeCredentialMutationWithClient(client, {
+      ...dispatchProof,
+      oauthTokenId: row.id,
+    });
+    if (own.authorized) return;
+    throw new CredentialDispatchConflictError(own.retryAfter);
+  }
   await expireCredentialDispatchLeasesWithClient(client, row.id);
-  const active = await hasActiveCredentialDispatchWithClient(client, { oauthTokenId: row.id });
+  const active = await hasActiveCredentialDispatchWithClient(client, {
+    oauthTokenId: row.id,
+    userId: row.user_id,
+    provider: row.provider,
+    accountEmail: row.account_email,
+  });
   if (active.active) throw new CredentialDispatchConflictError(active.retryAfter);
 }
 
@@ -438,6 +457,13 @@ export const oauthRepository = {
           FOR UPDATE`,
         [input.userId, input.provider, input.accountEmail],
       );
+      const activeDispatch = await hasActiveCredentialDispatchWithClient(
+        client,
+        { userId: input.userId, provider: input.provider },
+      );
+      if (activeDispatch.active) {
+        throw new CredentialDispatchConflictError(activeDispatch.retryAfter);
+      }
       if (existing.rows[0]) await assertTokenIdle(client, existing.rows[0]);
 
       const result = await client.query<OAuthTokenRow>(
@@ -696,7 +722,9 @@ export const oauthRepository = {
          AND dispatch_state = 'active'
          AND NOT EXISTS (
            SELECT 1 FROM credential_dispatch_leases l
-            WHERE l.oauth_token_id = oauth_tokens.id
+            WHERE (l.oauth_token_id = oauth_tokens.id OR
+                   (l.oauth_token_id IS NULL AND l.user_id = oauth_tokens.user_id
+                    AND l.provider = oauth_tokens.provider))
               AND l.state IN ('request_started', 'ambiguous')
          )
        RETURNING *`,
@@ -722,6 +750,7 @@ export const oauthRepository = {
     refreshToken: string;
     expiresAt: Date;
     scopes: string[];
+    dispatchProof?: CredentialMutationLeaseProof;
   }): Promise<OAuthTokenRow | null> {
     return withTransaction(async (client) => {
       if (!await lockOwner(client, input.userId)) return null;
@@ -734,7 +763,7 @@ export const oauthRepository = {
       if (!row || row.dispatch_state !== 'active' ||
           row.credential_revision !== input.expectedCredentialRevision) return null;
       try {
-        await assertTokenIdle(client, row);
+        await assertTokenIdle(client, row, input.dispatchProof);
       } catch (error) {
         if (error instanceof CredentialDispatchConflictError) return null;
         throw error;
@@ -782,7 +811,9 @@ export const oauthRepository = {
           )
           AND NOT EXISTS (
             SELECT 1 FROM credential_dispatch_leases l
-             WHERE l.oauth_token_id = oauth_tokens.id
+             WHERE (l.oauth_token_id = oauth_tokens.id OR
+                    (l.oauth_token_id IS NULL AND l.user_id = oauth_tokens.user_id
+                     AND l.provider = oauth_tokens.provider))
                AND l.state IN ('request_started', 'ambiguous')
           )`,
       [input.accessToken, input.expiresAt, input.id, input.userId,
@@ -815,7 +846,9 @@ export const oauthRepository = {
          AND dispatch_state = 'active'
          AND NOT EXISTS (
            SELECT 1 FROM credential_dispatch_leases l
-            WHERE l.oauth_token_id = oauth_tokens.id
+            WHERE (l.oauth_token_id = oauth_tokens.id OR
+                   (l.oauth_token_id IS NULL AND l.user_id = oauth_tokens.user_id
+                    AND l.provider = oauth_tokens.provider))
               AND l.state IN ('request_started', 'ambiguous')
          )
        RETURNING *`,
@@ -863,7 +896,9 @@ export const oauthRepository = {
           AND credential_revision = $6 AND dispatch_state = 'active'
           AND NOT EXISTS (
             SELECT 1 FROM credential_dispatch_leases l
-             WHERE l.oauth_token_id = oauth_tokens.id
+             WHERE (l.oauth_token_id = oauth_tokens.id OR
+                    (l.oauth_token_id IS NULL AND l.user_id = oauth_tokens.user_id
+                     AND l.provider = oauth_tokens.provider))
                AND l.state IN ('request_started', 'ambiguous')
           )`,
       [input.encryptedAccessToken, input.expiresAt, input.id, input.userId,
@@ -883,6 +918,7 @@ export const oauthRepository = {
     encryptedAccessToken: Buffer;
     encryptedRefreshToken?: Buffer;
     expiresAt: Date;
+    dispatchProof?: CredentialMutationLeaseProof;
   }): Promise<OAuthTokenRowWithEncrypted | null> {
     return withTransaction(async (client) => {
       if (!await lockOwner(client, input.userId)) return null;
@@ -903,7 +939,7 @@ export const oauthRepository = {
           row.credential_revision !== input.expectedCredentialRevision ||
           !row.encrypted_access_token) return null;
       try {
-        await assertTokenIdle(client, row);
+        await assertTokenIdle(client, row, input.dispatchProof);
       } catch (error) {
         if (error instanceof CredentialDispatchConflictError) return null;
         throw error;
@@ -968,6 +1004,7 @@ export const oauthRepository = {
     iv: Buffer;
     tag: Buffer;
     keyVersion: number;
+    dispatchProof?: CredentialMutationLeaseProof;
   }): Promise<boolean> {
     return withTransaction(async (client) => {
       if (!await lockOwner(client, input.userId)) return false;
@@ -979,6 +1016,21 @@ export const oauthRepository = {
         [input.userId, input.expectedVaultGeneration, input.keyVersion],
       );
       if (!vault.rows[0]) return false;
+      const locked = await client.query<OAuthTokenRow>(
+        `SELECT * FROM oauth_tokens
+          WHERE id = $1 AND user_id = $2 AND provider = $3
+            AND credential_revision = $4 AND dispatch_state = 'active'
+          FOR UPDATE`,
+        [input.id, input.userId, input.provider, input.expectedCredentialRevision],
+      );
+      const row = locked.rows[0];
+      if (!row) return false;
+      try {
+        await assertTokenIdle(client, row, input.dispatchProof);
+      } catch (error) {
+        if (error instanceof CredentialDispatchConflictError) return false;
+        throw error;
+      }
       const result = await client.query(
       `UPDATE oauth_tokens
           SET encrypted_access_token = $1, encrypted_refresh_token = $2,
@@ -986,12 +1038,7 @@ export const oauthRepository = {
               credential_revision = gen_random_uuid(), dispatch_generation = gen_random_uuid(),
               access_token = NULL, refresh_token = NULL, updated_at = now()
         WHERE id = $6 AND user_id = $7 AND provider = $8
-          AND credential_revision = $9 AND dispatch_state = 'active'
-          AND NOT EXISTS (
-            SELECT 1 FROM credential_dispatch_leases l
-             WHERE l.oauth_token_id = oauth_tokens.id
-               AND l.state IN ('request_started', 'ambiguous')
-          )`,
+          AND credential_revision = $9 AND dispatch_state = 'active'`,
       [input.encryptedAccessToken, input.encryptedRefreshToken, input.iv, input.tag,
         input.keyVersion, input.id, input.userId, input.provider,
         input.expectedCredentialRevision],
@@ -1093,7 +1140,9 @@ export const oauthRepository = {
          WHERE id = $3 AND dispatch_state = 'active'
            AND NOT EXISTS (
              SELECT 1 FROM credential_dispatch_leases l
-              WHERE l.oauth_token_id = oauth_tokens.id
+              WHERE (l.oauth_token_id = oauth_tokens.id OR
+                     (l.oauth_token_id IS NULL AND l.user_id = oauth_tokens.user_id
+                      AND l.provider = oauth_tokens.provider))
                 AND l.state IN ('request_started', 'ambiguous')
            )`
       : `UPDATE oauth_tokens
@@ -1106,7 +1155,9 @@ export const oauthRepository = {
          WHERE id = $4 AND dispatch_state = 'active'
            AND NOT EXISTS (
              SELECT 1 FROM credential_dispatch_leases l
-              WHERE l.oauth_token_id = oauth_tokens.id
+              WHERE (l.oauth_token_id = oauth_tokens.id OR
+                     (l.oauth_token_id IS NULL AND l.user_id = oauth_tokens.user_id
+                      AND l.provider = oauth_tokens.provider))
                 AND l.state IN ('request_started', 'ambiguous')
            )`;
     const params = input.encryptedRefreshToken === null

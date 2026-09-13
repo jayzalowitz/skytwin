@@ -103,23 +103,29 @@ ALTER TABLE oauth_tokens
     CHECK (dispatch_state IN ('active', 'disconnecting'));
 
 -- The committed request_started row is the external-request linearization
--- point. It contains identities and hashes only; OAuth secrets and the random
--- bearer capability never enter durable storage.
+-- point for every adapter. OAuth identity columns are filled only when a
+-- credential-backed direct handler binds its exact token revision. Secrets and
+-- the random bearer capability never enter durable storage.
 CREATE TABLE IF NOT EXISTS credential_dispatch_leases (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  oauth_token_id UUID NOT NULL,
-  provider STRING NOT NULL,
-  account_email STRING NOT NULL,
-  credential_revision UUID NOT NULL,
-  credential_generation UUID NOT NULL,
+  oauth_token_id UUID,
+  provider STRING,
+  account_email STRING,
+  credential_revision UUID,
+  credential_generation UUID,
   vault_generation UUID,
+  adapter_name STRING NOT NULL,
+  mcp_server_id UUID,
+  mcp_tool_name STRING,
+  execution_authority_revision UUID NOT NULL,
   policy_authority_revision UUID NOT NULL,
   action_id UUID NOT NULL,
   decision_id UUID NOT NULL,
   execution_plan_id UUID NOT NULL,
   authority_kind STRING NOT NULL CHECK (authority_kind IN ('admission', 'receipt')),
   authority_id UUID NOT NULL,
+  authority_updated_at TIMESTAMPTZ NOT NULL,
   capability_hash STRING NOT NULL UNIQUE,
   lease_generation UUID NOT NULL,
   state STRING NOT NULL CHECK (
@@ -141,6 +147,8 @@ CREATE TABLE IF NOT EXISTS credential_dispatch_leases (
 
 CREATE INDEX IF NOT EXISTS credential_dispatch_leases_token_state_idx
   ON credential_dispatch_leases (oauth_token_id, state, expires_at);
+CREATE INDEX IF NOT EXISTS credential_dispatch_leases_user_state_idx
+  ON credential_dispatch_leases (user_id, state, expires_at);
 
 ALTER TABLE user_credential_vault_meta
   ADD COLUMN IF NOT EXISTS vault_state STRING NOT NULL DEFAULT 'locked'
@@ -151,6 +159,25 @@ ALTER TABLE credential_dispatch_leases
   ADD COLUMN IF NOT EXISTS vault_generation UUID;
 ALTER TABLE credential_dispatch_leases
   ADD COLUMN IF NOT EXISTS policy_authority_revision UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE credential_dispatch_leases
+  ADD COLUMN IF NOT EXISTS adapter_name STRING NOT NULL DEFAULT 'direct';
+ALTER TABLE credential_dispatch_leases
+  ADD COLUMN IF NOT EXISTS mcp_server_id UUID;
+ALTER TABLE credential_dispatch_leases
+  ADD COLUMN IF NOT EXISTS mcp_tool_name STRING;
+ALTER TABLE credential_dispatch_leases
+  ADD COLUMN IF NOT EXISTS execution_authority_revision UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE credential_dispatch_leases
+  ADD COLUMN IF NOT EXISTS authority_updated_at TIMESTAMPTZ NOT NULL DEFAULT now();
+ALTER TABLE credential_dispatch_leases ALTER COLUMN adapter_name DROP DEFAULT;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN execution_authority_revision DROP DEFAULT;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN policy_authority_revision DROP DEFAULT;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN authority_updated_at DROP DEFAULT;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN oauth_token_id DROP NOT NULL;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN provider DROP NOT NULL;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN account_email DROP NOT NULL;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN credential_revision DROP NOT NULL;
+ALTER TABLE credential_dispatch_leases ALTER COLUMN credential_generation DROP NOT NULL;
 
 -- Version durable execution evidence so the rerunnable migration runner can
 -- scrub legacy arbitrary bodies exactly once without touching new typed rows.

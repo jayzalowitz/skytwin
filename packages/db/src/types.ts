@@ -363,18 +363,23 @@ export interface OAuthTokenRowWithEncrypted extends OAuthTokenRow {
 export interface CredentialDispatchLeaseRow {
   id: string;
   user_id: string;
-  oauth_token_id: string;
-  provider: string;
-  account_email: string;
-  credential_revision: string;
-  credential_generation: string;
+  oauth_token_id: string | null;
+  provider: string | null;
+  account_email: string | null;
+  credential_revision: string | null;
+  credential_generation: string | null;
   vault_generation: string | null;
+  adapter_name: string;
+  mcp_server_id: string | null;
+  mcp_tool_name: string | null;
+  execution_authority_revision: string;
   policy_authority_revision: string;
   action_id: string;
   decision_id: string;
   execution_plan_id: string;
   authority_kind: 'admission' | 'receipt';
   authority_id: string;
+  authority_updated_at: Date;
   capability_hash: string;
   lease_generation: string;
   state: 'request_started' | 'completed' | 'failed' | 'ambiguous';

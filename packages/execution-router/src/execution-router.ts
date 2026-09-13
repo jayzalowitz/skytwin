@@ -9,6 +9,8 @@ import type {
   SkillGap,
 } from '@skytwin/shared-types';
 import { evaluateInjectionGuard } from '@skytwin/shared-types';
+import { PreRequestExecutionError } from '@skytwin/ironclaw-adapter';
+import type { ExecutionRequestPreparation } from '@skytwin/ironclaw-adapter';
 import type { AdapterRegistry } from './adapter-registry.js';
 import { applyAdapterRiskModifier } from './risk-modifier.js';
 import { logSkillGap } from './skill-gap-logger.js';
@@ -24,6 +26,41 @@ import { logSkillGap } from './skill-gap-logger.js';
  */
 export interface ExecutionContext {
   approved?: boolean;
+  /** Current persisted IronClaw channel, supplied by the trusted caller. */
+  ironclawChannel?: string;
+}
+
+export interface ExecutionDispatchLeaseGrant {
+  capability: string;
+  leaseGeneration: string;
+  expiresAt: Date;
+}
+
+export interface ExecutionDispatchAuthorityPort {
+  start(input: {
+    userId: string;
+    decisionId: string;
+    actionId: string;
+    executionPlanId: string;
+    adapterName: string;
+    expectedAuthorityRevision: string;
+    expectedPolicyAuthorityRevision: string;
+    expectedAdmissionAuthorityId: string;
+    expectedAdmissionAuthorityUpdatedAt: string;
+    mcpServerId?: string;
+    mcpToolName?: string;
+    credentialProvider?: string;
+  }): Promise<
+    | { success: true; grant: ExecutionDispatchLeaseGrant }
+    | { success: false; code: 'authority_revoked' | 'dispatch_replayed'; error: string }
+  >;
+  terminalize(input: {
+    userId: string;
+    executionPlanId: string;
+    capability: string;
+    leaseGeneration: string;
+    state: 'completed' | 'failed' | 'ambiguous';
+  }): Promise<boolean>;
 }
 
 /**
@@ -48,11 +85,21 @@ export interface RollbackRoutingResult {
  * Dynamically discovered adapters are appended after these, sorted by riskModifier.
  */
 const BUILTIN_TRUST_RANKING: readonly string[] = ['ironclaw', 'direct', 'openclaw'];
+const TRUSTED_PRE_REQUEST_ADAPTERS = new Set([
+  'ironclaw', 'direct', 'openclaw', 'mcp-host',
+]);
 
 /**
  * Error thrown when no adapter in the registry can handle an action.
  */
-export class NoAdapterError extends Error {
+export class NoRequestExecutionError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'NoRequestExecutionError';
+  }
+}
+
+export class NoAdapterError extends NoRequestExecutionError {
   readonly skillGap: SkillGap;
 
   constructor(skillGap: SkillGap) {
@@ -72,7 +119,7 @@ export class NoAdapterError extends Error {
  *
  * These are programmer errors, not runtime conditions to recover from.
  */
-export class InvariantViolationError extends Error {
+export class InvariantViolationError extends NoRequestExecutionError {
   constructor(message: string) {
     super(message);
     this.name = 'InvariantViolationError';
@@ -102,6 +149,109 @@ const ADAPTER_RESERVED_OUTPUT_KEYS = new Set([
   'rollback_available',
 ]);
 
+const ROUTER_CONTROL_PARAMETER_KEYS = new Set([
+  'executionPlanId',
+  'userId',
+  'credentialActionId',
+  'credentialDecisionId',
+  'credentialExecutionPlanId',
+  'credentialAuthorityRevision',
+  'credentialPolicyAuthorityRevision',
+  'dispatchAuthorityId',
+  'dispatchAuthorityUpdatedAt',
+  'dispatchCapability',
+  'dispatchLeaseGeneration',
+  'mcpServerId',
+  'mcpToolName',
+  'ironclawChannel',
+]);
+
+// Keep credential fencing aligned with the concrete Direct handlers. Domain is
+// descriptive candidate data and cannot decide whether a provider credential
+// will be resolved after the generic request-start claim.
+const GOOGLE_CREDENTIAL_ACTION_TYPES = new Set([
+  'archive_email', 'label_email', 'send_reply', 'reply_email', 'draft_email',
+  'send_email', 'delete_email', 'accept_invite', 'decline_invite',
+  'propose_alternative', 'tentative_accept',
+]);
+
+const MAX_BUFFERED_STREAM_EVENTS = 256;
+const MAX_BUFFERED_STREAM_BYTES = 1_048_576;
+const MAX_STREAM_VALUE_DEPTH = 16;
+const MAX_STREAM_CONTAINER_ENTRIES = 1_024;
+
+interface StreamSizeState {
+  bytes: number;
+  readonly limit: number;
+  readonly seen: WeakSet<object>;
+}
+
+/** Conservatively bound adapter-owned progress without serializing a huge value. */
+function addStreamValueSize(value: unknown, state: StreamSizeState, depth = 0): boolean {
+  if (depth > MAX_STREAM_VALUE_DEPTH) return false;
+  const add = (bytes: number): boolean => {
+    state.bytes += bytes;
+    return state.bytes <= state.limit;
+  };
+  if (typeof value === 'string') {
+    return add(Math.min(value.length, state.limit + 1) * 3 + 2);
+  }
+  if (value === null || typeof value === 'boolean' || typeof value === 'number') {
+    return add(32);
+  }
+  if (value === undefined) return true;
+  if (value instanceof Date) return add(32);
+  if (typeof value !== 'object' || state.seen.has(value)) return false;
+  state.seen.add(value);
+  if (!add(2)) return false;
+
+  if (Array.isArray(value)) {
+    if (value.length > MAX_STREAM_CONTAINER_ENTRIES) return false;
+    for (const child of value) {
+      if (!addStreamValueSize(child, state, depth + 1)) return false;
+    }
+    return true;
+  }
+
+  let entries = 0;
+  for (const key in value as Record<string, unknown>) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    entries += 1;
+    if (entries > MAX_STREAM_CONTAINER_ENTRIES ||
+        !add(Math.min(key.length, state.limit + 1) * 3 + 2) ||
+        !addStreamValueSize((value as Record<string, unknown>)[key], state, depth + 1)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function stripRouterControlParameters(
+  parameters: Record<string, unknown>,
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(parameters).filter(([key]) => !ROUTER_CONTROL_PARAMETER_KEYS.has(key)),
+  );
+}
+
+function hasOwnParameter(action: CandidateAction, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(action.parameters, key);
+}
+
+function requiresExactMcpRouting(action: CandidateAction): boolean {
+  const targeted = hasOwnParameter(action, 'mcpServerId') || hasOwnParameter(action, 'mcpToolName');
+  if (!targeted) return false;
+  const serverId = action.parameters['mcpServerId'];
+  const toolName = action.parameters['mcpToolName'];
+  if (typeof serverId !== 'string' || serverId.trim().length === 0) {
+    throw new InvariantViolationError('An explicit MCP action requires a non-empty mcpServerId.');
+  }
+  if (toolName !== undefined && toolName !== action.actionType) {
+    throw new InvariantViolationError('An explicit MCP tool must exactly match the admitted actionType.');
+  }
+  return true;
+}
+
 /** Remove fields whose durable meaning can only be authored by this router. */
 function stripAdapterReservedOutput(
   output: Record<string, unknown> | undefined,
@@ -110,6 +260,22 @@ function stripAdapterReservedOutput(
   return Object.fromEntries(
     Object.entries(output).filter(([key]) => !ADAPTER_RESERVED_OUTPUT_KEYS.has(key)),
   );
+}
+
+function canonicalJson(value: unknown): string {
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+function valuesMatch(left: unknown, right: unknown): boolean {
+  return canonicalJson(left) === canonicalJson(right);
 }
 
 function assertValidExecutionInputs(
@@ -173,47 +339,152 @@ function assertExecutionPermitted(
 }
 
 function bindTrustedDispatchAction(action: CandidateAction, userId: string): CandidateAction {
-  const parameters = { ...action.parameters };
-  for (const key of ['accessToken', 'access_token', 'refreshToken', 'refresh_token', 'authorization']) {
+  const trustedAction = structuredClone(action);
+  const parameters = { ...trustedAction.parameters };
+  for (const key of [
+    'accessToken', 'access_token', 'refreshToken', 'refresh_token', 'authorization',
+    'actionType', 'domain', 'estimatedCostCents', 'adapter_used',
+    '_mcpServerId', '_mcpToolName', '_isRollback', 'originalActionType',
+    'ironclawChannel',
+  ]) {
     delete parameters[key];
   }
   parameters['userId'] = userId;
-  return { ...action, parameters };
+  return { ...trustedAction, parameters };
+}
+
+function bindExactStepParameters(
+  parameters: Record<string, unknown>,
+  action: CandidateAction,
+  adapterName: string,
+  kind: 'step' | 'rollback',
+): Record<string, unknown> {
+  const canonical = structuredClone(action.parameters);
+  for (const [key, expected] of Object.entries(action.parameters)) {
+    if (!Object.prototype.hasOwnProperty.call(parameters, key) ||
+        !valuesMatch(parameters[key], expected)) {
+      throw new InvariantViolationError(`Adapter build plan changed admitted parameter "${key}".`);
+    }
+  }
+
+  for (const [key, value] of Object.entries(parameters)) {
+    if (Object.prototype.hasOwnProperty.call(action.parameters, key)) continue;
+    if (key === 'actionType' && value === action.actionType) {
+      canonical[key] = action.actionType;
+    } else if (key === 'domain' && value === action.domain) {
+      canonical[key] = action.domain;
+    } else if (key === 'estimatedCostCents' && value === action.estimatedCostCents) {
+      canonical[key] = action.estimatedCostCents;
+    } else if (key === 'adapter_used' && value === adapterName) {
+      canonical[key] = adapterName;
+    } else if (kind === 'rollback' && key === 'originalActionType' &&
+        value === action.actionType) {
+      canonical[key] = action.actionType;
+    } else if (kind === 'rollback' && adapterName === 'mcp-host' &&
+        key === '_isRollback' && value === true) {
+      canonical[key] = true;
+    } else if (adapterName === 'mcp-host' && key === '_mcpToolName') {
+      const expectedTool = action.actionType;
+      if (value !== expectedTool) {
+        throw new InvariantViolationError('MCP build plan changed the admitted tool identity.');
+      }
+      canonical[key] = expectedTool;
+    } else if (adapterName === 'mcp-host' && key === '_mcpServerId') {
+      const expectedServer = action.parameters['mcpServerId'];
+      if (typeof expectedServer !== 'string' || expectedServer.length === 0 ||
+          value !== expectedServer) {
+        throw new InvariantViolationError('MCP build plan changed the admitted server identity.');
+      }
+      canonical[key] = expectedServer;
+    } else {
+      throw new InvariantViolationError(`Adapter build plan introduced executable parameter "${key}".`);
+    }
+  }
+  return canonical;
 }
 
 function bindTrustedPlanContext(
   plan: ExecutionPlan,
   action: CandidateAction,
   userId: string,
+  adapterName: string,
+  grant?: ExecutionDispatchLeaseGrant,
+  executionChannel?: string,
 ): ExecutionPlan {
   const expectedPlanId = action.parameters['executionPlanId'];
   if (typeof expectedPlanId === 'string' && plan.id !== expectedPlanId) {
     throw new InvariantViolationError('Adapter build plan did not preserve the admitted execution identity.');
   }
+  if (plan.decisionId !== action.decisionId || !valuesMatch(plan.action, action)) {
+    throw new InvariantViolationError('Adapter build plan changed the admitted action identity or effect shape.');
+  }
+  if (!Array.isArray(plan.steps) || plan.steps.length !== 1) {
+    throw new InvariantViolationError('Adapter build plan must contain exactly one admitted executable step.');
+  }
+  if (!Array.isArray(plan.rollbackSteps) || plan.rollbackSteps.length > 1 ||
+      (!action.reversible && plan.rollbackSteps.length !== 0)) {
+    throw new InvariantViolationError('Adapter build plan changed the admitted rollback shape.');
+  }
   const bind = (
     step: ExecutionPlan['steps'][number],
     index: number,
     kind: 'step' | 'rollback',
-  ): ExecutionPlan['steps'][number] => ({
-    ...step,
-    // Step identity is router-authored. Adapter-provided identifiers are
-    // untrusted evidence and may contain credentials or forge another step.
-    id: `${kind}-${index + 1}`,
-    parameters: {
-      ...step.parameters,
-      userId,
-      credentialActionId: action.id,
-      credentialDecisionId: action.decisionId,
-      credentialExecutionPlanId: plan.id,
-      credentialAuthorityRevision: action.parameters['credentialAuthorityRevision'],
-      credentialPolicyAuthorityRevision: action.parameters['credentialPolicyAuthorityRevision'],
-    },
-  });
-  return {
+  ): ExecutionPlan['steps'][number] => {
+    const expectedType = kind === 'step' ? action.actionType : `rollback_${action.actionType}`;
+    const expectedDescription = kind === 'step'
+      ? action.description
+      : `Rollback: ${action.description}`;
+    if (step.order !== 1 || step.type !== expectedType ||
+        step.description !== expectedDescription || step.timeout !== 30_000) {
+      throw new InvariantViolationError(`Adapter build plan changed the admitted ${kind} effect shape.`);
+    }
+    return {
+      ...step,
+      // Step identity is router-authored. Adapter-provided identifiers are
+      // untrusted evidence and may contain credentials or forge another step.
+      id: `${kind}-${index + 1}`,
+      order: 1,
+      type: expectedType,
+      description: expectedDescription,
+      timeout: 30_000,
+      parameters: {
+        ...bindExactStepParameters(step.parameters, action, adapterName, kind),
+        userId,
+        credentialActionId: action.id,
+        credentialDecisionId: action.decisionId,
+        credentialExecutionPlanId: plan.id,
+        credentialAuthorityRevision: action.parameters['credentialAuthorityRevision'],
+        credentialPolicyAuthorityRevision: action.parameters['credentialPolicyAuthorityRevision'],
+        ...(grant && adapterName === 'direct' ? {
+          dispatchCapability: grant.capability,
+          dispatchLeaseGeneration: grant.leaseGeneration,
+        } : {}),
+      },
+    };
+  };
+  const trustedPlan = {
     ...plan,
+    executionOwnerId: userId,
+    ...(executionChannel ? { executionChannel } : {}),
     action,
     steps: plan.steps.map((step, index) => bind(step, index, 'step')),
     rollbackSteps: plan.rollbackSteps.map((step, index) => bind(step, index, 'rollback')),
+  };
+  if (adapterName === 'direct') return trustedPlan;
+  return {
+    ...trustedPlan,
+    action: {
+      ...trustedPlan.action,
+      parameters: stripRouterControlParameters(trustedPlan.action.parameters),
+    },
+    steps: trustedPlan.steps.map((step) => ({
+      ...step,
+      parameters: stripRouterControlParameters(step.parameters),
+    })),
+    rollbackSteps: trustedPlan.rollbackSteps.map((step) => ({
+      ...step,
+      parameters: stripRouterControlParameters(step.parameters),
+    })),
   };
 }
 
@@ -231,9 +502,97 @@ function bindTrustedPlanContext(
  */
 export class ExecutionRouter {
   private readonly registry: AdapterRegistry;
+  private readonly dispatchAuthority: ExecutionDispatchAuthorityPort;
 
-  constructor(registry: AdapterRegistry) {
+  constructor(registry: AdapterRegistry, dispatchAuthority: ExecutionDispatchAuthorityPort) {
     this.registry = registry;
+    this.dispatchAuthority = dispatchAuthority;
+  }
+
+  private authorityInput(
+    action: CandidateAction,
+    plan: ExecutionPlan,
+    userId: string,
+    adapterName: string,
+  ): Parameters<ExecutionDispatchAuthorityPort['start']>[0] {
+    const authorityRevision = action.parameters['credentialAuthorityRevision'];
+    const policyAuthorityRevision = action.parameters['credentialPolicyAuthorityRevision'];
+    const admissionAuthorityId = action.parameters['dispatchAuthorityId'];
+    const admissionAuthorityUpdatedAt = action.parameters['dispatchAuthorityUpdatedAt'];
+    if (typeof authorityRevision !== 'string' || typeof policyAuthorityRevision !== 'string' ||
+        typeof admissionAuthorityId !== 'string' ||
+        typeof admissionAuthorityUpdatedAt !== 'string') {
+      throw new InvariantViolationError('Persisted execution authority revisions are required at request start.');
+    }
+    return {
+      userId,
+      decisionId: action.decisionId,
+      actionId: action.id,
+      executionPlanId: plan.id,
+      adapterName,
+      expectedAuthorityRevision: authorityRevision,
+      expectedPolicyAuthorityRevision: policyAuthorityRevision,
+      expectedAdmissionAuthorityId: admissionAuthorityId,
+      expectedAdmissionAuthorityUpdatedAt: admissionAuthorityUpdatedAt,
+      ...(adapterName === 'mcp-host' ? {
+        mcpServerId: action.parameters['mcpServerId'] as string,
+        mcpToolName: action.actionType,
+      } : {}),
+      ...(adapterName === 'direct' && GOOGLE_CREDENTIAL_ACTION_TYPES.has(action.actionType)
+        ? { credentialProvider: 'google' }
+        : {}),
+    };
+  }
+
+  private async terminalizeDispatch(
+    userId: string,
+    planId: string,
+    grant: ExecutionDispatchLeaseGrant,
+    state: 'completed' | 'failed' | 'ambiguous',
+  ): Promise<void> {
+    const persisted = await this.dispatchAuthority.terminalize({
+      userId,
+      executionPlanId: planId,
+      capability: grant.capability,
+      leaseGeneration: grant.leaseGeneration,
+      state,
+    });
+    if (!persisted) {
+      throw new AmbiguousExecutionError('Dispatch terminal state could not be durably linked to its request-start capability.');
+    }
+  }
+
+  private async startDispatch(
+    action: CandidateAction,
+    plan: ExecutionPlan,
+    userId: string,
+    adapterName: string,
+  ): Promise<ExecutionDispatchLeaseGrant> {
+    let started: Awaited<ReturnType<ExecutionDispatchAuthorityPort['start']>>;
+    try {
+      started = await this.dispatchAuthority.start(
+        this.authorityInput(action, plan, userId, adapterName),
+      );
+    } catch (error) {
+      // The adapter was not invoked by this process, but an interrupted start
+      // transaction may have committed or another process may already own the
+      // same plan. Without a typed refusal, plan-wide no-effect is not proven.
+      throw new AmbiguousExecutionError(
+        'Execution request-start authority outcome is ambiguous.',
+        { cause: error },
+      );
+    }
+    if (!started.success) {
+      if (started.code === 'authority_revoked') {
+        throw new NoRequestExecutionError(
+          `Execution request-start authority refused: ${started.error}`,
+        );
+      }
+      throw new AmbiguousExecutionError(
+        `Execution request-start authority was already consumed: ${started.error}`,
+      );
+    }
+    return started.grant;
   }
 
   /**
@@ -251,7 +610,14 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<RoutingDecision> {
-    const capableNames = this.registry.getCapableAdapters(action.actionType);
+    // An explicit MCP target is execution authority, not descriptive routing
+    // metadata. It can only cross the MCP host boundary whose DB claim checks
+    // the exact server/tool opt-in; never reinterpret it through another
+    // generic-capable adapter or plugin.
+    const exactMcp = requiresExactMcpRouting(action);
+    const capableNames = exactMcp
+      ? (this.registry.canHandle('mcp-host', action.actionType) ? ['mcp-host'] : [])
+      : this.registry.getCapableAdapters(action.actionType);
 
     if (capableNames.length === 0) {
       const gap = logSkillGap(
@@ -342,10 +708,43 @@ export class ExecutionRouter {
         continue;
       }
 
+      let builtPlan: ExecutionPlan;
       try {
-        const builtPlan = await entry.adapter.buildPlan(dispatchAction);
-        const plan = bindTrustedPlanContext(builtPlan, dispatchAction, userId);
-        const result = await entry.adapter.execute(plan);
+        builtPlan = await entry.adapter.buildPlan(structuredClone(dispatchAction), { streaming: false });
+      } catch (error) {
+        if (error instanceof PreRequestExecutionError &&
+            TRUSTED_PRE_REQUEST_ADAPTERS.has(adapterName)) {
+          continue;
+        }
+        throw new AmbiguousExecutionError(
+          `Adapter "${adapterName}" plan preparation could not prove a safe refusal.`,
+          { cause: error },
+        );
+      }
+
+      const unleasedPlan = bindTrustedPlanContext(
+        builtPlan, dispatchAction, userId, adapterName, undefined, context?.ironclawChannel,
+      );
+      let preparation: ExecutionRequestPreparation | undefined;
+      try {
+        preparation = await entry.adapter.prepareRequestStart?.(unleasedPlan, { streaming: false });
+      } catch (error) {
+        if (error instanceof PreRequestExecutionError &&
+            TRUSTED_PRE_REQUEST_ADAPTERS.has(adapterName)) continue;
+        throw new AmbiguousExecutionError(
+          `Adapter "${adapterName}" request preparation could not prove a safe refusal.`,
+          { cause: error },
+        );
+      }
+      const grant = await this.startDispatch(dispatchAction, unleasedPlan, userId, adapterName);
+      const plan = bindTrustedPlanContext(
+        builtPlan, dispatchAction, userId, adapterName, grant, context?.ironclawChannel,
+      );
+
+      try {
+        // No awaited work is permitted between the committed request-start
+        // fence above and this sole adapter invocation.
+        const result = await entry.adapter.execute(plan, preparation);
 
         if (result.planId !== plan.id) {
           throw new AmbiguousExecutionError(
@@ -354,6 +753,7 @@ export class ExecutionRouter {
         }
 
         if (result.status === 'completed') {
+          await this.terminalizeDispatch(userId, plan.id, grant, 'completed');
           return {
             ...result,
             output: {
@@ -378,6 +778,7 @@ export class ExecutionRouter {
         // Explicit terminal failure is durable truth. Do not fall through to
         // another adapter because partial execution may still have occurred.
         firstAttemptCompleted = true;
+        await this.terminalizeDispatch(userId, plan.id, grant, 'failed');
         return {
           ...result,
           output: {
@@ -396,6 +797,12 @@ export class ExecutionRouter {
         // Once an adapter is invoked, its exception cannot prove whether an
         // external effect committed. Never authorize a second adapter within
         // this call; reconciliation must resolve the ambiguous first attempt.
+        try {
+          await this.terminalizeDispatch(userId, plan.id, grant, 'ambiguous');
+        } catch {
+          // Preserve the original ambiguity; the durable row remains
+          // request_started/ambiguous and therefore non-replayable.
+        }
         if (error instanceof AmbiguousExecutionError) throw error;
         throw new AmbiguousExecutionError(
           `Execution through adapter "${adapterName}" is ambiguous: ${
@@ -528,15 +935,47 @@ export class ExecutionRouter {
       const entry = this.registry.get(adapterName);
       if (!entry) continue;
 
+      let builtPlan: ExecutionPlan;
       try {
-        const builtPlan = await entry.adapter.buildPlan(dispatchAction);
-        const plan = bindTrustedPlanContext(builtPlan, dispatchAction, userId);
+        builtPlan = await entry.adapter.buildPlan(structuredClone(dispatchAction), { streaming: true });
+      } catch (error) {
+        if (error instanceof PreRequestExecutionError &&
+            TRUSTED_PRE_REQUEST_ADAPTERS.has(adapterName)) {
+          continue;
+        }
+        throw new AmbiguousExecutionError(
+          `Adapter "${adapterName}" plan preparation could not prove a safe refusal.`,
+          { cause: error },
+        );
+      }
+      const unleasedPlan = bindTrustedPlanContext(
+        builtPlan, dispatchAction, userId, adapterName, undefined, context?.ironclawChannel,
+      );
+      let preparation: ExecutionRequestPreparation | undefined;
+      try {
+        preparation = await entry.adapter.prepareRequestStart?.(unleasedPlan, { streaming: true });
+      } catch (error) {
+        if (error instanceof PreRequestExecutionError &&
+            TRUSTED_PRE_REQUEST_ADAPTERS.has(adapterName)) continue;
+        throw new AmbiguousExecutionError(
+          `Adapter "${adapterName}" request preparation could not prove a safe refusal.`,
+          { cause: error },
+        );
+      }
+      const grant = await this.startDispatch(dispatchAction, unleasedPlan, userId, adapterName);
+      const plan = bindTrustedPlanContext(
+        builtPlan, dispatchAction, userId, adapterName, grant, context?.ironclawChannel,
+      );
+
+      try {
 
         if (hasStreamingExecution(entry.adapter)) {
           let terminalEvent: ExecutionEvent | null = null;
           let activeStepId: string | null = null;
           let nextStepIndex = 0;
-          for await (const event of entry.adapter.executeStreaming(plan)) {
+          const bufferedEvents: ExecutionEvent[] = [];
+          let bufferedBytes = 0;
+          for await (const event of entry.adapter.executeStreaming(plan, preparation)) {
             const isTerminal = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
             if (event.planId !== plan.id) {
               throw new Error('Adapter stream emitted an event for a different execution plan');
@@ -589,19 +1028,41 @@ export class ExecutionRouter {
                   : {}),
               },
             };
-            if (isTerminal) terminalEvent = routedEvent;
-            else yield routedEvent;
+            if (!isTerminal && bufferedEvents.length >= MAX_BUFFERED_STREAM_EVENTS) {
+              throw new Error('Adapter stream exceeded the buffered event limit.');
+            }
+            const size = {
+              bytes: 0,
+              limit: MAX_BUFFERED_STREAM_BYTES - bufferedBytes,
+              seen: new WeakSet<object>(),
+            };
+            if (size.limit < 0 || !addStreamValueSize(routedEvent, size)) {
+              throw new Error('Adapter stream exceeded the buffered byte limit.');
+            }
+            bufferedBytes += size.bytes;
+            if (isTerminal) {
+              terminalEvent = routedEvent;
+            } else {
+              bufferedEvents.push(routedEvent);
+            }
           }
 
           if (!terminalEvent) {
             throw new Error('Adapter stream ended without an explicit terminal event');
           }
+          await this.terminalizeDispatch(
+            userId,
+            plan.id,
+            grant,
+            terminalEvent.eventType === 'plan_completed' ? 'completed' : 'failed',
+          );
           firstAttemptCompleted = true;
+          for (const event of bufferedEvents) yield event;
           yield terminalEvent;
           return;
         }
 
-        const result = await entry.adapter.execute(plan);
+        const result = await entry.adapter.execute(plan, preparation);
         if (result.planId !== plan.id) {
           throw new Error('Adapter returned terminal truth for a different execution plan');
         }
@@ -609,6 +1070,7 @@ export class ExecutionRouter {
           throw new Error(`Adapter returned non-terminal status ${result.status}`);
         }
         const status = result.status === 'completed' ? 'plan_completed' : 'plan_failed';
+        await this.terminalizeDispatch(userId, plan.id, grant, result.status);
         firstAttemptCompleted = true;
 
         yield {
@@ -632,10 +1094,16 @@ export class ExecutionRouter {
         };
         return;
       } catch (error) {
-        // Adapter-originated stream/build/execute errors are all ambiguous.
-        // A marker thrown by adapter code is forgeable and cannot authorize
-        // another attempt.
-        throw error;
+        try {
+          await this.terminalizeDispatch(userId, plan.id, grant, 'ambiguous');
+        } catch {
+          // The unresolved durable claim already blocks replay.
+        }
+        if (error instanceof AmbiguousExecutionError) throw error;
+        throw new AmbiguousExecutionError(
+          `Streaming execution through adapter "${adapterName}" is ambiguous.`,
+          { cause: error },
+        );
       }
     }
 
@@ -704,6 +1172,11 @@ export class ExecutionRouter {
 
 function hasStreamingExecution(
   adapter: unknown,
-): adapter is { executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent> } {
+): adapter is {
+  executeStreaming(
+    plan: ExecutionPlan,
+    preparation?: ExecutionRequestPreparation,
+  ): AsyncIterable<ExecutionEvent>;
+} {
   return typeof (adapter as { executeStreaming?: unknown }).executeStreaming === 'function';
 }

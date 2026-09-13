@@ -1,6 +1,6 @@
 import { loadConfig } from '@skytwin/config';
 import {
-  credentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository,
   credentialVaultMetaRepository,
   encryptColumn,
   oauthRepository,
@@ -25,6 +25,21 @@ export interface CredentialError {
 
 export type CredentialOutcome = CredentialResult | CredentialError;
 
+const credentialRequestBoundaries = new WeakMap<object, boolean>();
+
+function markCredentialRequestBoundary<T extends CredentialOutcome>(
+  outcome: T,
+  requestStarted: boolean,
+): T {
+  credentialRequestBoundaries.set(outcome, requestStarted);
+  return outcome;
+}
+
+/** Authenticated module-local fact; arbitrary provider-shaped objects cannot forge it. */
+export function didCredentialRequestStart(outcome: CredentialOutcome): boolean | undefined {
+  return credentialRequestBoundaries.get(outcome);
+}
+
 export interface CredentialDispatchInput {
   userId: string;
   provider: string;
@@ -34,6 +49,8 @@ export interface CredentialDispatchInput {
   executionPlanId: string;
   authorityRevision: string;
   policyAuthorityRevision: string;
+  dispatchCapability: string;
+  dispatchLeaseGeneration: string;
 }
 
 export interface CredentialDispatchResult extends CredentialResult {
@@ -44,6 +61,14 @@ export interface CredentialDispatchResult extends CredentialResult {
 }
 
 export type CredentialDispatchOutcome = CredentialDispatchResult | CredentialError;
+
+interface DispatchLeaseProof {
+  userId: string;
+  provider: string;
+  executionPlanId: string;
+  capability: string;
+  leaseGeneration: string;
+}
 
 export interface CredentialProvider {
   getAccessToken(userId: string, provider: string, accountEmail?: string): Promise<CredentialOutcome>;
@@ -106,12 +131,16 @@ export class DbCredentialProvider implements CredentialProvider {
     provider: string,
     accountEmail: string | undefined,
     allowPlaintextMigration: boolean,
+    dispatchProof?: DispatchLeaseProof,
   ): Promise<CredentialOutcome> {
     const token = accountEmail
       ? await oauthRepository.getTokenByAccount(userId, provider, accountEmail)
       : await oauthRepository.getToken(userId, provider);
     if (!token) {
-      return { success: false, error: `No OAuth token found for ${provider}. Connect the account first.` };
+      return markCredentialRequestBoundary(
+        { success: false, error: `No OAuth token found for ${provider}. Connect the account first.` },
+        false,
+      );
     }
 
     const key = this.keyProvider?.get(userId) ?? null;
@@ -119,13 +148,19 @@ export class DbCredentialProvider implements CredentialProvider {
     const vaultMeta = await credentialVaultMetaRepository.getForUser(userId);
     if ((vaultOwned && !vaultMeta) || (vaultMeta && (vaultMeta.vault_state !== 'unlocked' ||
         this.keyProvider?.getGeneration?.(userId) !== vaultMeta.vault_generation))) {
-      return { success: false, error: 'OAuth credential is unavailable while the credential vault is locked.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'OAuth credential is unavailable while the credential vault is locked.' }, false,
+      );
     }
     if (vaultOwned && key === null) {
-      return { success: false, error: 'OAuth credential is encrypted; unlock the credential vault first.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'OAuth credential is encrypted; unlock the credential vault first.' }, false,
+      );
     }
     if (this.keyProvider && key === null && !vaultOwned && vaultMeta) {
-      return { success: false, error: 'OAuth credential is unavailable while the credential vault is locked.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'OAuth credential is unavailable while the credential vault is locked.' }, false,
+      );
     }
     // Once a vault exists it is the only durable credential authority. Migrate
     // a complete legacy plaintext row under the exact row revision, live vault
@@ -136,7 +171,9 @@ export class DbCredentialProvider implements CredentialProvider {
       if (!allowPlaintextMigration || key === null || !token.id ||
           !token.credential_revision || !token.access_token || !token.refresh_token ||
           !oauthRepository.updateEncryptedIfCurrent) {
-        return { success: false, error: 'OAuth credential could not be migrated into the credential vault.' };
+        return markCredentialRequestBoundary(
+          { success: false, error: 'OAuth credential could not be migrated into the credential vault.' }, false,
+        );
       }
       const migrated = await oauthRepository.updateEncryptedIfCurrent({
         id: token.id,
@@ -149,11 +186,14 @@ export class DbCredentialProvider implements CredentialProvider {
         iv: Buffer.alloc(0),
         tag: Buffer.alloc(0),
         keyVersion: vaultMeta.current_key_version,
+        dispatchProof,
       });
       if (!migrated) {
-        return { success: false, error: 'OAuth credential changed while vault migration was in flight.' };
+        return markCredentialRequestBoundary(
+          { success: false, error: 'OAuth credential changed while vault migration was in flight.' }, false,
+        );
       }
-      return this.getAccessTokenInternal(userId, provider, accountEmail, false);
+      return this.getAccessTokenInternal(userId, provider, accountEmail, false, dispatchProof);
     }
     // Encryption is a row-wide authority boundary. A partially migrated row
     // must never use a stale plaintext sibling alongside encrypted material.
@@ -163,11 +203,13 @@ export class DbCredentialProvider implements CredentialProvider {
       key,
     );
     if (!access.success) {
-      return { success: false, error: 'OAuth credential is encrypted; unlock the credential vault first.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'OAuth credential is encrypted; unlock the credential vault first.' }, false,
+      );
     }
     if (token.encrypted_access_token) this.recordDecrypt(userId, token.id ?? null);
     if (access.value && token.expires_at.getTime() > Date.now() + 60_000) {
-      return {
+      return markCredentialRequestBoundary({
         success: true,
         accessToken: access.value,
         ...(token.id && token.credential_revision
@@ -178,11 +220,13 @@ export class DbCredentialProvider implements CredentialProvider {
               ...(vaultMeta ? { vaultGeneration: vaultMeta.vault_generation } : {}),
             }
           : {}),
-      };
+      }, false);
     }
 
     if (provider !== 'google') {
-      return { success: false, error: `OAuth refresh is not implemented for ${provider}. Reconnect the account.` };
+      return markCredentialRequestBoundary(
+        { success: false, error: `OAuth refresh is not implemented for ${provider}. Reconnect the account.` }, false,
+      );
     }
 
     const refresh = readColumn(
@@ -191,11 +235,15 @@ export class DbCredentialProvider implements CredentialProvider {
       key,
     );
     if (!refresh.success || !refresh.value) {
-      return { success: false, error: 'Google OAuth token is expired and has no refresh token. Reconnect Google.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'Google OAuth token is expired and has no refresh token. Reconnect Google.' }, false,
+      );
     }
 
     // Serialize concurrent refresh requests for the same user+provider
-    const lockKey = `${userId}:${provider}:${accountEmail ?? ''}`;
+    // Alias callers (implicit newest-account selection vs explicit email)
+    // must share one refresh request for the exact selected credential row.
+    const lockKey = `${userId}:${provider}:${token.id}`;
     const existing = this.refreshLocks.get(lockKey);
     if (existing) return existing;
 
@@ -211,6 +259,7 @@ export class DbCredentialProvider implements CredentialProvider {
       key,
       scopes,
       vaultGeneration: vaultMeta?.vault_generation,
+      dispatchProof,
     })
       .finally(() => this.refreshLocks.delete(lockKey));
     this.refreshLocks.set(lockKey, refreshPromise);
@@ -218,57 +267,67 @@ export class DbCredentialProvider implements CredentialProvider {
   }
 
   async startDispatch(input: CredentialDispatchInput): Promise<CredentialDispatchOutcome> {
-    // Refresh may involve network I/O, so it happens before the DB request-start
-    // claim. The claim then re-reads and binds the exact current row revision.
-    const ready = await this.getAccessToken(input.userId, input.provider, input.accountEmail);
+    // Refresh or plaintext migration runs under the already-committed generic
+    // request-start capability. Its DB write must prove that exact capability;
+    // the final bind then re-reads the resulting credential row revision.
+    const dispatchProof = {
+      userId: input.userId,
+      provider: input.provider,
+      executionPlanId: input.executionPlanId,
+      capability: input.dispatchCapability,
+      leaseGeneration: input.dispatchLeaseGeneration,
+    };
+    const ready = await this.getAccessTokenInternal(
+      input.userId, input.provider, input.accountEmail, true, dispatchProof,
+    );
     if (!ready.success) return ready;
     if (!ready.oauthTokenId || !ready.credentialRevision) {
-      return { success: false, error: 'OAuth credential is missing required dispatch identity.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'OAuth credential is missing required dispatch identity.' },
+        didCredentialRequestStart(ready) ?? false,
+      );
     }
-    const started = await credentialDispatchLeaseRepository.start({
-      ...input,
+    const started = await executionDispatchLeaseRepository.bindCredential({
+      userId: input.userId,
+      provider: input.provider,
       accountEmail: input.accountEmail ?? ready.accountEmail,
+      decisionId: input.decisionId,
+      actionId: input.actionId,
+      executionPlanId: input.executionPlanId,
+      capability: input.dispatchCapability,
+      leaseGeneration: input.dispatchLeaseGeneration,
       expectedOAuthTokenId: ready.oauthTokenId,
       expectedCredentialRevision: ready.credentialRevision,
-      expectedAuthorityRevision: input.authorityRevision,
-      expectedPolicyAuthorityRevision: input.policyAuthorityRevision,
       expectedVaultGeneration: ready.vaultGeneration,
     });
-    if (!started.success) return { success: false, error: started.error };
-    // A process-local key session can expire while the DB request-start claim
-    // is awaiting commit. Recheck synchronously after that final await and do
-    // not hand materialized plaintext to the adapter if this exact vault
-    // generation is no longer live in this process. The provider request has
-    // not started, so this lease can be terminalized as a known no-effect.
+    if (!started.success) return markCredentialRequestBoundary({
+      success: false,
+      error: started.error,
+    }, didCredentialRequestStart(ready) ?? false);
+    // Recheck the process-local key session after the durable credential bind.
+    // The router owns terminalization of the generic request-start lease.
     if (ready.vaultGeneration && (!this.keyProvider?.get(input.userId) ||
         this.keyProvider.getGeneration?.(input.userId) !== ready.vaultGeneration)) {
-      await credentialDispatchLeaseRepository.terminalize({
-        userId: input.userId,
-        executionPlanId: input.executionPlanId,
-        capability: started.grant.capability,
-        leaseGeneration: started.grant.leaseGeneration,
-        state: 'failed',
-      });
-      return {
+      return markCredentialRequestBoundary({
         success: false,
         error: 'OAuth credential is unavailable while the credential vault is locked.',
-      };
+      }, didCredentialRequestStart(ready) ?? false);
     }
-    return {
+    return markCredentialRequestBoundary({
       success: true,
       accessToken: ready.accessToken,
       capability: started.grant.capability,
       leaseGeneration: started.grant.leaseGeneration,
       executionPlanId: input.executionPlanId,
       userId: input.userId,
-    };
+    }, didCredentialRequestStart(ready) ?? false);
   }
 
   async terminalizeDispatch(
     grant: CredentialDispatchResult,
     state: 'completed' | 'failed' | 'ambiguous',
   ): Promise<boolean> {
-    return credentialDispatchLeaseRepository.terminalize({
+    return executionDispatchLeaseRepository.terminalize({
       userId: grant.userId,
       executionPlanId: grant.executionPlanId,
       capability: grant.capability,
@@ -288,6 +347,7 @@ export class DbCredentialProvider implements CredentialProvider {
     key: Buffer | null;
     scopes: string[];
     vaultGeneration?: string;
+    dispatchProof?: DispatchLeaseProof;
   }): Promise<CredentialOutcome> {
     const googleConfig = await this.getGoogleOAuthConfig();
     if (!googleConfig.success) return googleConfig;
@@ -305,7 +365,9 @@ export class DbCredentialProvider implements CredentialProvider {
 
     if (!response.ok) {
       const body = await response.text().catch(() => '');
-      return { success: false, error: `Google OAuth refresh failed: HTTP ${response.status} ${body}` };
+      return markCredentialRequestBoundary(
+        { success: false, error: `Google OAuth refresh failed: HTTP ${response.status} ${body}` }, true,
+      );
     }
 
     const payload = await response.json() as {
@@ -315,7 +377,9 @@ export class DbCredentialProvider implements CredentialProvider {
     };
 
     if (!payload.access_token) {
-      return { success: false, error: 'Google OAuth refresh response did not include an access token.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'Google OAuth refresh response did not include an access token.' }, true,
+      );
     }
 
     const expiresAt = new Date(Date.now() + (payload.expires_in ?? 3600) * 1000);
@@ -331,6 +395,7 @@ export class DbCredentialProvider implements CredentialProvider {
             ? { encryptedRefreshToken: encryptColumn(payload.refresh_token, input.key) }
             : {}),
           expiresAt,
+          dispatchProof: input.dispatchProof,
         })
       : await oauthRepository.rotateTokenIfCurrent({
           id: input.rowId,
@@ -343,15 +408,16 @@ export class DbCredentialProvider implements CredentialProvider {
           refreshToken: payload.refresh_token ?? input.refreshToken,
           expiresAt,
           scopes: input.scopes,
+          dispatchProof: input.dispatchProof,
         });
 
     if (!saved) {
-      return {
+      return markCredentialRequestBoundary({
         success: false,
         error: 'OAuth credential changed or disconnected while refresh was in flight. Reconnect and retry.',
-      };
+      }, true);
     }
-    return {
+    return markCredentialRequestBoundary({
       success: true,
       accessToken: payload.access_token,
       ...(saved.id && saved.credential_revision
@@ -362,7 +428,7 @@ export class DbCredentialProvider implements CredentialProvider {
             ...(input.vaultGeneration ? { vaultGeneration: input.vaultGeneration } : {}),
           }
         : {}),
-    };
+    }, true);
   }
 
   private async getGoogleOAuthConfig(): Promise<{ success: true; clientId: string; clientSecret: string } | CredentialError> {
@@ -377,7 +443,9 @@ export class DbCredentialProvider implements CredentialProvider {
     }
 
     if (!clientId || !clientSecret) {
-      return { success: false, error: 'Google OAuth client credentials are not configured.' };
+      return markCredentialRequestBoundary(
+        { success: false, error: 'Google OAuth client credentials are not configured.' }, false,
+      );
     }
 
     return { success: true, clientId, clientSecret };
@@ -386,12 +454,16 @@ export class DbCredentialProvider implements CredentialProvider {
 
 export class NoopCredentialProvider implements CredentialProvider {
   async getAccessToken(_userId: string, provider: string): Promise<CredentialOutcome> {
-    return { success: false, error: `No credential provider configured for ${provider}.` };
+    return markCredentialRequestBoundary(
+      { success: false, error: `No credential provider configured for ${provider}.` }, false,
+    );
   }
 
 
   async startDispatch(input: CredentialDispatchInput): Promise<CredentialDispatchOutcome> {
-    return { success: false, error: `No credential provider configured for ${input.provider}.` };
+    return markCredentialRequestBoundary(
+      { success: false, error: `No credential provider configured for ${input.provider}.` }, false,
+    );
   }
 
   async terminalizeDispatch(
