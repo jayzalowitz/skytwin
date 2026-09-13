@@ -1,6 +1,7 @@
 import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-types';
 import {
   didCredentialRequestStart,
+  type CredentialDispatchResult,
   type CredentialProvider,
 } from '../credential-provider.js';
 import {
@@ -27,8 +28,6 @@ export class CalendarActionHandler implements ActionHandler {
   readonly actionType = 'calendar';
   readonly domain = 'calendar';
   readonly supportsRollback: boolean;
-  private readonly preparedCredentials = new WeakMap<object, ResolvedCredential>();
-
   constructor(private readonly credentialProvider?: CredentialProvider) {
     this.supportsRollback = !credentialProvider;
   }
@@ -41,43 +40,18 @@ export class CalendarActionHandler implements ActionHandler {
   }
 
   async prepareRequestStart(step: ExecutionStep): Promise<ExecutionRequestPreparation> {
-    if (!this.credentialProvider) return {};
-    const userId = step.parameters['userId'];
-    if (typeof userId !== 'string') {
+    if (typeof step.parameters['eventId'] !== 'string' || !step.parameters['eventId'].trim()) {
+      throw new PreRequestExecutionError('Missing eventId in step parameters');
+    }
+    if (this.credentialProvider && typeof step.parameters['userId'] !== 'string') {
       throw new PreRequestExecutionError('Credential dispatch owner is missing.');
     }
-    const ready = await this.credentialProvider.getAccessToken(
-      userId,
-      'google',
-      typeof step.parameters['accountEmail'] === 'string'
-        ? step.parameters['accountEmail'] : undefined,
-    );
-    if (!ready.success) {
-      if (didCredentialRequestStart(ready) === false) {
-        throw new PreRequestExecutionError(ready.error);
-      }
-      throw new Error(ready.error);
-    }
-    if (!ready.oauthTokenId || !ready.credentialRevision) {
-      throw new PreRequestExecutionError('OAuth credential is missing required dispatch identity.');
-    }
-    const proof = {};
-    this.preparedCredentials.set(proof, { accessToken: ready.accessToken });
-    return {
-      proof,
-      credentialBinding: {
-        provider: 'google',
-        ...(ready.accountEmail ? { accountEmail: ready.accountEmail } : {}),
-        oauthTokenId: ready.oauthTokenId,
-        credentialRevision: ready.credentialRevision,
-        ...(ready.vaultGeneration ? { vaultGeneration: ready.vaultGeneration } : {}),
-      },
-    };
+    return {};
   }
 
   async execute(
     step: ExecutionStep,
-    preparation?: ExecutionRequestPreparation,
+    _preparation?: ExecutionRequestPreparation,
   ): Promise<StepResult> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
     const eventId = step.parameters['eventId'] as string | undefined;
@@ -96,14 +70,12 @@ export class CalendarActionHandler implements ActionHandler {
 
     let credential: ResolvedCredential;
     if (this.credentialProvider) {
-      const proof = preparation?.proof;
-      if (typeof proof !== 'object' || proof === null) {
-        throw new Error('Prepared OAuth credential proof is missing.');
+      const started = await this.startCredentialDispatch(step);
+      const accessToken = this.credentialProvider.consumeDispatchCredential?.(started) ?? null;
+      if (!accessToken) {
+        throw new Error('Credential vault authority changed before Calendar request start.');
       }
-      const prepared = this.preparedCredentials.get(proof);
-      this.preparedCredentials.delete(proof);
-      if (!prepared) throw new Error('Prepared OAuth credential proof is invalid or already consumed.');
-      credential = prepared;
+      credential = { accessToken };
     } else {
       const accessToken = step.parameters['accessToken'];
       if (typeof accessToken !== 'string' || accessToken.length === 0) {
@@ -139,7 +111,7 @@ export class CalendarActionHandler implements ActionHandler {
         error: 'Credential-backed rollback requires a separately admitted dispatch authority.',
       };
     }
-    const { accessToken } = await this.resolveAccessToken(step, false);
+    const { accessToken } = await this.resolveAccessToken(step);
     const eventId = step.parameters['eventId'] as string | undefined;
 
     if (!eventId) {
@@ -150,49 +122,45 @@ export class CalendarActionHandler implements ActionHandler {
     return this.respondToEvent(accessToken, eventId, 'needsAction');
   }
 
-  private async resolveAccessToken(
-    step: ExecutionStep,
-    requireDispatchLease: boolean,
-  ): Promise<ResolvedCredential> {
+  private async startCredentialDispatch(step: ExecutionStep): Promise<CredentialDispatchResult> {
+    const userId = step.parameters['userId'] as string | undefined;
+    const decisionId = step.parameters['credentialDecisionId'];
+    const actionId = step.parameters['credentialActionId'];
+    const executionPlanId = step.parameters['credentialExecutionPlanId'];
+    const authorityRevision = step.parameters['credentialAuthorityRevision'];
+    const policyAuthorityRevision = step.parameters['credentialPolicyAuthorityRevision'];
+    const dispatchCapability = step.parameters['dispatchCapability'];
+    const dispatchLeaseGeneration = step.parameters['dispatchLeaseGeneration'];
+    if (!this.credentialProvider || !userId || typeof decisionId !== 'string' ||
+        typeof actionId !== 'string' || typeof executionPlanId !== 'string' ||
+        typeof authorityRevision !== 'string' || typeof policyAuthorityRevision !== 'string' ||
+        typeof dispatchCapability !== 'string' || typeof dispatchLeaseGeneration !== 'string' ||
+        !this.credentialProvider.startDispatch || !this.credentialProvider.consumeDispatchCredential) {
+      throw new Error('Credential dispatch authority is missing.');
+    }
+    const result = await this.credentialProvider.startDispatch({
+      userId,
+      provider: 'google',
+      accountEmail: typeof step.parameters['accountEmail'] === 'string'
+        ? step.parameters['accountEmail'] : undefined,
+      decisionId,
+      actionId,
+      executionPlanId,
+      authorityRevision,
+      policyAuthorityRevision,
+      dispatchCapability,
+      dispatchLeaseGeneration,
+    });
+    if (!result.success) {
+      if (didCredentialRequestStart(result) === false) throw new PreRequestExecutionError(result.error);
+      throw new Error(result.error);
+    }
+    return result;
+  }
+
+  private async resolveAccessToken(step: ExecutionStep): Promise<ResolvedCredential> {
     const userId = step.parameters['userId'] as string | undefined;
     if (this.credentialProvider && userId) {
-      if (requireDispatchLease) {
-        const decisionId = step.parameters['credentialDecisionId'];
-        const actionId = step.parameters['credentialActionId'];
-        const executionPlanId = step.parameters['credentialExecutionPlanId'];
-        const authorityRevision = step.parameters['credentialAuthorityRevision'];
-        const policyAuthorityRevision = step.parameters['credentialPolicyAuthorityRevision'];
-        const dispatchCapability = step.parameters['dispatchCapability'];
-        const dispatchLeaseGeneration = step.parameters['dispatchLeaseGeneration'];
-        if (typeof decisionId !== 'string' || typeof actionId !== 'string' ||
-            typeof executionPlanId !== 'string' || typeof authorityRevision !== 'string' ||
-            typeof policyAuthorityRevision !== 'string' ||
-            typeof dispatchCapability !== 'string' ||
-            typeof dispatchLeaseGeneration !== 'string' ||
-            !this.credentialProvider.startDispatch) {
-          throw new Error('Credential dispatch authority is missing.');
-        }
-        const result = await this.credentialProvider.startDispatch({
-          userId,
-          provider: 'google',
-          accountEmail: typeof step.parameters['accountEmail'] === 'string'
-            ? step.parameters['accountEmail'] : undefined,
-          decisionId,
-          actionId,
-          executionPlanId,
-          authorityRevision,
-          policyAuthorityRevision,
-          dispatchCapability,
-          dispatchLeaseGeneration,
-        });
-        if (!result.success) {
-          if (didCredentialRequestStart(result) === false) {
-            throw new PreRequestExecutionError(result.error);
-          }
-          throw new Error(result.error);
-        }
-        return { accessToken: result.accessToken };
-      }
       const result = await this.credentialProvider.getAccessToken(userId, 'google');
       if (!result.success) throw new Error(result.error);
       return { accessToken: result.accessToken };

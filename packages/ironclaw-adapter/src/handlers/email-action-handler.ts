@@ -2,6 +2,7 @@ import type { ActionHandler, ExecutionStep, StepResult } from '@skytwin/shared-t
 import { appendSkyTwinEmailAttribution } from '@skytwin/shared-types';
 import {
   didCredentialRequestStart,
+  type CredentialDispatchResult,
   type CredentialProvider,
 } from '../credential-provider.js';
 import {
@@ -29,8 +30,6 @@ export class EmailActionHandler implements ActionHandler {
   readonly actionType = 'email';
   readonly domain = 'email';
   readonly supportsRollback: boolean;
-  private readonly preparedCredentials = new WeakMap<object, ResolvedCredential>();
-
   constructor(private readonly credentialProvider?: CredentialProvider) {
     this.supportsRollback = !credentialProvider;
   }
@@ -48,43 +47,32 @@ export class EmailActionHandler implements ActionHandler {
   }
 
   async prepareRequestStart(step: ExecutionStep): Promise<ExecutionRequestPreparation> {
-    if (!this.credentialProvider) return {};
-    const userId = step.parameters['userId'];
-    if (typeof userId !== 'string') {
+    const actionType = (step.parameters['actionType'] as string) ?? step.type;
+    const messageId = step.parameters['emailId'];
+    if (['archive_email', 'label_email', 'send_reply', 'reply_email', 'draft_email', 'delete_email']
+      .includes(actionType) && typeof messageId !== 'string') {
+      throw new PreRequestExecutionError('Missing emailId in step parameters');
+    }
+    if (actionType === 'send_email' &&
+        (typeof step.parameters['to'] !== 'string' || !step.parameters['to'].trim())) {
+      throw new PreRequestExecutionError('Missing to in step parameters');
+    }
+    if (['send_reply', 'reply_email', 'draft_email'].includes(actionType) &&
+        (typeof step.parameters['replyToFrom'] !== 'string' || !step.parameters['replyToFrom'].trim())) {
+      throw new PreRequestExecutionError('Missing replyToFrom in step parameters');
+    }
+    if (this.credentialProvider && typeof step.parameters['userId'] !== 'string') {
       throw new PreRequestExecutionError('Credential dispatch owner is missing.');
     }
-    const ready = await this.credentialProvider.getAccessToken(
-      userId,
-      'google',
-      typeof step.parameters['accountEmail'] === 'string'
-        ? step.parameters['accountEmail'] : undefined,
-    );
-    if (!ready.success) {
-      if (didCredentialRequestStart(ready) === false) {
-        throw new PreRequestExecutionError(ready.error);
-      }
-      throw new Error(ready.error);
-    }
-    if (!ready.oauthTokenId || !ready.credentialRevision) {
-      throw new PreRequestExecutionError('OAuth credential is missing required dispatch identity.');
-    }
-    const proof = {};
-    this.preparedCredentials.set(proof, { accessToken: ready.accessToken });
-    return {
-      proof,
-      credentialBinding: {
-        provider: 'google',
-        ...(ready.accountEmail ? { accountEmail: ready.accountEmail } : {}),
-        oauthTokenId: ready.oauthTokenId,
-        credentialRevision: ready.credentialRevision,
-        ...(ready.vaultGeneration ? { vaultGeneration: ready.vaultGeneration } : {}),
-      },
-    };
+    // Planning is deliberately credential-free. OAuth reads, migration and
+    // refresh happen only after the caller has persisted policy/admission and
+    // the router has claimed its one-shot generic request-start authority.
+    return {};
   }
 
   async execute(
     step: ExecutionStep,
-    preparation?: ExecutionRequestPreparation,
+    _preparation?: ExecutionRequestPreparation,
   ): Promise<StepResult> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
     const messageId = step.parameters['emailId'] as string | undefined;
@@ -114,14 +102,14 @@ export class EmailActionHandler implements ActionHandler {
     }
     let credential: ResolvedCredential;
     if (this.credentialProvider) {
-      const proof = preparation?.proof;
-      if (typeof proof !== 'object' || proof === null) {
-        throw new Error('Prepared OAuth credential proof is missing.');
+      const started = await this.startCredentialDispatch(step);
+      const accessToken = this.credentialProvider.consumeDispatchCredential?.(started) ?? null;
+      if (!accessToken) {
+        throw new Error('Credential vault authority changed before Gmail request start.');
       }
-      const prepared = this.preparedCredentials.get(proof);
-      this.preparedCredentials.delete(proof);
-      if (!prepared) throw new Error('Prepared OAuth credential proof is invalid or already consumed.');
-      credential = prepared;
+      // No await may occur between this synchronous vault-generation check and
+      // the provider fetch selected below.
+      credential = { accessToken };
     } else {
       const accessToken = step.parameters['accessToken'];
       if (typeof accessToken !== 'string' || accessToken.length === 0) {
@@ -169,7 +157,7 @@ export class EmailActionHandler implements ActionHandler {
       };
     }
     const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
-    const { accessToken } = await this.resolveAccessToken(step, false);
+    const { accessToken } = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
     if (!messageId) {
@@ -193,49 +181,45 @@ export class EmailActionHandler implements ActionHandler {
     }
   }
 
-  private async resolveAccessToken(
-    step: ExecutionStep,
-    requireDispatchLease: boolean,
-  ): Promise<ResolvedCredential> {
+  private async startCredentialDispatch(step: ExecutionStep): Promise<CredentialDispatchResult> {
+    const userId = step.parameters['userId'] as string | undefined;
+    const decisionId = step.parameters['credentialDecisionId'];
+    const actionId = step.parameters['credentialActionId'];
+    const executionPlanId = step.parameters['credentialExecutionPlanId'];
+    const authorityRevision = step.parameters['credentialAuthorityRevision'];
+    const policyAuthorityRevision = step.parameters['credentialPolicyAuthorityRevision'];
+    const dispatchCapability = step.parameters['dispatchCapability'];
+    const dispatchLeaseGeneration = step.parameters['dispatchLeaseGeneration'];
+    if (!this.credentialProvider || !userId || typeof decisionId !== 'string' ||
+        typeof actionId !== 'string' || typeof executionPlanId !== 'string' ||
+        typeof authorityRevision !== 'string' || typeof policyAuthorityRevision !== 'string' ||
+        typeof dispatchCapability !== 'string' || typeof dispatchLeaseGeneration !== 'string' ||
+        !this.credentialProvider.startDispatch || !this.credentialProvider.consumeDispatchCredential) {
+      throw new Error('Credential dispatch authority is missing.');
+    }
+    const result = await this.credentialProvider.startDispatch({
+      userId,
+      provider: 'google',
+      accountEmail: typeof step.parameters['accountEmail'] === 'string'
+        ? step.parameters['accountEmail'] : undefined,
+      decisionId,
+      actionId,
+      executionPlanId,
+      authorityRevision,
+      policyAuthorityRevision,
+      dispatchCapability,
+      dispatchLeaseGeneration,
+    });
+    if (!result.success) {
+      if (didCredentialRequestStart(result) === false) throw new PreRequestExecutionError(result.error);
+      throw new Error(result.error);
+    }
+    return result;
+  }
+
+  private async resolveAccessToken(step: ExecutionStep): Promise<ResolvedCredential> {
     const userId = step.parameters['userId'] as string | undefined;
     if (this.credentialProvider && userId) {
-      if (requireDispatchLease) {
-        const decisionId = step.parameters['credentialDecisionId'];
-        const actionId = step.parameters['credentialActionId'];
-        const executionPlanId = step.parameters['credentialExecutionPlanId'];
-        const authorityRevision = step.parameters['credentialAuthorityRevision'];
-        const policyAuthorityRevision = step.parameters['credentialPolicyAuthorityRevision'];
-        const dispatchCapability = step.parameters['dispatchCapability'];
-        const dispatchLeaseGeneration = step.parameters['dispatchLeaseGeneration'];
-        if (typeof decisionId !== 'string' || typeof actionId !== 'string' ||
-            typeof executionPlanId !== 'string' || typeof authorityRevision !== 'string' ||
-            typeof policyAuthorityRevision !== 'string' ||
-            typeof dispatchCapability !== 'string' ||
-            typeof dispatchLeaseGeneration !== 'string' ||
-            !this.credentialProvider.startDispatch) {
-          throw new Error('Credential dispatch authority is missing.');
-        }
-        const result = await this.credentialProvider.startDispatch({
-          userId,
-          provider: 'google',
-          accountEmail: typeof step.parameters['accountEmail'] === 'string'
-            ? step.parameters['accountEmail'] : undefined,
-          decisionId,
-          actionId,
-          executionPlanId,
-          authorityRevision,
-          policyAuthorityRevision,
-          dispatchCapability,
-          dispatchLeaseGeneration,
-        });
-        if (!result.success) {
-          if (didCredentialRequestStart(result) === false) {
-            throw new PreRequestExecutionError(result.error);
-          }
-          throw new Error(result.error);
-        }
-        return { accessToken: result.accessToken };
-      }
       const result = await this.credentialProvider.getAccessToken(userId, 'google');
       if (!result.success) throw new Error(result.error);
       return { accessToken: result.accessToken };

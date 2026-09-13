@@ -2010,6 +2010,215 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     )).resolves.toBe(false);
   });
 
+  it.each(['escalation-first', 'claim-first'] as const)(
+    'serializes prepared-risk escalation against autonomous claim (%s)',
+    async (ordering) => {
+      const owner = await createGraph(`prepared-escalation-${ordering}`, 'auto_execute');
+      await inferenceReceiptRepository.createManyForUser(owner.userId, [{
+        bundle: receiptBundle(owner),
+        trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+      }], completionForGraph(owner, 'auto_execute'));
+      const continuation = completionForGraph(owner, 'auto_execute').continuation;
+      const selectedAction = continuation.outcome.selectedAction!;
+      const candidateAction = JSON.parse(JSON.stringify({
+        id: selectedAction.id,
+        actionType: selectedAction.actionType,
+        description: selectedAction.description,
+        domain: selectedAction.domain,
+        parameters: selectedAction.parameters,
+        estimatedCostCents: selectedAction.estimatedCostCents,
+        costZeroIntent: selectedAction.costZeroIntent,
+        provenance: selectedAction.provenance,
+        reversible: selectedAction.reversible,
+        confidence: selectedAction.confidence,
+        reasoning: selectedAction.reasoning,
+      })) as Record<string, unknown>;
+      const escalation = () => inferenceReceiptRepository.escalateExecutionToApproval({
+        userId: owner.userId,
+        decisionId: owner.decisionId,
+        continuation,
+        candidateAction,
+        reason: 'Prepared adapter risk now requires approval.',
+        urgency: 'normal',
+        confirmationLevel: 'single',
+        dispatch: {
+          adapterName: 'openclaw',
+          riskSnapshot: continuation.outcome.riskAssessment as unknown as Record<string, unknown>,
+          policySnapshot: {
+            allowed: true, requiresApproval: true, reason: 'Prepared risk crossed the threshold.',
+          },
+        },
+      });
+      await expect(inferenceReceiptRepository.escalateExecutionToApproval({
+        userId: owner.userId,
+        decisionId: owner.decisionId,
+        continuation,
+        candidateAction: { ...candidateAction, actionType: 'tampered_action' },
+        reason: 'Prepared adapter risk now requires approval.',
+        urgency: 'normal',
+        confirmationLevel: 'single',
+      })).resolves.toBeNull();
+      const claim = () => inferenceReceiptRepository.claimExecutionForDecision(
+        owner.userId,
+        owner.decisionId,
+        continuation,
+        [],
+        CURRENT_ALLOWED_POLICY,
+        receiptDispatch(owner),
+      );
+
+      const blocker = await pool.connect();
+      await blocker.query('BEGIN');
+      await blocker.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [owner.userId]);
+      const first = ordering === 'escalation-first' ? escalation() : claim();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const second = ordering === 'escalation-first' ? claim() : escalation();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await blocker.query('COMMIT');
+      blocker.release();
+      const [firstResult, secondResult] = await Promise.all([first, second]);
+      const escalationResult = ordering === 'escalation-first' ? firstResult : secondResult;
+      const claimResult = ordering === 'claim-first' ? firstResult : secondResult;
+
+      const approvals = await pool.query(
+        'SELECT id, status FROM approval_requests WHERE decision_id = $1',
+        [owner.decisionId],
+      );
+      const plans = await pool.query(
+        'SELECT id, status FROM execution_plans WHERE decision_id = $1',
+        [owner.decisionId],
+      );
+      const guard = await pool.query<{
+        effect_state: string;
+        source_execution_plan_id: string | null;
+        confirmation_level: string | null;
+        continuation_kind: string;
+      }>(
+        `SELECT effect_state, source_execution_plan_id, confirmation_level, continuation_kind
+           FROM decision_ingest_guards WHERE decision_id = $1`,
+        [owner.decisionId],
+      );
+
+      if (ordering === 'escalation-first') {
+        expect(escalationResult).toMatchObject({ row: { status: 'pending' } });
+        expect(claimResult).toBeNull();
+        expect(approvals.rows).toHaveLength(1);
+        expect(plans.rows).toHaveLength(0);
+        expect(guard.rows[0]).toEqual({
+          effect_state: 'non_effect', source_execution_plan_id: null,
+          confirmation_level: 'single',
+          continuation_kind: 'approval',
+        });
+      } else {
+        expect(claimResult).toMatchObject({ status: 'running' });
+        expect(escalationResult).toBeNull();
+        expect(approvals.rows).toHaveLength(0);
+        expect(plans.rows).toHaveLength(1);
+        expect(guard.rows[0]).toMatchObject({
+          effect_state: 'running', source_execution_plan_id: plans.rows[0]!.id,
+          confirmation_level: null,
+          continuation_kind: 'auto_execute',
+        });
+      }
+    },
+  );
+
+  it.each([
+    [false, 'non_effect', 'failed', 'execution_preparation_refusal'],
+    [true, 'running', 'ambiguous', 'execution_preparation_ambiguous'],
+  ] as const)(
+    'persists and rehydrates an exact receipt preparation disposition (ambiguous=%s)',
+    async (ambiguous, effectState, status, kind) => {
+      const owner = await createGraph(`preparation-disposition-${kind}`, 'auto_execute');
+      await inferenceReceiptRepository.createManyForUser(owner.userId, [{
+        bundle: receiptBundle(owner),
+        trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+      }], completionForGraph(owner, 'auto_execute'));
+
+      const disposition = await executionAdmissionRepository.recordReceiptPreparationDisposition({
+        userId: owner.userId,
+        decisionId: owner.decisionId,
+        actionId: owner.actionId!,
+        ambiguous,
+        reason: ambiguous
+          ? 'Preparation outcome could not be classified.'
+          : 'No adapter was available before request start.',
+      });
+      expect(disposition).toMatchObject({ status, kind });
+      await expect(executionAdmissionRepository.recordReceiptPreparationDisposition({
+        userId: owner.userId,
+        decisionId: owner.decisionId,
+        actionId: owner.actionId!,
+        ambiguous,
+        reason: 'A retry must not create another disposition.',
+      })).resolves.toBeNull();
+      await pool.query(
+        `INSERT INTO explanation_records
+           (decision_id, type, what_happened, evidence_used, preferences_invoked,
+            confidence_reasoning, action_rationale, correction_guidance)
+         VALUES ($1, $2, 'Unrelated newer approval evidence', $3::JSONB, '{}',
+                 'unrelated', 'unrelated', 'unrelated')`,
+        [owner.decisionId, kind, JSON.stringify([{
+          kind, scope: 'approval', decisionId: owner.decisionId, actionId: owner.actionId,
+          reason: 'This unrelated record must not mask receipt replay truth.',
+        }])],
+      );
+      await expect(executionAdmissionRepository.findReceiptExecutionDisposition(
+        owner.userId, owner.decisionId, owner.actionId!,
+      )).resolves.toMatchObject({
+        explanationId: disposition!.explanationId,
+        status,
+        kind,
+      });
+      await expect(inferenceReceiptRepository.getContinuationForDecision(
+        owner.userId, owner.decisionId,
+      )).resolves.toMatchObject({
+        effectState,
+        sourceExecutionStatus: ambiguous ? 'ambiguous' : null,
+      });
+      expect(await pool.query(
+        `SELECT count(*)::INT AS count FROM explanation_records
+          WHERE decision_id = $1 AND type = $2
+            AND evidence_used->0->>'scope' = 'receipt'`,
+        [owner.decisionId, kind],
+      )).toMatchObject({ rows: [{ count: '1' }] });
+    },
+  );
+
+  it('refuses approval admission while autonomous receipt authority is ready', async () => {
+    const owner = await createGraph('receipt-approval-exclusion', 'auto_execute');
+    await inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle: receiptBundle(owner),
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(owner, 'auto_execute'));
+    const approval = await pool.query<{ id: string }>(
+      `INSERT INTO approval_requests
+         (user_id, decision_id, candidate_action, reason, urgency, status, responded_at)
+       VALUES ($1, $2, $3::JSONB, 'stale escalation', 'normal', 'approved', now())
+       RETURNING id`,
+      [owner.userId, owner.decisionId, JSON.stringify({
+        id: owner.actionId, actionType: 'test_action', description: 'Test action',
+      })],
+    );
+
+    await expect(executionAdmissionRepository.admitApprovalExecution({
+      userId: owner.userId,
+      approvalId: approval.rows[0]!.id,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
+    })).rejects.toThrow('conflicts with autonomous receipt authority');
+    expect(await pool.query(
+      'SELECT 1 FROM execution_admission_barriers WHERE decision_id = $1',
+      [owner.decisionId],
+    )).toMatchObject({ rowCount: 0 });
+    expect(await pool.query(
+      'SELECT 1 FROM execution_plans WHERE decision_id = $1',
+      [owner.decisionId],
+    )).toMatchObject({ rowCount: 0 });
+  });
+
   it('durably admits one approved execution and reconciles its exact terminal plan', async () => {
     const owner = await createGraph('approval-admission', 'approval');
     const other = await createGraph('approval-admission-other', 'approval');
@@ -2669,5 +2878,41 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       CURRENT_ALLOWED_POLICY,
       receiptDispatch(owner),
     )).resolves.toBeNull();
+  });
+
+  it('round-trips the execution-policy-denial explanation classification', async () => {
+    const owner = await createGraph('backup-policy-denial', 'auto_execute');
+    await inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle: receiptBundle(owner),
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(owner, 'auto_execute'));
+    const authority = admissionAuthority(owner);
+    const denial = await executionAdmissionRepository.recordPolicyDenial({
+      scope: 'receipt',
+      userId: owner.userId,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      adapterName: authority.adapterName,
+      actionSnapshot: authority.actionSnapshot,
+      riskSnapshot: authority.riskSnapshot,
+      policySnapshot: { allowed: false, requiresApproval: false, reason: 'Denied in backup test.' },
+      reason: 'Denied in backup test.',
+    });
+    expect(denial).not.toBeNull();
+
+    const backup = await collectBackup(owner.userId);
+    expect(backup.success).toBe(true);
+    if (!backup.success) return;
+    expect(backup.data.decisions[0]?.explanations.find(
+      (explanation) => explanation.id === denial!.explanationId,
+    )?.type).toBe('execution_policy_denial');
+
+    await deleteUserGraph(owner.userId);
+    const restored = await restoreBackup(backup.data);
+    expect(restored).toMatchObject({ success: true });
+    expect(await pool.query<{ type: string }>(
+      'SELECT type FROM explanation_records WHERE id = $1',
+      [denial!.explanationId],
+    )).toMatchObject({ rows: [{ type: 'execution_policy_denial' }] });
   });
 });

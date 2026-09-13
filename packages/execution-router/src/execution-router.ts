@@ -588,11 +588,8 @@ export class ExecutionRouter {
     const credentialRequired = adapterName === 'direct' &&
       GOOGLE_CREDENTIAL_ACTION_TYPES.has(action.actionType);
     const credential = preparation?.credentialBinding;
-    if (credentialRequired && (!credential || credential.provider !== 'google' ||
-        !credential.oauthTokenId || !credential.credentialRevision)) {
-      throw new InvariantViolationError(
-        'Direct credential dispatch requires an exact prepared OAuth row identity.',
-      );
+    if (credentialRequired && credential && credential.provider !== 'google') {
+      throw new InvariantViolationError('Direct credential dispatch provider is invalid.');
     }
     return {
       userId,
@@ -612,14 +609,16 @@ export class ExecutionRouter {
         mcpServerId: action.parameters['mcpServerId'] as string,
         mcpToolName: action.actionType,
       } : {}),
-      ...(credentialRequired && credential ? {
-        credentialProvider: credential.provider,
+      ...(credentialRequired ? {
+        credentialProvider: 'google',
+        ...(credential ? {
         expectedOAuthTokenId: credential.oauthTokenId,
         expectedCredentialRevision: credential.credentialRevision,
         ...(credential.accountEmail ? { credentialAccountEmail: credential.accountEmail } : {}),
         ...(credential.vaultGeneration
           ? { expectedVaultGeneration: credential.vaultGeneration }
           : {}),
+        } : {}),
       } : {}),
     };
   }

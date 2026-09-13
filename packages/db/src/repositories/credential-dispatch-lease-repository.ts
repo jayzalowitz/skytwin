@@ -292,13 +292,6 @@ export const executionDispatchLeaseRepository = {
       let credentialRow: DispatchTokenRow | undefined;
       let credentialVaultGeneration: string | null = null;
       if (input.credentialProvider) {
-        if (!input.expectedOAuthTokenId || !input.expectedCredentialRevision) {
-          return {
-            success: false,
-            code: 'authority_revoked',
-            error: 'Exact prepared OAuth credential authority is required.',
-          };
-        }
         const resolving = await client.query(
           `SELECT id FROM credential_dispatch_leases
             WHERE user_id = $1 AND provider = $2
@@ -314,42 +307,53 @@ export const executionDispatchLeaseRepository = {
           };
         }
 
-        const vault = await client.query<{
-          vault_state: 'locked' | 'unlocked';
-          vault_generation: string;
-        }>(
-          `SELECT vault_state, vault_generation
-             FROM user_credential_vault_meta WHERE user_id = $1 FOR UPDATE`,
-          [input.userId],
-        );
-        const vaultRow = vault.rows[0];
-        if ((vaultRow && (vaultRow.vault_state !== 'unlocked' ||
-            vaultRow.vault_generation !== input.expectedVaultGeneration)) ||
-            (!vaultRow && input.expectedVaultGeneration !== undefined)) {
-          return {
-            success: false,
-            code: 'authority_revoked',
-            error: 'Prepared OAuth credential vault authority is stale.',
-          };
-        }
-        credentialVaultGeneration = vaultRow?.vault_generation ?? null;
-        const token = await client.query<DispatchTokenRow>(
-          `SELECT * FROM oauth_tokens
-            WHERE id = $1 AND user_id = $2 AND provider = $3
-              AND credential_revision = $4
-              AND ($5::STRING IS NULL OR account_email = $5)
-            ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,
-          [input.expectedOAuthTokenId, input.userId, input.credentialProvider,
-            input.expectedCredentialRevision, input.credentialAccountEmail ?? null],
-        );
-        credentialRow = token.rows[0];
-        if (!credentialRow || credentialRow.dispatch_state !== 'active' ||
-            credentialRow.expires_at <= now) {
-          return {
-            success: false,
-            code: 'authority_revoked',
-            error: `Prepared ${input.credentialProvider} credential is unavailable for dispatch.`,
-          };
+        const hasPreparedIdentity = input.expectedOAuthTokenId !== undefined ||
+          input.expectedCredentialRevision !== undefined || input.expectedVaultGeneration !== undefined;
+        if (hasPreparedIdentity) {
+          if (!input.expectedOAuthTokenId || !input.expectedCredentialRevision) {
+            return {
+              success: false,
+              code: 'authority_revoked',
+              error: 'Prepared OAuth credential identity is incomplete.',
+            };
+          }
+          const vault = await client.query<{
+            vault_state: 'locked' | 'unlocked';
+            vault_generation: string;
+          }>(
+            `SELECT vault_state, vault_generation
+               FROM user_credential_vault_meta WHERE user_id = $1 FOR UPDATE`,
+            [input.userId],
+          );
+          const vaultRow = vault.rows[0];
+          if ((vaultRow && (vaultRow.vault_state !== 'unlocked' ||
+              vaultRow.vault_generation !== input.expectedVaultGeneration)) ||
+              (!vaultRow && input.expectedVaultGeneration !== undefined)) {
+            return {
+              success: false,
+              code: 'authority_revoked',
+              error: 'Prepared OAuth credential vault authority is stale.',
+            };
+          }
+          credentialVaultGeneration = vaultRow?.vault_generation ?? null;
+          const token = await client.query<DispatchTokenRow>(
+            `SELECT * FROM oauth_tokens
+              WHERE id = $1 AND user_id = $2 AND provider = $3
+                AND credential_revision = $4
+                AND ($5::STRING IS NULL OR account_email = $5)
+              ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,
+            [input.expectedOAuthTokenId, input.userId, input.credentialProvider,
+              input.expectedCredentialRevision, input.credentialAccountEmail ?? null],
+          );
+          credentialRow = token.rows[0];
+          if (!credentialRow || credentialRow.dispatch_state !== 'active' ||
+              credentialRow.expires_at <= now) {
+            return {
+              success: false,
+              code: 'authority_revoked',
+              error: `Prepared ${input.credentialProvider} credential is unavailable for dispatch.`,
+            };
+          }
         }
       }
 

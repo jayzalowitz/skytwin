@@ -278,6 +278,8 @@ export interface MemoryActionOpportunityRow {
 export interface ExplanationRecordRow {
   id: string;
   decision_id: string;
+  /** Durable explanation classification; denial records must survive backup. */
+  type: string;
   what_happened: string;
   evidence_used: unknown[];
   preferences_invoked: string[];

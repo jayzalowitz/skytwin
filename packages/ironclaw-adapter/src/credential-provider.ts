@@ -27,7 +27,7 @@ export type CredentialOutcome = CredentialResult | CredentialError;
 
 const credentialRequestBoundaries = new WeakMap<object, boolean>();
 
-function markCredentialRequestBoundary<T extends CredentialOutcome>(
+function markCredentialRequestBoundary<T extends object>(
   outcome: T,
   requestStarted: boolean,
 ): T {
@@ -36,7 +36,7 @@ function markCredentialRequestBoundary<T extends CredentialOutcome>(
 }
 
 /** Authenticated module-local fact; arbitrary provider-shaped objects cannot forge it. */
-export function didCredentialRequestStart(outcome: CredentialOutcome): boolean | undefined {
+export function didCredentialRequestStart(outcome: object): boolean | undefined {
   return credentialRequestBoundaries.get(outcome);
 }
 
@@ -53,7 +53,8 @@ export interface CredentialDispatchInput {
   dispatchLeaseGeneration: string;
 }
 
-export interface CredentialDispatchResult extends CredentialResult {
+export interface CredentialDispatchResult {
+  success: true;
   capability: string;
   leaseGeneration: string;
   executionPlanId: string;
@@ -73,6 +74,12 @@ interface DispatchLeaseProof {
 export interface CredentialProvider {
   getAccessToken(userId: string, provider: string, accountEmail?: string): Promise<CredentialOutcome>;
   startDispatch?(input: CredentialDispatchInput): Promise<CredentialDispatchOutcome>;
+  /**
+   * Consume the process-local plaintext for an exact started dispatch. This is
+   * synchronous so the built-in handler can recheck vault generation and call
+   * fetch in the same turn, with no authority suspension in between.
+   */
+  consumeDispatchCredential?(grant: CredentialDispatchResult): string | null;
   terminalizeDispatch?(
     grant: CredentialDispatchResult,
     state: 'completed' | 'failed' | 'ambiguous',
@@ -92,6 +99,11 @@ export interface CredentialAuditPort {
 export class DbCredentialProvider implements CredentialProvider {
   // Per-user+provider lock to prevent concurrent refresh races
   private readonly refreshLocks = new Map<string, Promise<CredentialOutcome>>();
+  private readonly dispatchCredentials = new WeakMap<CredentialDispatchResult, {
+    accessToken: string;
+    userId: string;
+    vaultGeneration?: string;
+  }>();
 
   constructor(
     private readonly keyProvider: VaultKeyProvider | null = null,
@@ -313,14 +325,30 @@ export class DbCredentialProvider implements CredentialProvider {
         error: 'OAuth credential is unavailable while the credential vault is locked.',
       }, didCredentialRequestStart(ready) ?? false);
     }
-    return markCredentialRequestBoundary({
+    const result: CredentialDispatchResult = {
       success: true,
-      accessToken: ready.accessToken,
       capability: started.grant.capability,
       leaseGeneration: started.grant.leaseGeneration,
       executionPlanId: input.executionPlanId,
       userId: input.userId,
-    }, didCredentialRequestStart(ready) ?? false);
+    };
+    this.dispatchCredentials.set(result, {
+      accessToken: ready.accessToken,
+      userId: input.userId,
+      ...(ready.vaultGeneration ? { vaultGeneration: ready.vaultGeneration } : {}),
+    });
+    return markCredentialRequestBoundary(result, didCredentialRequestStart(ready) ?? false);
+  }
+
+  consumeDispatchCredential(grant: CredentialDispatchResult): string | null {
+    const prepared = this.dispatchCredentials.get(grant);
+    this.dispatchCredentials.delete(grant);
+    if (!prepared || prepared.userId !== grant.userId) return null;
+    if (prepared.vaultGeneration && (!this.keyProvider?.get(prepared.userId) ||
+        this.keyProvider.getGeneration?.(prepared.userId) !== prepared.vaultGeneration)) {
+      return null;
+    }
+    return prepared.accessToken;
   }
 
   async terminalizeDispatch(
@@ -464,6 +492,10 @@ export class NoopCredentialProvider implements CredentialProvider {
     return markCredentialRequestBoundary(
       { success: false, error: `No credential provider configured for ${input.provider}.` }, false,
     );
+  }
+
+  consumeDispatchCredential(_grant: CredentialDispatchResult): string | null {
+    return null;
   }
 
   async terminalizeDispatch(

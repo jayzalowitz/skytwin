@@ -387,6 +387,31 @@ describe('restoreBackup guards', () => {
     ]);
   });
 
+  it('preserves execution-policy-denial explanation types during restore', async () => {
+    const payload = validPayload();
+    const bundle = decisionBundle();
+    bundle['explanations'] = [{
+      id: 'explanation-a',
+      decision_id: 'decision-a',
+      type: 'execution_policy_denial',
+      what_happened: 'Execution was blocked before dispatch.',
+      evidence_used: [],
+      preferences_invoked: [],
+      confidence_reasoning: 'Policy denied the exact prepared risk.',
+      action_rationale: 'No action was taken.',
+      escalation_rationale: null,
+      correction_guidance: 'Review the policy.',
+      capability_provenance_node_id: null,
+      created_at: new Date('2026-06-15T00:00:00.000Z'),
+    }];
+    payload['decisions'] = [bundle];
+
+    await expect(restoreBackup(payload)).resolves.toMatchObject({ success: true });
+    const explanationInsert = clientQuery.mock.calls.find(([sql]) =>
+      typeof sql === 'string' && sql.includes('INSERT INTO explanation_records'));
+    expect(explanationInsert?.[1]?.[2]).toBe('execution_policy_denial');
+  });
+
   it('aborts instead of reporting a receipt whose linkage insert affected no row', async () => {
     const payload = validPayload();
     payload['decisions'] = [decisionBundle()];
