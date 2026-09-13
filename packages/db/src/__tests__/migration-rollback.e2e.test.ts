@@ -46,6 +46,66 @@ async function admissionForeignKeys(): Promise<Array<{
   return result.rows;
 }
 
+async function stackForeignKeys(): Promise<Array<{
+  table_name: string;
+  constraint_name: string;
+  delete_rule: string;
+}>> {
+  const result = await pool.query<{
+    table_name: string;
+    constraint_name: string;
+    delete_rule: string;
+  }>(`
+    SELECT tc.table_name, tc.constraint_name, rc.delete_rule
+      FROM information_schema.table_constraints tc
+      JOIN information_schema.referential_constraints rc
+        ON rc.constraint_catalog = tc.constraint_catalog
+       AND rc.constraint_schema = tc.constraint_schema
+       AND rc.constraint_name = tc.constraint_name
+     WHERE tc.table_name IN (
+       'inference_receipts',
+       'inference_receipt_completions',
+       'decision_ingest_guards'
+     )
+       AND tc.constraint_type = 'FOREIGN KEY'
+     ORDER BY tc.table_name, tc.constraint_name
+  `);
+  return result.rows;
+}
+
+const EXPECTED_STACK_FOREIGN_KEYS = [
+  {
+    table_name: 'decision_ingest_guards',
+    constraint_name: 'decision_ingest_guards_decision_id_fkey',
+    delete_rule: 'CASCADE',
+  },
+  {
+    table_name: 'decision_ingest_guards',
+    constraint_name: 'decision_ingest_guards_receipt_explanation_fk',
+    delete_rule: 'CASCADE',
+  },
+  {
+    table_name: 'inference_receipt_completions',
+    constraint_name: 'inference_receipt_completions_decision_id_fkey',
+    delete_rule: 'CASCADE',
+  },
+  {
+    table_name: 'inference_receipt_completions',
+    constraint_name: 'inference_receipt_completions_explanation_decision_fk',
+    delete_rule: 'CASCADE',
+  },
+  {
+    table_name: 'inference_receipts',
+    constraint_name: 'inference_receipts_decision_id_fkey',
+    delete_rule: 'CASCADE',
+  },
+  {
+    table_name: 'inference_receipts',
+    constraint_name: 'inference_receipts_explanation_decision_fk',
+    delete_rule: 'CASCADE',
+  },
+];
+
 describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
   beforeAll(() => {
     const databaseUrl = process.env['DATABASE_URL'];
@@ -60,6 +120,7 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
 
   it('drops and recreates admission barriers with every authority FK intact', async () => {
     await up();
+    expect(await stackForeignKeys()).toEqual(EXPECTED_STACK_FOREIGN_KEYS);
     expect(await admissionForeignKeys()).toEqual([
       { column_name: 'action_id', foreign_table_name: 'candidate_actions', delete_rule: 'NO ACTION' },
       { column_name: 'decision_id', foreign_table_name: 'decisions', delete_rule: 'NO ACTION' },
@@ -70,11 +131,15 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     await down();
     const dropped = await pool.query(
       `SELECT 1 FROM information_schema.tables
-       WHERE table_schema = current_schema() AND table_name = 'execution_admission_barriers'`,
+       WHERE table_schema = current_schema() AND table_name IN (
+         'inference_receipts', 'inference_receipt_completions',
+         'decision_ingest_guards', 'execution_admission_barriers'
+       )`,
     );
     expect(dropped.rowCount).toBe(0);
 
     await up();
+    expect(await stackForeignKeys()).toEqual(EXPECTED_STACK_FOREIGN_KEYS);
     expect(await admissionForeignKeys()).toEqual([
       { column_name: 'action_id', foreign_table_name: 'candidate_actions', delete_rule: 'NO ACTION' },
       { column_name: 'decision_id', foreign_table_name: 'decisions', delete_rule: 'NO ACTION' },

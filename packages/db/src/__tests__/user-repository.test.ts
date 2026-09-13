@@ -381,6 +381,10 @@ describe('userRepository', () => {
         String(call[0]).includes('DELETE FROM execution_plans'));
       expect(barrierIndex).toBeGreaterThanOrEqual(0);
       expect(barrierIndex).toBeLessThan(planIndex);
+      const outcomeIndex = calls.findIndex((call) =>
+        String(call[0]).includes('DELETE FROM decision_outcomes'));
+      expect(outcomeIndex).toBeGreaterThanOrEqual(0);
+      expect(outcomeIndex).toBeLessThan(planIndex);
 
       // All calls should pass the user id
       for (const call of calls) {
