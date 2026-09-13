@@ -18,7 +18,7 @@
 
 /** Bump this whenever the precache list or shell strategy changes — old
  * caches are pruned on `activate` by name prefix. */
-export const CACHE_VERSION = 'v1';
+export const CACHE_VERSION = 'v2';
 export const SHELL_CACHE = `skytwin-shell-${CACHE_VERSION}`;
 export const RUNTIME_CACHE = `skytwin-runtime-${CACHE_VERSION}`;
 
@@ -42,6 +42,7 @@ export const PRECACHE_URLS = Object.freeze([
   '/css/assistant.css',
   '/js/app.js',
   '/js/api-client.js',
+  '/js/sample-session.js',
   '/js/storage-keys.js',
   '/js/toast.js',
   '/js/format.js',
@@ -59,12 +60,15 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  *     stream POST would produce a duplicate assistant turn.
  *   - auth/session exchange — a stale pairing token is single-use and
  *     replaying it produces a confusing "already used" error.
+ *   - disposable sample lifecycle — queueing would persist tab-scoped sample
+ *     authority and could report disposal before the server confirmed it.
  * Matched as path prefixes (after the leading /api).
  */
 const NON_REPLAYABLE_PREFIXES = Object.freeze([
   '/api/assistant/messages', // streamed; replay would duplicate a turn
   '/api/sessions/pair',      // single-use pairing tokens
   '/api/oauth',              // OAuth handshakes are time-sensitive
+  '/api/v1/demo',            // disposable sample state must never be replayed
 ]);
 
 /**
@@ -97,6 +101,10 @@ export function classifyRequest(req, origin) {
 
   // Only ever intercept our own origin. Fonts/CDNs handle their own caching.
   if (parsed.origin !== origin) return 'passthrough';
+
+  // Sample responses are scoped by an Authorization header, which is not part
+  // of the Cache API lookup key. Never cache or queue them across generations.
+  if (parsed.pathname.startsWith('/api/v1/demo')) return 'passthrough';
 
   if (method === 'GET') {
     // Treat HTML document loads as navigations. The SW spec exposes

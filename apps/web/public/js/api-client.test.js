@@ -18,13 +18,20 @@ const source = readFileSync(new URL('./api-client.js', import.meta.url), 'utf8')
 
 describe('api client', () => {
   const values = new Map();
+  const sampleValues = new Map();
 
   beforeEach(() => {
     values.clear();
+    sampleValues.clear();
     vi.stubGlobal('localStorage', {
       getItem: vi.fn((key) => values.get(key) ?? null),
       setItem: vi.fn((key, value) => values.set(key, String(value))),
       removeItem: vi.fn((key) => values.delete(key)),
+    });
+    vi.stubGlobal('sessionStorage', {
+      getItem: vi.fn((key) => sampleValues.get(key) ?? null),
+      setItem: vi.fn((key, value) => sampleValues.set(key, String(value))),
+      removeItem: vi.fn((key) => sampleValues.delete(key)),
     });
     vi.restoreAllMocks();
   });
@@ -50,14 +57,15 @@ describe('api client', () => {
 
     await startDemoSession();
 
-    expect(values.get(KEY_SESSION_TOKEN)).toBe('sample-token');
-    expect(values.get(KEY_DEMO_SESSION_EXPIRES_AT)).toBe('2030-01-01T00:00:00.000Z');
+    expect(sampleValues.get(KEY_SESSION_TOKEN)).toBe('sample-token');
+    expect(sampleValues.get(KEY_DEMO_SESSION_EXPIRES_AT)).toBe('2030-01-01T00:00:00.000Z');
+    expect(values.has(KEY_SESSION_TOKEN)).toBe(false);
   });
 
   it('renews an expired sample credential once and retries the read', async () => {
-    values.set(KEY_TOUR_MODE, '1');
-    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
-    values.set(KEY_SESSION_TOKEN, 'expired-token');
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'expired-token');
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(new Response('{}', { status: 401 }))
@@ -85,10 +93,12 @@ describe('api client', () => {
   });
 
   it('never replaces a real session when a stale sample marker survives', async () => {
-    values.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'stale-sample-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
     values.set(KEY_USER_ID, '11111111-1111-4111-8111-111111111111');
     values.set(KEY_SESSION_TOKEN, 'real-token');
-    values.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
     const fetchMock = vi.fn().mockResolvedValue(
       new Response('{}', { status: 401, headers: { 'Content-Type': 'application/json' } }),
     );
@@ -100,10 +110,10 @@ describe('api client', () => {
   });
 
   it('deletes disposable state with the original token without renewal', async () => {
-    values.set(KEY_TOUR_MODE, '1');
-    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
-    values.set(KEY_SESSION_TOKEN, 'expired-sample-token');
-    values.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'expired-sample-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal('fetch', fetchMock);
 
@@ -117,10 +127,10 @@ describe('api client', () => {
   });
 
   it('does not replay a command into a replacement session after expiry', async () => {
-    values.set(KEY_TOUR_MODE, '1');
-    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
-    values.set(KEY_SESSION_TOKEN, 'expired-sample-token');
-    values.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'expired-sample-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ error: 'Sample session expired' }), {
         status: 401,
@@ -139,13 +149,13 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
       'Bearer expired-sample-token',
     );
-    expect(values.get(KEY_SESSION_TOKEN)).toBe('expired-sample-token');
+    expect(sampleValues.get(KEY_SESSION_TOKEN)).toBe('expired-sample-token');
   });
 
   it('rejects a sample credential for any other identity before storing it', async () => {
-    values.set(KEY_TOUR_MODE, '1');
-    values.set(KEY_SESSION_TOKEN, 'old-token');
-    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_SESSION_TOKEN, 'old-token');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
@@ -161,9 +171,9 @@ describe('api client', () => {
     );
 
     await expect(startDemoSession()).rejects.toThrow(/invalid/i);
-    expect(values.has(KEY_SESSION_TOKEN)).toBe(false);
-    expect(values.has(KEY_TOUR_MODE)).toBe(false);
-    expect(values.has(KEY_USER_ID)).toBe(false);
+    expect(sampleValues.has(KEY_SESSION_TOKEN)).toBe(false);
+    expect(sampleValues.has(KEY_TOUR_MODE)).toBe(false);
+    expect(sampleValues.has(KEY_USER_ID)).toBe(false);
   });
 
   for (const responseKind of ['valid', 'invalid']) {
@@ -178,8 +188,6 @@ describe('api client', () => {
       await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
       values.set(KEY_USER_ID, '11111111-1111-4111-8111-111111111111');
       values.set(KEY_SESSION_TOKEN, 'real-token');
-      values.delete(KEY_TOUR_MODE);
-      values.delete(KEY_DEMO_SESSION_EXPIRES_AT);
 
       resolveFetch(new Response(JSON.stringify(responseKind === 'valid' ? {
         token: 'late-sample-token',
@@ -193,8 +201,9 @@ describe('api client', () => {
       await expect(starting).rejects.toThrow(/authentication changed/i);
       expect(values.get(KEY_USER_ID)).toBe('11111111-1111-4111-8111-111111111111');
       expect(values.get(KEY_SESSION_TOKEN)).toBe('real-token');
-      expect(values.has(KEY_TOUR_MODE)).toBe(false);
-      expect(values.has(KEY_DEMO_SESSION_EXPIRES_AT)).toBe(false);
+      expect(sampleValues.has(KEY_SESSION_TOKEN)).toBe(false);
+      expect(sampleValues.has(KEY_TOUR_MODE)).toBe(false);
+      expect(sampleValues.has(KEY_DEMO_SESSION_EXPIRES_AT)).toBe(false);
     });
   }
 });

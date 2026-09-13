@@ -5,7 +5,7 @@ import {
   sendSampleSimulationCommand,
   startDemoSession,
 } from '../api-client.js';
-import { KEY_TOUR_MODE } from '../storage-keys.js';
+import { isSampleMode } from '../sample-session.js';
 import { skyTwinExitTour } from './dashboard-view.js';
 
 let _sampleGlobalsWired = false;
@@ -300,7 +300,7 @@ export async function renderSample(container) {
   const generation = ++_sampleRenderGeneration;
   invalidateSampleOperations();
   _sampleExitPending = false;
-  if (localStorage.getItem(KEY_TOUR_MODE) !== '1') {
+  if (!isSampleMode()) {
     container.innerHTML = `
       <div class="sample-shell"><div class="card sample-state-card">
         <h2>This sample is available in tour mode.</h2>
@@ -450,7 +450,7 @@ export function initSampleGlobals() {
     } else if (action === 'exit-tour') {
       if (
         !_sampleExitPending &&
-        localStorage.getItem(KEY_TOUR_MODE) === '1'
+        isSampleMode()
       ) {
         _sampleExitPending = true;
         _sampleRenderGeneration += 1;

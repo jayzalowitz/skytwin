@@ -9,6 +9,7 @@ import {
   KEY_USER_ID,
 } from '../storage-keys.js';
 import { setTourExitPending, skyTwinExitTour } from './dashboard-view.js';
+import { cancelDemoSessionExit, startDemoSession } from '../api-client.js';
 import {
   renderSampleEmpty,
   renderSampleError,
@@ -310,6 +311,7 @@ describe('interactive sample page states', () => {
 
   it('discards server state before removing all sample credentials on exit', async () => {
     const values = new Map();
+    const sampleValues = new Map();
     vi.stubGlobal('localStorage', {
       get length() {
         return values.size;
@@ -319,13 +321,18 @@ describe('interactive sample page states', () => {
       removeItem: (key) => values.delete(key),
       key: (index) => [...values.keys()][index] ?? null,
     });
-    localStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
-    localStorage.setItem(
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key) => sampleValues.get(key) ?? null,
+      setItem: (key, value) => sampleValues.set(key, String(value)),
+      removeItem: (key) => sampleValues.delete(key),
+    });
+    sessionStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
+    sessionStorage.setItem(
       KEY_DEMO_SESSION_EXPIRES_AT,
       '2030-01-01T00:00:00.000Z',
     );
-    localStorage.setItem(KEY_TOUR_MODE, '1');
-    localStorage.setItem(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sessionStorage.setItem(KEY_TOUR_MODE, '1');
+    sessionStorage.setItem(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
     const fetchMock = vi
       .fn()
       .mockResolvedValue(new Response(null, { status: 204 }));
@@ -343,10 +350,10 @@ describe('interactive sample page states', () => {
         }),
       }),
     );
-    expect(localStorage.getItem(KEY_SESSION_TOKEN)).toBeNull();
-    expect(localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT)).toBeNull();
-    expect(localStorage.getItem(KEY_TOUR_MODE)).toBeNull();
-    expect(localStorage.getItem(KEY_USER_ID)).toBeNull();
+    expect(sessionStorage.getItem(KEY_SESSION_TOKEN)).toBeNull();
+    expect(sessionStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT)).toBeNull();
+    expect(sessionStorage.getItem(KEY_TOUR_MODE)).toBeNull();
+    expect(sessionStorage.getItem(KEY_USER_ID)).toBeNull();
     expect(window.location.reload).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });
@@ -355,6 +362,7 @@ describe('interactive sample page states', () => {
     const demoUserId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     const realUserId = '11111111-2222-4333-8444-555555555555';
     const values = new Map();
+    const sampleValues = new Map();
     vi.stubGlobal('localStorage', {
       get length() {
         return values.size;
@@ -364,13 +372,18 @@ describe('interactive sample page states', () => {
       removeItem: (key) => values.delete(key),
       key: (index) => [...values.keys()][index] ?? null,
     });
-    localStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
-    localStorage.setItem(
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key) => sampleValues.get(key) ?? null,
+      setItem: (key, value) => sampleValues.set(key, String(value)),
+      removeItem: (key) => sampleValues.delete(key),
+    });
+    sessionStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
+    sessionStorage.setItem(
       KEY_DEMO_SESSION_EXPIRES_AT,
       '2030-01-01T00:00:00.000Z',
     );
-    localStorage.setItem(KEY_TOUR_MODE, '1');
-    localStorage.setItem(KEY_USER_ID, demoUserId);
+    sessionStorage.setItem(KEY_TOUR_MODE, '1');
+    sessionStorage.setItem(KEY_USER_ID, demoUserId);
     localStorage.setItem(`skytwin_last_visit_${demoUserId}`, 'sample-only');
 
     let resolveDiscard;
@@ -389,8 +402,6 @@ describe('interactive sample page states', () => {
     localStorage.setItem(KEY_SESSION_TOKEN, 'real-session-token');
     localStorage.setItem(KEY_USER_ID, realUserId);
     localStorage.setItem(KEY_ONBOARDED, 'true');
-    localStorage.removeItem(KEY_TOUR_MODE);
-    localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
     localStorage.setItem(`skytwin_last_visit_${realUserId}`, 'real-state');
     resolveDiscard(new Response(null, { status: 204 }));
 
@@ -398,6 +409,7 @@ describe('interactive sample page states', () => {
     expect(localStorage.getItem(KEY_SESSION_TOKEN)).toBe('real-session-token');
     expect(localStorage.getItem(KEY_USER_ID)).toBe(realUserId);
     expect(localStorage.getItem(KEY_ONBOARDED)).toBe('true');
+    expect(sessionStorage.getItem(KEY_SESSION_TOKEN)).toBeNull();
     expect(localStorage.getItem(`skytwin_last_visit_${realUserId}`)).toBe(
       'real-state',
     );
@@ -406,9 +418,75 @@ describe('interactive sample page states', () => {
     vi.unstubAllGlobals();
   });
 
+  for (const winner of ['exit', 'renewal']) {
+    it(`does not recreate sample state when ${winner} resolves first during renewal and exit`, async () => {
+      const demoUserId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+      const values = new Map();
+      const sampleValues = new Map([
+        [KEY_SESSION_TOKEN, 'old-sample-token'],
+        [KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z'],
+        [KEY_TOUR_MODE, '1'],
+        [KEY_USER_ID, demoUserId],
+      ]);
+      vi.stubGlobal('localStorage', {
+        get length() { return values.size; },
+        getItem: (key) => values.get(key) ?? null,
+        setItem: (key, value) => values.set(key, String(value)),
+        removeItem: (key) => values.delete(key),
+        key: (index) => [...values.keys()][index] ?? null,
+      });
+      vi.stubGlobal('sessionStorage', {
+        getItem: (key) => sampleValues.get(key) ?? null,
+        setItem: (key, value) => sampleValues.set(key, String(value)),
+        removeItem: (key) => sampleValues.delete(key),
+      });
+      let resolveRenewal;
+      let resolveOldDiscard;
+      const fetchMock = vi.fn((url, options = {}) => {
+        if (options.method === 'POST') {
+          return new Promise((resolve) => { resolveRenewal = resolve; });
+        }
+        if (options.headers?.Authorization === 'Bearer old-sample-token') {
+          if (winner === 'exit') return Promise.resolve(new Response(null, { status: 204 }));
+          return new Promise((resolve) => { resolveOldDiscard = resolve; });
+        }
+        return Promise.resolve(new Response(null, { status: 204 }));
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      window.location.reload = vi.fn();
+
+      cancelDemoSessionExit();
+      const renewing = startDemoSession();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+      const exiting = skyTwinExitTour();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      if (winner === 'exit') await exiting;
+      resolveRenewal(new Response(JSON.stringify({
+        token: 'late-sample-token',
+        userId: demoUserId,
+        expiresAt: '2030-01-01T00:00:00.000Z',
+      }), { status: 201, headers: { 'Content-Type': 'application/json' } }));
+      await expect(renewing).rejects.toThrow(/changed/i);
+      if (winner === 'renewal') {
+        resolveOldDiscard(new Response(null, { status: 204 }));
+        await exiting;
+      }
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+
+      expect(sampleValues.has(KEY_SESSION_TOKEN)).toBe(false);
+      expect(sampleValues.has(KEY_TOUR_MODE)).toBe(false);
+      expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe(
+        'Bearer late-sample-token',
+      );
+      cancelDemoSessionExit();
+      vi.unstubAllGlobals();
+    });
+  }
+
   it('keeps the sample credential and browser state when disposal is unconfirmed', async () => {
     const demoUserId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
     const values = new Map();
+    const sampleValues = new Map();
     vi.stubGlobal('localStorage', {
       get length() {
         return values.size;
@@ -418,26 +496,95 @@ describe('interactive sample page states', () => {
       removeItem: (key) => values.delete(key),
       key: (index) => [...values.keys()][index] ?? null,
     });
-    localStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
-    localStorage.setItem(
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key) => sampleValues.get(key) ?? null,
+      setItem: (key, value) => sampleValues.set(key, String(value)),
+      removeItem: (key) => sampleValues.delete(key),
+    });
+    sessionStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
+    sessionStorage.setItem(
       KEY_DEMO_SESSION_EXPIRES_AT,
       '2030-01-01T00:00:00.000Z',
     );
-    localStorage.setItem(KEY_TOUR_MODE, '1');
-    localStorage.setItem(KEY_USER_ID, demoUserId);
+    sessionStorage.setItem(KEY_TOUR_MODE, '1');
+    sessionStorage.setItem(KEY_USER_ID, demoUserId);
     localStorage.setItem(`skytwin_last_visit_${demoUserId}`, 'sample-state');
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
     window.location.reload = vi.fn();
 
     await expect(skyTwinExitTour()).resolves.toBe(false);
 
-    expect(localStorage.getItem(KEY_SESSION_TOKEN)).toBe('sample-token');
-    expect(localStorage.getItem(KEY_USER_ID)).toBe(demoUserId);
-    expect(localStorage.getItem(KEY_TOUR_MODE)).toBe('1');
+    expect(sessionStorage.getItem(KEY_SESSION_TOKEN)).toBe('sample-token');
+    expect(sessionStorage.getItem(KEY_USER_ID)).toBe(demoUserId);
+    expect(sessionStorage.getItem(KEY_TOUR_MODE)).toBe('1');
     expect(localStorage.getItem(`skytwin_last_visit_${demoUserId}`)).toBe(
       'sample-state',
     );
     expect(window.location.reload).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it('leaves sample mode when its disposable credential is already absent', async () => {
+    const values = new Map();
+    const sampleValues = new Map([
+      [KEY_TOUR_MODE, '1'],
+      [KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'],
+    ]);
+    vi.stubGlobal('localStorage', {
+      get length() { return values.size; },
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, String(value)),
+      removeItem: (key) => values.delete(key),
+      key: (index) => [...values.keys()][index] ?? null,
+    });
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key) => sampleValues.get(key) ?? null,
+      setItem: (key, value) => sampleValues.set(key, String(value)),
+      removeItem: (key) => sampleValues.delete(key),
+    });
+    vi.stubGlobal('fetch', vi.fn());
+    window.location.reload = vi.fn();
+
+    await expect(skyTwinExitTour()).resolves.toBe(true);
+
+    expect(fetch).not.toHaveBeenCalled();
+    expect(sampleValues.size).toBe(0);
+    expect(window.location.reload).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('leaves sample mode when the server proves its credential is unusable', async () => {
+    const values = new Map();
+    const sampleValues = new Map([
+      [KEY_SESSION_TOKEN, 'invalid-sample-token'],
+      [KEY_DEMO_SESSION_EXPIRES_AT, '2030-01-01T00:00:00.000Z'],
+      [KEY_TOUR_MODE, '1'],
+      [KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'],
+    ]);
+    vi.stubGlobal('localStorage', {
+      get length() { return values.size; },
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, String(value)),
+      removeItem: (key) => values.delete(key),
+      key: (index) => [...values.keys()][index] ?? null,
+    });
+    vi.stubGlobal('sessionStorage', {
+      getItem: (key) => sampleValues.get(key) ?? null,
+      setItem: (key, value) => sampleValues.set(key, String(value)),
+      removeItem: (key) => sampleValues.delete(key),
+    });
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Sample session expired' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ));
+    window.location.reload = vi.fn();
+
+    await expect(skyTwinExitTour()).resolves.toBe(true);
+
+    expect(sampleValues.size).toBe(0);
+    expect(window.location.reload).toHaveBeenCalledOnce();
     vi.unstubAllGlobals();
   });
 });

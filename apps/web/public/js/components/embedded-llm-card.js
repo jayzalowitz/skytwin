@@ -23,14 +23,14 @@ import {
   resumeModelDownload,
   startModelDownload,
 } from '../api-client.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 import { showErrorToast, showSavedToast } from '../toast.js';
 
 const CARD_TARGET_ID = 'embedded-llm-card-target';
 
 function getCurrentUserId() {
   try {
-    return localStorage.getItem(KEY_USER_ID) || '';
+    return getEffectiveUserId();
   } catch {
     return '';
   }

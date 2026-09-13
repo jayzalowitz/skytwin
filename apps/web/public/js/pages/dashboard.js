@@ -2,12 +2,11 @@ import { fetchHealth, fetchDecisions, fetchAccuracy, fetchConfidence, fetchLearn
 import { renderTrustProgress } from '../components/progress-bar.js';
 import { renderTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
-  KEY_USER_ID,
-  KEY_TOUR_MODE,
   lastVisitKey,
   firstDecisionSeenKey,
   tierCelebratedKey,
 } from '../storage-keys.js';
+import { getEffectiveUserId, isSampleMode } from '../sample-session.js';
 
 // View layer — pure render helpers + global handlers (handleAskTwin etc).
 // Split out so this file can stay focused on data flow and lifecycle.
@@ -462,7 +461,7 @@ export async function renderDashboard(container, userId) {
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
   const confClass = overallConf >= 75 ? 'high' : overallConf >= 50 ? 'moderate' : overallConf >= 25 ? 'low' : 'speculative';
 
-  const tourMode = (() => { try { return localStorage.getItem(KEY_TOUR_MODE) === '1'; } catch { return false; } })();
+  const tourMode = isSampleMode();
 
   // First-run "needs a brain" prompt. Two prerequisites are cheap and
   // already known here: tour mode (always-off) and recentDecisions
@@ -522,12 +521,12 @@ export async function renderDashboard(container, userId) {
     window._skytwinLastVisitWired = true;
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState !== 'hidden') return;
-      const uid = (() => { try { return localStorage.getItem(KEY_USER_ID); } catch { return null; } })();
+      const uid = getEffectiveUserId();
       if (!uid) return;
       try { localStorage.setItem(lastVisitKey(uid), String(Date.now())); } catch { /* private mode */ }
     });
     window.addEventListener('beforeunload', () => {
-      const uid = (() => { try { return localStorage.getItem(KEY_USER_ID); } catch { return null; } })();
+      const uid = getEffectiveUserId();
       if (!uid) return;
       try { localStorage.setItem(lastVisitKey(uid), String(Date.now())); } catch { /* noop */ }
     });

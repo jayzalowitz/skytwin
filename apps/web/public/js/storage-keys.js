@@ -24,6 +24,14 @@ export const KEY_DEMO_SESSION_EXPIRES_AT = 'skytwin_demo_session_expires_at';
 // ── Tour / demo ────────────────────────────────────────────────────────
 
 export const KEY_TOUR_MODE = 'skytwin_tour_mode';
+export const KEY_LEGACY_SAMPLE_DISABLED = 'skytwin_legacy_sample_disabled';
+
+/**
+ * Sample mode uses these existing key names in sessionStorage, never in
+ * localStorage. Keeping the disposable credential tab-scoped prevents a
+ * sample transition from racing with or replacing a real login in another
+ * tab. Real account credentials remain localStorage-only.
+ */
 
 /**
  * Onboarding wizard step persistence (#390). Stores the most
@@ -92,8 +100,8 @@ export function assistantDraftKey(threadId) {
 // ── Sweep helpers ──────────────────────────────────────────────────────
 
 /**
- * Remove every SkyTwin key from localStorage. Used when exiting tour mode
- * or for dev reset. Iterates in reverse so removal during enumeration is safe.
+ * Remove every SkyTwin key from localStorage. Used for real-account reset.
+ * Disposable sample state lives separately in sessionStorage.
  */
 export function clearAllSkyTwinKeys() {
   try {

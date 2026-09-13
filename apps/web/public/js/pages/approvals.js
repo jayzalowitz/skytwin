@@ -1,7 +1,8 @@
 import { fetchPendingApprovals, fetchApprovalHistory, respondToApproval, escapeHtml, fetchTrustProgress, renderApiError, wireApiRetry } from '../api-client.js';
 import { renderTrustProgress } from '../components/progress-bar.js';
 import { renderDraftEmailCard, readDraftEditedBody } from '../components/draft-card.js';
-import { KEY_TOUR_MODE, firstApprovalIntroSeenKey } from '../storage-keys.js';
+import { firstApprovalIntroSeenKey } from '../storage-keys.js';
+import { isSampleMode } from '../sample-session.js';
 import { showToast } from '../toast.js';
 import { formatMoney } from '../format.js';
 
@@ -67,7 +68,7 @@ export async function renderApprovals(container, userId) {
   let firstApprovalIntroKey = '';
   let showFirstApprovalIntro = false;
   try {
-    tourMode = localStorage.getItem(KEY_TOUR_MODE) === '1';
+    tourMode = isSampleMode();
     firstApprovalIntroKey = firstApprovalIntroSeenKey(userId);
     showFirstApprovalIntro = !tourMode
       && pending.length > 0

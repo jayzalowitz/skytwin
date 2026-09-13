@@ -9,7 +9,7 @@ import {
   escapeHtml,
 } from '../api-client.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 /**
  * Per-Lifebook page (#193 Child 1, adaptive layout #319).
@@ -30,7 +30,7 @@ let _lifebookListenerWired = false;
 let _lifebookContainer = null;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 /**

@@ -23,14 +23,14 @@
  */
 import { promoteTier, declinePromotion, escapeHtml } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 const MODAL_ID = 'tier-promotion-modal';
 
 let _tierPromotionListenerWired = false;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function ensureTierPromotionListener() {

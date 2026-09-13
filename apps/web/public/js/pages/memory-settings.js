@@ -1,6 +1,6 @@
 import { escapeHtml } from '../api-client.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
-import { KEY_SESSION_TOKEN, KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveAuthToken, getEffectiveUserId } from '../sample-session.js';
 
 /**
  * Memory backend settings page (#197 AC #6).
@@ -21,7 +21,7 @@ let _sseListenerWired = false;
 let _sseRefreshTimer = null;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) ?? '';
+  return getEffectiveUserId();
 }
 
 /**
@@ -50,7 +50,7 @@ function ensureSseListener() {
 
 async function api(path, init = {}) {
   const userId = getCurrentUserId();
-  const sessionToken = localStorage.getItem(KEY_SESSION_TOKEN) ?? '';
+  const sessionToken = getEffectiveAuthToken();
   const encodedUserId = encodeURIComponent(userId);
   const url = path.includes('?') ? `${path}&userId=${encodedUserId}` : `${path}?userId=${encodedUserId}`;
   return fetch(url, {

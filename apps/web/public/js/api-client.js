@@ -1,13 +1,29 @@
 import {
-  KEY_DEMO_SESSION_EXPIRES_AT,
-  KEY_SESSION_TOKEN,
-  KEY_TOUR_MODE,
-  KEY_USER_ID,
-} from './storage-keys.js';
+  clearSampleSession,
+  getEffectiveAuthToken,
+  hasRealAuthentication,
+  isSampleMode,
+  readSampleSession,
+  SAMPLE_USER_ID,
+  storeSampleSession,
+} from './sample-session.js';
 
 const API = '/api';
-export const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+export const DEMO_USER_ID = SAMPLE_USER_ID;
 let demoSessionPromise = null;
+let demoSessionGeneration = 0;
+let demoSessionClosing = false;
+
+/** Invalidate every in-flight sample start before disposal begins. */
+export function beginDemoSessionExit() {
+  demoSessionGeneration += 1;
+  demoSessionClosing = true;
+}
+
+/** Re-open renewal only when disposal could not be confirmed. */
+export function cancelDemoSessionExit() {
+  demoSessionClosing = false;
+}
 
 /**
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
@@ -23,7 +39,7 @@ export function escapeHtml(str) {
  * Build the Authorization header from the stored session token (if any).
  */
 function authHeaders() {
-  const token = localStorage.getItem(KEY_SESSION_TOKEN);
+  const token = getEffectiveAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -178,14 +194,13 @@ export async function fetchJSON(
   allowDemoRenewal = true,
 ) {
   const sampleExpiry = Date.parse(
-    localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ?? '',
+    readSampleSession().expiresAt ?? '',
   );
   if (
     allowDemoRenewal &&
     !demoRenewed &&
     url !== `${API}/v1/demo/session` &&
-    localStorage.getItem(KEY_TOUR_MODE) === '1' &&
-    localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID &&
+    isSampleMode() &&
     Number.isFinite(sampleExpiry) &&
     sampleExpiry <= Date.now()
   ) {
@@ -216,8 +231,7 @@ export async function fetchJSON(
       allowDemoRenewal &&
       !demoRenewed &&
       url !== `${API}/v1/demo/session` &&
-      localStorage.getItem(KEY_TOUR_MODE) === '1' &&
-      localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID
+      isSampleMode()
     ) {
       await startDemoSession();
       return fetchJSON(url, options, true, allowDemoRenewal);
@@ -461,21 +475,25 @@ export function fetchDemoInfo() {
 export async function startDemoSession() {
   if (demoSessionPromise) return demoSessionPromise;
   demoSessionPromise = (async () => {
-    const authStateAtStart = {
-      token: localStorage.getItem(KEY_SESSION_TOKEN),
-      expiresAt: localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT),
-      tourMode: localStorage.getItem(KEY_TOUR_MODE),
-      userId: localStorage.getItem(KEY_USER_ID),
-    };
+    if (demoSessionClosing) {
+      throw new Error('The sample session is being discarded.');
+    }
+    const requestGeneration = demoSessionGeneration;
+    if (hasRealAuthentication()) {
+      throw new Error('Sign out before starting the sample.');
+    }
     const session = await fetchJSON(`${API}/v1/demo/session`, { method: 'POST' });
-    const authStateIsCurrent =
-      localStorage.getItem(KEY_SESSION_TOKEN) === authStateAtStart.token &&
-      localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) === authStateAtStart.expiresAt &&
-      localStorage.getItem(KEY_TOUR_MODE) === authStateAtStart.tourMode &&
-      localStorage.getItem(KEY_USER_ID) === authStateAtStart.userId;
-    // Pairing or sign-in may finish while this public request is in flight.
-    // Never let a late sample response overwrite or clear newer credentials.
-    if (!authStateIsCurrent) {
+    if (
+      demoSessionClosing ||
+      requestGeneration !== demoSessionGeneration
+    ) {
+      void endSampleSimulation(session?.token).catch(() => {});
+      throw new Error('The sample session changed while it was starting.');
+    }
+    // A real login may finish while the public request is in flight. Sample
+    // state is tab-scoped and never overwrites it; real authentication wins.
+    if (hasRealAuthentication()) {
+      void endSampleSimulation(session?.token).catch(() => {});
       throw new Error('Authentication changed while the sample session was starting.');
     }
     const expiresAtMs = Date.parse(session?.expiresAt ?? '');
@@ -486,16 +504,10 @@ export async function startDemoSession() {
       !Number.isFinite(expiresAtMs) ||
       expiresAtMs <= Date.now()
     ) {
-      localStorage.removeItem(KEY_SESSION_TOKEN);
-      localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
-      localStorage.removeItem(KEY_TOUR_MODE);
-      if (localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID) {
-        localStorage.removeItem(KEY_USER_ID);
-      }
+      clearSampleSession();
       throw new Error('Sample session response was invalid.');
     }
-    localStorage.setItem(KEY_SESSION_TOKEN, session.token);
-    localStorage.setItem(KEY_DEMO_SESSION_EXPIRES_AT, session.expiresAt);
+    storeSampleSession(session);
     return session;
   })();
   try {
@@ -530,7 +542,7 @@ export function sendSampleSimulationCommand(command) {
 }
 
 export async function endSampleSimulation(
-  token = localStorage.getItem(KEY_SESSION_TOKEN),
+  token = readSampleSession().token,
 ) {
   if (!token) return null;
   const controller = new AbortController();

@@ -16,7 +16,7 @@
 
 import { fetchJSON, escapeHtml } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // ─── Desktop OS-keychain passphrase bridge (#401) ────────────────────────────
 // On the desktop app, `window.skytwinDesktop` exposes a passphrase store backed
@@ -244,7 +244,7 @@ function ensureCredentialVaultListener() {
 }
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 /**

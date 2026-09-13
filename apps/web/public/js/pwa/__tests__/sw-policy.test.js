@@ -5,6 +5,7 @@ import {
   isReplayable,
   serializeWrite,
   decideReplayOutcome,
+  CACHE_VERSION,
   PRECACHE_URLS,
   MAX_REPLAY_ATTEMPTS,
 } from '../sw-policy.js';
@@ -41,6 +42,12 @@ describe('classifyRequest', () => {
     ).toBe('runtime');
   });
 
+  it('never caches credential-scoped sample reads', () => {
+    expect(
+      classifyRequest({ method: 'GET', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN),
+    ).toBe('passthrough');
+  });
+
   it('queues same-origin mutating API writes', () => {
     for (const m of ['POST', 'PUT', 'PATCH', 'DELETE']) {
       expect(
@@ -58,6 +65,12 @@ describe('classifyRequest', () => {
     ).toBe('passthrough');
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/assistant/messages` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'DELETE', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/v1/demo/session` }, ORIGIN),
     ).toBe('passthrough');
   });
 
@@ -82,6 +95,10 @@ describe('classifyRequest', () => {
 });
 
 describe('precache list', () => {
+  it('advances the shell cache and includes the auth-state dependency', () => {
+    expect(CACHE_VERSION).toBe('v2');
+    expect(PRECACHE_URLS).toContain('/js/sample-session.js');
+  });
   it('includes the shell entrypoints', () => {
     for (const url of ['/', '/index.html', '/offline.html', '/js/app.js', '/manifest.webmanifest']) {
       expect(PRECACHE_URLS).toContain(url);
@@ -104,6 +121,7 @@ describe('isReplayable', () => {
     expect(isReplayable('/api/oauth/google/disconnect')).toBe(false);
     expect(isReplayable('/api/sessions/pair/consume')).toBe(false);
     expect(isReplayable('/api/assistant/messages')).toBe(false);
+    expect(isReplayable('/api/v1/demo/simulation/commands')).toBe(false);
   });
 });
 

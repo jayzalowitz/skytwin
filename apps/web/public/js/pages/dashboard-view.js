@@ -18,6 +18,8 @@
 
 import {
   askTwin,
+  beginDemoSessionExit,
+  cancelDemoSessionExit,
   DEMO_USER_ID,
   endSampleSimulation,
   escapeHtml,
@@ -25,15 +27,11 @@ import {
 } from '../api-client.js';
 import { dismissTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
-  KEY_USER_ID,
-  KEY_ONBOARDED,
-  KEY_TOUR_MODE,
   KEY_NOTIF_DISMISSED,
   KEY_NOTIF_ASKED,
-  KEY_SESSION_TOKEN,
-  KEY_DEMO_SESSION_EXPIRES_AT,
   clearKeysForSuffix,
 } from '../storage-keys.js';
+import { clearSampleSession, getEffectiveUserId, readSampleSession } from '../sample-session.js';
 
 export function situationLabel(type) {
   if (!type) return 'something';
@@ -542,61 +540,43 @@ export function setTourExitPending(trigger, pending, settledMessage = '') {
 }
 
 export async function skyTwinExitTour() {
-  let sampleSnapshot;
-  try {
-    sampleSnapshot = {
-      userId: localStorage.getItem(KEY_USER_ID),
-      token: localStorage.getItem(KEY_SESSION_TOKEN),
-      tourMode: localStorage.getItem(KEY_TOUR_MODE),
-      expiresAt: localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT),
-    };
-  } catch {
-    return false;
-  }
+  beginDemoSessionExit();
+  const sampleSnapshot = readSampleSession();
   if (
     sampleSnapshot.userId !== DEMO_USER_ID ||
-    sampleSnapshot.tourMode !== '1' ||
-    !sampleSnapshot.token
+    sampleSnapshot.tourMode !== '1'
   ) {
-    // A stale sample view must not mutate authentication that has already
-    // moved on to a real user or another sample generation.
+    // A stale sample view must not mutate real authentication.
+    window.location.reload();
+    return true;
+  }
+  if (!sampleSnapshot.token) {
+    clearSampleSession();
+    clearKeysForSuffix(DEMO_USER_ID);
     window.location.reload();
     return true;
   }
   try {
     await endSampleSimulation(sampleSnapshot.token);
-  } catch {
+  } catch (error) {
+    if (error?.status === 401 || error?.status === 403) {
+      // The server has proven the disposable authority is unusable. There is
+      // no live session this browser can revoke, so leave sample mode safely.
+      clearSampleSession();
+      clearKeysForSuffix(DEMO_USER_ID);
+      window.location.reload();
+      return true;
+    }
+    cancelDemoSessionExit();
     // Keep the only credential and local state when the server cannot confirm
     // disposal. The user can retry instead of leaving live state behind until
     // the signed authority expires.
     return false;
   }
-  // Per-user sample flags are safe to sweep after confirmed disposal. Fixed
-  // authentication keys are removed only if the exact sample snapshot is
-  // still current; an overlapping login or renewal wins and is preserved.
+  // Only tab-local disposable state and demo-user presentation flags are
+  // removed. Real account authentication in localStorage is never touched.
+  clearSampleSession();
   clearKeysForSuffix(DEMO_USER_ID);
-  try {
-    if (
-      localStorage.getItem(KEY_USER_ID) === sampleSnapshot.userId &&
-      localStorage.getItem(KEY_SESSION_TOKEN) === sampleSnapshot.token &&
-      localStorage.getItem(KEY_TOUR_MODE) === sampleSnapshot.tourMode &&
-      localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ===
-        sampleSnapshot.expiresAt
-    ) {
-      clearKeysForSuffix('', [
-        KEY_TOUR_MODE,
-        KEY_USER_ID,
-        KEY_ONBOARDED,
-        KEY_NOTIF_DISMISSED,
-        KEY_NOTIF_ASKED,
-        KEY_SESSION_TOKEN,
-        KEY_DEMO_SESSION_EXPIRES_AT,
-      ]);
-    }
-  } catch {
-    // Disposal succeeded. A storage failure must not guess at newer browser
-    // authentication state.
-  }
   window.location.reload();
   return true;
 }
@@ -742,10 +722,10 @@ export async function handleConnectGoogleFromDashboard(userId) {
         // Re-check AFTER the await, not before. The poll runs for up to
         // 5 minutes, so by the time it fires the user may have navigated
         // to another route OR switched to a different user (the dev
-        // user-switcher rewrites KEY_USER_ID). Either way, don't render
+        // user-switcher changes the effective user). Either way, don't render
         // this poll's stale (route, userId) pair over what's current.
         const onDashboard = ((window.location.hash.slice(1) || '/').split('?')[0] || '/') === '/';
-        const stillCurrentUser = localStorage.getItem(KEY_USER_ID) === userId;
+        const stillCurrentUser = getEffectiveUserId() === userId;
         if (!onDashboard || !stillCurrentUser) return;
         const container = document.getElementById('page-content');
         if (!container) return;

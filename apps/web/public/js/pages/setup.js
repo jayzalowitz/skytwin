@@ -1,5 +1,5 @@
 import { fetchJSON, escapeHtml } from '../api-client.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // Module-level sync lookup for dynamic integration card rendering
 let _syncLookup = {};
@@ -561,7 +561,7 @@ window.saveServiceCredentials = async function(service, opts = {}) {
     if (service === 'google' && opts.autoConnect) {
       statusEl.innerHTML = '<span style="color: var(--success);">Saved! Sending you to Google…</span>';
       try {
-        const userId = localStorage.getItem(KEY_USER_ID);
+        const userId = getEffectiveUserId();
         const { startGoogleSignIn } = await import('../google-signin.js');
         const result = await startGoogleSignIn({ userId, onComplete: reRenderSetupOnConnect });
         if (result.status === 'redirecting' || result.status === 'polling') return;
@@ -576,7 +576,7 @@ window.saveServiceCredentials = async function(service, opts = {}) {
     // Re-render to update status badges
     setTimeout(async () => {
       const { renderSetup } = await import('./setup.js');
-      await renderSetup(document.getElementById('page-content'), localStorage.getItem(KEY_USER_ID));
+      await renderSetup(document.getElementById('page-content'), getEffectiveUserId());
     }, 800);
   } catch (err) {
     statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
@@ -597,14 +597,14 @@ async function reRenderSetupOnConnect(connected) {
   if (!container) return;
   // renderSetup is exported from this same module — call it directly
   // rather than dynamically re-importing the module that's executing.
-  await renderSetup(container, localStorage.getItem(KEY_USER_ID));
+  await renderSetup(container, getEffectiveUserId());
 }
 
 window.handleConnectGoogleFromSetup = async function() {
   const statusEl = document.getElementById('save-status-google');
   if (statusEl) statusEl.innerHTML = '<span style="color: var(--text-muted);">Sending you to Google…</span>';
   try {
-    const userId = localStorage.getItem(KEY_USER_ID);
+    const userId = getEffectiveUserId();
     const { startGoogleSignIn } = await import('../google-signin.js');
     const result = await startGoogleSignIn({ userId, onComplete: reRenderSetupOnConnect });
     if (result.status === 'error') throw new Error(result.error || 'sign-in failed');
@@ -625,7 +625,7 @@ window.syncServiceToIronClaw = async function(service) {
     if (statusEl) statusEl.innerHTML = '<span style="color: var(--success);">Synced!</span>';
     setTimeout(async () => {
       const { renderSetup } = await import('./setup.js');
-      await renderSetup(document.getElementById('page-content'), localStorage.getItem(KEY_USER_ID));
+      await renderSetup(document.getElementById('page-content'), getEffectiveUserId());
     }, 800);
   } catch (err) {
     if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.message)}</span>`;
