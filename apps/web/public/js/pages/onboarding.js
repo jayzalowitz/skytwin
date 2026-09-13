@@ -35,10 +35,10 @@ import {
   KEY_USER_ID,
   KEY_SESSION_TOKEN,
   KEY_ONBOARDED,
-  KEY_TOUR_MODE,
   KEY_ONBOARDING_STATE,
   ONBOARDING_STATE_VERSION,
 } from '../storage-keys.js';
+import { clearSampleSession, getEffectiveUserId, isSampleMode } from '../sample-session.js';
 
 /**
  * Persist the in-flight wizard state to localStorage (#390). Called
@@ -106,7 +106,7 @@ function isOnWizard() {
 }
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -208,6 +208,7 @@ async function handleOnboardingClick(e) {
           next: 'connect-gmail',
           onComplete: (completion) => {
             if (completion.connected && completion.userId) {
+              clearSampleSession();
               // The pending endpoint mints the session — store the
               // token first so subsequent API calls authenticate.
               // Without it, the dashboard would 401 the moment the
@@ -390,22 +391,13 @@ async function handleOnboardingClick(e) {
           if (!session?.token || session.userId !== info.userId) {
             throw new Error('Sample session could not be verified.');
           }
-          localStorage.setItem(KEY_TOUR_MODE, '1');
-          localStorage.setItem(KEY_USER_ID, info.userId);
-          // 'sample' (not 'true') so the chrome can tell sample-mode
-          // users apart from completed-onboarding users for the
-          // P2 "Sample profile mode" banner work. needsOnboarding()
-          // treats any non-null value as "no modal".
-          localStorage.setItem(KEY_ONBOARDED, 'sample');
           hideWizard();
           if (typeof window.skyTwinSetUserId === 'function') {
             window.skyTwinSetUserId(info.userId);
           }
-          // Land on a populated route so the sample profile is visible
-          // immediately. setUserId() above calls navigate() against the
-          // current hash; redirecting after means the next navigate()
-          // (fired by hashchange) renders #/decisions.
-          window.location.hash = '#/decisions';
+          // Start with the isolated interactive loop. The rest of the
+          // fictional profile stays available through normal navigation.
+          window.location.hash = '#/sample';
         } else {
           showWizardError(
             'Sample profile is not loaded on this server. Run pnpm db:seed to enable it.',
@@ -1227,12 +1219,9 @@ async function finishWizard(userId, choice, recipeSlug) {
 function hideWizard() {
   const overlay = document.getElementById('onboarding-overlay');
   if (overlay) overlay.style.display = 'none';
-  // Preserve any existing marker — the tour-mode handler writes
-  // `KEY_ONBOARDED='sample'` immediately before calling hideWizard(),
-  // and a blanket overwrite to 'true' here would clobber that marker
-  // before the chrome banner work (P2 follow-up) ever sees it. Only
-  // promote the "never onboarded" null state to 'true' here.
-  if (!localStorage.getItem(KEY_ONBOARDED)) {
+  // Sample onboarding state is tab-scoped. Only promote the real account's
+  // persistent marker when this tab is not showing the disposable sample.
+  if (!isSampleMode() && !localStorage.getItem(KEY_ONBOARDED)) {
     localStorage.setItem(KEY_ONBOARDED, 'true');
   }
   // Drop the resume token whenever the wizard goes away (#390 Copilot).

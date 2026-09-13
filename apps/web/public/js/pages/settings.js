@@ -8,6 +8,7 @@ import {
 } from '../a11y.js';
 import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
+import { clearSampleSession, getEffectiveUserId } from '../sample-session.js';
 import { formatMoney } from '../format.js';
 
 const TIERS = [
@@ -1839,7 +1840,7 @@ function renderProviderChain(providers) {
 }
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || 'default-user';
+  return getEffectiveUserId() || 'default-user';
 }
 
 // Drag and drop state
@@ -2036,6 +2037,7 @@ window.signOut = function() {
   localStorage.removeItem(KEY_USER_ID);
   localStorage.removeItem(KEY_ONBOARDED);
   localStorage.removeItem(KEY_SESSION_TOKEN);
+  clearSampleSession();
   window.location.hash = '#/';
   window.location.reload();
 };

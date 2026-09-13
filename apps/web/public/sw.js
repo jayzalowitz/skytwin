@@ -29,6 +29,7 @@ import {
   RUNTIME_CACHE,
   PRECACHE_URLS,
   classifyRequest,
+  isQueuedWriteEligible,
   serializeWrite,
   decideReplayOutcome,
 } from '/js/pwa/sw-policy.js';
@@ -78,7 +79,15 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const route = classifyRequest(
-    { method: request.method, url: request.url, mode: request.mode, headers: { accept: request.headers.get('accept') || '' } },
+    {
+      method: request.method,
+      url: request.url,
+      mode: request.mode,
+      headers: {
+        accept: request.headers.get('accept') || '',
+        authorization: request.headers.get('authorization') || '',
+      },
+    },
     self.location.origin,
   );
 
@@ -222,6 +231,14 @@ async function replayQueue() {
   writes.sort((a, b) => a.queuedAt - b.queuedAt);
 
   for (const write of writes) {
+    // Re-evaluate persisted entries under the current policy before replay.
+    // This retires anything queued by an older worker whose route matching was
+    // less strict (including alternate-case sample URLs) without sending it.
+    if (!isQueuedWriteEligible(write, self.location.origin)) {
+      await queueDelete(write.id);
+      continue;
+    }
+
     let result;
     try {
       const res = await fetch(write.url, {

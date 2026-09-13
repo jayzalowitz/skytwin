@@ -1,6 +1,6 @@
 import { fetchJSON, escapeHtml, renderApiError, wireApiRetry } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 const API = '/api';
 
@@ -14,7 +14,7 @@ const API = '/api';
 let _capabilitiesAuditListenerWired = false;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function ensureCapabilitiesAuditListener() {

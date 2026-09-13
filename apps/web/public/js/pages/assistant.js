@@ -12,7 +12,8 @@ import {
   renderApiError,
   wireApiRetry,
 } from '../api-client.js';
-import { assistantDraftKey, KEY_USER_ID } from '../storage-keys.js';
+import { assistantDraftKey } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 import { showToast } from '../toast.js';
 import { renderTierPromotionModal } from '../components/tier-promotion-modal.js';
 
@@ -564,7 +565,7 @@ function runHeuristicReverseCapability(userMessage, replyText, container) {
 }
 
 async function checkReverseCapabilityFlow(userMessage, replyText, container) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId) return;
 
   try {
@@ -606,7 +607,7 @@ async function checkReverseCapabilityFlow(userMessage, replyText, container) {
  * Calls POST /api/capabilities/install and shows a toast.
  */
 async function handleReverseCapabilityInstall(registryId, displayName) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId) {
     showToast('Log in to connect capabilities.', { kind: 'warning' });
     return;
@@ -667,7 +668,7 @@ function renderWatchDraftAffordance(parsed, sourceText, container) {
 }
 
 async function checkWatchDraftFlow(userMessage, container) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId || !userMessage) return;
   const parsed = await parseWatchText(userMessage);
   if (!parsed?.matched) return;
@@ -675,7 +676,7 @@ async function checkWatchDraftFlow(userMessage, container) {
 }
 
 async function handleCreateWatchFromChat(status) {
-  const userId = localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId || !_watchDraft?.spec) return;
   const buttons = document.querySelectorAll('.assistant-watch-draft button');
   buttons.forEach((b) => { b.disabled = true; });

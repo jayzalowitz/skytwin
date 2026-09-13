@@ -16,16 +16,22 @@
  * post-render side effects); this file owns presentation.
  */
 
-import { askTwin, escapeHtml, fetchDemoRecipes } from '../api-client.js';
+import {
+  askTwin,
+  beginDemoSessionExit,
+  cancelDemoSessionExit,
+  DEMO_USER_ID,
+  endSampleSimulation,
+  escapeHtml,
+  fetchDemoRecipes,
+} from '../api-client.js';
 import { dismissTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
-  KEY_USER_ID,
-  KEY_ONBOARDED,
-  KEY_TOUR_MODE,
   KEY_NOTIF_DISMISSED,
   KEY_NOTIF_ASKED,
   clearKeysForSuffix,
 } from '../storage-keys.js';
+import { clearSampleSession, getEffectiveUserId, readSampleSession } from '../sample-session.js';
 
 export function situationLabel(type) {
   if (!type) return 'something';
@@ -486,37 +492,93 @@ export function handleTryRecipe(userId, situation) {
 
 export function renderTourBanner() {
   return `
-    <div class="card" style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
+    <div class="card" data-tour-banner style="border-left: 3px solid var(--warning, #e6a700); background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg) 100%);">
       <div class="card-header">
         <span class="card-title">You're exploring with a sample profile</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Everything you see — the decisions, the learnings, the approvals — belongs to a fictional user named Alex.
+        Everything you see — the decisions, the learnings, the approvals — belongs to a fictional sample profile.
         Click around freely, then start your own when you're ready. Nothing you do here touches your real accounts.
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <button class="btn btn-primary btn-sm" data-action="exit-tour">Start my own setup</button>
-        <a class="btn btn-outline btn-sm" href="#/decisions">See what Alex's twin has been doing</a>
-        <a class="btn btn-outline btn-sm" href="#/twin">See what it learned about Alex</a>
+        <a class="btn btn-outline btn-sm" href="#/sample">Try the interactive sample</a>
+        <a class="btn btn-outline btn-sm" href="#/decisions">See what the sample twin has been doing</a>
+        <a class="btn btn-outline btn-sm" href="#/twin">See what the sample twin learned</a>
       </div>
     </div>
   `;
 }
 
-export function skyTwinExitTour() {
-  // Hard-cleanup everything the tour wrote so a future tour starts
-  // fresh (no stale "first decision" toast, no stale tier celebration,
-  // no stale notification dismissal). Sweeps both the fixed-name flags
-  // and any per-user key whose suffix matches the demo uid.
-  const demoUid = (() => { try { return localStorage.getItem(KEY_USER_ID) || ''; } catch { return ''; } })();
-  clearKeysForSuffix(demoUid, [
-    KEY_TOUR_MODE,
-    KEY_USER_ID,
-    KEY_ONBOARDED,
-    KEY_NOTIF_DISMISSED,
-    KEY_NOTIF_ASKED,
-  ]);
+/** Make the dashboard tour-exit wait visible and announced to assistive tech. */
+export function setTourExitPending(trigger, pending, settledMessage = '') {
+  const region = trigger?.closest?.('[data-tour-banner]');
+  if (!region) return;
+  const button = region.querySelector('[data-action="exit-tour"]');
+  if (button) button.disabled = pending;
+  if (!pending) {
+    region.removeAttribute('aria-busy');
+    const status = region.querySelector('[data-tour-exit-status]');
+    if (settledMessage) {
+      if (status) status.textContent = settledMessage;
+    } else {
+      status?.remove();
+    }
+    return;
+  }
+  region.setAttribute('aria-busy', 'true');
+  let status = region.querySelector('[data-tour-exit-status]');
+  if (!status) {
+    status = document.createElement('p');
+    status.className = 'sample-operation-status';
+    status.setAttribute('data-tour-exit-status', '');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    region.append(status);
+  }
+  status.textContent = 'Discarding the sample and opening your setup…';
+}
+
+export async function skyTwinExitTour() {
+  beginDemoSessionExit();
+  const sampleSnapshot = readSampleSession();
+  if (
+    sampleSnapshot.userId !== DEMO_USER_ID ||
+    sampleSnapshot.tourMode !== '1'
+  ) {
+    // A stale sample view must not mutate real authentication.
+    window.location.reload();
+    return true;
+  }
+  if (!sampleSnapshot.token) {
+    clearSampleSession();
+    clearKeysForSuffix(DEMO_USER_ID);
+    window.location.reload();
+    return true;
+  }
+  try {
+    await endSampleSimulation(sampleSnapshot.token);
+  } catch (error) {
+    if (error?.status === 401 || error?.status === 403) {
+      // The server has proven the disposable authority is unusable. There is
+      // no live session this browser can revoke, so leave sample mode safely.
+      clearSampleSession();
+      clearKeysForSuffix(DEMO_USER_ID);
+      window.location.reload();
+      return true;
+    }
+    cancelDemoSessionExit();
+    // Keep the only credential and local state when the server cannot confirm
+    // disposal. The user can retry instead of leaving live state behind until
+    // the signed authority expires.
+    return false;
+  }
+  // Only tab-local disposable state and demo-user presentation flags are
+  // removed. Real account authentication in localStorage is never touched.
+  clearSampleSession();
+  clearKeysForSuffix(DEMO_USER_ID);
   window.location.reload();
+  return true;
 }
 
 export function renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount, learnedCount }) {
@@ -660,10 +722,10 @@ export async function handleConnectGoogleFromDashboard(userId) {
         // Re-check AFTER the await, not before. The poll runs for up to
         // 5 minutes, so by the time it fires the user may have navigated
         // to another route OR switched to a different user (the dev
-        // user-switcher rewrites KEY_USER_ID). Either way, don't render
+        // user-switcher changes the effective user). Either way, don't render
         // this poll's stale (route, userId) pair over what's current.
         const onDashboard = ((window.location.hash.slice(1) || '/').split('?')[0] || '/') === '/';
-        const stillCurrentUser = localStorage.getItem(KEY_USER_ID) === userId;
+        const stillCurrentUser = getEffectiveUserId() === userId;
         if (!onDashboard || !stillCurrentUser) return;
         const container = document.getElementById('page-content');
         if (!container) return;
@@ -706,7 +768,7 @@ export function initDashboardGlobals() {
   // Hash-route gate: the SPA reuses one #page-content container across
   // routes, so without this check our data-action names would collide
   // with data-action="connect-google" on settings.js and similar.
-  document.addEventListener('click', (ev) => {
+  document.addEventListener('click', async (ev) => {
     const hash = (window.location.hash || '').split('?')[0] || '#/';
     if (hash !== '#/' && hash !== '#') return;
     const target = ev.target instanceof Element ? ev.target : null;
@@ -747,7 +809,17 @@ export function initDashboardGlobals() {
       const uid = askInput?.getAttribute('data-user-id');
       if (uid && situation) handleTryRecipe(uid, situation);
     } else if (action === 'exit-tour') {
-      skyTwinExitTour();
+      setTourExitPending(el, true);
+      let exitMessage = '';
+      try {
+        if (!(await skyTwinExitTour())) {
+          exitMessage = 'Could not discard the sample. Check your connection and try again.';
+        }
+      } finally {
+        // Production reloads on success; restore the control if navigation is
+        // suppressed or fails in an embedded/test environment.
+        setTourExitPending(el, false, exitMessage);
+      }
     } else if (action === 'connect-google') {
       const uid = el.getAttribute('data-user-id');
       if (uid) handleConnectGoogleFromDashboard(uid);

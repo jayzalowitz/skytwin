@@ -11,7 +11,7 @@ import {
   wireApiRetry,
 } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 let _listenerWired = false;
 let _container = null;
@@ -29,7 +29,7 @@ let _state = {
 };
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || _state.userId || '';
+  return getEffectiveUserId() || _state.userId || '';
 }
 
 function isOnWatchesRoute() {

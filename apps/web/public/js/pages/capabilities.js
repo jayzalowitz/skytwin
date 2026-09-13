@@ -15,7 +15,7 @@ import {
   wireApiRetry,
 } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton click delegator guard.
@@ -44,7 +44,7 @@ let _cachedLifebooks = [];
 let _lastContainer = null;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function ensureCapabilitiesListener() {

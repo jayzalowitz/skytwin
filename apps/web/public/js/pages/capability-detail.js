@@ -9,13 +9,13 @@ import {
   renderApiError,
   wireApiRetry,
 } from '../api-client.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 /** Warn threshold for success-rate display. Matches @skytwin/observability constant. */
 const SUCCESS_RATE_WARN_THRESHOLD = 0.9;
 /** Warn threshold for p95 latency (ms). Matches @skytwin/observability constant. */
 const LATENCY_P95_WARN_MS = 2000;
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
 import { formatMoney } from '../format.js';
 
 const API = '/api';
@@ -29,7 +29,7 @@ let _capabilityDetailListenerWired = false;
 let _currentDetailServerId = '';
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function getCurrentDetailHash() {

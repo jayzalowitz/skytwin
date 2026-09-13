@@ -1,13 +1,29 @@
 import {
-  KEY_DEMO_SESSION_EXPIRES_AT,
-  KEY_SESSION_TOKEN,
-  KEY_TOUR_MODE,
-  KEY_USER_ID,
-} from './storage-keys.js';
+  clearSampleSession,
+  getEffectiveAuthToken,
+  hasRealAuthentication,
+  isSampleMode,
+  readSampleSession,
+  SAMPLE_USER_ID,
+  storeSampleSession,
+} from './sample-session.js';
 
 const API = '/api';
-const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+export const DEMO_USER_ID = SAMPLE_USER_ID;
 let demoSessionPromise = null;
+let demoSessionGeneration = 0;
+let demoSessionClosing = false;
+
+/** Invalidate every in-flight sample start before disposal begins. */
+export function beginDemoSessionExit() {
+  demoSessionGeneration += 1;
+  demoSessionClosing = true;
+}
+
+/** Re-open renewal only when disposal could not be confirmed. */
+export function cancelDemoSessionExit() {
+  demoSessionClosing = false;
+}
 
 /**
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
@@ -23,7 +39,7 @@ export function escapeHtml(str) {
  * Build the Authorization header from the stored session token (if any).
  */
 function authHeaders() {
-  const token = localStorage.getItem(KEY_SESSION_TOKEN);
+  const token = getEffectiveAuthToken();
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
@@ -171,27 +187,55 @@ async function classifyHttpError(res) {
  * branch on `err.kind` rather than parsing `err.message`. Use
  * `renderApiError(err, retry)` for a consistent visual treatment.
  */
-export async function fetchJSON(url, options = {}, demoRenewed = false) {
+export async function fetchJSON(
+  url,
+  options = {},
+  demoRenewed = false,
+  allowDemoRenewal = true,
+) {
   const sampleExpiry = Date.parse(
-    localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ?? '',
+    readSampleSession().expiresAt ?? '',
   );
   if (
+    allowDemoRenewal &&
     !demoRenewed &&
     url !== `${API}/v1/demo/session` &&
-    localStorage.getItem(KEY_TOUR_MODE) === '1' &&
-    localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID &&
+    isSampleMode() &&
     Number.isFinite(sampleExpiry) &&
     sampleExpiry <= Date.now()
   ) {
     await startDemoSession();
-    return fetchJSON(url, options, true);
+    return fetchJSON(url, options, true, allowDemoRenewal);
   }
 
+  // Keep the exact sample authority used by this request. Parallel dashboard
+  // reads can receive staggered 401s after one of them has already renewed the
+  // session; those older responses must reuse the successor instead of
+  // replacing (and revoking) it again.
+  const currentSampleToken = isSampleMode()
+    ? readSampleSession().token
+    : null;
+  const authTokenAtRequest = getEffectiveAuthToken();
+  const { headers: optionHeaders = {}, ...requestOptions } = options;
+  const requestHeaders = {
+    'Content-Type': 'application/json',
+    ...(authTokenAtRequest
+      ? { Authorization: `Bearer ${authTokenAtRequest}` }
+      : {}),
+    ...optionHeaders,
+  };
+  const requestAuthorization = Object.entries(requestHeaders).find(
+    ([name]) => name.toLowerCase() === 'authorization',
+  )?.[1];
+  const sampleTokenAtRequest = currentSampleToken &&
+    requestAuthorization === `Bearer ${currentSampleToken}`
+    ? currentSampleToken
+    : null;
   let res;
   try {
     res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...authHeaders(), ...options.headers },
-      ...options,
+      ...requestOptions,
+      headers: requestHeaders,
     });
   } catch (cause) {
     // Network unreachable (no DNS, no route, browser offline, etc.)
@@ -207,13 +251,18 @@ export async function fetchJSON(url, options = {}, demoRenewed = false) {
   if (!res.ok) {
     if (
       res.status === 401 &&
+      allowDemoRenewal &&
       !demoRenewed &&
       url !== `${API}/v1/demo/session` &&
-      localStorage.getItem(KEY_TOUR_MODE) === '1' &&
-      localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID
+      sampleTokenAtRequest &&
+      isSampleMode()
     ) {
+      const currentSampleToken = readSampleSession().token;
+      if (currentSampleToken && currentSampleToken !== sampleTokenAtRequest) {
+        return fetchJSON(url, options, true, allowDemoRenewal);
+      }
       await startDemoSession();
-      return fetchJSON(url, options, true);
+      return fetchJSON(url, options, true, allowDemoRenewal);
     }
     const apiErr = await classifyHttpError(res);
     if (apiErr.kind === 'offline') markApiOffline();
@@ -454,21 +503,25 @@ export function fetchDemoInfo() {
 export async function startDemoSession() {
   if (demoSessionPromise) return demoSessionPromise;
   demoSessionPromise = (async () => {
-    const authStateAtStart = {
-      token: localStorage.getItem(KEY_SESSION_TOKEN),
-      expiresAt: localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT),
-      tourMode: localStorage.getItem(KEY_TOUR_MODE),
-      userId: localStorage.getItem(KEY_USER_ID),
-    };
+    if (demoSessionClosing) {
+      throw new Error('The sample session is being discarded.');
+    }
+    const requestGeneration = demoSessionGeneration;
+    if (hasRealAuthentication()) {
+      throw new Error('Sign out before starting the sample.');
+    }
     const session = await fetchJSON(`${API}/v1/demo/session`, { method: 'POST' });
-    const authStateIsCurrent =
-      localStorage.getItem(KEY_SESSION_TOKEN) === authStateAtStart.token &&
-      localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) === authStateAtStart.expiresAt &&
-      localStorage.getItem(KEY_TOUR_MODE) === authStateAtStart.tourMode &&
-      localStorage.getItem(KEY_USER_ID) === authStateAtStart.userId;
-    // Pairing or sign-in may finish while this public request is in flight.
-    // Never let a late sample response overwrite or clear newer credentials.
-    if (!authStateIsCurrent) {
+    if (
+      demoSessionClosing ||
+      requestGeneration !== demoSessionGeneration
+    ) {
+      void endSampleSimulation(session?.token).catch(() => {});
+      throw new Error('The sample session changed while it was starting.');
+    }
+    // A real login may finish while the public request is in flight. Sample
+    // state is tab-scoped and never overwrites it; real authentication wins.
+    if (hasRealAuthentication()) {
+      void endSampleSimulation(session?.token).catch(() => {});
       throw new Error('Authentication changed while the sample session was starting.');
     }
     const expiresAtMs = Date.parse(session?.expiresAt ?? '');
@@ -479,16 +532,10 @@ export async function startDemoSession() {
       !Number.isFinite(expiresAtMs) ||
       expiresAtMs <= Date.now()
     ) {
-      localStorage.removeItem(KEY_SESSION_TOKEN);
-      localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
-      localStorage.removeItem(KEY_TOUR_MODE);
-      if (localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID) {
-        localStorage.removeItem(KEY_USER_ID);
-      }
+      clearSampleSession();
       throw new Error('Sample session response was invalid.');
     }
-    localStorage.setItem(KEY_SESSION_TOKEN, session.token);
-    localStorage.setItem(KEY_DEMO_SESSION_EXPIRES_AT, session.expiresAt);
+    storeSampleSession(session);
     return session;
   })();
   try {
@@ -509,6 +556,36 @@ export function previewDemoDecision(situation) {
 // the source of truth is DEMO_RECIPES in @skytwin/shared-types.
 export function fetchDemoRecipes() {
   return fetchJSON(`${API}/v1/demo/recipes`);
+}
+
+export function fetchSampleSimulation() {
+  return fetchJSON(`${API}/v1/demo/simulation`);
+}
+
+export function sendSampleSimulationCommand(command) {
+  return fetchJSON(`${API}/v1/demo/simulation/commands`, {
+    method: 'POST',
+    body: JSON.stringify(command),
+  }, false, false);
+}
+
+export async function endSampleSimulation(
+  token = readSampleSession().token,
+) {
+  if (!token) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const res = await fetch(`${API}/v1/demo/simulation`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw await classifyHttpError(res);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function askTwin(userId, situation, opts = {}) {

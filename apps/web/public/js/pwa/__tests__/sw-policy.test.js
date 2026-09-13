@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyRequest,
   isPrecached,
+  isQueuedWriteEligible,
   isReplayable,
   serializeWrite,
   decideReplayOutcome,
+  CACHE_VERSION,
   PRECACHE_URLS,
   MAX_REPLAY_ATTEMPTS,
 } from '../sw-policy.js';
@@ -41,6 +43,34 @@ describe('classifyRequest', () => {
     ).toBe('runtime');
   });
 
+  it('never caches credential-scoped sample reads', () => {
+    expect(
+      classifyRequest({ method: 'GET', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'GET', url: `${ORIGIN}/API/V1/DEMO/SIMULATION` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        {
+          method: 'GET',
+          url: `${ORIGIN}/api/approvals/sample/pending`,
+          headers: { Authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+        },
+        ORIGIN,
+      ),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        {
+          method: 'GET',
+          url: `${ORIGIN}/api/v1/briefings/sample?token=skytwin-demo-v1.expiry.nonce.signature`,
+        },
+        ORIGIN,
+      ),
+    ).toBe('passthrough');
+  });
+
   it('queues same-origin mutating API writes', () => {
     for (const m of ['POST', 'PUT', 'PATCH', 'DELETE']) {
       expect(
@@ -58,6 +88,25 @@ describe('classifyRequest', () => {
     ).toBe('passthrough');
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/assistant/messages` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'DELETE', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/v1/demo/session` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/V1/Demo/simulation/commands` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/feedback`,
+          headers: { authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+        },
+        ORIGIN,
+      ),
     ).toBe('passthrough');
   });
 
@@ -82,6 +131,10 @@ describe('classifyRequest', () => {
 });
 
 describe('precache list', () => {
+  it('advances the shell cache and includes the auth-state dependency', () => {
+    expect(CACHE_VERSION).toBe('v4');
+    expect(PRECACHE_URLS).toContain('/js/sample-session.js');
+  });
   it('includes the shell entrypoints', () => {
     for (const url of ['/', '/index.html', '/offline.html', '/js/app.js', '/manifest.webmanifest']) {
       expect(PRECACHE_URLS).toContain(url);
@@ -104,6 +157,45 @@ describe('isReplayable', () => {
     expect(isReplayable('/api/oauth/google/disconnect')).toBe(false);
     expect(isReplayable('/api/sessions/pair/consume')).toBe(false);
     expect(isReplayable('/api/assistant/messages')).toBe(false);
+    expect(isReplayable('/api/v1/demo/simulation/commands')).toBe(false);
+    expect(isReplayable('/API/V1/DEMO/SIMULATION/COMMANDS')).toBe(false);
+  });
+});
+
+describe('isQueuedWriteEligible', () => {
+  it('revalidates persisted writes under the current case-insensitive policy', () => {
+    expect(
+      isQueuedWriteEligible(
+        { method: 'POST', url: `${ORIGIN}/api/feedback` },
+        ORIGIN,
+      ),
+    ).toBe(true);
+    expect(
+      isQueuedWriteEligible(
+        { method: 'POST', url: `${ORIGIN}/API/V1/DEMO/SIMULATION/COMMANDS` },
+        ORIGIN,
+      ),
+    ).toBe(false);
+    expect(
+      isQueuedWriteEligible(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/feedback`,
+          headers: { authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+        },
+        ORIGIN,
+      ),
+    ).toBe(false);
+    expect(
+      isQueuedWriteEligible(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/feedback?token=skytwin-demo-v1.expiry.nonce.signature`,
+          headers: {},
+        },
+        ORIGIN,
+      ),
+    ).toBe(false);
   });
 });
 

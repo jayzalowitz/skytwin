@@ -1,5 +1,9 @@
 export { userRepository } from './user-repository.js';
-export type { CreateUserInput, UpdateUserInput } from './user-repository.js';
+export type {
+  CreateUserInput,
+  DemoUserRow,
+  UpdateUserInput,
+} from './user-repository.js';
 
 export { twinRepository } from './twin-repository.js';
 export type { UpdateProfileInput } from './twin-repository.js';

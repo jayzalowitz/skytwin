@@ -13,7 +13,7 @@ import {
   wireApiRetry,
 } from '../api-client.js';
 import { showToast } from '../toast.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton delegator guard — see CLAUDE.md "Frontend Event Handling".
@@ -24,7 +24,7 @@ let _container = null;
 let _activeCadence = 'daily';
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function isOnBriefingRoute() {

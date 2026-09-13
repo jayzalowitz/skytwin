@@ -3,7 +3,7 @@ import {
   renderApiError,
   wireApiRetry,
 } from '../api-client.js';
-import { KEY_USER_ID } from '../storage-keys.js';
+import { getEffectiveUserId } from '../sample-session.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton click/change delegator guard.
@@ -20,7 +20,7 @@ let _selectedNodeId = null;
 let _graphData = null;
 
 function getCurrentUserId() {
-  return localStorage.getItem(KEY_USER_ID) || '';
+  return getEffectiveUserId();
 }
 
 function ensureProvenanceGraphListener() {

@@ -19,6 +19,11 @@ export interface UpdateUserInput {
   name?: string;
 }
 
+export interface DemoUserRow extends UserRow {
+  /** CockroachDB MVCC version for this exact synthetic-row incarnation. */
+  demo_authority_revision: string;
+}
+
 /**
  * Repository for user CRUD operations.
  */
@@ -39,9 +44,10 @@ export const userRepository = {
    * synthetic. This prevents a public sample session from ever attaching to
    * an ordinary account that happens to occupy the reserved UUID.
    */
-  async findDemoById(id: string): Promise<UserRow | null> {
-    const result = await query<UserRow>(
-      'SELECT * FROM users WHERE id = $1 AND is_demo = true',
+  async findDemoById(id: string): Promise<DemoUserRow | null> {
+    const result = await query<DemoUserRow>(
+      `SELECT *, crdb_internal_mvcc_timestamp::STRING AS demo_authority_revision
+       FROM users WHERE id = $1 AND is_demo = true`,
       [id],
     );
     return result.rows[0] ?? null;

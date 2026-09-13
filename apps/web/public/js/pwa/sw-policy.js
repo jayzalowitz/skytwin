@@ -18,7 +18,7 @@
 
 /** Bump this whenever the precache list or shell strategy changes — old
  * caches are pruned on `activate` by name prefix. */
-export const CACHE_VERSION = 'v1';
+export const CACHE_VERSION = 'v4';
 export const SHELL_CACHE = `skytwin-shell-${CACHE_VERSION}`;
 export const RUNTIME_CACHE = `skytwin-runtime-${CACHE_VERSION}`;
 
@@ -42,6 +42,7 @@ export const PRECACHE_URLS = Object.freeze([
   '/css/assistant.css',
   '/js/app.js',
   '/js/api-client.js',
+  '/js/sample-session.js',
   '/js/storage-keys.js',
   '/js/toast.js',
   '/js/format.js',
@@ -51,6 +52,7 @@ export const PRECACHE_URLS = Object.freeze([
 
 /** HTTP methods that mutate server state — the ones we queue when offline. */
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const SAMPLE_TOKEN_PREFIX = 'skytwin-demo-v1';
 
 /**
  * Methods/paths the queue must NEVER replay, because replaying them is
@@ -59,12 +61,15 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
  *     stream POST would produce a duplicate assistant turn.
  *   - auth/session exchange — a stale pairing token is single-use and
  *     replaying it produces a confusing "already used" error.
+ *   - disposable sample lifecycle — queueing would persist tab-scoped sample
+ *     authority and could report disposal before the server confirmed it.
  * Matched as path prefixes (after the leading /api).
  */
 const NON_REPLAYABLE_PREFIXES = Object.freeze([
   '/api/assistant/messages', // streamed; replay would duplicate a turn
   '/api/sessions/pair',      // single-use pairing tokens
   '/api/oauth',              // OAuth handshakes are time-sensitive
+  '/api/v1/demo',            // disposable sample state must never be replayed
 ]);
 
 /**
@@ -98,6 +103,20 @@ export function classifyRequest(req, origin) {
   // Only ever intercept our own origin. Fonts/CDNs handle their own caching.
   if (parsed.origin !== origin) return 'passthrough';
 
+  // Express route matching is case-insensitive by default. Apply the same
+  // semantics before making any cache or replay decision so an alternate path
+  // casing cannot cross a server-enforced credential boundary.
+  const normalizedPathname = parsed.pathname.toLowerCase();
+
+  // The sample credential also reads a narrow set of normal product routes.
+  // Bind the cache boundary to the credential itself, including EventSource's
+  // query-token transport, rather than relying only on the dedicated path.
+  if (hasSampleCredential(req, parsed)) return 'passthrough';
+
+  // Sample responses are scoped by an Authorization header, which is not part
+  // of the Cache API lookup key. Never cache or queue them across generations.
+  if (normalizedPathname.startsWith('/api/v1/demo')) return 'passthrough';
+
   if (method === 'GET') {
     // Treat HTML document loads as navigations. The SW spec exposes
     // `request.mode === 'navigate'`; we also accept an Accept: text/html
@@ -107,16 +126,40 @@ export function classifyRequest(req, origin) {
     return 'runtime';
   }
 
-  if (WRITE_METHODS.has(method) && parsed.pathname.startsWith('/api/')) {
-    return isReplayable(parsed.pathname) ? 'queueable-write' : 'passthrough';
+  if (WRITE_METHODS.has(method) && normalizedPathname.startsWith('/api/')) {
+    return isReplayable(normalizedPathname) ? 'queueable-write' : 'passthrough';
   }
 
   return 'passthrough';
 }
 
 function isHtmlAccept(req) {
-  const accept = req?.headers?.accept || req?.accept || '';
+  const accept = readHeader(req?.headers, 'accept') || req?.accept || '';
   return typeof accept === 'string' && accept.includes('text/html');
+}
+
+function readHeader(headers, name) {
+  if (!headers) return '';
+  if (typeof headers.get === 'function') return headers.get(name) || '';
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted && typeof value === 'string') return value;
+  }
+  return '';
+}
+
+function isSampleTokenCandidate(token) {
+  return (
+    typeof token === 'string' &&
+    (token === SAMPLE_TOKEN_PREFIX || token.startsWith(`${SAMPLE_TOKEN_PREFIX}.`))
+  );
+}
+
+function hasSampleCredential(req, parsed) {
+  const authorization = readHeader(req?.headers, 'authorization');
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  if (match && isSampleTokenCandidate(match[1])) return true;
+  return isSampleTokenCandidate(parsed.searchParams.get('token'));
 }
 
 /** True when `pathname` is in the precache list (query/hash already stripped). */
@@ -126,7 +169,16 @@ export function isPrecached(pathname) {
 
 /** True when a mutating API path is safe to queue + replay later. */
 export function isReplayable(pathname) {
-  return !NON_REPLAYABLE_PREFIXES.some((p) => pathname.startsWith(p));
+  const normalizedPathname = String(pathname).toLowerCase();
+  return !NON_REPLAYABLE_PREFIXES.some((p) => normalizedPathname.startsWith(p));
+}
+
+/** Revalidate a persisted write under the current routing policy before send. */
+export function isQueuedWriteEligible(write, origin) {
+  return classifyRequest(
+    { method: write?.method, url: write?.url, headers: write?.headers },
+    origin,
+  ) === 'queueable-write';
 }
 
 /**

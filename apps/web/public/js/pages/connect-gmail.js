@@ -24,6 +24,7 @@
  */
 
 import { escapeHtml, fetchJSON } from '../api-client.js';
+import { clearSampleSession } from '../sample-session.js';
 
 const KEY_USER_ID = 'skytwin_userId';
 const KEY_WIZARD_STEP = 'skytwin_connect_gmail_step';
@@ -340,6 +341,7 @@ async function submitCredentials() {
         // Desktop only — system-browser callback can't navigate the
         // renderer back. The poll fires here when /callback resolves.
         if (completion.connected && completion.userId) {
+          clearSampleSession();
           if (completion.sessionToken) {
             localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
           }
