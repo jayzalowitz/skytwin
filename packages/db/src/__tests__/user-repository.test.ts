@@ -350,6 +350,12 @@ describe('userRepository', () => {
       expect(calls[0]![0]).toContain('DELETE FROM feedback_events');
       // Last delete should be users
       expect(calls[calls.length - 1]![0]).toContain('DELETE FROM users WHERE id = $1');
+      const barrierIndex = calls.findIndex((call) =>
+        String(call[0]).includes('DELETE FROM execution_admission_barriers'));
+      const planIndex = calls.findIndex((call) =>
+        String(call[0]).includes('DELETE FROM execution_plans'));
+      expect(barrierIndex).toBeGreaterThanOrEqual(0);
+      expect(barrierIndex).toBeLessThan(planIndex);
 
       // All calls should pass the user id
       for (const call of calls) {

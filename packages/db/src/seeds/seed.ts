@@ -1,5 +1,6 @@
 import { getPool, closePool, withTransaction } from '../connection.js';
 import { seedDemoShowcase } from './demo-showcase.js';
+import { cleanupLegacyFlatDecisions } from './legacy-decision-cleanup.js';
 
 /**
  * Seed the database with sample data for development.
@@ -1283,36 +1284,9 @@ async function seed(): Promise<void> {
     // The subtree has real depth from worker-run items:
     //   execution_results / execution_events → execution_plans → candidate_actions
     //   decision_outcomes → { candidate_actions, execution_plans }
-    // so the order below is dependents-before-parents, not a flat loop.
-    const flatDecisionFilter = `SELECT id FROM decisions WHERE user_id = $1 AND raw_event->'data' IS NULL`;
-    const flatPlanFilter = `SELECT id FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`;
-
-    // 1. execution subtree (keyed on plan_id)
-    await client.query(`DELETE FROM execution_results WHERE plan_id IN (${flatPlanFilter})`, [userId]);
-    await client.query(`DELETE FROM execution_events WHERE plan_id IN (${flatPlanFilter})`, [userId]);
-    // 2. decision_outcomes — references BOTH candidate_actions and execution_plans
-    await client.query(`DELETE FROM decision_outcomes WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
-    // 3. execution_plans — references candidate_actions
-    await client.query(`DELETE FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
-    // 4. remaining decision_id-keyed children
-    for (const childTable of [
-      'candidate_actions',
-      'approval_requests',
-      'explanation_records',
-      'feedback_events',
-      'skill_gap_log',
-      'episodic_memories',
-    ]) {
-      await client.query(
-        `DELETE FROM ${childTable} WHERE decision_id IN (${flatDecisionFilter})`,
-        [userId],
-      );
-    }
-    const cleanup = await client.query(
-      `DELETE FROM decisions WHERE user_id = $1 AND raw_event->'data' IS NULL`,
-      [userId],
-    );
-    console.log(`[seed] Cleaned up ${cleanup.rowCount ?? 0} legacy flat decisions for the sample profile.`);
+    // so the cleanup helper uses dependents-before-parents ordering.
+    const cleaned = await cleanupLegacyFlatDecisions(client, userId);
+    console.log(`[seed] Cleaned up ${cleaned} legacy flat decisions for the sample profile.`);
 
     for (const d of demoDecisions) {
       // raw_event carries the signal two ways on purpose:

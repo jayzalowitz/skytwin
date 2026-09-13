@@ -201,10 +201,11 @@ export async function up(): Promise<void> {
 /**
  * Roll back the initial migration: drop all tables in reverse dependency order.
  */
-export async function down(): Promise<void> {
-  const pool = getPool();
-
-  const dropOrder = [
+export const INITIAL_MIGRATION_DROP_ORDER = [
+    // Added by migration 078. Drop explicitly before its non-cascading
+    // decision/action/plan parents so rollback/reapply cannot retain a table
+    // whose foreign keys were removed by a parent CASCADE.
+    'execution_admission_barriers',
     // Added by migration 012 (mempalace)
     'entity_codes',
     'episodic_memories',
@@ -251,9 +252,12 @@ export async function down(): Promise<void> {
     'twin_profiles',
     'connected_accounts',
     'users',
-  ];
+  ] as const;
 
-  for (const table of dropOrder) {
+export async function down(): Promise<void> {
+  const pool = getPool();
+
+  for (const table of INITIAL_MIGRATION_DROP_ORDER) {
     try {
       await pool.query(`DROP TABLE IF EXISTS ${table} CASCADE`);
     } catch (error) {

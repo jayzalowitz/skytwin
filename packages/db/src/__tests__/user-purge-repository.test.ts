@@ -61,6 +61,7 @@ describe('userPurgeRepository.purgeUser', () => {
 
   it('runs every delete and returns per-table row counts', async () => {
     setupDeleteCounts({
+      execution_admission_barriers: 1,
       execution_results: 3,
       execution_events: 5,
       execution_plans: 2,
@@ -68,6 +69,7 @@ describe('userPurgeRepository.purgeUser', () => {
       decision_outcomes: 4,
       candidate_actions: 11,
       twin_profile_versions: 1,
+      entity_codes: 2,
       knowledge_triples: 0,
       users: 1,
     });
@@ -79,7 +81,7 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(result.counts['candidate_actions']).toBe(11);
     expect(result.counts['users']).toBe(1);
     // Total sums every table's count (including the user row itself).
-    expect(result.total).toBe(3 + 5 + 2 + 7 + 4 + 11 + 1 + 0 + 1);
+    expect(result.total).toBe(1 + 3 + 5 + 2 + 7 + 4 + 11 + 1 + 2 + 0 + 1);
   });
 
   it('returns userExisted=false when the final DELETE FROM users hit zero rows', async () => {
@@ -118,6 +120,12 @@ describe('userPurgeRepository.purgeUser', () => {
     );
     expect(indexOf('DELETE FROM execution_results')).toBeLessThan(
       indexOf('DELETE FROM execution_plans'),
+    );
+    expect(indexOf('DELETE FROM execution_admission_barriers')).toBeLessThan(
+      indexOf('DELETE FROM execution_plans'),
+    );
+    expect(indexOf('DELETE FROM execution_admission_barriers')).toBeLessThan(
+      indexOf('DELETE FROM candidate_actions'),
     );
     expect(indexOf('DELETE FROM twin_profile_versions')).toBeLessThan(
       indexOf('DELETE FROM users'),

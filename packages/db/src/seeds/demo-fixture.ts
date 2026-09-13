@@ -50,6 +50,10 @@ async function main(): Promise<void> {
   if (reset) {
     // Gate 3 by predicate: only is_demo rows are touched. Owned rows cascade.
     await withTransaction(async (client) => {
+      await client.query(
+        `DELETE FROM execution_admission_barriers
+         WHERE user_id IN (SELECT id FROM users WHERE is_demo = true)`,
+      );
       await client.query(`DELETE FROM users WHERE is_demo = true`);
     });
     console.log('[demo:fixture] reset complete — removed is_demo users only.');

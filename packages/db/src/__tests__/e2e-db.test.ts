@@ -74,6 +74,7 @@ describe.skipIf(!E2E)('E2E: CockroachDB integration', () => {
     // Delete in reverse dependency order so FK constraints are satisfied.
     for (const userId of createdUserIds) {
       try {
+        await pool.query('DELETE FROM execution_admission_barriers WHERE user_id = $1', [userId]);
         await pool.query('DELETE FROM feedback_events WHERE user_id = $1', [userId]);
         await pool.query(
           `DELETE FROM explanation_records WHERE decision_id IN

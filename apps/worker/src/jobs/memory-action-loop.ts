@@ -373,12 +373,13 @@ async function executeAllowedOpportunity(
       },
     );
     admissionAttempted = true;
+    const admittedSteps = [{ type: candidate.actionType, status: 'pending' }];
     const admission = await executionAdmissionRepository.admitMemoryExecution({
       userId,
       opportunityId: opportunity.id,
       decisionId: candidate.decisionId,
       actionId: candidate.id,
-      steps: [{ type: candidate.actionType, status: 'pending' }],
+      steps: admittedSteps,
       report: admittedReport,
     });
     if (!admission.created) {
@@ -511,8 +512,16 @@ async function executeAllowedOpportunity(
     if (admissionAttempted) {
       const message = err instanceof Error ? err.message : String(err);
       const recovered = await executionAdmissionRepository
-        .findByScope(userId, 'memory', opportunity.id)
+        .findByScope(userId, 'memory', opportunity.id, {
+          userId,
+          decisionId: candidate.decisionId,
+          actionId: candidate.id,
+          steps: [{ type: candidate.actionType, status: 'pending' }],
+        })
         .catch(() => null);
+      if (recovered) {
+        return reportForExistingAdmission(opportunity, recovered, deps.now);
+      }
       const report = buildReport(
         opportunity,
         'execution_ambiguous',
@@ -521,7 +530,6 @@ async function executeAllowedOpportunity(
         deps.now,
         {
           decisionId: candidate.decisionId,
-          executionPlanId: recovered?.plan.id,
           routeReason: message,
         },
       );
@@ -531,7 +539,6 @@ async function executeAllowedOpportunity(
           status: 'execution_ambiguous',
           report,
           decisionId: candidate.decisionId,
-          executionPlanId: recovered?.plan.id,
           routeReason: message,
           nextStep: report.nextStep,
         }));
@@ -595,14 +602,19 @@ function reportForExistingAdmission(
   now?: Date,
 ): MemoryActionLoopReport {
   const completed = admission.barrier.status === 'completed';
+  const failed = admission.barrier.status === 'failed';
   return buildReport(
     opportunity,
-    completed ? 'auto_executed' : 'execution_ambiguous',
+    completed ? 'auto_executed' : failed ? 'execution_failed' : 'execution_ambiguous',
     completed
       ? 'This memory action already completed; the duplicate attempt was suppressed.'
+      : failed
+        ? 'This memory action already returned an explicit failure; the duplicate attempt was suppressed.'
       : 'A prior execution admission exists; the duplicate attempt was suppressed.',
     completed
       ? 'No action required.'
+      : failed
+        ? 'Resolve the reported failure before creating a new opportunity.'
       : 'Reconcile the admitted execution before creating another opportunity.',
     now,
     {

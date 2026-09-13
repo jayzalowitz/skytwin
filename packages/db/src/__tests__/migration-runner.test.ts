@@ -1,5 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import { splitSqlStatements, isIdempotentError } from '../migrations/001-initial.js';
+import {
+  INITIAL_MIGRATION_DROP_ORDER,
+  splitSqlStatements,
+  isIdempotentError,
+} from '../migrations/001-initial.js';
+
+describe('migration rollback ordering', () => {
+  it('drops execution admission barriers before every authority parent', () => {
+    const barrierIndex = INITIAL_MIGRATION_DROP_ORDER.indexOf('execution_admission_barriers');
+    expect(barrierIndex).toBeGreaterThanOrEqual(0);
+    for (const parent of ['execution_plans', 'candidate_actions', 'decisions', 'users'] as const) {
+      expect(barrierIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf(parent));
+    }
+  });
+});
 
 describe('splitSqlStatements', () => {
   it('splits statements on end-of-line semicolons', () => {

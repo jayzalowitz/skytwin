@@ -473,6 +473,48 @@ describe('runMemoryActionLoopJob', () => {
     });
   });
 
+  it('preserves an explicit failed barrier when suppressing a duplicate memory execution', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    mockExecutionAdmissionRepository.admitMemoryExecution.mockResolvedValueOnce({
+      created: false,
+      barrier: {
+        status: 'failed',
+        decision_id: '22222222-2222-2222-2222-222222222222',
+      },
+      plan: { id: '44444444-4444-4444-4444-444444444444' },
+    });
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
+        modifiedRiskAssessment: {}, reasoning: 'direct route',
+      }),
+      executeWithRouting: vi.fn(),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(router.executeWithRouting).not.toHaveBeenCalled();
+    expect(summary.executionFailed).toBe(1);
+    expect(summary.executionAmbiguous).toBe(0);
+    expect(summary.reports[0]).toMatchObject({
+      status: 'execution_failed',
+      executionPlanId: '44444444-4444-4444-4444-444444444444',
+      summary: expect.stringContaining('explicit failure'),
+    });
+  });
+
   it('marks outbound email memory actions irreversible before policy evaluation', async () => {
     const opportunity = makeOpportunity('draft_email');
     mockCommon(opportunity);

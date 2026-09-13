@@ -840,12 +840,27 @@ export function createApprovalsRouter(): Router {
               body.userId,
               memoryOpportunityId ? 'memory' : 'approval',
               memoryOpportunityId ?? approval.id,
+              {
+                userId: body.userId,
+                decisionId: approval.decision_id,
+                actionId: candidateAction.id,
+                steps: [{ type: candidateAction.actionType, status: 'pending' }],
+              },
             ).catch(() => null);
-            executionResult = {
-              status: 'ambiguous',
-              planId: recovered?.plan.id,
-              error: 'Execution outcome requires reconciliation',
-            };
+            const recoveredStatus = recovered?.barrier.status;
+            executionResult = recovered &&
+              (recoveredStatus === 'completed' || recoveredStatus === 'failed')
+              ? {
+                  status: recoveredStatus,
+                  planId: recovered.plan.id,
+                  adapterUsed: recovered.barrier.observed_result['adapterUsed'],
+                  ...(recoveredStatus === 'failed' ? { error: 'Execution failed' } : {}),
+                }
+              : {
+                  status: 'ambiguous',
+                  planId: recovered?.plan.id,
+                  error: 'Execution outcome requires reconciliation',
+                };
           } else {
             log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
             executionResult = { status: 'failed', error: 'Execution failed before admission' };
