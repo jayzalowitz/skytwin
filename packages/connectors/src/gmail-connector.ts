@@ -130,7 +130,6 @@ export class GmailConnector implements SignalConnector {
   async commitCursor(): Promise<void> {
     const pending = this.pendingHistoryId;
     if (pending === null) return;
-    this.pendingHistoryId = null;
     await this.persistCursor(pending);
   }
 
@@ -396,20 +395,14 @@ export class GmailConnector implements SignalConnector {
   }
 
   private async persistCursor(historyId: string): Promise<void> {
-    this.historyId = historyId;
+    if (this.cursorStore) {
+      await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);
+    }
+    // Advance process-local state only after the durable write succeeds.
     // Any staged advance is superseded by this one; keep it from being
     // re-applied (possibly rewinding the cursor) by a later commit.
+    this.historyId = historyId;
     this.pendingHistoryId = null;
-    if (this.cursorStore) {
-      try {
-        await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);
-      } catch (err) {
-        console.warn(
-          `[gmail] Failed to persist history cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
   }
 
   /**

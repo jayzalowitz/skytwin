@@ -223,7 +223,7 @@ describe('OutlookMailConnector', () => {
     expect(cursor.map.get(CURSOR_KEY)).toBe('NEXT1');
   });
 
-  it.each([401, 403])('replays mail in a new generation after downstream ingest returns %s', async () => {
+  it('replays mail in a new generation when downstream delivery is not acknowledged', async () => {
     fetchMock
       .mockResolvedValueOnce(res(200, {
         value: [gmsg({ id: 'replay-me' })],

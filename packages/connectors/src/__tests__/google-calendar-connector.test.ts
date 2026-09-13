@@ -315,7 +315,7 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     expect(cursor.snapshot['user-1:google_calendar:sync_token']).toBe('fresh-token');
   });
 
-  it.each([401, 403])('replays an event in a new generation after downstream ingest returns %s', async () => {
+  it('replays an event in a new generation when downstream delivery is not acknowledged', async () => {
     vi.stubGlobal('fetch', vi.fn()
       .mockResolvedValueOnce(jsonResponse({
         items: [makeEvent({ id: 'replay-me' })],
@@ -335,8 +335,8 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     const firstGeneration = new GoogleCalendarConnector('user-1', tokenStore, cursor);
     await firstGeneration.connect();
     const first = await firstGeneration.poll();
-    // A 401/403 from downstream ingest means commitCursor is deliberately
-    // not called before this process generation is revoked.
+    // Failed downstream delivery means commitCursor is deliberately not
+    // called before this process generation is revoked.
     await firstGeneration.disconnect();
 
     const nextGeneration = new GoogleCalendarConnector('user-1', tokenStore, cursor);

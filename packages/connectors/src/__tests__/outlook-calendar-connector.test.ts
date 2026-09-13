@@ -279,7 +279,7 @@ describe('OutlookCalendarConnector', () => {
     expect(cursor.map.get(DELTA_KEY)).toBe('NEXT1');
   });
 
-  it.each([401, 403])('replays an event in a new generation after downstream ingest returns %s', async () => {
+  it('replays an event in a new generation when downstream delivery is not acknowledged', async () => {
     fetchMock
       .mockResolvedValueOnce(res(200, {
         value: [gevent({ id: 'replay-me' })],

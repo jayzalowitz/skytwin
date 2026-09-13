@@ -1,4 +1,9 @@
-import type { RawSignal } from "@skytwin/connectors";
+import {
+  GmailConnector,
+  type CursorStore,
+  type OAuthTokenStore,
+  type RawSignal,
+} from "@skytwin/connectors";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createWorkerGenerationAdmission,
@@ -34,6 +39,7 @@ function options(
 describe("worker generation request admission", () => {
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it.each(["SIGTERM", "SIGINT"])(
@@ -133,6 +139,97 @@ describe("worker generation request admission", () => {
       ).rejects.toBeInstanceOf(WorkerGenerationRevokedError);
       expect(admission.isActive()).toBe(false);
       expect(fetchImpl).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([401, 403])(
+    "replays Gmail mail and its cursor in a new generation after ingest status %s",
+    async (status) => {
+      const cursors = new Map<string, string>([
+        ["user-1:gmail:history_id", "1000"],
+      ]);
+      const cursorStore: CursorStore = {
+        get: async (userId, connector, kind) =>
+          cursors.get(`${userId}:${connector}:${kind}`) ?? null,
+        save: async (userId, connector, kind, value) => {
+          cursors.set(`${userId}:${connector}:${kind}`, value);
+        },
+      };
+      const tokenStore = {
+        refreshIfExpired: async () => ({
+          accessToken: "access-token",
+          refreshToken: "refresh-token",
+          expiresAt: new Date(Date.now() + 60_000),
+        }),
+      } as unknown as OAuthTokenStore;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn<typeof fetch>(async (input) => {
+          const url = String(input);
+          if (url.includes("/users/me/history")) {
+            return new Response(
+              JSON.stringify({
+                history: [
+                  { messagesAdded: [{ message: { id: "replay-me" } }] },
+                ],
+                historyId: "2050",
+              }),
+              { status: 200, headers: { "Content-Type": "application/json" } },
+            );
+          }
+          return new Response(
+            JSON.stringify({
+              id: "replay-me",
+              threadId: "thread-replay",
+              labelIds: ["INBOX"],
+              snippet: "replay",
+              payload: { headers: [] },
+              internalDate: "1735689600000",
+              historyId: "2040",
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }),
+      );
+
+      const firstAdmission = createWorkerGenerationAdmission();
+      const first = new GmailConnector("user-1", tokenStore, cursorStore);
+      await first.connect(firstAdmission.signal);
+      const firstBatch = await first.poll(firstAdmission.signal);
+      const rejectedIngest = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status }));
+      await expect(
+        forwardSignalToApi(
+          firstBatch[0]!,
+          "user-1",
+          options(firstAdmission, rejectedIngest),
+        ),
+      ).rejects.toBeInstanceOf(WorkerGenerationRevokedError);
+      expect(cursors.get("user-1:gmail:history_id")).toBe("1000");
+      await first.disconnect();
+
+      const nextAdmission = createWorkerGenerationAdmission();
+      const next = new GmailConnector("user-1", tokenStore, cursorStore);
+      await next.connect(nextAdmission.signal);
+      const replay = await next.poll(nextAdmission.signal);
+      const acceptedIngest = vi
+        .fn<typeof fetch>()
+        .mockResolvedValue(new Response(null, { status: 204 }));
+      await forwardSignalToApi(
+        replay[0]!,
+        "user-1",
+        options(nextAdmission, acceptedIngest),
+      );
+      await next.commitCursor();
+
+      expect(firstBatch.map((item) => item.id)).toEqual([
+        "sig_gmail_replay-me",
+      ]);
+      expect(replay.map((item) => item.id)).toEqual(["sig_gmail_replay-me"]);
+      expect(rejectedIngest).toHaveBeenCalledOnce();
+      expect(acceptedIngest).toHaveBeenCalledOnce();
+      expect(cursors.get("user-1:gmail:history_id")).toBe("2050");
     },
   );
 });

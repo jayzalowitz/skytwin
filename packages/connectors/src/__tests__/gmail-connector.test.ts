@@ -585,6 +585,51 @@ describe('GmailConnector History API', () => {
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('2050');
   });
 
+  it('does not advance process-local state when committing the staged cursor fails', async () => {
+    let historyCalls = 0;
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/history': () => {
+        historyCalls++;
+        return jsonResponse({
+          history: [{ messagesAdded: [{ message: { id: 'retry-me' } }] }],
+          historyId: '2050',
+        });
+      },
+      '/users/me/messages/retry-me': () => jsonResponse({
+        id: 'retry-me',
+        threadId: 't-retry-me',
+        labelIds: ['INBOX'],
+        snippet: '',
+        payload: { headers: [] },
+        internalDate: '1735689600000',
+        historyId: '2040',
+      }),
+    }));
+    let failSave = true;
+    const snapshot: Record<string, string> = {
+      'user-1:gmail:history_id': '1000',
+    };
+    const cursor: CursorStore = {
+      get: async (userId, connector, kind) => snapshot[`${userId}:${connector}:${kind}`] ?? null,
+      save: async (userId, connector, kind, value) => {
+        if (failSave) throw new Error('DB down');
+        snapshot[`${userId}:${connector}:${kind}`] = value;
+      },
+    };
+    const conn = new GmailConnector('user-1', makeFreshTokenStore(), cursor);
+    await conn.connect();
+
+    expect((await conn.poll()).map((item) => item.id)).toEqual(['sig_gmail_retry-me']);
+    await expect(conn.commitCursor()).rejects.toThrow('DB down');
+    expect(snapshot['user-1:gmail:history_id']).toBe('1000');
+
+    failSave = false;
+    expect((await conn.poll()).map((item) => item.id)).toEqual(['sig_gmail_retry-me']);
+    await conn.commitCursor();
+    expect(historyCalls).toBe(2);
+    expect(snapshot['user-1:gmail:history_id']).toBe('2050');
+  });
+
   it('commitCursor is a no-op when nothing is staged', async () => {
     vi.stubGlobal('fetch', makeFetchRouter({
       '/users/me/history': () => jsonResponse({ historyId: '5500' }),
@@ -604,7 +649,7 @@ describe('GmailConnector History API', () => {
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('5500');
   });
 
-  it('cursor save errors do not crash the poll', async () => {
+  it('propagates a durable cursor save failure', async () => {
     vi.stubGlobal('fetch', makeFetchRouter({
       '/users/me/messages?q=': () => jsonResponse({ messages: [] }),
       '/users/me/profile': () => jsonResponse({ historyId: '500' }),
@@ -619,7 +664,7 @@ describe('GmailConnector History API', () => {
 
     const conn = new GmailConnector('user-1', makeFreshTokenStore(), failingCursor);
     await conn.connect();
-    await expect(conn.poll()).resolves.toEqual([]);
+    await expect(conn.poll()).rejects.toThrow('DB down');
   });
 
   it('without a cursor store, the connector still works (back-compat)', async () => {
