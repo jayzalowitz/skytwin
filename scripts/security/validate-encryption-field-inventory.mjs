@@ -37,6 +37,8 @@ const EXPECTED_MIGRATION_RUNNER = "packages/db/src/migrations/001-initial.ts";
 const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
   "38c0b78baaa27b6115a00491e22307ac5ea65989a343842911fcea3f44915f6c";
+const EXPECTED_SCHEMA_CORPUS_SHA256 =
+  "98e650d8c856c73134fcc50d627d91f1799220c1e363d1b88729a26289442c48";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
@@ -221,6 +223,7 @@ function parseColumnName(definition) {
       "check",
       "index",
       "family",
+      "like",
     ].includes(name.toLowerCase())
   ) {
     return null;
@@ -228,9 +231,48 @@ function parseColumnName(definition) {
   return name;
 }
 
+function modeledNonColumnDefinition(definition) {
+  const name = '(?:"[^"]+"|[a-zA-Z_][\\w]*)';
+  const constraint = `(?:CONSTRAINT\\s+${name}\\s+)?`;
+  if (
+    new RegExp(`^${constraint}PRIMARY\\s+KEY\\s*\\([\\s\\S]+\\)$`, "i").test(
+      definition,
+    )
+  ) {
+    return "primary_key";
+  }
+  if (
+    new RegExp(`^${constraint}(?:UNIQUE|CHECK)\\s*\\([\\s\\S]+\\)$`, "i").test(
+      definition,
+    ) ||
+    new RegExp(
+      `^${constraint}FOREIGN\\s+KEY\\s*\\([\\s\\S]+\\)\\s+REFERENCES\\s+[\\s\\S]+$`,
+      "i",
+    ).test(definition) ||
+    new RegExp(
+      `^(?:INDEX|FAMILY)(?:\\s+${name})?\\s*\\([\\s\\S]+\\)$`,
+      "i",
+    ).test(definition)
+  ) {
+    return "modeled_non_column";
+  }
+  return null;
+}
+
+function containsInlinePrimaryKey(definition) {
+  const withoutStringLiterals = definition.replace(/'(?:''|[^'])*'/g, "''");
+  return /\bPRIMARY\s+KEY\b/i.test(withoutStringLiterals);
+}
+
 export function applySchemaSql(schema, rawSql) {
   const sql = stripComments(rawSql);
   for (const statement of splitSqlStatements(sql)) {
+    if (
+      /\bUSING\s+HASH\b/i.test(statement) ||
+      /^CREATE\s+MATERIALIZED\s+VIEW\b/i.test(statement)
+    ) {
+      throw new Error(`unsupported schema-mutating DDL: ${statement}`);
+    }
     if (
       /^CREATE\s+(?:(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\b/i.test(statement)
     ) {
@@ -244,9 +286,23 @@ export function applySchemaSql(schema, rawSql) {
         throw new Error(`unsupported schema-mutating DDL: ${statement}`);
       }
       const columns = schema.get(create.table) ?? new Set();
+      let hasPrimaryKey = false;
       for (const definition of splitTopLevel(create.body)) {
+        const trimmed = definition.trim();
+        const nonColumnKind = modeledNonColumnDefinition(trimmed);
+        if (nonColumnKind) {
+          if (nonColumnKind === "primary_key") hasPrimaryKey = true;
+          continue;
+        }
         const column = parseColumnName(definition);
-        if (column) columns.add(column);
+        if (!column) {
+          throw new Error(`unsupported schema-mutating DDL: ${statement}`);
+        }
+        columns.add(column);
+        if (containsInlinePrimaryKey(trimmed)) hasPrimaryKey = true;
+      }
+      if (!hasPrimaryKey) {
+        throw new Error(`unsupported schema-mutating DDL: ${statement}`);
       }
       schema.set(create.table, columns);
       continue;
@@ -798,13 +854,34 @@ export function productionMigrationSourceFiles() {
   if (runnerErrors.length > 0) {
     throw new Error(runnerErrors.join("; "));
   }
-  return [
+  const files = [
     SCHEMA_PATH,
     ...readdirSync(MIGRATIONS_DIR)
       .filter((name) => name.endsWith(".sql"))
       .sort()
       .map((name) => join(MIGRATIONS_DIR, name)),
   ];
+  const corpusErrors = schemaCorpusContractErrors(files);
+  if (corpusErrors.length > 0) {
+    throw new Error(corpusErrors.join("; "));
+  }
+  return files;
+}
+
+export function schemaCorpusContractErrors(
+  files,
+  readSource = (path) => readFileSync(path, "utf8"),
+) {
+  const hash = createHash("sha256");
+  for (const path of files) {
+    hash.update(normalizeRepositoryPath(relative(REPO_ROOT, path)));
+    hash.update("\0");
+    hash.update(readSource(path).replaceAll("\r\n", "\n"));
+    hash.update("\0");
+  }
+  return hash.digest("hex") === EXPECTED_SCHEMA_CORPUS_SHA256
+    ? []
+    : ["migration SQL corpus must match the reviewed source baseline"];
 }
 
 export function extractSchemaColumns() {

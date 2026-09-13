@@ -20,6 +20,8 @@ import {
   extractSchemaColumns,
   isRepositoryRegularFile,
   migrationRunnerContractErrors,
+  productionMigrationSourceFiles,
+  schemaCorpusContractErrors,
   validateInventory,
 } from "./validate-encryption-field-inventory.mjs";
 
@@ -109,7 +111,7 @@ test("schema reconstruction applies column and table DDL in statement order", ()
   applySchemaSql(
     schema,
     `
-      CREATE TABLE old_name (first STRING, removed STRING);
+      CREATE TABLE old_name (first STRING PRIMARY KEY, removed STRING);
       ALTER TABLE old_name RENAME COLUMN first TO renamed;
       ALTER TABLE old_name DROP COLUMN removed;
       ALTER TABLE old_name ADD COLUMN added INT;
@@ -134,6 +136,11 @@ test("schema reconstruction rejects table DDL it cannot fully consume", () => {
     "ALTER TABLE users SET (fillfactor = 70);",
     'CREATE TABLE "quoted_table" (id UUID);',
     "CREATE TABLE trailing_table (id UUID) LOCALITY GLOBAL;",
+    "CREATE TABLE clone (LIKE users INCLUDING ALL);",
+    "CREATE TABLE nopk (secret STRING);",
+    "CREATE INDEX users_hash ON users (id) USING HASH WITH BUCKET_COUNT = 8;",
+    "CREATE TABLE inline_hash (id UUID, PRIMARY KEY (id) USING HASH WITH BUCKET_COUNT = 8);",
+    "CREATE MATERIALIZED VIEW users_view AS SELECT id FROM users;",
     "DROP TABLE users, twin_profiles;",
   ]) {
     assert.throws(
@@ -141,6 +148,18 @@ test("schema reconstruction rejects table DDL it cannot fully consume", () => {
       /unsupported schema-mutating DDL/,
     );
   }
+});
+
+test("schema reconstruction is bound to the reviewed SQL corpus", () => {
+  const files = productionMigrationSourceFiles();
+  assert.deepEqual(schemaCorpusContractErrors(files), []);
+  assert.deepEqual(
+    schemaCorpusContractErrors(files, (path) => {
+      const source = readFileSync(path, "utf8");
+      return path === files[0] ? `${source}\n` : source;
+    }),
+    ["migration SQL corpus must match the reviewed source baseline"],
+  );
 });
 
 test("schema reconstruction is bound to the production migration runner order", () => {
