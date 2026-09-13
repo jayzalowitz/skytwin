@@ -260,9 +260,9 @@ export class ServiceManager {
 
   private async stopDataServicesOwned(): Promise<void> {
     const results = await Promise.allSettled([
-      this.stopProcess(this.api, 'api'),
       this.stopProcess(this.worker, 'worker'),
       this.stopProcess(this.web, 'web'),
+      this.stopProcess(this.api, 'api'),
     ]);
     const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
     if (failed) throw failed.reason;
@@ -1307,9 +1307,11 @@ export class ServiceManager {
     this.revokeApiGeneration(generation);
     this.api.status = 'error';
     this.emitStatus();
-    // An `error` event is not proof that the OS process exited. Keep the exact
-    // handle and do not start a replacement until TERM/KILL yields exit/close.
-    await this.stopProcess(this.api, 'api');
+    // An `error` event is not proof that the OS process exited. Stop the
+    // generation-bound worker before it can present this generation's ingest
+    // credential again, retain the exact API handle, and do not start any
+    // replacement until every child yields exit/close proof.
+    await this.stopDataServicesOwned();
     this.scheduleApiRestart(startup, 'child process error');
   }
 

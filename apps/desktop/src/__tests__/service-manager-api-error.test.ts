@@ -56,6 +56,13 @@ interface ManagerInternals {
     status: string;
     external: boolean;
   };
+  worker: {
+    process: ChildProcess | null;
+    status: string;
+    restartCount: number;
+    failureTimestamps: number[];
+    external: boolean;
+  };
   apiGeneration: ApiGenerationForTest | null;
   getResourcePath(): string;
   ensureEmbeddedRoot(): Promise<string>;
@@ -80,6 +87,26 @@ function stubbornChild(): ChildProcess {
   return child;
 }
 
+function generationWorker(onRevoke: () => void): ChildProcess {
+  const child = new EventEmitter() as ChildProcess;
+  Object.assign(child, {
+    pid: 7655,
+    exitCode: null,
+    signalCode: null,
+    connected: true,
+    stdout: new PassThrough(),
+    stderr: new PassThrough(),
+    kill: vi.fn((signal: NodeJS.Signals) => {
+      if (signal === "SIGTERM") {
+        onRevoke();
+        queueMicrotask(() => child.emit("close", null, "SIGTERM"));
+      }
+      return true;
+    }),
+  });
+  return child;
+}
+
 describe("ServiceManager API error lifecycle", () => {
   const previousSessionSecret = process.env["SESSION_SECRET"];
 
@@ -98,7 +125,7 @@ describe("ServiceManager API error lifecycle", () => {
     else process.env["SESSION_SECRET"] = previousSessionSecret;
   });
 
-  it("revokes authority but retains the exact child when error has no exit proof", async () => {
+  it("stops the generation worker and blocks writes or replacement when API error has no exit proof", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -106,6 +133,18 @@ describe("ServiceManager API error lifecycle", () => {
       typeof ServiceManager
     > &
       ManagerInternals;
+    let workerRevoked = false;
+    let postRevocationWrites = 0;
+    const worker = generationWorker(() => {
+      workerRevoked = true;
+    });
+    manager.worker = {
+      process: worker,
+      status: "running",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
     manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
     manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
     const startup = {
@@ -118,6 +157,9 @@ describe("ServiceManager API error lifecycle", () => {
     const generation = await manager.startApi(startup);
     expect(generation).not.toBeNull();
     processState.child?.emit("error", new Error("spawn channel failed"));
+    queueMicrotask(() => {
+      if (!workerRevoked) postRevocationWrites++;
+    });
 
     expect(generation?.controller.signal.aborted).toBe(true);
     expect(manager.apiGeneration).toBeNull();
@@ -125,6 +167,9 @@ describe("ServiceManager API error lifecycle", () => {
     await vi.runAllTimersAsync();
     await Promise.resolve();
 
+    expect(worker.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(manager.worker.process).toBeNull();
+    expect(postRevocationWrites).toBe(0);
     expect(processState.child?.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
     expect(processState.child?.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
     expect(manager.api.process).toBe(processState.child);
