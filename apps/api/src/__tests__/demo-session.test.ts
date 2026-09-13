@@ -1,11 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  _resetDemoSessionLifecycleForTests,
   DEMO_USER_ID,
   isDemoReadRequest,
   isLocalDemoAddress,
   isLocalDemoRequest,
   inspectDemoSession,
+  isDemoSessionActive,
+  isDemoSessionTokenCandidate,
   issueDemoSession,
+  revokeDemoSession,
   verifyDemoSession,
 } from '../auth/demo-session.js';
 
@@ -13,8 +17,30 @@ describe('demo session credential', () => {
   const previousSecret = process.env['SESSION_SECRET'];
 
   beforeEach(() => {
+    _resetDemoSessionLifecycleForTests();
     process.env['SESSION_SECRET'] =
       'test-demo-session-secret-that-is-long-enough';
+  });
+
+  it('retains discarded and replacement tombstones through signed expiry', () => {
+    const now = 1_800_000_000_000;
+    const discarded = issueDemoSession(now);
+    const claims = inspectDemoSession(discarded.token, now + 1)!;
+    expect(isDemoSessionActive(claims, now + 1)).toBe(true);
+    expect(revokeDemoSession(discarded.token, now + 2)).toBe(true);
+    expect(claims.signal.aborted).toBe(true);
+    expect(inspectDemoSession(discarded.token, now + 3)).toBeNull();
+
+    const previous = issueDemoSession(now + 4);
+    const replacement = issueDemoSession(now + 5, previous.token);
+    expect(inspectDemoSession(previous.token, now + 6)).toBeNull();
+    expect(inspectDemoSession(replacement.token, now + 6)).not.toBeNull();
+  });
+
+  it('recognizes reserved token candidates without accepting malformed ones', () => {
+    expect(isDemoSessionTokenCandidate('skytwin-demo-v1')).toBe(true);
+    expect(isDemoSessionTokenCandidate('skytwin-demo-v1.not-valid')).toBe(true);
+    expect(isDemoSessionTokenCandidate('normal-session-token')).toBe(false);
   });
 
   afterEach(() => {

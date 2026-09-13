@@ -234,6 +234,39 @@ describe('sessionAuth middleware', () => {
       expect(req.demoAuthenticated).toBe(true);
     });
 
+    it('does not pass authority revoked during the sample marker lookup', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const db = await import('@skytwin/db');
+      let releaseLookup!: (value: { id: string; is_demo: boolean }) => void;
+      (
+        db.userRepository.findDemoById as ReturnType<typeof vi.fn>
+      ).mockReturnValueOnce(
+        new Promise((resolve) => {
+          releaseLookup = resolve;
+        }),
+      );
+      const issued = mod.issueDemoSession();
+      const req = mockReq({
+        method: 'GET',
+        originalUrl: `/api/decisions/${demo.DEMO_USER_ID}`,
+        headers: { authorization: `Bearer ${issued.token}` },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      const pending = mod.sessionAuth(req, res, next);
+      await vi.waitFor(() =>
+        expect(db.userRepository.findDemoById).toHaveBeenCalledOnce(),
+      );
+      demo.revokeDemoSession(issued.token);
+      releaseLookup({ id: demo.DEMO_USER_ID, is_demo: true });
+      await pending;
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+    });
+
     it('rejects mutations and non-allowlisted reads without falling through to DB sessions', async () => {
       const mod = await loadDemoAuth();
       const issued = mod.issueDemoSession();
@@ -285,6 +318,39 @@ describe('sessionAuth middleware', () => {
       expect(res.status).toHaveBeenCalledWith(403);
       expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
     });
+
+    it.each(['expired', 'malformed'])(
+      'never lets an %s reserved sample token inherit localhost dev auth',
+      async (kind) => {
+        process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'true';
+        process.env['SESSION_SECRET'] =
+          'test-demo-session-secret-that-is-long-enough';
+        const auth = await import('../middleware/session-auth.js');
+        const demo = await import('../auth/demo-session.js');
+        const db = await import('@skytwin/db');
+        const token =
+          kind === 'expired'
+            ? demo.issueDemoSession(
+                Date.now() - 4 * 60 * 60 * 1000 - 1,
+              ).token
+            : 'skytwin-demo-v1';
+        const req = mockReq({
+          ip: '127.0.0.1',
+          socket: { remoteAddress: '127.0.0.1' } as Request['socket'],
+          method: 'POST',
+          originalUrl: '/api/feedback',
+          headers: { authorization: `Bearer ${token}` },
+        });
+        const res = mockRes();
+        const next = vi.fn();
+
+        await auth.sessionAuth(req, res, next);
+
+        expect(next).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(401);
+        expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+      },
+    );
 
     it('revokes an issued sample credential when the database marker disappears', async () => {
       const mod = await loadDemoAuth();

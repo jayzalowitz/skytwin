@@ -5,8 +5,11 @@ import type { Express } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SampleSimulationStateResponse } from '@skytwin/shared-types';
 import {
+  _resetDemoSessionLifecycleForTests,
+  inspectDemoSession,
   inspectDemoSessionForDiscard,
   issueDemoSession,
+  revokeDemoSession,
 } from '../auth/demo-session.js';
 import { createDemoSimulationRouter } from '../routes/demo-simulation.js';
 import { SampleSimulationService } from '../services/sample-simulation.js';
@@ -92,6 +95,7 @@ function asState(body: unknown): SampleSimulationStateResponse {
 
 describe('isolated sample simulation', () => {
   beforeEach(() => {
+    _resetDemoSessionLifecycleForTests();
     process.env['SESSION_SECRET'] = 'sample-simulation-test-secret';
   });
 
@@ -157,6 +161,103 @@ describe('isolated sample simulation', () => {
     expect(denied.status).toBe(401);
     expect(checks).toBe(2);
     expect(service.hasSessionForTests(identity.sessionKey)).toBe(false);
+  });
+
+  it('keeps a discarded credential tombstoned instead of recreating its state', async () => {
+    const service = new SampleSimulationService();
+    const app = buildApp(service);
+    const issued = issueDemoSession();
+    expect(
+      (await request(app, 'GET', '/api/v1/demo/simulation', issued.token))
+        .status,
+    ).toBe(200);
+    expect(
+      (await request(app, 'DELETE', '/api/v1/demo/simulation', issued.token))
+        .status,
+    ).toBe(204);
+
+    const replay = await request(
+      app,
+      'GET',
+      '/api/v1/demo/simulation',
+      issued.token,
+    );
+    expect(replay.status).toBe(401);
+    const identity = inspectDemoSessionForDiscard(issued.token)!;
+    expect(service.hasSessionForTests(identity.sessionKey)).toBe(false);
+  });
+
+  it('does not return state when discard wins the final availability await', async () => {
+    let checks = 0;
+    let releaseFinalCheck!: () => void;
+    const finalCheck = new Promise<void>((resolve) => {
+      releaseFinalCheck = resolve;
+    });
+    const service = new SampleSimulationService();
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/demo/simulation',
+      createDemoSimulationRouter(service, async () => {
+        checks += 1;
+        if (checks === 2) await finalCheck;
+        return true;
+      }),
+    );
+    const issued = issueDemoSession();
+    const pending = request(
+      app,
+      'GET',
+      '/api/v1/demo/simulation',
+      issued.token,
+    );
+    await vi.waitFor(() => expect(checks).toBe(2));
+    const discarded = await request(
+      app,
+      'DELETE',
+      '/api/v1/demo/simulation',
+      issued.token,
+    );
+    expect(discarded.status).toBe(204);
+    releaseFinalCheck();
+
+    expect((await pending).status).toBe(401);
+  });
+
+  it('cancels service work when the exact session authority is revoked', async () => {
+    let releasePolicy!: (value: {
+      allowed: boolean;
+      requiresApproval: boolean;
+      reason: string;
+    }) => void;
+    const policyResult = new Promise<{
+      allowed: boolean;
+      requiresApproval: boolean;
+      reason: string;
+    }>((resolve) => {
+      releasePolicy = resolve;
+    });
+    const service = new SampleSimulationService({
+      evaluate: vi.fn(() => policyResult),
+    });
+    const issued = issueDemoSession();
+    const session = inspectDemoSession(issued.token)!;
+    const pending = service.command(
+      session.sessionKey,
+      session.expiresAtMs,
+      { type: 'approve', proposalId: 'calendar-focus' },
+      undefined,
+      session.signal,
+    );
+    revokeDemoSession(issued.token);
+    releasePolicy({
+      allowed: true,
+      requiresApproval: true,
+      reason: 'Deferred test policy.',
+    });
+
+    await expect(pending).rejects.toMatchObject({ statusCode: 401 });
+    expect(service.hasSessionForTests(session.sessionKey)).toBe(false);
   });
 
   it('completes approve, reject, correct, and learn without network access', async () => {

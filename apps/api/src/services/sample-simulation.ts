@@ -495,16 +495,19 @@ export class SampleSimulationService {
     sessionKey: string,
     expiresAtMs: number,
     nowMs = this.clock(),
+    signal?: AbortSignal,
   ): Promise<SampleSimulationStateResponse> {
     this.dropExpired(nowMs);
-    this.assertActive(sessionKey, expiresAtMs, nowMs);
+    this.assertActive(sessionKey, expiresAtMs, nowMs, signal);
     let record = this.records.get(sessionKey);
     if (!record) {
       record = makeRecord(expiresAtMs);
       this.putRecord(sessionKey, record);
     }
-    const presented = await this.present(record);
-    this.assertActive(sessionKey, expiresAtMs, this.clock());
+    const presented = await this.present(record, () =>
+      this.assertActive(sessionKey, expiresAtMs, this.clock(), signal),
+    );
+    this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
     if (this.records.get(sessionKey) !== record) {
       throw new SampleSimulationCommandError(
         'The sample changed while this state was being prepared.',
@@ -519,9 +522,10 @@ export class SampleSimulationService {
     expiresAtMs: number,
     command: SampleSimulationCommand,
     nowMs = this.clock(),
+    signal?: AbortSignal,
   ): Promise<SampleSimulationStateResponse> {
     this.dropExpired(nowMs);
-    this.assertActive(sessionKey, expiresAtMs, nowMs);
+    this.assertActive(sessionKey, expiresAtMs, nowMs, signal);
     let existing = this.records.get(sessionKey);
     if (!existing) {
       existing = makeRecord(expiresAtMs);
@@ -532,14 +536,16 @@ export class SampleSimulationService {
       this.putRecord(sessionKey, reset);
       let presented: SampleSimulationStateResponse;
       try {
-        presented = await this.present(reset);
+        presented = await this.present(reset, () =>
+          this.assertActive(sessionKey, expiresAtMs, this.clock(), signal),
+        );
       } catch (error) {
         if (this.records.get(sessionKey) === reset) {
           this.records.set(sessionKey, existing);
         }
         throw error;
       }
-      this.assertActive(sessionKey, expiresAtMs, this.clock());
+      this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
       if (this.records.get(sessionKey) !== reset) {
         throw new SampleSimulationCommandError(
           'The sample changed while reset was being prepared.',
@@ -563,8 +569,23 @@ export class SampleSimulationService {
     // Build against the pre-command state and freeze it below. A later
     // correction may change future predictions, but must never rewrite the
     // evidence, preferences, or proposed action shown for an earlier choice.
-    const proposalBeforeCommand = await this.presentProposal(entry, existing);
-    this.assertActive(sessionKey, existing.expiresAtMs, this.clock());
+    const proposalBeforeCommand = await this.presentProposal(
+      entry,
+      existing,
+      () =>
+        this.assertActive(
+          sessionKey,
+          existing.expiresAtMs,
+          this.clock(),
+          signal,
+        ),
+    );
+    this.assertActive(
+      sessionKey,
+      existing.expiresAtMs,
+      this.clock(),
+      signal,
+    );
     if (
       this.records.get(sessionKey) !== existing ||
       existing.statuses[command.proposalId] !== 'pending'
@@ -617,8 +638,10 @@ export class SampleSimulationService {
       resultMessage: staged.resultMessages[command.proposalId] ?? null,
     };
     staged.revision += 1;
-    const presented = await this.present(staged);
-    this.assertActive(sessionKey, expiresAtMs, this.clock());
+    const presented = await this.present(staged, () =>
+      this.assertActive(sessionKey, expiresAtMs, this.clock(), signal),
+    );
+    this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
     if (
       this.records.get(sessionKey) !== existing ||
       existing.statuses[command.proposalId] !== 'pending'
@@ -650,11 +673,14 @@ export class SampleSimulationService {
     sessionKey: string,
     expiresAtMs: number,
     nowMs: number,
+    signal?: AbortSignal,
   ): void {
-    if (expiresAtMs > nowMs) return;
+    if (expiresAtMs > nowMs && !signal?.aborted) return;
     this.records.delete(sessionKey);
     throw new SampleSimulationCommandError(
-      'Sample session expired. Restart the sample to continue.',
+      signal?.aborted
+        ? 'Sample session is no longer active. Restart the sample to continue.'
+        : 'Sample session expired. Restart the sample to continue.',
       401,
     );
   }
@@ -674,11 +700,17 @@ export class SampleSimulationService {
 
   private async present(
     record: SessionRecord,
+    assertStillActive: () => void = () => {},
   ): Promise<SampleSimulationStateResponse> {
     const proposals: SampleSimulationProposal[] = [];
     for (const entry of catalog(record)) {
+      assertStillActive();
       const snapshot = record.proposalSnapshots[entry.id];
-      proposals.push(snapshot ?? (await this.presentProposal(entry, record)));
+      proposals.push(
+        snapshot ??
+          (await this.presentProposal(entry, record, assertStillActive)),
+      );
+      assertStillActive();
     }
     const changedByLearning = record.learning.length > 0;
     return {
@@ -700,6 +732,7 @@ export class SampleSimulationService {
   private async presentProposal(
     entry: CatalogEntry,
     record: SessionRecord,
+    assertStillActive: () => void = () => {},
   ): Promise<SampleSimulationProposal> {
     const assessment = riskAssessment(entry);
     const action = candidateAction(entry);
@@ -709,12 +742,14 @@ export class SampleSimulationService {
       TrustTier.OBSERVER,
       assessment,
     );
+    assertStillActive();
     const parts = decisionParts(entry, record, policy, action);
     const explanation = await this.explanations.generate(
       parts.decision,
       parts.outcome,
       parts.context,
     );
+    assertStillActive();
     const normalizedProvenance = entry.provenance ?? 'untrusted_external';
     return {
       id: entry.id,

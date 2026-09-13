@@ -4,8 +4,11 @@ import { sessionRepository, userRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import {
   DEMO_USER_ID,
+  inspectDemoSession,
+  isDemoSessionActive,
+  isDemoSessionTokenCandidate,
   isDemoReadRequest,
-  verifyDemoSession,
+  revokeDemoSessionByKey,
 } from '../auth/demo-session.js';
 
 const log = createLogger('api:auth');
@@ -153,7 +156,8 @@ export async function sessionAuth(
   // reserved synthetic identity and only reaches an explicit GET/HEAD
   // allowlist. It never enters the normal session table and cannot mutate the
   // fixture or select another user.
-  if (token && verifyDemoSession(token)) {
+  const demoSession = token ? inspectDemoSession(token) : null;
+  if (demoSession) {
     if (!isDemoReadRequest(req.method, req.originalUrl ?? req.url)) {
       res.status(403).json({
         error: 'Sample mode is read-only',
@@ -166,6 +170,20 @@ export async function sessionAuth(
     // the fixture, or replacing the reserved row takes effect immediately.
     const demoUser = await userRepository.findDemoById(DEMO_USER_ID);
     if (!demoUser) {
+      revokeDemoSessionByKey(
+        demoSession.sessionKey,
+        demoSession.expiresAtMs,
+      );
+      res.status(401).json({
+        error: 'Sample session unavailable',
+        message: 'Restart the sample tour to continue.',
+      });
+      return;
+    }
+    // The marker lookup is asynchronous. Replacement, discard, or expiry may
+    // win while it is pending, so never hand stale authority to a downstream
+    // repository route.
+    if (!isDemoSessionActive(demoSession)) {
       res.status(401).json({
         error: 'Sample session unavailable',
         message: 'Restart the sample tour to continue.',
@@ -178,10 +196,22 @@ export async function sessionAuth(
     return;
   }
 
+  // A credential that claims the reserved sample format stays on this narrow
+  // path even when it is expired, malformed, replaced, or revoked. Letting it
+  // fall through would turn it into broad unauthenticated traffic whenever the
+  // localhost development bypass is enabled.
+  if (token && isDemoSessionTokenCandidate(token)) {
+    res.status(401).json({
+      error: 'Invalid sample session',
+      message: 'Restart the sample to continue.',
+    });
+    return;
+  }
+
   // Dev-only localhost bypass (must be explicitly enabled or NODE_ENV=development).
-  // Check a valid sample credential first: presenting that narrow principal must
-  // never inherit the broader development bypass merely because the request is
-  // loopback. An invalid token still falls through to the documented dev mode.
+  // Check the reserved sample credential path first: presenting that narrow
+  // principal must never inherit the broader development bypass merely because
+  // the request is loopback.
   if (DEV_AUTH_BYPASS && isLocalhost(req)) {
     if (!bypassWarned) {
       log.warn(

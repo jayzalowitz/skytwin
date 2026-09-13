@@ -35,7 +35,10 @@ vi.mock('@skytwin/policy-engine', () => ({
 }));
 
 import { createDemoRouter, _resetDemoCacheForTests } from '../routes/demo.js';
-import { verifyDemoSession } from '../auth/demo-session.js';
+import {
+  _resetDemoSessionLifecycleForTests,
+  verifyDemoSession,
+} from '../auth/demo-session.js';
 
 const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 
@@ -118,6 +121,7 @@ const SUCCESSFUL_PREDICTION = {
 
 describe('demo routes', () => {
   beforeEach(() => {
+    _resetDemoSessionLifecycleForTests();
     mockUserRepository.findDemoById.mockReset();
     mockWhatWouldIDo.mockReset();
     _resetDemoCacheForTests();
@@ -195,6 +199,25 @@ describe('demo routes', () => {
       expect(res.body).toMatchObject({
         error: expect.stringMatching(/not available/i),
       });
+    });
+
+    it('retires the credential presented during replacement issuance', async () => {
+      mockUserRepository.findDemoById.mockResolvedValue(SEEDED_USER);
+      const app = buildApp();
+      const first = await request(app, 'POST', '/api/v1/demo/session');
+      const firstToken = (first.body as { token: string }).token;
+      const second = await request(
+        app,
+        'POST',
+        '/api/v1/demo/session',
+        undefined,
+        { Authorization: `Bearer ${firstToken}` },
+      );
+      const secondToken = (second.body as { token: string }).token;
+
+      expect(second.status).toBe(201);
+      expect(verifyDemoSession(firstToken)).toBe(false);
+      expect(verifyDemoSession(secondToken)).toBe(true);
     });
 
     it('does not mint from a stale positive info cache after readiness is revoked', async () => {

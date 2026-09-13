@@ -16,6 +16,7 @@ import {
   renderSampleState,
   isSampleRenderCurrent,
   focusSampleResult,
+  setSampleOperationPending,
 } from './sample.js';
 
 function proposal(overrides = {}) {
@@ -219,6 +220,52 @@ describe('interactive sample page states', () => {
     expect(proposalFocus).toHaveBeenCalledWith({ preventScroll: true });
     expect(focusSampleResult(container)).toBe(true);
     expect(resetFocus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+
+  it('announces pending operations and exposes the page busy state', () => {
+    const attributes = new Map();
+    const buttons = [{ disabled: false }, { disabled: false }];
+    let operationStatus = null;
+    const shell = {
+      setAttribute: (key, value) => attributes.set(key, value),
+      removeAttribute: (key) => attributes.delete(key),
+      getAttribute: (key) => attributes.get(key) ?? null,
+      hasAttribute: (key) => attributes.has(key),
+      querySelector: () => operationStatus,
+      querySelectorAll: () => buttons,
+      prepend: (node) => {
+        operationStatus = node;
+      },
+    };
+    const container = {
+      querySelector: (selector) =>
+        selector === '.sample-shell' ? shell : operationStatus,
+      querySelectorAll: () => buttons,
+    };
+    const statusAttributes = new Map();
+    const statusNode = {
+      className: '',
+      textContent: '',
+      setAttribute: (key, value) => statusAttributes.set(key, value),
+      getAttribute: (key) => statusAttributes.get(key) ?? null,
+      remove: () => {
+        operationStatus = null;
+      },
+    };
+    vi.spyOn(document, 'createElement').mockReturnValue(statusNode);
+
+    setSampleOperationPending(container, true, 'Applying sample choice…');
+
+    expect(shell.getAttribute('aria-busy')).toBe('true');
+    expect(statusNode.getAttribute('role')).toBe('status');
+    expect(statusNode.getAttribute('aria-live')).toBe('polite');
+    expect(statusNode.textContent).toBe('Applying sample choice…');
+    expect(buttons.every((button) => button.disabled)).toBe(true);
+
+    setSampleOperationPending(container, false);
+    expect(shell.hasAttribute('aria-busy')).toBe(false);
+    expect(operationStatus).toBeNull();
+    expect(buttons.every((button) => !button.disabled)).toBe(true);
   });
 
   it('discards server state before removing all sample credentials on exit', async () => {

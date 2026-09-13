@@ -4,8 +4,11 @@ import type { SampleSimulationStateResponse } from '@skytwin/shared-types';
 import {
   inspectDemoSession,
   inspectDemoSessionForDiscard,
+  isDemoSessionActive,
   isLocalDemoRequest,
+  revokeDemoSessionByKey,
 } from '../auth/demo-session.js';
+import type { VerifiedDemoSession } from '../auth/demo-session.js';
 import {
   parseSampleSimulationCommand,
   SampleSimulationCommandError,
@@ -14,8 +17,10 @@ import {
 
 interface AuthenticatedSampleRequest extends Request {
   sampleSimulationSession?: {
-    sessionKey: string;
-    expiresAtMs: number;
+    sessionKey: VerifiedDemoSession['sessionKey'];
+    expiresAtMs: VerifiedDemoSession['expiresAtMs'];
+    generation: VerifiedDemoSession['generation'];
+    signal: VerifiedDemoSession['signal'];
   };
 }
 
@@ -64,9 +69,24 @@ export function createDemoSimulationRouter(
     req: AuthenticatedSampleRequest,
     res: Response,
   ): Promise<boolean> {
-    if (await isSampleAvailable()) return true;
-    const sessionKey = req.sampleSimulationSession?.sessionKey;
-    if (sessionKey) service.discard(sessionKey);
+    const session = req.sampleSimulationSession;
+    if (!session || !isDemoSessionActive(session)) {
+      if (session) service.discard(session.sessionKey);
+      res.status(401).json({ error: 'Sample session is no longer active.' });
+      return false;
+    }
+    const available = await isSampleAvailable();
+    // The availability check is asynchronous (a DB query in production).
+    // Revalidate the exact generation after it so discard/replacement/expiry
+    // cannot return a late response or advance into the simulation service.
+    if (!isDemoSessionActive(session)) {
+      service.discard(session.sessionKey);
+      res.status(401).json({ error: 'Sample session is no longer active.' });
+      return false;
+    }
+    if (available) return true;
+    revokeDemoSessionByKey(session.sessionKey, session.expiresAtMs);
+    service.discard(session.sessionKey);
     res.status(401).json({ error: 'Sample session is no longer available.' });
     return false;
   }
@@ -89,6 +109,7 @@ export function createDemoSimulationRouter(
         res.status(401).json({ error: 'Invalid sample session' });
         return;
       }
+      revokeDemoSessionByKey(session.sessionKey, session.expiresAtMs);
       service.discard(session.sessionKey);
       res.status(204).end();
     } catch (error) {
@@ -111,6 +132,8 @@ export function createDemoSimulationRouter(
       const state: SampleSimulationStateResponse = await service.getState(
         session.sessionKey,
         session.expiresAtMs,
+        undefined,
+        session.signal,
       );
       if (!(await requireAvailableFixture(req, res))) return;
       res.json(state);
@@ -133,6 +156,8 @@ export function createDemoSimulationRouter(
           session.sessionKey,
           session.expiresAtMs,
           command,
+          undefined,
+          session.signal,
         );
         if (!(await requireAvailableFixture(req, res))) return;
         res.json(state);

@@ -24,7 +24,9 @@ function beginSampleOperation() {
 function finishSampleOperation(operationGeneration) {
   if (operationGeneration === _sampleOperationGeneration) {
     _sampleBusy = false;
+    return true;
   }
+  return false;
 }
 
 function invalidateSampleOperations() {
@@ -218,6 +220,46 @@ function renderSampleFailure(container, error) {
   container.innerHTML = renderSampleError(error);
 }
 
+/** Announce asynchronous sample work and expose its busy state to AT. */
+export function setSampleOperationPending(
+  container,
+  pending,
+  message = 'Updating the disposable simulation…',
+) {
+  const shell = container?.querySelector?.('.sample-shell');
+  if (!shell) return;
+  if (!pending) {
+    shell.removeAttribute('aria-busy');
+    shell.querySelector('[data-sample-operation-status]')?.remove();
+    shell
+      .querySelectorAll(
+        '[data-action="sample-command"], [data-action="sample-reset"], [data-action="sample-restart"], [data-action="api-retry"]',
+      )
+      .forEach((button) => {
+        button.disabled = false;
+      });
+    return;
+  }
+  shell.setAttribute('aria-busy', 'true');
+  shell
+    .querySelectorAll(
+      '[data-action="sample-command"], [data-action="sample-reset"], [data-action="sample-restart"], [data-action="api-retry"]',
+    )
+    .forEach((button) => {
+      button.disabled = true;
+    });
+  let status = shell.querySelector('[data-sample-operation-status]');
+  if (!status) {
+    status = document.createElement('p');
+    status.className = 'sample-operation-status';
+    status.setAttribute('data-sample-operation-status', '');
+    status.setAttribute('role', 'status');
+    status.setAttribute('aria-live', 'polite');
+    shell.prepend(status);
+  }
+  status.textContent = message;
+}
+
 /** Restore keyboard context after the sample replaces its page markup. */
 export function focusSampleResult(container, proposalId = null) {
   let target = null;
@@ -278,11 +320,11 @@ async function runCommand(element) {
   if (correctionId) payload.correctionId = correctionId;
   const operationGeneration = beginSampleOperation();
   if (operationGeneration === null) return;
-  container
-    .querySelectorAll('[data-action="sample-command"]')
-    .forEach((button) => {
-      button.disabled = true;
-    });
+  setSampleOperationPending(
+    container,
+    true,
+    'Applying this choice in the disposable simulation…',
+  );
   try {
     const state = await sendSampleSimulationCommand(payload);
     if (isSampleRenderCurrent(container, generation)) {
@@ -294,7 +336,12 @@ async function runCommand(element) {
       renderSampleFailure(container, error);
     }
   } finally {
-    finishSampleOperation(operationGeneration);
+    if (
+      finishSampleOperation(operationGeneration) &&
+      isSampleRenderCurrent(container, generation)
+    ) {
+      setSampleOperationPending(container, false);
+    }
   }
 }
 
@@ -316,6 +363,13 @@ export function initSampleGlobals() {
       if (operationGeneration === null) return;
       const container = document.getElementById('page-content');
       const generation = _sampleRenderGeneration;
+      if (container) {
+        setSampleOperationPending(
+          container,
+          true,
+          'Resetting the disposable simulation…',
+        );
+      }
       try {
         const state = await sendSampleSimulationCommand({ type: 'reset' });
         if (container && isSampleRenderCurrent(container, generation)) {
@@ -330,7 +384,13 @@ export function initSampleGlobals() {
           renderSampleFailure(container, error);
         }
       } finally {
-        finishSampleOperation(operationGeneration);
+        if (
+          container &&
+          finishSampleOperation(operationGeneration) &&
+          isSampleRenderCurrent(container, generation)
+        ) {
+          setSampleOperationPending(container, false);
+        }
       }
     } else if (action === 'sample-restart') {
       const operationGeneration = beginSampleOperation();
@@ -342,6 +402,11 @@ export function initSampleGlobals() {
       }
       const generation = ++_sampleRenderGeneration;
       container.innerHTML = renderSampleLoading();
+      setSampleOperationPending(
+        container,
+        true,
+        'Starting a fresh disposable sample…',
+      );
       try {
         await startDemoSession();
         if (isSampleRenderCurrent(container, generation)) {
@@ -352,7 +417,12 @@ export function initSampleGlobals() {
           renderSampleFailure(container, error);
         }
       } finally {
-        finishSampleOperation(operationGeneration);
+        if (
+          finishSampleOperation(operationGeneration) &&
+          isSampleRenderCurrent(container, generation)
+        ) {
+          setSampleOperationPending(container, false);
+        }
       }
     } else if (action === 'api-retry') {
       const operationGeneration = beginSampleOperation();
@@ -364,7 +434,13 @@ export function initSampleGlobals() {
           await loadInto(container, generation);
         }
       } finally {
-        finishSampleOperation(operationGeneration);
+        if (
+          container &&
+          finishSampleOperation(operationGeneration) &&
+          isSampleRenderCurrent(container, _sampleRenderGeneration)
+        ) {
+          setSampleOperationPending(container, false);
+        }
       }
     } else if (action === 'exit-tour') {
       if (

@@ -204,7 +204,14 @@ export function createDemoRouter(): Router {
         });
         return;
       }
-      const session = issueDemoSession();
+      const presented = req.headers.authorization;
+      const replacedToken = presented?.startsWith('Bearer ')
+        ? presented.slice(7)
+        : undefined;
+      // Browser renewal presents the credential it is replacing. Retire that
+      // exact authority before minting the successor so delayed requests from
+      // the previous session cannot recreate disposable state.
+      const session = issueDemoSession(Date.now(), replacedToken);
       const response: DemoSessionResponse = {
         token: session.token,
         userId: DEMO_USER_ID,

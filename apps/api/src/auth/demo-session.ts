@@ -17,6 +17,34 @@ export interface VerifiedDemoSession {
   /** One-way key suitable for session-local, disposable server state. */
   sessionKey: string;
   expiresAtMs: number;
+  /** Changes for every issued credential; used to fence asynchronous work. */
+  generation: number;
+  /** Aborted as soon as this credential is replaced, discarded, or revoked. */
+  signal: AbortSignal;
+}
+
+interface SignedDemoSession {
+  sessionKey: string;
+  expiresAtMs: number;
+}
+
+interface DemoSessionLifecycle {
+  expiresAtMs: number;
+  generation: number;
+  active: boolean;
+  controller: AbortController;
+}
+
+const demoSessionLifecycle = new Map<string, DemoSessionLifecycle>();
+let nextDemoSessionGeneration = 0;
+
+function dropElapsedSessionLifecycles(nowMs: number): void {
+  for (const [sessionKey, lifecycle] of demoSessionLifecycle) {
+    // Revocation tombstones intentionally remain until the signed authority
+    // itself has elapsed. A discarded credential therefore cannot recreate
+    // state during the rest of its original lifetime.
+    if (lifecycle.expiresAtMs <= nowMs) demoSessionLifecycle.delete(sessionKey);
+  }
 }
 
 function sessionSecret(): string {
@@ -41,12 +69,25 @@ function constantTimeEqual(left: string, right: string): boolean {
  * It is deliberately separate from normal user sessions: callers cannot use
  * it to select an identity, and sessionAuth applies a strict read allowlist.
  */
-export function issueDemoSession(nowMs = Date.now()): IssuedDemoSession {
+export function issueDemoSession(
+  nowMs = Date.now(),
+  replacesToken?: string,
+): IssuedDemoSession {
+  if (replacesToken) revokeDemoSession(replacesToken, nowMs);
   const expiresAt = new Date(nowMs + DEMO_SESSION_DURATION_MS);
   const nonce = randomBytes(18).toString('base64url');
   const payload = `${DEMO_TOKEN_PREFIX}.${expiresAt.getTime()}.${nonce}`;
+  const token = `${payload}.${signature(payload)}`;
+  const sessionKey = createHash('sha256').update(token).digest('hex');
+  dropElapsedSessionLifecycles(nowMs);
+  demoSessionLifecycle.set(sessionKey, {
+    expiresAtMs: expiresAt.getTime(),
+    generation: ++nextDemoSessionGeneration,
+    active: true,
+    controller: new AbortController(),
+  });
   return {
-    token: `${payload}.${signature(payload)}`,
+    token,
     expiresAt,
   };
 }
@@ -58,17 +99,31 @@ export function inspectDemoSession(
 ): VerifiedDemoSession | null {
   const signed = inspectSignedDemoSession(token);
   if (!signed || signed.expiresAtMs <= nowMs) return null;
-  return signed;
+  dropElapsedSessionLifecycles(nowMs);
+  const lifecycle = demoSessionLifecycle.get(signed.sessionKey);
+  if (
+    !lifecycle ||
+    !lifecycle.active ||
+    lifecycle.expiresAtMs !== signed.expiresAtMs ||
+    lifecycle.controller.signal.aborted
+  ) {
+    return null;
+  }
+  return {
+    ...signed,
+    generation: lifecycle.generation,
+    signal: lifecycle.controller.signal,
+  };
 }
 
 /** Authenticate an expired credential only for deleting its disposable state. */
 export function inspectDemoSessionForDiscard(
   token: string,
-): VerifiedDemoSession | null {
+): SignedDemoSession | null {
   return inspectSignedDemoSession(token);
 }
 
-function inspectSignedDemoSession(token: string): VerifiedDemoSession | null {
+function inspectSignedDemoSession(token: string): SignedDemoSession | null {
   const parts = token.split('.');
   if (parts.length !== 4 || parts[0] !== DEMO_TOKEN_PREFIX) return null;
 
@@ -87,6 +142,63 @@ function inspectSignedDemoSession(token: string): VerifiedDemoSession | null {
     sessionKey: createHash('sha256').update(token).digest('hex'),
     expiresAtMs,
   };
+}
+
+/** True for credentials that must stay inside the narrow sample auth path. */
+export function isDemoSessionTokenCandidate(token: string): boolean {
+  return (
+    token === DEMO_TOKEN_PREFIX || token.startsWith(`${DEMO_TOKEN_PREFIX}.`)
+  );
+}
+
+/** Retire a signed credential while retaining a tombstone through its expiry. */
+export function revokeDemoSession(token: string, nowMs = Date.now()): boolean {
+  const signed = inspectSignedDemoSession(token);
+  if (!signed) return false;
+  return revokeDemoSessionByKey(signed.sessionKey, signed.expiresAtMs, nowMs);
+}
+
+export function revokeDemoSessionByKey(
+  sessionKey: string,
+  expiresAtMs: number,
+  nowMs = Date.now(),
+): boolean {
+  dropElapsedSessionLifecycles(nowMs);
+  if (expiresAtMs <= nowMs) return true;
+  const existing = demoSessionLifecycle.get(sessionKey);
+  existing?.controller.abort();
+  demoSessionLifecycle.set(sessionKey, {
+    expiresAtMs,
+    generation: existing?.generation ?? ++nextDemoSessionGeneration,
+    active: false,
+    controller: existing?.controller ?? new AbortController(),
+  });
+  demoSessionLifecycle.get(sessionKey)?.controller.abort();
+  return true;
+}
+
+/** Re-check the exact authority after an asynchronous boundary. */
+export function isDemoSessionActive(
+  session: VerifiedDemoSession,
+  nowMs = Date.now(),
+): boolean {
+  if (session.expiresAtMs <= nowMs || session.signal.aborted) return false;
+  const current = demoSessionLifecycle.get(session.sessionKey);
+  return Boolean(
+    current?.active &&
+      !current.controller.signal.aborted &&
+      current.generation === session.generation &&
+      current.expiresAtMs === session.expiresAtMs,
+  );
+}
+
+/** Test isolation for the process-local lifecycle registry. */
+export function _resetDemoSessionLifecycleForTests(): void {
+  for (const lifecycle of demoSessionLifecycle.values()) {
+    lifecycle.controller.abort();
+  }
+  demoSessionLifecycle.clear();
+  nextDemoSessionGeneration = 0;
 }
 
 export function verifyDemoSession(token: string, nowMs = Date.now()): boolean {
