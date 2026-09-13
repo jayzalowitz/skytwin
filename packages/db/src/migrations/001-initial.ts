@@ -274,6 +274,12 @@ interface PublicTableRow {
   table_name: string;
 }
 
+interface ForeignDependencyRow {
+  dependency_kind: string;
+  dependency_name: string;
+  owned_table_name: string;
+}
+
 const OWNED_PUBLIC_BASE_TABLES_SQL = `
   SELECT table_name
     FROM information_schema.tables
@@ -281,6 +287,32 @@ const OWNED_PUBLIC_BASE_TABLES_SQL = `
      AND table_type = 'BASE TABLE'
      AND table_name = ANY($1::STRING[])
    ORDER BY table_name
+`;
+
+const FOREIGN_OWNED_DEPENDENCIES_SQL = `
+  SELECT 'foreign_key' AS dependency_kind,
+         tc.table_schema || '.' || tc.table_name || '.' || tc.constraint_name AS dependency_name,
+         ccu.table_name AS owned_table_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.referential_constraints rc
+      ON rc.constraint_catalog = tc.constraint_catalog
+     AND rc.constraint_schema = tc.constraint_schema
+     AND rc.constraint_name = tc.constraint_name
+    JOIN information_schema.constraint_column_usage ccu
+      ON ccu.constraint_catalog = rc.unique_constraint_catalog
+     AND ccu.constraint_schema = rc.unique_constraint_schema
+     AND ccu.constraint_name = rc.unique_constraint_name
+   WHERE tc.constraint_type = 'FOREIGN KEY'
+     AND ccu.table_schema = 'public' AND ccu.table_name = ANY($1::STRING[])
+     AND NOT (tc.table_schema = 'public' AND tc.table_name = ANY($1::STRING[]))
+  UNION ALL
+  SELECT 'view' AS dependency_kind,
+         vtu.view_schema || '.' || vtu.view_name AS dependency_name,
+         vtu.table_name AS owned_table_name
+    FROM information_schema.view_table_usage vtu
+   WHERE vtu.table_schema = 'public' AND vtu.table_name = ANY($1::STRING[])
+     AND NOT (vtu.view_schema = 'public' AND vtu.view_name = ANY($1::STRING[]))
+  ORDER BY dependency_kind, dependency_name, owned_table_name
 `;
 
 /** Quote a database-sourced identifier without treating it as SQL text. */
@@ -293,7 +325,22 @@ export function quoteSqlIdentifier(identifier: string): string {
 
 export async function down(): Promise<void> {
   const pool = getPool();
-  const owned = getSkyTwinOwnedTableManifest().all;
+  // A retired name is no longer proof of current ownership. If an operator
+  // reuses it after an upgrade, rollback must preserve their replacement.
+  const owned = getSkyTwinOwnedTableManifest().current;
+
+  const dependencies = await pool.query<ForeignDependencyRow>(
+    FOREIGN_OWNED_DEPENDENCIES_SQL,
+    [owned],
+  );
+  if (dependencies.rows.length > 0) {
+    const details = dependencies.rows.map((row) =>
+      `${row.dependency_kind} ${row.dependency_name} -> public.${row.owned_table_name}`
+    ).join(', ');
+    throw new Error(
+      `[migration] Refusing rollback: operator-owned objects depend on SkyTwin tables: ${details}`,
+    );
+  }
 
   // The manifest follows checked-in CREATE/DROP TABLE DDL, including tables
   // removed by later migrations. Never infer ownership from everything in the
@@ -307,7 +354,10 @@ export async function down(): Promise<void> {
     // One schema change avoids scheduling a separate CockroachDB job for
     // every table while retaining all-or-error behavior for the enumerated
     // set.
-    await pool.query(`DROP TABLE ${qualifiedTables} CASCADE`);
+    // Listing the complete owned graph lets Cockroach remove its internal FKs
+    // without CASCADE. Any unrecognised external dependency makes the whole
+    // statement fail rather than silently mutating an operator-owned object.
+    await pool.query(`DROP TABLE ${qualifiedTables}`);
   }
 
   const survivors = await pool.query<PublicTableRow>(OWNED_PUBLIC_BASE_TABLES_SQL, [owned]);

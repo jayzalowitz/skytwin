@@ -34,16 +34,42 @@ const BARRIER = {
   execution_plan_id: PLAN.id,
   outcome_id: '77777777-7777-4777-8777-777777777777',
   explanation_id: '88888888-8888-4888-8888-888888888888',
-  risk_snapshot: { actionId: PLAN.action_id, overallTier: 'low' },
-  policy_snapshot: { allowed: true },
+  risk_snapshot: {
+    actionId: PLAN.action_id,
+    overallTier: 'low',
+    assessedAt: '2026-09-13T00:00:00.000Z',
+  },
+  policy_snapshot: { allowed: true, requiresApproval: false },
+  action_snapshot: {
+    id: PLAN.action_id,
+    decisionId: PLAN.decision_id,
+    actionType: 'create_task',
+    parameters: {},
+  },
+  outcome_snapshot: {
+    decisionId: PLAN.decision_id,
+    selectedAction: {
+      id: PLAN.action_id,
+      decisionId: PLAN.decision_id,
+      actionType: 'create_task',
+      parameters: {},
+    },
+    autoExecute: true,
+    requiresApproval: false,
+  },
   status: 'in_progress' as const,
   observed_result: {},
   created_at: new Date('2026-09-13T00:00:00Z'),
   updated_at: new Date('2026-09-13T00:00:00Z'),
 };
 const MEMORY_EVIDENCE = {
-  riskSnapshot: BARRIER.risk_snapshot,
+  riskSnapshot: {
+    ...BARRIER.risk_snapshot,
+    assessedAt: new Date(BARRIER.risk_snapshot.assessedAt),
+  },
   policySnapshot: BARRIER.policy_snapshot,
+  actionSnapshot: BARRIER.action_snapshot,
+  outcomeSnapshot: BARRIER.outcome_snapshot,
   preEffectOutcome: { explanation: 'admitted before dispatch', confidence: 0.9 },
   preEffectExplanation: {
     whatHappened: 'admitted before dispatch',
@@ -129,6 +155,8 @@ describe('executionAdmissionRepository', () => {
     ['steps', { steps: [{ type: 'different', status: 'pending' }] }],
     ['risk snapshot', { riskSnapshot: { actionId: PLAN.action_id, overallTier: 'high' } }],
     ['policy snapshot', { policySnapshot: { allowed: false } }],
+    ['action snapshot', { actionSnapshot: { ...BARRIER.action_snapshot, actionType: 'delete_file' } }],
+    ['outcome snapshot', { outcomeSnapshot: { ...BARRIER.outcome_snapshot, autoExecute: false } }],
   ])('rejects an existing admission with conflicting %s authority', async (_label, override) => {
     mockTransactionQuery
       .mockResolvedValueOnce({ rows: [{ id: BARRIER.user_id }] })
@@ -149,7 +177,7 @@ describe('executionAdmissionRepository', () => {
         summary: 'admitted', nextStep: 'reconcile', attemptedAt: new Date().toISOString(),
       },
       ...override,
-    })).rejects.toThrow('conflicts with requested authority');
+    })).rejects.toThrow(/conflict.*requested authority|does not authorize/);
   });
 
   it('recovers the exact admitted plan by owner and scope after commit-response loss', async () => {
@@ -168,6 +196,8 @@ describe('executionAdmissionRepository', () => {
         steps: [{ type: 'create_task', status: 'pending' }],
         riskSnapshot: BARRIER.risk_snapshot,
         policySnapshot: BARRIER.policy_snapshot,
+        actionSnapshot: BARRIER.action_snapshot,
+        outcomeSnapshot: BARRIER.outcome_snapshot,
       },
     )).resolves.toMatchObject({ created: false, barrier: BARRIER, plan: PLAN });
     expect(mockQuery.mock.calls[0]![1]).toEqual([
@@ -204,15 +234,28 @@ describe('executionAdmissionRepository', () => {
       barrier: BARRIER,
       plan: PLAN,
       created: true,
+    }, {
+      userId: BARRIER.user_id,
+      decisionId: BARRIER.decision_id,
+      actionId: BARRIER.action_id,
+      steps: PLAN.steps,
+      ...MEMORY_EVIDENCE,
     })).resolves.toBe(true);
     expect(mockQuery.mock.calls[0]![0]).toContain("b.status = 'in_progress'");
     expect(mockQuery.mock.calls[0]![0]).toContain("ep.status = 'running'");
+    expect(mockQuery.mock.calls[0]![0]).toContain("autonomy_settings->>'paused'");
 
     mockQuery.mockResolvedValueOnce({ rows: [] });
     await expect(executionAdmissionRepository.isDispatchable({
       barrier: BARRIER,
       plan: PLAN,
       created: true,
+    }, {
+      userId: BARRIER.user_id,
+      decisionId: BARRIER.decision_id,
+      actionId: BARRIER.action_id,
+      steps: PLAN.steps,
+      ...MEMORY_EVIDENCE,
     })).resolves.toBe(false);
   });
 

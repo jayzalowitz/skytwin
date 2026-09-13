@@ -28,6 +28,8 @@ const {
   mockEmitReceipt,
   mockLlmClient,
   mockGetOAuthToken,
+  mockCurrentPolicyEvaluate,
+  mockGetAllPolicies,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -61,6 +63,8 @@ const {
   mockEmitReceipt: vi.fn(),
   mockLlmClient: vi.fn(),
   mockGetOAuthToken: vi.fn(),
+  mockCurrentPolicyEvaluate: vi.fn(),
+  mockGetAllPolicies: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -92,7 +96,9 @@ vi.mock('@skytwin/twin-model', () => ({
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
-  PolicyEvaluator: vi.fn(),
+  PolicyEvaluator: vi.fn(function PolicyEvaluator() {
+    return { evaluate: mockCurrentPolicyEvaluate };
+  }),
 }));
 
 vi.mock('@skytwin/explanations', () => ({
@@ -153,7 +159,7 @@ vi.mock('@skytwin/db', () => ({
     })),
   },
   explanationRepositoryAdapter: { getByDecisionId: mockGetExplanation },
-  policyRepositoryAdapter: {},
+  policyRepositoryAdapter: { getAllPolicies: mockGetAllPolicies },
 }));
 
 vi.mock('@skytwin/llm-client', () => ({
@@ -312,6 +318,12 @@ describe('Events API routes', () => {
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
     mockGetProviders.mockResolvedValue([]);
     mockGetOAuthToken.mockResolvedValue(null);
+    mockGetAllPolicies.mockResolvedValue([]);
+    mockCurrentPolicyEvaluate.mockResolvedValue({
+      allowed: true,
+      requiresApproval: false,
+      reason: 'Current policy allows automatic execution.',
+    });
     mockCreateReceipts.mockImplementation(async (
       _userId: unknown,
       inputs: unknown[],
@@ -1108,6 +1120,70 @@ describe('Events API routes', () => {
       expect(mockMarkExecutionTerminal).toHaveBeenCalledWith(
         'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'decision-1', 'completed', 'plan-1',
       );
+    });
+
+    it('does not claim recovered ready work after a user or operator pause', async () => {
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1',
+        selectedAction: {
+          id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
+          description: 'Create calendar event', domain: 'calendar', parameters: {},
+          reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+        },
+        autoExecute: true, requiresApproval: false, reasoning: 'Previous ready run', allCandidates: [],
+      });
+      mockGetExplanation.mockResolvedValue({
+        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+      });
+      mockGetIngestState.mockResolvedValue(ingestState('ready'));
+      mockCurrentPolicyEvaluate.mockResolvedValueOnce({
+        allowed: false, requiresApproval: true, reason: 'Auto-execution paused by user.',
+      });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'gmail', type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+      expect(mockClaimExecution).not.toHaveBeenCalled();
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+    });
+
+    it('fences a policy change after recovered work is claimed but before dispatch', async () => {
+      const stream = vi.fn(async function* () {
+        yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      });
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1',
+        selectedAction: {
+          id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
+          description: 'Create calendar event', domain: 'calendar', parameters: {},
+          reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+        },
+        autoExecute: true, requiresApproval: false, reasoning: 'Previous ready run', allCandidates: [],
+      });
+      mockGetExplanation.mockResolvedValue({
+        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+      });
+      mockGetIngestState.mockResolvedValue(ingestState('ready'));
+      mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+      mockCurrentPolicyEvaluate
+        .mockResolvedValueOnce({ allowed: true, requiresApproval: false, reason: 'Allowed at claim.' })
+        .mockResolvedValueOnce({ allowed: false, requiresApproval: true, reason: 'Operator paused.' });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'gmail', type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+      expect(mockClaimExecution).toHaveBeenCalledOnce();
+      expect(mockIsExecutionDispatchable).not.toHaveBeenCalled();
+      expect(stream).not.toHaveBeenCalled();
+      expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
     });
 
     it('never resumes a ready execution after a fail-closed approval exists', async () => {

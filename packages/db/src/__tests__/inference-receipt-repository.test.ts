@@ -442,15 +442,31 @@ describe('inferenceReceiptRepository', () => {
       .resolves.toMatchObject({ effectState: 'ready', continuationKind: 'auto_execute' });
     await expect(inferenceReceiptRepository.claimExecutionForDecision(
       'user', completion.decisionId, completion.continuation, [{ type: 'test_action' }],
+      { allowed: true, requiresApproval: false, reason: 'current policy allowed' },
     )).resolves.toMatchObject({ id: '77777777-7777-4777-8777-777777777777' });
     await expect(inferenceReceiptRepository.claimExecutionForDecision(
       'user', completion.decisionId, completion.continuation, [{ type: 'test_action' }],
+      { allowed: true, requiresApproval: false, reason: 'current policy allowed' },
     )).resolves.toBeNull();
     expect(mockTransactionQuery.mock.calls[1]![0]).toContain("g.effect_state = 'ready'");
     expect(mockTransactionQuery.mock.calls[1]![0]).toContain('d.user_id = $1');
     expect(mockTransactionQuery.mock.calls[1]![0]).toContain('g.continuation_snapshot = $7::JSONB');
     expect(mockTransactionQuery.mock.calls[2]![0]).toContain('INSERT INTO execution_plans');
     expect(mockTransactionQuery.mock.calls[4]![0]).toContain('source_execution_plan_id = $2');
+    expect(mockTransactionQuery.mock.calls[4]![0]).toContain('dispatch_policy_snapshot = $6::JSONB');
+  });
+
+  it('cannot claim ready execution with a paused or approval-required current verdict', async () => {
+    const completion = completionFor(fixture(), 'auto_execute');
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(
+      'user', completion.decisionId, completion.continuation, [],
+      { allowed: false, requiresApproval: true, reason: 'operator paused' },
+    )).resolves.toBeNull();
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(
+      'user', completion.decisionId, completion.continuation, [],
+      { allowed: true, requiresApproval: true, reason: 'policy changed' },
+    )).resolves.toBeNull();
+    expect(mockTransactionQuery).not.toHaveBeenCalled();
   });
 
   it('classifies a legacy completion without a guard as restored and non-replayable', async () => {

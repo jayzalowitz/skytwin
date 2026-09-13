@@ -25,18 +25,26 @@ All notable changes to SkyTwin will be documented in this file.
 
 - Migration rollback now removes only an independently checked, DDL-derived
   manifest of SkyTwin-owned tables and preserves unrelated objects colocated in
-  `public`. CI verifies a fresh disposable Cockroach down/up cycle across owned
-  tables, normalized columns/defaults/generated expressions, constraints, and
-  secondary/partial index definitions; locality and partition equivalence are
-  intentionally outside that claim.
+  `public`. Retired SkyTwin names are no longer treated as current ownership,
+  and rollback refuses before mutation when an operator-owned table or view
+  depends on the owned graph. CI verifies a fresh disposable Cockroach down/up
+  cycle across owned tables, normalized columns/defaults/generated expressions,
+  constraints, and secondary/partial index definitions; locality and partition
+  equivalence are intentionally outside that claim.
 - Effect admission now binds the exact owner, decision, action, plan, outcome,
-  ExplanationRecord, risk snapshot, and policy snapshot before dispatch. Memory
-  auto-execution persists its pre-effect outcome and explanation atomically with
-  the one-shot barrier; terminal adapter observations remain separate.
+  ExplanationRecord, risk snapshot, current policy snapshot, canonical action
+  parameters, and outcome snapshot before dispatch. Edited draft approvals are
+  converted to the exact irreversible send action before risk and policy are
+  recomputed; the original persisted risk remains source-integrity evidence, not
+  execution authority. Memory auto-execution persists its pre-effect outcome and
+  explanation atomically with the one-shot barrier; terminal adapter observations
+  remain separate.
 - Account purge, demo reset, and legacy seed cleanup now refuse active or
   ambiguous execution graphs. Admission and purge share an owner-first
-  serializable lock order, and every effect path rechecks owner/graph authority
-  immediately before invoking an adapter.
+  serializable lock order, and every effect path rechecks owner/graph authority,
+  current policy, and user/operator pause immediately before invoking an adapter.
+  Recovered ready work renews policy authority at its one-shot claim and cannot
+  use a receipt-era allow verdict after policy or pause state changes.
 
 ## [0.6.102.0] - 2026-08-27
 

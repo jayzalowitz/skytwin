@@ -130,11 +130,40 @@ function riskSnapshot(actionId: string) {
 }
 
 function admissionAuthority(graph: Graph) {
+  const risk = riskSnapshot(graph.actionId!);
+  const actionSnapshot = {
+    id: graph.actionId,
+    decisionId: graph.decisionId,
+    actionType: 'test_action',
+    description: 'Test action',
+    parameters: { domain: 'test' },
+    reversible: true,
+  };
   return {
-    riskSnapshot: riskSnapshot(graph.actionId!),
-    policySnapshot: { allowed: true, reason: 'e2e policy allowed' },
+    riskSnapshot: risk,
+    sourceRiskSnapshot: risk,
+    policySnapshot: { allowed: true, requiresApproval: false, reason: 'e2e policy allowed' },
+    actionSnapshot,
+    outcomeSnapshot: {
+      decisionId: graph.decisionId,
+      selectedAction: actionSnapshot,
+      autoExecute: true,
+      requiresApproval: false,
+    },
+    preEffectExplanation: {
+      whatHappened: 'Approved execution admitted before dispatch.',
+      confidenceReasoning: 'e2e risk fixture',
+      actionRationale: 'e2e action fixture',
+      correctionGuidance: 'Review the terminal observation.',
+    },
   };
 }
+
+const CURRENT_ALLOWED_POLICY = {
+  allowed: true,
+  requiresApproval: false,
+  reason: 'current e2e policy allowed',
+};
 
 function memoryPreEffect() {
   return {
@@ -629,10 +658,35 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     const continuation = completionForGraph(owner, 'auto_execute').continuation;
 
     const claims = await Promise.all([
-      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId, continuation, []),
-      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId, continuation, []),
+      inferenceReceiptRepository.claimExecutionForDecision(
+        owner.userId, owner.decisionId, continuation, [], CURRENT_ALLOWED_POLICY,
+      ),
+      inferenceReceiptRepository.claimExecutionForDecision(
+        owner.userId, owner.decisionId, continuation, [], CURRENT_ALLOWED_POLICY,
+      ),
     ]);
     expect(claims.filter(Boolean)).toHaveLength(1);
+    const plan = claims.find((claim) => claim !== null)!;
+    await expect(inferenceReceiptRepository.getContinuationForDecision(
+      owner.userId, owner.decisionId,
+    )).resolves.toMatchObject({
+      effectState: 'running',
+      sourceExecutionPlanId: plan.id,
+    });
+    await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
+      owner.userId, owner.decisionId, plan.id, CURRENT_ALLOWED_POLICY,
+    )).resolves.toBe(true);
+    await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
+      owner.userId, owner.decisionId, plan.id,
+      { allowed: true, requiresApproval: false, reason: 'changed after claim' },
+    )).resolves.toBe(false);
+    await pool.query(
+      `UPDATE users SET autonomy_settings = '{"paused":true}'::JSONB WHERE id = $1`,
+      [owner.userId],
+    );
+    await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
+      owner.userId, owner.decisionId, plan.id, CURRENT_ALLOWED_POLICY,
+    )).resolves.toBe(false);
   });
 
   it('durably admits one approved execution and reconciles its exact terminal plan', async () => {
@@ -674,7 +728,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
       ...admissionAuthority(owner),
-    })).rejects.toThrow('conflicts with requested authority');
+    })).rejects.toThrow(/conflict.*requested authority/);
     await expect(executionAdmissionRepository.admitApprovalExecution({
       userId: owner.userId,
       approvalId: approval.rows[0]!.id,
@@ -682,7 +736,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       actionId: other.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
       ...admissionAuthority(owner),
-    })).rejects.toThrow('conflicts with requested authority');
+    })).rejects.toThrow(/conflict.*requested authority/);
     await expect(executionAdmissionRepository.admitApprovalExecution({
       userId: owner.userId,
       approvalId: approval.rows[0]!.id,
@@ -690,7 +744,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       actionId: owner.actionId!,
       steps: [{ type: 'different_action', status: 'pending' }],
       ...admissionAuthority(owner),
-    })).rejects.toThrow('conflicts with requested authority');
+    })).rejects.toThrow(/conflict.*requested authority/);
 
     const observed = {
       planId: admitted.plan.id,
@@ -954,6 +1008,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     }], completionForGraph(owner, 'auto_execute'));
     const ownerPlan = await inferenceReceiptRepository.claimExecutionForDecision(
       owner.userId, owner.decisionId, completionForGraph(owner, 'auto_execute').continuation, [],
+      CURRENT_ALLOWED_POLICY,
     );
     expect(ownerPlan).not.toBeNull();
     const otherPlan = await executionRepository.createPlan({
@@ -1043,6 +1098,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       owner.decisionId,
       completionForGraph(owner, 'auto_execute').continuation,
       [],
+      CURRENT_ALLOWED_POLICY,
     )).resolves.toBeNull();
   });
 });
