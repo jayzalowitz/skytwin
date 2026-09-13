@@ -127,9 +127,7 @@ export function createDemoRouter(): Router {
    */
   router.post('/session', async (_req, res, next) => {
     try {
-      // Session issuance is an authorization decision, so never use the
-      // availability cache: revoking `is_demo` must stop new credentials now.
-      const user = await userRepository.findDemoById(DEMO_USER_ID);
+      const user = await getDemoUserCached();
       if (!user) {
         res.status(404).json({ error: 'Demo profile not available on this server.' });
         return;

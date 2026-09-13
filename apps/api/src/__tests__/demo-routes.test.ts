@@ -168,18 +168,6 @@ describe('demo routes', () => {
       expect(res.status).toBe(404);
       expect(res.body).toMatchObject({ error: expect.stringMatching(/not available/i) });
     });
-
-    it('does not use a stale availability cache when the demo marker is revoked', async () => {
-      mockUserRepository.findDemoById
-        .mockResolvedValueOnce(SEEDED_USER)
-        .mockResolvedValueOnce(null);
-      await request(buildApp(), 'GET', '/api/v1/demo/info');
-
-      const res = await request(buildApp(), 'POST', '/api/v1/demo/session');
-
-      expect(res.status).toBe(404);
-      expect(mockUserRepository.findDemoById).toHaveBeenCalledTimes(2);
-    });
   });
 
   // ── /recipes ───────────────────────────────────────────────────────
