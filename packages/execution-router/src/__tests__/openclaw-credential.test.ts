@@ -220,7 +220,7 @@ describe('OpenClawAdapter credential_required handling', () => {
   });
 
   describe('no callback provided', () => {
-    it('returns a normal completed result when credential_required is present but no callback', async () => {
+    it('preserves the explicit credential failure when no callback is configured', async () => {
       // Create adapter WITHOUT onCredentialNeeded
       const adapter = new OpenClawAdapter({
         apiUrl: 'http://localhost:9000',
@@ -243,16 +243,13 @@ describe('OpenClawAdapter credential_required handling', () => {
       const plan = await buildPlanFromAdapter(adapter);
       const result = await adapter.execute(plan);
 
-      // Without a callback, the credential_required field is ignored and treated
-      // as a normal completed response
-      expect(result.status).toBe('completed');
+      expect(result.status).toBe('failed');
       expect(result.output).toBeDefined();
       expect(result.output!['adapter_used']).toBe('openclaw');
-      expect(result.output!['stepsCompleted']).toBe(plan.steps.length);
-      expect(result.output!['actionType']).toBe('social_media_post');
+      expect(result.output!['credential_required']).toBe(true);
     });
 
-    it('returns completed even when adapter is created with explicit undefined callback', async () => {
+    it('returns failed when the callback is explicitly undefined', async () => {
       const adapter = new OpenClawAdapter({
         apiUrl: 'http://localhost:9000',
         onCredentialNeeded: undefined,
@@ -272,7 +269,7 @@ describe('OpenClawAdapter credential_required handling', () => {
       const plan = await buildPlanFromAdapter(adapter);
       const result = await adapter.execute(plan);
 
-      expect(result.status).toBe('completed');
+      expect(result.status).toBe('failed');
     });
   });
 
@@ -305,6 +302,19 @@ describe('OpenClawAdapter credential_required handling', () => {
       expect(result.output!['adapter_used']).toBe('openclaw');
       expect(result.output!['stepsCompleted']).toBe(1);
       expect(result.output!['tweetId']).toBe('tweet_abc123');
+    });
+
+    it('preserves an explicit failed result and rejects a status-free response', async () => {
+      const adapter = new OpenClawAdapter({ apiUrl: 'http://localhost:9000' });
+      const failedPlan = await buildPlanFromAdapter(adapter);
+      fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'permission denied' }));
+      await expect(adapter.execute(failedPlan)).resolves.toMatchObject({
+        status: 'failed', error: 'permission denied',
+      });
+
+      const ambiguousPlan = await buildPlanFromAdapter(adapter);
+      fetchMock.mockResolvedValueOnce(jsonResponse({ message: 'accepted' }));
+      await expect(adapter.execute(ambiguousPlan)).rejects.toThrow('outcome is ambiguous');
     });
 
     it('does not trigger on null credential_required', async () => {
@@ -563,6 +573,24 @@ describe('OpenClawAdapter credential_required handling', () => {
 
       expect(result.status).toBe('failed');
       expect(result.output!['credential_required']).toBe(true);
+    });
+  });
+
+  describe('ambiguous execution transport', () => {
+    it.each([
+      ['network loss', () => Promise.reject(new Error('connection reset'))],
+      ['HTTP failure', () => Promise.resolve(new Response('server error', { status: 500 }))],
+      ['response-body loss', () => Promise.resolve({
+        ok: true,
+        json: () => Promise.reject(new Error('body truncated')),
+      } as Response)],
+    ] as const)('does not fabricate a terminal result after %s', async (_label, response) => {
+      const adapter = new OpenClawAdapter({ apiUrl: 'http://localhost:9000' });
+      fetchMock.mockImplementationOnce(response);
+      const plan = await buildPlanFromAdapter(adapter);
+
+      await expect(adapter.execute(plan)).rejects.toThrow('outcome is ambiguous');
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
     });
   });
 });

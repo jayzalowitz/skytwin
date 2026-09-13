@@ -132,14 +132,10 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
       this.planStatuses.set(plan.id, result.status);
       return result;
     } catch (error) {
-      this.planStatuses.set(plan.id, 'failed');
-      return {
-        planId: plan.id,
-        status: 'failed',
-        startedAt,
-        completedAt: new Date(),
-        error: error instanceof Error ? error.message : String(error),
-      };
+      // Transport loss after dispatch cannot prove failure: IronClaw may have
+      // committed the effect before the response disappeared.
+      this.planStatuses.set(plan.id, 'running');
+      throw error;
     }
   }
 
@@ -152,31 +148,31 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
       payload: { adapter: 'ironclaw', steps: plan.steps.length },
     };
 
+    const message = this.buildExecutionMessage(plan, { stream: true });
+    let terminalEvent: ExecutionEvent | null = null;
     try {
-      const message = this.buildExecutionMessage(plan, { stream: true });
       for await (const event of this.client.sendMessageStreaming(message)) {
-        if (event.eventType === 'plan_completed') this.planStatuses.set(plan.id, 'completed');
-        if (event.eventType === 'plan_failed') this.planStatuses.set(plan.id, 'failed');
-        yield event;
+        const isTerminal = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
+        if (terminalEvent) {
+          throw new Error(`IronClaw emitted an event after terminal ${terminalEvent.eventType}`);
+        }
+        if (isTerminal) {
+          terminalEvent = event;
+        } else {
+          yield event;
+        }
       }
-
-      if (this.planStatuses.get(plan.id) === 'running') {
-        this.planStatuses.set(plan.id, 'completed');
-        yield {
-          planId: plan.id,
-          eventType: 'plan_completed',
-          timestamp: new Date(),
-          payload: { adapter: 'ironclaw' },
-        };
+      if (!terminalEvent) {
+        throw new Error('IronClaw execution stream ended without an explicit terminal event');
       }
+      this.planStatuses.set(
+        plan.id,
+        terminalEvent.eventType === 'plan_completed' ? 'completed' : 'failed',
+      );
+      yield terminalEvent;
     } catch (error) {
-      this.planStatuses.set(plan.id, 'failed');
-      yield {
-        planId: plan.id,
-        eventType: 'plan_failed',
-        timestamp: new Date(),
-        payload: { error: error instanceof Error ? error.message : String(error) },
-      };
+      this.planStatuses.set(plan.id, 'running');
+      throw error;
     }
   }
 

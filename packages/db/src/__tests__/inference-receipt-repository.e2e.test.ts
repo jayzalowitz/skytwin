@@ -399,6 +399,63 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     });
   });
 
+  it('serializes a concurrent outcome upsert against guard finalization', async () => {
+    const owner = await createGraph('outcome-race', 'auto_execute');
+    const bundle = receiptBundle(owner);
+    const blocker = await pool.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM decisions WHERE id = $1 FOR UPDATE', [owner.decisionId]);
+
+    const capture = inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle,
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(owner, 'auto_execute'));
+    const drift = decisionRepository.recordOutcome({
+      decisionId: owner.decisionId,
+      selectedActionId: null,
+      autoExecuted: false,
+      requiresApproval: false,
+      explanation: 'Concurrent conflicting evaluation',
+      confidence: 0,
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await blocker.query('COMMIT');
+    blocker.release();
+    const [captureResult, driftResult] = await Promise.allSettled([capture, drift]);
+    const guard = await pool.query<{ outcome_id: string }>(
+      'SELECT outcome_id FROM decision_ingest_guards WHERE decision_id = $1',
+      [owner.decisionId],
+    );
+    const stored = await pool.query<{
+      id: string;
+      selected_action_id: string | null;
+      auto_executed: boolean;
+      explanation: string;
+    }>('SELECT id, selected_action_id, auto_executed, explanation FROM decision_outcomes WHERE decision_id = $1', [
+      owner.decisionId,
+    ]);
+
+    if (guard.rows[0]) {
+      expect(captureResult.status).toBe('fulfilled');
+      expect(driftResult.status).toBe('rejected');
+      expect(guard.rows[0].outcome_id).toBe(stored.rows[0]!.id);
+      expect(stored.rows[0]).toMatchObject({
+        selected_action_id: owner.actionId,
+        auto_executed: true,
+        explanation: 'test outcome',
+      });
+    } else {
+      expect(driftResult.status).toBe('fulfilled');
+      expect(captureResult.status).toBe('rejected');
+      expect(stored.rows[0]).toMatchObject({
+        selected_action_id: null,
+        auto_executed: false,
+        explanation: 'Concurrent conflicting evaluation',
+      });
+    }
+  });
+
   it('allows only one concurrent ready-to-running execution claim', async () => {
     const owner = await createGraph('concurrent-claim', 'auto_execute');
     const bundle = receiptBundle(owner);

@@ -147,30 +147,27 @@ export class OpenClawAdapter implements IronClawAdapter {
         });
 
         if (!response.ok) {
-          return this.recordExecutionResult({
-            planId: plan.id,
-            status: 'failed',
-            startedAt,
-            completedAt: new Date(),
-            error: `OpenClaw returned ${response.status}: ${await response.text()}`,
-          });
+          const responseBody = await response.text().catch(() => 'unreadable response');
+          throw new Error(`OpenClaw returned ${response.status}: ${responseBody}`);
         }
 
         const result = await response.json() as Record<string, unknown>;
 
         // Check if OpenClaw is reporting that this skill needs credentials
-        if (result['credential_required'] && this.onCredentialNeeded) {
+        if (result['credential_required']) {
           const credReq = result['credential_required'] as Record<string, unknown>;
-          try {
-            await this.onCredentialNeeded({
-              integration: (credReq['integration'] as string) ?? plan.action.actionType,
-              integrationLabel: (credReq['label'] as string) ?? plan.action.actionType,
-              description: credReq['description'] as string | undefined,
-              fields: (credReq['fields'] as Array<{ key: string; label: string; placeholder?: string; secret?: boolean; optional?: boolean }>) ?? [],
-              skills: (credReq['skills'] as string[]) ?? [plan.action.actionType],
-            });
-          } catch {
-            // Don't let callback errors block the response
+          if (this.onCredentialNeeded) {
+            try {
+              await this.onCredentialNeeded({
+                integration: (credReq['integration'] as string) ?? plan.action.actionType,
+                integrationLabel: (credReq['label'] as string) ?? plan.action.actionType,
+                description: credReq['description'] as string | undefined,
+                fields: (credReq['fields'] as Array<{ key: string; label: string; placeholder?: string; secret?: boolean; optional?: boolean }>) ?? [],
+                skills: (credReq['skills'] as string[]) ?? [plan.action.actionType],
+              });
+            } catch {
+              // Don't let callback errors block the explicit response
+            }
           }
 
           return this.recordExecutionResult({
@@ -187,6 +184,23 @@ export class OpenClawAdapter implements IronClawAdapter {
           });
         }
 
+        const explicitStatus = result['status'];
+        if (result['success'] === false || explicitStatus === 'failed') {
+          return this.recordExecutionResult({
+            planId: plan.id,
+            status: 'failed',
+            startedAt,
+            completedAt: new Date(),
+            error: typeof result['error'] === 'string'
+              ? result['error']
+              : 'OpenClaw reported execution failure',
+            output: { adapter_used: 'openclaw', ...result },
+          });
+        }
+        if (result['success'] !== true && explicitStatus !== 'completed') {
+          throw new Error('OpenClaw response did not contain an explicit terminal status');
+        }
+
         return this.recordExecutionResult({
           planId: plan.id,
           status: 'completed',
@@ -201,13 +215,13 @@ export class OpenClawAdapter implements IronClawAdapter {
           },
         });
       } catch (err) {
-        return this.recordExecutionResult({
-          planId: plan.id,
-          status: 'failed',
-          startedAt,
-          completedAt: new Date(),
-          error: `OpenClaw execution error: ${err instanceof Error ? err.message : String(err)}`,
-        });
+        // Fetch rejection, timeout, response-body loss, and HTTP failure all
+        // happen after dispatch. None proves that the remote effect did not
+        // commit, so retain the running cache entry and surface ambiguity.
+        throw new Error(
+          `OpenClaw execution outcome is ambiguous: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
+        );
       }
     }
 
