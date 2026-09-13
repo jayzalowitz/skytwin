@@ -19,6 +19,7 @@ import {
   extractSchemaColumns,
   isRepositoryRegularFile,
   migrationRunnerContractErrors,
+  sqlTextCandidates,
   validateInventory,
 } from "./validate-encryption-field-inventory.mjs";
 
@@ -52,6 +53,13 @@ function moveFieldToClassification(inventory, table, column, classification) {
 test("the inventory exactly covers the migration-derived schema", () => {
   const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
   assert.deepEqual(validateInventory(inventory, extractSchemaColumns()), []);
+});
+
+test("SQL callsite discovery recognizes Cockroach UPSERT statements", () => {
+  assert.deepEqual(
+    sqlTextCandidates("query(`UPSERT INTO source_key_deletion_intents (user_id) VALUES ($1)`);"),
+    ["UPSERT INTO source_key_deletion_intents (user_id) VALUES ($1)"],
+  );
 });
 
 test("schema drift fails when a new column is not classified", () => {

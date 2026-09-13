@@ -38,7 +38,7 @@ const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "07ea8bd92f95eb4ac2eb4853dad6549929b0ac381858e8c7ae8b8653057b6e1c";
+  "702c802871728f30b502b302dd8928b905d12bfdee44f86a1262e8e477e78f00";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -639,7 +639,7 @@ export function sqlTextCandidates(source) {
   const candidates = [];
   let hasQueryCall = false;
   const sqlStart =
-    /^\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|TRUNCATE|FROM|JOIN|INTO|REFERENCES)\b/i;
+    /^\s*(?:SELECT|INSERT|UPSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|TRUNCATE|FROM|JOIN|INTO|REFERENCES)\b/i;
   function visit(node) {
     if (
       ts.isCallExpression(node) &&

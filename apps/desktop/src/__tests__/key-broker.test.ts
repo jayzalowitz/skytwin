@@ -6,8 +6,16 @@ import { DesktopKeyBroker, PersistentWrappedKeyStore, type BrokerContext, type W
 class MemoryStore implements WrappedKeyStore {
   rows = new Map<string, WrappedUserKey>();
   get(id: string) { return this.rows.get(id); }
-  set(id: string, row: WrappedUserKey) { this.rows.set(id, structuredClone(row)); }
-  delete(id: string) { this.rows.delete(id); }
+  create(id: string, row: WrappedUserKey) {
+    if (this.rows.has(id)) return false;
+    this.rows.set(id, structuredClone(row));
+    return true;
+  }
+  deleteIfMatch(id: string, row: WrappedUserKey) {
+    if (JSON.stringify(this.rows.get(id)) !== JSON.stringify(row)) return false;
+    this.rows.delete(id);
+    return true;
+  }
 }
 class DeferredGetStore extends MemoryStore {
   private releaseFirst!: () => void;
@@ -32,8 +40,35 @@ class PausableGetStore extends MemoryStore {
     return super.get(id);
   }
 }
-class FakeChild extends EventEmitter { sent: unknown[] = []; send(value: unknown) { this.sent.push(value); return true; } }
-class DeviceStore { rows = new Map<string, string>(); get(id: string) { return this.rows.get(id); } set(id: string, value: string) { this.rows.set(id, value); } delete(id: string) { this.rows.delete(id); } }
+class FakeChild extends EventEmitter {
+  sent: unknown[] = [];
+  connected = true;
+  killed = false;
+  autoAck = true;
+  send(value: unknown) {
+    this.sent.push(value);
+    const message = value as Record<string, unknown>;
+    if (this.autoAck && message['type'] === 'skytwin:vault:lock') {
+      const capability = (this.sent[0] as { capability: string }).capability;
+      queueMicrotask(() => this.emit('message', {
+        type: 'skytwin:vault:lock-ack',
+        capability,
+        lockId: message['lockId'],
+        userId: message['userId'],
+        generation: message['generation'],
+      }));
+    }
+    return true;
+  }
+  kill() { this.killed = true; this.connected = false; this.emit('exit'); return true; }
+}
+class DeviceStore {
+  rows = new Map<string, string>();
+  get(id: string) { return this.rows.get(id); }
+  set(id: string, value: string) { this.rows.set(id, value); }
+  delete(id: string) { this.rows.delete(id); }
+  keys() { return [...this.rows.keys()]; }
+}
 const deviceProtection = { isEncryptionAvailable: () => true, encryptString: (v: string) => Buffer.from(v), decryptString: (v: Buffer) => v.toString(), getSelectedStorageBackend: () => 'keychain' };
 const context: BrokerContext = { userId: 'user-0001', purpose: 'oauth', table: 'oauth_tokens', column: 'access_token', rowId: 'row-1' };
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
@@ -70,13 +105,33 @@ describe('DesktopKeyBroker', () => {
     expect(store.rows.size).toBe(1);
   });
 
+  it('never deletes a different persistence winner during ambiguous rollback', async () => {
+    let winner: WrappedUserKey | undefined;
+    const store: WrappedKeyStore = {
+      get: () => { throw new Error('ambiguous reread'); },
+      create: (_id, row) => {
+        winner = { ...structuredClone(row), ciphertext: Buffer.alloc(32, 7).toString('base64') };
+        return true;
+      },
+      deleteIfMatch: (_id, row) => {
+        if (JSON.stringify(winner) !== JSON.stringify(row)) return false;
+        winner = undefined;
+        return true;
+      },
+    };
+    const broker = new DesktopKeyBroker(store);
+    expect(await broker.initialize(context.userId, 'correct horse battery staple'))
+      .toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(winner).toBeDefined();
+  });
+
   it('does not reopen when lock completes during initialization', async () => {
     const store = new DeferredGetStore(), broker = new DesktopKeyBroker(store);
     const initialize = broker.initialize(context.userId, 'correct horse battery staple');
     await broker.lock(context.userId);
     store.release();
     expect(await initialize).toEqual({ success: true });
-    expect(await broker.state(context.userId)).toBe('locked');
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
   });
 
   it('does not reopen when lock completes during passphrase unlock', async () => {
@@ -88,7 +143,7 @@ describe('DesktopKeyBroker', () => {
     await broker.lock(context.userId);
     store.release();
     expect(await unlock).toEqual({ success: false, error: 'vault_locked' });
-    expect(await broker.state(context.userId)).toBe('locked');
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
   });
 
   it('does not reopen from a device wrapper when lock completes during its registry read', async () => {
@@ -102,7 +157,7 @@ describe('DesktopKeyBroker', () => {
     await broker.lock(context.userId);
     store.release();
     expect(await unlock).toEqual({ success: false, error: 'vault_locked' });
-    expect(await broker.state(context.userId)).toBe('locked');
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
     expect(devices.get(context.userId)).toBeDefined();
   });
 
@@ -148,7 +203,8 @@ describe('DesktopKeyBroker', () => {
     const capability = (child.sent[0] as { capability: string }).capability;
     const first = broker.lock(context.userId), second = broker.lock(context.userId);
     child.emit('message', { type: 'skytwin:vault:request', requestId: 'during-second-lock', capability, generation: 1, operation: 'state', context }); await tick();
-    expect(child.sent.at(-1)).toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+    expect(child.sent.find(value => (value as { requestId?: string }).requestId === 'during-second-lock'))
+      .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
     await Promise.all([first, second]);
   });
 
@@ -170,7 +226,7 @@ describe('DesktopKeyBroker', () => {
 
   it('expires the cached key and advances the generation', async () => {
     let now = 1000; const broker = new DesktopKeyBroker(new MemoryStore(), { now: () => now, ttlMs: 60 }); await broker.initialize(context.userId, 'correct horse battery staple'); now += 61;
-    expect(await broker.state(context.userId)).toBe('locked'); expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' }); expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
   });
 
   it('uses an optional device wrapper only as an additional unlock path', async () => {
@@ -198,5 +254,82 @@ describe('DesktopKeyBroker', () => {
     expect(await unsupported.unlockFromDevice(context.userId)).toEqual({ success: false, error: 'vault_broker_unavailable' });
     const throws = new DesktopKeyBroker(registry, { deviceProtection: { ...deviceProtection, isEncryptionAvailable: () => { throw new Error('backend unavailable'); } }, deviceStore: devices });
     expect(await throws.unlockFromDevice(context.userId)).toEqual({ success: false, error: 'vault_broker_unavailable' });
+  });
+
+  it.each(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'])(
+    'accepts only reviewed Linux secure-storage backend %s',
+    async backend => {
+      const devices = new DeviceStore();
+      const broker = new DesktopKeyBroker(new MemoryStore(), {
+        platform: 'linux',
+        deviceStore: devices,
+        deviceProtection: { ...deviceProtection, getSelectedStorageBackend: () => backend },
+      });
+      await broker.initialize(context.userId, 'correct horse battery staple');
+      expect(broker.rememberDevice(context.userId)).toEqual({ success: true });
+      expect(devices.get(context.userId)).toContain(`linux:${backend}`);
+    },
+  );
+
+  it.each(['basic_text', 'unknown_future_backend', 'keychain'])(
+    'rejects and purges unreviewed Linux backend %s',
+    async backend => {
+      const devices = new DeviceStore();
+      devices.set(context.userId, JSON.stringify({ version: 1, backend: `linux:${backend}`, ciphertext: 'YQ==' }));
+      const broker = new DesktopKeyBroker(new MemoryStore(), {
+        platform: 'linux',
+        deviceStore: devices,
+        deviceProtection: { ...deviceProtection, getSelectedStorageBackend: () => backend },
+      });
+      expect(broker.purgeUntrustedDeviceWrappers()).toEqual({ success: true, removed: 1 });
+      expect(devices.get(context.userId)).toBeUndefined();
+      await broker.initialize(context.userId, 'correct horse battery staple');
+      expect(broker.rememberDevice(context.userId))
+        .toEqual({ success: false, error: 'vault_broker_unavailable' });
+    },
+  );
+
+  it('kills a child that does not acknowledge a lock before the bounded deadline', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), { lockAckTimeoutMs: 10 });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    await broker.lock(context.userId);
+    expect(child.killed).toBe(true);
+    expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+  });
+
+  it('snapshots child owner grants instead of retaining a mutable set', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const grants = new Set([context.userId]);
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api', grants);
+    grants.add('user-0002');
+    const capability = (child.sent[0] as { capability: string }).capability;
+    child.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'late-grant', capability,
+      generation: 1, operation: 'state', context: { ...context, userId: 'user-0002' },
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: 'late-grant',
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+  });
+
+  it('returns typed failures when persistence throws', async () => {
+    const failing: WrappedKeyStore = {
+      get: () => { throw new Error('disk unavailable'); },
+      create: () => { throw new Error('disk unavailable'); },
+      deleteIfMatch: () => { throw new Error('disk unavailable'); },
+    };
+    const broker = new DesktopKeyBroker(failing);
+    expect(await broker.state(context.userId)).toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(await broker.unlock(context.userId, 'correct horse battery staple'))
+      .toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(await broker.initialize(context.userId, 'correct horse battery staple'))
+      .toEqual({ success: false, error: 'vault_broker_unavailable' });
   });
 });

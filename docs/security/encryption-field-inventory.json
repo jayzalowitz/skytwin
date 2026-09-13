@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "070-watch-runs.sql",
+  "asOfMigration": "073-source-key-registry.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -3077,6 +3077,32 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "source_key_deletion_intents",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/source-key-registry-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "device_wrapper_deleted_at",
+            "requested_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "A content-free retry marker is required to remove device-local wrappers after database deletion without storing key material."
+        }
+      ],
+      "ownershipNotes": "The UUID names the deleted owner. It intentionally survives deletion of the users row so device cleanup remains retryable."
+    },
+    {
       "table": "skill_gap_log",
       "owner": "user",
       "boundary": {
@@ -3520,6 +3546,37 @@
         }
       ],
       "ownershipNotes": "Root user row; id is the owner identifier."
+    },
+    {
+      "table": "user_source_key_registry",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/source-key-registry-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "algorithm",
+            "created_at",
+            "kdf_record",
+            "key_version",
+            "recovery_wrapper",
+            "retired_at",
+            "user_id",
+            "wrapper_version"
+          ],
+          "currentProtection": "The root key is passphrase-wrapped, but its wrapper ciphertext, KDF parameters, identifiers, versions, and lifecycle timestamps are locally readable cryptographic metadata.",
+          "targetProtection": "Remain locally readable only through the owner-bound broker gateway; disclose that copying the recovery wrapper permits offline passphrase guessing.",
+          "migrationStage": "source-key-custody-kernel",
+          "rationale": "Recovery requires a database backup plus the user's passphrase. Treating wrapper and KDF records as encrypted source would overstate protection."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id; deletion cascades with the user. Multiple active wrappers are corruption until an explicit rotation lifecycle exists."
     },
     {
       "table": "watch_runs",

@@ -261,6 +261,3 @@ export type { WatchRow, CreateWatchInput } from './watch-repository.js';
 
 export { watchRunRepository } from './watch-run-repository.js';
 export type { WatchRunRow, CreateWatchRunInput } from './watch-run-repository.js';
-
-export { sourceKeyRegistryRepository } from './source-key-registry-repository.js';
-export type { SourceKeyRegistryRow } from './source-key-registry-repository.js';
