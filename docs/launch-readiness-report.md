@@ -47,7 +47,7 @@ Recorded launch blockers include:
 2. **External review** — Google OAuth restricted-scope / brand verification (#351, multi-week CASA review) and mobile app-store review (#369/#360, needs Apple/Play accounts).
 3. **Design assets** — real multi-resolution mobile icons/splash to replace the 1×1 placeholders (#409/#369).
 
-4. **Code and architecture** — #374 (encrypt user memory + preferences at rest) requires the #401 key-management decision. See [§ The one code-side launch task](#the-one-code-side-launch-task).
+4. **Code and architecture** — #374 (encrypt user memory + preferences at rest) requires the #401 key-management decision. See [§ Encryption and key-management detail](#encryption-and-key-management-detail). Packaged-sample interactivity and the other partial code-side items remain tracked under #357 and in the inventory below.
 5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems. The source-tree checks below do not substitute for this gate.
 
 ---
@@ -79,7 +79,7 @@ Recorded launch blockers include:
 | 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
 | 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
 
-## The one code-side launch task
+## Encryption and key-management detail
 
 **[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). Re-audited 2026-06-16 (full code-state findings on the issue). The encryption **infrastructure shipped** via #520 — but it is **dormant** in production and **partial**, and the memory half has an architectural conflict that makes it a design task, not a wiring task:
 
@@ -88,7 +88,7 @@ Recorded launch blockers include:
 - **Partial:** `twin_profiles`' 7 `_encrypted` columns are unused, and `brain_pages` (user memory) is written plaintext (`insertPage()` in `packages/memory-gbrain-crdb-adapter/src/repository.ts` ignores the `_encrypted` columns).
 - **The hard part:** `brain_pages` is the *searchable* store. RRF retrieval needs `content_tsv @@ plainto_tsquery` (full-text, server-side) and the row's `embedding` (vector — pulled out and scored with `cosineSimilarity` in application code, brute-force; not a CRDB `<=>` operator). Both are derived from plaintext content, and a `tsvector` stores the lexemes in the clear — so encrypting `content` while keeping `content_tsv` queryable leaks it anyway, while encrypting the index breaks search; the embedding likewise has to be read back out in the clear to score. So memory-at-rest encryption needs a design (scope to non-searched columns, index-time decrypt, or searchable encryption), not just an `encryptColumn` call.
 
-**Why it isn't auto-fixable:** enabling the provider with a wrong/ephemeral master key is worse than shipping none (lost key → unrecoverable memory) — that's exactly the #374↔#401 decision — and the memory search-conflict needs a design call. **Recommended sequence:** decide #401 key management → enable the provider (makes the existing preference encryption live) → extend to `twin_profiles` (not searched, straightforward) → design `brain_pages` against the search conflict. Top engineering pre-launch item.
+**Why it isn't auto-fixable:** enabling the provider with a wrong/ephemeral master key is worse than shipping none (lost key → unrecoverable memory) — that's exactly the #374↔#401 decision — and the memory search-conflict needs a design call. **Recommended sequence for this task:** decide #401 key management → enable the provider (makes the existing preference encryption live) → extend to `twin_profiles` (not searched, straightforward) → design `brain_pages` against the search conflict.
 
 ## Issues closed this pass (shipped, verified in code)
 
@@ -162,7 +162,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 ## Recommended next actions (ordered)
 
 1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359). The certs alone aren't enough — `build.yml` currently skips signing (`CSC_IDENTITY_AUTO_DISCOVERY: 'false'`), so someone must also wire the cert secrets into its `package:*` steps (see launch-plan §1.3). Submit Google OAuth verification (#351) — multi-week.
-2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. Top engineering pre-launch item (the encryption schema + adapter already exist via #520; what remains is the default-on key-management policy decision).
+2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. The encryption schema + adapter already exist via #520; what remains is the default-on key-management policy decision.
 3. **Mobile cut-or-commit (#360):** decide whether mobile ships at launch. If yes: commission icon/splash assets (#409), land the EAS config + CI (#369/#404), then the native inline notification actions (#387's remaining half). If no: descope to a fast-follow.
 
 **Done since the 2026-06-14 audit (2026-06-16 update):** auto-update code half + user-facing banner/menu (#370, #523 — closed); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.
