@@ -157,7 +157,7 @@ describe('DesktopKeyBroker', () => {
 
   it('does not reopen from a device wrapper when lock completes during its registry read', async () => {
     const store = new PausableGetStore(), devices = new DeviceStore();
-    const broker = new DesktopKeyBroker(store, { deviceProtection, deviceStore: devices });
+    const broker = new DesktopKeyBroker(store, { deviceProtection, deviceStore: devices, platform: 'darwin' });
     await broker.initialize(context.userId, 'correct horse battery staple');
     expect(broker.rememberDevice(context.userId)).toEqual({ success: true });
     await broker.lock(context.userId);
@@ -219,7 +219,7 @@ describe('DesktopKeyBroker', () => {
 
   it('refuses to create a device wrapper while a lock is draining child work', async () => {
     const store = new PausableGetStore(), devices = new DeviceStore();
-    const broker = new DesktopKeyBroker(store, { deviceProtection, deviceStore: devices });
+    const broker = new DesktopKeyBroker(store, { deviceProtection, deviceStore: devices, platform: 'darwin' });
     await broker.initialize(context.userId, 'correct horse battery staple');
     const child = new FakeChild(); broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
     const capability = (child.sent[0] as { capability: string }).capability;
@@ -240,7 +240,7 @@ describe('DesktopKeyBroker', () => {
 
   it('uses an optional device wrapper only as an additional unlock path', async () => {
     const registry = new MemoryStore(), devices = new DeviceStore();
-    const broker = new DesktopKeyBroker(registry, { deviceProtection, deviceStore: devices });
+    const broker = new DesktopKeyBroker(registry, { deviceProtection, deviceStore: devices, platform: 'darwin' });
     await broker.initialize(context.userId, 'correct horse battery staple');
     expect(broker.rememberDevice(context.userId)).toEqual({ success: true });
     await broker.lock(context.userId);
@@ -252,16 +252,16 @@ describe('DesktopKeyBroker', () => {
 
   it('deletes a corrupt device wrapper and rejects unavailable protection', async () => {
     const registry = new MemoryStore(), devices = new DeviceStore();
-    const broker = new DesktopKeyBroker(registry, { deviceProtection, deviceStore: devices });
+    const broker = new DesktopKeyBroker(registry, { deviceProtection, deviceStore: devices, platform: 'darwin' });
     await broker.initialize(context.userId, 'correct horse battery staple');
     devices.set(context.userId, 'not-base64'); await broker.lock(context.userId);
     expect(await broker.unlockFromDevice(context.userId)).toEqual({ success: false, error: 'ciphertext_invalid' });
     expect(devices.get(context.userId)).toBeUndefined();
-    const unsupported = new DesktopKeyBroker(registry, { deviceProtection: { ...deviceProtection, isEncryptionAvailable: () => false }, deviceStore: devices });
+    const unsupported = new DesktopKeyBroker(registry, { deviceProtection: { ...deviceProtection, isEncryptionAvailable: () => false }, deviceStore: devices, platform: 'darwin' });
     expect(await unsupported.unlock(context.userId, 'correct horse battery staple')).toMatchObject({ success: true });
     expect(unsupported.rememberDevice(context.userId)).toEqual({ success: false, error: 'vault_broker_unavailable' });
     expect(await unsupported.unlockFromDevice(context.userId)).toEqual({ success: false, error: 'vault_broker_unavailable' });
-    const throws = new DesktopKeyBroker(registry, { deviceProtection: { ...deviceProtection, isEncryptionAvailable: () => { throw new Error('backend unavailable'); } }, deviceStore: devices });
+    const throws = new DesktopKeyBroker(registry, { deviceProtection: { ...deviceProtection, isEncryptionAvailable: () => { throw new Error('backend unavailable'); } }, deviceStore: devices, platform: 'darwin' });
     expect(await throws.unlockFromDevice(context.userId)).toEqual({ success: false, error: 'vault_broker_unavailable' });
   });
 
