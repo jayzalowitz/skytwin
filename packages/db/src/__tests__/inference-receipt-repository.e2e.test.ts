@@ -444,6 +444,101 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     }
   });
 
+  it('serializes a concurrent fresh candidate insert against guard finalization', async () => {
+    const owner = await createGraph('fresh-candidate-race', 'auto_execute');
+    const candidateId = randomUUID();
+    const blocker = await pool.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM decisions WHERE id = $1 FOR UPDATE', [owner.decisionId]);
+
+    const capture = inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle: receiptBundle(owner),
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(owner, 'auto_execute'));
+    const insert = decisionRepository.addCandidateAction({
+      id: candidateId,
+      decisionId: owner.decisionId,
+      actionType: 'late_candidate',
+      description: 'Concurrent candidate',
+      predictedUserPreference: 'high',
+      riskAssessment: { reasoning: 'concurrent placeholder' },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await blocker.query('COMMIT');
+    blocker.release();
+    const [captureResult, insertResult] = await Promise.allSettled([capture, insert]);
+    const candidate = await pool.query(
+      'SELECT id FROM candidate_actions WHERE id = $1 AND decision_id = $2',
+      [candidateId, owner.decisionId],
+    );
+    const guard = await pool.query(
+      'SELECT 1 FROM decision_ingest_guards WHERE decision_id = $1',
+      [owner.decisionId],
+    );
+
+    expect(captureResult.status).toBe('fulfilled');
+    expect(guard.rows).toHaveLength(1);
+    if (insertResult.status === 'fulfilled') {
+      // The candidate transaction won the shared decision lock and committed
+      // before capture. Capture may include a decision with extra alternatives,
+      // but no candidate authority changed after its guard was written.
+      expect(candidate.rows).toHaveLength(1);
+    } else {
+      expect(insertResult.reason).toBeInstanceOf(Error);
+      expect((insertResult.reason as Error).message).toContain('immutable');
+      expect(candidate.rows).toHaveLength(0);
+    }
+    await expect(decisionRepository.addCandidateAction({
+      decisionId: owner.decisionId,
+      actionType: 'post_capture_candidate',
+      description: 'Must not persist',
+      predictedUserPreference: 'high',
+      riskAssessment: {},
+    })).rejects.toThrow('immutable after receipt finalization');
+  });
+
+  it('serializes a concurrent candidate risk write against guard finalization', async () => {
+    const owner = await createGraph('risk-race', 'auto_execute');
+    const replacementRisk = riskSnapshot(owner.actionId!);
+    replacementRisk.reasoning = 'concurrent replacement risk';
+    const blocker = await pool.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM decisions WHERE id = $1 FOR UPDATE', [owner.decisionId]);
+
+    const capture = inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle: receiptBundle(owner),
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(owner, 'auto_execute'));
+    const riskWrite = decisionRepository.updateCandidateRiskAssessment(
+      owner.actionId!,
+      replacementRisk,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await blocker.query('COMMIT');
+    blocker.release();
+    const [captureResult, riskResult] = await Promise.allSettled([capture, riskWrite]);
+    const stored = await pool.query<{ risk_assessment: { reasoning: string } }>(
+      'SELECT risk_assessment FROM candidate_actions WHERE id = $1',
+      [owner.actionId],
+    );
+    const guard = await pool.query(
+      'SELECT 1 FROM decision_ingest_guards WHERE decision_id = $1',
+      [owner.decisionId],
+    );
+
+    if (captureResult.status === 'fulfilled') {
+      expect(riskResult.status).toBe('rejected');
+      expect(guard.rows).toHaveLength(1);
+      expect(stored.rows[0]!.risk_assessment.reasoning).toBe('test risk');
+    } else {
+      expect(riskResult.status).toBe('fulfilled');
+      expect(guard.rows).toHaveLength(0);
+      expect(stored.rows[0]!.risk_assessment.reasoning).toBe('concurrent replacement risk');
+    }
+  });
+
   it('allows only one concurrent ready-to-running execution claim', async () => {
     const owner = await createGraph('concurrent-claim', 'auto_execute');
     const bundle = receiptBundle(owner);

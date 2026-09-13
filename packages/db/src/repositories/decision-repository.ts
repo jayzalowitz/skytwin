@@ -1,4 +1,4 @@
-import { query } from '../connection.js';
+import { query, withTransaction } from '../connection.js';
 import type {
   DecisionRow,
   CandidateActionRow,
@@ -223,29 +223,67 @@ export const decisionRepository = {
   async addCandidateAction(
     input: CreateCandidateActionInput,
   ): Promise<CandidateActionRow> {
-    if (input.id) {
-      const result = await query<CandidateActionRow>(
+    return withTransaction(async (client) => {
+      // Receipt capture locks the same decision row before reading candidate
+      // authority and inserting its guard. Taking that lock first makes every
+      // candidate INSERT/UPDATE serialize with capture in CockroachDB: the
+      // loser observes the winner's committed guard/candidate state rather
+      // than writing through an absent-guard snapshot.
+      const decision = await client.query<{ id: string }>(
+        'SELECT id FROM decisions WHERE id = $1 FOR UPDATE',
+        [input.decisionId],
+      );
+      if (!decision.rows[0]) throw new Error('Candidate decision does not exist');
+
+      const guard = await client.query(
+        'SELECT 1 FROM decision_ingest_guards WHERE decision_id = $1',
+        [input.decisionId],
+      );
+      if (guard.rows[0]) {
+        throw new Error('Candidate action is immutable after receipt finalization');
+      }
+
+      if (input.id) {
+        const result = await client.query<CandidateActionRow>(
+          `INSERT INTO candidate_actions (
+            id, decision_id, action_type, description, parameters,
+            predicted_user_preference, risk_assessment, reversible, estimated_cost
+          )
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          ON CONFLICT (id) DO UPDATE SET
+            action_type = EXCLUDED.action_type,
+            description = EXCLUDED.description,
+            parameters = EXCLUDED.parameters,
+            predicted_user_preference = EXCLUDED.predicted_user_preference,
+            risk_assessment = EXCLUDED.risk_assessment,
+            reversible = EXCLUDED.reversible,
+            estimated_cost = EXCLUDED.estimated_cost
+          WHERE candidate_actions.decision_id = EXCLUDED.decision_id
+          RETURNING *`,
+          [
+            input.id,
+            input.decisionId,
+            input.actionType,
+            input.description,
+            JSON.stringify(input.parameters ?? {}),
+            input.predictedUserPreference,
+            JSON.stringify(input.riskAssessment),
+            input.reversible ?? true,
+            input.estimatedCost ?? null,
+          ],
+        );
+        const row = result.rows[0];
+        if (!row) throw new Error('Candidate action belongs to another decision');
+        return row;
+      }
+      const result = await client.query<CandidateActionRow>(
         `INSERT INTO candidate_actions (
-          id, decision_id, action_type, description, parameters,
+          decision_id, action_type, description, parameters,
           predicted_user_preference, risk_assessment, reversible, estimated_cost
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-        ON CONFLICT (id) DO UPDATE SET
-          action_type = EXCLUDED.action_type,
-          description = EXCLUDED.description,
-          parameters = EXCLUDED.parameters,
-          predicted_user_preference = EXCLUDED.predicted_user_preference,
-          risk_assessment = EXCLUDED.risk_assessment,
-          reversible = EXCLUDED.reversible,
-          estimated_cost = EXCLUDED.estimated_cost
-        WHERE candidate_actions.decision_id = EXCLUDED.decision_id
-          AND NOT EXISTS (
-            SELECT 1 FROM decision_ingest_guards g
-            WHERE g.decision_id = EXCLUDED.decision_id
-          )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING *`,
         [
-          input.id,
           input.decisionId,
           input.actionType,
           input.description,
@@ -256,29 +294,49 @@ export const decisionRepository = {
           input.estimatedCost ?? null,
         ],
       );
-      const row = result.rows[0];
-      if (!row) throw new Error('Candidate action is immutable after receipt finalization');
+      return result.rows[0]!;
+    });
+  },
+
+  /**
+   * Replace a candidate's risk authority only while its decision remains
+   * unfrozen. Lock ordering matches receipt capture (decision, then candidate)
+   * so a concurrent capture either includes this risk or rejects this write.
+   */
+  async updateCandidateRiskAssessment(
+    actionId: string,
+    riskAssessment: Record<string, unknown>,
+  ): Promise<CandidateActionRow> {
+    return withTransaction(async (client) => {
+      const decision = await client.query<{ id: string }>(
+        `SELECT d.id FROM decisions d
+         JOIN candidate_actions ca ON ca.decision_id = d.id
+         WHERE ca.id = $1
+         FOR UPDATE OF d`,
+        [actionId],
+      );
+      const decisionId = decision.rows[0]?.id;
+      if (!decisionId) throw new Error('Candidate action does not exist');
+
+      const guard = await client.query(
+        'SELECT 1 FROM decision_ingest_guards WHERE decision_id = $1',
+        [decisionId],
+      );
+      if (guard.rows[0]) {
+        throw new Error('Candidate risk is immutable after receipt finalization');
+      }
+
+      const updated = await client.query<CandidateActionRow>(
+        `UPDATE candidate_actions
+         SET risk_assessment = $1
+         WHERE id = $2 AND decision_id = $3
+         RETURNING *`,
+        [JSON.stringify(riskAssessment), actionId, decisionId],
+      );
+      const row = updated.rows[0];
+      if (!row) throw new Error('Candidate action disappeared during risk persistence');
       return row;
-    }
-    const result = await query<CandidateActionRow>(
-      `INSERT INTO candidate_actions (
-        decision_id, action_type, description, parameters,
-        predicted_user_preference, risk_assessment, reversible, estimated_cost
-      )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *`,
-      [
-        input.decisionId,
-        input.actionType,
-        input.description,
-        JSON.stringify(input.parameters ?? {}),
-        input.predictedUserPreference,
-        JSON.stringify(input.riskAssessment),
-        input.reversible ?? true,
-        input.estimatedCost ?? null,
-      ],
-    );
-    return result.rows[0]!;
+    });
   },
 
   /**

@@ -263,6 +263,7 @@ function parseStatus(value: string): MemoryActionOpportunityStatus {
   return RETRYABLE_STATUSES.includes(value as MemoryActionOpportunityStatus) ||
     value === 'queued_approval' ||
     value === 'auto_executed' ||
+    value === 'execution_ambiguous' ||
     value === 'noted_awareness' ||
     value === 'skipped'
     ? value as MemoryActionOpportunityStatus

@@ -116,7 +116,13 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
 
     try {
       if (this.client.preferChatCompletions) {
-        const response = await this.client.sendChatCompletion(this.buildExecutionChatMessages(plan));
+        // Chat execution has no proven server-side idempotency contract. Once
+        // dispatched, a transport/5xx response is ambiguous and must not POST
+        // again within this call.
+        const response = await this.client.sendChatCompletion(
+          this.buildExecutionChatMessages(plan),
+          { allowRetry: false },
+        );
         const result = this.client.parseChatExecutionResult(plan.id, response, startedAt);
         this.planStatuses.set(plan.id, result.status);
         return result;

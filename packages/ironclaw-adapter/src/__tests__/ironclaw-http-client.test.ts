@@ -262,22 +262,19 @@ describe('IronClawHttpClient', () => {
       expect(result.error).toBe('Permission denied');
     });
 
-    it('infers status from content when metadata has no status', () => {
+    it('rejects free-text execution responses without explicit terminal status', () => {
       const client = makeClient();
 
-      const successResult = client.parseExecutionResult('plan_1', {
+      expect(() => client.parseExecutionResult('plan_1', {
         content: 'All good',
         attachments: [],
         metadata: {},
-      }, new Date());
-      expect(successResult.status).toBe('completed');
-
-      const failResult = client.parseExecutionResult('plan_2', {
+      }, new Date())).toThrow('omitted explicit execution status');
+      expect(() => client.parseExecutionResult('plan_2', {
         content: 'Error occurred during processing',
         attachments: [],
         metadata: {},
-      }, new Date());
-      expect(failResult.status).toBe('failed');
+      }, new Date())).toThrow('omitted explicit execution status');
     });
   });
 
@@ -306,6 +303,13 @@ describe('IronClawHttpClient', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toBe('Irreversible action');
+    });
+
+    it('rejects rollback prose without explicit terminal status', () => {
+      const client = makeClient();
+      expect(() => client.parseRollbackResult({
+        content: 'Rollback completed', attachments: [], metadata: {},
+      })).toThrow('omitted explicit execution status');
     });
   });
 
@@ -622,7 +626,7 @@ describe('IronClawHttpClient', () => {
         content: 'Email archived successfully',
         model: 'openclaw/default',
         usage: { promptTokens: 100, completionTokens: 25 },
-        metadata: { taskId: 'task_42' },
+        metadata: { status: 'completed', taskId: 'task_42' },
       }, startedAt);
 
       expect(result.planId).toBe('plan_1');
@@ -643,6 +647,7 @@ describe('IronClawHttpClient', () => {
         content: 'Error: unable to send the message',
         model: 'openclaw/default',
         usage: { promptTokens: 50, completionTokens: 10 },
+        metadata: { status: 'failed' },
       }, new Date());
 
       expect(result.status).toBe('failed');
@@ -681,34 +686,50 @@ describe('IronClawHttpClient', () => {
       expect(client.parseExecutionStatus({ content: '', attachments: [], metadata: { status: 'running' } })).toBe('running');
     });
 
-    it('infers pending from content when no metadata status', () => {
+    it('rejects content-only pending text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Task is pending approval', attachments: [], metadata: {} })).toBe('pending');
+      expect(() => client.parseExecutionStatus({ content: 'Task is pending approval', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers running from content when no metadata status', () => {
+    it('rejects content-only running text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Task is running now', attachments: [], metadata: {} })).toBe('running');
+      expect(() => client.parseExecutionStatus({ content: 'Task is running now', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers running from "in progress" content', () => {
+    it('rejects content-only in-progress text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Operation in progress', attachments: [], metadata: {} })).toBe('running');
+      expect(() => client.parseExecutionStatus({ content: 'Operation in progress', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers failed from content containing "error"', () => {
+    it('rejects content-only error text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'An error occurred', attachments: [], metadata: {} })).toBe('failed');
+      expect(() => client.parseExecutionStatus({ content: 'An error occurred', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers failed from content containing "unable"', () => {
+    it('rejects content-only unable text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Unable to process request', attachments: [], metadata: {} })).toBe('failed');
+      expect(() => client.parseExecutionStatus({ content: 'Unable to process request', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('defaults to completed when content has no failure signals', () => {
+    it('rejects content-only completion text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'All done', attachments: [], metadata: {} })).toBe('completed');
+      expect(() => client.parseExecutionStatus({ content: 'All done', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
+    });
+
+    it('rejects conflicting structured status fields', () => {
+      const client = makeClient();
+      expect(() => client.parseExecutionStatus({
+        content: '', attachments: [], metadata: { status: 'completed', success: false },
+      })).toThrow('conflicting execution status fields');
+      expect(() => client.parseExecutionStatus({
+        content: '', attachments: [], metadata: { status: 'completed', error: 'late error' },
+      })).toThrow('also contained an error');
     });
   });
 });

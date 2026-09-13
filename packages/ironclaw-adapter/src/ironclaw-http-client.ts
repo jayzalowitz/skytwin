@@ -191,7 +191,7 @@ export class IronClawHttpClient {
    */
   async sendChatCompletion(
     messages: ChatMessage[],
-    opts: { model?: string; stream?: boolean } = {},
+    opts: { model?: string; stream?: boolean; allowRetry?: boolean } = {},
   ): Promise<ChatCompletionResponse> {
     const response = await this.fetchWithRetries('chat', `${this.config.apiUrl}/v1/chat/completions`, {
       method: 'POST',
@@ -202,7 +202,7 @@ export class IronClawHttpClient {
         stream: false,
       }),
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw chat completion');
+    }, 'IronClaw chat completion', opts.allowRetry ?? true);
 
     const payload = await response.json() as Record<string, unknown>;
     return this.parseChatCompletionResponse(payload, opts.model);
@@ -420,14 +420,18 @@ export class IronClawHttpClient {
    * Parse an IronClaw response into a SkyTwin ExecutionResult.
    *
    * IronClaw returns structured metadata when responding to SkyTwin-formatted
-   * messages. We look for status/outputs/error in metadata first, then fall
-   * back to inferring from the response content.
+   * messages. Execution authority comes only from explicit, internally
+   * consistent terminal protocol fields; human-readable content is never
+   * interpreted as terminal truth.
    */
   parseExecutionResult(planId: string, response: IronClawResponse, startedAt: Date): ExecutionResult {
     const metadata = response.metadata ?? {};
     const metadataError = this.readString(metadata, ['error']);
     const metadataOutputs = this.asRecord(metadata['outputs']);
     const status = this.parseExecutionStatus(response);
+    if (status !== 'completed' && status !== 'failed') {
+      throw new Error(`IronClaw returned non-terminal execution status ${status}`);
+    }
 
     const result: ExecutionResult = {
       planId,
@@ -451,17 +455,18 @@ export class IronClawHttpClient {
   }
 
   parseChatExecutionResult(planId: string, response: ChatCompletionResponse, startedAt: Date): ExecutionResult {
-    const content = response.content.toLowerCase();
-    const status: ExecutionStatus = content.includes('error') || content.includes('failed') || content.includes('unable')
-      ? 'failed'
-      : 'completed';
+    const status = this.parseDeclaredExecutionStatus(response.metadata ?? {});
+    if (status !== 'completed' && status !== 'failed') {
+      throw new Error(`IronClaw returned non-terminal execution status ${status}`);
+    }
+    const metadataError = this.readString(response.metadata ?? {}, ['error']);
 
     return {
       planId,
       status,
       startedAt,
       completedAt: new Date(),
-      error: status === 'failed' ? response.content : undefined,
+      error: status === 'failed' ? metadataError ?? response.content : undefined,
       output: {
         ironclawResponse: response.content,
         ironclawModel: response.model,
@@ -476,51 +481,52 @@ export class IronClawHttpClient {
    */
   parseRollbackResult(response: IronClawResponse): RollbackResult {
     const metadata = response.metadata ?? {};
-    const metadataStatus = this.readString(metadata, ['status']);
+    const status = this.parseDeclaredExecutionStatus(metadata);
 
-    if (metadataStatus === 'completed' || metadataStatus === 'success') {
+    if (status === 'completed') {
       return { success: true, message: response.content ?? 'Rollback completed.' };
     }
 
-    if (metadataStatus === 'failed' || metadataStatus === 'error') {
+    if (status === 'failed') {
       return {
         success: false,
         message: this.readString(metadata, ['error']) ?? response.content ?? 'Rollback failed.',
       };
     }
-
-    const content = (response.content ?? '').toLowerCase();
-    if (content.includes('error') || content.includes('failed') || content.includes('unable')) {
-      return { success: false, message: response.content };
-    }
-
-    return { success: true, message: response.content ?? 'Rollback completed.' };
+    throw new Error(`IronClaw returned non-terminal rollback status ${status}`);
   }
 
   parseExecutionStatus(response: IronClawResponse): ExecutionStatus {
-    const metadata = response.metadata ?? {};
-    const metadataStatus = this.readString(metadata, ['status']);
+    return this.parseDeclaredExecutionStatus(response.metadata ?? {});
+  }
 
-    if (metadataStatus === 'completed' || metadataStatus === 'success') {
-      return 'completed';
-    }
-    if (metadataStatus === 'failed' || metadataStatus === 'error') {
-      return 'failed';
-    }
-    if (metadataStatus === 'pending') {
-      return 'pending';
-    }
-    if (metadataStatus === 'running') {
-      return 'running';
+  private parseDeclaredExecutionStatus(metadata: Record<string, unknown>): ExecutionStatus {
+    const declared = this.readString(metadata, ['status']);
+    const success = metadata['success'];
+    if (success !== undefined && typeof success !== 'boolean') {
+      throw new Error('IronClaw execution success field is not boolean');
     }
 
-    const content = (response.content ?? '').toLowerCase();
-    if (content.includes('pending')) return 'pending';
-    if (content.includes('running') || content.includes('in progress')) return 'running';
-    if (content.includes('error') || content.includes('failed') || content.includes('unable')) {
-      return 'failed';
+    let status: ExecutionStatus | null = null;
+    if (declared === 'completed' || declared === 'success') status = 'completed';
+    else if (declared === 'failed' || declared === 'error') status = 'failed';
+    else if (declared === 'pending') status = 'pending';
+    else if (declared === 'running') status = 'running';
+    else if (declared !== undefined) {
+      throw new Error(`IronClaw returned unknown execution status ${declared}`);
+    } else if (success === true) status = 'completed';
+    else if (success === false) status = 'failed';
+
+    if (!status) throw new Error('IronClaw response omitted explicit execution status');
+    if ((status === 'completed' && success === false) ||
+        (status === 'failed' && success === true) ||
+        ((status === 'pending' || status === 'running') && success !== undefined)) {
+      throw new Error('IronClaw response contained conflicting execution status fields');
     }
-    return 'completed';
+    if (status === 'completed' && this.readString(metadata, ['error'])) {
+      throw new Error('IronClaw completed response also contained an error');
+    }
+    return status;
   }
 
   /**

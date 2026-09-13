@@ -417,6 +417,7 @@ CREATE TABLE IF NOT EXISTS memory_action_opportunities (
       'blocked_by_policy',
       'learning_needed',
       'execution_failed',
+      'execution_ambiguous',
       'noted_awareness',
       'skipped'
     )),

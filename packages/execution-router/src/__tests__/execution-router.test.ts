@@ -11,6 +11,7 @@ import type {
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import {
   ExecutionRouter,
+  AmbiguousExecutionError,
   NoAdapterError,
   InvariantViolationError,
 } from '../execution-router.js';
@@ -337,6 +338,26 @@ describe('ExecutionRouter', () => {
         .rejects.toThrow('ambiguous');
       expect(fallbackExecute).not.toHaveBeenCalled();
     });
+
+    it.each(['pending', 'running'] as const)(
+      'rejects a synchronous %s result as ambiguous without fallback',
+      async (status) => {
+        const ambiguous = createMockAdapter('ironclaw');
+        ambiguous.execute = vi.fn(async (plan) => ({
+          planId: plan.id,
+          status,
+          startedAt: new Date(),
+        }));
+        const fallback = createMockAdapter('direct');
+        const fallbackExecute = vi.spyOn(fallback, 'execute');
+        registry.register('ironclaw', ambiguous, IRONCLAW_TRUST_PROFILE);
+        registry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+
+        await expect(router.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+          .rejects.toBeInstanceOf(AmbiguousExecutionError);
+        expect(fallbackExecute).not.toHaveBeenCalled();
+      },
+    );
 
     it('surfaces the first adapter error without trying the rest', async () => {
       registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);

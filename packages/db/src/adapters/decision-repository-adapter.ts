@@ -257,11 +257,9 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
       assessedAt: assessment.assessedAt.toISOString(),
     };
 
-    await query(
-      `UPDATE candidate_actions
-       SET risk_assessment = $1
-       WHERE id = $2`,
-      [JSON.stringify(serialised), assessment.actionId],
+    await decisionRepository.updateCandidateRiskAssessment(
+      assessment.actionId,
+      serialised,
     );
 
     return assessment;

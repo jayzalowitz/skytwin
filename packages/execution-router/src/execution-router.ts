@@ -79,6 +79,18 @@ export class InvariantViolationError extends Error {
   }
 }
 
+/**
+ * The adapter was invoked but did not provide trustworthy terminal truth.
+ * Callers must retain an unresolved/ambiguous state and reconcile out of band;
+ * this error never authorizes fallback or a fabricated failed result.
+ */
+export class AmbiguousExecutionError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'AmbiguousExecutionError';
+  }
+}
+
 function assertValidExecutionInputs(
   action: CandidateAction,
   riskAssessment: RiskAssessment,
@@ -279,8 +291,14 @@ export class ExecutionRouter {
           };
         }
 
-        // Adapter returned a non-completed status (partial execution possible).
-        // Do NOT fall through to the next adapter — that risks duplicate actions.
+        if (result.status !== 'failed') {
+          throw new AmbiguousExecutionError(
+            `Adapter "${adapterName}" returned non-terminal status ${result.status}`,
+          );
+        }
+
+        // Explicit terminal failure is durable truth. Do not fall through to
+        // another adapter because partial execution may still have occurred.
         firstAttemptCompleted = true;
         return {
           ...result,
@@ -296,7 +314,13 @@ export class ExecutionRouter {
         // Once an adapter is invoked, its exception cannot prove whether an
         // external effect committed. Never authorize a second adapter within
         // this call; reconciliation must resolve the ambiguous first attempt.
-        throw error;
+        if (error instanceof AmbiguousExecutionError) throw error;
+        throw new AmbiguousExecutionError(
+          `Execution through adapter "${adapterName}" is ambiguous: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { cause: error },
+        );
       }
     }
 

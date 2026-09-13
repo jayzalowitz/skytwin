@@ -20,6 +20,7 @@ const MEMORY_STATUS_LABEL: Record<MemoryActionOpportunityStatus, string> = {
   blocked_by_policy: 'blocked by your rules',
   learning_needed: 'needs a new skill',
   execution_failed: "couldn't complete",
+  execution_ambiguous: 'needs reconciliation',
   noted_awareness: 'noted as FYI',
   skipped: 'skipped',
 };
