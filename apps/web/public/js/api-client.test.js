@@ -117,4 +117,36 @@ describe('api client', () => {
     expect(values.has(KEY_TOUR_MODE)).toBe(false);
     expect(values.has(KEY_USER_ID)).toBe(false);
   });
+
+  for (const responseKind of ['valid', 'invalid']) {
+    it(`preserves a real session established during an in-flight ${responseKind} sample response`, async () => {
+      let resolveFetch;
+      const pendingResponse = new Promise((resolve) => {
+        resolveFetch = resolve;
+      });
+      vi.stubGlobal('fetch', vi.fn().mockReturnValue(pendingResponse));
+
+      const starting = startDemoSession();
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+      values.set(KEY_USER_ID, '11111111-1111-4111-8111-111111111111');
+      values.set(KEY_SESSION_TOKEN, 'real-token');
+      values.delete(KEY_TOUR_MODE);
+      values.delete(KEY_DEMO_SESSION_EXPIRES_AT);
+
+      resolveFetch(new Response(JSON.stringify(responseKind === 'valid' ? {
+        token: 'late-sample-token',
+        userId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        expiresAt: '2030-01-01T00:00:00.000Z',
+      } : { token: '', userId: 'wrong' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+
+      await expect(starting).rejects.toThrow(/authentication changed/i);
+      expect(values.get(KEY_USER_ID)).toBe('11111111-1111-4111-8111-111111111111');
+      expect(values.get(KEY_SESSION_TOKEN)).toBe('real-token');
+      expect(values.has(KEY_TOUR_MODE)).toBe(false);
+      expect(values.has(KEY_DEMO_SESSION_EXPIRES_AT)).toBe(false);
+    });
+  }
 });

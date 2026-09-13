@@ -454,7 +454,23 @@ export function fetchDemoInfo() {
 export async function startDemoSession() {
   if (demoSessionPromise) return demoSessionPromise;
   demoSessionPromise = (async () => {
+    const authStateAtStart = {
+      token: localStorage.getItem(KEY_SESSION_TOKEN),
+      expiresAt: localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT),
+      tourMode: localStorage.getItem(KEY_TOUR_MODE),
+      userId: localStorage.getItem(KEY_USER_ID),
+    };
     const session = await fetchJSON(`${API}/v1/demo/session`, { method: 'POST' });
+    const authStateIsCurrent =
+      localStorage.getItem(KEY_SESSION_TOKEN) === authStateAtStart.token &&
+      localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) === authStateAtStart.expiresAt &&
+      localStorage.getItem(KEY_TOUR_MODE) === authStateAtStart.tourMode &&
+      localStorage.getItem(KEY_USER_ID) === authStateAtStart.userId;
+    // Pairing or sign-in may finish while this public request is in flight.
+    // Never let a late sample response overwrite or clear newer credentials.
+    if (!authStateIsCurrent) {
+      throw new Error('Authentication changed while the sample session was starting.');
+    }
     const expiresAtMs = Date.parse(session?.expiresAt ?? '');
     if (
       typeof session?.token !== 'string' ||
