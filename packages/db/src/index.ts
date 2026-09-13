@@ -42,9 +42,11 @@ export {
   provisionPackagedSampleWithClient,
   ingestPackagedSampleSignals,
   type PackagedSampleEnvironment,
+  type PackagedSampleProvisionOptions,
   type PackagedSampleGuardResult,
   type PackagedSampleProvisionResult,
   type PackagedSampleIngestResult,
+  type OwnedSampleClient,
 } from './seeds/packaged-sample.js';
 
 // Row types

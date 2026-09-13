@@ -2,7 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   assertPackagedSampleSafe,
   ingestPackagedSampleSignals,
+  provisionPackagedSample,
   provisionPackagedSampleWithClient,
+  type OwnedSampleClient,
 } from '../seeds/packaged-sample.js';
 import { DEMO_USER_ID } from '../seeds/demo-guard.js';
 import { DEMO_SIGNALS } from '../seeds/demo-fixtures/signals.js';
@@ -92,6 +94,56 @@ describe('packaged sample safety', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ is_demo: false }] });
 
     await expect(provisionPackagedSampleWithClient({ query } as never)).rejects.toThrow(/non-sample account/);
+  });
+
+  it('performs no transaction write when authority is lost after the fixed connection opens', async () => {
+    const client = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      query: vi.fn().mockResolvedValue({ rowCount: 0, rows: [] }),
+      end: vi.fn().mockResolvedValue(undefined),
+    } as unknown as OwnedSampleClient;
+
+    await expect(
+      provisionPackagedSample({
+        ...safe,
+        authorize: () => false,
+        createClient: () => client,
+      }),
+    ).rejects.toThrow(/ownership changed/);
+
+    expect(client.connect).toHaveBeenCalledOnce();
+    expect(client.query).not.toHaveBeenCalled();
+    expect(client.end).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks authority before each write on the same non-reconnecting transaction client', async () => {
+    const query = vi.fn(async (text: string) => {
+      if (text.includes('INSERT INTO users')) {
+        return { rowCount: 1, rows: [{ id: DEMO_USER_ID }] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+    const client = {
+      connect: vi.fn().mockResolvedValue(undefined),
+      query,
+      end: vi.fn().mockResolvedValue(undefined),
+    } as unknown as OwnedSampleClient;
+    const authorize = vi.fn(() => query.mock.calls.length < 2);
+    const createClient = vi.fn(() => client);
+
+    await expect(
+      provisionPackagedSample({ ...safe, authorize, createClient }),
+    ).rejects.toThrow(/ownership changed/);
+
+    expect(createClient).toHaveBeenCalledExactlyOnceWith(safe.databaseUrl);
+    expect(query.mock.calls.map(([text]) => String(text).trim().split(/\s+/).slice(0, 3).join(' '))).toEqual([
+      'BEGIN',
+      'INSERT INTO users',
+      'ROLLBACK',
+    ]);
+    expect(query.mock.calls.some(([text]) => String(text).includes('INSERT INTO twin_profiles'))).toBe(false);
+    expect(query.mock.calls.some(([text]) => text === 'COMMIT')).toBe(false);
+    expect(client.end).toHaveBeenCalledOnce();
   });
 
   it('authenticates every synthetic event and restricts ingestion to the reserved identity', async () => {

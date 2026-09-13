@@ -546,6 +546,7 @@ export class ServiceManager {
           managedDataDir: string | null;
           bundledDataDir: string;
           packaged: boolean;
+          authorize: () => boolean;
         }) => Promise<{ created: boolean; userId: string }>;
       }>;
       const mod = await nativeImport(moduleUrl);
@@ -560,6 +561,7 @@ export class ServiceManager {
         databaseOwnership: startup.ownership,
         managedDataDir: startup.dataDir,
         bundledDataDir: this.cockroach.getDataDir(),
+        authorize: () => this.isSampleLaunchCurrent(epoch, signal, startup),
       });
       if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
       // Retry the versioned fixture on every healthy launch. Each synthetic

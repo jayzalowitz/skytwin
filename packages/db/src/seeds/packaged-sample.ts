@@ -1,9 +1,11 @@
-import type { PoolClient } from 'pg';
-import { closePool, getPool, withTransaction } from '../connection.js';
+import { Client, type PoolClient } from 'pg';
 import { DEMO_USER_ID, isLocalDbTarget } from './demo-guard.js';
 import { DEMO_SIGNALS } from './demo-fixtures/signals.js';
 
 type Db = Pick<PoolClient, 'query'>;
+
+const OWNED_SAMPLE_CONNECTION_TIMEOUT_MS = 5_000;
+const OWNED_SAMPLE_QUERY_TIMEOUT_MS = 30_000;
 
 export interface PackagedSampleEnvironment {
   desktopMode: string | undefined;
@@ -14,6 +16,18 @@ export interface PackagedSampleEnvironment {
   managedDataDir: string | null;
   bundledDataDir: string;
   packaged: boolean;
+}
+
+export interface OwnedSampleClient extends Db {
+  connect(): Promise<unknown>;
+  end(): Promise<void>;
+}
+
+export interface PackagedSampleProvisionOptions extends PackagedSampleEnvironment {
+  /** Revalidates the exact CockroachDB child capability for this launch. */
+  authorize: () => boolean;
+  /** Test seam for proving connection and authority sequencing. */
+  createClient?: (connectionString: string) => OwnedSampleClient;
 }
 
 export type PackagedSampleGuardResult = { ok: true } | { ok: false; reason: string };
@@ -36,6 +50,20 @@ function fixtureSignalId(index: number): string {
 }
 
 class NonRetryableSampleIngestError extends Error {}
+
+function requireOwnedSampleAuthority(authorize: () => boolean): void {
+  if (!authorize()) {
+    throw new Error('CockroachDB ownership changed; refusing packaged sample write');
+  }
+}
+
+function ownedSampleClient(connectionString: string): OwnedSampleClient {
+  return new Client({
+    connectionString,
+    connectionTimeoutMillis: OWNED_SAMPLE_CONNECTION_TIMEOUT_MS,
+    query_timeout: OWNED_SAMPLE_QUERY_TIMEOUT_MS,
+  });
+}
 
 /**
  * This bootstrap is deliberately narrower than the developer demo fixture.
@@ -85,7 +113,11 @@ export function assertPackagedSampleSafe(env: PackagedSampleEnvironment): Packag
  * untouched, while a non-demo row occupying the reserved UUID aborts startup
  * provisioning rather than exposing or modifying that account.
  */
-export async function provisionPackagedSampleWithClient(client: Db): Promise<PackagedSampleProvisionResult> {
+export async function provisionPackagedSampleWithClient(
+  client: Db,
+  authorize: () => boolean = () => true,
+): Promise<PackagedSampleProvisionResult> {
+  requireOwnedSampleAuthority(authorize);
   const inserted = await client.query(
     `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, is_demo)
      VALUES ($1, $2, $3, $4, $5, true)
@@ -95,6 +127,7 @@ export async function provisionPackagedSampleWithClient(client: Db): Promise<Pac
   );
 
   if (inserted.rowCount === 0) {
+    requireOwnedSampleAuthority(authorize);
     const existing = await client.query<{ is_demo: boolean }>(`SELECT is_demo FROM users WHERE id = $1`, [
       DEMO_USER_ID,
     ]);
@@ -103,6 +136,7 @@ export async function provisionPackagedSampleWithClient(client: Db): Promise<Pac
     }
   }
 
+  requireOwnedSampleAuthority(authorize);
   await client.query(
     `INSERT INTO twin_profiles (user_id, version)
      VALUES ($1, 1)
@@ -112,15 +146,31 @@ export async function provisionPackagedSampleWithClient(client: Db): Promise<Pac
   return { created: inserted.rowCount === 1, userId: DEMO_USER_ID };
 }
 
-export async function provisionPackagedSample(env: PackagedSampleEnvironment): Promise<PackagedSampleProvisionResult> {
-  const guard = assertPackagedSampleSafe(env);
+export async function provisionPackagedSample(
+  options: PackagedSampleProvisionOptions,
+): Promise<PackagedSampleProvisionResult> {
+  const guard = assertPackagedSampleSafe(options);
   if (!guard.ok) throw new Error(guard.reason);
+  if (!options.databaseUrl) throw new Error('packaged sample database URL is required');
 
-  getPool();
+  const createClient = options.createClient ?? ownedSampleClient;
+  const client = createClient(options.databaseUrl);
+  let transactionStarted = false;
   try {
-    return await withTransaction(provisionPackagedSampleWithClient);
+    await client.connect();
+    requireOwnedSampleAuthority(options.authorize);
+    transactionStarted = true;
+    await client.query('BEGIN');
+    const result = await provisionPackagedSampleWithClient(client, options.authorize);
+    requireOwnedSampleAuthority(options.authorize);
+    await client.query('COMMIT');
+    transactionStarted = false;
+    return result;
+  } catch (error) {
+    if (transactionStarted) await client.query('ROLLBACK').catch(() => undefined);
+    throw error;
   } finally {
-    await closePool();
+    await client.end().catch(() => undefined);
   }
 }
 
