@@ -5,6 +5,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { IdlePauseController } from "../idle-pause-controller.js";
 
 const cockroachMockState = vi.hoisted(() => ({
   authorityLossHandler: null as ((generation: number) => void) | null,
@@ -43,7 +44,16 @@ interface SampleManagerInternals {
   sampleLaunchEpoch: number;
   sampleAbortController: AbortController | null;
   activeDatabaseStartup: SampleStartup | null;
+  invalidatedDatabaseStartup: SampleStartup | null;
   api: { process: ChildProcess | null; external: boolean; status?: string };
+  web: { process: ChildProcess | null; external: boolean; status?: string };
+  worker: {
+    process: ChildProcess | null;
+    external: boolean;
+    status: string;
+    restartCount: number;
+    failureTimestamps: number[];
+  };
   apiGeneration: TestApiGeneration | null;
   registeredWorkerGeneration: TestApiGeneration | null;
   healthCheckInFlight: boolean;
@@ -138,6 +148,9 @@ interface SampleManagerInternals {
   revokeSampleLaunch(): void;
   beginSampleLaunch(): { epoch: number; signal: AbortSignal };
   stopAll(): Promise<void>;
+  startAll(): Promise<void>;
+  pause(): Promise<void>;
+  resume(): Promise<void>;
   getEnv(): Record<string, string>;
   apiEnv(
     instanceCapability: string,
@@ -400,9 +413,11 @@ describe("packaged sample startup sequencing", () => {
       manager.sampleBootstrapAllowedThisLaunch = true;
     });
     const generation = apiGeneration();
-    manager.api.process = generation.process;
-    manager.apiGeneration = generation;
-    manager.startApi = vi.fn().mockResolvedValue(generation);
+    manager.startApi = vi.fn().mockImplementation(async () => {
+      manager.api.process = generation.process;
+      manager.apiGeneration = generation;
+      return generation;
+    });
     manager.waitForApi = vi.fn().mockResolvedValue(true);
     manager.startWeb = vi.fn().mockResolvedValue(undefined);
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
@@ -454,9 +469,11 @@ describe("packaged sample startup sequencing", () => {
     manager.runMigrations = vi.fn().mockResolvedValue(true);
     manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
     const generation = apiGeneration();
-    manager.api.process = generation.process;
-    manager.apiGeneration = generation;
-    manager.startApi = vi.fn().mockResolvedValue(generation);
+    manager.startApi = vi.fn().mockImplementation(async () => {
+      manager.api.process = generation.process;
+      manager.apiGeneration = generation;
+      return generation;
+    });
     manager.waitForApi = vi.fn().mockResolvedValue(false);
     manager.startWeb = vi.fn().mockResolvedValue(undefined);
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
@@ -618,9 +635,11 @@ describe("packaged sample startup sequencing", () => {
       manager.sampleBootstrapAllowedThisLaunch = true;
     });
     const generation = apiGeneration();
-    manager.api.process = generation.process;
-    manager.apiGeneration = generation;
-    manager.startApi = vi.fn().mockResolvedValue(generation);
+    manager.startApi = vi.fn().mockImplementation(async () => {
+      manager.api.process = generation.process;
+      manager.apiGeneration = generation;
+      return generation;
+    });
     let launchSignal: AbortSignal | undefined;
     manager.waitForApi = vi.fn().mockImplementation(async () => {
       launchSignal = manager.sampleAbortController?.signal;
@@ -677,7 +696,11 @@ describe("packaged sample startup sequencing", () => {
     const { startup, controller } = authorize(manager);
     manager.activeDatabaseStartup = startup;
     manager.cockroachStatus = "running";
-    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    manager.stopDataServicesOwned = vi.fn().mockImplementation(async () => {
+      manager.api.process = null;
+      manager.apiGeneration = null;
+      manager.registeredWorkerGeneration = null;
+    });
     manager.cockroach.isManagedStartCurrent.mockReturnValue(false);
 
     await manager.runHealthCheck(startup);
@@ -688,6 +711,43 @@ describe("packaged sample startup sequencing", () => {
     expect(controller.signal.aborted).toBe(true);
     expect(manager.activeDatabaseStartup).toBeNull();
     expect(manager.cockroachStatus).toBe("error");
+  });
+
+  it("blocks a hostile listener reconnect before any new packaged startup work", async () => {
+    const manager = internals();
+    const { startup, generation } = authorize(manager);
+    manager.activeDatabaseStartup = startup;
+    manager.registeredWorkerGeneration = generation;
+    manager.cockroachStatus = "running";
+    manager.stopDataServicesOwned = vi
+      .fn()
+      .mockRejectedValue(new Error("old API exit unproven"));
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.waitForExternalApi = vi.fn().mockResolvedValue(false);
+    manager.startCockroach = vi.fn();
+    manager.runMigrations = vi.fn();
+    manager.startApi = vi.fn();
+
+    manager.cockroach.isManagedStartCurrent.mockReturnValue(false);
+    cockroachMockState.authorityLossHandler?.(startup.generation!);
+    await vi.waitFor(() =>
+      expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce(),
+    );
+    // Model an unrelated listener taking the same endpoint after the owned
+    // database disappeared. Retained generation state must still win.
+    manager.cockroach.isManagedStartCurrent.mockReturnValue(true);
+
+    await expect(manager.startAll()).rejects.toThrow(
+      /blocked until every previous service generation has proven termination/,
+    );
+    expect(manager.activeDatabaseStartup).toBe(startup);
+    expect(manager.invalidatedDatabaseStartup).toBe(startup);
+    expect(manager.registeredWorkerGeneration).toBe(generation);
+    expect(manager.ensureEmbeddedRoot).not.toHaveBeenCalled();
+    expect(manager.waitForExternalApi).not.toHaveBeenCalled();
+    expect(manager.startCockroach).not.toHaveBeenCalled();
+    expect(manager.runMigrations).not.toHaveBeenCalled();
+    expect(manager.startApi).not.toHaveBeenCalled();
   });
 
   it("revokes a deferred verifier before stop can hand the port to another listener", async () => {
@@ -1011,6 +1071,102 @@ describe("packaged sample startup sequencing", () => {
       expect(process.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
       expect(managed.process).toBe(process);
       expect(managed.status).toBe("error");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a failed pause fail-closed when manual resume is requested", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = internals(true);
+      const { startup, generation } = authorize(manager);
+      const worker = fakeProcess();
+      manager.activeDatabaseStartup = startup;
+      manager.registeredWorkerGeneration = generation;
+      manager.worker = {
+        process: worker,
+        status: "running",
+        external: false,
+        restartCount: 0,
+        failureTimestamps: [],
+      };
+      const revoke = vi.fn().mockResolvedValue(undefined);
+      manager.workerGenerationAuthorityModule = vi.fn().mockResolvedValue({
+        registerWorkerGenerationAuthority: vi.fn(),
+        revokeWorkerGenerationAuthority: revoke,
+      });
+
+      const pausing = manager.pause();
+      const pauseFailure = expect(pausing).rejects.toThrow(
+        /pause and generation containment both failed/,
+      );
+      await vi.runAllTimersAsync();
+      await pauseFailure;
+
+      const killsBeforeResume = (worker.kill as ReturnType<typeof vi.fn>).mock
+        .calls.length;
+      await expect(
+        manager.startWorker(startup, generation),
+      ).rejects.toMatchObject({
+        code: "CHILD_TERMINATION_UNPROVEN",
+        serviceName: "worker",
+      });
+      await expect(manager.resume()).rejects.toMatchObject({
+        code: "CHILD_TERMINATION_UNPROVEN",
+        serviceName: "worker",
+      });
+      expect(manager.worker.process).toBe(worker);
+      expect(manager.worker.status).toBe("error");
+      expect(manager.isPaused()).toBe(true);
+      expect(worker.kill).toHaveBeenCalledTimes(killsBeforeResume);
+      expect(revoke).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps idle auto-pause ownership after hostile pause and resume failures", async () => {
+    vi.useFakeTimers();
+    try {
+      const manager = internals(true);
+      const { startup, generation } = authorize(manager);
+      const worker = fakeProcess();
+      manager.activeDatabaseStartup = startup;
+      manager.registeredWorkerGeneration = generation;
+      manager.worker = {
+        process: worker,
+        status: "running",
+        external: false,
+        restartCount: 0,
+        failureTimestamps: [],
+      };
+      manager.workerGenerationAuthorityModule = vi.fn().mockResolvedValue({
+        registerWorkerGenerationAuthority: vi.fn(),
+        revokeWorkerGenerationAuthority: vi.fn().mockResolvedValue(undefined),
+      });
+      const idle = new IdlePauseController({
+        getEnabled: () => true,
+        isCurrentlyPaused: () => manager.isPaused(),
+        pauseServices: () => manager.pause(),
+        resumeServices: () => manager.resume(),
+      });
+
+      const pausing = idle.onIdleStateChange("idle");
+      const pauseFailure = expect(pausing).rejects.toThrow(
+        /pause and generation containment both failed/,
+      );
+      await vi.runAllTimersAsync();
+      await pauseFailure;
+      expect(idle.isAutoPausedByIdle()).toBe(true);
+
+      await expect(idle.onIdleStateChange("active")).rejects.toMatchObject({
+        code: "CHILD_TERMINATION_UNPROVEN",
+        serviceName: "worker",
+      });
+      expect(idle.isAutoPausedByIdle()).toBe(true);
+      expect(manager.worker.process).toBe(worker);
+      expect(manager.isPaused()).toBe(true);
     } finally {
       vi.useRealTimers();
     }

@@ -242,6 +242,7 @@ export class ServiceManager {
   private sampleAbortController: AbortController | null = null;
   private serviceLifecycleTail: Promise<void> = Promise.resolve();
   private activeDatabaseStartup: CockroachStartResult | null = null;
+  private invalidatedDatabaseStartup: CockroachStartResult | null = null;
   private apiGeneration: ApiGeneration | null = null;
   private registeredWorkerGeneration: ApiGeneration | null = null;
   private nextApiGeneration = 0;
@@ -262,14 +263,16 @@ export class ServiceManager {
     return (
       startup?.ownership === 'managed-child' &&
       this.activeDatabaseStartup === startup &&
+      this.invalidatedDatabaseStartup !== startup &&
       this.cockroach.isManagedStartCurrent(startup)
     );
   }
 
   private invalidatePackagedDatabase(startup: CockroachStartResult, reason: string): boolean {
     if (!app.isPackaged || this.activeDatabaseStartup !== startup) return false;
+    if (this.invalidatedDatabaseStartup === startup) return false;
     console.error(`[crdb] ${reason}; stopping packaged services.`);
-    this.activeDatabaseStartup = null;
+    this.invalidatedDatabaseStartup = startup;
     this.revokeSampleLaunch();
     this.cockroachStatus = 'error';
     this.emitStatus();
@@ -279,8 +282,12 @@ export class ServiceManager {
   private async stopDataServicesOwned(): Promise<void> {
     const registeredGeneration = this.registeredWorkerGeneration;
     const startup = this.activeDatabaseStartup;
+    const canRevokeDurably =
+      registeredGeneration !== null &&
+      startup?.ownership === 'managed-child' &&
+      this.cockroach.isManagedStartCurrent(startup);
     const results = await Promise.allSettled([
-      registeredGeneration && startup
+      canRevokeDurably && registeredGeneration && startup
         ? this.revokeWorkerGenerationAuthority(registeredGeneration, startup)
         : Promise.resolve(),
       this.stopProcess(this.worker, 'worker'),
@@ -294,9 +301,26 @@ export class ServiceManager {
     }
   }
 
+  private clearInvalidatedDatabaseStartup(startup: CockroachStartResult): void {
+    if (
+      this.invalidatedDatabaseStartup === startup &&
+      this.activeDatabaseStartup === startup &&
+      this.registeredWorkerGeneration === null &&
+      this.api.process === null &&
+      this.web.process === null &&
+      this.worker.process === null
+    ) {
+      this.invalidatedDatabaseStartup = null;
+      this.activeDatabaseStartup = null;
+    }
+  }
+
   private schedulePackagedDatabaseLoss(startup: CockroachStartResult, reason: string): void {
     if (!this.invalidatePackagedDatabase(startup, reason)) return;
-    void this.runServiceLifecycle(() => this.stopDataServicesOwned()).catch((error) => {
+    void this.runServiceLifecycle(async () => {
+      await this.stopDataServicesOwned();
+      this.clearInvalidatedDatabaseStartup(startup);
+    }).catch((error) => {
       console.error('[crdb] Failed to stop services after database authority loss:', error);
     });
   }
@@ -308,6 +332,7 @@ export class ServiceManager {
     if (this.isServiceDatabaseCurrent(startup)) return;
     this.invalidatePackagedDatabase(startup, `ownership changed ${phase}`);
     await this.stopDataServicesOwned();
+    this.clearInvalidatedDatabaseStartup(startup);
     throw new Error(`CockroachDB ownership changed ${phase}`);
   }
 
@@ -1068,8 +1093,20 @@ export class ServiceManager {
   }
 
   private async startAllOwned(): Promise<void> {
+    if (
+      app.isPackaged &&
+      (this.activeDatabaseStartup !== null ||
+        this.invalidatedDatabaseStartup !== null ||
+        this.registeredWorkerGeneration !== null ||
+        this.api.process !== null ||
+        this.web.process !== null ||
+        this.worker.process !== null)
+    ) {
+      throw new Error(
+        'Packaged startup is blocked until every previous service generation has proven termination',
+      );
+    }
     this.paused = false;
-    this.activeDatabaseStartup = null;
     const { epoch, signal } = this.beginSampleLaunch();
     let startup: CockroachStartResult | null = null;
     // Extract the bundled embedded apps tarball before anything else so
@@ -1571,6 +1608,10 @@ export class ServiceManager {
     startup: CockroachStartResult | null = null,
     apiGeneration: ApiGeneration | null = null,
   ): Promise<void> {
+    if (this.worker.process) {
+      throw new ChildTerminationError('worker');
+    }
+    if (this.paused) return;
     if (!this.guardServiceDatabase(startup, 'before worker spawn')) return;
     if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
     if (app.isPackaged) {
@@ -1666,7 +1707,24 @@ export class ServiceManager {
    */
   async pause(): Promise<void> {
     this.paused = true;
-    await this.stopProcess(this.worker, 'worker');
+    try {
+      await this.stopProcess(this.worker, 'worker');
+    } catch (error) {
+      this.worker.status = 'error';
+      this.emitStatus();
+      try {
+        // A worker whose exit cannot be proven may still know the live API
+        // ingest credential. Contain it by revoking durable DB authority and
+        // stopping the API/web generation before reporting the pause failure.
+        await this.stopDataServicesOwned();
+      } catch (containmentError) {
+        throw new AggregateError(
+          [error, containmentError],
+          'Worker pause and generation containment both failed',
+        );
+      }
+      throw error;
+    }
     this.worker.status = 'paused';
     this.emitStatus();
   }
@@ -1675,10 +1733,30 @@ export class ServiceManager {
    * Resume the twin — restarts the worker.
    */
   async resume(): Promise<void> {
-    this.paused = false;
+    if (this.worker.process) throw new ChildTerminationError('worker');
+    if (
+      app.isPackaged &&
+      (!this.isServiceDatabaseCurrent(this.activeDatabaseStartup) ||
+        !this.apiGeneration ||
+        !this.isApiGenerationCurrent(this.apiGeneration) ||
+        this.registeredWorkerGeneration !== this.apiGeneration)
+    ) {
+      throw new Error('Packaged resume requires the current proven service generation');
+    }
     this.worker.restartCount = 0;
     this.worker.failureTimestamps = [];
-    await this.startWorker(this.activeDatabaseStartup, this.apiGeneration);
+    this.paused = false;
+    try {
+      await this.startWorker(this.activeDatabaseStartup, this.apiGeneration);
+      if (app.isPackaged && !this.worker.process) {
+        throw new Error('Packaged worker did not establish a managed child');
+      }
+    } catch (error) {
+      this.paused = true;
+      this.worker.status = 'error';
+      this.emitStatus();
+      throw error;
+    }
   }
 
   isPaused(): boolean {
@@ -1779,7 +1857,6 @@ export class ServiceManager {
       this.emitStatus();
       throw error;
     }
-    this.activeDatabaseStartup = null;
     try {
       await this.cockroach.stop();
       this.cockroachStatus = 'stopped';
@@ -1789,6 +1866,8 @@ export class ServiceManager {
       this.emitStatus();
       throw err;
     }
+    this.activeDatabaseStartup = null;
+    this.invalidatedDatabaseStartup = null;
     this.emitStatus();
   }
 
