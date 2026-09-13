@@ -339,6 +339,32 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.registeredWorkerGeneration).toBe(generation);
   });
 
+  it("reconciles registration when the database response is ambiguous", async () => {
+    const manager = internals(true);
+    const { startup, generation } = authorize(manager);
+    manager.activeDatabaseStartup = startup;
+    const register = vi
+      .fn()
+      .mockRejectedValue(new Error("commit response lost"));
+    const revoke = vi.fn().mockResolvedValue(undefined);
+    manager.workerGenerationAuthorityModule = vi.fn().mockResolvedValue({
+      registerWorkerGenerationAuthority: register,
+      revokeWorkerGenerationAuthority: revoke,
+    });
+
+    await expect(
+      manager.registerWorkerGenerationAuthority(generation, startup),
+    ).rejects.toThrow("commit response lost");
+
+    expect(revoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        generationId: generation.workerAuthorityId,
+        generationSecret: generation.workerAuthoritySecret,
+      }),
+    );
+    expect(manager.registeredWorkerGeneration).toBeNull();
+  });
+
   it("fails closed before database or web startup if packaged external detection ever succeeds", async () => {
     const manager = internals();
     manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");

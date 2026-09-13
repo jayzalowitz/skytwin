@@ -127,4 +127,22 @@ describe("worker generation database authority", () => {
       ),
     ).toEqual(["BEGIN", "UPDATE", "SELECT", "COMMIT"]);
   });
+
+  it("accepts cleanup when an ambiguous registration never created a row", async () => {
+    const client = fakeClient();
+
+    await revokeWorkerGenerationAuthority({
+      connectionString: "postgresql://owned/skytwin",
+      generationId: GENERATION_ID,
+      generationSecret: GENERATION_SECRET,
+      authorize: () => true,
+      createClient: () => client,
+    });
+
+    expect(
+      client.query.mock.calls.map(
+        ([sql]) => String(sql).trim().split(/\s+/)[0],
+      ),
+    ).toEqual(["BEGIN", "UPDATE", "SELECT", "COMMIT"]);
+  });
 });

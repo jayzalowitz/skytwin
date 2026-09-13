@@ -764,20 +764,41 @@ export class ServiceManager {
     startup: CockroachStartResult,
   ): Promise<void> {
     if (!app.isPackaged) return;
+    if (
+      this.registeredWorkerGeneration &&
+      this.registeredWorkerGeneration !== generation
+    ) {
+      throw new Error('A previous worker generation authority is still registered');
+    }
     const authority = await this.workerGenerationAuthorityModule();
-    await authority.registerWorkerGenerationAuthority({
-      connectionString: this.cockroach.getConnectionString(),
-      generationId: generation.workerAuthorityId,
-      generationSecret: generation.workerAuthoritySecret,
-      authorize: () =>
-        this.isServiceDatabaseCurrent(startup) && this.isApiGenerationCurrent(generation),
-    });
-    // From this point the durable row may be active. Retain the exact
-    // capability before local revalidation so any API-side failure can revoke
-    // it through stopDataServicesOwned instead of orphaning active authority.
+    // Retain the exact capability before the first write. If the database
+    // commits and the response is lost, cleanup can reconcile by this ID and
+    // secret rather than orphaning an active authority row.
     this.registeredWorkerGeneration = generation;
-    await this.requireServiceDatabaseCurrent(startup, 'after worker authority registration');
-    await this.requireApiGenerationCurrent(generation, 'after worker authority registration');
+    try {
+      await authority.registerWorkerGenerationAuthority({
+        connectionString: this.cockroach.getConnectionString(),
+        generationId: generation.workerAuthorityId,
+        generationSecret: generation.workerAuthoritySecret,
+        authorize: () =>
+          this.isServiceDatabaseCurrent(startup) && this.isApiGenerationCurrent(generation),
+      });
+      await this.requireServiceDatabaseCurrent(startup, 'after worker authority registration');
+      await this.requireApiGenerationCurrent(generation, 'after worker authority registration');
+    } catch (error) {
+      try {
+        await this.revokeWorkerGenerationAuthority(generation, startup);
+        if (this.registeredWorkerGeneration === generation) {
+          this.registeredWorkerGeneration = null;
+        }
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          'Worker generation registration and reconciliation both failed',
+        );
+      }
+      throw error;
+    }
   }
 
   private async revokeWorkerGenerationAuthority(
