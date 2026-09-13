@@ -23,6 +23,7 @@ function makeStore(): PassphraseKeyValueStore & { _map: Map<string, string> } {
 function makeSafeStorage(overrides: Partial<SafeStoragePort> = {}): SafeStoragePort {
   return {
     isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
     encryptString: (plaintext: string) => {
       const buf = Buffer.from(plaintext, 'utf8');
       return Buffer.from(buf.map((b) => b ^ 0x5a));
@@ -93,7 +94,7 @@ describe('PassphraseVault', () => {
     });
   });
 
-  describe('graceful fallback — OS keychain unavailable', () => {
+  describe('graceful fallback — secure storage unavailable', () => {
     it('remember returns unsupported and stores nothing', () => {
       const safeStorage = makeSafeStorage({ isEncryptionAvailable: () => false });
       const vault = new PassphraseVault(safeStorage, store);
@@ -116,6 +117,108 @@ describe('PassphraseVault', () => {
       const vault = new PassphraseVault(safeStorage, store);
       expect(vault.isSupported()).toBe(false);
       expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: false, reason: 'unsupported' });
+    });
+
+    it.each(['basic_text', 'unknown', 'future_unreviewed_backend'])(
+      'rejects the Linux %s backend and stores nothing',
+      (backend) => {
+        const safeStorage = makeSafeStorage({
+          getSelectedStorageBackend: () => backend,
+        });
+        const vault = new PassphraseVault(safeStorage, store, 'linux');
+
+        expect(vault.isSupported()).toBe(false);
+        expect(vault.remember(USER, PASSPHRASE)).toEqual({
+          ok: false,
+          reason: 'unsupported',
+        });
+        expect(store._map.size).toBe(0);
+      },
+    );
+
+    it('rejects Linux storage when backend inspection throws', () => {
+      const vault = new PassphraseVault(
+        makeSafeStorage({
+          getSelectedStorageBackend: () => { throw new Error('backend unavailable'); },
+        }),
+        store,
+        'linux',
+      );
+
+      expect(vault.isSupported()).toBe(false);
+      expect(vault.remember(USER, PASSPHRASE)).toEqual({
+        ok: false,
+        reason: 'unsupported',
+      });
+      expect(store._map.size).toBe(0);
+    });
+
+    it.each(['darwin', 'win32'] satisfies NodeJS.Platform[])(
+      'uses native secure storage on %s without consulting the Linux backend',
+      (platform) => {
+        const getSelectedStorageBackend = () => {
+          throw new Error('Linux-only inspection must not run');
+        };
+        const vault = new PassphraseVault(
+          makeSafeStorage({ getSelectedStorageBackend }),
+          store,
+          platform,
+        );
+
+        expect(vault.isSupported()).toBe(true);
+        expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+      },
+    );
+
+    it.each(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'])(
+      'accepts the reviewed Linux %s backend',
+      (backend) => {
+        const safeStorage = makeSafeStorage({
+          getSelectedStorageBackend: () => backend,
+        });
+        const vault = new PassphraseVault(safeStorage, store, 'linux');
+
+        expect(vault.isSupported()).toBe(true);
+        expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+      },
+    );
+
+    it('removes a remembered entry on read when the Linux backend is no longer secure', () => {
+      const secureVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'kwallet6' }),
+        store,
+        'linux',
+      );
+      expect(secureVault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+      expect(store._map.size).toBe(1);
+
+      const fallbackVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'basic_text' }),
+        store,
+        'linux',
+      );
+      expect(fallbackVault.getRemembered(USER)).toEqual({
+        ok: false,
+        reason: 'unsupported',
+      });
+      expect(store._map.size).toBe(0);
+    });
+
+    it('removes a remembered entry on existence checks when Linux storage becomes unsafe', () => {
+      const secureVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'kwallet6' }),
+        store,
+        'linux',
+      );
+      expect(secureVault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+
+      const fallbackVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'basic_text' }),
+        store,
+        'linux',
+      );
+      expect(fallbackVault.has(USER)).toBe(false);
+      expect(store._map.size).toBe(0);
     });
   });
 
