@@ -288,78 +288,57 @@ export async function upOwned(options: OwnedMigrationOptions): Promise<void> {
   }
 }
 
-/**
- * Roll back the initial migration: drop all tables in reverse dependency order.
- */
-export const INITIAL_MIGRATION_DROP_ORDER = [
-    // Added by migrations 074-078. Drop these stack-owned tables explicitly
-    // before their decision/explanation/action/plan parents. Otherwise a
-    // parent CASCADE removes their foreign keys while leaving the tables in
-    // place, and the next CREATE TABLE IF NOT EXISTS cannot restore them.
-    'execution_admission_barriers',
-    'decision_ingest_guards',
-    'inference_receipt_completions',
-    'inference_receipts',
-    // Added by migration 012 (mempalace)
-    'entity_codes',
-    'episodic_memories',
-    'knowledge_triples',
-    'knowledge_entities',
-    'memory_tunnels',
-    'memory_closets',
-    'memory_drawers',
-    'memory_rooms',
-    'memory_wings',
-    // Added by migrations 002–011 (reverse dependency order)
-    'sessions',
-    'ironclaw_tools',
-    'preference_history',
-    'escalation_triggers',
-    'domain_autonomy_policies',
-    'spend_records',
-    'trust_tier_audit',
-    'briefings',
-    'proactive_scans',
-    'skill_gap_log',
-    'twin_exports',
-    'preference_proposals',
-    'signals',
-    'accuracy_metrics',
-    'eval_runs',
-    'cross_domain_traits',
-    'behavioral_patterns',
-    'connector_configs',
-    'oauth_tokens',
-    // Base schema tables
-    'execution_events',
-    'feedback_events',
-    'explanation_records',
-    'execution_results',
-    'execution_plans',
-    'approval_requests',
-    'decision_outcomes',
-    'candidate_actions',
-    'decisions',
-    'action_policies',
-    'preferences',
-    'twin_profile_versions',
-    'twin_profiles',
-    'connected_accounts',
-    'users',
-  ] as const;
+interface PublicTableRow {
+  table_name: string;
+}
+
+const PUBLIC_BASE_TABLES_SQL = `
+  SELECT table_name
+    FROM information_schema.tables
+   WHERE table_schema = 'public'
+     AND table_type = 'BASE TABLE'
+   ORDER BY table_name
+`;
+
+/** Quote a database-sourced identifier without treating it as SQL text. */
+export function quoteSqlIdentifier(identifier: string): string {
+  if (identifier.length === 0 || identifier.includes('\0')) {
+    throw new Error('[migration] Refusing to quote an empty or NUL-containing SQL identifier');
+  }
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
 
 export async function down(): Promise<void> {
   const pool = getPool();
 
-  for (const table of INITIAL_MIGRATION_DROP_ORDER) {
-    try {
-      await pool.query(`DROP TABLE IF EXISTS ${table} CASCADE`);
-    } catch (error) {
-      console.error(`[migration] Failed to drop table ${table}:`, error);
-    }
+  // `up()` replays every migration without a migration ledger. A static drop
+  // list therefore becomes unsafe as soon as a later migration adds a table:
+  // dropping one of its parents with CASCADE strips the survivor's foreign
+  // keys, while its CREATE TABLE IF NOT EXISTS cannot restore them on reapply.
+  // Enumerate the complete application schema instead so rollback remains a
+  // fixed point as new migrations land.
+  const existing = await pool.query<PublicTableRow>(PUBLIC_BASE_TABLES_SQL);
+  if (existing.rows.length > 0) {
+    const qualifiedTables = existing.rows
+      .map(({ table_name: tableName }) =>
+        `${quoteSqlIdentifier('public')}.${quoteSqlIdentifier(tableName)}`)
+      .join(', ');
+    // One schema change avoids scheduling a separate CockroachDB job for
+    // every table while retaining all-or-error behavior for the enumerated
+    // set.
+    await pool.query(`DROP TABLE ${qualifiedTables} CASCADE`);
   }
 
-  console.log('[migration] 001-initial: All tables dropped.');
+  const survivors = await pool.query<PublicTableRow>(PUBLIC_BASE_TABLES_SQL);
+  if (survivors.rows.length > 0) {
+    throw new Error(
+      `[migration] 001-initial: rollback left public base tables behind: ${
+        survivors.rows.map(({ table_name: tableName }) => tableName).join(', ')
+      }`,
+    );
+  }
+
+  console.log('[migration] 001-initial: All public base tables dropped.');
 }
 
 /**

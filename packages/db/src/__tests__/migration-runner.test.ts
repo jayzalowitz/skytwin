@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  INITIAL_MIGRATION_DROP_ORDER,
-  splitSqlStatements,
   isIdempotentError,
+  quoteSqlIdentifier,
+  splitSqlStatements,
   upOwned,
   type OwnedMigrationClient,
 } from '../migrations/001-initial.js';
@@ -88,23 +88,17 @@ describe('owned desktop migration connection', () => {
   });
 });
 
-describe('migration rollback ordering', () => {
-  it('drops every stack-owned receipt/admission table before every authority parent', () => {
-    const barrierIndex = INITIAL_MIGRATION_DROP_ORDER.indexOf('execution_admission_barriers');
-    expect(barrierIndex).toBeGreaterThanOrEqual(0);
-    for (const parent of ['execution_plans', 'candidate_actions', 'decisions', 'users'] as const) {
-      expect(barrierIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf(parent));
-    }
-    for (const child of [
-      'decision_ingest_guards',
-      'inference_receipt_completions',
-      'inference_receipts',
-    ] as const) {
-      const childIndex = INITIAL_MIGRATION_DROP_ORDER.indexOf(child);
-      expect(childIndex).toBeGreaterThanOrEqual(0);
-      expect(childIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf('explanation_records'));
-      expect(childIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf('decisions'));
-    }
+describe('quoteSqlIdentifier', () => {
+  it('quotes ordinary and embedded-quote identifiers', () => {
+    expect(quoteSqlIdentifier('memory_action_opportunities'))
+      .toBe('"memory_action_opportunities"');
+    expect(quoteSqlIdentifier('table"; DROP DATABASE skytwin; --'))
+      .toBe('"table""; DROP DATABASE skytwin; --"');
+  });
+
+  it('rejects identifiers that cannot be represented safely', () => {
+    expect(() => quoteSqlIdentifier('')).toThrow(/Refusing to quote/);
+    expect(() => quoteSqlIdentifier('table\0name')).toThrow(/Refusing to quote/);
   });
 });
 
