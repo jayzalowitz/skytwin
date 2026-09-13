@@ -16,8 +16,7 @@ export interface PackagedSampleEnvironment {
   packaged: boolean;
 }
 
-export type PackagedSampleGuardResult =
-  { ok: true } | { ok: false; reason: string };
+export type PackagedSampleGuardResult = { ok: true } | { ok: false; reason: string };
 
 export interface PackagedSampleProvisionResult {
   created: boolean;
@@ -30,9 +29,7 @@ export interface PackagedSampleIngestResult {
 }
 
 const PACKAGED_SAMPLE_FIXTURE_VERSION = 1;
-const PACKAGED_SAMPLE_FIXTURE_ID_SEGMENT = PACKAGED_SAMPLE_FIXTURE_VERSION
-  .toString(16)
-  .padStart(4, '0');
+const PACKAGED_SAMPLE_FIXTURE_ID_SEGMENT = PACKAGED_SAMPLE_FIXTURE_VERSION.toString(16).padStart(4, '0');
 
 function fixtureSignalId(index: number): string {
   return `51a7e000-${PACKAGED_SAMPLE_FIXTURE_ID_SEGMENT}-4000-8000-${String(index + 1).padStart(12, '0')}`;
@@ -46,9 +43,7 @@ class NonRetryableSampleIngestError extends Error {}
  * bundled loopback database. An operator-supplied hosted DATABASE_URL must
  * never receive synthetic data merely because the desktop app started.
  */
-export function assertPackagedSampleSafe(
-  env: PackagedSampleEnvironment,
-): PackagedSampleGuardResult {
+export function assertPackagedSampleSafe(env: PackagedSampleEnvironment): PackagedSampleGuardResult {
   if (!env.packaged) {
     return {
       ok: false,
@@ -90,32 +85,21 @@ export function assertPackagedSampleSafe(
  * untouched, while a non-demo row occupying the reserved UUID aborts startup
  * provisioning rather than exposing or modifying that account.
  */
-export async function provisionPackagedSampleWithClient(
-  client: Db,
-): Promise<PackagedSampleProvisionResult> {
+export async function provisionPackagedSampleWithClient(client: Db): Promise<PackagedSampleProvisionResult> {
   const inserted = await client.query(
     `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, is_demo)
      VALUES ($1, $2, $3, $4, $5, true)
      ON CONFLICT (id) DO NOTHING
      RETURNING id`,
-    [
-      DEMO_USER_ID,
-      'sample@local.invalid',
-      'Sample User',
-      'observer',
-      JSON.stringify({ maxAutoSpend: 0 }),
-    ],
+    [DEMO_USER_ID, 'sample@local.invalid', 'Sample User', 'observer', JSON.stringify({ maxAutoSpend: 0 })],
   );
 
   if (inserted.rowCount === 0) {
-    const existing = await client.query<{ is_demo: boolean }>(
-      `SELECT is_demo FROM users WHERE id = $1`,
-      [DEMO_USER_ID],
-    );
+    const existing = await client.query<{ is_demo: boolean }>(`SELECT is_demo FROM users WHERE id = $1`, [
+      DEMO_USER_ID,
+    ]);
     if (existing.rows[0]?.is_demo !== true) {
-      throw new Error(
-        'reserved sample identity is occupied by a non-sample account',
-      );
+      throw new Error('reserved sample identity is occupied by a non-sample account');
     }
   }
 
@@ -128,9 +112,7 @@ export async function provisionPackagedSampleWithClient(
   return { created: inserted.rowCount === 1, userId: DEMO_USER_ID };
 }
 
-export async function provisionPackagedSample(
-  env: PackagedSampleEnvironment,
-): Promise<PackagedSampleProvisionResult> {
+export async function provisionPackagedSample(env: PackagedSampleEnvironment): Promise<PackagedSampleProvisionResult> {
   const guard = assertPackagedSampleSafe(env);
   if (!guard.ok) throw new Error(guard.reason);
 
@@ -151,9 +133,10 @@ export async function ingestPackagedSampleSignals(options: {
   requestTimeoutMs?: number;
   maxAttempts?: number;
   retryDelayMs?: number;
+  signal: AbortSignal;
+  authorizeRequest: () => Promise<boolean>;
 }): Promise<PackagedSampleIngestResult> {
-  if (!options.serviceToken)
-    throw new Error('loopback service credential is required');
+  if (!options.serviceToken) throw new Error('loopback service credential is required');
   let apiUrl: URL;
   try {
     apiUrl = new URL(options.apiUrl);
@@ -172,8 +155,7 @@ export async function ingestPackagedSampleSignals(options: {
   }
   const fetchImpl = options.fetchImpl ?? fetch;
   const userId = options.userId ?? DEMO_USER_ID;
-  if (userId !== DEMO_USER_ID)
-    throw new Error('sample ingest is restricted to the reserved identity');
+  if (userId !== DEMO_USER_ID) throw new Error('sample ingest is restricted to the reserved identity');
   const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
   const maxAttempts = options.maxAttempts ?? 3;
   const retryDelayMs = options.retryDelayMs ?? 250;
@@ -183,6 +165,21 @@ export async function ingestPackagedSampleSignals(options: {
     throw new Error('sample ingest max attempts must be between 1 and 5');
   if (!Number.isInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 5_000)
     throw new Error('sample ingest retry delay must be between 0 and 5000 ms');
+
+  const assertRequestAuthorized = async (): Promise<void> => {
+    if (options.signal.aborted) {
+      throw new NonRetryableSampleIngestError('sample ingest launch authority was revoked');
+    }
+    let authorized = false;
+    try {
+      authorized = await options.authorizeRequest();
+    } catch {
+      authorized = false;
+    }
+    if (!authorized || options.signal.aborted) {
+      throw new NonRetryableSampleIngestError('sample ingest target is no longer authorized');
+    }
+  };
 
   let ingested = 0;
   for (const [index, signal] of DEMO_SIGNALS.entries()) {
@@ -201,12 +198,26 @@ export async function ingestPackagedSampleSignals(options: {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const controller = new AbortController();
       let timeout: ReturnType<typeof setTimeout> | undefined;
+      let removeLaunchAbort: (() => void) | undefined;
       try {
+        await assertRequestAuthorized();
         const timeoutPromise = new Promise<never>((_resolve, reject) => {
           timeout = setTimeout(() => {
             controller.abort();
             reject(new Error('sample signal ingest request timed out'));
           }, requestTimeoutMs);
+        });
+        const launchAbortPromise = new Promise<never>((_resolve, reject) => {
+          const abort = (): void => {
+            controller.abort();
+            reject(new NonRetryableSampleIngestError('sample ingest launch authority was revoked'));
+          };
+          if (options.signal.aborted) {
+            abort();
+            return;
+          }
+          options.signal.addEventListener('abort', abort, { once: true });
+          removeLaunchAbort = () => options.signal.removeEventListener('abort', abort);
         });
         const response = await Promise.race([
           fetchImpl(requestUrl, {
@@ -219,6 +230,7 @@ export async function ingestPackagedSampleSignals(options: {
             signal: controller.signal,
           }),
           timeoutPromise,
+          launchAbortPromise,
         ]);
         if (response.ok) break;
         const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
@@ -229,9 +241,20 @@ export async function ingestPackagedSampleSignals(options: {
         if (error instanceof NonRetryableSampleIngestError || attempt === maxAttempts) throw error;
       } finally {
         if (timeout !== undefined) clearTimeout(timeout);
+        removeLaunchAbort?.();
       }
       if (retryDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(() => {
+            options.signal.removeEventListener('abort', abort);
+            resolve();
+          }, retryDelayMs);
+          const abort = (): void => {
+            clearTimeout(timer);
+            reject(new NonRetryableSampleIngestError('sample ingest launch authority was revoked'));
+          };
+          options.signal.addEventListener('abort', abort, { once: true });
+        });
       }
     }
     ingested++;

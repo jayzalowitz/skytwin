@@ -8,6 +8,10 @@ import { DEMO_USER_ID } from '../seeds/demo-guard.js';
 import { DEMO_SIGNALS } from '../seeds/demo-fixtures/signals.js';
 
 describe('packaged sample safety', () => {
+  const requestAuthority = {
+    signal: new AbortController().signal,
+    authorizeRequest: async () => true,
+  };
   const safe = {
     packaged: true,
     desktopMode: 'true',
@@ -21,15 +25,9 @@ describe('packaged sample safety', () => {
 
   it('allows only the packaged production desktop against loopback', () => {
     expect(assertPackagedSampleSafe(safe)).toEqual({ ok: true });
-    expect(assertPackagedSampleSafe({ ...safe, packaged: false }).ok).toBe(
-      false,
-    );
-    expect(assertPackagedSampleSafe({ ...safe, desktopMode: 'false' }).ok).toBe(
-      false,
-    );
-    expect(
-      assertPackagedSampleSafe({ ...safe, nodeEnv: 'development' }).ok,
-    ).toBe(false);
+    expect(assertPackagedSampleSafe({ ...safe, packaged: false }).ok).toBe(false);
+    expect(assertPackagedSampleSafe({ ...safe, desktopMode: 'false' }).ok).toBe(false);
+    expect(assertPackagedSampleSafe({ ...safe, nodeEnv: 'development' }).ok).toBe(false);
     expect(
       assertPackagedSampleSafe({
         ...safe,
@@ -42,9 +40,7 @@ describe('packaged sample safety', () => {
         databaseUrl: 'postgresql://root@127.0.0.1:26258/other',
       }).ok,
     ).toBe(false);
-    expect(
-      assertPackagedSampleSafe({ ...safe, bundledDatabaseUrl: undefined }).ok,
-    ).toBe(false);
+    expect(assertPackagedSampleSafe({ ...safe, bundledDatabaseUrl: undefined }).ok).toBe(false);
     expect(
       assertPackagedSampleSafe({
         ...safe,
@@ -66,9 +62,7 @@ describe('packaged sample safety', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: DEMO_USER_ID }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [] });
 
-    await expect(
-      provisionPackagedSampleWithClient({ query } as never),
-    ).resolves.toEqual({
+    await expect(provisionPackagedSampleWithClient({ query } as never)).resolves.toEqual({
       created: true,
       userId: DEMO_USER_ID,
     });
@@ -83,9 +77,7 @@ describe('packaged sample safety', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ is_demo: true }] })
       .mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
-    await expect(
-      provisionPackagedSampleWithClient({ query } as never),
-    ).resolves.toEqual({
+    await expect(provisionPackagedSampleWithClient({ query } as never)).resolves.toEqual({
       created: false,
       userId: DEMO_USER_ID,
     });
@@ -99,14 +91,13 @@ describe('packaged sample safety', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ is_demo: false }] });
 
-    await expect(
-      provisionPackagedSampleWithClient({ query } as never),
-    ).rejects.toThrow(/non-sample account/);
+    await expect(provisionPackagedSampleWithClient({ query } as never)).rejects.toThrow(/non-sample account/);
   });
 
   it('authenticates every synthetic event and restricts ingestion to the reserved identity', async () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 202 });
     const result = await ingestPackagedSampleSignals({
+      ...requestAuthority,
       apiUrl: 'http://127.0.0.1:3100',
       serviceToken: 'local-secret',
       fetchImpl,
@@ -119,36 +110,28 @@ describe('packaged sample safety', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(DEMO_SIGNALS.length);
     for (const call of fetchImpl.mock.calls) {
       const init = call[1] as RequestInit;
-      expect(
-        (init.headers as Record<string, string>)['x-skytwin-service-token'],
-      ).toBe('local-secret');
+      expect((init.headers as Record<string, string>)['x-skytwin-service-token']).toBe('local-secret');
       const body = JSON.parse(String(init.body));
       expect(body.userId).toBe(DEMO_USER_ID);
-      expect(body.signalId).toMatch(
-        /^51a7e000-0001-4000-8000-\d{12}$/,
-      );
+      expect(body.signalId).toMatch(/^51a7e000-0001-4000-8000-\d{12}$/);
       expect(body.data.sampleFixtureVersion).toBe(1);
-      expect(body.signalId.split('-')[1]).toBe(
-        body.data.sampleFixtureVersion.toString(16).padStart(4, '0'),
-      );
+      expect(body.signalId.split('-')[1]).toBe(body.data.sampleFixtureVersion.toString(16).padStart(4, '0'));
     }
 
-    const firstRunIds = fetchImpl.mock.calls.map((call) =>
-      JSON.parse(String((call[1] as RequestInit).body)).signalId,
-    );
+    const firstRunIds = fetchImpl.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)).signalId);
     fetchImpl.mockClear();
     await ingestPackagedSampleSignals({
+      ...requestAuthority,
       apiUrl: 'http://127.0.0.1:3100',
       serviceToken: 'local-secret',
       fetchImpl,
     });
-    const retryIds = fetchImpl.mock.calls.map((call) =>
-      JSON.parse(String((call[1] as RequestInit).body)).signalId,
-    );
+    const retryIds = fetchImpl.mock.calls.map((call) => JSON.parse(String((call[1] as RequestInit).body)).signalId);
     expect(retryIds).toEqual(firstRunIds);
 
     await expect(
       ingestPackagedSampleSignals({
+        ...requestAuthority,
         apiUrl: 'http://127.0.0.1:3100',
         serviceToken: 'local-secret',
         userId: '00000000-0000-4000-8000-000000000000',
@@ -158,6 +141,7 @@ describe('packaged sample safety', () => {
 
     await expect(
       ingestPackagedSampleSignals({
+        ...requestAuthority,
         apiUrl: 'https://api.example.com',
         serviceToken: 'local-secret',
         fetchImpl,
@@ -165,6 +149,7 @@ describe('packaged sample safety', () => {
     ).rejects.toThrow(/loopback API URL/);
     await expect(
       ingestPackagedSampleSignals({
+        ...requestAuthority,
         apiUrl: 'http://localhost.evil.example',
         serviceToken: 'local-secret',
         fetchImpl,
@@ -176,6 +161,7 @@ describe('packaged sample safety', () => {
     const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined));
     await expect(
       ingestPackagedSampleSignals({
+        ...requestAuthority,
         apiUrl: 'http://127.0.0.1:3100',
         serviceToken: 'local-secret',
         fetchImpl,
@@ -187,11 +173,51 @@ describe('packaged sample safety', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
+  it('aborts a hung request immediately when launch authority is revoked', async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn(() => {
+      controller.abort();
+      return new Promise<Response>(() => undefined);
+    });
+
+    await expect(
+      ingestPackagedSampleSignals({
+        apiUrl: 'http://127.0.0.1:3100',
+        serviceToken: 'local-secret',
+        fetchImpl,
+        signal: controller.signal,
+        authorizeRequest: async () => true,
+        requestTimeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/authority was revoked/);
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
+  it('re-authorizes the concrete listener before every token-bearing POST', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: true, status: 202 });
+    const authorizeRequest = vi.fn(async () => fetchImpl.mock.calls.length === 0);
+
+    await expect(
+      ingestPackagedSampleSignals({
+        apiUrl: 'http://127.0.0.1:3100',
+        serviceToken: 'local-secret',
+        fetchImpl,
+        authorizeRequest,
+        signal: new AbortController().signal,
+      }),
+    ).rejects.toThrow(/no longer authorized/);
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(authorizeRequest.mock.calls.length).toBeGreaterThan(fetchImpl.mock.calls.length);
+  });
+
   it('retries a transient response with the exact same stable event payload', async () => {
-    const fetchImpl = vi.fn()
+    const fetchImpl = vi
+      .fn()
       .mockResolvedValueOnce({ ok: false, status: 503 })
       .mockResolvedValue({ ok: true, status: 202 });
     await ingestPackagedSampleSignals({
+      ...requestAuthority,
       apiUrl: 'http://127.0.0.1:3100',
       serviceToken: 'local-secret',
       fetchImpl,
@@ -205,6 +231,7 @@ describe('packaged sample safety', () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 401 });
     await expect(
       ingestPackagedSampleSignals({
+        ...requestAuthority,
         apiUrl: 'http://127.0.0.1:3100',
         serviceToken: 'local-secret',
         fetchImpl,
