@@ -4,6 +4,13 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Added
 
+- **The source-key runtime is composed behind process capabilities.** Desktop
+  stores passphrase-wrapped per-user recovery keys in CockroachDB, gives the API
+  and worker separate ephemeral broker capabilities, and accepts owner grants
+  only after session authentication or worker database discovery. Parent-owned
+  API grants expire with their sessions; worker reconciliation replaces the
+  entire authorized-owner set. Lock and unlock use bounded child acknowledgement
+  and proven child termination before changing key availability.
 - **An accepted, implementation-ready source-field encryption contract.** ADR
   0001 defines key custody, locked behavior, context-bound envelopes,
   crash-safe migration and rotation, backup/restore, deletion after key loss,
@@ -18,6 +25,37 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-/review)
 
+- **Initialization rollback is bound to the exact recovery wrapper.** A failed
+  read-back self-test can delete only the row value created by that attempt, so
+  cleanup cannot remove a concurrent or replacement wrapper.
+- **Child authority now starts empty and session replacement cannot inherit a
+  revoked deadline.** Every API/worker owner must arrive through the explicit
+  grant or reconciliation protocol. Session routes do not eagerly re-grant from
+  a race-prone active-session snapshot, and explicit revoke removes only the
+  exact session nonce while preserving other independently valid sessions.
+- **Corrupt registry state is distinguished from an absent wrapper.** Invalid
+  recovery-wrapper data or mismatched registry metadata now fails closed instead
+  of being surfaced as an uninitialized vault.
+- **Broker grants now preserve exact session and deletion lifecycles.** Each API
+  session keeps its own database-proven expiry and revocation timer; one session
+  cannot borrow another session's deadline or authorize another session's
+  request. Account deletion records durable local cleanup in the purge
+  transaction, fences paused API and worker grants, drains child work, and
+  removes in-memory keys, device-wrapped keys, and remembered passphrases.
+  A shared generation fence now also prevents renderer or internal passphrase
+  writes from recreating that local secret while deletion completion is pending
+  or after a restart; non-deleted owners open only after the durable deletion
+  ledger has been read successfully.
+- **Deletion cleanup now gates service authority and reports pending work
+  truthfully.** Startup retries an unreadable or incomplete cleanup ledger before
+  accepting an external API or attaching a managed one, revokes existing child
+  capabilities when the authoritative ledger cannot be read, and periodically
+  reconciles deletions initiated through an external development API. A
+  brokerless API reports committed database deletion with native cleanup pending
+  instead of manufacturing a cleanup acknowledgement.
+- **Transient worker discovery failures preserve the prior authority snapshot.**
+  Only a complete database result replaces the worker owner set, while connector
+  startup failures no longer masquerade as authoritative owner removal.
 - **Remembered vault passphrases now retain verifiable storage provenance.**
   New desktop records carry a format version and the exact secure OS backend
   that encrypted them. Startup deletes every legacy untagged, unsupported, or
@@ -25,6 +63,11 @@ All notable changes to SkyTwin will be documented in this file.
   passphrase persisted by Linux `basic_text` cannot survive the hardened
   boundary. The credential-vault plaintext warning also uses the design
   system's security-alert color.
+
+### Security scope
+
+- Source-field migration remains disabled. This runtime composition does not
+  make an at-rest encryption claim; source-column cutover remains follow-up work.
 
 ## [0.6.102.0] - 2026-08-27
 

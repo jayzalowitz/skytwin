@@ -144,6 +144,20 @@ export const userPurgeRepository = {
       const counts: Record<string, number> = {};
       let total = 0;
       let userExisted = false;
+      // Commit the content-free local-cleanup marker in the same serializable
+      // transaction as the user delete. If the API or desktop exits after the
+      // database purge, Electron can converge device/key cleanup before it
+      // attaches a replacement API child.
+      await client.query(
+        `INSERT INTO source_key_deletion_intents
+           (user_id, requested_at, device_wrapper_deleted_at)
+         SELECT $1, now(), NULL
+          WHERE EXISTS (SELECT 1 FROM users WHERE id = $1)
+         ON CONFLICT (user_id) DO UPDATE
+           SET requested_at = excluded.requested_at,
+               device_wrapper_deleted_at = NULL`,
+        [userId],
+      );
       for (const { table, sql } of DELETE_PLAN) {
         const n = await execAndCount(client, sql, userId);
         counts[table] = n;

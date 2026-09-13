@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { sessionRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import { apiVaultBroker } from '../vault-broker-client.js';
 
 const log = createLogger('api:auth');
 
@@ -211,19 +212,41 @@ export async function sessionAuth(
     return;
   }
 
-  // Attach identity to request
-  req.authenticatedUserId = session.user_id;
-  req.authenticatedSessionId = session.id;
+  // Revalidate the exact immutable session nonce immediately before asking the
+  // parent broker for authority. The parent also tombstones revoked nonces, so
+  // either ordering of a concurrent revoke and grant fails closed.
+  const grantSession = await sessionRepository.findActiveForBrokerGrant(
+    session.id,
+    session.user_id,
+    tokenHash,
+  );
+  if (!grantSession) {
+    res.status(401).json({
+      error: 'Session no longer active',
+      message: 'Scan the QR code again from your desktop.',
+    });
+    return;
+  }
+
+  // Attach identity only after the grant proof is fresh. Broker failure does
+  // not weaken HTTP auth; secret operations remain unavailable independently.
+  req.authenticatedUserId = grantSession.user_id;
+  req.authenticatedSessionId = grantSession.id;
+  await apiVaultBroker.grantAuthenticatedSession(
+    grantSession.user_id,
+    grantSession.id,
+    new Date(grantSession.expires_at),
+  );
 
   // Auto-refresh if within 1 day of expiry
-  const timeUntilExpiry = new Date(session.expires_at).getTime() - Date.now();
+  const timeUntilExpiry = new Date(grantSession.expires_at).getTime() - Date.now();
   if (timeUntilExpiry < REFRESH_WINDOW_MS) {
     await sessionRepository.refreshExpiry(
-      session.id,
+      grantSession.id,
       new Date(Date.now() + SESSION_DURATION_MS),
     );
   } else {
-    await sessionRepository.touchLastActive(session.id);
+    await sessionRepository.touchLastActive(grantSession.id);
   }
 
   next();

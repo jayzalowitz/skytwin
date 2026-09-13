@@ -120,8 +120,9 @@ function normalizeRow(raw: RawSourceKeyRegistryRow): SourceKeyRegistryRow {
   });
 }
 
-// Deliberately absent from both DB barrels. Future runtime composition must
-// wrap this sensitive leaf in a narrow, owner-bound gateway.
+// Exported through the package root only for the Electron-owned recovery-wrapper
+// gateway. Every operation validates the owner and wrapper shape, and rollback
+// is bound to the complete value created by the failed initialization attempt.
 export const sourceKeyRegistryRepository = {
   async getCurrent(userId: string): Promise<SourceKeyRegistryRow | null> {
     validateUserId(userId);
@@ -193,6 +194,43 @@ export const sourceKeyRegistryRepository = {
     await query(
       `UPSERT INTO source_key_deletion_intents (user_id, requested_at, device_wrapper_deleted_at)
        VALUES ($1, now(), NULL)`,
+      [userId],
+    );
+  },
+
+  async listPendingDeletions(): Promise<string[]> {
+    const result = await query<{ user_id: unknown }>(
+      `SELECT user_id
+         FROM source_key_deletion_intents
+        WHERE device_wrapper_deleted_at IS NULL
+        ORDER BY requested_at ASC
+        LIMIT 1000`,
+    );
+    return result.rows.map(row => {
+      validateUserId(row.user_id);
+      return row.user_id;
+    });
+  },
+
+  async listDeletionFences(): Promise<string[]> {
+    const result = await query<{ user_id: unknown }>(
+      `SELECT user_id
+         FROM source_key_deletion_intents
+        ORDER BY user_id ASC`,
+    );
+    return result.rows.map(row => {
+      validateUserId(row.user_id);
+      return row.user_id;
+    });
+  },
+
+  async completeDeletion(userId: string): Promise<void> {
+    validateUserId(userId);
+    await query(
+      `UPDATE source_key_deletion_intents
+          SET device_wrapper_deleted_at = now()
+        WHERE user_id = $1
+          AND device_wrapper_deleted_at IS NULL`,
       [userId],
     );
   },

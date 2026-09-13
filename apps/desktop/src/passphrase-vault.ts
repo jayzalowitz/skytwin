@@ -58,12 +58,70 @@ export interface PassphraseKeyValueStore {
 /** Result of an attempt to read a remembered passphrase. */
 export type RememberedPassphraseResult =
   | { ok: true; passphrase: string }
-  | { ok: false; reason: 'unsupported' | 'not_found' | 'corrupt' };
+  | { ok: false; reason: 'unsupported' | 'not_found' | 'corrupt' | OwnerFenceDenial };
 
 /** Result of an attempt to remember / forget a passphrase. */
 export type RememberWriteResult =
   | { ok: true }
-  | { ok: false; reason: 'unsupported' | 'empty_passphrase' };
+  | { ok: false; reason: 'unsupported' | 'empty_passphrase' | OwnerFenceDenial };
+
+export type OwnerFenceDenial = 'owner_deleted' | 'owner_state_unavailable';
+
+/** Shared generation fence for local secrets belonging to deleted owners. */
+export class OwnerDeletionFence {
+  private ready: boolean;
+  private globalEpoch = 0;
+  private blockedOwners = new Set<string>();
+  private ownerEpochs = new Map<string, number>();
+
+  constructor(initiallyReady = false) {
+    this.ready = initiallyReady;
+  }
+
+  close(): void {
+    this.ready = false;
+    this.globalEpoch += 1;
+  }
+
+  block(userId: string): void {
+    this.blockedOwners.add(userId);
+    this.ownerEpochs.set(userId, (this.ownerEpochs.get(userId) ?? 0) + 1);
+  }
+
+  blockAll(userIds: Iterable<string>): void {
+    for (const userId of userIds) this.block(userId);
+  }
+
+  open(): void {
+    this.ready = true;
+    this.globalEpoch += 1;
+  }
+
+  capture(userId: string):
+    | { ok: true; globalEpoch: number; ownerEpoch: number }
+    | { ok: false; reason: OwnerFenceDenial } {
+    if (this.blockedOwners.has(userId)) return { ok: false, reason: 'owner_deleted' };
+    if (!this.ready) return { ok: false, reason: 'owner_state_unavailable' };
+    return {
+      ok: true,
+      globalEpoch: this.globalEpoch,
+      ownerEpoch: this.ownerEpochs.get(userId) ?? 0,
+    };
+  }
+
+  denialReason(userId: string): OwnerFenceDenial | null {
+    if (this.blockedOwners.has(userId)) return 'owner_deleted';
+    if (!this.ready) return 'owner_state_unavailable';
+    return null;
+  }
+
+  isCurrent(userId: string, globalEpoch: number, ownerEpoch: number): boolean {
+    return this.ready
+      && !this.blockedOwners.has(userId)
+      && this.globalEpoch === globalEpoch
+      && (this.ownerEpochs.get(userId) ?? 0) === ownerEpoch;
+  }
+}
 
 /**
  * Storage-key prefix. Per-user so multiple device accounts each keep their own
@@ -110,15 +168,18 @@ export class PassphraseVault {
   private readonly safeStorage: SafeStoragePort;
   private readonly store: PassphraseKeyValueStore;
   private readonly platform: NodeJS.Platform;
+  private readonly ownerFence: OwnerDeletionFence;
 
   constructor(
     safeStorage: SafeStoragePort,
     store: PassphraseKeyValueStore,
     platform: NodeJS.Platform = process.platform,
+    ownerFence: OwnerDeletionFence = new OwnerDeletionFence(true),
   ) {
     this.safeStorage = safeStorage;
     this.store = store;
     this.platform = platform;
+    this.ownerFence = ownerFence;
   }
 
   /**
@@ -165,6 +226,11 @@ export class PassphraseVault {
    * plaintext as a fallback.
    */
   remember(userId: string, passphrase: string): RememberWriteResult {
+    const admission = this.ownerFence.capture(userId);
+    if (!admission.ok) {
+      if (admission.reason === 'owner_deleted') this.forget(userId);
+      return admission;
+    }
     const backend = this.currentBackend();
     if (backend === null) {
       return { ok: false, reason: 'unsupported' };
@@ -180,6 +246,11 @@ export class PassphraseVault {
       backend,
       ciphertext: ciphertext.toString('base64'),
     };
+    if (!this.ownerFence.isCurrent(userId, admission.globalEpoch, admission.ownerEpoch)) {
+      const reason = this.ownerFence.denialReason(userId) ?? 'owner_state_unavailable';
+      if (reason === 'owner_deleted') this.forget(userId);
+      return { ok: false, reason };
+    }
     this.store.set(storeKeyFor(userId), JSON.stringify(record));
     return { ok: true };
   }
@@ -192,6 +263,11 @@ export class PassphraseVault {
    * the passphrase prompt; we proactively evict the bad entry.
    */
   getRemembered(userId: string): RememberedPassphraseResult {
+    const admission = this.ownerFence.capture(userId);
+    if (!admission.ok) {
+      if (admission.reason === 'owner_deleted') this.forget(userId);
+      return admission;
+    }
     const backend = this.currentBackend();
     if (backend === null) {
       // A previous build may have persisted through Linux `basic_text`.
@@ -217,6 +293,11 @@ export class PassphraseVault {
         this.forget(userId);
         return { ok: false, reason: 'corrupt' };
       }
+      if (!this.ownerFence.isCurrent(userId, admission.globalEpoch, admission.ownerEpoch)) {
+        const reason = this.ownerFence.denialReason(userId) ?? 'owner_state_unavailable';
+        if (reason === 'owner_deleted') this.forget(userId);
+        return { ok: false, reason };
+      }
       return { ok: true, passphrase };
     } catch {
       // Undecryptable on this machine/account — drop it so we stop retrying a
@@ -228,6 +309,11 @@ export class PassphraseVault {
 
   /** Whether a remembered passphrase exists for `userId` (does not decrypt). */
   has(userId: string): boolean {
+    const admission = this.ownerFence.capture(userId);
+    if (!admission.ok) {
+      if (admission.reason === 'owner_deleted') this.forget(userId);
+      return false;
+    }
     const backend = this.currentBackend();
     if (backend === null) {
       this.forget(userId);
@@ -238,6 +324,10 @@ export class PassphraseVault {
     const record = parseStoredRecord(stored);
     if (record === null || record.backend !== backend) {
       this.forget(userId);
+      return false;
+    }
+    if (!this.ownerFence.isCurrent(userId, admission.globalEpoch, admission.ownerEpoch)) {
+      if (this.ownerFence.denialReason(userId) === 'owner_deleted') this.forget(userId);
       return false;
     }
     return true;

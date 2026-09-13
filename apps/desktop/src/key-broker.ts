@@ -11,6 +11,7 @@ import {
   resolveSecureStorageBackend,
   type SecureStorageBackendPort,
 } from './secure-storage-backend.js';
+import type { OwnerDeletionFence } from './passphrase-vault.js';
 
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
@@ -43,7 +44,10 @@ export type VaultFailureCode =
   | 'vault_locked'
   | 'vault_broker_unavailable'
   | 'key_version_unavailable'
-  | 'ciphertext_invalid';
+  | 'ciphertext_invalid'
+  | 'grant_expired'
+  | 'grant_revoked'
+  | 'capability_mismatch';
 export type VaultState = 'locked' | 'unlocked' | 'uninitialized';
 export type VaultStateResult =
   | { success: true; state: VaultState }
@@ -90,6 +94,9 @@ export interface WrappedKeyStore {
   get(userId: string): unknown | Promise<unknown>;
   create(userId: string, value: WrappedUserKey): boolean | Promise<boolean>;
   deleteIfMatch(userId: string, value: WrappedUserKey): boolean | Promise<boolean>;
+  listPendingDeletions?(): string[] | Promise<string[]>;
+  listDeletionFences?(): string[] | Promise<string[]>;
+  completeDeletion?(userId: string): void | Promise<void>;
 }
 
 export interface WrappedKeyValueStore {
@@ -105,6 +112,11 @@ export interface DeviceWrapperStore {
   keys(): string[];
 }
 
+/** A separate native secret that must be erased with the owner's source keys. */
+export interface OwnerSecretStore {
+  delete(userId: string): void;
+}
+
 export interface DeviceProtectionPort extends SecureStorageBackendPort {
   encryptString(value: string): Buffer;
   decryptString(value: Buffer): string;
@@ -116,6 +128,9 @@ export interface BrokerRequest {
   capability: string;
   generation: number;
   operation: 'encrypt' | 'decrypt' | 'state';
+  role: BrokerRole;
+  authentication: 'session' | 'service';
+  sessionId?: string;
   context: BrokerContext;
   plaintext?: string;
   envelope?: BrokerEnvelope;
@@ -142,9 +157,16 @@ interface BrokerCapabilityMessage {
   role: BrokerRole;
 }
 
+interface BrokerGenerationMessage {
+  type: 'skytwin:vault:generation';
+  userId: string;
+  generation: number;
+}
+
 export interface BrokerResponse {
   type: 'skytwin:vault:response';
   requestId: string;
+  contextUserId: string;
   generation: number;
   result:
     | { success: true; state: VaultState }
@@ -195,9 +217,13 @@ interface PendingLockAck {
 interface Binding {
   role: BrokerRole;
   capability: Buffer;
-  users: ReadonlySet<string>;
+  users: Map<string, number | null>;
+  apiSessions: Map<string, { userId: string; expiresAt: number }>;
+  revokedSessions: Map<string, number>;
   inFlight: Map<string, number>;
   lockAcks: Map<string, PendingLockAck>;
+  messageListener?: (message: unknown) => void;
+  exitListener?: () => void;
 }
 
 interface StoredDeviceWrapper {
@@ -425,6 +451,7 @@ export class DesktopKeyBroker {
   private readonly initializing = new Set<string>();
   private readonly lockDepth = new Map<string, number>();
   private readonly lockTails = new Map<string, Promise<void>>();
+  private readonly purgedOwners = new Set<string>();
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly lockAckTimeoutMs: number;
@@ -432,6 +459,8 @@ export class DesktopKeyBroker {
   private readonly platform: NodeJS.Platform;
   private readonly deviceProtection?: DeviceProtectionPort;
   private readonly deviceStore?: DeviceWrapperStore;
+  private readonly ownerSecretStore?: OwnerSecretStore;
+  private readonly ownerDeletionFence?: OwnerDeletionFence;
 
   constructor(
     private readonly store: WrappedKeyStore,
@@ -443,6 +472,8 @@ export class DesktopKeyBroker {
       platform?: NodeJS.Platform;
       deviceProtection?: DeviceProtectionPort;
       deviceStore?: DeviceWrapperStore;
+      ownerSecretStore?: OwnerSecretStore;
+      ownerDeletionFence?: OwnerDeletionFence;
     } = {},
   ) {
     this.now = options.now ?? Date.now;
@@ -452,6 +483,8 @@ export class DesktopKeyBroker {
     this.platform = options.platform ?? process.platform;
     this.deviceProtection = options.deviceProtection;
     this.deviceStore = options.deviceStore;
+    this.ownerSecretStore = options.ownerSecretStore;
+    this.ownerDeletionFence = options.ownerDeletionFence;
   }
 
   async initialize(
@@ -729,6 +762,65 @@ export class DesktopKeyBroker {
       : { success: false, error: 'vault_broker_unavailable' };
   }
 
+  async reconcilePendingDeletions(): Promise<
+    { success: true; removed: number } | { success: false; error: 'vault_broker_unavailable' }
+  > {
+    if (!this.store.listPendingDeletions) return { success: true, removed: 0 };
+    this.ownerDeletionFence?.close();
+    try {
+      const deletedOwners = await this.store.listDeletionFences?.();
+      if (this.ownerDeletionFence && deletedOwners === undefined) {
+        throw new Error('durable owner deletion fences unavailable');
+      }
+      this.ownerDeletionFence?.blockAll(deletedOwners ?? []);
+    } catch {
+      await this.revokeAllChildAuthority();
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
+    let removed = 0;
+    const processed = new Set<string>();
+    for (;;) {
+      let userIds: string[];
+      try {
+        userIds = await this.store.listPendingDeletions();
+      } catch {
+        await this.revokeAllChildAuthority();
+        return { success: false, error: 'vault_broker_unavailable' };
+      }
+      if (userIds.length === 0) {
+        this.ownerDeletionFence?.open();
+        return { success: true, removed };
+      }
+      this.ownerDeletionFence?.blockAll(userIds);
+      for (const userId of userIds) {
+        if (processed.has(userId) || !isValidVaultUserId(userId) || !await this.purgeOwnerState(userId)) {
+          return { success: false, error: 'vault_broker_unavailable' };
+        }
+        processed.add(userId);
+        removed += 1;
+      }
+    }
+  }
+
+  /**
+   * Remove every child capability and root key when the durable deletion set
+   * cannot be read. Without an authoritative set, retaining any owner would let
+   * a worker snapshot outlive an account deletion.
+   */
+  async revokeAllChildAuthority(): Promise<boolean> {
+    const userIds = new Set<string>([
+      ...this.unlocked.keys(),
+      ...this.generations.keys(),
+    ]);
+    for (const binding of this.children.values()) {
+      for (const userId of binding.users.keys()) userIds.add(userId);
+      for (const session of binding.apiSessions.values()) userIds.add(session.userId);
+    }
+    const results = await Promise.all([...userIds].map(userId => this.lock(userId)));
+    for (const [child, binding] of [...this.children]) this.releaseChild(child, binding);
+    return results.every(result => result.success);
+  }
+
   async lock(userId: string): Promise<VaultLockResult> {
     this.operationEpochs.set(userId, this.operationEpoch(userId) + 1);
     this.lockDepth.set(userId, (this.lockDepth.get(userId) ?? 0) + 1);
@@ -802,18 +894,16 @@ export class DesktopKeyBroker {
       : { success: false, error: 'vault_locked' };
   }
 
-  attachChild(child: ChildProcess, role: BrokerRole, authorizedUsers: ReadonlySet<string>): void {
+  attachChild(child: ChildProcess, role: BrokerRole): void {
     const capability = randomBytes(KEY_BYTES);
-    const users = new Set([...authorizedUsers].filter(isValidVaultUserId));
     const previous = this.children.get(child);
-    if (previous) {
-      previous.capability.fill(0);
-      for (const ack of previous.lockAcks.values()) ack.finish();
-    }
+    if (previous) this.releaseChild(child, previous);
     const binding: Binding = {
       role,
       capability,
-      users,
+      users: new Map(),
+      apiSessions: new Map(),
+      revokedSessions: new Map(),
       inFlight: new Map(),
       lockAcks: new Map(),
     };
@@ -827,17 +917,22 @@ export class DesktopKeyBroker {
       this.children.delete(child);
       return;
     }
-    child.on('message', message => {
+    const messageListener = (message: unknown) => {
       void this.handle(child, message).catch(() => {
         this.safeSend(child, {
           type: 'skytwin:vault:response',
           requestId: 'invalid-request',
+          contextUserId: '',
           generation: -1,
           result: { success: false, error: 'vault_broker_unavailable' },
         });
       });
-    });
-    child.once('exit', () => this.releaseChild(child, binding));
+    };
+    const exitListener = () => this.releaseChild(child, binding);
+    binding.messageListener = messageListener;
+    binding.exitListener = exitListener;
+    child.on('message', messageListener);
+    child.once('exit', exitListener);
   }
 
   private async handle(child: ChildProcess, raw: unknown): Promise<void> {
@@ -845,7 +940,25 @@ export class DesktopKeyBroker {
     const binding = this.children.get(child);
     const capability = b64(raw['capability'], KEY_BYTES, KEY_BYTES);
     try {
-      if (!binding || !capability || !timingSafeEqual(capability, binding.capability)) return;
+      if (!binding) return;
+      if (!capability || !timingSafeEqual(capability, binding.capability)) {
+        const requestId = raw['requestId'];
+        const contextUserId = isValidVaultUserId(raw['userId'])
+          ? raw['userId']
+          : validContext(raw['context'])
+            ? raw['context'].userId
+            : raw['type'] === 'skytwin:vault:reconcile'
+              ? 'worker-set'
+              : '';
+        if (validId(requestId, 128)) {
+          this.safeSend(child, {
+            type: 'skytwin:vault:response', requestId, contextUserId,
+            generation: isValidVaultUserId(contextUserId) ? this.generation(contextUserId) : 0,
+            result: { success: false, error: 'capability_mismatch' },
+          });
+        }
+        return;
+      }
       if (raw['type'] === 'skytwin:vault:lock-ack') {
         const lockId = raw['lockId'];
         const pending = typeof lockId === 'string' ? binding.lockAcks.get(lockId) : undefined;
@@ -856,19 +969,195 @@ export class DesktopKeyBroker {
         ) pending.finish();
         return;
       }
+      if (
+        raw['type'] === 'skytwin:vault:grant'
+        && validId(raw['requestId'], 128)
+        && isValidVaultUserId(raw['userId'])
+      ) {
+        const requestId = raw['requestId'];
+        const userId = raw['userId'];
+        const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
+        const expiresAt = raw['expiresAt'];
+        const sessionId = raw['sessionId'];
+        this.pruneRevokedSessions(binding);
+        const validExpiry = binding.role === 'worker'
+          ? expiresAt === null
+          : Number.isSafeInteger(expiresAt) && Number(expiresAt) > this.now();
+        const validSession = binding.role === 'worker'
+          ? sessionId === undefined
+          : validId(sessionId, 128);
+        const revoked = binding.role === 'api'
+          && typeof sessionId === 'string'
+          && binding.revokedSessions.has(sessionId);
+        const purged = this.purgedOwners.has(userId);
+        const existingSession = binding.role === 'api' && typeof sessionId === 'string'
+          ? binding.apiSessions.get(sessionId)
+          : undefined;
+        const allowed = !revoked
+          && !purged
+          && raw['role'] === binding.role
+          && raw['authentication'] === expectedAuthentication
+          && validSession
+          && validExpiry
+          && (!existingSession || existingSession.userId === userId);
+        if (allowed) {
+          if (binding.role === 'api' && typeof sessionId === 'string') {
+            binding.apiSessions.set(sessionId, { userId, expiresAt: Number(expiresAt) });
+            this.refreshApiOwner(binding, userId);
+          } else {
+            binding.users.set(userId, null);
+          }
+        }
+        this.safeSend(child, {
+          type: 'skytwin:vault:response',
+          requestId,
+          contextUserId: userId,
+          generation: this.generation(userId),
+          result: allowed
+            ? await this.state(userId)
+            : {
+                success: false,
+                error: revoked
+                  ? 'grant_revoked'
+                  : !validExpiry
+                    ? 'grant_expired'
+                    : 'vault_broker_unavailable',
+              },
+        });
+        return;
+      }
+      if (
+        raw['type'] === 'skytwin:vault:revoke'
+        && validId(raw['requestId'], 128)
+        && isValidVaultUserId(raw['userId'])
+      ) {
+        const requestId = raw['requestId'];
+        const userId = raw['userId'];
+        const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
+        const sessionId = raw['sessionId'];
+        const expiresAt = raw['expiresAt'];
+        const existingSession = binding.role === 'api' && typeof sessionId === 'string'
+          ? binding.apiSessions.get(sessionId)
+          : undefined;
+        const validSession = binding.role === 'worker'
+          ? sessionId === undefined && expiresAt === undefined
+          : validId(sessionId, 128) && Number.isSafeInteger(expiresAt);
+        const allowed = raw['role'] === binding.role
+          && raw['authentication'] === expectedAuthentication
+          && validSession
+          && (!existingSession || existingSession.userId === userId);
+        let recordedRevocation = allowed;
+        if (allowed) {
+          if (binding.role === 'api' && typeof sessionId === 'string') {
+            const existing = binding.apiSessions.get(sessionId);
+            if (!existing || existing.userId === userId) binding.apiSessions.delete(sessionId);
+            this.refreshApiOwner(binding, userId);
+            recordedRevocation = this.recordRevokedSession(binding, sessionId, Number(expiresAt));
+          } else {
+            binding.users.delete(userId);
+          }
+        }
+        this.safeSend(child, {
+          type: 'skytwin:vault:response',
+          requestId,
+          contextUserId: userId,
+          generation: this.generation(userId),
+          result: allowed && recordedRevocation
+            ? { success: true, state: 'locked' }
+            : { success: false, error: 'vault_broker_unavailable' },
+        });
+        // If the bounded tombstone set cannot represent a revocation, destroy
+        // the whole child capability after replying. A paused grant from this
+        // child can then never revive the revoked session.
+        if (allowed && !recordedRevocation) this.releaseChild(child, binding);
+        return;
+      }
+      if (
+        raw['type'] === 'skytwin:vault:purge-owner'
+        && validId(raw['requestId'], 128)
+        && isValidVaultUserId(raw['userId'])
+      ) {
+        const requestId = raw['requestId'];
+        const userId = raw['userId'];
+        const allowed = binding.role === 'api'
+          && raw['role'] === 'api'
+          && raw['authentication'] === 'session';
+        if (!allowed) {
+          this.safeSend(child, {
+            type: 'skytwin:vault:response', requestId, contextUserId: userId,
+            generation: this.generation(userId),
+            result: { success: false, error: 'vault_broker_unavailable' },
+          });
+          return;
+        }
+
+        // The database purge has already committed. Fence first so a paused
+        // session grant or stale worker reconciliation cannot restore access
+        // while the lock barrier drains work and destroys the root key.
+        const purged = await this.purgeOwnerState(userId);
+        this.safeSend(child, {
+          type: 'skytwin:vault:response', requestId, contextUserId: userId,
+          generation: this.generation(userId),
+          result: purged
+            ? { success: true, state: 'locked' }
+            : { success: false, error: 'vault_broker_unavailable' },
+        });
+        return;
+      }
+      if (
+        raw['type'] === 'skytwin:vault:reconcile'
+        && validId(raw['requestId'], 128)
+        && raw['role'] === 'worker'
+        && binding.role === 'worker'
+        && raw['authentication'] === 'service'
+        && Array.isArray(raw['userIds'])
+      ) {
+        const userIds = raw['userIds'];
+        const allowed = userIds.length <= 10_000
+          && userIds.every(isValidVaultUserId)
+          && new Set(userIds).size === userIds.length;
+        if (allowed) {
+          binding.users = new Map((userIds as string[])
+            .filter(userId => !this.purgedOwners.has(userId))
+            .map(userId => [userId, null]));
+        }
+        this.safeSend(child, {
+          type: 'skytwin:vault:response',
+          requestId: raw['requestId'],
+          contextUserId: 'worker-set',
+          generation: 0,
+          result: allowed
+            ? { success: true, state: 'locked' }
+            : { success: false, error: 'vault_broker_unavailable' },
+        });
+        return;
+      }
       if (raw['type'] !== 'skytwin:vault:request' || !validId(raw['requestId'], 128)) return;
       const requestId = raw['requestId'];
       const context = raw['context'];
       const requestGeneration = raw['generation'];
+      const requestSessionId = raw['sessionId'];
       const deny = (error: VaultFailureCode) => this.safeSend(child, {
         type: 'skytwin:vault:response',
         requestId,
-        generation: typeof requestGeneration === 'number' ? requestGeneration : -1,
+        contextUserId: validContext(context) ? context.userId : '',
+        generation: validContext(context) ? this.generation(context.userId) : -1,
         result: { success: false, error },
       });
+      const authorityValid = validContext(context) && (
+        binding.role === 'api'
+          ? raw['role'] === 'api'
+            && raw['authentication'] === 'session'
+            && validId(requestSessionId, 128)
+            && this.hasActiveApiSession(binding, context.userId, requestSessionId)
+          : raw['role'] === 'worker'
+            && raw['authentication'] === 'service'
+            && requestSessionId === undefined
+            && this.hasActiveGrant(binding, context.userId)
+      );
       if (
         !validContext(context)
-        || !binding.users.has(context.userId)
+        || !authorityValid
         || (this.lockDepth.get(context.userId) ?? 0) > 0
       ) {
         deny('vault_broker_unavailable');
@@ -882,6 +1171,7 @@ export class DesktopKeyBroker {
           this.safeSend(child, {
             type: 'skytwin:vault:response',
             requestId,
+            contextUserId: userId,
             generation: this.generation(userId),
             result,
           });
@@ -905,6 +1195,7 @@ export class DesktopKeyBroker {
         this.safeSend(child, {
           type: 'skytwin:vault:response',
           requestId,
+          contextUserId: userId,
           generation: this.generation(userId),
           result,
         });
@@ -1035,6 +1326,11 @@ export class DesktopKeyBroker {
         expiresAt: this.now() + this.ttlMs,
       });
       this.generations.set(userId, this.generation(userId) + 1);
+      const generation = this.generation(userId);
+      for (const [child, binding] of this.children) {
+        if (!this.hasActiveGrant(binding, userId)) continue;
+        this.safeSend(child, { type: 'skytwin:vault:generation', userId, generation });
+      }
       const nextTimer = setTimeout(() => {
         void this.lock(userId).catch(() => undefined);
       }, this.ttlMs);
@@ -1062,6 +1358,81 @@ export class DesktopKeyBroker {
     }
     const results = await Promise.all(waits);
     return results.every(Boolean);
+  }
+
+  private hasActiveGrant(binding: Binding, userId: string): boolean {
+    if (this.purgedOwners.has(userId)) return false;
+    if (binding.role === 'api') this.refreshApiOwner(binding, userId);
+    if (!binding.users.has(userId)) return false;
+    const expiresAt = binding.users.get(userId);
+    if (expiresAt !== null && expiresAt !== undefined && expiresAt <= this.now()) {
+      binding.users.delete(userId);
+      return false;
+    }
+    return true;
+  }
+
+  private hasActiveApiSession(binding: Binding, userId: string, sessionId: string): boolean {
+    if (this.purgedOwners.has(userId)) return false;
+    const session = binding.apiSessions.get(sessionId);
+    if (!session || session.userId !== userId) return false;
+    if (session.expiresAt <= this.now()) {
+      binding.apiSessions.delete(sessionId);
+      this.refreshApiOwner(binding, userId);
+      return false;
+    }
+    return true;
+  }
+
+  private refreshApiOwner(binding: Binding, userId: string): void {
+    let latest = 0;
+    for (const [sessionId, session] of binding.apiSessions) {
+      if (session.userId !== userId) continue;
+      if (session.expiresAt <= this.now()) {
+        binding.apiSessions.delete(sessionId);
+        continue;
+      }
+      latest = Math.max(latest, session.expiresAt);
+    }
+    if (latest > 0) binding.users.set(userId, latest);
+    else binding.users.delete(userId);
+  }
+
+  private async purgeOwnerState(userId: string): Promise<boolean> {
+    this.ownerDeletionFence?.block(userId);
+    this.purgedOwners.add(userId);
+    for (const binding of this.children.values()) {
+      binding.users.delete(userId);
+      for (const [sessionId, session] of binding.apiSessions) {
+        if (session.userId === userId) binding.apiSessions.delete(sessionId);
+      }
+    }
+    const locked = await this.lock(userId);
+    const deviceRemoved = this.tryDeleteDevice(userId);
+    const ownerSecretRemoved = this.tryDeleteOwnerSecret(userId);
+    if (!locked.success || !deviceRemoved || !ownerSecretRemoved) return false;
+    try {
+      await this.store.completeDeletion?.(userId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private pruneRevokedSessions(binding: Binding): void {
+    const now = this.now();
+    for (const [sessionId, expiresAt] of binding.revokedSessions) {
+      if (expiresAt <= now) binding.revokedSessions.delete(sessionId);
+    }
+  }
+
+  private recordRevokedSession(binding: Binding, sessionId: string, expiresAt: number): boolean {
+    this.pruneRevokedSessions(binding);
+    if (!binding.revokedSessions.has(sessionId) && binding.revokedSessions.size >= 10_000) {
+      return false;
+    }
+    binding.revokedSessions.set(sessionId, Math.max(expiresAt, this.now() + 1));
+    return true;
   }
 
   private async waitForChildLock(
@@ -1147,13 +1518,15 @@ export class DesktopKeyBroker {
   private releaseChild(child: ChildProcess, expected: Binding): void {
     if (this.children.get(child) !== expected) return;
     this.children.delete(child);
+    if (expected.messageListener) child.removeListener('message', expected.messageListener);
+    if (expected.exitListener) child.removeListener('exit', expected.exitListener);
     expected.capability.fill(0);
     for (const ack of [...expected.lockAcks.values()]) ack.finish();
   }
 
   private safeSend(
     child: ChildProcess,
-    message: BrokerResponse | BrokerLockRequest | BrokerCapabilityMessage,
+    message: BrokerResponse | BrokerLockRequest | BrokerCapabilityMessage | BrokerGenerationMessage,
   ): boolean {
     try {
       if (child.connected === false || !child.send) return false;
@@ -1167,6 +1540,16 @@ export class DesktopKeyBroker {
     if (!this.deviceStore) return true;
     try {
       this.deviceStore.delete(userId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private tryDeleteOwnerSecret(userId: string): boolean {
+    if (!this.ownerSecretStore) return true;
+    try {
+      this.ownerSecretStore.delete(userId);
       return true;
     } catch {
       return false;

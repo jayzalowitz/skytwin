@@ -8,6 +8,14 @@
 export { getPool, query, withTransaction, healthCheck, closePool, getPoolStats } from './connection.js';
 export type { DatabaseConfig } from './connection.js';
 
+// Narrow recovery-wrapper gateway used by the Electron main process. Source
+// fields do not import or call this repository directly.
+export {
+  sourceKeyRegistryRepository,
+  SourceKeyRegistryConflictError,
+} from './repositories/source-key-registry-repository.js';
+export type { SourceKeyRegistryRow } from './repositories/source-key-registry-repository.js';
+
 // Request-scoped context (#408): AsyncLocalStorage carries the authoritative
 // userId across async boundaries so deep callees — including this repository
 // layer — can assert they're operating in the right user's context.

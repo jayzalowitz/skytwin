@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
+  OwnerDeletionFence,
   PassphraseVault,
   type PassphraseKeyValueStore,
   type SafeStoragePort,
@@ -46,6 +47,47 @@ describe('PassphraseVault', () => {
   });
 
   describe('happy path — remember + retrieve', () => {
+    it('fails closed until owner deletion state is available', () => {
+      const fence = new OwnerDeletionFence();
+      const vault = new PassphraseVault(makeSafeStorage(), store, 'linux', fence);
+      expect(vault.remember(USER, PASSPHRASE))
+        .toEqual({ ok: false, reason: 'owner_state_unavailable' });
+      fence.open();
+      expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+    });
+
+    it('preserves an unaffected owner record while deletion state is unavailable', () => {
+      const fence = new OwnerDeletionFence(true);
+      const vault = new PassphraseVault(makeSafeStorage(), store, 'linux', fence);
+      expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+      const seededRecord = store._map.get(`vault-passphrase:${USER}`);
+
+      fence.close();
+      expect(vault.remember(USER, 'replacement passphrase'))
+        .toEqual({ ok: false, reason: 'owner_state_unavailable' });
+      expect(vault.getRemembered(USER))
+        .toEqual({ ok: false, reason: 'owner_state_unavailable' });
+      expect(vault.has(USER)).toBe(false);
+      expect(store._map.get(`vault-passphrase:${USER}`)).toBe(seededRecord);
+
+      fence.open();
+      expect(vault.getRemembered(USER)).toEqual({ ok: true, passphrase: PASSPHRASE });
+    });
+
+    it('rejects a write when its captured owner generation is revoked', () => {
+      const fence = new OwnerDeletionFence(true);
+      const safeStorage = makeSafeStorage({
+        encryptString: plaintext => {
+          fence.block(USER);
+          return Buffer.from(plaintext);
+        },
+      });
+      const vault = new PassphraseVault(safeStorage, store, 'linux', fence);
+      expect(vault.remember(USER, PASSPHRASE))
+        .toEqual({ ok: false, reason: 'owner_deleted' });
+      expect(store._map.size).toBe(0);
+    });
+
     it('persists encrypted ciphertext (never plaintext) and round-trips', () => {
       const vault = new PassphraseVault(makeSafeStorage(), store);
 

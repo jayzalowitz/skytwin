@@ -55,6 +55,23 @@ test("the inventory exactly covers the migration-derived schema", () => {
   assert.deepEqual(validateInventory(inventory, extractSchemaColumns()), []);
 });
 
+test("owner deletion intent evidence matches every runtime SQL callsite", () => {
+  const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+  const entry = inventory.tables.find(
+    (candidate) => candidate.table === "source_key_deletion_intents",
+  );
+  const audit = discoverSqlCallsiteAudit(extractSchemaColumns());
+
+  assert.deepEqual(entry.boundary.auditedCallsites, [
+    "packages/db/src/repositories/source-key-registry-repository.ts",
+    "packages/db/src/repositories/user-purge-repository.ts",
+  ]);
+  assert.deepEqual(
+    audit.callsites.get("source_key_deletion_intents"),
+    entry.boundary.auditedCallsites,
+  );
+});
+
 test("SQL callsite discovery recognizes Cockroach UPSERT statements", () => {
   assert.deepEqual(
     sqlTextCandidates("query(`UPSERT INTO source_key_deletion_intents (user_id) VALUES ($1)`);"),

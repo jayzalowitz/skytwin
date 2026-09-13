@@ -8,6 +8,7 @@ import {
   issuePairingToken,
   consumePairingToken,
 } from '../pairing-token-store.js';
+import { apiVaultBroker } from '../vault-broker-client.js';
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -171,13 +172,22 @@ export function createSessionsRouter(): Router {
 
       // Verify the session belongs to the requesting user
       const sessions = await sessionRepository.findActiveByUser(body.userId);
-      const owns = sessions.some((s) => s.id === sessionId);
-      if (!owns) {
+      const target = sessions.find((session) => session.id === sessionId);
+      if (!target) {
         res.status(403).json({ error: 'Session not found or not owned by user' });
         return;
       }
 
       await sessionRepository.revoke(sessionId);
+      // Revoke the owner grant unconditionally. Any remaining valid session
+      // re-establishes a deadline on its next authenticated request. Avoiding
+      // an eager re-grant prevents concurrent session revocations from
+      // restoring authority based on a stale active-session snapshot.
+      await apiVaultBroker.revokeAuthenticatedSession(
+        body.userId,
+        sessionId,
+        new Date(target.expires_at),
+      );
       res.json({ revoked: true });
     } catch (error) {
       next(error);

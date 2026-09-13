@@ -5,6 +5,7 @@ import { TwinRepositoryAdapter, PatternRepositoryAdapter } from '@skytwin/db';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { isValidUserId } from '../middleware/validate-uuid.js';
+import { apiVaultBroker } from '../vault-broker-client.js';
 
 const VALID_TIERS = ['observer', 'suggest', 'low_autonomy', 'moderate_autonomy', 'high_autonomy'];
 
@@ -498,6 +499,26 @@ export function createUsersRouter(): Router {
           error: 'user_not_found',
           message: 'No user with that id existed at delete time.',
           counts: result.counts,
+        });
+        return;
+      }
+
+      // This is an explicit, authenticated user deletion, not an automated
+      // action, so the policy/explanation execution pipeline does not apply.
+      // The durable database purge is authoritative and already committed;
+      // do not claim the whole deletion lifecycle completed until Electron has
+      // fenced paused grants, drained child work, dropped the root key, and
+      // removed the optional device wrapper.
+      const brokerCleanup = await apiVaultBroker.purgeOwner(targetUserId);
+      if (!brokerCleanup.success) {
+        res.status(202).json({
+          deleted: true,
+          userId: targetUserId,
+          counts: result.counts,
+          totalRows: result.total,
+          cleanupPending: true,
+          cleanupState: 'pending',
+          message: 'User data was deleted; native secret cleanup is queued for the desktop.',
         });
         return;
       }

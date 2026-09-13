@@ -5,6 +5,7 @@ import { join } from 'path';
 import { ServiceManager } from './service-manager.js';
 import {
   PassphraseVault,
+  OwnerDeletionFence,
   type PassphraseKeyValueStore,
   type SafeStoragePort,
 } from './passphrase-vault.js';
@@ -30,18 +31,20 @@ import { reportCrash } from './crash-reporter.js';
 import {
   DesktopKeyBroker,
   type DeviceWrapperStore,
-  PersistentWrappedKeyStore,
-  type WrappedKeyValueStore,
-  type WrappedUserKey,
 } from './key-broker.js';
+import { CockroachWrappedKeyStore, type SourceKeyRegistryPort } from './crdb-wrapped-key-store.js';
 import { installVaultNavigationGuards } from './vault-renderer-security.js';
 
-// This store contains passphrase-wrapped random root keys, never passphrases or
-// plaintext root keys. Source-field migration remains disabled until the
-// broker boundary has completed its packaged verification gate.
-const wrappedKeyStore = new PersistentWrappedKeyStore(new Store<Record<string, WrappedUserKey>>({
-  name: 'skytwin-wrapped-user-keys',
-}) as unknown as WrappedKeyValueStore);
+// Recovery wrappers live beside the encrypted source data in CockroachDB so a
+// database backup plus the passphrase is sufficient for recovery. Native
+// dynamic import is required because Electron main compiles as CommonJS while
+// @skytwin/db is ESM. Source-field migration remains disabled.
+const wrappedKeyStore = new CockroachWrappedKeyStore(async () => {
+  const nativeImport = new Function('path', 'return import(path)') as (
+    path: string,
+  ) => Promise<{ sourceKeyRegistryRepository: SourceKeyRegistryPort }>;
+  return (await nativeImport('@skytwin/db')).sourceKeyRegistryRepository;
+});
 const electronDeviceKeyStore = new Store<Record<string, string>>({
   name: 'skytwin-device-user-keys',
 });
@@ -51,12 +54,6 @@ const deviceKeyStore: DeviceWrapperStore = {
   delete: (key) => electronDeviceKeyStore.delete(key),
   keys: () => Object.keys(electronDeviceKeyStore.store),
 };
-const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
-  deviceProtection: safeStorage,
-  deviceStore: deviceKeyStore,
-});
-const serviceManager = new ServiceManager(keyBroker);
-
 // Secure-device-backed "remember my vault passphrase" store (#401). Persists
 // safeStorage ciphertext only when a reviewed OS credential backend is active;
 // Linux `basic_text` is rejected. See passphrase-vault.ts.
@@ -71,10 +68,20 @@ const passphraseStore: PassphraseKeyValueStore = {
   delete: (key) => electronPassphraseStore.delete(key),
   keys: () => Object.keys(electronPassphraseStore.store),
 };
+const ownerDeletionFence = new OwnerDeletionFence();
 const passphraseVault = new PassphraseVault(
   safeStorage as unknown as SafeStoragePort,
   passphraseStore,
+  process.platform,
+  ownerDeletionFence,
 );
+const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
+  deviceProtection: safeStorage,
+  deviceStore: deviceKeyStore,
+  ownerSecretStore: { delete: (userId) => passphraseVault.forget(userId) },
+  ownerDeletionFence,
+});
+const serviceManager = new ServiceManager(keyBroker);
 
 let mainWindow: BrowserWindow | null = null;
 let splashWindow: BrowserWindow | null = null;

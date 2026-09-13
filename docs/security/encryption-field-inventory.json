@@ -3083,7 +3083,8 @@
         "current": "repository_sql",
         "target": "locally_exposed_or_excluded",
         "auditedCallsites": [
-          "packages/db/src/repositories/source-key-registry-repository.ts"
+          "packages/db/src/repositories/source-key-registry-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
         ]
       },
       "groups": [
