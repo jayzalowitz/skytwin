@@ -260,8 +260,10 @@ function modeledNonColumnDefinition(definition) {
 }
 
 function containsInlinePrimaryKey(definition) {
-  const withoutStringLiterals = definition.replace(/'(?:''|[^'])*'/g, "''");
-  return /\bPRIMARY\s+KEY\b/i.test(withoutStringLiterals);
+  const withoutQuotedContent = definition
+    .replace(/'(?:''|[^'])*'/g, "''")
+    .replace(/"(?:""|[^"])*"/g, '""');
+  return /\bPRIMARY\s+KEY\b/i.test(withoutQuotedContent);
 }
 
 export function applySchemaSql(schema, rawSql) {

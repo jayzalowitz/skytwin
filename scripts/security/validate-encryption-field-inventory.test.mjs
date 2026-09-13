@@ -126,6 +126,16 @@ test("schema reconstruction applies column and table DDL in statement order", ()
     "final",
     "renamed",
   ]);
+
+  const quotedPrimaryKey = new Map();
+  applySchemaSql(
+    quotedPrimaryKey,
+    'CREATE TABLE quoted_pk ("id" UUID PRIMARY KEY, secret STRING);',
+  );
+  assert.deepEqual([...quotedPrimaryKey.get("quoted_pk")].sort(), [
+    "id",
+    "secret",
+  ]);
 });
 
 test("schema reconstruction rejects table DDL it cannot fully consume", () => {
@@ -138,6 +148,7 @@ test("schema reconstruction rejects table DDL it cannot fully consume", () => {
     "CREATE TABLE trailing_table (id UUID) LOCALITY GLOBAL;",
     "CREATE TABLE clone (LIKE users INCLUDING ALL);",
     "CREATE TABLE nopk (secret STRING);",
+    'CREATE TABLE weird ("PRIMARY KEY" STRING, secret STRING);',
     "CREATE INDEX users_hash ON users (id) USING HASH WITH BUCKET_COUNT = 8;",
     "CREATE TABLE inline_hash (id UUID, PRIMARY KEY (id) USING HASH WITH BUCKET_COUNT = 8);",
     "CREATE MATERIALIZED VIEW users_view AS SELECT id FROM users;",
