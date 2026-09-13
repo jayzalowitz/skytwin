@@ -52,13 +52,12 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
   /**
    * Credential-vault passphrase "remember on this device" (#401).
    *
-   * The passphrase is encrypted by the OS keychain (Electron safeStorage) in
-   * the main process before it ever touches disk — plaintext crosses this
-   * bridge only on the way in (remember) and out (get), never to storage.
+   * The passphrase is encrypted by Electron safeStorage in the main process
+   * only when a reviewed secure OS credential backend is active. Plaintext
+   * crosses this bridge only on the way in (remember) and out (get).
    *
-   * `vaultPassphraseSupported()` is false on environments without an OS secret
-   * store (e.g. headless Linux with no Secret Service); the renderer hides the
-   * "Remember on this device?" prompt and keeps the per-session behavior.
+   * `vaultPassphraseSupported()` is false without a secure OS secret store,
+   * including Electron's Linux `basic_text` fallback.
    */
   vaultPassphraseSupported: () =>
     ipcRenderer.invoke('vault-passphrase-supported') as Promise<boolean>,

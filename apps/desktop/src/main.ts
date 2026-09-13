@@ -30,9 +30,9 @@ import { reportCrash } from './crash-reporter.js';
 
 const serviceManager = new ServiceManager();
 
-// OS-keychain-backed "remember my vault passphrase on this device" store (#401).
-// Persists the safeStorage-encrypted passphrase ciphertext in the OS userData
-// dir; only decryptable on this machine + user account. See passphrase-vault.ts.
+// Secure-device-backed "remember my vault passphrase" store (#401). Persists
+// safeStorage ciphertext only when a reviewed OS credential backend is active;
+// Linux `basic_text` is rejected. See passphrase-vault.ts.
 // Cast through the structural ports for the same reason desktop-preferences.ts
 // does — electron-store's ESM Conf inheritance doesn't survive `module: commonjs`.
 const passphraseStore = new Store<Record<string, string>>({
@@ -389,11 +389,9 @@ ipcMain.handle('read-dxt-file', async (_event, filePath: string) => {
 });
 
 // ── Credential-vault passphrase remember-on-device (#401) ────────────────────
-// Lets the renderer optionally cache the vault passphrase in the OS keychain so
-// a relaunch can auto-unlock. Plaintext never crosses the bridge to disk — the
-// main process encrypts via safeStorage before persisting. Unsupported
-// environments degrade gracefully (the renderer hides the prompt and keeps the
-// per-session passphrase behavior).
+// Lets the renderer optionally cache the preparatory vault passphrase in secure
+// OS credential storage so a relaunch can restore the API-local key state.
+// Unsupported environments degrade gracefully and persist nothing.
 ipcMain.handle('vault-passphrase-supported', () => passphraseVault.isSupported());
 
 ipcMain.handle('vault-passphrase-remember', (_event, userId: string, passphrase: string) => {

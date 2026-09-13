@@ -91,7 +91,7 @@ These are non-negotiable, deterministic, and only change via deploy:
 - User-set absolute spend ceilings (per-action, daily, monthly)
 - Audit log integrity: every action recorded immutably, audit table append-only, never hidden from user
 - MCP protocol conformance: stdio + http/sse transports per spec; tool call schemas validated; security model enforced
-- Authentication and OAuth token storage: envelope-encrypted at rest, never logged in plaintext.
+- Authentication and OAuth token storage target: envelope-encrypted at rest, never logged in plaintext.
   **Status:** the "never logged in plaintext" half holds today. The at-rest half does
   not yet: tokens are written plaintext by `saveTokenForAccount`
   (`packages/db/src/repositories/oauth-repository.ts`), and the `DbTokenStore` lazy
