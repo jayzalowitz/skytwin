@@ -119,6 +119,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
 
     expect(created).toMatchObject({
       id: bundle.receipt.id,
+      version: 1,
       decision_id: owner.decisionId,
       explanation_id: owner.explanationId,
       trusted: true,

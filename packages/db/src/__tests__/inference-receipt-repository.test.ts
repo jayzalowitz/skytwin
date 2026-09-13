@@ -71,6 +71,7 @@ describe('inferenceReceiptRepository', () => {
     expect(sql).toContain('JOIN explanation_records er ON er.decision_id = d.id');
     expect(sql).toContain('WHERE d.user_id = $1');
     expect(sql).toContain('$7::JSONB, true');
+    expect(sql).toContain('version::INT4 AS version');
     expect(args[0]).toBe(bundle.receipt.userId);
     expect(args[7]).toBe(bundle.receipt.userId);
   });
