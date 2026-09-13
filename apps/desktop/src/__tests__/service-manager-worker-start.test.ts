@@ -71,15 +71,39 @@ interface ManagerInternals {
     external: boolean;
   };
   apiGeneration: TestApiGeneration | null;
+  readyApiGeneration: TestApiGeneration | null;
   registeredWorkerGeneration: TestApiGeneration | null;
   paused: boolean;
+  cockroachStatus: string;
   getResourcePath(): string;
   ensureEmbeddedRoot(): Promise<string>;
   startWorker(
     startup: TestStartup,
     generation: TestApiGeneration,
   ): Promise<void>;
+  startWeb(startup: TestStartup, generation: TestApiGeneration): Promise<void>;
+  startAll(): Promise<void>;
+  pause(): Promise<void>;
   resume(): Promise<void>;
+  waitForExternalApi(timeoutMs: number): Promise<boolean>;
+  startCockroach(): Promise<TestStartup>;
+  runMigrations(startup: TestStartup): Promise<boolean>;
+  provisionPackagedSample(
+    startup: TestStartup,
+    epoch: number,
+    signal: AbortSignal,
+  ): Promise<void>;
+  startApi(startup: TestStartup): Promise<TestApiGeneration>;
+  registerWorkerGenerationAuthority(
+    generation: TestApiGeneration,
+    startup: TestStartup,
+  ): Promise<void>;
+  waitForApi(
+    timeoutMs: number,
+    startup: TestStartup,
+    generation: TestApiGeneration,
+  ): Promise<boolean>;
+  startHealthMonitoring(startup: TestStartup): void;
 }
 
 function child(pid: number): ChildProcess {
@@ -119,6 +143,7 @@ function authorize(manager: ManagerInternals): {
   manager.api.process = apiProcess;
   manager.api.external = false;
   manager.apiGeneration = generation;
+  manager.readyApiGeneration = generation;
   manager.registeredWorkerGeneration = generation;
   manager.paused = false;
   manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
@@ -330,6 +355,100 @@ describe("ServiceManager worker start serialization", () => {
       expect.objectContaining({ message: "worker bundle unavailable" }),
     );
     expect(manager.worker.status).toBe("error");
+    expect(manager.worker.process).toBeNull();
+  });
+
+  it("blocks pause and resume startup while the exact API generation awaits readiness", async () => {
+    const manager = new ServiceManager() as InstanceType<
+      typeof ServiceManager
+    > & ManagerInternals;
+    const startup: TestStartup = {
+      ownership: "managed-child",
+      dataDir: "/tmp/skytwin-worker-start-test/crdb-data",
+      generation: 1,
+    };
+    const apiProcess = child(8300);
+    const generation: TestApiGeneration = {
+      generation: 1,
+      process: apiProcess,
+      instanceCapability: "e".repeat(64),
+      ingestCredential: "f".repeat(64),
+      workerAuthorityId: "93c89fcc-2fa4-49a4-8510-171193973984",
+      workerAuthoritySecret: "1".repeat(64),
+      controller: new AbortController(),
+    };
+    const web = child(8301);
+    const worker = child(8302);
+    processState.fork
+      .mockReturnValueOnce(web)
+      .mockReturnValueOnce(worker);
+    manager.cockroachStatus = "running";
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.waitForExternalApi = vi.fn().mockResolvedValue(false);
+    manager.startCockroach = vi.fn().mockResolvedValue(startup);
+    manager.runMigrations = vi.fn().mockResolvedValue(true);
+    manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockImplementation(async () => {
+      manager.api.process = apiProcess;
+      manager.api.status = "running";
+      manager.apiGeneration = generation;
+      return generation;
+    });
+    manager.registerWorkerGenerationAuthority = vi.fn().mockImplementation(async () => {
+      manager.registeredWorkerGeneration = generation;
+    });
+    let releaseReadiness: ((ready: boolean) => void) | undefined;
+    manager.waitForApi = vi.fn(
+      () => new Promise<boolean>((resolve) => {
+        releaseReadiness = resolve;
+      }),
+    );
+    manager.startHealthMonitoring = vi.fn();
+
+    const starting = manager.startAll();
+    await vi.waitFor(() => expect(manager.waitForApi).toHaveBeenCalledOnce());
+    expect(manager.readyApiGeneration).toBeNull();
+
+    await manager.pause();
+    await expect(manager.resume()).rejects.toThrow(
+      "Packaged resume requires the current proven service generation",
+    );
+    expect(processState.fork).not.toHaveBeenCalled();
+
+    releaseReadiness?.(true);
+    await starting;
+    expect(manager.readyApiGeneration).toBe(generation);
+    expect(processState.fork).toHaveBeenCalledOnce();
+    expect(manager.worker.process).toBeNull();
+
+    await manager.resume();
+    expect(processState.fork).toHaveBeenCalledTimes(2);
+    expect(manager.worker.process).toBe(worker);
+  });
+
+  it("rejects a stale ready-generation marker at every packaged spawn boundary", async () => {
+    const manager = new ServiceManager() as InstanceType<
+      typeof ServiceManager
+    > & ManagerInternals;
+    const { startup, generation } = authorize(manager);
+    const staleProcess = child(8400);
+    manager.readyApiGeneration = {
+      ...generation,
+      generation: generation.generation - 1,
+      process: staleProcess,
+      controller: new AbortController(),
+    };
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    processState.fork.mockReturnValue(child(8401));
+
+    await manager.startWeb(startup, generation);
+    await manager.startWorker(startup, generation);
+    await expect(manager.resume()).rejects.toThrow(
+      "Packaged resume requires the current proven service generation",
+    );
+
+    expect(processState.fork).not.toHaveBeenCalled();
     expect(manager.worker.process).toBeNull();
   });
 });

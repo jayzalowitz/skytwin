@@ -76,6 +76,7 @@ interface ManagerInternals {
   apiGeneration: ApiGenerationForTest | null;
   readyApiGeneration: ApiGenerationForTest | null;
   registeredWorkerGeneration: ApiGenerationForTest | null;
+  paused: boolean;
   serviceLifecycleTail: Promise<void>;
   getResourcePath(): string;
   ensureEmbeddedRoot(): Promise<string>;
@@ -478,5 +479,77 @@ describe("ServiceManager API error lifecycle", () => {
     expect(generation?.controller.signal.aborted).toBe(false);
     expect(manager.apiGeneration).toBe(generation);
     expect(manager.api.status).toBe("running");
+  });
+
+  it("contains sibling services without restarting when the API exits while paused", async () => {
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    const worker = generationWorker();
+    const web = generationWorker();
+    manager.activeDatabaseStartup = startup;
+    manager.worker = {
+      process: worker,
+      status: "paused",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.web = {
+      process: web,
+      status: "running",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    const generation = await manager.startApi(startup);
+    expect(generation).not.toBeNull();
+    manager.registeredWorkerGeneration = generation;
+    manager.paused = true;
+    const revokeAuthority = vi.fn().mockResolvedValue(undefined);
+    manager.revokeWorkerGenerationAuthority = revokeAuthority;
+
+    if (processState.child) processState.child.exitCode = 1;
+    processState.child?.emit("exit", 1);
+    await manager.serviceLifecycleTail;
+
+    expect(manager.api.restartCount).toBe(0);
+    expect(manager.api.process).toBeNull();
+    expect(manager.worker.process).toBeNull();
+    expect(manager.web.process).toBeNull();
+    expect(manager.registeredWorkerGeneration).toBeNull();
+    expect(revokeAuthority).toHaveBeenCalledWith(generation, startup);
+    expect(processState.fork).toHaveBeenCalledOnce();
+  });
+
+  it("continues packaged API identity monitoring while worker execution is paused", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    const generation = await manager.startApi(startup);
+    expect(generation).not.toBeNull();
+    manager.readyApiGeneration = generation;
+    manager.paused = true;
+    manager.stopDataServicesOwned = vi.fn().mockResolvedValue(undefined);
+    const fetchImpl = vi.fn().mockRejectedValue(new Error("connection refused"));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    await manager.runHealthCheck(startup);
+    await vi.waitFor(() => expect(manager.stopDataServicesOwned).toHaveBeenCalledOnce());
+
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(generation?.controller.signal.aborted).toBe(true);
   });
 });

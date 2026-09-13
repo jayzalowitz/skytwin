@@ -902,6 +902,10 @@ export class ServiceManager {
     return true;
   }
 
+  private isApiGenerationReady(generation: ApiGeneration): boolean {
+    return this.readyApiGeneration === generation && this.isApiGenerationCurrent(generation);
+  }
+
   private markApiGenerationReady(generation: ApiGeneration): boolean {
     if (!this.isApiGenerationCurrent(generation)) return false;
     this.readyApiGeneration = generation;
@@ -1260,8 +1264,6 @@ export class ServiceManager {
     this.healthCheckInFlight = true;
     try {
       if (!this.guardServiceDatabase(startup, 'during health monitoring')) return;
-      if (this.paused) return;
-
       // A packaged health response must prove the exact API generation, not
       // merely that some process has occupied the well-known port.
       if (this.api.status === 'running') {
@@ -1275,7 +1277,7 @@ export class ServiceManager {
           // readiness proof completes. A timer retained from the previous
           // generation must not classify that expected startup interval as
           // listener identity loss.
-          if (this.readyApiGeneration !== generation) return;
+          if (!this.isApiGenerationReady(generation)) return;
           if (!(await this.verifyOwnedApi(generation))) {
             this.schedulePackagedApiIdentityLoss(startup, generation, 'API listener identity changed');
             return;
@@ -1495,7 +1497,21 @@ export class ServiceManager {
   }
 
   private scheduleApiRestart(startup: CockroachStartResult | null, reason: string): void {
-    if (this.paused || !this.guardServiceDatabase(startup, 'before API restart')) return;
+    if (!this.guardServiceDatabase(startup, 'before API restart')) return;
+    if (this.paused) {
+      if (app.isPackaged) {
+        // Pausing suppresses replacement work, not containment. The web and
+        // durable worker authority must not survive the API generation whose
+        // service credential they were bound to.
+        void this.runServiceLifecycle(async () => {
+          await this.stopDataServicesOwned();
+          if (startup) this.guardServiceDatabase(startup, 'after paused API exit containment');
+        }).catch((error) => {
+          console.error('[api] Failed to contain services after paused API exit:', error);
+        });
+      }
+      return;
+    }
     this.api.restartCount++;
     this.recordFailure(this.api, 'api');
     if (this.api.failureTimestamps.length >= MAX_RESTARTS) {
@@ -1596,7 +1612,7 @@ export class ServiceManager {
     apiGeneration: ApiGeneration | null = null,
   ): Promise<void> {
     if (!this.guardServiceDatabase(startup, 'before web spawn')) return;
-    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
     this.web.status = 'starting';
     this.emitStatus();
 
@@ -1612,7 +1628,7 @@ export class ServiceManager {
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
     if (!this.guardServiceDatabase(startup, 'while resolving the web bundle')) return;
-    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
     const webEntry = app.isPackaged
       ? join(embeddedRoot, 'web', 'dist', 'index.js')
       : join(base, 'apps', 'web', 'dist', 'index.js');
@@ -1642,7 +1658,7 @@ export class ServiceManager {
           code !== 0 &&
           !this.paused &&
           this.guardServiceDatabase(startup, 'before web restart') &&
-          (!app.isPackaged || (apiGeneration && this.isApiGenerationCurrent(apiGeneration)))
+          (!app.isPackaged || (apiGeneration && this.isApiGenerationReady(apiGeneration)))
         ) {
           this.web.restartCount++;
           this.recordFailure(this.web, 'web');
@@ -1662,7 +1678,7 @@ export class ServiceManager {
       this.emitStatus();
       if (
         !this.guardServiceDatabase(startup, 'after web spawn') ||
-        (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration)))
+        (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration)))
       ) {
         void this.stopProcess(this.web, 'web');
       }
@@ -1721,7 +1737,7 @@ export class ServiceManager {
     }
     if (this.paused) return;
     if (!this.guardServiceDatabase(startup, 'before worker spawn')) return;
-    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
     if (app.isPackaged) {
       if (!startup || !apiGeneration) {
         throw new Error('Packaged worker startup requires database and API generation authority');
@@ -1750,7 +1766,7 @@ export class ServiceManager {
     const embeddedRoot = await this.ensureEmbeddedRoot();
     if (this.paused) return;
     if (!this.guardServiceDatabase(startup, 'while resolving the worker bundle')) return;
-    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration))) return;
+    if (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration))) return;
     // See apiEntry comment above — same reasoning for worker.
     const workerEntry = app.isPackaged
       ? join(embeddedRoot, 'worker', 'dist', 'index.js')
@@ -1781,7 +1797,7 @@ export class ServiceManager {
           code !== 0 &&
           !this.paused &&
           this.guardServiceDatabase(startup, 'before worker restart') &&
-          (!app.isPackaged || (apiGeneration && this.isApiGenerationCurrent(apiGeneration)))
+          (!app.isPackaged || (apiGeneration && this.isApiGenerationReady(apiGeneration)))
         ) {
           this.worker.restartCount++;
           this.recordFailure(this.worker, 'worker');
@@ -1809,7 +1825,7 @@ export class ServiceManager {
       this.emitStatus();
       if (
         !this.guardServiceDatabase(startup, 'after worker spawn') ||
-        (app.isPackaged && (!apiGeneration || !this.isApiGenerationCurrent(apiGeneration)))
+        (app.isPackaged && (!apiGeneration || !this.isApiGenerationReady(apiGeneration)))
       ) {
         void this.stopProcess(this.worker, 'worker');
       }
@@ -1856,7 +1872,7 @@ export class ServiceManager {
       app.isPackaged &&
       (!this.isServiceDatabaseCurrent(this.activeDatabaseStartup) ||
         !this.apiGeneration ||
-        !this.isApiGenerationCurrent(this.apiGeneration) ||
+        !this.isApiGenerationReady(this.apiGeneration) ||
         this.registeredWorkerGeneration !== this.apiGeneration)
     ) {
       throw new Error('Packaged resume requires the current proven service generation');
