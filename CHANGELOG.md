@@ -30,13 +30,20 @@ All notable changes to SkyTwin will be documented in this file.
   cleanup cannot remove a concurrent or replacement wrapper.
 - **Child authority now starts empty and session replacement cannot inherit a
   revoked deadline.** Every API/worker owner must arrive through the explicit
-  grant or reconciliation protocol. Explicit revoke clears the cached deadline,
-  and session routes do not eagerly re-grant from a race-prone active-session
-  snapshot; another valid session restores access on its next authenticated
-  request.
+  grant or reconciliation protocol. Session routes do not eagerly re-grant from
+  a race-prone active-session snapshot, and explicit revoke removes only the
+  exact session nonce while preserving other independently valid sessions.
 - **Corrupt registry state is distinguished from an absent wrapper.** Invalid
   recovery-wrapper data or mismatched registry metadata now fails closed instead
   of being surfaced as an uninitialized vault.
+- **Broker grants now preserve exact session and deletion lifecycles.** Each API
+  session keeps its own database-proven expiry and revocation timer; one session
+  cannot borrow another session's deadline. Account deletion records durable
+  local cleanup in the purge transaction, fences paused API and worker grants,
+  drains child work, and removes in-memory and device-wrapped key material.
+- **Transient worker discovery failures preserve the prior authority snapshot.**
+  Only a complete database result replaces the worker owner set, while connector
+  startup failures no longer masquerade as authoritative owner removal.
 - **Remembered vault passphrases now retain verifiable storage provenance.**
   New desktop records carry a format version and the exact secure OS backend
   that encrypted them. Startup deletes every legacy untagged, unsupported, or
@@ -48,8 +55,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Security scope
 
 - Source-field migration remains disabled. This runtime composition does not
-  make an at-rest encryption claim; source-column cutover and durable device
-  deletion-intent processing remain follow-up work.
+  make an at-rest encryption claim; source-column cutover remains follow-up work.
 
 ## [0.6.102.0] - 2026-08-27
 

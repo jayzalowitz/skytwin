@@ -93,6 +93,8 @@ export interface WrappedKeyStore {
   get(userId: string): unknown | Promise<unknown>;
   create(userId: string, value: WrappedUserKey): boolean | Promise<boolean>;
   deleteIfMatch(userId: string, value: WrappedUserKey): boolean | Promise<boolean>;
+  listPendingDeletions?(): string[] | Promise<string[]>;
+  completeDeletion?(userId: string): void | Promise<void>;
 }
 
 export interface WrappedKeyValueStore {
@@ -206,6 +208,7 @@ interface Binding {
   role: BrokerRole;
   capability: Buffer;
   users: Map<string, number | null>;
+  apiSessions: Map<string, { userId: string; expiresAt: number }>;
   revokedSessions: Map<string, number>;
   inFlight: Map<string, number>;
   lockAcks: Map<string, PendingLockAck>;
@@ -436,6 +439,7 @@ export class DesktopKeyBroker {
   private readonly initializing = new Set<string>();
   private readonly lockDepth = new Map<string, number>();
   private readonly lockTails = new Map<string, Promise<void>>();
+  private readonly purgedOwners = new Set<string>();
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly lockAckTimeoutMs: number;
@@ -740,6 +744,30 @@ export class DesktopKeyBroker {
       : { success: false, error: 'vault_broker_unavailable' };
   }
 
+  async reconcilePendingDeletions(): Promise<
+    { success: true; removed: number } | { success: false; error: 'vault_broker_unavailable' }
+  > {
+    if (!this.store.listPendingDeletions) return { success: true, removed: 0 };
+    let removed = 0;
+    const processed = new Set<string>();
+    for (;;) {
+      let userIds: string[];
+      try {
+        userIds = await this.store.listPendingDeletions();
+      } catch {
+        return { success: false, error: 'vault_broker_unavailable' };
+      }
+      if (userIds.length === 0) return { success: true, removed };
+      for (const userId of userIds) {
+        if (processed.has(userId) || !isValidVaultUserId(userId) || !await this.purgeOwnerState(userId)) {
+          return { success: false, error: 'vault_broker_unavailable' };
+        }
+        processed.add(userId);
+        removed += 1;
+      }
+    }
+  }
+
   async lock(userId: string): Promise<VaultLockResult> {
     this.operationEpochs.set(userId, this.operationEpoch(userId) + 1);
     this.lockDepth.set(userId, (this.lockDepth.get(userId) ?? 0) + 1);
@@ -824,6 +852,7 @@ export class DesktopKeyBroker {
       role,
       capability,
       users: new Map(),
+      apiSessions: new Map(),
       revokedSessions: new Map(),
       inFlight: new Map(),
       lockAcks: new Map(),
@@ -906,12 +935,25 @@ export class DesktopKeyBroker {
         const revoked = binding.role === 'api'
           && typeof sessionId === 'string'
           && binding.revokedSessions.has(sessionId);
+        const purged = this.purgedOwners.has(userId);
+        const existingSession = binding.role === 'api' && typeof sessionId === 'string'
+          ? binding.apiSessions.get(sessionId)
+          : undefined;
         const allowed = !revoked
+          && !purged
           && raw['role'] === binding.role
           && raw['authentication'] === expectedAuthentication
           && validSession
-          && validExpiry;
-        if (allowed) binding.users.set(userId, binding.role === 'api' ? Number(expiresAt) : null);
+          && validExpiry
+          && (!existingSession || existingSession.userId === userId);
+        if (allowed) {
+          if (binding.role === 'api' && typeof sessionId === 'string') {
+            binding.apiSessions.set(sessionId, { userId, expiresAt: Number(expiresAt) });
+            this.refreshApiOwner(binding, userId);
+          } else {
+            binding.users.set(userId, null);
+          }
+        }
         this.safeSend(child, {
           type: 'skytwin:vault:response',
           requestId,
@@ -940,17 +982,25 @@ export class DesktopKeyBroker {
         const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
         const sessionId = raw['sessionId'];
         const expiresAt = raw['expiresAt'];
+        const existingSession = binding.role === 'api' && typeof sessionId === 'string'
+          ? binding.apiSessions.get(sessionId)
+          : undefined;
         const validSession = binding.role === 'worker'
           ? sessionId === undefined && expiresAt === undefined
           : validId(sessionId, 128) && Number.isSafeInteger(expiresAt);
         const allowed = raw['role'] === binding.role
           && raw['authentication'] === expectedAuthentication
-          && validSession;
+          && validSession
+          && (!existingSession || existingSession.userId === userId);
         let recordedRevocation = allowed;
         if (allowed) {
-          binding.users.delete(userId);
           if (binding.role === 'api' && typeof sessionId === 'string') {
+            const existing = binding.apiSessions.get(sessionId);
+            if (!existing || existing.userId === userId) binding.apiSessions.delete(sessionId);
+            this.refreshApiOwner(binding, userId);
             recordedRevocation = this.recordRevokedSession(binding, sessionId, Number(expiresAt));
+          } else {
+            binding.users.delete(userId);
           }
         }
         this.safeSend(child, {
@@ -969,6 +1019,38 @@ export class DesktopKeyBroker {
         return;
       }
       if (
+        raw['type'] === 'skytwin:vault:purge-owner'
+        && validId(raw['requestId'], 128)
+        && isValidVaultUserId(raw['userId'])
+      ) {
+        const requestId = raw['requestId'];
+        const userId = raw['userId'];
+        const allowed = binding.role === 'api'
+          && raw['role'] === 'api'
+          && raw['authentication'] === 'session';
+        if (!allowed) {
+          this.safeSend(child, {
+            type: 'skytwin:vault:response', requestId, contextUserId: userId,
+            generation: this.generation(userId),
+            result: { success: false, error: 'vault_broker_unavailable' },
+          });
+          return;
+        }
+
+        // The database purge has already committed. Fence first so a paused
+        // session grant or stale worker reconciliation cannot restore access
+        // while the lock barrier drains work and destroys the root key.
+        const purged = await this.purgeOwnerState(userId);
+        this.safeSend(child, {
+          type: 'skytwin:vault:response', requestId, contextUserId: userId,
+          generation: this.generation(userId),
+          result: purged
+            ? { success: true, state: 'locked' }
+            : { success: false, error: 'vault_broker_unavailable' },
+        });
+        return;
+      }
+      if (
         raw['type'] === 'skytwin:vault:reconcile'
         && validId(raw['requestId'], 128)
         && raw['role'] === 'worker'
@@ -981,7 +1063,9 @@ export class DesktopKeyBroker {
           && userIds.every(isValidVaultUserId)
           && new Set(userIds).size === userIds.length;
         if (allowed) {
-          binding.users = new Map((userIds as string[]).map(userId => [userId, null]));
+          binding.users = new Map((userIds as string[])
+            .filter(userId => !this.purgedOwners.has(userId))
+            .map(userId => [userId, null]));
         }
         this.safeSend(child, {
           type: 'skytwin:vault:response',
@@ -1211,6 +1295,8 @@ export class DesktopKeyBroker {
   }
 
   private hasActiveGrant(binding: Binding, userId: string): boolean {
+    if (this.purgedOwners.has(userId)) return false;
+    if (binding.role === 'api') this.refreshApiOwner(binding, userId);
     if (!binding.users.has(userId)) return false;
     const expiresAt = binding.users.get(userId);
     if (expiresAt !== null && expiresAt !== undefined && expiresAt <= this.now()) {
@@ -1218,6 +1304,39 @@ export class DesktopKeyBroker {
       return false;
     }
     return true;
+  }
+
+  private refreshApiOwner(binding: Binding, userId: string): void {
+    let latest = 0;
+    for (const [sessionId, session] of binding.apiSessions) {
+      if (session.userId !== userId) continue;
+      if (session.expiresAt <= this.now()) {
+        binding.apiSessions.delete(sessionId);
+        continue;
+      }
+      latest = Math.max(latest, session.expiresAt);
+    }
+    if (latest > 0) binding.users.set(userId, latest);
+    else binding.users.delete(userId);
+  }
+
+  private async purgeOwnerState(userId: string): Promise<boolean> {
+    this.purgedOwners.add(userId);
+    for (const binding of this.children.values()) {
+      binding.users.delete(userId);
+      for (const [sessionId, session] of binding.apiSessions) {
+        if (session.userId === userId) binding.apiSessions.delete(sessionId);
+      }
+    }
+    const locked = await this.lock(userId);
+    const deviceRemoved = this.tryDeleteDevice(userId);
+    if (!locked.success || !deviceRemoved) return false;
+    try {
+      await this.store.completeDeletion?.(userId);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private pruneRevokedSessions(binding: Binding): void {

@@ -6,7 +6,7 @@ vi.mock('@skytwin/credential-vault', () => ({
   VaultBrokerClient: class { reconcileAuthenticatedOwners = reconcileAuthenticatedOwners; },
 }));
 
-const { grantWorkerOwners } = await import('../vault-broker-client.js');
+const { grantWorkerOwners, reconcileWorkerDiscovery } = await import('../vault-broker-client.js');
 
 describe('worker vault owner reconciliation', () => {
   beforeEach(() => reconcileAuthenticatedOwners.mockReset().mockResolvedValue({ success: true }));
@@ -16,6 +16,19 @@ describe('worker vault owner reconciliation', () => {
     expect(reconcileAuthenticatedOwners).toHaveBeenCalledWith(['user-0001', 'user-0002']);
     await grantWorkerOwners(['user-0002']);
     expect(reconcileAuthenticatedOwners).toHaveBeenLastCalledWith(['user-0002']);
+  });
+
+  it('does not replace prior authority when database discovery is transiently unavailable', async () => {
+    await expect(reconcileWorkerDiscovery({
+      success: false,
+      error: 'discovery_unavailable',
+    })).resolves.toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(reconcileAuthenticatedOwners).not.toHaveBeenCalled();
+  });
+
+  it('uses the database owner snapshot even when connector startup produced no clients', async () => {
+    await reconcileWorkerDiscovery({ success: true, userIds: ['user-0001'] });
+    expect(reconcileAuthenticatedOwners).toHaveBeenCalledWith(['user-0001']);
   });
 
   it('continues brokerless standalone work with secret operations unavailable', async () => {

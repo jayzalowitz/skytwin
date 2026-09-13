@@ -141,6 +141,16 @@ describe('userPurgeRepository.purgeUser', () => {
       (c) => typeof c[0] === 'string' && c[0].includes('DELETE FROM'),
     );
     expect(deleteCalls.length).toBeGreaterThanOrEqual(8);
+    const intentIdx = mockClient.query.mock.calls.findIndex(
+      (c) => typeof c[0] === 'string' && c[0].includes('source_key_deletion_intents'),
+    );
+    const userDeleteIdx = mockClient.query.mock.calls.findIndex(
+      (c) => typeof c[0] === 'string' && c[0].includes('DELETE FROM users'),
+    );
+    expect(intentIdx).toBeGreaterThan(beginIdx);
+    expect(intentIdx).toBeLessThan(userDeleteIdx);
+    expect(intentIdx).toBeLessThan(commitIdx);
+    expect(mockClient.query.mock.calls[intentIdx]![1]).toEqual([USER_ID]);
   });
 
   it('rolls back when a delete throws (transactional all-or-nothing)', async () => {

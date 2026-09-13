@@ -53,7 +53,7 @@ import {
 import { extractErrorCode } from './oauth-error-code.js';
 import { recordPermanentOAuthFailure } from './oauth-circuit.js';
 import { DeadLetterTracker } from './dead-letter.js';
-import { grantWorkerOwners } from './vault-broker-client.js';
+import { reconcileWorkerDiscovery } from './vault-broker-client.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -195,6 +195,10 @@ interface UserConnectors {
   userId: string;
   connectors: SignalConnector[];
 }
+
+type UserDiscoveryResult =
+  | { success: true; users: UserConnectors[]; ownerIds: string[] }
+  | { success: false; error: 'discovery_unavailable' };
 
 /**
  * Forward a signal to the API for processing, with retry on transient failures.
@@ -513,11 +517,11 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
  * Discover users with active OAuth tokens and build their connectors.
  * Returns empty array if no users have connected accounts yet.
  */
-async function discoverUsers(): Promise<UserConnectors[]> {
+async function discoverUsers(): Promise<UserDiscoveryResult> {
   try {
     const tokens = await oauthRepository.getUsersWithActiveTokens();
     if (tokens.length === 0) {
-      return [];
+      return { success: true, users: [], ownerIds: [] };
     }
 
     // Group tokens by user
@@ -576,12 +580,12 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       }
     }
 
-    return result;
+    return { success: true, users: result, ownerIds: [...userTokens.keys()] };
   } catch (error) {
     log.error('Error discovering users', {
       error: error instanceof Error ? error.message : String(error),
     });
-    return [];
+    return { success: false, error: 'discovery_unavailable' };
   }
 }
 
@@ -668,8 +672,13 @@ async function main(): Promise<void> {
   startupTimer.unref();
 
   // Discover users and set up connectors
-  let userConnectors = await connectUserConnectors(await discoverUsers());
-  await grantWorkerOwners(userConnectors.map(({ userId }) => userId));
+  const initialDiscovery = await discoverUsers();
+  let userConnectors = initialDiscovery.success
+    ? await connectUserConnectors(initialDiscovery.users)
+    : [];
+  await reconcileWorkerDiscovery(initialDiscovery.success
+    ? { success: true, userIds: initialDiscovery.ownerIds }
+    : initialDiscovery);
   if (userConnectors.length === 0) {
     log.info('No users with connected accounts yet — waiting for first connection');
   } else {
@@ -1068,29 +1077,34 @@ async function main(): Promise<void> {
     // When no users are tracked yet, check every cycle so first-time
     // connections are picked up within one poll interval (~10s).
     if (userConnectors.length === 0 || pollCount % 10 === 0) {
-      const newUserConnectors = await connectUserConnectors(await discoverUsers());
-      await grantWorkerOwners(newUserConnectors.map(({ userId }) => userId));
-      const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
-      const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
-      const usersChanged = oldUserIds.size !== newUserIds.size
-        || [...oldUserIds].some((id) => !newUserIds.has(id));
-      if (usersChanged) {
-        log.info(`User set changed: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
-        // Disconnect old connectors
-        for (const uc of userConnectors) {
-          for (const connector of uc.connectors) {
-            await connector.disconnect();
+      const discovery = await discoverUsers();
+      if (!discovery.success) {
+        log.warn('User discovery unavailable — retaining the prior connector and vault-owner sets');
+      } else {
+        const newUserConnectors = await connectUserConnectors(discovery.users);
+        await reconcileWorkerDiscovery({ success: true, userIds: discovery.ownerIds });
+        const oldUserIds = new Set(userConnectors.map((uc) => uc.userId));
+        const newUserIds = new Set(newUserConnectors.map((uc) => uc.userId));
+        const usersChanged = oldUserIds.size !== newUserIds.size
+          || [...oldUserIds].some((id) => !newUserIds.has(id));
+        if (usersChanged) {
+          log.info(`User set changed: ${[...oldUserIds].join(',')} → ${[...newUserIds].join(',')}`);
+          // Disconnect old connectors
+          for (const uc of userConnectors) {
+            for (const connector of uc.connectors) {
+              await connector.disconnect();
+            }
           }
-        }
-        userConnectors = newUserConnectors;
+          userConnectors = newUserConnectors;
 
-        // Prune circuit breakers and signal dedupe maps for users no longer tracked
-        for (const userId of userCircuitBreakers.keys()) {
-          if (!newUserIds.has(userId)) {
-            userCircuitBreakers.delete(userId);
+          // Prune circuit breakers and signal dedupe maps for users no longer tracked
+          for (const userId of userCircuitBreakers.keys()) {
+            if (!newUserIds.has(userId)) {
+              userCircuitBreakers.delete(userId);
+            }
           }
+          signalDeduper.pruneUsers(newUserIds);
         }
-        signalDeduper.pruneUsers(newUserIds);
       }
     }
 

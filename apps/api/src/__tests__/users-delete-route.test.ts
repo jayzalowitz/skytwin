@@ -23,6 +23,7 @@ const mockUserRepository = {
   findByEmail: vi.fn(),
   findAll: vi.fn(),
 };
+const mockPurgeOwner = vi.fn();
 
 vi.mock('@skytwin/db', () => ({
   userRepository: mockUserRepository,
@@ -46,6 +47,10 @@ vi.mock('../middleware/session-auth.js', () => ({
     }
     next();
   },
+}));
+
+vi.mock('../vault-broker-client.js', () => ({
+  apiVaultBroker: { purgeOwner: mockPurgeOwner },
 }));
 
 vi.mock('../middleware/require-ownership.js', () => ({
@@ -193,6 +198,7 @@ describe('GET /users/:userId', () => {
 describe('DELETE /users/:userId (#376)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockPurgeOwner.mockResolvedValue({ success: true });
   });
 
   it('400s without ?confirm=delete-my-data — no purge call', async () => {
@@ -239,6 +245,22 @@ describe('DELETE /users/:userId (#376)', () => {
     expect(counts['candidate_actions']).toBe(11);
     expect(counts['users']).toBe(1);
     expect(mockUserPurgeRepository.purgeUser).toHaveBeenCalledWith(USER_ID);
+    expect(mockPurgeOwner).toHaveBeenCalledWith(USER_ID);
+  });
+
+  it('truthfully reports a committed deletion when local key cleanup is pending', async () => {
+    mockUserPurgeRepository.purgeUser.mockResolvedValue({
+      counts: { users: 1 }, total: 1, userExisted: true,
+    });
+    mockPurgeOwner.mockResolvedValue({ success: false, error: 'vault_broker_unavailable' });
+    const { status, body } = await request(
+      makeApp(), 'DELETE', `/users/${USER_ID}?confirm=delete-my-data`,
+    );
+    expect(status).toBe(503);
+    expect(body).toMatchObject({
+      deleted: true, cleanupPending: true, userId: USER_ID,
+      error: 'vault_broker_unavailable',
+    });
   });
 
   it('404s when the final DELETE FROM users hit zero rows (user already gone)', async () => {
@@ -256,6 +278,7 @@ describe('DELETE /users/:userId (#376)', () => {
     expect(status).toBe(404);
     expect(body['error']).toBe('user_not_found');
     expect(body['counts']).toEqual({ users: 0 });
+    expect(mockPurgeOwner).not.toHaveBeenCalled();
   });
 
   it('propagates a repository error via the express error pipeline', async () => {

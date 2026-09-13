@@ -11,6 +11,7 @@ const wrapper: WrappedUserKey = {
 
 class Registry implements SourceKeyRegistryPort {
   row: SourceKeyRegistryRecord | null = null;
+  pending: string[] = [];
   async getCurrent(): Promise<SourceKeyRegistryRecord | null> { return this.row; }
   async createInitial(input: SourceKeyRegistryRecord): Promise<boolean> { if (this.row) return false; this.row = structuredClone(input); return true; }
   async deleteInitialIfMatch(input: SourceKeyRegistryRecord): Promise<boolean> {
@@ -18,6 +19,8 @@ class Registry implements SourceKeyRegistryPort {
     this.row = null;
     return true;
   }
+  async listPendingDeletions(): Promise<string[]> { return [...this.pending]; }
+  async completeDeletion(userId: string): Promise<void> { this.pending = this.pending.filter(id => id !== userId); }
 }
 
 describe('CockroachWrappedKeyStore', () => {
@@ -52,5 +55,14 @@ describe('CockroachWrappedKeyStore', () => {
     registry.deleteInitialIfMatch = async () => false;
     expect(await store.deleteIfMatch(wrapper.userId, wrapper)).toBe(false);
     expect(registry.row).not.toBeNull();
+  });
+
+  it('forwards durable local-cleanup intent reads and completion', async () => {
+    const registry = new Registry();
+    registry.pending = [wrapper.userId];
+    const store = new CockroachWrappedKeyStore(async () => registry);
+    expect(await store.listPendingDeletions()).toEqual([wrapper.userId]);
+    await store.completeDeletion(wrapper.userId);
+    expect(await store.listPendingDeletions()).toEqual([]);
   });
 });

@@ -73,4 +73,16 @@ describe('sourceKeyRegistryRepository', () => {
     expect(mockQuery.mock.calls[0]![0]).toContain('UPSERT INTO source_key_deletion_intents');
     expect(mockQuery.mock.calls[0]![1]).toEqual([input.user_id]);
   });
+
+  it('lists and completes pending device-wrapper deletion intents', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ user_id: input.user_id }], rowCount: 1,
+    });
+    expect(await sourceKeyRegistryRepository.listPendingDeletions()).toEqual([input.user_id]);
+    expect(mockQuery.mock.calls[0]![0]).toContain('device_wrapper_deleted_at IS NULL');
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    await sourceKeyRegistryRepository.completeDeletion(input.user_id);
+    expect(mockQuery.mock.calls[1]![0]).toContain('device_wrapper_deleted_at = now()');
+    expect(mockQuery.mock.calls[1]![1]).toEqual([input.user_id]);
+  });
 });

@@ -197,4 +197,29 @@ export const sourceKeyRegistryRepository = {
       [userId],
     );
   },
+
+  async listPendingDeletions(): Promise<string[]> {
+    const result = await query<{ user_id: unknown }>(
+      `SELECT user_id
+         FROM source_key_deletion_intents
+        WHERE device_wrapper_deleted_at IS NULL
+        ORDER BY requested_at ASC
+        LIMIT 1000`,
+    );
+    return result.rows.map(row => {
+      validateUserId(row.user_id);
+      return row.user_id;
+    });
+  },
+
+  async completeDeletion(userId: string): Promise<void> {
+    validateUserId(userId);
+    await query(
+      `UPDATE source_key_deletion_intents
+          SET device_wrapper_deleted_at = now()
+        WHERE user_id = $1
+          AND device_wrapper_deleted_at IS NULL`,
+      [userId],
+    );
+  },
 };

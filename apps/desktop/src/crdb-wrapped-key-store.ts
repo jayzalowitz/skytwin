@@ -13,6 +13,8 @@ export interface SourceKeyRegistryPort {
   getCurrent(userId: string): Promise<SourceKeyRegistryRecord | null>;
   createInitial(input: SourceKeyRegistryRecord): Promise<boolean>;
   deleteInitialIfMatch(input: SourceKeyRegistryRecord): Promise<boolean>;
+  listPendingDeletions(): Promise<string[]>;
+  completeDeletion(userId: string): Promise<void>;
 }
 
 /** CockroachDB-backed recovery-wrapper store. Device wrappers stay local. */
@@ -48,6 +50,14 @@ export class CockroachWrappedKeyStore implements WrappedKeyStore {
       user_id: userId, key_version: value.keyVersion, wrapper_version: value.wrapperVersion,
       algorithm: value.algorithm, kdf_record: value.kdf, recovery_wrapper: value,
     });
+  }
+
+  async listPendingDeletions(): Promise<string[]> {
+    return await (await this.port()).listPendingDeletions();
+  }
+
+  async completeDeletion(userId: string): Promise<void> {
+    await (await this.port()).completeDeletion(userId);
   }
 
   private async port(): Promise<SourceKeyRegistryPort> {

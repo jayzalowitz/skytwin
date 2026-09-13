@@ -15,6 +15,11 @@ export type VaultBrokerControlResult =
   | { success: true }
   | { success: false; error: VaultBrokerControlFailure };
 
+interface SessionGrant {
+  expiresAt: number;
+  timer: ReturnType<typeof setTimeout>;
+}
+
 interface IpcProcess {
   connected?: boolean;
   send?: (message: unknown) => boolean;
@@ -33,10 +38,12 @@ export class VaultBrokerClient {
   private role: VaultBrokerRole | null = null;
   private generations = new Map<string, number>();
   private grantedOwners = new Set<string>();
-  private grantTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  private grantDeadlines = new Map<string, number>();
+  private sessionGrants = new Map<string, Map<string, SessionGrant>>();
+  private ownerEpochs = new Map<string, number>();
+  private sessionEpochs = new Map<string, number>();
   private pending = new Map<string, Pending>();
   private listening = false;
+  private capabilityIssued = false;
   private readonly onMessage = (raw?: unknown): void => { this.handle(raw); };
   private readonly onDisconnect = (): void => { this.reset(); };
 
@@ -71,11 +78,13 @@ export class VaultBrokerClient {
       || !this.capability
       || this.role !== 'api'
     ) return { success: false, error: 'vault_broker_unavailable' };
-    const requestedExpiry = validUntil.getTime();
-    const expiresAt = Math.max(this.grantDeadlines.get(userId) ?? 0, requestedExpiry);
+    const expiresAt = validUntil.getTime();
     if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) {
       return { success: false, error: 'grant_expired' };
     }
+    const ownerEpoch = this.ownerEpochs.get(userId) ?? 0;
+    const sessionKey = this.sessionKey(userId, sessionId);
+    const sessionEpoch = this.sessionEpochs.get(sessionKey) ?? 0;
     const requestId = randomBytes(16).toString('hex');
     const response = await this.exchange(requestId, userId, {
       type: 'skytwin:vault:grant', requestId, capability: this.capability.toString('base64'),
@@ -86,8 +95,12 @@ export class VaultBrokerClient {
       return { success: false, error: this.controlError(response.error) };
     }
     if (!('state' in response)) return { success: false, error: 'vault_broker_unavailable' };
+    if (
+      ownerEpoch !== (this.ownerEpochs.get(userId) ?? 0)
+      || sessionEpoch !== (this.sessionEpochs.get(sessionKey) ?? 0)
+    ) return { success: false, error: 'grant_revoked' };
     this.grantedOwners.add(userId);
-    this.scheduleRevocation(userId, sessionId, new Date(expiresAt));
+    this.scheduleRevocation(userId, sessionId, expiresAt);
     return { success: true };
   }
 
@@ -96,9 +109,9 @@ export class VaultBrokerClient {
     sessionId: string,
     validUntil: Date,
   ): Promise<VaultBrokerControlResult> {
-    const timer = this.grantTimers.get(userId); if (timer) clearTimeout(timer); this.grantTimers.delete(userId);
-    this.grantDeadlines.delete(userId);
-    this.grantedOwners.delete(userId);
+    const sessionKey = this.sessionKey(userId, sessionId);
+    this.sessionEpochs.set(sessionKey, (this.sessionEpochs.get(sessionKey) ?? 0) + 1);
+    this.removeSessionGrant(userId, sessionId);
     const expiresAt = validUntil.getTime();
     if (!this.capability || this.role !== 'api' || !this.validUserId(userId) || !this.validId(sessionId) || !Number.isSafeInteger(expiresAt)) {
       return { success: false, error: 'vault_broker_unavailable' };
@@ -107,6 +120,41 @@ export class VaultBrokerClient {
     const response = await this.exchange(requestId, userId, {
       type: 'skytwin:vault:revoke', requestId, capability: this.capability.toString('base64'),
       role: 'api', userId, authentication: 'session', sessionId, expiresAt,
+    }, 'control');
+    if (!response.success) {
+      if (response.error === 'capability_mismatch') this.reset();
+      return { success: false, error: this.controlError(response.error) };
+    }
+    return 'state' in response
+      ? { success: true }
+      : { success: false, error: 'vault_broker_unavailable' };
+  }
+
+  /**
+   * Permanently fence an owner in the current desktop-broker lifetime after
+   * the authoritative user purge has committed. The parent clears every child
+   * grant, drains in-flight work, drops the root key, and removes its device
+   * wrapper before acknowledging.
+   */
+  async purgeOwner(userId: string): Promise<VaultBrokerControlResult> {
+    this.ownerEpochs.set(userId, (this.ownerEpochs.get(userId) ?? 0) + 1);
+    this.removeAllSessionGrants(userId);
+    if (!this.validUserId(userId)) {
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
+    // A standalone API that has never received an Electron capability has no
+    // broker authority or parent-held key to clean up. Preserve account-delete
+    // availability there; once a capability has existed, loss is ambiguous and
+    // must remain a retryable failure.
+    if (!this.capability && !this.capabilityIssued) return { success: true };
+    if (!this.capability || this.role !== 'api') {
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
+    const requestId = randomBytes(16).toString('hex');
+    const response = await this.exchange(requestId, userId, {
+      type: 'skytwin:vault:purge-owner', requestId,
+      capability: this.capability.toString('base64'),
+      role: 'api', authentication: 'session', userId,
     }, 'control');
     if (!response.success) {
       if (response.error === 'capability_mismatch') this.reset();
@@ -166,13 +214,13 @@ export class VaultBrokerClient {
     if (message['type'] === 'skytwin:vault:capability' && typeof message['capability'] === 'string' && (message['role'] === 'api' || message['role'] === 'worker')) {
       const decoded = Buffer.from(message['capability'], 'base64');
       if (decoded.length !== 32 || decoded.toString('base64') !== message['capability']) { decoded.fill(0); return; }
-      this.reset(); this.capability = decoded; this.role = message['role'];
+      this.reset(); this.capability = decoded; this.role = message['role']; this.capabilityIssued = true;
       return;
     }
     if (message['type'] === 'skytwin:vault:lock' && typeof message['userId'] === 'string' && Number.isSafeInteger(message['generation']) && this.capability) {
       const userId = message['userId']; this.generations.set(userId, message['generation'] as number);
       for (const [id, pending] of this.pending) {
-        if (pending.userId !== userId) continue;
+        if (pending.userId !== userId || pending.operation === 'control') continue;
         clearTimeout(pending.timer); pending.resolve({ success: false, error: 'vault_locked' }); this.pending.delete(id);
       }
       this.ipc.send?.({ type: 'skytwin:vault:lock-ack', lockId: message['lockId'], userId, generation: message['generation'], capability: this.capability.toString('base64') });
@@ -196,7 +244,11 @@ export class VaultBrokerClient {
 
   private clearAuthority(): void {
     this.generations.clear(); this.grantedOwners.clear();
-    for (const timer of this.grantTimers.values()) clearTimeout(timer); this.grantTimers.clear(); this.grantDeadlines.clear();
+    for (const grants of this.sessionGrants.values()) {
+      for (const grant of grants.values()) clearTimeout(grant.timer);
+    }
+    this.sessionGrants.clear();
+    this.ownerEpochs.clear(); this.sessionEpochs.clear();
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.resolve({ success: false, error: 'vault_broker_unavailable' }); }
     this.pending.clear();
   }
@@ -220,13 +272,43 @@ export class VaultBrokerClient {
     return pending.operation === 'encrypt' && !!pending.context && e['magic'] === 'skytwin-envelope' && e['version'] === 2 && e['algorithm'] === 'aes-256-gcm' && e['ownerKind'] === 'user' && e['purpose'] === pending.context.purpose && Number.isSafeInteger(e['keyVersion']) && Number(e['keyVersion']) > 0 && this.validBase64(e['iv'], 12) && this.validBase64(e['tag'], 16) && this.validBase64(e['ciphertext']);
   }
   private validBase64(value: unknown, exact?: number): boolean { if (typeof value !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false; const decoded = Buffer.from(value, 'base64'); return decoded.toString('base64') === value && (exact === undefined || decoded.length === exact); }
-  private scheduleRevocation(userId: string, sessionId: string, validUntil: Date): void {
-    const deadline = validUntil.getTime(); if ((this.grantDeadlines.get(userId) ?? 0) >= deadline) return;
-    this.grantDeadlines.set(userId, deadline);
-    const prior = this.grantTimers.get(userId); if (prior) clearTimeout(prior);
+  private scheduleRevocation(userId: string, sessionId: string, deadline: number): void {
+    let grants = this.sessionGrants.get(userId);
+    if (!grants) {
+      grants = new Map();
+      this.sessionGrants.set(userId, grants);
+    }
+    const prior = grants.get(sessionId);
+    if (prior && prior.expiresAt >= deadline) return;
+    if (prior) clearTimeout(prior.timer);
     const timer = setTimeout(() => {
-      this.grantDeadlines.delete(userId);
-      void this.revokeAuthenticatedSession(userId, sessionId, validUntil);
-    }, Math.max(0, deadline - Date.now())); timer.unref?.(); this.grantTimers.set(userId, timer);
+      this.removeSessionGrant(userId, sessionId);
+      void this.revokeAuthenticatedSession(userId, sessionId, new Date(deadline));
+    }, Math.max(0, deadline - Date.now())); timer.unref?.();
+    grants.set(sessionId, { expiresAt: deadline, timer });
+    this.grantedOwners.add(userId);
+  }
+
+  private removeSessionGrant(userId: string, sessionId: string): void {
+    const grants = this.sessionGrants.get(userId);
+    const grant = grants?.get(sessionId);
+    if (grant) clearTimeout(grant.timer);
+    grants?.delete(sessionId);
+    if (grants && grants.size > 0) return;
+    this.sessionGrants.delete(userId);
+    this.grantedOwners.delete(userId);
+  }
+
+  private removeAllSessionGrants(userId: string): void {
+    const grants = this.sessionGrants.get(userId);
+    if (grants) {
+      for (const grant of grants.values()) clearTimeout(grant.timer);
+    }
+    this.sessionGrants.delete(userId);
+    this.grantedOwners.delete(userId);
+  }
+
+  private sessionKey(userId: string, sessionId: string): string {
+    return `${userId}\u0000${sessionId}`;
   }
 }

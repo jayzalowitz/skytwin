@@ -22,7 +22,19 @@ composition stores the recovery wrapper in the CockroachDB registry. The API
 requests an owner grant only after validating that user's session, and the
 parent independently enforces the session deadline on every broker request.
 The worker replaces its complete owner set after database-backed connector
-discovery, so owners absent from the new set lose authority atomically.
+discovery, so owners absent from the new set lose authority atomically. A
+transient discovery failure is not an empty snapshot and preserves the last
+authoritative set; connector startup success does not define key ownership.
+
+API grants retain the exact session nonce and database-proven expiry rather than
+collapsing multiple sessions into one owner deadline. Revoking or expiring one
+session preserves any independently valid session. Account deletion commits a
+content-free cleanup intent in the same transaction as the database purge. The
+parent then fences that owner across API and worker children, drains in-flight
+work, drops the in-memory key, deletes the optional device wrapper, and marks the
+intent complete. Pending intents are replayed before a replacement API child is
+given a capability, so a process exit between database and native-store cleanup
+converges safely.
 
 Lock and unlock close admission, request a capability-authenticated child
 acknowledgement, and wait for in-flight calls. A child that does not acknowledge
@@ -39,6 +51,6 @@ be deleted by rollback.
 Consequently, the public privacy policy remains unchanged: source fields are
 not represented as encrypted at rest. Passing unit tests for this kernel is
 design and implementation evidence only, not packaged-platform or coverage
-evidence. The deletion-intent consumer and source-field migration remain release
-blockers; OAuth, provider, MCP, federation, cursor, and DXT source columns do not
-yet route through this client.
+evidence. Source-field migration remains a release blocker; OAuth, provider,
+MCP, federation, cursor, and DXT source columns do not yet route through this
+client.

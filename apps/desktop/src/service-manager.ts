@@ -581,6 +581,14 @@ export class ServiceManager {
     this.api.status = 'starting';
     this.emitStatus();
 
+    // A user purge and native device-store deletion cannot share a database
+    // transaction. Drain durable deletion intents before using an external API
+    // or issuing a capability to a fresh managed process, including restarts.
+    const pendingDeletionCleanup = await this.keyBroker?.reconcilePendingDeletions();
+    if (pendingDeletionCleanup && !pendingDeletionCleanup.success) {
+      console.warn('[vault] Pending owner cleanup remains fail closed');
+    }
+
     if (await this.detectExternalApi()) {
       console.log('[api] External API detected on :3100 — using existing instance, not forking.');
       this.api.external = true;

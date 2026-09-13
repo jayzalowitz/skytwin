@@ -1,5 +1,5 @@
 import { EventEmitter } from 'events';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { VaultBrokerClient, type VaultBrokerContext } from '../broker-client.js';
 
 class FakeIpc extends EventEmitter {
@@ -102,6 +102,103 @@ describe('VaultBrokerClient', () => {
     const earlier = new Date(Date.now() + 60_000);
     void client.grantAuthenticatedSession(context.userId, 'session-0002', earlier);
     expect(ipc.sent.at(-1)).toMatchObject({ expiresAt: earlier.getTime() });
+    client.close();
+  });
+
+  it('keeps overlapping session expiries exact and never lends a live deadline to an expired nonce', async () => {
+    const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 50);
+    ipc.emit('message', { type: 'skytwin:vault:capability', capability, role: 'api' });
+    const later = new Date(Date.now() + 120_000);
+    const first = client.grantAuthenticatedSession(context.userId, 'session-long', later);
+    const firstMessage = ipc.sent.at(-1)!;
+    ipc.emit('message', { type: 'skytwin:vault:response', requestId: firstMessage['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'unlocked' } });
+    await first;
+
+    const earlier = new Date(Date.now() + 60_000);
+    void client.grantAuthenticatedSession(context.userId, 'session-short', earlier);
+    expect(ipc.sent.at(-1)).toMatchObject({ sessionId: 'session-short', expiresAt: earlier.getTime() });
+    const sentBeforeExpired = ipc.sent.length;
+    await expect(client.grantAuthenticatedSession(context.userId, 'session-expired', new Date(Date.now() - 1)))
+      .resolves.toEqual({ success: false, error: 'grant_expired' });
+    expect(ipc.sent).toHaveLength(sentBeforeExpired);
+    client.close();
+  });
+
+  it('keeps another session locally admitted when one overlapping session is revoked', async () => {
+    const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 50);
+    ipc.emit('message', { type: 'skytwin:vault:capability', capability, role: 'api' });
+    for (const id of ['session-a', 'session-b']) {
+      const grant = client.grantAuthenticatedSession(context.userId, id, new Date(Date.now() + 60_000));
+      const message = ipc.sent.at(-1)!;
+      ipc.emit('message', { type: 'skytwin:vault:response', requestId: message['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'unlocked' } });
+      await grant;
+    }
+    const revoke = client.revokeAuthenticatedSession(context.userId, 'session-a', new Date(Date.now() + 60_000));
+    const revokeMessage = ipc.sent.at(-1)!;
+    ipc.emit('message', { type: 'skytwin:vault:response', requestId: revokeMessage['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'unlocked' } });
+    await revoke;
+    void client.state(context);
+    expect(ipc.sent.at(-1)).toMatchObject({ type: 'skytwin:vault:request', operation: 'state' });
+    client.close();
+  });
+
+  it('expires overlapping session timers independently', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    try {
+      const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 50);
+      ipc.emit('message', { type: 'skytwin:vault:capability', capability, role: 'api' });
+      for (const [id, expiry] of [['session-short', 1_100], ['session-long', 1_200]] as const) {
+        const grant = client.grantAuthenticatedSession(context.userId, id, new Date(expiry));
+        const message = ipc.sent.at(-1)!;
+        ipc.emit('message', { type: 'skytwin:vault:response', requestId: message['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'unlocked' } });
+        await grant;
+      }
+      await vi.advanceTimersByTimeAsync(101);
+      expect(ipc.sent.some(message => message['type'] === 'skytwin:vault:revoke' && message['sessionId'] === 'session-short')).toBe(true);
+      void client.state(context);
+      expect(ipc.sent.at(-1)).toMatchObject({ type: 'skytwin:vault:request', operation: 'state' });
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not restore local authority when a grant response arrives after revoke began', async () => {
+    const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 50);
+    ipc.emit('message', { type: 'skytwin:vault:capability', capability, role: 'api' });
+    const expiry = new Date(Date.now() + 60_000);
+    const grant = client.grantAuthenticatedSession(context.userId, sessionId, expiry);
+    const grantMessage = ipc.sent.at(-1)!;
+    const revoke = client.revokeAuthenticatedSession(context.userId, sessionId, expiry);
+    const revokeMessage = ipc.sent.at(-1)!;
+    ipc.emit('message', { type: 'skytwin:vault:response', requestId: revokeMessage['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'locked' } });
+    await revoke;
+    ipc.emit('message', { type: 'skytwin:vault:response', requestId: grantMessage['requestId'], contextUserId: context.userId, generation: 1, result: { success: true, state: 'unlocked' } });
+    expect(await grant).toEqual({ success: false, error: 'grant_revoked' });
+    expect(await client.state(context)).toEqual({ success: false, error: 'vault_broker_unavailable' });
+    client.close();
+  });
+
+  it('keeps standalone account deletion available but requires acknowledgement after capability issuance', async () => {
+    const standalone = new VaultBrokerClient(new EventEmitter() as FakeIpc, 20);
+    await expect(standalone.purgeOwner(context.userId)).resolves.toEqual({ success: true });
+    standalone.close();
+
+    const ipc = new FakeIpc(), client = new VaultBrokerClient(ipc, 50);
+    ipc.emit('message', { type: 'skytwin:vault:capability', capability, role: 'api' });
+    const purge = client.purgeOwner(context.userId);
+    const message = ipc.sent.at(-1)!;
+    expect(message).toMatchObject({
+      type: 'skytwin:vault:purge-owner', role: 'api', authentication: 'session',
+      userId: context.userId,
+    });
+    ipc.emit('message', {
+      type: 'skytwin:vault:response', requestId: message['requestId'],
+      contextUserId: context.userId, generation: 2,
+      result: { success: true, state: 'locked' },
+    });
+    await expect(purge).resolves.toEqual({ success: true });
     client.close();
   });
 

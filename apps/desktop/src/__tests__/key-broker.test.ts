@@ -40,6 +40,15 @@ class PausableGetStore extends MemoryStore {
     return super.get(id);
   }
 }
+class DeletionIntentStore extends MemoryStore {
+  pending: string[] = [];
+  failCompletion = false;
+  listPendingDeletions(): string[] { return [...this.pending]; }
+  completeDeletion(userId: string): void {
+    if (this.failCompletion) throw new Error('database unavailable');
+    this.pending = this.pending.filter(id => id !== userId);
+  }
+}
 class FakeChild extends EventEmitter {
   sent: unknown[] = [];
   killSignals: NodeJS.Signals[] = [];
@@ -293,6 +302,38 @@ describe('DesktopKeyBroker', () => {
       .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
   });
 
+  it('keeps an owner admitted until every independently expiring session is gone', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api');
+    const capability = (child.sent[0] as { capability: string }).capability;
+    for (const [sessionId, expiresAt] of [
+      ['session-long', Date.now() + 120_000],
+      ['session-short', Date.now() + 60_000],
+    ] as const) {
+      child.emit('message', {
+        type: 'skytwin:vault:grant', requestId: `grant-${sessionId}`, capability,
+        role: 'api', authentication: 'session', userId: context.userId,
+        sessionId, expiresAt,
+      });
+    }
+    await tick();
+    child.emit('message', {
+      type: 'skytwin:vault:revoke', requestId: 'revoke-short', capability,
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId: 'session-short', expiresAt: Date.now() + 60_000,
+    });
+    await tick();
+    child.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'long-still-valid', capability,
+      generation: 1, operation: 'state', context,
+    });
+    await tick();
+    expect(child.sent.find(value => (value as { requestId?: string }).requestId === 'long-still-valid'))
+      .toMatchObject({ result: { success: true, state: 'unlocked' } });
+  });
+
   it('enforces API grant expiry in the parent broker on every request', async () => {
     let now = 1_000;
     const broker = new DesktopKeyBroker(new MemoryStore(), { now: () => now });
@@ -353,6 +394,125 @@ describe('DesktopKeyBroker', () => {
       requestId: 'after-stale-grant',
       result: { success: false, error: 'vault_broker_unavailable' },
     });
+  });
+
+  it('purges one owner across API and worker children and fences paused grants', async () => {
+    const devices = new DeviceStore();
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      deviceProtection, deviceStore: devices, platform: 'darwin',
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    expect(broker.rememberDevice(context.userId)).toEqual({ success: true });
+    const api = new FakeChild(), worker = new FakeChild();
+    const apiCapability = await attachAuthorized(broker, api);
+    const workerCapability = await attachAuthorized(broker, worker, 'worker');
+
+    api.emit('message', {
+      type: 'skytwin:vault:purge-owner', requestId: 'purge-owner', capability: apiCapability,
+      role: 'api', authentication: 'session', userId: context.userId,
+    });
+    await tick();
+    expect(api.sent.find(value => (value as { requestId?: string }).requestId === 'purge-owner'))
+      .toMatchObject({ result: { success: true, state: 'locked' } });
+    expect(devices.get(context.userId)).toBeUndefined();
+    expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+
+    api.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'paused-grant', capability: apiCapability,
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId: 'session-paused', expiresAt: Date.now() + 60_000,
+    });
+    worker.emit('message', {
+      type: 'skytwin:vault:reconcile', requestId: 'stale-worker', capability: workerCapability,
+      role: 'worker', authentication: 'service', userIds: [context.userId],
+    });
+    await tick();
+    expect(api.sent.find(value => (value as { requestId?: string }).requestId === 'paused-grant'))
+      .toMatchObject({ result: { success: false } });
+    worker.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'worker-after-purge', capability: workerCapability,
+      generation: 2, operation: 'state', context,
+    });
+    await tick();
+    expect(worker.sent.find(value => (value as { requestId?: string }).requestId === 'worker-after-purge'))
+      .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+  });
+
+  it('converges a committed purge intent before a replacement child can regain authority', async () => {
+    const store = new DeletionIntentStore(), devices = new DeviceStore();
+    const broker = new DesktopKeyBroker(store, {
+      deviceProtection, deviceStore: devices, platform: 'darwin',
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    expect(broker.rememberDevice(context.userId)).toEqual({ success: true });
+    store.pending = [context.userId];
+    expect(await broker.reconcilePendingDeletions()).toEqual({ success: true, removed: 1 });
+    expect(store.pending).toEqual([]);
+    expect(devices.get(context.userId)).toBeUndefined();
+    expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+
+    const replacement = new FakeChild();
+    broker.attachChild(replacement as unknown as ChildProcess, 'api');
+    const capability = (replacement.sent[0] as { capability: string }).capability;
+    replacement.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'replay-after-restart', capability,
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId: 'session-stale', expiresAt: Date.now() + 60_000,
+    });
+    await tick();
+    expect(replacement.sent.at(-1)).toMatchObject({
+      requestId: 'replay-after-restart', result: { success: false },
+    });
+  });
+
+  it('keeps a failed cleanup intent pending and the owner fenced for retry', async () => {
+    const store = new DeletionIntentStore(), devices = new DeviceStore();
+    const broker = new DesktopKeyBroker(store, {
+      deviceProtection, deviceStore: devices, platform: 'darwin',
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    expect(broker.rememberDevice(context.userId)).toEqual({ success: true });
+    store.pending = [context.userId];
+    store.failCompletion = true;
+    expect(await broker.reconcilePendingDeletions())
+      .toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(store.pending).toEqual([context.userId]);
+    expect(devices.get(context.userId)).toBeUndefined();
+    expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+    store.failCompletion = false;
+    expect(await broker.reconcilePendingDeletions()).toEqual({ success: true, removed: 1 });
+    expect(store.pending).toEqual([]);
+  });
+
+  it('destroys the child capability when the revoked-session tombstone bound is exhausted', async () => {
+    let now = 1_000;
+    const broker = new DesktopKeyBroker(new MemoryStore(), { now: () => now });
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api');
+    const capability = (child.sent[0] as { capability: string }).capability;
+    for (let index = 0; index <= 10_000; index++) {
+      child.emit('message', {
+        type: 'skytwin:vault:revoke', requestId: `revoke-${index}`, capability,
+        role: 'api', authentication: 'session', userId: context.userId,
+        sessionId: `session-${index}`, expiresAt: 60_000,
+      });
+    }
+    await tick();
+    expect(child.sent.find(value => (value as { requestId?: string }).requestId === 'revoke-10000'))
+      .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+    const responsesAfterRelease = child.sent.length;
+    now += 1;
+    child.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'grant-after-release', capability,
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId: 'session-after-release', expiresAt: 60_000,
+    });
+    child.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'request-after-release', capability,
+      generation: 0, operation: 'state', context,
+    });
+    await tick();
+    expect(child.sent).toHaveLength(responsesAfterRelease);
   });
 
   it('returns an authoritative error for a mismatched child capability', async () => {
