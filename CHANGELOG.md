@@ -42,6 +42,10 @@ All notable changes to SkyTwin will be documented in this file.
   request. Account deletion records durable local cleanup in the purge
   transaction, fences paused API and worker grants, drains child work, and
   removes in-memory keys, device-wrapped keys, and remembered passphrases.
+  A shared generation fence now also prevents renderer or internal passphrase
+  writes from recreating that local secret while deletion completion is pending
+  or after a restart; non-deleted owners open only after the durable deletion
+  ledger has been read successfully.
 - **Deletion cleanup now gates service authority and reports pending work
   truthfully.** Startup retries an unreadable or incomplete cleanup ledger before
   accepting an external API or attaching a managed one, revokes existing child

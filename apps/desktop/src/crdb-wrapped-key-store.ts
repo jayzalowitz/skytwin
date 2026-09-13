@@ -14,6 +14,7 @@ export interface SourceKeyRegistryPort {
   createInitial(input: SourceKeyRegistryRecord): Promise<boolean>;
   deleteInitialIfMatch(input: SourceKeyRegistryRecord): Promise<boolean>;
   listPendingDeletions(): Promise<string[]>;
+  listDeletionFences(): Promise<string[]>;
   completeDeletion(userId: string): Promise<void>;
 }
 
@@ -54,6 +55,10 @@ export class CockroachWrappedKeyStore implements WrappedKeyStore {
 
   async listPendingDeletions(): Promise<string[]> {
     return await (await this.port()).listPendingDeletions();
+  }
+
+  async listDeletionFences(): Promise<string[]> {
+    return await (await this.port()).listDeletionFences();
   }
 
   async completeDeletion(userId: string): Promise<void> {

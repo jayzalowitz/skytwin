@@ -20,6 +20,7 @@ class Registry implements SourceKeyRegistryPort {
     return true;
   }
   async listPendingDeletions(): Promise<string[]> { return [...this.pending]; }
+  async listDeletionFences(): Promise<string[]> { return [...this.pending]; }
   async completeDeletion(userId: string): Promise<void> { this.pending = this.pending.filter(id => id !== userId); }
 }
 
@@ -62,6 +63,7 @@ describe('CockroachWrappedKeyStore', () => {
     registry.pending = [wrapper.userId];
     const store = new CockroachWrappedKeyStore(async () => registry);
     expect(await store.listPendingDeletions()).toEqual([wrapper.userId]);
+    expect(await store.listDeletionFences()).toEqual([wrapper.userId]);
     await store.completeDeletion(wrapper.userId);
     expect(await store.listPendingDeletions()).toEqual([]);
   });

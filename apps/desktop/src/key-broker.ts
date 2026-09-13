@@ -11,6 +11,7 @@ import {
   resolveSecureStorageBackend,
   type SecureStorageBackendPort,
 } from './secure-storage-backend.js';
+import type { OwnerDeletionFence } from './passphrase-vault.js';
 
 const KEY_BYTES = 32;
 const IV_BYTES = 12;
@@ -94,6 +95,7 @@ export interface WrappedKeyStore {
   create(userId: string, value: WrappedUserKey): boolean | Promise<boolean>;
   deleteIfMatch(userId: string, value: WrappedUserKey): boolean | Promise<boolean>;
   listPendingDeletions?(): string[] | Promise<string[]>;
+  listDeletionFences?(): string[] | Promise<string[]>;
   completeDeletion?(userId: string): void | Promise<void>;
 }
 
@@ -458,6 +460,7 @@ export class DesktopKeyBroker {
   private readonly deviceProtection?: DeviceProtectionPort;
   private readonly deviceStore?: DeviceWrapperStore;
   private readonly ownerSecretStore?: OwnerSecretStore;
+  private readonly ownerDeletionFence?: OwnerDeletionFence;
 
   constructor(
     private readonly store: WrappedKeyStore,
@@ -470,6 +473,7 @@ export class DesktopKeyBroker {
       deviceProtection?: DeviceProtectionPort;
       deviceStore?: DeviceWrapperStore;
       ownerSecretStore?: OwnerSecretStore;
+      ownerDeletionFence?: OwnerDeletionFence;
     } = {},
   ) {
     this.now = options.now ?? Date.now;
@@ -480,6 +484,7 @@ export class DesktopKeyBroker {
     this.deviceProtection = options.deviceProtection;
     this.deviceStore = options.deviceStore;
     this.ownerSecretStore = options.ownerSecretStore;
+    this.ownerDeletionFence = options.ownerDeletionFence;
   }
 
   async initialize(
@@ -761,6 +766,17 @@ export class DesktopKeyBroker {
     { success: true; removed: number } | { success: false; error: 'vault_broker_unavailable' }
   > {
     if (!this.store.listPendingDeletions) return { success: true, removed: 0 };
+    this.ownerDeletionFence?.close();
+    try {
+      const deletedOwners = await this.store.listDeletionFences?.();
+      if (this.ownerDeletionFence && deletedOwners === undefined) {
+        throw new Error('durable owner deletion fences unavailable');
+      }
+      this.ownerDeletionFence?.blockAll(deletedOwners ?? []);
+    } catch {
+      await this.revokeAllChildAuthority();
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
     let removed = 0;
     const processed = new Set<string>();
     for (;;) {
@@ -771,7 +787,11 @@ export class DesktopKeyBroker {
         await this.revokeAllChildAuthority();
         return { success: false, error: 'vault_broker_unavailable' };
       }
-      if (userIds.length === 0) return { success: true, removed };
+      if (userIds.length === 0) {
+        this.ownerDeletionFence?.open();
+        return { success: true, removed };
+      }
+      this.ownerDeletionFence?.blockAll(userIds);
       for (const userId of userIds) {
         if (processed.has(userId) || !isValidVaultUserId(userId) || !await this.purgeOwnerState(userId)) {
           return { success: false, error: 'vault_broker_unavailable' };
@@ -1379,6 +1399,7 @@ export class DesktopKeyBroker {
   }
 
   private async purgeOwnerState(userId: string): Promise<boolean> {
+    this.ownerDeletionFence?.block(userId);
     this.purgedOwners.add(userId);
     for (const binding of this.children.values()) {
       binding.users.delete(userId);

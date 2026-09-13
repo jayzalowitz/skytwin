@@ -212,6 +212,18 @@ export const sourceKeyRegistryRepository = {
     });
   },
 
+  async listDeletionFences(): Promise<string[]> {
+    const result = await query<{ user_id: unknown }>(
+      `SELECT user_id
+         FROM source_key_deletion_intents
+        ORDER BY user_id ASC`,
+    );
+    return result.rows.map(row => {
+      validateUserId(row.user_id);
+      return row.user_id;
+    });
+  },
+
   async completeDeletion(userId: string): Promise<void> {
     validateUserId(userId);
     await query(

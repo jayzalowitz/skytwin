@@ -63,12 +63,12 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
     ipcRenderer.invoke('vault-passphrase-supported') as Promise<boolean>,
   vaultPassphraseRemember: (userId: string, passphrase: string) =>
     ipcRenderer.invoke('vault-passphrase-remember', userId, passphrase) as Promise<
-      { ok: true } | { ok: false; reason: 'unsupported' | 'empty_passphrase' }
+      { ok: true } | { ok: false; reason: 'unsupported' | 'empty_passphrase' | 'owner_deleted' | 'owner_state_unavailable' }
     >,
   vaultPassphraseGet: (userId: string) =>
     ipcRenderer.invoke('vault-passphrase-get', userId) as Promise<
       | { ok: true; passphrase: string }
-      | { ok: false; reason: 'unsupported' | 'not_found' | 'corrupt' }
+      | { ok: false; reason: 'unsupported' | 'not_found' | 'corrupt' | 'owner_deleted' | 'owner_state_unavailable' }
     >,
   vaultPassphraseHas: (userId: string) =>
     ipcRenderer.invoke('vault-passphrase-has', userId) as Promise<boolean>,

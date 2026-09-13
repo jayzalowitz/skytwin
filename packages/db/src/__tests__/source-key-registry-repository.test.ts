@@ -85,4 +85,13 @@ describe('sourceKeyRegistryRepository', () => {
     expect(mockQuery.mock.calls[1]![0]).toContain('device_wrapper_deleted_at = now()');
     expect(mockQuery.mock.calls[1]![1]).toEqual([input.user_id]);
   });
+
+  it('lists durable owner fences including completed deletion intents', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ user_id: input.user_id }], rowCount: 1,
+    });
+    expect(await sourceKeyRegistryRepository.listDeletionFences()).toEqual([input.user_id]);
+    expect(mockQuery.mock.calls[0]![0]).toContain('FROM source_key_deletion_intents');
+    expect(mockQuery.mock.calls[0]![0]).not.toContain('device_wrapper_deleted_at IS NULL');
+  });
 });

@@ -5,6 +5,7 @@ import { join } from 'path';
 import { ServiceManager } from './service-manager.js';
 import {
   PassphraseVault,
+  OwnerDeletionFence,
   type PassphraseKeyValueStore,
   type SafeStoragePort,
 } from './passphrase-vault.js';
@@ -67,14 +68,18 @@ const passphraseStore: PassphraseKeyValueStore = {
   delete: (key) => electronPassphraseStore.delete(key),
   keys: () => Object.keys(electronPassphraseStore.store),
 };
+const ownerDeletionFence = new OwnerDeletionFence();
 const passphraseVault = new PassphraseVault(
   safeStorage as unknown as SafeStoragePort,
   passphraseStore,
+  process.platform,
+  ownerDeletionFence,
 );
 const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
   deviceProtection: safeStorage,
   deviceStore: deviceKeyStore,
   ownerSecretStore: { delete: (userId) => passphraseVault.forget(userId) },
+  ownerDeletionFence,
 });
 const serviceManager = new ServiceManager(keyBroker);
 

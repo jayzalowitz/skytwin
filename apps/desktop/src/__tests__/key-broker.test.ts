@@ -2,6 +2,7 @@ import { EventEmitter } from 'events';
 import { describe, expect, it } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import { DesktopKeyBroker, PersistentWrappedKeyStore, type BrokerContext, type WrappedKeyStore, type WrappedUserKey } from '../key-broker.js';
+import { OwnerDeletionFence, PassphraseVault, type PassphraseKeyValueStore } from '../passphrase-vault.js';
 
 class MemoryStore implements WrappedKeyStore {
   rows = new Map<string, WrappedUserKey>();
@@ -42,14 +43,33 @@ class PausableGetStore extends MemoryStore {
 }
 class DeletionIntentStore extends MemoryStore {
   pending: string[] = [];
+  tombstones = new Set<string>();
   failList = false;
   failCompletion = false;
+  private completionRelease: (() => void) | null = null;
+  private completionStartedResolve: (() => void) | null = null;
+  completionStarted: Promise<void> = Promise.resolve();
+  pauseCompletion(): void {
+    this.completionStarted = new Promise(resolve => { this.completionStartedResolve = resolve; });
+  }
+  releaseCompletion(): void { this.completionRelease?.(); }
+  listDeletionFences(): string[] {
+    for (const userId of this.pending) this.tombstones.add(userId);
+    return [...this.tombstones];
+  }
   listPendingDeletions(): string[] {
     if (this.failList) throw new Error('database unavailable');
     return [...this.pending];
   }
-  completeDeletion(userId: string): void {
+  async completeDeletion(userId: string): Promise<void> {
+    if (this.completionStartedResolve) {
+      this.completionStartedResolve();
+      this.completionStartedResolve = null;
+      await new Promise<void>(resolve => { this.completionRelease = resolve; });
+      this.completionRelease = null;
+    }
     if (this.failCompletion) throw new Error('database unavailable');
+    this.tombstones.add(userId);
     this.pending = this.pending.filter(id => id !== userId);
   }
 }
@@ -98,6 +118,16 @@ class OwnerSecretStore {
     if (this.failDeletion) throw new Error('native secret store unavailable');
     this.rows.delete(id);
   }
+}
+function makePassphraseStore(): PassphraseKeyValueStore & { rows: Map<string, string> } {
+  const rows = new Map<string, string>();
+  return {
+    rows,
+    get: key => rows.get(key),
+    set: (key, value) => { rows.set(key, value); },
+    delete: key => { rows.delete(key); },
+    keys: () => [...rows.keys()],
+  };
 }
 const deviceProtection = { isEncryptionAvailable: () => true, encryptString: (v: string) => Buffer.from(v), decryptString: (v: Buffer) => v.toString(), getSelectedStorageBackend: () => 'keychain' };
 const context: BrokerContext = { userId: 'user-0001', purpose: 'oauth', table: 'oauth_tokens', column: 'access_token', rowId: 'row-1' };
@@ -544,6 +574,58 @@ describe('DesktopKeyBroker', () => {
     expect(await broker.reconcilePendingDeletions()).toEqual({ success: true, removed: 1 });
     expect(store.pending).toEqual([]);
     expect(ownerSecrets.rows.has(context.userId)).toBe(false);
+  });
+
+  it('prevents passphrase recreation while completion is paused and after restart', async () => {
+    const store = new DeletionIntentStore();
+    const secretRows = makePassphraseStore();
+    const fence = new OwnerDeletionFence(true);
+    const vault = new PassphraseVault(deviceProtection, secretRows, 'darwin', fence);
+    expect(vault.remember(context.userId, 'remembered secret')).toEqual({ ok: true });
+    store.pending = [context.userId];
+    store.failCompletion = true;
+    store.pauseCompletion();
+    const broker = new DesktopKeyBroker(store, {
+      ownerDeletionFence: fence,
+      ownerSecretStore: { delete: userId => vault.forget(userId) },
+    });
+
+    const reconciliation = broker.reconcilePendingDeletions();
+    await store.completionStarted;
+    expect(secretRows.rows.has(`vault-passphrase:${context.userId}`)).toBe(false);
+    expect(vault.remember(context.userId, 'raced replacement'))
+      .toEqual({ ok: false, reason: 'owner_deleted' });
+    expect(vault.getRemembered(context.userId))
+      .toEqual({ ok: false, reason: 'owner_deleted' });
+    expect(vault.has(context.userId)).toBe(false);
+    expect(store.pending).toEqual([context.userId]);
+    store.releaseCompletion();
+    expect(await reconciliation).toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(store.pending).toEqual([context.userId]);
+
+    const restartedFence = new OwnerDeletionFence();
+    const restartedVault = new PassphraseVault(deviceProtection, secretRows, 'darwin', restartedFence);
+    const restartedBroker = new DesktopKeyBroker(store, {
+      ownerDeletionFence: restartedFence,
+      ownerSecretStore: { delete: userId => restartedVault.forget(userId) },
+    });
+    store.failCompletion = false;
+    expect(await restartedBroker.reconcilePendingDeletions()).toEqual({ success: true, removed: 1 });
+    expect(restartedVault.remember(context.userId, 'after restart'))
+      .toEqual({ ok: false, reason: 'owner_deleted' });
+    expect(restartedVault.remember('user-0002', 'legitimate secret')).toEqual({ ok: true });
+    expect(restartedVault.getRemembered('user-0002'))
+      .toEqual({ ok: true, passphrase: 'legitimate secret' });
+
+    const completedFence = new OwnerDeletionFence();
+    const completedVault = new PassphraseVault(deviceProtection, secretRows, 'darwin', completedFence);
+    const completedBroker = new DesktopKeyBroker(store, {
+      ownerDeletionFence: completedFence,
+      ownerSecretStore: { delete: userId => completedVault.forget(userId) },
+    });
+    expect(await completedBroker.reconcilePendingDeletions()).toEqual({ success: true, removed: 0 });
+    expect(completedVault.remember(context.userId, 'after completed restart'))
+      .toEqual({ ok: false, reason: 'owner_deleted' });
   });
 
   it('revokes every child capability when the deletion ledger cannot be read', async () => {
