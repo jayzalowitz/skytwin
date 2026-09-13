@@ -282,12 +282,14 @@ export class DirectExecutionAdapter implements IronClawAdapter {
     try {
       return await Promise.race([
         handler.execute(step),
-        new Promise<StepResult>((resolve) => {
+        new Promise<StepResult>((_resolve, reject) => {
           timer = setTimeout(() => {
-            resolve({
-              success: false,
-              error: `Step timed out after ${timeoutMs}ms`,
-            });
+            // ActionHandler has no cancellation/settlement contract. The
+            // handler may still commit after this timer fires, so timeout is
+            // ambiguous rather than a terminal failed StepResult.
+            reject(new Error(
+              `Step timed out after ${timeoutMs}ms; execution outcome is ambiguous`,
+            ));
           }, timeoutMs);
         }),
       ]);

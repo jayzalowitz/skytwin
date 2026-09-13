@@ -327,6 +327,28 @@ export class DecisionMaker {
   }
 
   /**
+   * Re-run risk, policy, ranking, and outcome persistence for a candidate set
+   * whose execution semantics were prepared by the composition layer. This is
+   * intentionally a full evaluation: callers must not carry policy authority
+   * across changes to action type, body, description, or reversibility.
+   */
+  async reevaluatePreparedCandidates(
+    context: DecisionContext,
+    candidates: CandidateAction[],
+  ): Promise<DecisionOutcome> {
+    const preparedGenerator: CandidateGenerator = {
+      generate: async () => candidates,
+    };
+    return new DecisionMaker(
+      this.twinService,
+      this.policyEvaluator,
+      this.decisionRepository,
+      preparedGenerator,
+      this.labelInferencePort ?? undefined,
+    ).evaluate(context);
+  }
+
+  /**
    * Predict what the twin would do in a hypothetical situation without
    * persisting any state. This is a read-only query against the decision
    * pipeline.

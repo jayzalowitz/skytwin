@@ -99,7 +99,7 @@ describe('IronClawHttpClient', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('retries on 5xx server errors', async () => {
+    it('does not retry an effect-bearing webhook after a 5xx response', async () => {
       const client = makeClient({ maxRetries: 2 });
 
       fetchMock
@@ -111,12 +111,11 @@ describe('IronClawHttpClient', () => {
           }),
         );
 
-      const result = await client.sendMessage(makeMessage());
-      expect(result.content).toBe('ok');
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await expect(client.sendMessage(makeMessage())).rejects.toThrow('500');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('uses a fresh timeout signal for each retry attempt', async () => {
+    it('still retries a read-only status webhook with a fresh timeout signal', async () => {
       const client = makeClient({ maxRetries: 2 });
 
       fetchMock
@@ -128,7 +127,7 @@ describe('IronClawHttpClient', () => {
           }),
         );
 
-      await client.sendMessage(makeMessage());
+      await client.sendMessage(makeMessage({ metadata: { message_type: 'status' } }));
 
       const firstSignal = getFetchCall(fetchMock, 0)[1].signal;
       const secondSignal = getFetchCall(fetchMock, 1)[1].signal;
@@ -140,7 +139,7 @@ describe('IronClawHttpClient', () => {
       expect(thirdSignal).not.toBe(secondSignal);
     });
 
-    it('retries on 429 rate limit', async () => {
+    it('does not retry an effect-bearing webhook after rate limiting', async () => {
       const client = makeClient({ maxRetries: 1 });
 
       fetchMock
@@ -151,9 +150,8 @@ describe('IronClawHttpClient', () => {
           }),
         );
 
-      const result = await client.sendMessage(makeMessage());
-      expect(result.content).toBe('ok');
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expect(client.sendMessage(makeMessage())).rejects.toThrow('429');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 

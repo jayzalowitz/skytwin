@@ -480,9 +480,21 @@ describe('decisionRepository', () => {
       });
 
       const [_sql, params] = mockQuery.mock.calls[0]!;
+      expect(_sql).toContain('ON CONFLICT (id) DO UPDATE');
+      expect(_sql).toContain('decision_ingest_guards');
       expect(params![0]).toBe('ca-custom');
       expect(params![7]).toBe(false); // reversible
       expect(params![8]).toBe(0);     // estimatedCost
+    });
+
+    it('rejects candidate mutation after receipt finalization', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      await expect(decisionRepository.addCandidateAction({
+        id: 'ca-custom', decisionId: 'd-001', actionType: 'send_reply',
+        description: 'Send reply', predictedUserPreference: 'high',
+        riskAssessment: {}, reversible: false,
+      })).rejects.toThrow('immutable after receipt finalization');
     });
 
     it('defaults reversible to true and estimatedCost to null', async () => {

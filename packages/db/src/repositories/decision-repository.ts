@@ -230,6 +230,19 @@ export const decisionRepository = {
           predicted_user_preference, risk_assessment, reversible, estimated_cost
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (id) DO UPDATE SET
+          action_type = EXCLUDED.action_type,
+          description = EXCLUDED.description,
+          parameters = EXCLUDED.parameters,
+          predicted_user_preference = EXCLUDED.predicted_user_preference,
+          risk_assessment = EXCLUDED.risk_assessment,
+          reversible = EXCLUDED.reversible,
+          estimated_cost = EXCLUDED.estimated_cost
+        WHERE candidate_actions.decision_id = EXCLUDED.decision_id
+          AND NOT EXISTS (
+            SELECT 1 FROM decision_ingest_guards g
+            WHERE g.decision_id = EXCLUDED.decision_id
+          )
         RETURNING *`,
         [
           input.id,
@@ -243,7 +256,9 @@ export const decisionRepository = {
           input.estimatedCost ?? null,
         ],
       );
-      return result.rows[0]!;
+      const row = result.rows[0];
+      if (!row) throw new Error('Candidate action is immutable after receipt finalization');
+      return row;
     }
     const result = await query<CandidateActionRow>(
       `INSERT INTO candidate_actions (

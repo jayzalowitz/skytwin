@@ -141,7 +141,7 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(result.error).toBe('Gmail API returned 403');
     });
 
-    it('returns failed result on HTTP error', async () => {
+    it('leaves an HTTP error after dispatch ambiguous', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockResolvedValue(
@@ -149,22 +149,16 @@ describe('RealIronClawAdapter (HTTP)', () => {
       );
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
-
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('500');
+      await expect(adapter.execute(plan)).rejects.toThrow('500');
     });
 
-    it('returns failed result on network error', async () => {
+    it('leaves network response loss after dispatch ambiguous', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
-
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('ECONNREFUSED');
+      await expect(adapter.execute(plan)).rejects.toThrow('ECONNREFUSED');
     });
 
     it('sanitizes sensitive parameters in the message', async () => {
@@ -266,6 +260,55 @@ describe('RealIronClawAdapter (HTTP)', () => {
       const result = await adapter.execute(plan);
 
       expect(result.status).toBe('failed');
+    });
+  });
+
+  describe('executeStreaming terminal authority', () => {
+    async function consume(adapter: RealIronClawAdapter, action = makeAction()): Promise<string[]> {
+      const plan = await adapter.buildPlan(action);
+      const events: string[] = [];
+      for await (const event of adapter.executeStreaming(plan)) events.push(event.eventType);
+      return events;
+    }
+
+    it('treats clean EOF without an explicit terminal event as ambiguous', async () => {
+      fetchMock.mockResolvedValueOnce(new Response(
+        'data: {"eventType":"plan_started"}\n\n',
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      ));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('without an explicit terminal event');
+    });
+
+    it('rejects conflicting terminal events instead of choosing one', async () => {
+      fetchMock.mockResolvedValueOnce(new Response(
+        'data: {"eventType":"plan_completed"}\n\n' +
+          'data: {"eventType":"plan_failed"}\n\n',
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      ));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('event after terminal plan_completed');
+    });
+
+    it('does not publish a buffered terminal event when the stream is lost afterward', async () => {
+      const encoder = new TextEncoder();
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(encoder.encode('data: {"eventType":"plan_completed"}\n\n'));
+          } else {
+            controller.error(new Error('stream response lost'));
+          }
+        },
+      });
+      fetchMock.mockResolvedValueOnce(new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('stream response lost');
     });
   });
 

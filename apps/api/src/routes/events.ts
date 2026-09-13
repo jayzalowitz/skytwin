@@ -33,6 +33,7 @@ import {
 import type {
   DecisionContext,
   DecisionOutcome,
+  CandidateAction,
   ExecutionEvent,
   ExplanationRecord,
   RiskAssessment,
@@ -583,6 +584,25 @@ export function createEventsRouter(): Router {
       // 7. Evaluate through decision maker
       outcome = await decisionMaker.evaluate(context);
 
+      // Execution-time email semantics are materially different from a draft:
+      // sending is irreversible, changes the action type, and appends visible
+      // attribution. Prepare every possible outbound candidate and run the
+      // complete risk/policy/ranking pass again before outcome persistence,
+      // explanation generation, and receipt capture. Credentials are excluded
+      // here and injected only into a separate execution copy after the claim.
+      if (outcome.autoExecute && outcome.selectedAction &&
+          isOutboundEmailAction(outcome.selectedAction.actionType)) {
+        for (const candidate of outcome.allCandidates) {
+          if (isOutboundEmailAction(candidate.actionType)) {
+            prepareEmailActionForExecution(candidate, user);
+          }
+        }
+        outcome = await decisionMaker.reevaluatePreparedCandidates(
+          context,
+          outcome.allCandidates,
+        );
+      }
+
       // 8. Generate explanation
       explanation = await explanationGenerator.generate(
         decision,
@@ -649,21 +669,6 @@ export function createEventsRouter(): Router {
       }
       }
 
-      // 8b. Persist candidate actions so alternatives are available for approval UI
-      if (!resumedAfterReceiptCapture && outcome.allCandidates.length > 0) {
-        try {
-          await decisionRepositoryAdapter.saveCandidates(outcome.allCandidates);
-        } catch (err: unknown) {
-          // Duplicate key (PG 23505) is expected from prior runs or the engine itself.
-          // Log anything else so real failures aren't silently swallowed.
-          const code = (err as { code?: string }).code;
-          if (code !== '23505') {
-            const msg = err instanceof Error ? err.message : String(err);
-            log.error('Failed to persist candidate actions', { error: msg });
-          }
-        }
-      }
-
       // 9. Handle outcome
       let executionResult = null;
       let approvalRequest = null;
@@ -720,12 +725,6 @@ export function createEventsRouter(): Router {
         approvalRequest = approvalResult.row;
         approvalNewlyCreated = approvalResult.created;
       } else if (outcome.autoExecute && outcome.selectedAction) {
-        // Inject OAuth token if available for real execution
-        const tokenRow = await oauthRepository.getToken(userId, 'google');
-        if (tokenRow) {
-          outcome.selectedAction.parameters['accessToken'] = tokenRow.access_token;
-        }
-
         // Risk assessment for routing must be the one the decision-maker
         // actually computed (#371) — never a fresh synthetic one derived
         // from `explanation.riskTier`. The flat enum collapses every
@@ -775,8 +774,6 @@ export function createEventsRouter(): Router {
             throw new Error('Execution guard could not be converted to manual approval');
           }
         } else {
-          prepareEmailActionForExecution(outcome.selectedAction, user);
-
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
           let savedPlan: { id: string } | null = null;
@@ -805,9 +802,17 @@ export function createEventsRouter(): Router {
           // The claim transaction created and bound this exact DB plan before
           // dispatch, so every streamed event and terminal result has one
           // immutable execution identity.
-          outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
+          const tokenRow = await oauthRepository.getToken(userId, 'google');
+          const executionAction: CandidateAction = {
+            ...outcome.selectedAction,
+            parameters: {
+              ...outcome.selectedAction.parameters,
+              executionPlanId: savedPlan.id,
+              ...(tokenRow ? { accessToken: tokenRow.access_token } : {}),
+            },
+          };
           if (user?.ironclaw_channel) {
-            outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
+            executionAction.parameters['ironclawChannel'] = user.ironclaw_channel;
           }
 
           // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
@@ -819,12 +824,15 @@ export function createEventsRouter(): Router {
 
           try {
             for await (const event of executionRouter.executeWithRoutingStreaming(
-              outcome.selectedAction,
+              executionAction,
               riskAssessment,
               userId,
             )) {
               if (event.planId !== savedPlan.id) {
                 throw new Error('Execution event did not match the claimed plan');
+              }
+              if (terminalEvent) {
+                throw new Error(`Execution stream emitted an event after ${terminalEvent.eventType}`);
               }
               if (event.payload && Object.keys(event.payload).length > 0) {
                 stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
@@ -849,6 +857,8 @@ export function createEventsRouter(): Router {
               }
             }
           } catch (error) {
+            terminalStatus = null;
+            terminalEvent = null;
             terminalPayload = {
               error: error instanceof Error ? error.message : String(error),
             };

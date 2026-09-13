@@ -20,9 +20,11 @@ class TestActionHandler implements ActionHandler {
 class SlowActionHandler implements ActionHandler {
   readonly actionType = 'test_action';
   readonly domain = 'testing';
+  committed = false;
   canHandle(actionType: string): boolean { return actionType === 'test_action'; }
   async execute(_step: ExecutionStep): Promise<StepResult> {
     await new Promise((resolve) => setTimeout(resolve, 50));
+    this.committed = true;
     return { success: true };
   }
   async rollback(_step: ExecutionStep): Promise<StepResult> {
@@ -109,17 +111,20 @@ describe('DirectExecutionAdapter', () => {
     expect(events).toEqual(['plan_started', 'step_started', 'step_completed', 'plan_completed']);
   });
 
-  it('enforces step timeout', async () => {
+  it('leaves a timed-out handler ambiguous when it can still commit later', async () => {
     const registry = new ActionHandlerRegistry();
-    registry.register(new SlowActionHandler());
+    const handler = new SlowActionHandler();
+    registry.register(handler);
     const adapter = new DirectExecutionAdapter(registry);
 
     const plan = await adapter.buildPlan(makeAction());
     plan.steps[0]!.timeout = 5;
 
-    const result = await adapter.execute(plan);
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('Step timed out after 5ms');
+    await expect(adapter.execute(plan)).rejects.toThrow('outcome is ambiguous');
+    await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(handler.committed).toBe(true);
+    await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
   });
 
   it('throws when no handler is registered (enables fallback chain)', async () => {

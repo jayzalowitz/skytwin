@@ -157,20 +157,10 @@ export class IronClawHttpClient {
     };
     const response = await this.sendWebhookRequest(streamMessage);
     const planId = this.readPlanId(streamMessage);
-    let yielded = false;
-
     for await (const record of this.parseSseRecords(response.body, planId)) {
-      yielded = true;
+      // `[DONE]` closes an SSE transport; it is not an execution result.
+      if (record === '[DONE]') continue;
       yield this.normalizeExecutionEvent(planId, record);
-    }
-
-    if (!yielded) {
-      yield {
-        planId,
-        eventType: 'plan_completed',
-        timestamp: new Date(),
-        payload: { source: 'ironclaw', emptyStream: true },
-      };
     }
   }
 
@@ -559,7 +549,7 @@ export class IronClawHttpClient {
       },
       body,
       signal: AbortSignal.timeout(this.config.timeoutMs),
-    }, 'IronClaw webhook');
+    }, 'IronClaw webhook', message.metadata['message_type'] === 'status');
   }
 
   private readPlanId(message: IronClawMessage): string {
@@ -574,12 +564,14 @@ export class IronClawHttpClient {
     url: string,
     init: RequestInit,
     label: string,
+    allowRetry = true,
   ): Promise<Response> {
     await this.ensureEndpointReady(endpoint);
 
     let lastError: Error | null = null;
 
-    for (let attempt = 0; attempt <= this.config.maxRetries; attempt++) {
+    const maxRetries = allowRetry ? this.config.maxRetries : 0;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
       if (attempt > 0) {
         await this.delay(attempt * 1000);
       }
@@ -702,14 +694,7 @@ export class IronClawHttpClient {
   }
 
   private normalizeExecutionEvent(planId: string, record: Record<string, unknown> | string): ExecutionEvent {
-    if (typeof record === 'string') {
-      return {
-        planId,
-        eventType: 'plan_completed',
-        timestamp: new Date(),
-        payload: { data: record },
-      };
-    }
+    if (typeof record === 'string') throw new Error('Unexpected non-JSON execution event');
 
     const rawEventType = this.readString(record, ['eventType', 'event_type', 'type']);
     const eventType = this.normalizeExecutionEventType(rawEventType);

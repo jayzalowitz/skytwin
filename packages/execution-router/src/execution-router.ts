@@ -417,15 +417,13 @@ export class ExecutionRouter {
         const plan = await entry.adapter.buildPlan(action);
 
         if (hasStreamingExecution(entry.adapter)) {
-          let sawTerminalEvent = false;
+          let terminalEvent: ExecutionEvent | null = null;
           for await (const event of entry.adapter.executeStreaming(plan)) {
-            const terminalEvent = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
+            const isTerminal = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
             if (terminalEvent) {
-              sawTerminalEvent = true;
-              firstAttemptCompleted = true;
+              throw new Error(`Adapter emitted an event after terminal ${terminalEvent.eventType}`);
             }
-
-            yield {
+            const routedEvent = {
               ...event,
               payload: {
                 ...event.payload,
@@ -434,24 +432,22 @@ export class ExecutionRouter {
                 fallbacks_attempted: attemptedAdapters.length - 1,
               },
             };
+            if (isTerminal) terminalEvent = routedEvent;
+            else yield routedEvent;
           }
 
-          if (sawTerminalEvent) return;
+          if (!terminalEvent) {
+            throw new Error('Adapter stream ended without an explicit terminal event');
+          }
           firstAttemptCompleted = true;
-          yield {
-            planId: plan.id,
-            eventType: 'plan_completed',
-            timestamp: new Date(),
-            payload: {
-              adapter_used: adapterName,
-              routing_decision: routingDecision.selectedAdapter,
-              fallbacks_attempted: attemptedAdapters.length - 1,
-            },
-          };
+          yield terminalEvent;
           return;
         }
 
         const result = await entry.adapter.execute(plan);
+        if (result.status !== 'completed' && result.status !== 'failed') {
+          throw new Error(`Adapter returned non-terminal status ${result.status}`);
+        }
         const status = result.status === 'completed' ? 'plan_completed' : 'plan_failed';
         firstAttemptCompleted = true;
 

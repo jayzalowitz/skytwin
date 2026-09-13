@@ -5,6 +5,7 @@ import type {
   RiskAssessment,
   ExecutionPlan,
   ExecutionResult,
+  ExecutionEvent,
   RollbackResult,
 } from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
@@ -385,6 +386,41 @@ describe('ExecutionRouter', () => {
         }
       })()).rejects.toThrow('stream response lost after commit');
       expect(fallbackExecute).not.toHaveBeenCalled();
+    });
+
+    it('does not fabricate completion when a streaming adapter ends cleanly without terminal truth', async () => {
+      const hostile = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      hostile.executeStreaming = async function* (plan) {
+        yield { planId: plan.id, eventType: 'plan_started', timestamp: new Date() };
+      };
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+
+      const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
+      await expect((async () => {
+        for await (const _event of stream) {
+          // consume
+        }
+      })()).rejects.toThrow('without an explicit terminal event');
+    });
+
+    it('rejects conflicting terminal events without publishing either terminal result', async () => {
+      const hostile = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+      };
+      hostile.executeStreaming = async function* (plan) {
+        yield { planId: plan.id, eventType: 'plan_completed', timestamp: new Date() };
+        yield { planId: plan.id, eventType: 'plan_failed', timestamp: new Date() };
+      };
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      const published: ExecutionEvent[] = [];
+
+      const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
+      await expect((async () => {
+        for await (const event of stream) published.push(event);
+      })()).rejects.toThrow('event after terminal plan_completed');
+      expect(published).toEqual([]);
     });
 
     it('rollback flows through the selected adapter after execution', async () => {

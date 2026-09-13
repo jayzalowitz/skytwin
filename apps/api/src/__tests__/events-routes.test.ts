@@ -6,6 +6,7 @@ import { InvariantViolationError } from '@skytwin/execution-router';
 const {
   mockInterpret,
   mockEvaluate,
+  mockReevaluate,
   mockGenerate,
   mockExecutionRepository,
   mockGetExecutionRouter,
@@ -25,9 +26,11 @@ const {
   mockGetExplanation,
   mockEmitReceipt,
   mockLlmClient,
+  mockGetOAuthToken,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
+  mockReevaluate: vi.fn(),
   mockGenerate: vi.fn(),
   mockExecutionRepository: {
     createPlan: vi.fn(),
@@ -55,6 +58,7 @@ const {
   mockGetExplanation: vi.fn(),
   mockEmitReceipt: vi.fn(),
   mockLlmClient: vi.fn(),
+  mockGetOAuthToken: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -62,7 +66,7 @@ vi.mock('@skytwin/decision-engine', () => ({
     return { interpret: mockInterpret };
   }),
   DecisionMaker: vi.fn(function DecisionMaker() {
-    return { evaluate: mockEvaluate };
+    return { evaluate: mockEvaluate, reevaluatePreparedCandidates: mockReevaluate };
   }),
   LlmSituationStrategy: vi.fn(),
   LlmCandidateGenerator: vi.fn(),
@@ -100,7 +104,7 @@ vi.mock('@skytwin/db', () => ({
     create: mockApprovalCreate,
     findByDecisionId: mockApprovalFindByDecisionId,
   },
-  oauthRepository: { getToken: vi.fn().mockResolvedValue(null) },
+  oauthRepository: { getToken: mockGetOAuthToken },
   executionRepository: mockExecutionRepository,
   userRepository: { findById: vi.fn().mockResolvedValue({ id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer', ironclaw_channel: 'skytwin' }) },
   aiProviderRepository: { getEnabledForUser: mockGetProviders },
@@ -304,6 +308,7 @@ describe('Events API routes', () => {
     mockApprovalFindByDecisionId.mockResolvedValue(null);
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
     mockGetProviders.mockResolvedValue([]);
+    mockGetOAuthToken.mockResolvedValue(null);
     mockCreateReceipts.mockImplementation(async (
       _userId: unknown,
       inputs: unknown[],
@@ -374,6 +379,105 @@ describe('Events API routes', () => {
     expect(mockCreateReceipts.mock.invocationCallOrder[0]).toBeLessThan(
       mockApprovalCreate.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it.each([
+    ['calendar', 'create_calendar_event'],
+    ['email', 'draft_email'],
+  ] as const)('keeps credentialed %s execution separate from captured authority', async (
+    _domain,
+    actionType,
+  ) => {
+    const action = {
+      id: 'action-1', decisionId: 'decision-1', actionType,
+      description: actionType === 'draft_email' ? 'Draft reply' : 'Create calendar event',
+      domain: actionType === 'draft_email' ? 'email' : 'calendar',
+      parameters: actionType === 'draft_email' ? { draftBody: 'Hello there' } : { title: 'Planning' },
+      reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+    };
+    const assessment = {
+      actionId: action.id,
+      overallTier: 'low',
+      dimensions: {
+        reversibility: { tier: 'low', score: 0.2, reasoning: 'test' },
+        financial_impact: { tier: 'low', score: 0.2, reasoning: 'test' },
+        legal_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        privacy_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        relationship_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        operational_risk: { tier: 'low', score: 0.2, reasoning: 'test' },
+      },
+      reasoning: 'test assessment', assessedAt: new Date(),
+    };
+    const initialOutcome = {
+      id: 'outcome-1', decisionId: 'decision-1', selectedAction: action,
+      allCandidates: [action], riskAssessment: assessment, allRiskAssessments: [assessment],
+      autoExecute: true, requiresApproval: false, reasoning: 'Allowed by policy',
+      policyVerdicts: { [action.id]: 'allowed' }, decidedAt: new Date(),
+    };
+    mockEvaluate.mockResolvedValue(initialOutcome);
+    mockReevaluate.mockImplementation(async (_context, candidates: typeof initialOutcome.allCandidates) => {
+      const selectedAction = candidates[0]!;
+      const reevaluatedRisk = { ...assessment, actionId: selectedAction.id };
+      return {
+        ...initialOutcome,
+        selectedAction,
+        allCandidates: candidates,
+        riskAssessment: reevaluatedRisk,
+        allRiskAssessments: [reevaluatedRisk],
+        policyVerdicts: { [selectedAction.id]: 'allowed' },
+      };
+    });
+    mockGetOAuthToken.mockResolvedValue({ access_token: 'secret-token' });
+
+    let captured: { outcome: typeof initialOutcome; explanation: unknown } | undefined;
+    mockCreateReceipts.mockImplementation(async (
+      _userId: unknown,
+      inputs: unknown[],
+      completion: { continuation: typeof captured },
+    ) => {
+      captured = structuredClone(completion.continuation!);
+      return { receipts: inputs, continuation: structuredClone(completion.continuation!) };
+    });
+    let claimed: { outcome: typeof initialOutcome; explanation: unknown } | undefined;
+    mockClaimExecution.mockImplementation(async (
+      _userId: unknown,
+      _decisionId: unknown,
+      continuation: typeof claimed,
+    ) => {
+      claimed = structuredClone(continuation!);
+      return { id: 'plan-1' };
+    });
+    let executed: Record<string, unknown> | undefined;
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: vi.fn(async function* (candidate: Record<string, unknown>) {
+        executed = structuredClone(candidate);
+        yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      }),
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    const capturedAction = captured!.outcome.selectedAction!;
+    const claimedAction = claimed!.outcome.selectedAction!;
+    expect(capturedAction.parameters).not.toHaveProperty('accessToken');
+    expect(capturedAction.parameters).not.toHaveProperty('executionPlanId');
+    expect(claimedAction).toEqual(capturedAction);
+    expect((executed!['parameters'] as Record<string, unknown>)).toMatchObject({
+      accessToken: 'secret-token', executionPlanId: 'plan-1',
+    });
+    if (actionType === 'draft_email') {
+      expect(mockReevaluate).toHaveBeenCalledTimes(1);
+      expect(capturedAction.actionType).toBe('send_reply');
+      expect(capturedAction.reversible).toBe(false);
+      expect(capturedAction.description).toBe('Send reply');
+      expect(capturedAction.parameters['draftBody']).not.toBe('Hello there');
+    } else {
+      expect(mockReevaluate).not.toHaveBeenCalled();
+      expect(capturedAction.actionType).toBe('create_calendar_event');
+    }
   });
 
   it('stops before approval when the atomic receipt finalization fails', async () => {
@@ -1189,6 +1293,26 @@ describe('Events API routes', () => {
     expect(res.status).toBe(200);
     expect(mockExecutionRepository.createEvent).not.toHaveBeenCalled();
     expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+  });
+
+  it('does not terminalize a stream with conflicting terminal events', async () => {
+    async function* conflictingStream() {
+      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield { planId: 'plan-1', eventType: 'plan_failed', timestamp: new Date(), payload: {} };
+    }
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: vi.fn(() => conflictingStream()),
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect(mockExecutionRepository.updatePlanStatus).not.toHaveBeenCalled();
     expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
     expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
   });
