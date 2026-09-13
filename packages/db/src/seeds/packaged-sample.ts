@@ -10,6 +10,9 @@ export interface PackagedSampleEnvironment {
   nodeEnv: string | undefined;
   databaseUrl: string | undefined;
   bundledDatabaseUrl: string | undefined;
+  databaseOwnership: 'managed-child' | 'preexisting';
+  managedDataDir: string | null;
+  bundledDataDir: string;
   packaged: boolean;
 }
 
@@ -57,6 +60,16 @@ export function assertPackagedSampleSafe(
   }
   if ((env.nodeEnv ?? '').toLowerCase() !== 'production') {
     return { ok: false, reason: 'NODE_ENV=production is required' };
+  }
+  if (
+    env.databaseOwnership !== 'managed-child' ||
+    env.managedDataDir === null ||
+    env.managedDataDir !== env.bundledDataDir
+  ) {
+    return {
+      ok: false,
+      reason: 'sample bootstrap requires a desktop-managed database process and data directory',
+    };
   }
   if (
     !env.databaseUrl ||

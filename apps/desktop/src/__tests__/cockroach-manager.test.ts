@@ -10,6 +10,11 @@ vi.mock('electron', () => ({
 
 const { CockroachManager } = await import('../cockroach-manager.js');
 
+interface CockroachManagerInternals {
+  isCrdbResponding(): Promise<boolean>;
+  ensureDatabase(): Promise<void>;
+}
+
 describe('CockroachManager', () => {
   beforeEach(() => {
     delete process.env['SKYTWIN_DB_PORT'];
@@ -54,5 +59,18 @@ describe('CockroachManager', () => {
   it('allows explicit port overrides via constructor', () => {
     const mgr = new CockroachManager({ sqlPort: 31000 });
     expect(mgr.getConnectionString()).toContain(':31000/');
+  });
+
+  it('does not claim ownership of a pre-existing CockroachDB responder', async () => {
+    const mgr = new CockroachManager() as InstanceType<typeof CockroachManager>
+      & CockroachManagerInternals;
+    mgr.isCrdbResponding = vi.fn().mockResolvedValue(true);
+    mgr.ensureDatabase = vi.fn().mockResolvedValue(undefined);
+
+    await expect(mgr.start()).resolves.toEqual({
+      ownership: 'preexisting',
+      dataDir: null,
+    });
+    expect(mgr.ensureDatabase).toHaveBeenCalledOnce();
   });
 });

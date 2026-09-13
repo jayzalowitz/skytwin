@@ -14,6 +14,9 @@ describe('packaged sample safety', () => {
     nodeEnv: 'production',
     databaseUrl: 'postgresql://root@127.0.0.1:26257/skytwin',
     bundledDatabaseUrl: 'postgresql://root@127.0.0.1:26257/skytwin',
+    databaseOwnership: 'managed-child',
+    managedDataDir: '/app/user-data/crdb-data',
+    bundledDataDir: '/app/user-data/crdb-data',
   } as const;
 
   it('allows only the packaged production desktop against loopback', () => {
@@ -41,6 +44,19 @@ describe('packaged sample safety', () => {
     ).toBe(false);
     expect(
       assertPackagedSampleSafe({ ...safe, bundledDatabaseUrl: undefined }).ok,
+    ).toBe(false);
+    expect(
+      assertPackagedSampleSafe({
+        ...safe,
+        databaseOwnership: 'preexisting',
+        managedDataDir: null,
+      }).ok,
+    ).toBe(false);
+    expect(
+      assertPackagedSampleSafe({
+        ...safe,
+        managedDataDir: '/another-install/crdb-data',
+      }).ok,
     ).toBe(false);
   });
 

@@ -45,6 +45,10 @@ interface CockroachManagerOptions {
   startTimeoutMs?: number;
 }
 
+export type CockroachStartResult =
+  | Readonly<{ ownership: 'managed-child'; dataDir: string }>
+  | Readonly<{ ownership: 'preexisting'; dataDir: null }>;
+
 const DEFAULT_SQL_PORT = 26257;
 const DEFAULT_HTTP_PORT = 26258;
 // 127.0.0.1 instead of 'localhost' so we never accidentally bind IPv6 :: on
@@ -106,11 +110,21 @@ export class CockroachManager {
    * run that left CRDB running but missed the CREATE DATABASE step
    * heals itself on the next launch.
    */
-  async start(): Promise<void> {
+  async start(): Promise<CockroachStartResult> {
     if (await this.isCrdbResponding()) {
       console.log('[crdb] Already running on', `${this.listenHost}:${this.sqlPort}`);
       await this.ensureDatabase();
-      return;
+      // Only a live child retained by this manager proves that the responder
+      // was launched with our bundled binary and userData store. A listener
+      // inherited from an earlier process (or another local CockroachDB) is
+      // usable for ordinary owner startup, but must not receive sample data.
+      if (this.process !== null && this.process.exitCode === null) {
+        return Object.freeze({
+          ownership: 'managed-child',
+          dataDir: this.getDataDir(),
+        });
+      }
+      return Object.freeze({ ownership: 'preexisting', dataDir: null });
     }
 
     const bin = this.getBinaryPath();
@@ -142,13 +156,14 @@ export class CockroachManager {
     ];
 
     console.log('[crdb] Spawning', bin, args.join(' '));
-    this.process = spawn(bin, args, {
+    const spawnedProcess = spawn(bin, args, {
       stdio: 'pipe',
       // Detach=false so child dies if Electron crashes — leaving an
       // orphaned cockroach holding port 26257 is a worse failure mode
       // than the next launch retrying.
       detached: false,
     });
+    this.process = spawnedProcess;
 
     this.process.stdout?.on('data', (chunk: Buffer) => {
       console.log(`[crdb] ${chunk.toString().trimEnd()}`);
@@ -163,6 +178,16 @@ export class CockroachManager {
 
     await this.waitForReady();
     await this.ensureDatabase();
+    // A foreign responder could win a port-bind race after the initial probe.
+    // Do not claim ownership unless the exact child we spawned is still live
+    // after SQL readiness and database initialization both complete.
+    if (this.process !== spawnedProcess || spawnedProcess.exitCode !== null) {
+      throw new Error('CockroachDB managed child exited before ownership was established');
+    }
+    return Object.freeze({
+      ownership: 'managed-child',
+      dataDir,
+    });
   }
 
   async stop(): Promise<void> {

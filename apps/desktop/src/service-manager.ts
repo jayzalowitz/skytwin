@@ -4,7 +4,10 @@ import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
-import { CockroachManager } from './cockroach-manager.js';
+import {
+  CockroachManager,
+  type CockroachStartResult,
+} from './cockroach-manager.js';
 import { computeBundleMarker } from './bundle-marker.js';
 import {
   extractionDone,
@@ -436,7 +439,9 @@ export class ServiceManager {
    * bundled loopback database. The database module enforces the same boundary
    * again before writing and refuses reserved-ID collisions with real users.
    */
-  private async provisionPackagedSample(): Promise<void> {
+  private async provisionPackagedSample(
+    startup: CockroachStartResult,
+  ): Promise<void> {
     if (!app.isPackaged) return;
 
     const embeddedRoot = await this.ensureEmbeddedRoot();
@@ -463,6 +468,9 @@ export class ServiceManager {
           nodeEnv: string | undefined;
           databaseUrl: string | undefined;
           bundledDatabaseUrl: string | undefined;
+          databaseOwnership: 'managed-child' | 'preexisting';
+          managedDataDir: string | null;
+          bundledDataDir: string;
           packaged: boolean;
         }) => Promise<{ created: boolean; userId: string }>;
       }>;
@@ -474,6 +482,9 @@ export class ServiceManager {
         nodeEnv: env['NODE_ENV'],
         databaseUrl: env['DATABASE_URL'],
         bundledDatabaseUrl: this.cockroach.getConnectionString(),
+        databaseOwnership: startup.ownership,
+        managedDataDir: startup.dataDir,
+        bundledDataDir: this.cockroach.getDataDir(),
       });
       // Retry the versioned fixture on every healthy launch. Each synthetic
       // signal carries a stable signalId, so the normal ingest dedupe path
@@ -571,6 +582,9 @@ export class ServiceManager {
 
   async startAll(): Promise<void> {
     this.paused = false;
+    // This is launch-scoped authority. Never retain a prior successful sample
+    // bootstrap across a restart or a later attachment to a foreign listener.
+    this.sampleBootstrapAllowedThisLaunch = false;
     // Extract the bundled embedded apps tarball before anything else so
     // every downstream method (CockroachManager, runMigrations, startApi,
     // startWeb, startWorker) sees a populated <userData>/embedded/ tree.
@@ -594,13 +608,19 @@ export class ServiceManager {
       this.cockroachStatus = 'running';
       this.emitStatus();
     } else {
-      await this.startCockroach();
+      const startup = await this.startCockroach();
       // Migrations must complete after CRDB is up but before API starts;
       // otherwise API hits "relation does not exist" on first query and
       // crashlooks until restart-backoff exhausts.
       if (this.cockroachStatus === 'running') {
         const migrated = await this.runMigrations();
-        if (migrated) await this.provisionPackagedSample();
+        if (migrated && startup?.ownership === 'managed-child') {
+          await this.provisionPackagedSample(startup);
+        } else if (migrated && app.isPackaged) {
+          console.warn(
+            '[sample] Provisioning skipped: CockroachDB listener is not owned by this desktop launch.',
+          );
+        }
       }
     }
     await this.startApi();
@@ -676,17 +696,19 @@ export class ServiceManager {
    * attach to whatever stranger happens to be answering on localhost:3100,
    * since that could be a wildly different version (or untrusted).
    */
-  private async startCockroach(): Promise<void> {
+  private async startCockroach(): Promise<CockroachStartResult | null> {
     this.cockroachStatus = 'starting';
     this.emitStatus();
+    let startup: CockroachStartResult | null = null;
     try {
-      await this.cockroach.start();
+      startup = await this.cockroach.start();
       this.cockroachStatus = 'running';
     } catch (err) {
       console.error('[crdb] Failed to start:', err);
       this.cockroachStatus = 'error';
     }
     this.emitStatus();
+    return startup;
   }
 
   private async detectExternalApi(): Promise<boolean> {

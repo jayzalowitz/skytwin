@@ -14,6 +14,7 @@ vi.mock("../cockroach-manager.js", () => ({
     return {
       getConnectionString: () =>
         "postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable",
+      getDataDir: () => "/tmp/skytwin-sample-test/crdb-data",
     };
   }),
 }));
@@ -25,9 +26,15 @@ interface SampleManagerInternals {
   sampleBootstrapAllowedThisLaunch: boolean;
   ensureEmbeddedRoot(): Promise<string>;
   waitForExternalApi(timeoutMs: number): Promise<boolean>;
-  startCockroach(): Promise<void>;
+  startCockroach(): Promise<{
+    ownership: "managed-child" | "preexisting";
+    dataDir: string | null;
+  } | null>;
   runMigrations(): Promise<boolean>;
-  provisionPackagedSample(): Promise<void>;
+  provisionPackagedSample(startup: {
+    ownership: "managed-child" | "preexisting";
+    dataDir: string | null;
+  }): Promise<void>;
   startApi(): Promise<void>;
   waitForApi(timeoutMs: number): Promise<boolean>;
   startWeb(): Promise<void>;
@@ -62,7 +69,10 @@ describe("packaged sample startup sequencing", () => {
     manager.cockroachStatus = "running";
     manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
     manager.waitForExternalApi = vi.fn().mockResolvedValue(false);
-    manager.startCockroach = vi.fn().mockResolvedValue(undefined);
+    manager.startCockroach = vi.fn().mockResolvedValue({
+      ownership: "managed-child",
+      dataDir: "/tmp/skytwin-sample-test/crdb-data",
+    });
     manager.runMigrations = vi.fn().mockResolvedValue(true);
     manager.provisionPackagedSample = vi.fn().mockImplementation(async () => {
       manager.sampleBootstrapAllowedThisLaunch = true;
@@ -80,6 +90,36 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.startWeb).toHaveBeenCalledOnce();
     expect(manager.startWorker).toHaveBeenCalledOnce();
     expect(manager.startPackagedSampleIngest).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a foreign pre-existing CockroachDB sample-free", async () => {
+    const manager = internals();
+    manager.cockroachStatus = "running";
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.waitForExternalApi = vi.fn().mockResolvedValue(false);
+    manager.startCockroach = vi.fn().mockResolvedValue({
+      ownership: "preexisting",
+      dataDir: null,
+    });
+    manager.runMigrations = vi.fn().mockResolvedValue(true);
+    manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    manager.waitForApi = vi.fn().mockResolvedValue(true);
+    manager.startWeb = vi.fn().mockResolvedValue(undefined);
+    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+    manager.startHealthMonitoring = vi.fn();
+    manager.ingestPackagedSample = vi.fn().mockResolvedValue(undefined);
+
+    await expect(manager.startAll()).resolves.toBeUndefined();
+    await Promise.resolve();
+
+    expect(manager.runMigrations).toHaveBeenCalledOnce();
+    expect(manager.provisionPackagedSample).not.toHaveBeenCalled();
+    expect(manager.sampleBootstrapAllowedThisLaunch).toBe(false);
+    expect(manager.ingestPackagedSample).not.toHaveBeenCalled();
+    expect(manager.startApi).toHaveBeenCalledOnce();
+    expect(manager.startWeb).toHaveBeenCalledOnce();
+    expect(manager.startWorker).toHaveBeenCalledOnce();
   });
 
   it("does not present the service credential unless API ownership verifies", async () => {
