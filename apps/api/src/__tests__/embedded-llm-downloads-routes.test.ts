@@ -240,6 +240,53 @@ describe("POST /api/embedded-llm/downloads/start", () => {
   });
 });
 
+describe("legacy download error privacy", () => {
+  const legacyPathError = {
+    ...SAMPLE_ROW,
+    status: "failed" as const,
+    error:
+      "[download_io_error] ENOENT: open '/Users/alice/.skytwin/models/private.gguf'",
+  };
+
+  it("sanitizes a persisted pre-upgrade path on a single download", async () => {
+    mockRepo.findById.mockResolvedValue(legacyPathError);
+    const { status, body } = await req(
+      buildApp(),
+      "GET",
+      `/api/embedded-llm/downloads/${DOWNLOAD_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect((body["download"] as Record<string, unknown>)["error"]).toBe(
+      "Local model storage failed. Retry or cancel the download.",
+    );
+    expect(JSON.stringify(body)).not.toContain("/Users/alice");
+  });
+
+  it("sanitizes persisted pre-upgrade paths in download history", async () => {
+    mockRepo.listForUser.mockResolvedValue([
+      legacyPathError,
+      {
+        ...legacyPathError,
+        id: "eeeeeeee-ffff-aaaa-bbbb-222222222222",
+        error: "[constructor] /Users/bob/.skytwin/models/private.gguf",
+      },
+    ]);
+    const { status, body } = await req(
+      buildApp(),
+      "GET",
+      `/api/embedded-llm/downloads/user/${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect(JSON.stringify(body)).not.toContain("private.gguf");
+    const downloads = body["downloads"] as Array<Record<string, unknown>>;
+    expect(downloads[1]?.["error"]).toBe(
+      "Local model operation failed. Retry or cancel the download.",
+    );
+  });
+});
+
 describe("GET /api/embedded-llm/downloads/:id", () => {
   it("returns the row in JSON-friendly shape", async () => {
     mockRepo.findById.mockResolvedValue(SAMPLE_ROW);

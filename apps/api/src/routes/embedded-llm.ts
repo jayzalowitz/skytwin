@@ -251,6 +251,40 @@ interface DownloadJson {
   percent: number;
 }
 
+const PUBLIC_DOWNLOAD_ERRORS: Readonly<Record<string, string>> = {
+  timeout:
+    "Artifact transfer stalled. Retry to continue from the saved checkpoint.",
+  network_error: "Artifact transfer was interrupted. Retry to continue.",
+  source_unavailable: "The maintained model source is currently unavailable.",
+  source_metadata_mismatch:
+    "The model source did not match the maintained artifact.",
+  unapproved_redirect:
+    "The model source redirected to an unapproved location.",
+  private_source_address:
+    "The model source resolved to a blocked network address.",
+  unexpected_length: "The downloaded artifact had an unexpected size.",
+  unexpected_content_type:
+    "The model source returned an unexpected file type.",
+  resume_state_mismatch: "The saved download could not be resumed safely.",
+  cancelled: "The model download was cancelled.",
+  download_io_error:
+    "Local model storage failed. Retry or cancel the download.",
+  managed_path_mismatch: "The saved model location could not be verified.",
+  install_recovery_failed:
+    "Model installation could not be recovered safely. Retry installation.",
+};
+
+/** Never reflect arbitrary persisted diagnostics, including pre-upgrade paths. */
+function publicDownloadError(error: string | null): string | null {
+  if (error === null) return null;
+  const code = /^\[([a-z0-9_]+)\]/.exec(error)?.[1];
+  if (code !== undefined && Object.hasOwn(PUBLIC_DOWNLOAD_ERRORS, code))
+    return PUBLIC_DOWNLOAD_ERRORS[code]!;
+  if (error.startsWith("sha256 mismatch:"))
+    return "Model integrity verification failed. Retry the download.";
+  return "Local model operation failed. Retry or cancel the download.";
+}
+
 function rowToJson(r: import("@skytwin/db").ModelDownloadRow): DownloadJson {
   const totalBytes = Number(r.total_bytes);
   const bytesDownloaded = Number(r.bytes_downloaded);
@@ -264,7 +298,7 @@ function rowToJson(r: import("@skytwin/db").ModelDownloadRow): DownloadJson {
     totalBytes,
     bytesDownloaded,
     status: r.status,
-    error: r.error,
+    error: publicDownloadError(r.error),
     startedAt: r.started_at.toISOString(),
     pausedAt: r.paused_at?.toISOString() ?? null,
     completedAt: r.completed_at?.toISOString() ?? null,

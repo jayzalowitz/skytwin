@@ -9,7 +9,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { MODEL_REGISTRY, type ModelEntry } from "@skytwin/embedded-llm";
-import { restorePartialCheckpoint } from "../downloader.js";
+import {
+  DiskReservationLedger,
+  requiredAvailableBytes,
+} from "../artifact-transfer.js";
+import {
+  prepareResumeReservationBytes,
+  restorePartialCheckpoint,
+} from "../downloader.js";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -17,10 +24,17 @@ afterEach(() => {
     rmSync(dir, { recursive: true, force: true });
 });
 
-function setup(): { partial: string; model: ModelEntry } {
+function setup(): {
+  downloadId: string;
+  partial: string;
+  target: string;
+  model: ModelEntry;
+} {
   const dir = mkdtempSync(join(tmpdir(), "skytwin-checkpoint-"));
   dirs.push(dir);
-  const partial = join(dir, "model.partial");
+  const downloadId = "download-id";
+  const target = join(dir, "model.gguf");
+  const partial = `${target}.${downloadId}.partial`;
   const base = MODEL_REGISTRY[0]!;
   const model = {
     ...base,
@@ -41,7 +55,7 @@ function setup(): { partial: string; model: ModelEntry } {
       validator: { etag: '"immutable"' },
     }),
   );
-  return { partial, model };
+  return { downloadId, partial, target, model };
 }
 
 describe("durable partial checkpoints", () => {
@@ -100,5 +114,52 @@ describe("durable partial checkpoints", () => {
     );
     expect(restored.resumeFrom).toBe(4);
     expect(statSync(partial).size).toBe(4);
+  });
+
+  it("reserves concurrent crash-tail resumes from their validated durable boundaries", () => {
+    const first = setup();
+    const second = setup();
+    const ledger = new DiskReservationLedger();
+
+    for (const [id, fixture] of [
+      ["first", first],
+      ["second", second],
+    ] as const) {
+      const reusableBytes = prepareResumeReservationBytes(
+        fixture.target,
+        {
+          id: fixture.downloadId,
+          model_id: fixture.model.id,
+          target_path: fixture.target,
+          bytes_downloaded: 4,
+        },
+        fixture.model,
+      );
+      expect(reusableBytes).toBe(4);
+      expect(statSync(fixture.partial).size).toBe(4);
+      ledger.reserve(
+        id,
+        requiredAvailableBytes(fixture.model.exactBytes, reusableBytes),
+      );
+    }
+
+    expect(ledger.totalBytes).toBe(2 * requiredAvailableBytes(10, 4));
+  });
+
+  it("does not inspect or truncate a persisted path outside the managed target", () => {
+    const fixture = setup();
+    const reusableBytes = prepareResumeReservationBytes(
+      join(fixture.target, "unexpected"),
+      {
+        id: fixture.downloadId,
+        model_id: fixture.model.id,
+        target_path: fixture.target,
+        bytes_downloaded: 4,
+      },
+      fixture.model,
+    );
+
+    expect(reusableBytes).toBe(0);
+    expect(statSync(fixture.partial).size).toBe(7);
   });
 });

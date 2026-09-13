@@ -94,18 +94,6 @@ interface PartialState {
 function partialStatePath(partialPath: string): string {
   return `${partialPath}.json`;
 }
-function resumablePartialSize(path: string): number {
-  let fd: number | null = null;
-  try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    const stats = fstatSync(fd);
-    return stats.isFile() && stats.nlink === 1 ? stats.size : 0;
-  } catch {
-    return 0;
-  } finally {
-    if (fd !== null) closeSync(fd);
-  }
-}
 function writePartialState(path: string, state: PartialState): void {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
@@ -243,6 +231,33 @@ export function restorePartialCheckpoint(
 }
 
 /**
+ * Prepare a persisted partial before using it in disk accounting. The target
+ * must first match the registry-derived managed path, and only a checkpoint
+ * that agrees with the registry and database contributes reusable bytes.
+ * restorePartialCheckpoint() also removes any uncommitted crash tail, so the
+ * reservation and filesystem describe the same durable boundary. Invalid or
+ * missing partials reserve as a fresh download; the runner performs the
+ * authoritative state transition and user-visible failure handling.
+ */
+export function prepareResumeReservationBytes(
+  expectedTargetPath: string,
+  download: Pick<
+    ModelDownloadRow,
+    "id" | "model_id" | "target_path" | "bytes_downloaded"
+  >,
+  model: NonNullable<ReturnType<typeof findModelById>>,
+): number {
+  if (resolve(download.target_path) !== resolve(expectedTargetPath)) return 0;
+  const partialPath = partialPathFor(download.target_path, download.id);
+  if (download.bytes_downloaded <= 0 || !existsSync(partialPath)) return 0;
+  try {
+    return restorePartialCheckpoint(partialPath, download, model).resumeFrom;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * In-flight download registry. Lets `pause` flip a flag the streamer
  * checks per chunk, and lets `cancel` abort the underlying request.
  *
@@ -327,8 +342,7 @@ export async function startDownload(
     if (existing !== null) {
       download = existing;
       resumed = existing.bytes_downloaded > 0;
-      const partial = partialPathFor(existing.target_path, existing.id);
-      partialBytes = resumablePartialSize(partial);
+      partialBytes = prepareResumeReservationBytes(targetPath, existing, model);
     } else {
       // Check and reserve are serialized so concurrent starts cannot each
       // spend the same free bytes. Check before insert to avoid a stranded row.
@@ -1052,77 +1066,89 @@ export async function recoverOnBoot(
   }
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const orphaned = await modelDownloadRepository.listWorkerOwnedNonterminal();
-    if (orphaned.length === 0) return;
-    let recovered = 0;
-    for (const row of orphaned) {
-      try {
-        if (row.status === "downloading" || row.status === "verifying") {
-          if (
-            await modelDownloadRepository.transitionStatus(
-              row.id,
-              [row.status],
-              "paused",
-              { bytesDownloaded: row.bytes_downloaded },
+    try {
+      const orphaned =
+        await modelDownloadRepository.listWorkerOwnedNonterminal();
+      if (orphaned.length === 0) return;
+      let recovered = 0;
+      for (const row of orphaned) {
+        try {
+          if (row.status === "downloading" || row.status === "verifying") {
+            if (
+              await modelDownloadRepository.transitionStatus(
+                row.id,
+                [row.status],
+                "paused",
+                { bytesDownloaded: row.bytes_downloaded },
+              )
             )
-          )
-            recovered += 1;
-          continue;
-        }
+              recovered += 1;
+            continue;
+          }
 
-        const active = await dependencies.inspectActive(dependencies.modelDir());
-        const installed =
-          active.state === "verified" &&
-          active.model.id === row.model_id &&
-          active.path === row.target_path &&
-          active.manifest.sha256 === row.sha256_expected;
-        if (installed) {
-          if (
+          const active = await dependencies.inspectActive(
+            dependencies.modelDir(),
+          );
+          const installed =
+            active.state === "verified" &&
+            active.model.id === row.model_id &&
+            active.path === row.target_path &&
+            active.manifest.sha256 === row.sha256_expected;
+          if (installed) {
+            if (
+              await modelDownloadRepository.transitionStatus(
+                row.id,
+                ["installing"],
+                "complete",
+                { bytesDownloaded: row.total_bytes },
+              )
+            )
+              recovered += 1;
+          } else if (
             await modelDownloadRepository.transitionStatus(
               row.id,
               ["installing"],
-              "complete",
-              { bytesDownloaded: row.total_bytes },
+              "failed",
+              {
+                error:
+                  "[install_recovery_failed] No matching verified active manifest; retry installation",
+              },
             )
           )
             recovered += 1;
-        } else if (
-          await modelDownloadRepository.transitionStatus(
-            row.id,
-            ["installing"],
-            "failed",
-            {
-              error:
-                "[install_recovery_failed] No matching verified active manifest; retry installation",
-            },
-          )
-        )
-          recovered += 1;
-      } catch (error) {
-        // One malformed path/row or one failed CAS must not strand every later
-        // worker-owned row during startup reconciliation.
-        log.warn("Failed to reconcile orphaned model download row", {
-          downloadId: row.id,
-          error: error instanceof Error ? error.message : String(error),
+        } catch (error) {
+          // One malformed path/row or one failed CAS must not strand every later
+          // worker-owned row during startup reconciliation.
+          log.warn("Failed to reconcile orphaned model download row", {
+            downloadId: row.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      if (recovered > 0) {
+        log.info("Reconciled orphaned model download workers", {
+          count: recovered,
+          attempt,
         });
       }
-    }
-    if (recovered > 0) {
-      log.info("Reconciled orphaned model download workers", {
-        count: recovered,
-        attempt,
-      });
-    }
 
-    // Authority is the database after every isolated attempt. A failed CAS may
-    // mean another actor resolved the row, so never infer incompleteness from
-    // the local loop alone.
-    const remaining = await modelDownloadRepository.listWorkerOwnedNonterminal();
-    if (remaining.length === 0) return;
-    if (attempt === maxAttempts) {
-      throw new Error(
-        `model download recovery left ${remaining.length} worker-owned row(s) after ${maxAttempts} attempt(s)`,
-      );
+      // Authority is the database after every isolated attempt. A failed CAS may
+      // mean another actor resolved the row, so never infer incompleteness from
+      // the local loop alone.
+      const remaining =
+        await modelDownloadRepository.listWorkerOwnedNonterminal();
+      if (remaining.length === 0) return;
+      if (attempt === maxAttempts) {
+        throw new Error(
+          `model download recovery left ${remaining.length} worker-owned row(s) after ${maxAttempts} attempt(s)`,
+        );
+      }
+    } catch (error) {
+      if (attempt === maxAttempts) throw error;
+      log.warn("Model download recovery pass failed; retrying", {
+        attempt,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
     await wait(retryDelayMs);
   }

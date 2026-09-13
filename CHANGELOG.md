@@ -84,12 +84,12 @@ All notable changes to SkyTwin will be documented in this file.
 ### Changed
 
 - Startup reconciles orphaned transfer, verification, and installation rows before the API binds its port. The bounded startup gate retries transient database failures and does not accept traffic unless an authoritative pass completes. Recovery still isolates malformed individual rows so one bad artifact cannot prevent later rows from being reconciled.
-- Successful activation invalidates both the embedded-provider discovery cache and the API's LLM client cache before the download is marked complete. Public recommendation and download responses omit raw host hardware and filesystem paths.
+- Successful activation invalidates both the embedded-provider discovery cache and the API's LLM client cache before the download is marked complete. Public recommendation and download responses omit raw host hardware and filesystem paths, including diagnostics persisted by earlier versions.
 - The managed model is **downloaded after user action; it is not bundled**, and the llama.cpp runtime remains a separate prerequisite. `SKYTWIN_LLAMA_MODEL` continues to be an explicit user-managed override, so it does not receive the managed registry/manifest guarantees.
 
 ### Tested
 
-- Adversarial coverage includes source/target symlinks, staged hard links, a partial swapped between checkpoint restore and descriptor open, tampering, digest/length/content-type mismatches, redirect and DNS restrictions, crash-tail truncation, checkpoint disagreement, stalled transfer, state-transition races, CRDB `INT8` string normalization, bounded recovery retries, runtime cache invalidation, serialized descriptor hashing, and per-row recovery isolation.
+- Adversarial coverage includes source/target symlinks, staged hard links, a partial swapped between checkpoint restore and descriptor open, tampering, digest/length/content-type mismatches, redirect and DNS restrictions, concurrent crash-tail reservation, checkpoint disagreement, stalled transfer, state-transition races, CRDB `INT8` string normalization, bounded authoritative-read recovery retries, legacy diagnostic sanitization, runtime cache invalidation, serialized descriptor hashing, and per-row recovery isolation.
 
 ## [0.6.102.0] - 2026-08-27
 

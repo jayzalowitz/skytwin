@@ -534,15 +534,76 @@ describe("boot recovery", () => {
     );
   });
 
-  it("propagates an authoritative recovery query failure", async () => {
-    mockRepo.listWorkerOwnedNonterminal.mockRejectedValue(
-      new Error("recovery database unavailable"),
-    );
+  it("retries a transient initial authoritative query failure", async () => {
+    mockRepo.listWorkerOwnedNonterminal
+      .mockRejectedValueOnce(new Error("recovery database unavailable"))
+      .mockResolvedValueOnce([]);
+    const wait = vi.fn().mockResolvedValue(undefined);
 
-    await expect(recoverOnBoot()).rejects.toThrow(
-      "recovery database unavailable",
-    );
+    await recoverOnBoot({
+      modelDir: () => "/tmp",
+      inspectActive: () => ({ state: "missing" }),
+      maxAttempts: 2,
+      retryDelayMs: 0,
+      wait,
+    });
+
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(mockRepo.listWorkerOwnedNonterminal).toHaveBeenCalledTimes(2);
   });
+
+  it("retries a transient final authoritative query failure", async () => {
+    const row = testRow("/tmp", "downloading");
+    mockRepo.listWorkerOwnedNonterminal
+      .mockResolvedValueOnce([row])
+      .mockRejectedValueOnce(new Error("reconciliation read unavailable"))
+      .mockResolvedValueOnce([]);
+    const wait = vi.fn().mockResolvedValue(undefined);
+
+    await recoverOnBoot({
+      modelDir: () => "/tmp",
+      inspectActive: () => ({ state: "missing" }),
+      maxAttempts: 2,
+      retryDelayMs: 0,
+      wait,
+    });
+
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(mockRepo.listWorkerOwnedNonterminal).toHaveBeenCalledTimes(3);
+  });
+
+  it.each(["initial", "final"] as const)(
+    "fails closed after exhausting %s authoritative query retries",
+    async (phase) => {
+      const failure = new Error(`${phase} recovery database unavailable`);
+      const row = testRow("/tmp", "downloading");
+      if (phase === "initial") {
+        mockRepo.listWorkerOwnedNonterminal.mockRejectedValue(failure);
+      } else {
+        mockRepo.listWorkerOwnedNonterminal
+          .mockResolvedValueOnce([row])
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValueOnce([row])
+          .mockRejectedValueOnce(failure);
+      }
+      const wait = vi.fn().mockResolvedValue(undefined);
+
+      await expect(
+        recoverOnBoot({
+          modelDir: () => "/tmp",
+          inspectActive: () => ({ state: "missing" }),
+          maxAttempts: 2,
+          retryDelayMs: 0,
+          wait,
+        }),
+      ).rejects.toThrow(failure.message);
+
+      expect(wait).toHaveBeenCalledTimes(1);
+      expect(mockRepo.listWorkerOwnedNonterminal).toHaveBeenCalledTimes(
+        phase === "initial" ? 2 : 4,
+      );
+    },
+  );
 
   it("retries an unresolved row within a fixed bound and verifies DB authority", async () => {
     const dir = tempDir();
