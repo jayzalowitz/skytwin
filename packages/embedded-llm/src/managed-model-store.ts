@@ -95,6 +95,33 @@ export async function computeFileHandleSha256(handle: FileHandle): Promise<strin
   return hash.digest("hex");
 }
 
+/** Persist a complete copy chunk or fail closed if the descriptor stalls. */
+export async function writeFileHandleFully(
+  handle: Pick<FileHandle, "write">,
+  buffer: Buffer,
+  length: number,
+  position: number,
+): Promise<void> {
+  let written = 0;
+  while (written < length) {
+    const remaining = length - written;
+    const result = await handle.write(
+      buffer,
+      written,
+      remaining,
+      position + written,
+    );
+    if (
+      !Number.isSafeInteger(result.bytesWritten) ||
+      result.bytesWritten <= 0 ||
+      result.bytesWritten > remaining
+    ) {
+      throw new Error("managed_artifact_write_made_no_progress");
+    }
+    written += result.bytesWritten;
+  }
+}
+
 export function computeFileSha256(path: string): string {
   const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
@@ -456,16 +483,7 @@ async function activateManagedModelUnlocked(
           offset,
         ));
         if (read > 0) {
-          let written = 0;
-          while (written < read) {
-            const result = await destination.write(
-              buffer,
-              written,
-              read - written,
-              offset + written,
-            );
-            written += result.bytesWritten;
-          }
+          await writeFileHandleFully(destination, buffer, read, offset);
           offset += read;
         }
       } while (read > 0);

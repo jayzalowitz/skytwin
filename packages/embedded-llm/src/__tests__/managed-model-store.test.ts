@@ -12,7 +12,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import type { FileHandle } from "node:fs/promises";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   activateManagedModel,
   ACTIVE_MODEL_MANIFEST,
@@ -20,6 +21,7 @@ import {
   inspectManagedActiveModel,
   inspectManagedActiveModelAsync,
   managedArtifactPath,
+  writeFileHandleFully,
 } from "../managed-model-store.js";
 import { MODEL_REGISTRY, type ModelEntry } from "../model-registry.js";
 
@@ -50,6 +52,43 @@ function tinyModel(id: string, bytes: Buffer): ModelEntry {
 }
 
 describe("managed model activation", () => {
+  it("completes repeated short writes at the correct buffer and file offsets", async () => {
+    const write = vi.fn().mockImplementation(
+      async (buffer: Buffer, _offset: number, length: number) => ({
+        bytesWritten: Math.min(2, length),
+        buffer,
+      }),
+    );
+
+    await writeFileHandleFully(
+      { write } as unknown as Pick<FileHandle, "write">,
+      Buffer.from("chunk"),
+      5,
+      11,
+    );
+
+    expect(write.mock.calls.map((call) => call.slice(1))).toEqual([
+      [0, 5, 11],
+      [2, 3, 13],
+      [4, 1, 15],
+    ]);
+  });
+
+  it("rejects a zero-progress managed artifact write", async () => {
+    const write = vi.fn().mockResolvedValue({
+      bytesWritten: 0,
+      buffer: Buffer.from("chunk"),
+    });
+
+    await expect(writeFileHandleFully(
+      { write } as unknown as Pick<FileHandle, "write">,
+      Buffer.from("chunk"),
+      5,
+      0,
+    )).rejects.toThrow("managed_artifact_write_made_no_progress");
+    expect(write).toHaveBeenCalledOnce();
+  });
+
   it("activates only exact bytes and verifies before returning a runtime path", async () => {
     const dir = directory();
     const bytes = Buffer.from("tiny verified gguf fixture");
