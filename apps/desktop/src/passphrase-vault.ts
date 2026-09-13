@@ -109,6 +109,12 @@ export class OwnerDeletionFence {
     };
   }
 
+  denialReason(userId: string): OwnerFenceDenial | null {
+    if (this.blockedOwners.has(userId)) return 'owner_deleted';
+    if (!this.ready) return 'owner_state_unavailable';
+    return null;
+  }
+
   isCurrent(userId: string, globalEpoch: number, ownerEpoch: number): boolean {
     return this.ready
       && !this.blockedOwners.has(userId)
@@ -222,7 +228,7 @@ export class PassphraseVault {
   remember(userId: string, passphrase: string): RememberWriteResult {
     const admission = this.ownerFence.capture(userId);
     if (!admission.ok) {
-      this.forget(userId);
+      if (admission.reason === 'owner_deleted') this.forget(userId);
       return admission;
     }
     const backend = this.currentBackend();
@@ -241,8 +247,9 @@ export class PassphraseVault {
       ciphertext: ciphertext.toString('base64'),
     };
     if (!this.ownerFence.isCurrent(userId, admission.globalEpoch, admission.ownerEpoch)) {
-      this.forget(userId);
-      return { ok: false, reason: 'owner_deleted' };
+      const reason = this.ownerFence.denialReason(userId) ?? 'owner_state_unavailable';
+      if (reason === 'owner_deleted') this.forget(userId);
+      return { ok: false, reason };
     }
     this.store.set(storeKeyFor(userId), JSON.stringify(record));
     return { ok: true };
@@ -258,7 +265,7 @@ export class PassphraseVault {
   getRemembered(userId: string): RememberedPassphraseResult {
     const admission = this.ownerFence.capture(userId);
     if (!admission.ok) {
-      this.forget(userId);
+      if (admission.reason === 'owner_deleted') this.forget(userId);
       return admission;
     }
     const backend = this.currentBackend();
@@ -287,8 +294,9 @@ export class PassphraseVault {
         return { ok: false, reason: 'corrupt' };
       }
       if (!this.ownerFence.isCurrent(userId, admission.globalEpoch, admission.ownerEpoch)) {
-        this.forget(userId);
-        return { ok: false, reason: 'owner_deleted' };
+        const reason = this.ownerFence.denialReason(userId) ?? 'owner_state_unavailable';
+        if (reason === 'owner_deleted') this.forget(userId);
+        return { ok: false, reason };
       }
       return { ok: true, passphrase };
     } catch {
@@ -303,7 +311,7 @@ export class PassphraseVault {
   has(userId: string): boolean {
     const admission = this.ownerFence.capture(userId);
     if (!admission.ok) {
-      this.forget(userId);
+      if (admission.reason === 'owner_deleted') this.forget(userId);
       return false;
     }
     const backend = this.currentBackend();
@@ -319,7 +327,7 @@ export class PassphraseVault {
       return false;
     }
     if (!this.ownerFence.isCurrent(userId, admission.globalEpoch, admission.ownerEpoch)) {
-      this.forget(userId);
+      if (this.ownerFence.denialReason(userId) === 'owner_deleted') this.forget(userId);
       return false;
     }
     return true;
