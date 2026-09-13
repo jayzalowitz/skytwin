@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -161,6 +162,49 @@ describe("managed model activation", () => {
     mkdirSync(join(dir, ACTIVE_MODEL_MANIFEST));
     await expect(activateManagedModel(dir, staged, model)).rejects.toThrow();
     expect(existsSync(managedArtifactPath(dir, model))).toBe(true);
+  });
+
+  it("recovers a verified publication link left by an interrupted activation", async () => {
+    const dir = directory();
+    const bytes = Buffer.from("interrupted publication");
+    const model = tinyModel("tiny-interrupted", bytes);
+    const target = managedArtifactPath(dir, model);
+    const orphan = `${target}.12345678-1234-4123-8123-123456789abc.installing`;
+    writeFileSync(target, bytes);
+    linkSync(target, orphan);
+    expect(statSync(target).nlink).toBe(2);
+
+    const staged = join(dir, "retry.partial");
+    writeFileSync(staged, bytes);
+    await activateManagedModel(dir, staged, model);
+
+    expect(existsSync(orphan)).toBe(false);
+    expect(statSync(target).nlink).toBe(1);
+    expect(inspectManagedActiveModel(dir, [model])).toMatchObject({
+      state: "verified",
+      model: { id: model.id },
+    });
+  });
+
+  it("does not delete lookalike installation files or unrelated hard links", async () => {
+    const dir = directory();
+    const bytes = Buffer.from("untrusted publication collision");
+    const model = tinyModel("tiny-untrusted-interrupted", bytes);
+    const target = managedArtifactPath(dir, model);
+    const outside = join(dir, "outside-hard-link.gguf");
+    const lookalike = `${target}.12345678-1234-4123-8123-123456789abc.installing`;
+    writeFileSync(target, bytes);
+    linkSync(target, outside);
+    writeFileSync(lookalike, "unrelated contents");
+    const staged = join(dir, "retry.partial");
+    writeFileSync(staged, bytes);
+
+    await expect(activateManagedModel(dir, staged, model)).rejects.toThrow(
+      "existing_managed_artifact_invalid",
+    );
+    expect(readFileSync(outside)).toEqual(bytes);
+    expect(readFileSync(lookalike, "utf8")).toBe("unrelated contents");
+    expect(statSync(target).nlink).toBe(2);
   });
 
   it("rejects staged symlinks and hard links before copying bytes", async () => {

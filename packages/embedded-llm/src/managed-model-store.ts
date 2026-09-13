@@ -7,6 +7,7 @@ import {
   mkdirSync,
   openSync,
   closeSync,
+  readdirSync,
   readFileSync,
   readSync,
   renameSync,
@@ -278,6 +279,121 @@ async function withModelDirMutationLock<T>(
   }
 }
 
+async function reconcileOrphanedPublicationLink(
+  modelDir: string,
+  target: string,
+  model: ModelEntry,
+): Promise<void> {
+  let targetHandle: FileHandle | null = null;
+  try {
+    targetHandle = await openFile(
+      target,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    const targetStats = await targetHandle.stat({ bigint: true });
+    if (
+      !targetStats.isFile() ||
+      targetStats.nlink !== 2n ||
+      Number(targetStats.size) !== model.exactBytes ||
+      (await computeFileHandleSha256(targetHandle)) !== model.sha256
+    ) {
+      return;
+    }
+    const afterHash = await targetHandle.stat({ bigint: true });
+    if (
+      afterHash.dev !== targetStats.dev ||
+      afterHash.ino !== targetStats.ino ||
+      afterHash.size !== targetStats.size ||
+      afterHash.mtimeNs !== targetStats.mtimeNs ||
+      afterHash.ctimeNs !== targetStats.ctimeNs ||
+      afterHash.nlink !== 2n
+    ) {
+      return;
+    }
+
+    const prefix = `${basename(target)}.`;
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    for (const name of readdirSync(modelDir)) {
+      if (!name.startsWith(prefix) || !name.endsWith(".installing")) continue;
+      const identifier = name.slice(prefix.length, -".installing".length);
+      if (!uuid.test(identifier)) continue;
+      const candidate = join(modelDir, name);
+      let candidateHandle: FileHandle | null = null;
+      try {
+        candidateHandle = await openFile(
+          candidate,
+          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+        );
+        const candidateStats = await candidateHandle.stat({ bigint: true });
+        if (
+          !candidateStats.isFile() ||
+          candidateStats.dev !== targetStats.dev ||
+          candidateStats.ino !== targetStats.ino ||
+          candidateStats.nlink !== 2n
+        ) {
+          continue;
+        }
+
+        const quarantine = `${candidate}.${randomUUID()}.reconciling`;
+        renameSync(candidate, quarantine);
+        let quarantineHandle: FileHandle | null = null;
+        try {
+          quarantineHandle = await openFile(
+            quarantine,
+            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+          );
+          const quarantined = await quarantineHandle.stat({ bigint: true });
+          if (
+            !quarantined.isFile() ||
+            quarantined.dev !== targetStats.dev ||
+            quarantined.ino !== targetStats.ino ||
+            quarantined.nlink !== 2n
+          ) {
+            throw new Error("orphaned_publication_link_changed");
+          }
+          unlinkSync(quarantine);
+        } catch (error) {
+          if (!existsSync(candidate) && existsSync(quarantine)) {
+            try {
+              renameSync(quarantine, candidate);
+            } catch {
+              /* retain an unverified path rather than delete it */
+            }
+          }
+          throw error;
+        } finally {
+          await quarantineHandle?.close();
+        }
+
+        const reconciled = await targetHandle.stat({ bigint: true });
+        if (
+          reconciled.dev !== targetStats.dev ||
+          reconciled.ino !== targetStats.ino ||
+          reconciled.size !== targetStats.size ||
+          reconciled.nlink !== 1n
+        ) {
+          throw new Error("orphaned_publication_target_changed");
+        }
+        return;
+      } finally {
+        await candidateHandle?.close();
+      }
+    }
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.message === "orphaned_publication_link_changed" ||
+        error.message === "orphaned_publication_target_changed")
+    ) {
+      throw error;
+    }
+    // Missing, linked, or otherwise untrusted targets are handled by the
+    // caller's ordinary exact validation and remain untouched here.
+  } finally {
+    await targetHandle?.close();
+  }
+}
+
 export async function activateManagedModel(
   modelDir: string,
   stagedPath: string,
@@ -368,6 +484,7 @@ async function activateManagedModelUnlocked(
           ? (error as { code?: unknown }).code
           : undefined;
       if (code !== "EEXIST") throw error;
+      await reconcileOrphanedPublicationLink(modelDir, target, model);
       try {
         const targetHandle = await openFile(
           target,
