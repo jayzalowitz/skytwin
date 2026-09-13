@@ -430,10 +430,12 @@ describe('inferenceReceiptRepository', () => {
         continuation_snapshot: completion.continuation,
       }], rowCount: 1 });
     mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'user' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ decision_id: completion.decisionId }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ id: '77777777-7777-4777-8777-777777777777' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ id: completion.continuation.outcome.id }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [{ decision_id: completion.decisionId }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: 'user' }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     await expect(inferenceReceiptRepository.getContinuationForDecision('user', completion.decisionId))
@@ -444,11 +446,11 @@ describe('inferenceReceiptRepository', () => {
     await expect(inferenceReceiptRepository.claimExecutionForDecision(
       'user', completion.decisionId, completion.continuation, [{ type: 'test_action' }],
     )).resolves.toBeNull();
-    expect(mockTransactionQuery.mock.calls[0]![0]).toContain("g.effect_state = 'ready'");
-    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('d.user_id = $1');
-    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('g.continuation_snapshot = $7::JSONB');
-    expect(mockTransactionQuery.mock.calls[1]![0]).toContain('INSERT INTO execution_plans');
-    expect(mockTransactionQuery.mock.calls[3]![0]).toContain('source_execution_plan_id = $2');
+    expect(mockTransactionQuery.mock.calls[1]![0]).toContain("g.effect_state = 'ready'");
+    expect(mockTransactionQuery.mock.calls[1]![0]).toContain('d.user_id = $1');
+    expect(mockTransactionQuery.mock.calls[1]![0]).toContain('g.continuation_snapshot = $7::JSONB');
+    expect(mockTransactionQuery.mock.calls[2]![0]).toContain('INSERT INTO execution_plans');
+    expect(mockTransactionQuery.mock.calls[4]![0]).toContain('source_execution_plan_id = $2');
   });
 
   it('classifies a legacy completion without a guard as restored and non-replayable', async () => {

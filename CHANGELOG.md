@@ -21,6 +21,23 @@ All notable changes to SkyTwin will be documented in this file.
   inputs/outputs, not provider HTTP wire payloads. Other LLM-powered surfaces,
   the receipt detail UI, and tagged confidential evidence remain follow-up work.
 
+### Fixed
+
+- Migration rollback now removes only an independently checked, DDL-derived
+  manifest of SkyTwin-owned tables and preserves unrelated objects colocated in
+  `public`. CI verifies a fresh disposable Cockroach down/up cycle across owned
+  tables, normalized columns/defaults/generated expressions, constraints, and
+  secondary/partial index definitions; locality and partition equivalence are
+  intentionally outside that claim.
+- Effect admission now binds the exact owner, decision, action, plan, outcome,
+  ExplanationRecord, risk snapshot, and policy snapshot before dispatch. Memory
+  auto-execution persists its pre-effect outcome and explanation atomically with
+  the one-shot barrier; terminal adapter observations remain separate.
+- Account purge, demo reset, and legacy seed cleanup now refuse active or
+  ambiguous execution graphs. Admission and purge share an owner-first
+  serializable lock order, and every effect path rechecks owner/graph authority
+  immediately before invoking an adapter.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

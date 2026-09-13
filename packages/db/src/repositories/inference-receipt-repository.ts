@@ -497,6 +497,14 @@ export const inferenceReceiptRepository = {
     }
 
     return withTransaction(async (client) => {
+      // Owner-first locking gives account purge and effect admission one
+      // serializable order. Once purge owns this row, no new effect can claim.
+      const owner = await client.query(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [userId],
+      );
+      if (!owner.rows[0]) return null;
+
       const locked = await client.query(
         `SELECT g.decision_id
          FROM decision_ingest_guards g
@@ -549,6 +557,31 @@ export const inferenceReceiptRepository = {
       if (!claimed.rows[0]) throw new Error('Execution guard claim could not bind to its plan');
       return plan;
     });
+  },
+
+  /** Exact owner/receipt/plan fence checked immediately before dispatch. */
+  async isExecutionDispatchableForDecision(
+    userId: string,
+    decisionId: string,
+    planId: string,
+  ): Promise<boolean> {
+    const result = await query(
+      `SELECT g.decision_id
+       FROM decision_ingest_guards g
+       JOIN users u ON u.id = $1
+       JOIN decisions d ON d.id = g.decision_id AND d.user_id = u.id
+       JOIN decision_outcomes o ON o.id = g.outcome_id
+         AND o.decision_id = g.decision_id AND o.selected_action_id = g.selected_action_id
+         AND o.execution_plan_id = $3
+       JOIN explanation_records er ON er.id = g.receipt_explanation_id
+         AND er.decision_id = g.decision_id
+       JOIN execution_plans ep ON ep.id = $3 AND ep.decision_id = g.decision_id
+         AND ep.action_id = g.selected_action_id AND ep.status = 'running'
+       WHERE g.decision_id = $2 AND g.effect_state = 'running'
+         AND g.source_execution_plan_id = $3`,
+      [userId, decisionId, planId],
+    );
+    return !!result.rows[0];
   },
 
   async markExecutionTerminalForDecision(

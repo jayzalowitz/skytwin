@@ -47,6 +47,14 @@ function setupDeleteCounts(counts: Record<string, number>): void {
   // return a no-op result for BEGIN / COMMIT.
   mockClient.query.mockImplementation((sql: string) => {
     if (typeof sql !== 'string') return { rows: [], rowCount: 0 };
+    if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
+      return counts['users'] === 0
+        ? { rows: [], rowCount: 0 }
+        : { rows: [{ id: USER_ID }], rowCount: 1 };
+    }
+    if (sql.includes('AS active_count')) {
+      return { rows: [{ active_count: 0 }], rowCount: 1 };
+    }
     const match = sql.match(/DELETE FROM\s+([a-z_]+)/i);
     if (!match) return { rows: [], rowCount: 0 };
     const table = match[1]!;
@@ -155,13 +163,15 @@ describe('userPurgeRepository.purgeUser', () => {
   });
 
   it('rolls back when a delete throws (transactional all-or-nothing)', async () => {
-    let callCount = 0;
+    let deleteCount = 0;
     mockClient.query.mockImplementation((sql: string) => {
-      callCount += 1;
-      // Pass BEGIN through.
-      if (sql === 'BEGIN') return { rows: [], rowCount: 0 };
-      // Fail on the third DELETE (some intermediate step).
-      if (callCount === 4) throw new Error('CRDB temporary read error');
+      if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      }
+      if (sql.includes('AS active_count')) return { rows: [{ active_count: 0 }], rowCount: 1 };
+      if (sql.includes('DELETE FROM') && ++deleteCount === 3) {
+        throw new Error('CRDB temporary read error');
+      }
       return { rows: [], rowCount: 1 };
     });
 
@@ -186,12 +196,38 @@ describe('userPurgeRepository.purgeUser', () => {
     }
   });
 
+  it('refuses to erase an active or ambiguous execution graph', async () => {
+    mockClient.query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      }
+      if (sql.includes('AS active_count')) {
+        return { rows: [{ active_count: 1 }], rowCount: 1 };
+      }
+      return { rows: [], rowCount: 0 };
+    });
+
+    await expect(userPurgeRepository.purgeUser(USER_ID)).rejects.toMatchObject({
+      code: 'active_execution_admission',
+      activeAdmissions: 1,
+    });
+    expect(mockClient.query).not.toHaveBeenCalledWith(
+      expect.stringContaining('DELETE FROM execution_admission_barriers'),
+      expect.anything(),
+    );
+    expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
+  });
+
   it('locks the demo predicate and purges selected demo graphs in one transaction', async () => {
     setupDeleteCounts({ users: 1 });
     mockClient.query.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id FROM users WHERE is_demo = true FOR UPDATE')) {
         return { rows: [{ id: USER_ID }], rowCount: 1 };
       }
+      if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      }
+      if (sql.includes('AS active_count')) return { rows: [{ active_count: 0 }], rowCount: 1 };
       const match = sql.match(/DELETE FROM\s+([a-z_]+)/i);
       return { rows: [], rowCount: match?.[1] === 'users' ? 1 : 0 };
     });

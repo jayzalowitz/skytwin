@@ -8,6 +8,78 @@ const __dirname = dirname(__filename);
 
 const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
 
+export interface MigrationSqlSource {
+  name: string;
+  sql: string;
+}
+
+function migrationSqlSources(): MigrationSqlSource[] {
+  return [
+    { name: 'schema.sql', sql: readFileSync(SCHEMA_PATH, 'utf-8') },
+    ...readdirSync(__dirname)
+      .filter((file) => file.endsWith('.sql'))
+      .sort()
+      .map((file) => ({ name: file, sql: readFileSync(join(__dirname, file), 'utf-8') })),
+  ];
+}
+
+function unquoteSqlIdentifier(identifier: string): string {
+  return identifier.startsWith('"')
+    ? identifier.slice(1, -1).replaceAll('""', '"')
+    : identifier;
+}
+
+/**
+ * Derive the SkyTwin-owned table boundary from checked-in DDL, never from the
+ * database namespace. `all` includes tables later removed by a migration so a
+ * rollback can also clean an interrupted/older install; `current` applies the
+ * checked-in DROP TABLE statements and is the expected post-up manifest.
+ */
+export function deriveOwnedTableManifest(sources: readonly MigrationSqlSource[]): {
+  all: string[];
+  current: string[];
+} {
+  const all = new Set<string>();
+  const current = new Set<string>();
+  const identifier = '(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)';
+  const createPattern = new RegExp(
+    `\\bCREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:(?:public|"public")\\.)?(${identifier})(?![A-Za-z0-9_$"]|\\s*\\.)`,
+    'gi',
+  );
+  const dropPattern = new RegExp(
+    `\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:(?:public|"public")\\.)?(${identifier})(?![A-Za-z0-9_$"]|\\s*\\.)`,
+    'gi',
+  );
+
+  for (const source of sources) {
+    // Ownership is a property of executable DDL, not prose in a migration
+    // comment. The migration runner has the same line-comment limitation.
+    const ddl = source.sql.replace(/--[^\n]*/g, '');
+    const createStatements = ddl.match(/\bCREATE\s+TABLE\b/gi) ?? [];
+    const created = [...ddl.matchAll(createPattern)];
+    if (created.length !== createStatements.length) {
+      throw new Error(`[migration] Cannot derive every owned table from ${source.name}`);
+    }
+    for (const match of created) {
+      const name = unquoteSqlIdentifier(match[1]!);
+      all.add(name);
+      current.add(name);
+    }
+    for (const match of ddl.matchAll(dropPattern)) {
+      current.delete(unquoteSqlIdentifier(match[1]!));
+    }
+  }
+
+  return {
+    all: [...all].sort(),
+    current: [...current].sort(),
+  };
+}
+
+export function getSkyTwinOwnedTableManifest(): { all: string[]; current: string[] } {
+  return deriveOwnedTableManifest(migrationSqlSources());
+}
+
 /**
  * SQLSTATE codes that mean "this DDL object already exists" — re-running
  * a migration that hits one of these is a no-op, not a failure. Checking
@@ -202,11 +274,12 @@ interface PublicTableRow {
   table_name: string;
 }
 
-const PUBLIC_BASE_TABLES_SQL = `
+const OWNED_PUBLIC_BASE_TABLES_SQL = `
   SELECT table_name
     FROM information_schema.tables
    WHERE table_schema = 'public'
      AND table_type = 'BASE TABLE'
+     AND table_name = ANY($1::STRING[])
    ORDER BY table_name
 `;
 
@@ -220,14 +293,12 @@ export function quoteSqlIdentifier(identifier: string): string {
 
 export async function down(): Promise<void> {
   const pool = getPool();
+  const owned = getSkyTwinOwnedTableManifest().all;
 
-  // `up()` replays every migration without a migration ledger. A static drop
-  // list therefore becomes unsafe as soon as a later migration adds a table:
-  // dropping one of its parents with CASCADE strips the survivor's foreign
-  // keys, while its CREATE TABLE IF NOT EXISTS cannot restore them on reapply.
-  // Enumerate the complete application schema instead so rollback remains a
-  // fixed point as new migrations land.
-  const existing = await pool.query<PublicTableRow>(PUBLIC_BASE_TABLES_SQL);
+  // The manifest follows checked-in CREATE/DROP TABLE DDL, including tables
+  // removed by later migrations. Never infer ownership from everything in the
+  // shared `public` namespace: operators may colocate unrelated tables there.
+  const existing = await pool.query<PublicTableRow>(OWNED_PUBLIC_BASE_TABLES_SQL, [owned]);
   if (existing.rows.length > 0) {
     const qualifiedTables = existing.rows
       .map(({ table_name: tableName }) =>
@@ -239,16 +310,16 @@ export async function down(): Promise<void> {
     await pool.query(`DROP TABLE ${qualifiedTables} CASCADE`);
   }
 
-  const survivors = await pool.query<PublicTableRow>(PUBLIC_BASE_TABLES_SQL);
+  const survivors = await pool.query<PublicTableRow>(OWNED_PUBLIC_BASE_TABLES_SQL, [owned]);
   if (survivors.rows.length > 0) {
     throw new Error(
-      `[migration] 001-initial: rollback left public base tables behind: ${
+      `[migration] 001-initial: rollback left SkyTwin-owned tables behind: ${
         survivors.rows.map(({ table_name: tableName }) => tableName).join(', ')
       }`,
     );
   }
 
-  console.log('[migration] 001-initial: All public base tables dropped.');
+  console.log('[migration] 001-initial: All SkyTwin-owned tables dropped.');
 }
 
 /**

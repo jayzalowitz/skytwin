@@ -709,6 +709,8 @@ export function createApprovalsRouter(): Router {
               decisionId: approval.decision_id,
               actionId: candidateAction.id,
               steps: [{ type: candidateAction.actionType, status: 'pending' }],
+              riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
+              policySnapshot: policyResult as unknown as Record<string, unknown>,
               memoryOpportunityId: memoryOpportunityIdFromAction(storedAction) ?? undefined,
             });
             if (!admission.created) {
@@ -730,6 +732,15 @@ export function createApprovalsRouter(): Router {
                 executionPlanId: admission.plan.id,
                 admissionStatus: recordedStatus,
               });
+              break executionAttempt;
+            }
+
+            if (!await executionAdmissionRepository.isDispatchable(admission)) {
+              executionResult = {
+                status: 'ambiguous',
+                planId: admission.plan.id,
+                error: 'Execution authority was revoked before dispatch',
+              };
               break executionAttempt;
             }
 
@@ -845,6 +856,8 @@ export function createApprovalsRouter(): Router {
                 decisionId: approval.decision_id,
                 actionId: candidateAction.id,
                 steps: [{ type: candidateAction.actionType, status: 'pending' }],
+                riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
+                policySnapshot: policyResult as unknown as Record<string, unknown>,
               },
             ).catch(() => null);
             const recoveredStatus = recovered?.barrier.status;

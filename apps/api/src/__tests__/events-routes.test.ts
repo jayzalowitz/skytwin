@@ -21,6 +21,7 @@ const {
   mockCreateReceipts,
   mockGetIngestState,
   mockClaimExecution,
+  mockIsExecutionDispatchable,
   mockMarkExecutionTerminal,
   mockMarkNonEffect,
   mockGetExplanation,
@@ -53,6 +54,7 @@ const {
   mockCreateReceipts: vi.fn(),
   mockGetIngestState: vi.fn(),
   mockClaimExecution: vi.fn(),
+  mockIsExecutionDispatchable: vi.fn(),
   mockMarkExecutionTerminal: vi.fn(),
   mockMarkNonEffect: vi.fn(),
   mockGetExplanation: vi.fn(),
@@ -112,6 +114,7 @@ vi.mock('@skytwin/db', () => ({
     createManyForUser: mockCreateReceipts,
     getContinuationForDecision: mockGetIngestState,
     claimExecutionForDecision: mockClaimExecution,
+    isExecutionDispatchableForDecision: mockIsExecutionDispatchable,
     markExecutionTerminalForDecision: mockMarkExecutionTerminal,
     markNonEffectForDecision: mockMarkNonEffect,
   },
@@ -316,6 +319,7 @@ describe('Events API routes', () => {
     ) => ({ receipts: inputs, continuation: completion.continuation }));
     mockGetIngestState.mockResolvedValue(null);
     mockClaimExecution.mockResolvedValue({ id: 'plan-1' });
+    mockIsExecutionDispatchable.mockResolvedValue(true);
     mockMarkExecutionTerminal.mockResolvedValue(true);
     mockMarkNonEffect.mockResolvedValue(true);
     mockGetExplanation.mockResolvedValue(null);

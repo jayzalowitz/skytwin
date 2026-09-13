@@ -1,9 +1,38 @@
 import { describe, it, expect } from 'vitest';
 import {
+  deriveOwnedTableManifest,
+  getSkyTwinOwnedTableManifest,
   isIdempotentError,
   quoteSqlIdentifier,
   splitSqlStatements,
 } from '../migrations/001-initial.js';
+
+describe('SkyTwin-owned table manifest', () => {
+  it('derives current and historical ownership from executable checked-in DDL', () => {
+    expect(deriveOwnedTableManifest([{ name: 'fixture.sql', sql: `
+      -- CREATE TABLE foreign_comment (id INT);
+      CREATE TABLE IF NOT EXISTS public.alpha (id INT);
+      CREATE TABLE "odd""name" (id INT);
+      DROP TABLE IF EXISTS alpha;
+    ` }])).toEqual({ all: ['alpha', 'odd"name'], current: ['odd"name'] });
+  });
+
+  it('fails closed when a CREATE TABLE shape cannot be assigned to public ownership', () => {
+    expect(() => deriveOwnedTableManifest([{
+      name: 'unsupported.sql',
+      sql: 'CREATE TABLE private.operator_data (id INT);',
+    }])).toThrow(/Cannot derive every owned table/);
+  });
+
+  it('covers the checked-in schema and remembers intentionally retired tables', () => {
+    const manifest = getSkyTwinOwnedTableManifest();
+    expect(manifest.current).toContain('users');
+    expect(manifest.current).toContain('execution_admission_barriers');
+    expect(manifest.current).not.toContain('capability_recipes');
+    expect(manifest.all).toContain('capability_recipes');
+    expect(new Set(manifest.current).size).toBe(manifest.current.length);
+  });
+});
 
 describe('quoteSqlIdentifier', () => {
   it('quotes ordinary and embedded-quote identifiers', () => {

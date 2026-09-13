@@ -21,7 +21,8 @@ import { withTransaction } from '../connection.js';
  * see "twin profile (1), decisions (147), preferences (23)…" in the
  * response) and for debugging if a stale row is left behind.
  *
- * Safety: the entire delete runs inside `withTransaction`, so a
+ * Safety: active or ambiguous execution authority makes the operation fail
+ * closed before the first DELETE. The entire delete runs inside `withTransaction`, so a
  * failure anywhere in the chain rolls back. There is no "partially
  * deleted user" state.
  */
@@ -33,6 +34,16 @@ export interface PurgeUserResult {
   total: number;
   /** True if the users row itself was removed (false → user didn't exist). */
   userExisted: boolean;
+}
+
+/** Purge cannot truthfully complete while an admitted effect may still run. */
+export class ActiveExecutionAdmissionError extends Error {
+  readonly code = 'active_execution_admission';
+
+  constructor(readonly userId: string, readonly activeAdmissions: number) {
+    super(`User ${userId} has ${activeAdmissions} active or ambiguous execution admission(s).`);
+    this.name = 'ActiveExecutionAdmissionError';
+  }
 }
 
 /**
@@ -134,7 +145,48 @@ async function execAndCount(
   return result.rowCount ?? 0;
 }
 
+export async function assertNoActiveExecutionsWithClient(
+  client: PoolClient,
+  userId: string,
+): Promise<void> {
+  const active = await client.query<{ active_count: number }>(
+    `SELECT (
+       (SELECT count(*) FROM execution_admission_barriers
+         WHERE user_id = $1 AND status IN ('in_progress', 'ambiguous'))
+       + (SELECT count(*) FROM decision_ingest_guards g
+         JOIN decisions d ON d.id = g.decision_id
+         WHERE d.user_id = $1 AND g.effect_state = 'running')
+       + (SELECT count(*) FROM execution_plans ep
+         JOIN decisions d ON d.id = ep.decision_id
+         WHERE d.user_id = $1 AND ep.status = 'running'
+           AND NOT EXISTS (
+             SELECT 1 FROM execution_admission_barriers b
+             WHERE b.execution_plan_id = ep.id AND b.user_id = $1
+           )
+           AND NOT EXISTS (
+             SELECT 1 FROM decision_ingest_guards g
+             WHERE g.source_execution_plan_id = ep.id AND g.decision_id = d.id
+           ))
+     )::INT AS active_count`,
+    [userId],
+  );
+  const activeCount = active.rows[0]?.active_count ?? 0;
+  if (activeCount > 0) throw new ActiveExecutionAdmissionError(userId, activeCount);
+}
+
 async function purgeUserWithClient(client: PoolClient, userId: string): Promise<PurgeUserResult> {
+  // Admission and purge share this owner-first serializable lock order.
+  const owner = await client.query<{ id: string }>(
+    'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+    [userId],
+  );
+  if (!owner.rows[0]) {
+    const counts = Object.fromEntries(DELETE_PLAN.map(({ table }) => [table, 0]));
+    return { counts, total: 0, userExisted: false };
+  }
+
+  await assertNoActiveExecutionsWithClient(client, userId);
+
   const counts: Record<string, number> = {};
   let total = 0;
   let userExisted = false;
@@ -153,7 +205,8 @@ export const userPurgeRepository = {
    * `withTransaction` so a failure rolls back cleanly. Returns the
    * per-table row count for the caller to surface to the user.
    *
-   * Idempotent only in the trivial sense: a second call after a
+   * Refuses active/ambiguous execution graphs rather than erasing their
+   * reconciliation authority. Idempotent only in the trivial sense: a second call after a
    * successful delete is a no-op (every count is 0, `userExisted`
    * is false). Concurrent calls are guarded by the transaction —
    * the second caller sees the row gone and returns

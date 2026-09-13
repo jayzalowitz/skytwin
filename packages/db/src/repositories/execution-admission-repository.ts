@@ -1,5 +1,6 @@
 import type { MemoryActionLoopReport } from '@skytwin/shared-types';
 import { query, withTransaction } from '../connection.js';
+import type { CreateExplanationInput } from './explanation-repository.js';
 import type { ExecutionPlanRow } from '../types.js';
 
 function canonicalJson(value: unknown): string {
@@ -24,6 +25,10 @@ export interface ExecutionAdmissionRow {
   decision_id: string;
   action_id: string;
   execution_plan_id: string;
+  outcome_id: string;
+  explanation_id: string;
+  risk_snapshot: Record<string, unknown>;
+  policy_snapshot: Record<string, unknown>;
   status: ExecutionAdmissionStatus;
   observed_result: Record<string, unknown>;
   created_at: Date;
@@ -35,6 +40,8 @@ interface AdmitExecutionInput {
   decisionId: string;
   actionId: string;
   steps: unknown[];
+  riskSnapshot: Record<string, unknown>;
+  policySnapshot: Record<string, unknown>;
 }
 
 function assertExactAdmission(
@@ -43,6 +50,8 @@ function assertExactAdmission(
   input: AdmitExecutionInput,
 ): void {
   const persistedSteps = JSON.parse(JSON.stringify(input.steps)) as unknown[];
+  const persistedRisk = JSON.parse(JSON.stringify(input.riskSnapshot)) as Record<string, unknown>;
+  const persistedPolicy = JSON.parse(JSON.stringify(input.policySnapshot)) as Record<string, unknown>;
   if (
     barrier.user_id !== input.userId ||
     barrier.execution_plan_id !== plan.id ||
@@ -50,6 +59,8 @@ function assertExactAdmission(
     barrier.action_id !== input.actionId ||
     plan.decision_id !== input.decisionId ||
     plan.action_id !== input.actionId ||
+    canonicalJson(barrier.risk_snapshot) !== canonicalJson(persistedRisk) ||
+    canonicalJson(barrier.policy_snapshot) !== canonicalJson(persistedPolicy) ||
     canonicalJson(plan.steps) !== canonicalJson(persistedSteps)
   ) {
     throw new Error('Existing execution admission conflicts with requested authority.');
@@ -59,6 +70,11 @@ function assertExactAdmission(
 export interface AdmitMemoryExecutionInput extends AdmitExecutionInput {
   opportunityId: string;
   report: MemoryActionLoopReport;
+  preEffectOutcome: {
+    explanation: string;
+    confidence: number;
+  };
+  preEffectExplanation: Omit<CreateExplanationInput, 'decisionId'>;
 }
 
 export interface AdmitApprovalExecutionInput extends AdmitExecutionInput {
@@ -92,8 +108,9 @@ export const executionAdmissionRepository = {
     authority: AdmitExecutionInput,
   ): Promise<ExecutionAdmission | null> {
     const barrierResult = await query<ExecutionAdmissionRow>(
-      `SELECT * FROM execution_admission_barriers
-       WHERE user_id = $1 AND scope = $2 AND idempotency_key = $3`,
+      `SELECT b.* FROM execution_admission_barriers b
+       JOIN users u ON u.id = b.user_id
+       WHERE b.user_id = $1 AND b.scope = $2 AND b.idempotency_key = $3`,
       [userId, scope, idempotencyKey],
     );
     const barrier = barrierResult.rows[0];
@@ -110,6 +127,12 @@ export const executionAdmissionRepository = {
 
   async admitMemoryExecution(input: AdmitMemoryExecutionInput): Promise<ExecutionAdmission> {
     return withTransaction(async (client) => {
+      const owner = await client.query(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [input.userId],
+      );
+      if (!owner.rows[0]) throw new Error('Memory execution owner is unavailable.');
+
       const existing = await client.query<ExecutionAdmissionRow>(
         `SELECT b.* FROM execution_admission_barriers b
          WHERE b.user_id = $1 AND b.scope = 'memory' AND b.idempotency_key = $2
@@ -126,8 +149,8 @@ export const executionAdmissionRepository = {
         return { barrier: existing.rows[0], plan: plan.rows[0], created: false };
       }
 
-      const authority = await client.query(
-        `SELECT m.id
+      const authority = await client.query<{ id: string; risk_assessment: Record<string, unknown> }>(
+        `SELECT m.id, a.risk_assessment
          FROM memory_action_opportunities m
          JOIN decisions d ON d.id = $3 AND d.user_id = $1
          JOIN candidate_actions a ON a.id = $4 AND a.decision_id = d.id
@@ -137,6 +160,38 @@ export const executionAdmissionRepository = {
         [input.userId, input.opportunityId, input.decisionId, input.actionId],
       );
       if (!authority.rows[0]) throw new Error('Memory execution admission authority is unavailable.');
+      if (canonicalJson(authority.rows[0].risk_assessment) !== canonicalJson(input.riskSnapshot)) {
+        throw new Error('Memory execution risk snapshot conflicts with persisted authority.');
+      }
+
+      const outcomeResult = await client.query<{ id: string }>(
+        `INSERT INTO decision_outcomes
+           (decision_id, selected_action_id, auto_executed, requires_approval,
+            escalation_reason, explanation, confidence)
+         VALUES ($1, $2, true, false, NULL, $3, $4)
+         RETURNING id`,
+        [input.decisionId, input.actionId, input.preEffectOutcome.explanation,
+          input.preEffectOutcome.confidence],
+      );
+      const outcomeId = outcomeResult.rows[0]?.id;
+      if (!outcomeId) throw new Error('Memory pre-effect outcome could not be persisted.');
+
+      const explanation = input.preEffectExplanation;
+      const explanationResult = await client.query<{ id: string }>(
+        `INSERT INTO explanation_records (
+           decision_id, what_happened, evidence_used, preferences_invoked,
+           confidence_reasoning, action_rationale, escalation_rationale,
+           correction_guidance, capability_provenance_node_id
+         ) VALUES ($1, $2, $3::JSONB, $4, $5, $6, $7, $8, $9)
+         RETURNING id`,
+        [input.decisionId, explanation.whatHappened,
+          JSON.stringify(explanation.evidenceUsed ?? []), explanation.preferencesInvoked ?? [],
+          explanation.confidenceReasoning, explanation.actionRationale,
+          explanation.escalationRationale ?? null, explanation.correctionGuidance,
+          explanation.capabilityProvenanceNodeId ?? null],
+      );
+      const explanationId = explanationResult.rows[0]?.id;
+      if (!explanationId) throw new Error('Memory pre-effect explanation could not be persisted.');
 
       const planResult = await client.query<ExecutionPlanRow>(
         `INSERT INTO execution_plans (decision_id, action_id, status, steps)
@@ -149,10 +204,13 @@ export const executionAdmissionRepository = {
 
       const barrierResult = await client.query<ExecutionAdmissionRow>(
         `INSERT INTO execution_admission_barriers
-           (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id)
-         VALUES ($1, 'memory', $2, $3, $4, $5)
+           (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
+            outcome_id, explanation_id, risk_snapshot, policy_snapshot)
+         VALUES ($1, 'memory', $2, $3, $4, $5, $6, $7, $8::JSONB, $9::JSONB)
          RETURNING *`,
-        [input.userId, input.opportunityId, input.decisionId, input.actionId, plan.id],
+        [input.userId, input.opportunityId, input.decisionId, input.actionId, plan.id,
+          outcomeId, explanationId, JSON.stringify(input.riskSnapshot),
+          JSON.stringify(input.policySnapshot)],
       );
       const barrier = barrierResult.rows[0];
       if (!barrier) throw new Error('Memory execution barrier could not be admitted.');
@@ -175,6 +233,12 @@ export const executionAdmissionRepository = {
 
   async admitApprovalExecution(input: AdmitApprovalExecutionInput): Promise<ExecutionAdmission> {
     return withTransaction(async (client) => {
+      const owner = await client.query(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [input.userId],
+      );
+      if (!owner.rows[0]) throw new Error('Approval execution owner is unavailable.');
+
       const scope: ExecutionAdmissionScope = input.memoryOpportunityId ? 'memory' : 'approval';
       const idempotencyKey = input.memoryOpportunityId ?? input.approvalId;
       const existing = await client.query<ExecutionAdmissionRow>(
@@ -193,12 +257,22 @@ export const executionAdmissionRepository = {
         return { barrier: existing.rows[0], plan: plan.rows[0], created: false };
       }
 
-      const authority = await client.query(
-        `SELECT ar.id
+      const authority = await client.query<{
+        id: string;
+        outcome_id: string;
+        explanation_id: string;
+        risk_assessment: Record<string, unknown>;
+      }>(
+        `SELECT ar.id, o.id AS outcome_id, e.id AS explanation_id, a.risk_assessment
          FROM approval_requests ar
          JOIN decisions d ON d.id = ar.decision_id AND d.user_id = $1
          JOIN candidate_actions a ON a.id = $4 AND a.decision_id = d.id
          JOIN decision_outcomes o ON o.decision_id = d.id AND o.selected_action_id = a.id
+         JOIN LATERAL (
+           SELECT er.id FROM explanation_records er
+           WHERE er.decision_id = d.id
+           ORDER BY er.created_at DESC, er.id DESC LIMIT 1
+         ) e ON true
          WHERE ar.id = $2 AND ar.user_id = $1 AND ar.decision_id = $3
            AND ar.status = 'approved' AND ar.candidate_action->>'id' = $4::STRING
            AND ($5::UUID IS NULL OR EXISTS (
@@ -211,6 +285,9 @@ export const executionAdmissionRepository = {
           input.memoryOpportunityId ?? null],
       );
       if (!authority.rows[0]) throw new Error('Approval execution admission authority is unavailable.');
+      if (canonicalJson(authority.rows[0].risk_assessment) !== canonicalJson(input.riskSnapshot)) {
+        throw new Error('Approval execution risk snapshot conflicts with persisted authority.');
+      }
 
       const planResult = await client.query<ExecutionPlanRow>(
         `INSERT INTO execution_plans (decision_id, action_id, status, steps)
@@ -223,10 +300,13 @@ export const executionAdmissionRepository = {
 
       const barrierResult = await client.query<ExecutionAdmissionRow>(
          `INSERT INTO execution_admission_barriers
-           (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
+           (user_id, scope, idempotency_key, decision_id, action_id, execution_plan_id,
+            outcome_id, explanation_id, risk_snapshot, policy_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB, $10::JSONB)
          RETURNING *`,
-        [input.userId, scope, idempotencyKey, input.decisionId, input.actionId, plan.id],
+        [input.userId, scope, idempotencyKey, input.decisionId, input.actionId, plan.id,
+          authority.rows[0].outcome_id, authority.rows[0].explanation_id,
+          JSON.stringify(input.riskSnapshot), JSON.stringify(input.policySnapshot)],
       );
       const barrier = barrierResult.rows[0];
       if (!barrier) throw new Error('Approval execution barrier could not be admitted.');
@@ -254,6 +334,29 @@ export const executionAdmissionRepository = {
       }
       return { barrier, plan, created: true };
     });
+  },
+
+  /** Re-check exact owner and graph authority immediately before adapter dispatch. */
+  async isDispatchable(admission: ExecutionAdmission): Promise<boolean> {
+    const result = await query(
+      `SELECT b.id
+       FROM execution_admission_barriers b
+       JOIN users u ON u.id = b.user_id
+       JOIN decisions d ON d.id = b.decision_id AND d.user_id = b.user_id
+       JOIN candidate_actions a ON a.id = b.action_id AND a.decision_id = b.decision_id
+       JOIN execution_plans ep ON ep.id = b.execution_plan_id
+         AND ep.decision_id = b.decision_id AND ep.action_id = b.action_id
+       JOIN decision_outcomes o ON o.id = b.outcome_id
+         AND o.decision_id = b.decision_id AND o.selected_action_id = b.action_id
+       JOIN explanation_records er ON er.id = b.explanation_id
+         AND er.decision_id = b.decision_id
+       WHERE b.id = $1 AND b.user_id = $2 AND b.scope = $3
+         AND b.idempotency_key = $4 AND b.status = 'in_progress'
+         AND b.execution_plan_id = $5 AND ep.status = 'running'`,
+      [admission.barrier.id, admission.barrier.user_id, admission.barrier.scope,
+        admission.barrier.idempotency_key, admission.plan.id],
+    );
+    return !!result.rows[0];
   },
 
   async observeTerminal(input: ObserveExecutionInput): Promise<ExecutionAdmissionRow> {

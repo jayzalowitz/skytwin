@@ -374,16 +374,40 @@ async function executeAllowedOpportunity(
     );
     admissionAttempted = true;
     const admittedSteps = [{ type: candidate.actionType, status: 'pending' }];
+    const preEffectReason = `Admitted after policy evaluation and before adapter dispatch. ${policyDecision.reason}`;
     const admission = await executionAdmissionRepository.admitMemoryExecution({
       userId,
       opportunityId: opportunity.id,
       decisionId: candidate.decisionId,
       actionId: candidate.id,
       steps: admittedSteps,
+      riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
+      policySnapshot: policyDecision as unknown as Record<string, unknown>,
+      preEffectOutcome: {
+        explanation: preEffectReason,
+        confidence: riskTierToConfidence(riskAssessment.overallTier),
+      },
+      preEffectExplanation: {
+        whatHappened: 'SkyTwin admitted a memory-derived action after policy evaluation and before adapter dispatch.',
+        evidenceUsed: [{
+          memoryRefs: candidate.parameters['memoryRefs'],
+          sourceRefs: candidate.parameters['sourceRefs'],
+          opportunityId: opportunity.id,
+        }],
+        preferencesInvoked: [],
+        confidenceReasoning: riskAssessment.reasoning,
+        actionRationale: candidate.reasoning,
+        escalationRationale: null,
+        correctionGuidance:
+          'Review the durable admission and its terminal observation. Hide the underlying memory if this opportunity should not resurface.',
+      },
       report: admittedReport,
     });
     if (!admission.created) {
       return reportForExistingAdmission(opportunity, admission, deps.now);
+    }
+    if (!await executionAdmissionRepository.isDispatchable(admission)) {
+      throw new AmbiguousExecutionError('Execution owner or admitted graph was revoked before dispatch.');
     }
 
     let result: Awaited<ReturnType<typeof router.executeWithRouting>>;
@@ -402,13 +426,6 @@ async function executeAllowedOpportunity(
           userId,
           status: 'ambiguous',
           result: { planId: admission.plan.id, error: message },
-        }));
-      await bestEffortMemoryLedger('record ambiguous execution explanation', () =>
-        recordOutcomeAndExplanation(candidate, riskAssessment, {
-          autoExecuted: true,
-          requiresApproval: false,
-          executionAmbiguous: true,
-          reason: `Execution outcome requires reconciliation: ${message}`,
         }));
       const report = buildReport(
         opportunity,
@@ -455,14 +472,6 @@ async function executeAllowedOpportunity(
         userId,
         status: terminalStatus,
         result: observed,
-      }));
-    await bestEffortMemoryLedger('record terminal execution explanation', () =>
-      recordOutcomeAndExplanation(candidate, riskAssessment, {
-        autoExecuted: result.status === 'completed',
-        requiresApproval: false,
-        reason: result.status === 'completed'
-          ? `Auto-executed after policy passed. ${policyDecision.reason}`
-          : `Execution did not complete. ${result.error ?? 'Unknown adapter failure.'}`,
       }));
     await bestEffortMemoryLedger('finalize admitted execution plan', () =>
       executionRepository.finalizeAdmittedPlan({
@@ -517,6 +526,8 @@ async function executeAllowedOpportunity(
           decisionId: candidate.decisionId,
           actionId: candidate.id,
           steps: [{ type: candidate.actionType, status: 'pending' }],
+          riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
+          policySnapshot: policyDecision as unknown as Record<string, unknown>,
         })
         .catch(() => null);
       if (recovered) {

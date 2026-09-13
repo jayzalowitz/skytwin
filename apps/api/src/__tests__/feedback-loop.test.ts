@@ -64,6 +64,7 @@ const {
   },
   fakeExecutionAdmissionRepo: {
     admitApprovalExecution: vi.fn(),
+    isDispatchable: vi.fn(),
     findByScope: vi.fn(),
     observeTerminal: vi.fn(),
   },
@@ -263,6 +264,7 @@ beforeEach(() => {
   });
   fakeExecutionAdmissionRepo.observeTerminal.mockResolvedValue({});
   fakeExecutionAdmissionRepo.findByScope.mockResolvedValue(null);
+  fakeExecutionAdmissionRepo.isDispatchable.mockResolvedValue(true);
   fakeExecutionRepo.finalizeAdmittedPlan.mockResolvedValue({});
   fakeWithTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
     fn({ query: vi.fn() }),
@@ -632,6 +634,24 @@ describe('feedback loop — approval records an episode for memory boost', () =>
         steps: [{ type: 'archive_email', status: 'pending' }],
       }),
     );
+  });
+
+  it('does not dispatch an approved action after its exact owner fence is revoked', async () => {
+    fakeExecutionAdmissionRepo.isDispatchable.mockResolvedValueOnce(false);
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: {
+        status: 'ambiguous',
+        planId: '44444444-4444-4444-8444-444444444444',
+        error: 'Execution authority was revoked before dispatch',
+      },
+    });
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

@@ -124,6 +124,7 @@ export {
   connectorHealthRepository,
   workerDeadLetterRepository,
   userPurgeRepository,
+  ActiveExecutionAdmissionError,
   accessLogRepository,
   watchRepository,
   watchRunRepository,

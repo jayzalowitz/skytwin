@@ -61,6 +61,7 @@ vi.mock('@skytwin/db', () => ({
     createManyForUser: vi.fn().mockImplementation(async (_u, inputs, completion) => ({ receipts: inputs, continuation: completion.continuation })),
     getContinuationForDecision: vi.fn().mockResolvedValue(null),
     claimExecutionForDecision: vi.fn().mockResolvedValue({ id: 'plan-1' }),
+    isExecutionDispatchableForDecision: vi.fn().mockResolvedValue(true),
     markExecutionTerminalForDecision: vi.fn().mockResolvedValue(true),
     markNonEffectForDecision: vi.fn().mockResolvedValue(true),
   },

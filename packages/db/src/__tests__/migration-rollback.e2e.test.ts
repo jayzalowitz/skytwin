@@ -6,7 +6,8 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { closePool } from '../connection.js';
-import { down, up } from '../migrations/001-initial.js';
+import { down, getSkyTwinOwnedTableManifest, up } from '../migrations/001-initial.js';
+import { SKYTWIN_OWNED_TABLES } from './fixtures/skytwin-owned-tables.js';
 
 const ENABLED = process.env['E2E'] === 'true' &&
   process.env['MIGRATION_ROLLBACK_E2E'] === 'true';
@@ -19,6 +20,8 @@ interface SemanticConstraint {
   definition: string;
 }
 
+const OWNED = [...SKYTWIN_OWNED_TABLES];
+
 async function semanticConstraints(): Promise<SemanticConstraint[]> {
   const result = await pool.query<SemanticConstraint>(`
     WITH key_constraints AS (
@@ -30,7 +33,7 @@ async function semanticConstraints(): Promise<SemanticConstraint[]> {
           ON kcu.constraint_catalog = tc.constraint_catalog
          AND kcu.constraint_schema = tc.constraint_schema
          AND kcu.constraint_name = tc.constraint_name
-       WHERE tc.constraint_schema = 'public'
+       WHERE tc.constraint_schema = 'public' AND tc.table_name = ANY($1::STRING[])
          AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
        GROUP BY tc.table_name, tc.constraint_type, tc.constraint_name
     ), foreign_keys AS (
@@ -54,7 +57,7 @@ async function semanticConstraints(): Promise<SemanticConstraint[]> {
          AND referenced.constraint_schema = rc.unique_constraint_schema
          AND referenced.constraint_name = rc.unique_constraint_name
          AND referenced.ordinal_position = kcu.position_in_unique_constraint
-       WHERE tc.constraint_schema = 'public'
+       WHERE tc.constraint_schema = 'public' AND tc.table_name = ANY($1::STRING[])
          AND tc.constraint_type = 'FOREIGN KEY'
        GROUP BY tc.table_name, tc.constraint_name, rc.delete_rule, rc.update_rule
     ), checks AS (
@@ -66,7 +69,7 @@ async function semanticConstraints(): Promise<SemanticConstraint[]> {
           ON cc.constraint_catalog = tc.constraint_catalog
          AND cc.constraint_schema = tc.constraint_schema
          AND cc.constraint_name = tc.constraint_name
-       WHERE tc.constraint_schema = 'public'
+       WHERE tc.constraint_schema = 'public' AND tc.table_name = ANY($1::STRING[])
          AND tc.constraint_type = 'CHECK'
     )
     SELECT table_name, constraint_type, definition FROM key_constraints
@@ -75,8 +78,68 @@ async function semanticConstraints(): Promise<SemanticConstraint[]> {
     UNION ALL
     SELECT table_name, constraint_type, definition FROM checks
     ORDER BY table_name, constraint_type, definition
-  `);
+  `, [OWNED]);
   return result.rows;
+}
+
+interface ColumnDefinition {
+  table_name: string;
+  column_name: string;
+  ordinal_position: number;
+  data_type: string;
+  udt_name: string;
+  is_nullable: string;
+  column_default: string;
+  is_generated: string;
+  generation_expression: string;
+}
+
+async function columnDefinitions(): Promise<ColumnDefinition[]> {
+  const result = await pool.query<ColumnDefinition>(`
+    SELECT table_name, column_name, ordinal_position::INT,
+           data_type, udt_name, is_nullable,
+           COALESCE(column_default, '') AS column_default,
+           COALESCE(is_generated, '') AS is_generated,
+           COALESCE(generation_expression, '') AS generation_expression
+      FROM information_schema.columns
+     WHERE table_schema = 'public' AND table_name = ANY($1::STRING[])
+     ORDER BY table_name, ordinal_position
+  `, [OWNED]);
+  return result.rows.map((row) => ({
+    ...row,
+    column_default: row.column_default.replace(/\s+/g, ' ').trim(),
+    generation_expression: row.generation_expression.replace(/\s+/g, ' ').trim(),
+  }));
+}
+
+interface IndexDefinition {
+  tablename: string;
+  indexname: string;
+  indexdef: string;
+}
+
+async function indexDefinitions(): Promise<IndexDefinition[]> {
+  const result = await pool.query<IndexDefinition>(`
+    SELECT tablename, indexname, indexdef
+      FROM pg_catalog.pg_indexes
+     WHERE schemaname = 'public' AND tablename = ANY($1::STRING[])
+     ORDER BY tablename, indexname
+  `, [OWNED]);
+  return result.rows.map((row) => ({
+    ...row,
+    indexdef: row.indexdef.replace(/\s+/g, ' ').trim(),
+  }));
+}
+
+async function ownedTables(): Promise<string[]> {
+  const result = await pool.query<{ table_name: string }>(
+    `SELECT table_name FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+        AND table_name = ANY($1::STRING[])
+      ORDER BY table_name`,
+    [OWNED],
+  );
+  return result.rows.map(({ table_name: tableName }) => tableName);
 }
 
 async function admissionForeignKeys(): Promise<Array<{
@@ -217,16 +280,23 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     await closePool();
   });
 
-  it('drops the public schema and recreates every constraint and authority FK', async () => {
+  it('preserves foreign tables and recreates the owned structural schema', async () => {
+    expect(getSkyTwinOwnedTableManifest().current).toEqual(OWNED);
+    expect(await ownedTables()).toEqual([]);
+    await pool.query('CREATE TABLE operator_rollback_sentinel (id UUID PRIMARY KEY)');
+
+    try {
     await up();
+    expect(await ownedTables()).toEqual(OWNED);
+    const expectedColumns = await columnDefinitions();
     const expectedConstraints = await semanticConstraints();
+    const expectedIndexes = await indexDefinitions();
     expect(await stackForeignKeys()).toEqual(EXPECTED_STACK_FOREIGN_KEYS);
-    expect(await admissionForeignKeys()).toEqual([
-      { column_name: 'action_id', foreign_table_name: 'candidate_actions', delete_rule: 'NO ACTION' },
-      { column_name: 'decision_id', foreign_table_name: 'decisions', delete_rule: 'NO ACTION' },
-      { column_name: 'execution_plan_id', foreign_table_name: 'execution_plans', delete_rule: 'NO ACTION' },
+    expect(await admissionForeignKeys()).toEqual(expect.arrayContaining([
+      { column_name: 'outcome_id', foreign_table_name: 'decision_outcomes', delete_rule: 'NO ACTION' },
+      { column_name: 'explanation_id', foreign_table_name: 'explanation_records', delete_rule: 'NO ACTION' },
       { column_name: 'user_id', foreign_table_name: 'users', delete_rule: 'CASCADE' },
-    ]);
+    ]));
     expect(await memoryActionForeignKeys()).toEqual([
       { column_name: 'approval_request_id', foreign_table_name: 'approval_requests', delete_rule: 'SET NULL' },
       { column_name: 'decision_id', foreign_table_name: 'decisions', delete_rule: 'SET NULL' },
@@ -235,26 +305,32 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     ]);
 
     await down();
-    const dropped = await pool.query(
+    expect(await ownedTables()).toEqual([]);
+    expect(await pool.query(
       `SELECT 1 FROM information_schema.tables
-       WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`,
-    );
-    expect(dropped.rowCount).toBe(0);
+       WHERE table_schema = 'public' AND table_name = 'operator_rollback_sentinel'`,
+    )).toMatchObject({ rowCount: 1 });
 
     await up();
+    expect(await ownedTables()).toEqual(OWNED);
+    expect(await columnDefinitions()).toEqual(expectedColumns);
     expect(await semanticConstraints()).toEqual(expectedConstraints);
+    expect(await indexDefinitions()).toEqual(expectedIndexes);
     expect(await stackForeignKeys()).toEqual(EXPECTED_STACK_FOREIGN_KEYS);
-    expect(await admissionForeignKeys()).toEqual([
-      { column_name: 'action_id', foreign_table_name: 'candidate_actions', delete_rule: 'NO ACTION' },
-      { column_name: 'decision_id', foreign_table_name: 'decisions', delete_rule: 'NO ACTION' },
-      { column_name: 'execution_plan_id', foreign_table_name: 'execution_plans', delete_rule: 'NO ACTION' },
+    expect(await admissionForeignKeys()).toEqual(expect.arrayContaining([
+      { column_name: 'outcome_id', foreign_table_name: 'decision_outcomes', delete_rule: 'NO ACTION' },
+      { column_name: 'explanation_id', foreign_table_name: 'explanation_records', delete_rule: 'NO ACTION' },
       { column_name: 'user_id', foreign_table_name: 'users', delete_rule: 'CASCADE' },
-    ]);
+    ]));
     expect(await memoryActionForeignKeys()).toEqual([
       { column_name: 'approval_request_id', foreign_table_name: 'approval_requests', delete_rule: 'SET NULL' },
       { column_name: 'decision_id', foreign_table_name: 'decisions', delete_rule: 'SET NULL' },
       { column_name: 'execution_plan_id', foreign_table_name: 'execution_plans', delete_rule: 'SET NULL' },
       { column_name: 'user_id', foreign_table_name: 'users', delete_rule: 'CASCADE' },
     ]);
+    } finally {
+      await down();
+      await pool.query('DROP TABLE IF EXISTS operator_rollback_sentinel');
+    }
   }, 600_000);
 });

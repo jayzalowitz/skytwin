@@ -32,7 +32,11 @@ export type {
   WorkerDeadLetterStatus,
   RecordDeadLetterInput,
 } from './worker-dead-letter-repository.js';
-export { userPurgeRepository } from './user-purge-repository.js';
+export {
+  userPurgeRepository,
+  ActiveExecutionAdmissionError,
+  assertNoActiveExecutionsWithClient,
+} from './user-purge-repository.js';
 export type { PurgeUserResult } from './user-purge-repository.js';
 export { accessLogRepository } from './access-log-repository.js';
 export type { AccessLogRow, RecordAccessInput } from './access-log-repository.js';
