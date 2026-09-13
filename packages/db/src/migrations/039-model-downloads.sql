@@ -2,16 +2,16 @@
 -- Model download tracking for embedded LLM auto-fetch (#187 AC#2).
 --
 -- Each row tracks one download of a GGUF artifact named in the
--- `@skytwin/embedded-llm` registry. The downloader streams in chunks,
--- updates `bytes_downloaded` periodically, and survives API restart
--- via DB persistence: any row with status='downloading' on boot is
--- transitioned to 'paused' so the user can manually resume.
+-- `@skytwin/embedded-llm` registry. The downloader checkpoints verified
+-- transfer progress in CockroachDB. On boot, transfer and hash rows become
+-- paused and resumable; installation rows are reconciled against the exact
+-- verified active manifest. The API does not bind until a bounded,
+-- authoritative recovery pass leaves no worker-owned row ambiguous.
 --
--- Why DB-backed and not just in-memory: 2-9GB downloads can run for
--- 10+ minutes. An API restart mid-download (deploy, OOM, crash) would
--- otherwise lose all progress. With this table the user sees a
--- "paused — click resume" UX and the partial bytes on disk are still
--- valid (Range request resumes from where we left off).
+-- Why DB-backed and not just in-memory: model downloads can be large and
+-- long-running. An API restart mid-download (deploy, OOM, crash) must not
+-- infer durable progress from a file's length. The row, validator sidecar,
+-- and row-id-namespaced partial jointly bind the resumable byte boundary.
 
 CREATE TABLE IF NOT EXISTS model_downloads (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
