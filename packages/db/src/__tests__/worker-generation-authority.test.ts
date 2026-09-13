@@ -104,8 +104,18 @@ describe("worker generation database authority", () => {
     const client = fakeClient((sql) => {
       if (sql.includes("UPDATE worker_generation_authority"))
         return { rowCount: 0, rows: [] };
-      if (sql.includes("SELECT active"))
-        return { rowCount: 1, rows: [{ active: false }] };
+      if (sql.includes("SELECT secret_hash"))
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              secret_hash: createHash("sha256")
+                .update(GENERATION_SECRET)
+                .digest("hex"),
+              active: false,
+            },
+          ],
+        };
       return { rowCount: 0, rows: [] };
     });
 
@@ -144,5 +154,44 @@ describe("worker generation database authority", () => {
         ([sql]) => String(sql).trim().split(/\s+/)[0],
       ),
     ).toEqual(["BEGIN", "UPDATE", "SELECT", "COMMIT"]);
+  });
+
+  it.each([
+    {
+      label: "same ID with a different secret",
+      row: { secret_hash: "f".repeat(64), active: false },
+    },
+    {
+      label: "same ID and secret that remains active",
+      row: {
+        secret_hash: createHash("sha256")
+          .update(GENERATION_SECRET)
+          .digest("hex"),
+        active: true,
+      },
+    },
+  ])("rejects $label during revocation reconciliation", async ({ row }) => {
+    const client = fakeClient((sql) => {
+      if (sql.includes("SELECT secret_hash")) {
+        return { rowCount: 1, rows: [row] };
+      }
+      return { rowCount: 0, rows: [] };
+    });
+
+    await expect(
+      revokeWorkerGenerationAuthority({
+        connectionString: "postgresql://owned/skytwin",
+        generationId: GENERATION_ID,
+        generationSecret: GENERATION_SECRET,
+        authorize: () => true,
+        createClient: () => client,
+      }),
+    ).rejects.toThrow(/could not be revoked exactly/);
+
+    expect(
+      client.query.mock.calls.map(
+        ([sql]) => String(sql).trim().split(/\s+/)[0],
+      ),
+    ).toEqual(["BEGIN", "UPDATE", "SELECT", "ROLLBACK"]);
   });
 });

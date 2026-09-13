@@ -107,16 +107,20 @@ export async function revokeWorkerGenerationAuthority(
     );
     if (result.rowCount === 1) return;
     const existing = await client.query(
-      `SELECT active
+      `SELECT secret_hash, active
          FROM worker_generation_authority
-        WHERE id = $1 AND secret_hash = $2`,
-      [options.generationId, hash],
+        WHERE id = $1`,
+      [options.generationId],
     );
     // A registration that failed before its INSERT is indistinguishable at
     // the caller from a lost COMMIT response. Treat absence as an idempotent
     // cleanup success; a same-ID row with a different secret still fails.
     if (existing.rowCount === 0) return;
-    if (existing.rowCount !== 1 || existing.rows[0]?.["active"] !== false) {
+    if (
+      existing.rowCount !== 1 ||
+      existing.rows[0]?.["secret_hash"] !== hash ||
+      existing.rows[0]?.["active"] !== false
+    ) {
       throw new Error(
         "Worker generation authority could not be revoked exactly",
       );

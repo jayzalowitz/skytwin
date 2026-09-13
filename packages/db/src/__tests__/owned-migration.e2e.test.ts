@@ -22,6 +22,7 @@ import {
   withTransaction,
   WorkerGenerationAuthorityError,
 } from "../connection.js";
+import { revokeWorkerGenerationAuthority } from "../worker-generation-authority.js";
 
 const COCKROACH_BINARY = process.env["COCKROACH_BINARY"];
 const RUN_E2E = process.env["E2E"] === "true" && Boolean(COCKROACH_BINARY);
@@ -305,6 +306,46 @@ describe.skipIf(!RUN_E2E)(
         delete process.env["SKYTWIN_WORKER_GENERATION_SECRET"];
         delete process.env["DATABASE_URL"];
         await closePool();
+        await control.end();
+      }
+    }, 30_000);
+
+    it("rejects reconciliation against the same generation ID with a different secret", async () => {
+      const generationId = "bd21266c-b62a-4ada-ae0a-8a18b4c285eb";
+      const storedHash = createHash("sha256")
+        .update("d".repeat(64))
+        .digest("hex");
+      const control = new Client({ connectionString: targetUrl });
+      await control.connect();
+      try {
+        await control.query(
+          `INSERT INTO worker_generation_authority (id, secret_hash, active)
+           VALUES ($1, $2, true)`,
+          [generationId, storedHash],
+        );
+
+        await expect(
+          revokeWorkerGenerationAuthority({
+            connectionString: targetUrl,
+            generationId,
+            generationSecret: "e".repeat(64),
+            authorize: () => true,
+          }),
+        ).rejects.toThrow(/could not be revoked exactly/);
+
+        const retained = await control.query<{
+          secret_hash: string;
+          active: boolean;
+        }>(
+          `SELECT secret_hash, active
+             FROM worker_generation_authority
+            WHERE id = $1`,
+          [generationId],
+        );
+        expect(retained.rows).toEqual([
+          { secret_hash: storedHash, active: true },
+        ]);
+      } finally {
         await control.end();
       }
     }, 30_000);
