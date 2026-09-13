@@ -46,6 +46,9 @@ describe('classifyRequest', () => {
     expect(
       classifyRequest({ method: 'GET', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN),
     ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'GET', url: `${ORIGIN}/API/V1/DEMO/SIMULATION` }, ORIGIN),
+    ).toBe('passthrough');
   });
 
   it('queues same-origin mutating API writes', () => {
@@ -71,6 +74,9 @@ describe('classifyRequest', () => {
     ).toBe('passthrough');
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/v1/demo/session` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/V1/Demo/simulation/commands` }, ORIGIN),
     ).toBe('passthrough');
   });
 
@@ -122,6 +128,7 @@ describe('isReplayable', () => {
     expect(isReplayable('/api/sessions/pair/consume')).toBe(false);
     expect(isReplayable('/api/assistant/messages')).toBe(false);
     expect(isReplayable('/api/v1/demo/simulation/commands')).toBe(false);
+    expect(isReplayable('/API/V1/DEMO/SIMULATION/COMMANDS')).toBe(false);
   });
 });
 

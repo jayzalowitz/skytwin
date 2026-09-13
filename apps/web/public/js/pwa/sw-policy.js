@@ -102,9 +102,14 @@ export function classifyRequest(req, origin) {
   // Only ever intercept our own origin. Fonts/CDNs handle their own caching.
   if (parsed.origin !== origin) return 'passthrough';
 
+  // Express route matching is case-insensitive by default. Apply the same
+  // semantics before making any cache or replay decision so an alternate path
+  // casing cannot cross a server-enforced credential boundary.
+  const normalizedPathname = parsed.pathname.toLowerCase();
+
   // Sample responses are scoped by an Authorization header, which is not part
   // of the Cache API lookup key. Never cache or queue them across generations.
-  if (parsed.pathname.startsWith('/api/v1/demo')) return 'passthrough';
+  if (normalizedPathname.startsWith('/api/v1/demo')) return 'passthrough';
 
   if (method === 'GET') {
     // Treat HTML document loads as navigations. The SW spec exposes
@@ -115,8 +120,8 @@ export function classifyRequest(req, origin) {
     return 'runtime';
   }
 
-  if (WRITE_METHODS.has(method) && parsed.pathname.startsWith('/api/')) {
-    return isReplayable(parsed.pathname) ? 'queueable-write' : 'passthrough';
+  if (WRITE_METHODS.has(method) && normalizedPathname.startsWith('/api/')) {
+    return isReplayable(normalizedPathname) ? 'queueable-write' : 'passthrough';
   }
 
   return 'passthrough';
@@ -134,7 +139,8 @@ export function isPrecached(pathname) {
 
 /** True when a mutating API path is safe to queue + replay later. */
 export function isReplayable(pathname) {
-  return !NON_REPLAYABLE_PREFIXES.some((p) => pathname.startsWith(p));
+  const normalizedPathname = String(pathname).toLowerCase();
+  return !NON_REPLAYABLE_PREFIXES.some((p) => normalizedPathname.startsWith(p));
 }
 
 /**
