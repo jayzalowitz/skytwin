@@ -18,11 +18,11 @@ import { fetchJSON, escapeHtml } from '../api-client.js';
 import { showToast } from '../toast.js';
 import { getEffectiveUserId } from '../sample-session.js';
 
-// ─── Desktop OS-keychain passphrase bridge (#401) ────────────────────────────
+// ─── Desktop secure-storage passphrase bridge (#401) ───────────────────────
 // On the desktop app, `window.skytwinDesktop` exposes a passphrase store backed
-// by the OS keychain (Electron safeStorage). In pure-web mode these are all
-// no-ops, so the page falls back to the per-session passphrase prompt with no
-// behavioral change.
+// by Electron safeStorage only when a reviewed secure OS credential backend is
+// active. In pure-web mode these are all no-ops, so the page falls back to the
+// per-session passphrase prompt with no behavioral change.
 
 function desktopBridge() {
   return (typeof window !== 'undefined' && window.skytwinDesktop?.isDesktop)
@@ -30,7 +30,7 @@ function desktopBridge() {
     : null;
 }
 
-/** Whether "remember on this device" is available (desktop + OS keychain). */
+/** Whether "remember on this device" has a secure desktop storage backend. */
 async function rememberSupported() {
   const bridge = desktopBridge();
   if (!bridge?.vaultPassphraseSupported) return false;
@@ -41,7 +41,7 @@ async function rememberSupported() {
   }
 }
 
-/** Persist the passphrase in the OS keychain. Returns true on success. */
+/** Persist the passphrase through secure desktop storage. Returns true on success. */
 async function rememberPassphrase(userId, passphrase) {
   const bridge = desktopBridge();
   if (!bridge?.vaultPassphraseRemember) return false;
@@ -89,9 +89,8 @@ async function forgetPassphrase(userId) {
 
 /**
  * After a successful init/unlock, offer to remember the passphrase on this
- * device. Only prompts on desktop where the OS keychain is available and a
- * passphrase isn't already remembered (AC: "First unlock → Remember on this
- * device?"; "If no, current behavior unchanged").
+ * device. Only prompts on desktop where secure OS credential storage is
+ * available and a passphrase isn't already remembered.
  */
 async function maybeOfferRemember(userId, passphrase) {
   if (!userId || !passphrase) return;
@@ -99,13 +98,13 @@ async function maybeOfferRemember(userId, passphrase) {
   if (await hasRememberedPassphrase(userId)) return;
   const yes = window.confirm(
     'Remember this passphrase on this device?\n\n'
-    + 'It will be stored in your operating system keychain (encrypted) so the '
-    + 'vault unlocks automatically next time you open SkyTwin on this computer. '
-    + 'It is never uploaded and only works on this device.',
+    + 'A protected copy will be stored using this device\'s secure OS credential '
+    + 'storage so the preparatory vault key state can unlock next time. Unlocking '
+    + 'passes it through the desktop UI to SkyTwin\'s local API process.',
   );
   if (!yes) return;
   const ok = await rememberPassphrase(userId, passphrase);
-  showToast(ok ? 'Passphrase remembered on this device' : 'Could not save to the OS keychain', ok ? 'success' : 'error');
+  showToast(ok ? 'Passphrase remembered on this device' : 'Could not save to secure device storage', ok ? 'success' : 'error');
 }
 
 // ─── Singleton delegator ───────────────────────────────────────────────────
@@ -269,10 +268,11 @@ export async function renderCredentialVault(container, userId) {
   const keyVersion = status?.keyVersion ?? null;
   const lastRotated = status?.lastRotated ?? null;
 
-  // Desktop auto-unlock (#401): if the vault is initialized + locked and the
-  // user opted to remember the passphrase on this device, decrypt it from the
-  // OS keychain and unlock silently. A corrupt/wrong remembered passphrase
-  // falls through to the manual unlock form below — no behavior change.
+  // Desktop auto-unlock (#401): if the preparatory key state is initialized +
+  // locked and the user opted to remember the passphrase on this device,
+  // restore it from secure desktop storage and unlock silently. This does not
+  // migrate or decrypt plaintext OAuth rows. A corrupt/wrong remembered
+  // passphrase falls through to the manual unlock form below.
   const remembered = await hasRememberedPassphrase(userId);
   if (initialized && !unlocked && remembered) {
     const passphrase = await getRememberedPassphrase(userId);
@@ -316,8 +316,10 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Initialize vault</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:1rem;">
-        Set a passphrase to encrypt your stored OAuth tokens. The passphrase is never stored —
-        only a verification hash is kept. You will need to unlock the vault each session.
+        Create preparatory API-local vault key state. This does not encrypt current OAuth token
+        rows or new OAuth grants. The API stores a passphrase verifier; the desktop stores a
+        protected passphrase copy only if you separately choose Remember on this device and a
+        secure OS credential backend is available.
       </div>
       <div class="form-group">
         <label for="vault-init-passphrase">Passphrase (min 12 characters)</label>
@@ -339,7 +341,8 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Unlock vault</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:1rem;">
-        Enter your passphrase to decrypt your OAuth tokens for this session.
+        Unlock the preparatory API-local key cache for this session. This does not decrypt or
+        migrate OAuth tokens written by current production paths.
       </div>
       <div class="form-group">
         <label for="vault-unlock-passphrase">Passphrase</label>
@@ -362,9 +365,10 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Rotate passphrase</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:1rem;">
-        Change your vault passphrase. All encrypted OAuth tokens will be re-encrypted
-        with the new key inside a single atomic transaction. If anything fails the
-        original passphrase continues to work.
+        Change the key used by OAuth rows that are already encrypted, if any. Plaintext OAuth
+        rows are not encrypted by this operation, and new grants still use the current plaintext
+        write path. If rotation fails, the original passphrase continues to work for the
+        preparatory key state.
       </div>
       <div class="form-group">
         <label for="vault-rotate-current">Current passphrase</label>
@@ -389,7 +393,7 @@ export async function renderCredentialVault(container, userId) {
   const rememberedNow = initialized ? await hasRememberedPassphrase(userId) : false;
   const rememberSection = rememberedNow ? `
     <div style="margin-top:0.5rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
-      <span style="color:var(--muted)">Passphrase remembered on this device (stored in the OS keychain).</span>
+      <span style="color:var(--muted)">Preparatory vault passphrase protected by this device's secure credential storage.</span>
       <button class="btn btn-outline btn-sm" data-action="vault-forget-passphrase">Forget on this device</button>
     </div>
   ` : '';
@@ -400,11 +404,13 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Credential Vault</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:0.5rem;">
-        OAuth tokens are encrypted at rest using AES-256-GCM with a key derived from
-        your passphrase via scrypt.
+        <strong style="color:var(--danger)">OAuth token encryption is not active in this build.</strong>
+        Current production OAuth write paths store access and refresh tokens in plaintext.
+        These controls manage preparatory API-local key state only. Protect the database with
+        full-disk encryption until the production token path is migrated and verified.
       </div>
       <div style="display:flex;flex-direction:column;gap:0.25rem;">
-        <div>Status: ${statusBadge} ${lockBadge}</div>
+        <div>Preparatory key state: ${statusBadge} ${lockBadge}</div>
         ${keyVersionDisplay}
         ${lastRotatedDisplay}
       </div>

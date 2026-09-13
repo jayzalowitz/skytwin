@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   PassphraseVault,
   type PassphraseKeyValueStore,
@@ -13,6 +13,7 @@ function makeStore(): PassphraseKeyValueStore & { _map: Map<string, string> } {
     get: (key) => map.get(key),
     set: (key, value) => { map.set(key, value); },
     delete: (key) => { map.delete(key); },
+    keys: () => [...map.keys()],
   };
 }
 
@@ -23,6 +24,7 @@ function makeStore(): PassphraseKeyValueStore & { _map: Map<string, string> } {
 function makeSafeStorage(overrides: Partial<SafeStoragePort> = {}): SafeStoragePort {
   return {
     isEncryptionAvailable: () => true,
+    getSelectedStorageBackend: () => 'gnome_libsecret',
     encryptString: (plaintext: string) => {
       const buf = Buffer.from(plaintext, 'utf8');
       return Buffer.from(buf.map((b) => b ^ 0x5a));
@@ -54,6 +56,15 @@ describe('PassphraseVault', () => {
       const stored = [...store._map.values()][0];
       expect(stored).toBeDefined();
       expect(stored).not.toContain(PASSPHRASE);
+      expect(JSON.parse(stored)).toMatchObject({
+        version: 1,
+        backend: process.platform === 'linux'
+          ? 'linux:gnome_libsecret'
+          : process.platform === 'win32'
+            ? 'win32:dpapi'
+            : 'darwin:keychain',
+        ciphertext: expect.any(String),
+      });
 
       const read = vault.getRemembered(USER);
       expect(read).toEqual({ ok: true, passphrase: PASSPHRASE });
@@ -93,7 +104,7 @@ describe('PassphraseVault', () => {
     });
   });
 
-  describe('graceful fallback — OS keychain unavailable', () => {
+  describe('graceful fallback — secure storage unavailable', () => {
     it('remember returns unsupported and stores nothing', () => {
       const safeStorage = makeSafeStorage({ isEncryptionAvailable: () => false });
       const vault = new PassphraseVault(safeStorage, store);
@@ -116,6 +127,197 @@ describe('PassphraseVault', () => {
       const vault = new PassphraseVault(safeStorage, store);
       expect(vault.isSupported()).toBe(false);
       expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: false, reason: 'unsupported' });
+    });
+
+    it.each(['basic_text', 'unknown', 'future_unreviewed_backend'])(
+      'rejects the Linux %s backend and stores nothing',
+      (backend) => {
+        const safeStorage = makeSafeStorage({
+          getSelectedStorageBackend: () => backend,
+        });
+        const vault = new PassphraseVault(safeStorage, store, 'linux');
+
+        expect(vault.isSupported()).toBe(false);
+        expect(vault.remember(USER, PASSPHRASE)).toEqual({
+          ok: false,
+          reason: 'unsupported',
+        });
+        expect(store._map.size).toBe(0);
+      },
+    );
+
+    it('rejects Linux storage when backend inspection throws', () => {
+      const vault = new PassphraseVault(
+        makeSafeStorage({
+          getSelectedStorageBackend: () => { throw new Error('backend unavailable'); },
+        }),
+        store,
+        'linux',
+      );
+
+      expect(vault.isSupported()).toBe(false);
+      expect(vault.remember(USER, PASSPHRASE)).toEqual({
+        ok: false,
+        reason: 'unsupported',
+      });
+      expect(store._map.size).toBe(0);
+    });
+
+    it.each(['darwin', 'win32'] satisfies NodeJS.Platform[])(
+      'uses native secure storage on %s without consulting the Linux backend',
+      (platform) => {
+        const getSelectedStorageBackend = () => {
+          throw new Error('Linux-only inspection must not run');
+        };
+        const vault = new PassphraseVault(
+          makeSafeStorage({ getSelectedStorageBackend }),
+          store,
+          platform,
+        );
+
+        expect(vault.isSupported()).toBe(true);
+        expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+      },
+    );
+
+    it.each(['gnome_libsecret', 'kwallet', 'kwallet5', 'kwallet6'])(
+      'accepts the reviewed Linux %s backend',
+      (backend) => {
+        const safeStorage = makeSafeStorage({
+          getSelectedStorageBackend: () => backend,
+        });
+        const vault = new PassphraseVault(safeStorage, store, 'linux');
+
+        expect(vault.isSupported()).toBe(true);
+        expect(vault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+        expect(JSON.parse(store._map.get(`vault-passphrase:${USER}`) ?? '{}')).toMatchObject({
+          version: 1,
+          backend: `linux:${backend}`,
+        });
+      },
+    );
+
+    it('rejects and deletes an unversioned legacy value under a currently secure backend', () => {
+      const decryptString = vi.fn(() => PASSPHRASE);
+      store._map.set(`vault-passphrase:${USER}`, Buffer.from(PASSPHRASE).toString('base64'));
+      const vault = new PassphraseVault(makeSafeStorage({ decryptString }), store, 'linux');
+
+      expect(vault.getRemembered(USER)).toEqual({ ok: false, reason: 'corrupt' });
+      expect(decryptString).not.toHaveBeenCalled();
+      expect(store._map.has(`vault-passphrase:${USER}`)).toBe(false);
+    });
+
+    it('eagerly purges legacy entries across users without touching unrelated keys', () => {
+      const decryptString = vi.fn(() => PASSPHRASE);
+      store._map.set('vault-passphrase:alice', Buffer.from('legacy-a').toString('base64'));
+      store._map.set('vault-passphrase:bob', Buffer.from('legacy-b').toString('base64'));
+      store._map.set('unrelated-setting', 'keep-me');
+      const vault = new PassphraseVault(makeSafeStorage({ decryptString }), store, 'linux');
+
+      expect(vault.purgeUntrustedEntries()).toBe(2);
+      expect(decryptString).not.toHaveBeenCalled();
+      expect([...store._map.entries()]).toEqual([['unrelated-setting', 'keep-me']]);
+    });
+
+    it('eagerly purges every remembered entry when the current backend is unsupported', () => {
+      const secureVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'kwallet6' }),
+        store,
+        'linux',
+      );
+      expect(secureVault.remember('alice', 'alice-pass-phrase')).toEqual({ ok: true });
+      expect(secureVault.remember('bob', 'bob-pass-phrase-12')).toEqual({ ok: true });
+
+      const unsupportedVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'basic_text' }),
+        store,
+        'linux',
+      );
+      expect(unsupportedVault.purgeUntrustedEntries()).toBe(2);
+      expect(store._map.size).toBe(0);
+    });
+
+    it('rejects and deletes a record written by a different secure backend without decrypting', () => {
+      const kwalletVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'kwallet6' }),
+        store,
+        'linux',
+      );
+      expect(kwalletVault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+
+      const decryptString = vi.fn(() => PASSPHRASE);
+      const libsecretVault = new PassphraseVault(
+        makeSafeStorage({
+          getSelectedStorageBackend: () => 'gnome_libsecret',
+          decryptString,
+        }),
+        store,
+        'linux',
+      );
+      expect(libsecretVault.getRemembered(USER)).toEqual({ ok: false, reason: 'corrupt' });
+      expect(decryptString).not.toHaveBeenCalled();
+      expect(store._map.size).toBe(0);
+    });
+
+    it('eagerly removes a secure-backend mismatch across users without decrypting', () => {
+      const kwalletVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'kwallet6' }),
+        store,
+        'linux',
+      );
+      expect(kwalletVault.remember('alice', 'alice-pass-phrase')).toEqual({ ok: true });
+      expect(kwalletVault.remember('bob', 'bob-pass-phrase-12')).toEqual({ ok: true });
+
+      const decryptString = vi.fn(() => PASSPHRASE);
+      const libsecretVault = new PassphraseVault(
+        makeSafeStorage({
+          getSelectedStorageBackend: () => 'gnome_libsecret',
+          decryptString,
+        }),
+        store,
+        'linux',
+      );
+      expect(libsecretVault.purgeUntrustedEntries()).toBe(2);
+      expect(decryptString).not.toHaveBeenCalled();
+      expect(store._map.size).toBe(0);
+    });
+
+    it('removes a remembered entry on read when the Linux backend is no longer secure', () => {
+      const secureVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'kwallet6' }),
+        store,
+        'linux',
+      );
+      expect(secureVault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+      expect(store._map.size).toBe(1);
+
+      const fallbackVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'basic_text' }),
+        store,
+        'linux',
+      );
+      expect(fallbackVault.getRemembered(USER)).toEqual({
+        ok: false,
+        reason: 'unsupported',
+      });
+      expect(store._map.size).toBe(0);
+    });
+
+    it('removes a remembered entry on existence checks when Linux storage becomes unsafe', () => {
+      const secureVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'kwallet6' }),
+        store,
+        'linux',
+      );
+      expect(secureVault.remember(USER, PASSPHRASE)).toEqual({ ok: true });
+
+      const fallbackVault = new PassphraseVault(
+        makeSafeStorage({ getSelectedStorageBackend: () => 'basic_text' }),
+        store,
+        'linux',
+      );
+      expect(fallbackVault.has(USER)).toBe(false);
+      expect(store._map.size).toBe(0);
     });
   });
 

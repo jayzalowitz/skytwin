@@ -1,5 +1,46 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Local encryption boundary
+
+### Added
+
+- **An accepted, implementation-ready source-field encryption contract.** ADR
+  0001 defines key custody, locked behavior, context-bound envelopes,
+  crash-safe migration and rotation, backup/restore, deletion after key loss,
+  the intentionally readable search-derivative boundary, and the supported
+  desktop-beta scope. A machine-readable inventory classifies all 866 columns
+  across the 92 live tables and ties each table to its currently discoverable
+  SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
+  classification drift, invalid ownership/boundary values, or weakened critical
+  credential and dead-letter invariants. This is a reviewed design contract;
+  encryption claims remain blocked until the implementation and packaged
+  verification gates in the ADR pass.
+
+- **The encryption inventory follows the packaged worker-generation boundary.**
+  Migration 071's installation-scoped authority table retains only lifecycle
+  metadata and a one-way verifier for its random generation credential. The
+  validator pins the exact migration runner and schema-plus-sorted-migration
+  corpus, proves both migration entry points use the shared ordered flow, and
+  fails if that authority becomes recoverable source, global state, or an
+  unreviewed SQL callsite.
+
+### Fixed (post-/review)
+
+- **Remembered vault passphrases now retain verifiable storage provenance.**
+  New desktop records carry a format version and the exact secure OS backend
+  that encrypted them. Startup deletes every legacy untagged, unsupported, or
+  backend-mismatched record across users without attempting decryption, so a
+  passphrase persisted by Linux `basic_text` cannot survive the hardened
+  boundary. The credential-vault plaintext warning also uses the design
+  system's security-alert color.
+
+- **The encryption inventory gate now fails closed across platforms and schema
+  evolution.** Repository callsites use stable forward-slash paths on Windows,
+  migration entry points cannot execute an unreviewed SQL path, and unsupported
+  CockroachDB table DDL—including implicit-column forms—stops validation rather
+  than producing an incomplete field list. Mutation tests bind the exact runner,
+  migration corpus, supported DDL, and 92-table/866-column inventory.
+
 ## [Unreleased] — Account-free interactive sample
 
 ### Added

@@ -58,6 +58,7 @@ async function main(): Promise<void> {
   }
 
   // Upsert the reserved demo user (is_demo = true) + an empty profile.
+  // @encryption-inventory-dynamic-sql tables=users,twin_profiles
   await withTransaction(async (client) => {
     await seedUpsert(client, {
       table: 'users',

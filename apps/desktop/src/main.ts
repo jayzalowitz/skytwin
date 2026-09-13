@@ -30,14 +30,20 @@ import { reportCrash } from './crash-reporter.js';
 
 const serviceManager = new ServiceManager();
 
-// OS-keychain-backed "remember my vault passphrase on this device" store (#401).
-// Persists the safeStorage-encrypted passphrase ciphertext in the OS userData
-// dir; only decryptable on this machine + user account. See passphrase-vault.ts.
-// Cast through the structural ports for the same reason desktop-preferences.ts
-// does — electron-store's ESM Conf inheritance doesn't survive `module: commonjs`.
-const passphraseStore = new Store<Record<string, string>>({
+// Secure-device-backed "remember my vault passphrase" store (#401). Persists
+// safeStorage ciphertext only when a reviewed OS credential backend is active;
+// Linux `basic_text` is rejected. See passphrase-vault.ts.
+// Adapt electron-store to the narrow vault port explicitly so startup can
+// enumerate every per-user entry without exposing the store implementation.
+const electronPassphraseStore = new Store<Record<string, string>>({
   name: 'skytwin-passphrase-vault',
-}) as unknown as PassphraseKeyValueStore;
+});
+const passphraseStore: PassphraseKeyValueStore = {
+  get: (key) => electronPassphraseStore.get(key),
+  set: (key, value) => electronPassphraseStore.set(key, value),
+  delete: (key) => electronPassphraseStore.delete(key),
+  keys: () => Object.keys(electronPassphraseStore.store),
+};
 const passphraseVault = new PassphraseVault(
   safeStorage as unknown as SafeStoragePort,
   passphraseStore,
@@ -182,6 +188,11 @@ async function runFirstLaunchChecks(): Promise<boolean> {
 }
 
 async function startApp(): Promise<void> {
+  // safeStorage backend discovery is reliable only after Electron is ready.
+  // Purge every legacy, unsupported, or backend-mismatched remembered secret
+  // before the renderer can request one, including records for inactive users.
+  passphraseVault.purgeUntrustedEntries();
+
   // First-launch dependency check
   const depsOk = await runFirstLaunchChecks();
   if (!depsOk) return;
@@ -389,11 +400,9 @@ ipcMain.handle('read-dxt-file', async (_event, filePath: string) => {
 });
 
 // ── Credential-vault passphrase remember-on-device (#401) ────────────────────
-// Lets the renderer optionally cache the vault passphrase in the OS keychain so
-// a relaunch can auto-unlock. Plaintext never crosses the bridge to disk — the
-// main process encrypts via safeStorage before persisting. Unsupported
-// environments degrade gracefully (the renderer hides the prompt and keeps the
-// per-session passphrase behavior).
+// Lets the renderer optionally cache the preparatory vault passphrase in secure
+// OS credential storage so a relaunch can restore the API-local key state.
+// Unsupported environments degrade gracefully and persist nothing.
 ipcMain.handle('vault-passphrase-supported', () => passphraseVault.isSupported());
 
 ipcMain.handle('vault-passphrase-remember', (_event, userId: string, passphrase: string) => {
