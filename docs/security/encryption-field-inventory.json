@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "070-watch-runs.sql",
+  "asOfMigration": "071-worker-generation-authority.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -3297,6 +3297,7 @@
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-fixture.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/packaged-sample.ts",
           "packages/db/src/seeds/seed.ts",
           "packages/db/src/seeds/upsert.ts"
         ]
@@ -3482,7 +3483,9 @@
           "packages/db/src/repositories/vacation-mode-repository.ts",
           "packages/db/src/seeds/demo-fixture.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/packaged-sample.ts",
           "packages/db/src/seeds/seed.ts",
+          "packages/db/src/seeds/source-demo-user.ts",
           "packages/db/src/seeds/upsert.ts"
         ]
       },
@@ -3629,6 +3632,37 @@
         }
       ],
       "ownershipNotes": "Decision: global DLQ is content-free. Existing source-bearing rows must be redacted/deleted or moved to a new user-owned keyed record before enforcement."
+    },
+    {
+      "table": "worker_generation_authority",
+      "owner": "installation",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/connection.ts",
+          "packages/db/src/worker-generation-authority.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["active", "created_at", "id", "revoked_at"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to register, lock, revoke, and retire the exact worker generation without recovering its credential."
+        },
+        {
+          "classification": "one_way_secret",
+          "columns": ["secret_hash"],
+          "currentProtection": "One-way SHA-256 verifier of a random generation credential; the original credential is not stored in this table.",
+          "targetProtection": "Retain a one-way, generation-scoped verifier and constant-purpose comparison boundary; never treat it as encrypted recoverable data.",
+          "migrationStage": "retain-one-way",
+          "rationale": "Worker authorization compares a process-supplied random credential with this verifier and never needs to recover the original value."
+        }
+      ],
+      "ownershipNotes": "Installation-scoped, ephemeral authority for the packaged worker generation. It is excluded from portable backup and a restored or restarted installation registers fresh authority."
     }
   ]
 }

@@ -137,13 +137,23 @@ test("schema reconstruction is bound to the production migration runner order", 
   );
 
   const migrationsBeforeSchema = runner
-    .replace("await pool.query(schema);", "void schema;")
+    .replace("await client.query(schema);", "void schema;")
     .replace(
       "for (const file of sqlFiles) {",
-      "await pool.query(schema);\n\n  for (const file of sqlFiles) {",
+      "await client.query(schema);\n\n  for (const file of sqlFiles) {",
     );
   assert.ok(
     migrationRunnerContractErrors(migrationsBeforeSchema).some((error) =>
+      error.includes("execute schema.sql before incremental migrations"),
+    ),
+  );
+
+  const conditionalSchema = runner.replace(
+    "await client.query(schema);",
+    "if (false) await client.query(schema);",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(conditionalSchema).some((error) =>
       error.includes("execute schema.sql before incremental migrations"),
     ),
   );
@@ -159,7 +169,7 @@ test("schema reconstruction is bound to the production migration runner order", 
   );
 
   const missingExecution = runner.replace(
-    "await pool.query(stmt);",
+    "await client.query(stmt);",
     "void stmt;",
   );
   assert.ok(
@@ -170,7 +180,7 @@ test("schema reconstruction is bound to the production migration runner order", 
 
   const skippedFile = runner.replace(
     "for (const file of sqlFiles) {",
-    "for (const file of sqlFiles) {\n    if (file === '070-watch-runs.sql') continue;",
+    "for (const file of sqlFiles) {\n    if (file === '071-worker-generation-authority.sql') continue;",
   );
   assert.ok(
     migrationRunnerContractErrors(skippedFile).includes(
@@ -185,6 +195,36 @@ test("schema reconstruction is bound to the production migration runner order", 
   assert.ok(
     migrationRunnerContractErrors(truncatedSelection).includes(
       "production migration runner must not modify the selected SQL files before iteration",
+    ),
+  );
+
+  const bypassedOwnedEntrypoint = runner.replace(
+    "await applyMigrations(target, options.authorize);",
+    "void target;",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(bypassedOwnedEntrypoint).includes(
+      "production migration runner must route CLI and owned entry points through the ordered migration flow",
+    ),
+  );
+
+  const conditionalOwnedEntrypoint = runner.replace(
+    "await applyMigrations(target, options.authorize);",
+    "if (false) await applyMigrations(target, options.authorize);",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(conditionalOwnedEntrypoint).includes(
+      "production migration runner must route CLI and owned entry points through the ordered migration flow",
+    ),
+  );
+
+  const disabledDevelopmentEntrypoint = runner.replace(
+    "await applyMigrations(pool, () => true);",
+    "await applyMigrations(pool, () => false);",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(disabledDevelopmentEntrypoint).includes(
+      "production migration runner must route CLI and owned entry points through the ordered migration flow",
     ),
   );
 });
@@ -328,6 +368,32 @@ test("critical OAuth token classifications cannot be weakened", () => {
   assert.ok(
     validateInventory(inventory, extractSchemaColumns()).includes(
       "oauth_tokens.access_token: critical invariant requires encrypted_source",
+    ),
+  );
+});
+
+test("worker generation authority remains installation-scoped and one-way", () => {
+  const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+  const authority = inventory.tables.find(
+    (entry) => entry.table === "worker_generation_authority",
+  );
+  authority.owner = "system_global";
+  moveFieldToClassification(
+    inventory,
+    "worker_generation_authority",
+    "secret_hash",
+    "locally_exposed_metadata",
+  );
+
+  const errors = validateInventory(inventory, extractSchemaColumns());
+  assert.ok(
+    errors.includes(
+      "worker_generation_authority.secret_hash: critical invariant requires one_way_secret",
+    ),
+  );
+  assert.ok(
+    errors.includes(
+      "worker_generation_authority: critical invariant requires owner=installation target=locally_exposed_or_excluded",
     ),
   );
 });

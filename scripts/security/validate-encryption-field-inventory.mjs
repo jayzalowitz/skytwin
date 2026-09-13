@@ -38,7 +38,7 @@ const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "07ea8bd92f95eb4ac2eb4853dad6549929b0ac381858e8c7ae8b8653057b6e1c";
+  "fcc6813a5c9152feec632c0b4bb1ac33c25a5c4d8bbe6f8daeffecef4cb4b59d";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -300,43 +300,6 @@ export function applySchemaSql(schema, rawSql) {
  */
 export function migrationRunnerContractErrors(source) {
   const errors = [];
-  const schemaRead = source.indexOf("readFileSync(SCHEMA_PATH");
-  const schemaQuery = source.indexOf("await pool.query(schema)");
-  const migrationSelection = source.match(
-    /const\s+sqlFiles\s*=\s*readdirSync\(__dirname\)\s*\.filter\(\(f\)\s*=>\s*f\.endsWith\(['"]\.sql['"]\)\)\s*\.sort\(\)\s*;/,
-  );
-  const migrationLoop = source.indexOf("for (const file of sqlFiles)");
-  if (
-    schemaRead === -1 ||
-    schemaQuery === -1 ||
-    schemaRead > schemaQuery ||
-    (migrationSelection && migrationSelection.index < schemaQuery)
-  ) {
-    errors.push(
-      "production migration runner must execute schema.sql before incremental migrations",
-    );
-  }
-  if (!migrationSelection) {
-    errors.push(
-      "production migration runner must select every sibling .sql file in lexical order",
-    );
-  } else if (migrationLoop < migrationSelection.index) {
-    errors.push(
-      "production migration runner must iterate the selected SQL files in order",
-    );
-  } else if (
-    stripCodeComments(
-      source.slice(
-        migrationSelection.index + migrationSelection[0].length,
-        migrationLoop,
-      ),
-    ).trim() !== ""
-  ) {
-    errors.push(
-      "production migration runner must not modify the selected SQL files before iteration",
-    );
-  }
-
   const parsed = ts.createSourceFile(
     "migration-runner.ts",
     source,
@@ -344,12 +307,111 @@ export function migrationRunnerContractErrors(source) {
     true,
     ts.ScriptKind.TS,
   );
+  let applyMigrations;
   let fileLoop;
   let schemaReadNode;
   let schemaQueryNode;
   let sqlFilesDeclaration;
-  function visit(node) {
+  const entrypoints = new Set();
+
+  function containsApplyMigrations(
+    node,
+    entrypoint,
+    root = false,
+    conditionallySkipped = false,
+  ) {
+    if (!root && ts.isFunctionLike(node)) return false;
+    const nextConditionallySkipped =
+      conditionallySkipped ||
+      ts.isIfStatement(node) ||
+      ts.isConditionalExpression(node) ||
+      ts.isSwitchStatement(node) ||
+      ts.isCatchClause(node) ||
+      ts.isForStatement(node) ||
+      ts.isForInStatement(node) ||
+      ts.isForOfStatement(node) ||
+      ts.isWhileStatement(node);
     if (
+      !nextConditionallySkipped &&
+      ts.isAwaitExpression(node) &&
+      ts.isCallExpression(node.expression) &&
+      ts.isIdentifier(node.expression.expression) &&
+      node.expression.expression.text === "applyMigrations" &&
+      node.expression.arguments.length === 2 &&
+      ts.isIdentifier(node.expression.arguments[0]) &&
+      ((entrypoint === "up" &&
+        node.expression.arguments[0].text === "pool" &&
+        ts.isArrowFunction(node.expression.arguments[1]) &&
+        node.expression.arguments[1].parameters.length === 0 &&
+        node.expression.arguments[1].body.kind === ts.SyntaxKind.TrueKeyword) ||
+        (entrypoint === "upOwned" &&
+          node.expression.arguments[0].text === "target" &&
+          ts.isPropertyAccessExpression(node.expression.arguments[1]) &&
+          ts.isIdentifier(node.expression.arguments[1].expression) &&
+          node.expression.arguments[1].expression.text === "options" &&
+          node.expression.arguments[1].name.text === "authorize"))
+    ) {
+      return true;
+    }
+    let found = false;
+    ts.forEachChild(node, (child) => {
+      if (
+        !found &&
+        containsApplyMigrations(
+          child,
+          entrypoint,
+          false,
+          nextConditionallySkipped,
+        )
+      )
+        found = true;
+    });
+    return found;
+  }
+
+  function visitEntrypoints(node) {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      (node.name?.text === "up" || node.name?.text === "upOwned") &&
+      node.body &&
+      containsApplyMigrations(node.body, node.name.text, true)
+    ) {
+      entrypoints.add(node.name.text);
+    }
+    ts.forEachChild(node, visitEntrypoints);
+  }
+  visitEntrypoints(parsed);
+  if (!entrypoints.has("up") || !entrypoints.has("upOwned")) {
+    errors.push(
+      "production migration runner must route CLI and owned entry points through the ordered migration flow",
+    );
+  }
+
+  function findApplyMigrations(node) {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name?.text === "applyMigrations"
+    ) {
+      applyMigrations = node;
+      return;
+    }
+    ts.forEachChild(node, findApplyMigrations);
+  }
+  findApplyMigrations(parsed);
+  const clientParameter = applyMigrations?.parameters[0]?.name;
+  const clientName = ts.isIdentifier(clientParameter)
+    ? clientParameter.text
+    : undefined;
+
+  function visitOrderedFlow(node, conditionallySkipped = false) {
+    if (node !== applyMigrations?.body && ts.isFunctionLike(node)) return;
+    const nextConditionallySkipped =
+      conditionallySkipped ||
+      ts.isIfStatement(node) ||
+      ts.isConditionalExpression(node) ||
+      ts.isSwitchStatement(node);
+    if (
+      !nextConditionallySkipped &&
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.name.text === "schema" &&
@@ -364,11 +426,12 @@ export function migrationRunnerContractErrors(source) {
       schemaReadNode = node;
     }
     if (
+      !nextConditionallySkipped &&
       ts.isAwaitExpression(node) &&
       ts.isCallExpression(node.expression) &&
       ts.isPropertyAccessExpression(node.expression.expression) &&
       ts.isIdentifier(node.expression.expression.expression) &&
-      node.expression.expression.expression.text === "pool" &&
+      node.expression.expression.expression.text === clientName &&
       node.expression.expression.name.text === "query" &&
       node.expression.arguments.length === 1 &&
       ts.isIdentifier(node.expression.arguments[0]) &&
@@ -377,6 +440,7 @@ export function migrationRunnerContractErrors(source) {
       schemaQueryNode = node;
     }
     if (
+      !nextConditionallySkipped &&
       ts.isVariableDeclaration(node) &&
       ts.isIdentifier(node.name) &&
       node.name.text === "sqlFiles"
@@ -384,6 +448,7 @@ export function migrationRunnerContractErrors(source) {
       sqlFilesDeclaration = node;
     }
     if (
+      !nextConditionallySkipped &&
       ts.isForOfStatement(node) &&
       ts.isIdentifier(node.expression) &&
       node.expression.text === "sqlFiles" &&
@@ -394,9 +459,11 @@ export function migrationRunnerContractErrors(source) {
     ) {
       fileLoop = node;
     }
-    ts.forEachChild(node, visit);
+    ts.forEachChild(node, (child) =>
+      visitOrderedFlow(child, nextConditionallySkipped),
+    );
   }
-  visit(parsed);
+  if (applyMigrations?.body) visitOrderedFlow(applyMigrations.body);
 
   const selectionInitializer =
     sqlFilesDeclaration?.initializer?.getText(parsed);
@@ -410,7 +477,21 @@ export function migrationRunnerContractErrors(source) {
       "production migration runner must select every sibling .sql file in lexical order",
     );
   }
+  const sqlFilesStatement = sqlFilesDeclaration?.parent?.parent;
   if (
+    sqlFilesStatement &&
+    fileLoop &&
+    stripCodeComments(
+      source.slice(sqlFilesStatement.getEnd(), fileLoop.getStart(parsed)),
+    ).trim() !== ""
+  ) {
+    errors.push(
+      "production migration runner must not modify the selected SQL files before iteration",
+    );
+  }
+  if (
+    !applyMigrations ||
+    !clientName ||
     !schemaReadNode ||
     !schemaQueryNode ||
     !sqlFilesDeclaration ||
@@ -512,7 +593,7 @@ export function migrationRunnerContractErrors(source) {
           ts.isCallExpression(node.expression) &&
           ts.isPropertyAccessExpression(node.expression.expression) &&
           ts.isIdentifier(node.expression.expression.expression) &&
-          node.expression.expression.expression.text === "pool" &&
+          node.expression.expression.expression.text === clientName &&
           node.expression.expression.name.text === "query" &&
           node.expression.arguments.length === 1 &&
           ts.isIdentifier(node.expression.arguments[0]) &&
@@ -1266,6 +1347,7 @@ export function validateInventory(inventory, schema) {
   ]) {
     requireField(field, "forbidden_global_source");
   }
+  requireField("worker_generation_authority.secret_hash", "one_way_secret");
   requireField("brain_pages.metadata", "encrypted_source");
   requireField("lifebooks.metadata", "deferred_source");
   const requireOperationalDependency = (
@@ -1317,6 +1399,11 @@ export function validateInventory(inventory, schema) {
     ["ironclaw_tools", "installation", "installation_broker_gateway"],
     ["service_credentials", "installation", "installation_broker_gateway"],
     ["worker_dead_letter", "system_global", "content_free_global"],
+    [
+      "worker_generation_authority",
+      "installation",
+      "locally_exposed_or_excluded",
+    ],
   ];
   for (const [table, owner, target] of criticalBoundaries) {
     const entry = inventoryTables.get(table);

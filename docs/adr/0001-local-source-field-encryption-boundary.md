@@ -39,9 +39,15 @@ assistant messages, signals, histories, both memory backends, exports, and
 dead-letter context. Execution results and spend records are included as action
 receipts, not treated as harmless operational data. The machine-readable
 inventory classifies the entire live schema as of migration
-`070-watch-runs.sql`; validation fails when a table or column is missing or
-duplicated. It reconstructs the same schema-plus-sorted-SQL sequence used by the
-production [`001-initial` migration runner](../../packages/db/src/migrations/001-initial.ts).
+`071-worker-generation-authority.sql`; validation fails when a table or column
+is missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
+sequence used by the production
+[`001-initial` migration runner](../../packages/db/src/migrations/001-initial.ts).
+That runner sends both its development and desktop-owned entry points through
+one ordered migration flow. Migration 071's worker-generation table is an
+installation-scoped, ephemeral authorization boundary: it stores lifecycle
+metadata and a one-way verifier of a random process credential, not recoverable
+source, and is excluded from portable backup.
 
 Filesystem and process-local surfaces are separate from the SQL inventory:
 
