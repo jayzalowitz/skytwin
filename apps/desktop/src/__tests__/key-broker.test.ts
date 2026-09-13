@@ -1,7 +1,35 @@
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
 import type { ChildProcess } from 'child_process';
-import { DesktopKeyBroker, PersistentWrappedKeyStore, type BrokerContext, type WrappedKeyStore, type WrappedUserKey } from '../key-broker.js';
+import {
+  DesktopKeyBroker,
+  PersistentWrappedKeyStore,
+  ROLE_FIELDS,
+  type BrokerContext,
+  type BrokerField,
+  type BrokerRole,
+  type WrappedKeyStore,
+  type WrappedUserKey,
+} from '../key-broker.js';
+
+const EXPECTED_USER_FIELDS = [
+  { purpose: 'oauth', table: 'oauth_tokens', column: 'access_token' },
+  { purpose: 'oauth', table: 'oauth_tokens', column: 'refresh_token' },
+  { purpose: 'provider_credentials', table: 'ai_provider_settings', column: 'api_key' },
+  { purpose: 'mcp_config', table: 'mcp_servers', column: 'args' },
+  { purpose: 'mcp_config', table: 'mcp_servers', column: 'command' },
+  { purpose: 'mcp_config', table: 'mcp_servers', column: 'display_name' },
+  { purpose: 'mcp_config', table: 'mcp_servers', column: 'env' },
+  { purpose: 'mcp_config', table: 'mcp_servers', column: 'url' },
+  { purpose: 'federation', table: 'federation_peers', column: 'endpoint_url' },
+  { purpose: 'federation', table: 'federation_peers', column: 'label' },
+  { purpose: 'federation', table: 'federation_peers', column: 'last_sync_error' },
+  { purpose: 'federation', table: 'federation_peers', column: 'local_secret_key' },
+  { purpose: 'connector_cursor', table: 'connector_cursors', column: 'cursor_value' },
+  { purpose: 'dxt_database', table: 'dxt_imports', column: 'artifact_blob' },
+  { purpose: 'dxt_database', table: 'dxt_imports', column: 'error_message' },
+] as const satisfies readonly BrokerField[];
 
 class MemoryStore implements WrappedKeyStore {
   rows = new Map<string, WrappedUserKey>();
@@ -301,6 +329,88 @@ describe('DesktopKeyBroker', () => {
     expect(child.sent.at(-1)).toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
     child.emit('message', { type: 'skytwin:vault:request', requestId: 'tuple-smuggle', capability, generation: 1, operation: 'encrypt', context: { ...context, purpose: 'oauth', table: 'oauth_tokens:access', column: 'token' }, plaintext: 'secret' }); await tick();
     expect(child.sent.at(-1)).toMatchObject({ result: { success: false } });
+  });
+
+  it('maps every role permission to an inventoried user-owned encrypted source field', () => {
+    expect(ROLE_FIELDS).toEqual({
+      api: EXPECTED_USER_FIELDS,
+      worker: EXPECTED_USER_FIELDS,
+    });
+    expect(Object.isFrozen(ROLE_FIELDS)).toBe(true);
+    expect(Object.isFrozen(ROLE_FIELDS.api)).toBe(true);
+    expect(Object.isFrozen(ROLE_FIELDS.worker)).toBe(true);
+    expect(ROLE_FIELDS.api.every(field => Object.isFrozen(field))).toBe(true);
+    expect(ROLE_FIELDS.worker.every(field => Object.isFrozen(field))).toBe(true);
+
+    const inventory = JSON.parse(readFileSync(
+      new URL('../../../../docs/security/encryption-field-inventory.json', import.meta.url),
+      'utf8',
+    )) as {
+      tables: Array<{
+        table: string;
+        owner: string;
+        groups: Array<{ classification: string; columns: string[] }>;
+      }>;
+    };
+    for (const field of EXPECTED_USER_FIELDS) {
+      const table = inventory.tables.find(candidate => candidate.table === field.table);
+      const group = table?.groups.find(candidate => candidate.columns.includes(field.column));
+      expect(
+        { owner: table?.owner, classification: group?.classification },
+        `${field.table}.${field.column}`,
+      ).toEqual({ owner: 'user', classification: 'encrypted_source' });
+    }
+
+    const pkce = inventory.tables.find(candidate => candidate.table === 'oauth_pkce_pending');
+    expect(pkce?.owner).toBe('installation');
+  });
+
+  it('allows every role field through child IPC and denies installation-owned PKCE', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+
+    for (const role of ['api', 'worker'] satisfies readonly BrokerRole[]) {
+      const child = new FakeChild();
+      broker.attachChild(child as unknown as ChildProcess, role, new Set([context.userId]));
+      const capability = (child.sent[0] as { capability: string }).capability;
+      for (const [index, field] of EXPECTED_USER_FIELDS.entries()) {
+        const requestId = `${role}-${index}`;
+        child.emit('message', {
+          type: 'skytwin:vault:request',
+          requestId,
+          capability,
+          generation: 1,
+          operation: 'encrypt',
+          context: { ...field, userId: context.userId, rowId: `row-${index}` },
+          plaintext: 'secret',
+        });
+        await tick();
+        expect(
+          child.sent.find(value => (value as { requestId?: string }).requestId === requestId),
+          `${role}:${field.table}.${field.column}`,
+        ).toMatchObject({ result: { success: true } });
+      }
+
+      const requestId = `${role}-installation-pkce`;
+      child.emit('message', {
+        type: 'skytwin:vault:request',
+        requestId,
+        capability,
+        generation: 1,
+        operation: 'encrypt',
+        context: {
+          purpose: 'oauth_transient',
+          table: 'oauth_pkce_pending',
+          column: 'code_verifier',
+          userId: context.userId,
+          rowId: 'pkce-state',
+        },
+        plaintext: 'verifier',
+      });
+      await tick();
+      expect(child.sent.find(value => (value as { requestId?: string }).requestId === requestId))
+        .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+    }
   });
 
   it('denies every request when a child has no owner grants', async () => {

@@ -35,7 +35,6 @@ export type BrokerPurpose =
   | 'provider_credentials'
   | 'mcp_config'
   | 'federation'
-  | 'oauth_transient'
   | 'connector_cursor'
   | 'dxt_database';
 export type VaultFailureCode =
@@ -153,32 +152,39 @@ export interface BrokerResponse {
     | { success: false; error: VaultFailureCode };
 }
 
-interface Field {
-  purpose: BrokerPurpose;
-  table: string;
-  column: string;
+export interface BrokerField {
+  readonly purpose: BrokerPurpose;
+  readonly table: string;
+  readonly column: string;
 }
 
-const COMMON: readonly Field[] = [
-  { purpose: 'oauth', table: 'oauth_tokens', column: 'access_token' },
-  { purpose: 'oauth', table: 'oauth_tokens', column: 'refresh_token' },
-  { purpose: 'provider_credentials', table: 'ai_provider_settings', column: 'api_key' },
-  { purpose: 'mcp_config', table: 'mcp_servers', column: 'config' },
-  { purpose: 'federation', table: 'federation_peers', column: 'private_key' },
-  { purpose: 'connector_cursor', table: 'connector_cursors', column: 'cursor' },
-  { purpose: 'dxt_database', table: 'dxt_imports', column: 'artifact' },
-];
-const ROLE_FIELDS: Record<BrokerRole, readonly Field[]> = {
-  api: [
-    ...COMMON,
-    {
-      purpose: 'oauth_transient',
-      table: 'oauth_pending_signins',
-      column: 'code_verifier',
-    },
-  ],
-  worker: COMMON,
-};
+const brokerField = (
+  purpose: BrokerPurpose,
+  table: string,
+  column: string,
+): BrokerField => Object.freeze({ purpose, table, column });
+
+const USER_FIELDS: readonly BrokerField[] = Object.freeze([
+  brokerField('oauth', 'oauth_tokens', 'access_token'),
+  brokerField('oauth', 'oauth_tokens', 'refresh_token'),
+  brokerField('provider_credentials', 'ai_provider_settings', 'api_key'),
+  brokerField('mcp_config', 'mcp_servers', 'args'),
+  brokerField('mcp_config', 'mcp_servers', 'command'),
+  brokerField('mcp_config', 'mcp_servers', 'display_name'),
+  brokerField('mcp_config', 'mcp_servers', 'env'),
+  brokerField('mcp_config', 'mcp_servers', 'url'),
+  brokerField('federation', 'federation_peers', 'endpoint_url'),
+  brokerField('federation', 'federation_peers', 'label'),
+  brokerField('federation', 'federation_peers', 'last_sync_error'),
+  brokerField('federation', 'federation_peers', 'local_secret_key'),
+  brokerField('connector_cursor', 'connector_cursors', 'cursor_value'),
+  brokerField('dxt_database', 'dxt_imports', 'artifact_blob'),
+  brokerField('dxt_database', 'dxt_imports', 'error_message'),
+]);
+export const ROLE_FIELDS: Readonly<Record<BrokerRole, readonly BrokerField[]>> = Object.freeze({
+  api: USER_FIELDS,
+  worker: USER_FIELDS,
+});
 
 interface Unlocked {
   key: Buffer;
@@ -281,7 +287,7 @@ function parseEnvelope(value: unknown): BrokerEnvelope | null {
       || value['version'] !== 2
       || value['algorithm'] !== 'aes-256-gcm'
       || value['ownerKind'] !== 'user'
-      || !COMMON.concat(ROLE_FIELDS.api).some(field => field.purpose === value['purpose'])
+      || !USER_FIELDS.some(field => field.purpose === value['purpose'])
       || !Number.isSafeInteger(value['keyVersion'])
       || (value['keyVersion'] as number) <= 0
       || !isCanonicalB64(value['iv'], IV_BYTES, IV_BYTES)
@@ -404,7 +410,7 @@ function validContext(value: unknown): value is BrokerContext {
     && validId(value['table'])
     && validId(value['column'])
     && validId(value['rowId'])
-    && COMMON.concat(ROLE_FIELDS.api).some(field => field.purpose === value['purpose']);
+    && USER_FIELDS.some(field => field.purpose === value['purpose']);
 }
 
 const wrapperAad = (userId: string, version: number) =>
