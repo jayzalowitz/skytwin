@@ -94,7 +94,8 @@ async function attachAuthorized(
     for (const userId of userIds) {
       child.emit('message', {
         type: 'skytwin:vault:grant', requestId: `grant-${userId}`, capability,
-        role, authentication: 'session', userId, expiresAt: Date.now() + 60_000,
+        role, authentication: 'session', userId, sessionId: `session-${userId}`,
+        expiresAt: Date.now() + 60_000,
       });
     }
   } else {
@@ -263,7 +264,7 @@ describe('DesktopKeyBroker', () => {
     child.emit('message', {
       type: 'skytwin:vault:grant', requestId: 'good', capability,
       role: 'api', authentication: 'session', userId: context.userId,
-      expiresAt: Date.now() + 60_000,
+      sessionId: 'session-good', expiresAt: Date.now() + 60_000,
     });
     await tick();
     expect(child.sent.at(-1)).toMatchObject({
@@ -280,6 +281,7 @@ describe('DesktopKeyBroker', () => {
     child.emit('message', {
       type: 'skytwin:vault:revoke', requestId: 'revoke', capability,
       role: 'api', authentication: 'session', userId: context.userId,
+      sessionId: `session-${context.userId}`, expiresAt: Date.now() + 60_000,
     });
     await tick();
     child.emit('message', {
@@ -300,7 +302,8 @@ describe('DesktopKeyBroker', () => {
     const capability = (child.sent[0] as { capability: string }).capability;
     child.emit('message', {
       type: 'skytwin:vault:grant', requestId: 'grant', capability,
-      role: 'api', authentication: 'session', userId: context.userId, expiresAt: 1_100,
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId: 'session-expiry', expiresAt: 1_100,
     });
     await tick();
     now = 1_101;
@@ -312,6 +315,61 @@ describe('DesktopKeyBroker', () => {
     expect(child.sent.at(-1)).toMatchObject({
       requestId: 'after-expiry',
       result: { success: false, error: 'vault_broker_unavailable' },
+    });
+  });
+
+  it('keeps a revoked session nonce closed when a paused grant resumes', async () => {
+    let now = 1_000;
+    const broker = new DesktopKeyBroker(new MemoryStore(), { now: () => now });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api');
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const sessionId = 'session-concurrent-revoke';
+
+    // Model the authoritative ordering at the parent boundary: revocation is
+    // processed while an already-authenticated grant is paused upstream.
+    child.emit('message', {
+      type: 'skytwin:vault:revoke', requestId: 'revoke-first', capability,
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId, expiresAt: 60_000,
+    });
+    await tick();
+    child.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'stale-grant', capability,
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId, expiresAt: 60_000,
+    });
+    await tick();
+
+    expect(child.sent.find(value => (value as { requestId?: string }).requestId === 'stale-grant'))
+      .toMatchObject({ result: { success: false, error: 'grant_revoked' } });
+    child.emit('message', {
+      type: 'skytwin:vault:request', requestId: 'after-stale-grant', capability,
+      generation: 1, operation: 'state', context,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: 'after-stale-grant',
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+  });
+
+  it('returns an authoritative error for a mismatched child capability', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    const child = new FakeChild();
+    broker.attachChild(child as unknown as ChildProcess, 'api');
+    child.emit('message', {
+      type: 'skytwin:vault:grant', requestId: 'wrong-capability',
+      capability: Buffer.alloc(32, 9).toString('base64'),
+      role: 'api', authentication: 'session', userId: context.userId,
+      sessionId: 'session-wrong-capability', expiresAt: Date.now() + 60_000,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: 'wrong-capability',
+      contextUserId: context.userId,
+      result: { success: false, error: 'capability_mismatch' },
     });
   });
 

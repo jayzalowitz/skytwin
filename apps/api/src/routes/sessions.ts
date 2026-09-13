@@ -172,8 +172,8 @@ export function createSessionsRouter(): Router {
 
       // Verify the session belongs to the requesting user
       const sessions = await sessionRepository.findActiveByUser(body.userId);
-      const owns = sessions.some((s) => s.id === sessionId);
-      if (!owns) {
+      const target = sessions.find((session) => session.id === sessionId);
+      if (!target) {
         res.status(403).json({ error: 'Session not found or not owned by user' });
         return;
       }
@@ -183,7 +183,11 @@ export function createSessionsRouter(): Router {
       // re-establishes a deadline on its next authenticated request. Avoiding
       // an eager re-grant prevents concurrent session revocations from
       // restoring authority based on a stale active-session snapshot.
-      await apiVaultBroker.revokeAuthenticatedOwner(body.userId);
+      await apiVaultBroker.revokeAuthenticatedSession(
+        body.userId,
+        sessionId,
+        new Date(target.expires_at),
+      );
       res.json({ revoked: true });
     } catch (error) {
       next(error);

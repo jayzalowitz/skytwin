@@ -43,7 +43,10 @@ export type VaultFailureCode =
   | 'vault_locked'
   | 'vault_broker_unavailable'
   | 'key_version_unavailable'
-  | 'ciphertext_invalid';
+  | 'ciphertext_invalid'
+  | 'grant_expired'
+  | 'grant_revoked'
+  | 'capability_mismatch';
 export type VaultState = 'locked' | 'unlocked' | 'uninitialized';
 export type VaultStateResult =
   | { success: true; state: VaultState }
@@ -203,6 +206,7 @@ interface Binding {
   role: BrokerRole;
   capability: Buffer;
   users: Map<string, number | null>;
+  revokedSessions: Map<string, number>;
   inFlight: Map<string, number>;
   lockAcks: Map<string, PendingLockAck>;
 }
@@ -820,6 +824,7 @@ export class DesktopKeyBroker {
       role,
       capability,
       users: new Map(),
+      revokedSessions: new Map(),
       inFlight: new Map(),
       lockAcks: new Map(),
     };
@@ -852,7 +857,25 @@ export class DesktopKeyBroker {
     const binding = this.children.get(child);
     const capability = b64(raw['capability'], KEY_BYTES, KEY_BYTES);
     try {
-      if (!binding || !capability || !timingSafeEqual(capability, binding.capability)) return;
+      if (!binding) return;
+      if (!capability || !timingSafeEqual(capability, binding.capability)) {
+        const requestId = raw['requestId'];
+        const contextUserId = isValidVaultUserId(raw['userId'])
+          ? raw['userId']
+          : validContext(raw['context'])
+            ? raw['context'].userId
+            : raw['type'] === 'skytwin:vault:reconcile'
+              ? 'worker-set'
+              : '';
+        if (validId(requestId, 128)) {
+          this.safeSend(child, {
+            type: 'skytwin:vault:response', requestId, contextUserId,
+            generation: isValidVaultUserId(contextUserId) ? this.generation(contextUserId) : 0,
+            result: { success: false, error: 'capability_mismatch' },
+          });
+        }
+        return;
+      }
       if (raw['type'] === 'skytwin:vault:lock-ack') {
         const lockId = raw['lockId'];
         const pending = typeof lockId === 'string' ? binding.lockAcks.get(lockId) : undefined;
@@ -872,11 +895,21 @@ export class DesktopKeyBroker {
         const userId = raw['userId'];
         const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
         const expiresAt = raw['expiresAt'];
+        const sessionId = raw['sessionId'];
+        this.pruneRevokedSessions(binding);
         const validExpiry = binding.role === 'worker'
           ? expiresAt === null
           : Number.isSafeInteger(expiresAt) && Number(expiresAt) > this.now();
-        const allowed = raw['role'] === binding.role
+        const validSession = binding.role === 'worker'
+          ? sessionId === undefined
+          : validId(sessionId, 128);
+        const revoked = binding.role === 'api'
+          && typeof sessionId === 'string'
+          && binding.revokedSessions.has(sessionId);
+        const allowed = !revoked
+          && raw['role'] === binding.role
           && raw['authentication'] === expectedAuthentication
+          && validSession
           && validExpiry;
         if (allowed) binding.users.set(userId, binding.role === 'api' ? Number(expiresAt) : null);
         this.safeSend(child, {
@@ -886,7 +919,14 @@ export class DesktopKeyBroker {
           generation: this.generation(userId),
           result: allowed
             ? await this.state(userId)
-            : { success: false, error: 'vault_broker_unavailable' },
+            : {
+                success: false,
+                error: revoked
+                  ? 'grant_revoked'
+                  : !validExpiry
+                    ? 'grant_expired'
+                    : 'vault_broker_unavailable',
+              },
         });
         return;
       }
@@ -898,18 +938,34 @@ export class DesktopKeyBroker {
         const requestId = raw['requestId'];
         const userId = raw['userId'];
         const expectedAuthentication = binding.role === 'api' ? 'session' : 'service';
+        const sessionId = raw['sessionId'];
+        const expiresAt = raw['expiresAt'];
+        const validSession = binding.role === 'worker'
+          ? sessionId === undefined && expiresAt === undefined
+          : validId(sessionId, 128) && Number.isSafeInteger(expiresAt);
         const allowed = raw['role'] === binding.role
-          && raw['authentication'] === expectedAuthentication;
-        if (allowed) binding.users.delete(userId);
+          && raw['authentication'] === expectedAuthentication
+          && validSession;
+        let recordedRevocation = allowed;
+        if (allowed) {
+          binding.users.delete(userId);
+          if (binding.role === 'api' && typeof sessionId === 'string') {
+            recordedRevocation = this.recordRevokedSession(binding, sessionId, Number(expiresAt));
+          }
+        }
         this.safeSend(child, {
           type: 'skytwin:vault:response',
           requestId,
           contextUserId: userId,
           generation: this.generation(userId),
-          result: allowed
+          result: allowed && recordedRevocation
             ? { success: true, state: 'locked' }
             : { success: false, error: 'vault_broker_unavailable' },
         });
+        // If the bounded tombstone set cannot represent a revocation, destroy
+        // the whole child capability after replying. A paused grant from this
+        // child can then never revive the revoked session.
+        if (allowed && !recordedRevocation) this.releaseChild(child, binding);
         return;
       }
       if (
@@ -1161,6 +1217,22 @@ export class DesktopKeyBroker {
       binding.users.delete(userId);
       return false;
     }
+    return true;
+  }
+
+  private pruneRevokedSessions(binding: Binding): void {
+    const now = this.now();
+    for (const [sessionId, expiresAt] of binding.revokedSessions) {
+      if (expiresAt <= now) binding.revokedSessions.delete(sessionId);
+    }
+  }
+
+  private recordRevokedSession(binding: Binding, sessionId: string, expiresAt: number): boolean {
+    this.pruneRevokedSessions(binding);
+    if (!binding.revokedSessions.has(sessionId) && binding.revokedSessions.size >= 10_000) {
+      return false;
+    }
+    binding.revokedSessions.set(sessionId, Math.max(expiresAt, this.now() + 1));
     return true;
   }
 

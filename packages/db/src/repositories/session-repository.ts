@@ -36,6 +36,29 @@ export const sessionRepository = {
     return result.rows[0] ?? null;
   },
 
+  /**
+   * Revalidate the exact session immediately before an API broker grant.
+   * The immutable session id acts as the parent-broker nonce; checking the
+   * token hash prevents an owner/session-id pair from being substituted.
+   */
+  async findActiveForBrokerGrant(
+    id: string,
+    userId: string,
+    tokenHash: string,
+  ): Promise<SessionRow | null> {
+    const result = await query<SessionRow>(
+      `SELECT * FROM sessions
+       WHERE id = $1
+         AND user_id = $2
+         AND token_hash = $3
+         AND revoked = false
+         AND expires_at > now()
+       LIMIT 1`,
+      [id, userId, tokenHash],
+    );
+    return result.rows[0] ?? null;
+  },
+
   async findActiveByUser(userId: string): Promise<SessionRow[]> {
     const result = await query<SessionRow>(
       `SELECT * FROM sessions

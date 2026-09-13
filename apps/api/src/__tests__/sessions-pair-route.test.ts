@@ -17,7 +17,7 @@ const mockSessionRepository = {
   findByTokenHash: vi.fn(),
   revoke: vi.fn(),
 };
-const mockVaultBroker = { revokeAuthenticatedOwner: vi.fn(), grantAuthenticatedOwner: vi.fn() };
+const mockVaultBroker = { revokeAuthenticatedSession: vi.fn() };
 
 vi.mock('@skytwin/db', () => ({
   sessionRepository: mockSessionRepository,
@@ -81,22 +81,23 @@ beforeEach(() => {
     device_name: 'Phone',
     expires_at: new Date('2027-01-01T00:00:00Z'),
   });
-  mockVaultBroker.revokeAuthenticatedOwner.mockResolvedValue(true);
-  mockVaultBroker.grantAuthenticatedOwner.mockResolvedValue(true);
+  mockVaultBroker.revokeAuthenticatedSession.mockResolvedValue({ success: true });
 });
 
 describe('DELETE /api/sessions/:sessionId', () => {
   it('revokes broker ownership when the final active session is removed', async () => {
-    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }]);
+    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1', expires_at: new Date('2027-01-01T00:00:00Z') }]);
     const { status } = await request(makeApp(), 'DELETE', '/api/sessions/session-1', { userId: 'user-1' });
-    expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedOwner).toHaveBeenCalledWith('user-1');
+    expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedSession).toHaveBeenCalledWith('user-1', 'session-1', new Date('2027-01-01T00:00:00Z'));
   });
 
   it('does not eagerly restore a grant from a potentially stale session snapshot', async () => {
-    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([{ id: 'session-1' }, { id: 'session-2' }]);
+    mockSessionRepository.findActiveByUser.mockResolvedValueOnce([
+      { id: 'session-1', expires_at: new Date('2027-01-01T00:00:00Z') },
+      { id: 'session-2', expires_at: new Date('2027-02-01T00:00:00Z') },
+    ]);
     const { status } = await request(makeApp(), 'DELETE', '/api/sessions/session-1', { userId: 'user-1' });
-    expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedOwner).toHaveBeenCalledWith('user-1');
-    expect(mockVaultBroker.grantAuthenticatedOwner).not.toHaveBeenCalled();
+    expect(status).toBe(200); expect(mockVaultBroker.revokeAuthenticatedSession).toHaveBeenCalledWith('user-1', 'session-1', new Date('2027-01-01T00:00:00Z'));
   });
 });
 

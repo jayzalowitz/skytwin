@@ -2,7 +2,7 @@ import { randomBytes } from 'crypto';
 
 export type VaultBrokerRole = 'api' | 'worker';
 export type VaultBrokerPurpose = 'oauth' | 'provider_credentials' | 'mcp_config' | 'federation' | 'oauth_transient' | 'connector_cursor' | 'dxt_database';
-export type VaultBrokerFailure = 'vault_uninitialized' | 'vault_locked' | 'vault_broker_unavailable' | 'key_version_unavailable' | 'ciphertext_invalid';
+export type VaultBrokerFailure = 'vault_uninitialized' | 'vault_locked' | 'vault_broker_unavailable' | 'key_version_unavailable' | 'ciphertext_invalid' | 'grant_expired' | 'grant_revoked' | 'capability_mismatch';
 export interface VaultBrokerContext { userId: string; purpose: VaultBrokerPurpose; table: string; column: string; rowId: string }
 export interface VaultBrokerEnvelope { magic: 'skytwin-envelope'; version: 2; algorithm: 'aes-256-gcm'; ownerKind: 'user'; purpose: VaultBrokerPurpose; keyVersion: number; iv: string; tag: string; ciphertext: string }
 export type VaultBrokerResult =
@@ -10,6 +10,10 @@ export type VaultBrokerResult =
   | { success: true; envelope: VaultBrokerEnvelope }
   | { success: true; plaintext: string }
   | { success: false; error: VaultBrokerFailure };
+export type VaultBrokerControlFailure = 'vault_broker_unavailable' | 'grant_expired' | 'grant_revoked' | 'capability_mismatch';
+export type VaultBrokerControlResult =
+  | { success: true }
+  | { success: false; error: VaultBrokerControlFailure };
 
 interface IpcProcess {
   connected?: boolean;
@@ -55,43 +59,82 @@ export class VaultBrokerClient {
 
   isAvailable(): boolean { return this.capability !== null && this.ipc.connected !== false && typeof this.ipc.send === 'function'; }
 
-  /** Called only after the host process has authenticated this owner. */
-  async grantAuthenticatedOwner(userId: string, validUntil?: Date): Promise<boolean> {
-    if (!this.validUserId(userId) || !this.capability || !this.role) return false;
-    if (this.grantedOwners.has(userId) && this.role === 'worker') return true;
-    const requestedExpiry = validUntil?.getTime();
-    const expiresAt = this.role === 'api' ? Math.max(this.grantDeadlines.get(userId) ?? 0, requestedExpiry ?? 0) : null;
-    if (this.role === 'api' && (!Number.isSafeInteger(expiresAt) || Number(expiresAt) <= Date.now())) return false;
+  /** Called only after the API has authenticated and freshly revalidated this session. */
+  async grantAuthenticatedSession(
+    userId: string,
+    sessionId: string,
+    validUntil: Date,
+  ): Promise<VaultBrokerControlResult> {
+    if (
+      !this.validUserId(userId)
+      || !this.validId(sessionId)
+      || !this.capability
+      || this.role !== 'api'
+    ) return { success: false, error: 'vault_broker_unavailable' };
+    const requestedExpiry = validUntil.getTime();
+    const expiresAt = Math.max(this.grantDeadlines.get(userId) ?? 0, requestedExpiry);
+    if (!Number.isSafeInteger(expiresAt) || expiresAt <= Date.now()) {
+      return { success: false, error: 'grant_expired' };
+    }
     const requestId = randomBytes(16).toString('hex');
     const response = await this.exchange(requestId, userId, {
       type: 'skytwin:vault:grant', requestId, capability: this.capability.toString('base64'),
-      role: this.role, userId, authentication: this.role === 'api' ? 'session' : 'service', expiresAt,
+      role: 'api', userId, authentication: 'session', sessionId, expiresAt,
     }, 'control');
-    if (!response.success || !('state' in response)) { this.reset(); return false; }
+    if (!response.success) {
+      if (response.error === 'capability_mismatch') this.reset();
+      return { success: false, error: this.controlError(response.error) };
+    }
+    if (!('state' in response)) return { success: false, error: 'vault_broker_unavailable' };
     this.grantedOwners.add(userId);
-    this.scheduleRevocation(userId, expiresAt === null ? undefined : new Date(expiresAt));
-    return true;
+    this.scheduleRevocation(userId, sessionId, new Date(expiresAt));
+    return { success: true };
   }
 
-  async revokeAuthenticatedOwner(userId: string): Promise<boolean> {
+  async revokeAuthenticatedSession(
+    userId: string,
+    sessionId: string,
+    validUntil: Date,
+  ): Promise<VaultBrokerControlResult> {
     const timer = this.grantTimers.get(userId); if (timer) clearTimeout(timer); this.grantTimers.delete(userId);
     this.grantDeadlines.delete(userId);
     this.grantedOwners.delete(userId);
-    if (!this.capability || !this.role || !this.validUserId(userId)) return false;
+    const expiresAt = validUntil.getTime();
+    if (!this.capability || this.role !== 'api' || !this.validUserId(userId) || !this.validId(sessionId) || !Number.isSafeInteger(expiresAt)) {
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
     const requestId = randomBytes(16).toString('hex');
-    const response = await this.exchange(requestId, userId, { type: 'skytwin:vault:revoke', requestId, capability: this.capability.toString('base64'), role: this.role, userId, authentication: this.role === 'api' ? 'session' : 'service' }, 'control');
-    const success = response.success && 'state' in response;
-    if (!success) this.reset();
-    return success;
+    const response = await this.exchange(requestId, userId, {
+      type: 'skytwin:vault:revoke', requestId, capability: this.capability.toString('base64'),
+      role: 'api', userId, authentication: 'session', sessionId, expiresAt,
+    }, 'control');
+    if (!response.success) {
+      if (response.error === 'capability_mismatch') this.reset();
+      return { success: false, error: this.controlError(response.error) };
+    }
+    return 'state' in response
+      ? { success: true }
+      : { success: false, error: 'vault_broker_unavailable' };
   }
 
-  async reconcileAuthenticatedOwners(userIds: Iterable<string>): Promise<void> {
+  async reconcileAuthenticatedOwners(userIds: Iterable<string>): Promise<VaultBrokerControlResult> {
     const desired = new Set(userIds);
-    if (this.role !== 'worker' || !this.capability || [...desired].some(id => !this.validUserId(id))) { this.reset(); throw new Error('vault owner reconciliation unavailable'); }
+    if (this.role !== 'worker' || !this.capability || [...desired].some(id => !this.validUserId(id))) {
+      this.clearAuthority();
+      return { success: false, error: 'vault_broker_unavailable' };
+    }
     const requestId = randomBytes(16).toString('hex');
     const response = await this.exchange(requestId, 'worker-set', { type: 'skytwin:vault:reconcile', requestId, capability: this.capability.toString('base64'), role: 'worker', authentication: 'service', userIds: [...desired] }, 'control');
-    if (!response.success || !('state' in response)) { this.reset(); throw new Error('vault owner reconciliation failed'); }
+    if (!response.success || !('state' in response)) {
+      this.clearAuthority();
+      if (!response.success && response.error === 'capability_mismatch') this.reset();
+      return {
+        success: false,
+        error: !response.success ? this.controlError(response.error) : 'vault_broker_unavailable',
+      };
+    }
     this.grantedOwners = desired;
+    return { success: true };
   }
 
   async state(context: VaultBrokerContext): Promise<VaultBrokerResult> { return this.request('state', context); }
@@ -147,17 +190,28 @@ export class VaultBrokerClient {
   }
 
   private reset(): void {
-    this.capability?.fill(0); this.capability = null; this.role = null; this.generations.clear(); this.grantedOwners.clear();
+    this.capability?.fill(0); this.capability = null; this.role = null;
+    this.clearAuthority();
+  }
+
+  private clearAuthority(): void {
+    this.generations.clear(); this.grantedOwners.clear();
     for (const timer of this.grantTimers.values()) clearTimeout(timer); this.grantTimers.clear(); this.grantDeadlines.clear();
     for (const pending of this.pending.values()) { clearTimeout(pending.timer); pending.resolve({ success: false, error: 'vault_broker_unavailable' }); }
     this.pending.clear();
   }
 
   private validUserId(value: string): boolean { return value.length >= 8 && value.length <= 128 && /^[A-Za-z0-9_-]+$/.test(value); }
+  private validId(value: string): boolean { return value.length >= 1 && value.length <= 128 && /^[A-Za-z0-9_.-]+$/.test(value); }
+  private controlError(error: VaultBrokerFailure): VaultBrokerControlFailure {
+    return ['grant_expired', 'grant_revoked', 'capability_mismatch'].includes(error)
+      ? error as 'grant_expired' | 'grant_revoked' | 'capability_mismatch'
+      : 'vault_broker_unavailable';
+  }
   private validResult(value: unknown, pending: Pending): value is VaultBrokerResult {
     if (!value || typeof value !== 'object') return false;
     const result = value as Record<string, unknown>;
-    if (result['success'] === false) return Object.keys(result).every(k => k === 'success' || k === 'error') && ['vault_uninitialized', 'vault_locked', 'vault_broker_unavailable', 'key_version_unavailable', 'ciphertext_invalid'].includes(String(result['error']));
+    if (result['success'] === false) return Object.keys(result).every(k => k === 'success' || k === 'error') && ['vault_uninitialized', 'vault_locked', 'vault_broker_unavailable', 'key_version_unavailable', 'ciphertext_invalid', 'grant_expired', 'grant_revoked', 'capability_mismatch'].includes(String(result['error']));
     if (result['success'] !== true) return false;
     if (['locked', 'unlocked', 'uninitialized'].includes(String(result['state']))) return (pending.operation === 'state' || pending.operation === 'control') && Object.keys(result).every(k => k === 'success' || k === 'state');
     if (typeof result['plaintext'] === 'string') return pending.operation === 'decrypt' && Object.keys(result).every(k => k === 'success' || k === 'plaintext');
@@ -166,11 +220,13 @@ export class VaultBrokerClient {
     return pending.operation === 'encrypt' && !!pending.context && e['magic'] === 'skytwin-envelope' && e['version'] === 2 && e['algorithm'] === 'aes-256-gcm' && e['ownerKind'] === 'user' && e['purpose'] === pending.context.purpose && Number.isSafeInteger(e['keyVersion']) && Number(e['keyVersion']) > 0 && this.validBase64(e['iv'], 12) && this.validBase64(e['tag'], 16) && this.validBase64(e['ciphertext']);
   }
   private validBase64(value: unknown, exact?: number): boolean { if (typeof value !== 'string' || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) return false; const decoded = Buffer.from(value, 'base64'); return decoded.toString('base64') === value && (exact === undefined || decoded.length === exact); }
-  private scheduleRevocation(userId: string, validUntil?: Date): void {
-    if (!validUntil) return;
+  private scheduleRevocation(userId: string, sessionId: string, validUntil: Date): void {
     const deadline = validUntil.getTime(); if ((this.grantDeadlines.get(userId) ?? 0) >= deadline) return;
     this.grantDeadlines.set(userId, deadline);
     const prior = this.grantTimers.get(userId); if (prior) clearTimeout(prior);
-    const timer = setTimeout(() => { this.grantDeadlines.delete(userId); void this.revokeAuthenticatedOwner(userId); }, Math.max(0, deadline - Date.now())); timer.unref?.(); this.grantTimers.set(userId, timer);
+    const timer = setTimeout(() => {
+      this.grantDeadlines.delete(userId);
+      void this.revokeAuthenticatedSession(userId, sessionId, validUntil);
+    }, Math.max(0, deadline - Date.now())); timer.unref?.(); this.grantTimers.set(userId, timer);
   }
 }

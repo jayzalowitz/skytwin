@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
-const mockGrantAuthenticatedOwner = vi.fn().mockResolvedValue(true);
+const mockGrantAuthenticatedSession = vi.fn().mockResolvedValue({ success: true });
 
 /**
  * Tests for the session-auth middleware and require-ownership middleware.
@@ -13,6 +13,7 @@ const mockGrantAuthenticatedOwner = vi.fn().mockResolvedValue(true);
 vi.mock('@skytwin/db', () => ({
   sessionRepository: {
     findByTokenHash: vi.fn(),
+    findActiveForBrokerGrant: vi.fn(),
     refreshExpiry: vi.fn(),
     touchLastActive: vi.fn(),
   },
@@ -56,12 +57,13 @@ describe('sessionAuth middleware', () => {
     vi.doMock('@skytwin/db', () => ({
       sessionRepository: {
         findByTokenHash: vi.fn(),
+        findActiveForBrokerGrant: vi.fn(),
         refreshExpiry: vi.fn(),
         touchLastActive: vi.fn(),
       },
     }));
-    vi.doMock('../vault-broker-client.js', () => ({ apiVaultBroker: { grantAuthenticatedOwner: mockGrantAuthenticatedOwner } }));
-    mockGrantAuthenticatedOwner.mockClear();
+    vi.doMock('../vault-broker-client.js', () => ({ apiVaultBroker: { grantAuthenticatedSession: mockGrantAuthenticatedSession } }));
+    mockGrantAuthenticatedSession.mockClear();
   });
 
   afterEach(() => {
@@ -111,11 +113,13 @@ describe('sessionAuth middleware', () => {
     const mod = await import('../middleware/session-auth.js');
     sessionAuth = mod.sessionAuth;
     const db = await import('@skytwin/db');
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue({
+    const session = {
       id: 'session-1',
       user_id: 'user-abc',
       expires_at: new Date(Date.now() + 86400000 * 3), // 3 days from now
-    });
+    };
+    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(session);
+    (db.sessionRepository.findActiveForBrokerGrant as ReturnType<typeof vi.fn>).mockResolvedValue(session);
     (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 
     const req = mockReq({ headers: { authorization: 'Bearer good-token' } });
@@ -127,7 +131,7 @@ describe('sessionAuth middleware', () => {
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBe('user-abc');
     expect(req.authenticatedSessionId).toBe('session-1');
-    expect(mockGrantAuthenticatedOwner).toHaveBeenCalledWith('user-abc', expect.any(Date));
+    expect(mockGrantAuthenticatedSession).toHaveBeenCalledWith('user-abc', 'session-1', expect.any(Date));
   });
 
   it('accepts token from query string for EventSource-based clients', async () => {
@@ -135,11 +139,13 @@ describe('sessionAuth middleware', () => {
     const mod = await import('../middleware/session-auth.js');
     sessionAuth = mod.sessionAuth;
     const db = await import('@skytwin/db');
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue({
+    const session = {
       id: 'session-2',
       user_id: 'user-sse',
       expires_at: new Date(Date.now() + 86400000 * 3),
-    });
+    };
+    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(session);
+    (db.sessionRepository.findActiveForBrokerGrant as ReturnType<typeof vi.fn>).mockResolvedValue(session);
     (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 
     const req = mockReq({ query: { token: 'sse-token' } });
@@ -150,6 +156,72 @@ describe('sessionAuth middleware', () => {
 
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBe('user-sse');
+  });
+
+  it('continues authenticated non-secret requests when no parent broker is available', async () => {
+    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
+    const mod = await import('../middleware/session-auth.js');
+    sessionAuth = mod.sessionAuth;
+    const db = await import('@skytwin/db');
+    const session = {
+      id: 'session-brokerless',
+      user_id: 'user-brokerless',
+      expires_at: new Date(Date.now() + 86400000 * 3),
+    };
+    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(session);
+    (db.sessionRepository.findActiveForBrokerGrant as ReturnType<typeof vi.fn>).mockResolvedValue(session);
+    mockGrantAuthenticatedSession.mockResolvedValueOnce({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+
+    const req = mockReq({ headers: { authorization: 'Bearer brokerless-token' } });
+    const res = mockRes();
+    const next = vi.fn();
+    await sessionAuth(req, res, next);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(req.authenticatedUserId).toBe('user-brokerless');
+    expect(req.authenticatedSessionId).toBe('session-brokerless');
+  });
+
+  it('does not grant when the session is revoked while authentication is paused', async () => {
+    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
+    const mod = await import('../middleware/session-auth.js');
+    sessionAuth = mod.sessionAuth;
+    const db = await import('@skytwin/db');
+    const session = {
+      id: 'session-race',
+      user_id: 'user-race',
+      expires_at: new Date(Date.now() + 86400000 * 3),
+    };
+    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(session);
+
+    let resumeAfterRevoke: ((value: null) => void) | undefined;
+    const pausedRevalidation = new Promise<null>(resolve => { resumeAfterRevoke = resolve; });
+    (db.sessionRepository.findActiveForBrokerGrant as ReturnType<typeof vi.fn>)
+      .mockReturnValue(pausedRevalidation);
+
+    const req = mockReq({ headers: { authorization: 'Bearer race-token' } });
+    const res = mockRes();
+    const next = vi.fn();
+    const authenticating = sessionAuth(req, res, next);
+    await vi.waitFor(() => {
+      expect(db.sessionRepository.findActiveForBrokerGrant).toHaveBeenCalledWith(
+        'session-race',
+        'user-race',
+        mod.hashToken('race-token'),
+      );
+    });
+
+    // The authoritative query resumes after the concurrent revocation commit.
+    resumeAfterRevoke?.(null);
+    await authenticating;
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(next).not.toHaveBeenCalled();
+    expect(mockGrantAuthenticatedSession).not.toHaveBeenCalled();
+    expect(req.authenticatedUserId).toBeUndefined();
   });
 
   it('rejects expired sessions', async () => {
