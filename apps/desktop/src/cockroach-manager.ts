@@ -1,6 +1,7 @@
 import { app } from 'electron';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -43,11 +44,24 @@ interface CockroachManagerOptions {
   httpPort?: number;
   listenHost?: string;
   startTimeoutMs?: number;
+  spawnImpl?: typeof spawn;
 }
 
 export type CockroachStartResult =
-  | Readonly<{ ownership: 'managed-child'; dataDir: string }>
-  | Readonly<{ ownership: 'preexisting'; dataDir: null }>;
+  | Readonly<{
+      ownership: 'managed-child';
+      dataDir: string;
+      generation: number;
+    }>
+  | Readonly<{ ownership: 'preexisting'; dataDir: null; generation: null }>;
+
+interface ManagedAuthority {
+  readonly process: ChildProcess;
+  readonly generation: number;
+  readonly dataDir: string;
+  readonly pidFile: string;
+  readonly listeningUrlFile: string;
+}
 
 const DEFAULT_SQL_PORT = 26257;
 const DEFAULT_HTTP_PORT = 26258;
@@ -62,16 +76,21 @@ const GRACEFUL_STOP_TIMEOUT_MS = 30_000;
 
 export class CockroachManager {
   private process: ChildProcess | null = null;
+  private authority: ManagedAuthority | null = null;
+  private lifecycleGeneration = 0;
+  private lifecycleTail: Promise<void> = Promise.resolve();
   private readonly sqlPort: number;
   private readonly httpPort: number;
   private readonly listenHost: string;
   private readonly startTimeoutMs: number;
+  private readonly spawnImpl: typeof spawn;
 
   constructor(opts: CockroachManagerOptions = {}) {
     this.sqlPort = opts.sqlPort ?? Number(process.env['SKYTWIN_DB_PORT'] ?? DEFAULT_SQL_PORT);
     this.httpPort = opts.httpPort ?? Number(process.env['SKYTWIN_DB_HTTP_PORT'] ?? DEFAULT_HTTP_PORT);
     this.listenHost = opts.listenHost ?? DEFAULT_LISTEN_HOST;
     this.startTimeoutMs = opts.startTimeoutMs ?? DEFAULT_START_TIMEOUT_MS;
+    this.spawnImpl = opts.spawnImpl ?? spawn;
   }
 
   /**
@@ -96,7 +115,12 @@ export class CockroachManager {
   }
 
   getDataDir(): string {
-    return join(app.getPath('userData'), 'crdb-data');
+    const dataDir = join(app.getPath('userData'), 'crdb-data');
+    try {
+      return realpathSync(dataDir);
+    } catch {
+      return dataDir;
+    }
   }
 
   getConnectionString(): string {
@@ -104,59 +128,76 @@ export class CockroachManager {
   }
 
   /**
-   * Start CockroachDB in single-node mode. Idempotent — returns
-   * immediately if a CRDB SQL listener is responding on the configured
-   * port. Always calls ensureDatabase() afterwards so a partial first
-   * run that left CRDB running but missed the CREATE DATABASE step
-   * heals itself on the next launch.
+   * Start CockroachDB in single-node mode. A pre-existing responder is
+   * reported but never mutated. Only this manager's exact child may receive
+   * database initialization, after Cockroach has written fresh PID and
+   * listening-URL files for the launch.
    */
-  async start(): Promise<CockroachStartResult> {
+  start(): Promise<CockroachStartResult> {
+    return this.runSerialized(() => this.startOwned());
+  }
+
+  private async startOwned(): Promise<CockroachStartResult> {
     if (await this.isCrdbResponding()) {
       console.log('[crdb] Already running on', `${this.listenHost}:${this.sqlPort}`);
-      await this.ensureDatabase();
-      // Only a live child retained by this manager proves that the responder
-      // was launched with our bundled binary and userData store. A listener
-      // inherited from an earlier process (or another local CockroachDB) is
-      // usable for ordinary owner startup, but must not receive sample data.
-      if (this.process !== null && this.process.exitCode === null) {
-        return Object.freeze({
-          ownership: 'managed-child',
-          dataDir: this.getDataDir(),
-        });
+      const authority = this.authority;
+      if (authority && this.isAuthorityCurrent(authority)) {
+        await this.ensureDatabase();
+        if (!this.isAuthorityCurrent(authority)) {
+          throw new Error('CockroachDB ownership changed during database initialization');
+        }
+        return this.resultFor(authority);
       }
-      return Object.freeze({ ownership: 'preexisting', dataDir: null });
+      // A retained but unattested child must never lend its identity to the
+      // process answering the configured port.
+      if (this.process) await this.terminateProcess(this.process);
+      return Object.freeze({
+        ownership: 'preexisting',
+        dataDir: null,
+        generation: null,
+      });
     }
 
     const bin = this.getBinaryPath();
     if (!existsSync(bin)) {
       throw new Error(
         `CockroachDB binary missing at ${bin}. Run 'bin/skytwin-db install' (dev) or ` +
-        `rebuild the desktop bundle (release).`,
+          `rebuild the desktop bundle (release).`,
       );
     }
 
+    if (this.process) await this.terminateProcess(this.process);
+
     const dataDir = this.getDataDir();
     mkdirSync(dataDir, { recursive: true });
+    const canonicalDataDir = realpathSync(dataDir);
 
-    // Pin the CRDB log dir to userData/crdb-logs so the timeout error
-    // message in waitForReady() points at a real location. Without
+    // Pin the CRDB log dir to userData/crdb-logs so the owned-readiness
+    // timeout points at a real location. Without
     // --log-dir, CRDB writes to a default that depends on platform and
     // how the binary was invoked — fine for normal operation, confusing
     // when something fails on first run.
     const logDir = join(app.getPath('userData'), 'crdb-logs');
     mkdirSync(logDir, { recursive: true });
+    const runtimeDir = join(app.getPath('userData'), 'crdb-runtime');
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+    const launchId = randomUUID();
+    const pidFile = join(runtimeDir, `${launchId}.pid`);
+    const listeningUrlFile = join(runtimeDir, `${launchId}.url`);
 
     const args = [
       'start-single-node',
       '--insecure',
       `--listen-addr=${this.listenHost}:${this.sqlPort}`,
       `--http-addr=${this.listenHost}:${this.httpPort}`,
-      `--store=${dataDir}`,
+      `--store=${canonicalDataDir}`,
       `--log-dir=${logDir}`,
+      `--pid-file=${pidFile}`,
+      `--listening-url-file=${listeningUrlFile}`,
     ];
 
     console.log('[crdb] Spawning', bin, args.join(' '));
-    const spawnedProcess = spawn(bin, args, {
+    const spawnedProcess = this.spawnImpl(bin, args, {
       stdio: 'pipe',
       // Detach=false so child dies if Electron crashes — leaving an
       // orphaned cockroach holding port 26257 is a worse failure mode
@@ -164,6 +205,8 @@ export class CockroachManager {
       detached: false,
     });
     this.process = spawnedProcess;
+    const generation = ++this.lifecycleGeneration;
+    let spawnError: Error | null = null;
 
     this.process.stdout?.on('data', (chunk: Buffer) => {
       console.log(`[crdb] ${chunk.toString().trimEnd()}`);
@@ -171,54 +214,145 @@ export class CockroachManager {
     this.process.stderr?.on('data', (chunk: Buffer) => {
       console.error(`[crdb] ${chunk.toString().trimEnd()}`);
     });
+    this.process.on('error', (error) => {
+      spawnError = error;
+    });
     this.process.on('exit', (code, signal) => {
       console.log(`[crdb] Exited code=${code} signal=${signal}`);
-      this.process = null;
+      const wasCurrent = this.process === spawnedProcess || this.authority?.process === spawnedProcess;
+      if (this.process === spawnedProcess) this.process = null;
+      if (this.authority?.process === spawnedProcess) this.authority = null;
+      if (wasCurrent) ++this.lifecycleGeneration;
+      this.removeRuntimeFiles(pidFile, listeningUrlFile);
     });
 
-    await this.waitForReady();
-    await this.ensureDatabase();
-    // A foreign responder could win a port-bind race after the initial probe.
-    // Do not claim ownership unless the exact child we spawned is still live
-    // after SQL readiness and database initialization both complete.
-    if (this.process !== spawnedProcess || spawnedProcess.exitCode !== null) {
-      throw new Error('CockroachDB managed child exited before ownership was established');
+    const authority: ManagedAuthority = {
+      process: spawnedProcess,
+      generation,
+      dataDir: canonicalDataDir,
+      pidFile,
+      listeningUrlFile,
+    };
+    try {
+      await this.waitForOwnedReady(authority, () => spawnError);
+      this.authority = authority;
+      if (!this.isAuthorityCurrent(authority)) {
+        throw new Error('CockroachDB ownership changed before database initialization');
+      }
+      await this.ensureDatabase();
+      if (!this.isAuthorityCurrent(authority)) {
+        throw new Error('CockroachDB ownership changed during database initialization');
+      }
+      return this.resultFor(authority);
+    } catch (error) {
+      if (this.authority?.process === spawnedProcess) this.authority = null;
+      await this.terminateProcess(spawnedProcess);
+      this.removeRuntimeFiles(pidFile, listeningUrlFile);
+      throw error;
     }
+  }
+
+  stop(): Promise<void> {
+    return this.runSerialized(() => this.stopOwned());
+  }
+
+  private async stopOwned(): Promise<void> {
+    if (!this.process) return;
+    const proc = this.process;
+    const authority = this.authority;
+    this.process = null;
+    if (authority?.process === proc) this.authority = null;
+    ++this.lifecycleGeneration;
+    await this.terminateProcess(proc, GRACEFUL_STOP_TIMEOUT_MS);
+    if (authority) this.removeRuntimeFiles(authority.pidFile, authority.listeningUrlFile);
+  }
+
+  /** Revalidate a previously returned capability against the live managed child. */
+  isManagedStartCurrent(startup: CockroachStartResult): boolean {
+    const authority = this.authority;
+    return (
+      startup.ownership === 'managed-child' &&
+      authority !== null &&
+      startup.generation === authority.generation &&
+      startup.dataDir === authority.dataDir &&
+      this.isAuthorityCurrent(authority)
+    );
+  }
+
+  private resultFor(authority: ManagedAuthority): CockroachStartResult {
     return Object.freeze({
       ownership: 'managed-child',
-      dataDir,
+      dataDir: authority.dataDir,
+      generation: authority.generation,
     });
   }
 
-  async stop(): Promise<void> {
-    if (!this.process) return;
-    const proc = this.process;
-    this.process = null;
+  private isAuthorityCurrent(authority: ManagedAuthority): boolean {
+    if (
+      this.authority !== authority ||
+      this.process !== authority.process ||
+      authority.process.exitCode !== null ||
+      authority.process.pid === undefined
+    ) {
+      return false;
+    }
+    return this.hasValidStartupProof(authority);
+  }
 
-    // Try graceful drain via `cockroach node drain` first — drains
-    // connections, flushes WAL, finishes pending replication. On
-    // success, CRDB exits on its own and the SIGTERM below becomes a
-    // no-op. Falls through to SIGTERM if drain can't reach the node
-    // (e.g. it's already shutting down).
-    await this.gracefulQuit();
+  private hasValidStartupProof(authority: ManagedAuthority): boolean {
+    try {
+      const pid = Number.parseInt(readFileSync(authority.pidFile, 'utf8').trim(), 10);
+      const listeningUrl = new URL(readFileSync(authority.listeningUrlFile, 'utf8').trim());
+      return (
+        pid === authority.process.pid &&
+        listeningUrl.protocol === 'postgresql:' &&
+        listeningUrl.hostname === this.listenHost &&
+        Number(listeningUrl.port) === this.sqlPort &&
+        realpathSync(authority.dataDir) === authority.dataDir
+      );
+    } catch {
+      return false;
+    }
+  }
 
-    // If the drain already caused CRDB to exit, proc.kill('SIGTERM')
-    // throws ESRCH (no such process) and would propagate, turning a
-    // clean shutdown into an exception. proc.exitCode is the durable
-    // signal for that state (null until the process exits); proc.killed
-    // alone only flips after a signal we sent. The try/catch is the
-    // portable belt to that suspenders.
-    if (proc.exitCode === null) {
-      try {
-        proc.kill('SIGTERM');
-      } catch {
-        // already exited from the drain — proceed to the wait below.
+  private async waitForOwnedReady(authority: ManagedAuthority, getSpawnError: () => Error | null): Promise<void> {
+    const deadline = Date.now() + this.startTimeoutMs;
+    while (Date.now() < deadline) {
+      const spawnError = getSpawnError();
+      if (spawnError) throw spawnError;
+      if (this.process !== authority.process || authority.process.exitCode !== null) {
+        throw new Error('CockroachDB managed child exited before ownership was established');
       }
+      // Cockroach itself writes both files only after successful startup. The
+      // PID binds readiness to this exact ChildProcess, while the URL binds it
+      // to the endpoint we will migrate and provision.
+      if (this.hasValidStartupProof(authority) && (await this.isCrdbResponding())) {
+        if (
+          this.process === authority.process &&
+          authority.process.exitCode === null &&
+          this.hasValidStartupProof(authority)
+        )
+          return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(
+      `CockroachDB did not establish owned SQL readiness on ${this.listenHost}:${this.sqlPort} ` +
+        `within ${this.startTimeoutMs / 1000}s. Check logs in ` +
+        `${join(app.getPath('userData'), 'crdb-logs')}.`,
+    );
+  }
+
+  private async terminateProcess(proc: ChildProcess, timeoutMs = 5_000): Promise<void> {
+    if (this.process === proc) this.process = null;
+    if (this.authority?.process === proc) this.authority = null;
+    if (proc.exitCode !== null) return;
+    try {
+      proc.kill('SIGTERM');
+    } catch {
+      return;
     }
     await new Promise<void>((resolve) => {
-      // Short-circuit if CRDB already exited (drain succeeded) — the
-      // first 'exit' handler at line ~160 already cleared this.process
-      // and the next .once('exit') would never fire.
       if (proc.exitCode !== null) {
         resolve();
         return;
@@ -227,10 +361,10 @@ export class CockroachManager {
         try {
           proc.kill('SIGKILL');
         } catch {
-          // already dead
+          /* already dead */
         }
         resolve();
-      }, GRACEFUL_STOP_TIMEOUT_MS);
+      }, timeoutMs);
       proc.once('exit', () => {
         clearTimeout(timer);
         resolve();
@@ -238,31 +372,23 @@ export class CockroachManager {
     });
   }
 
-  private async gracefulQuit(): Promise<void> {
-    const bin = this.getBinaryPath();
-    if (!existsSync(bin)) return;
-    await new Promise<void>((resolve) => {
-      const quit = spawn(bin, [
-        'node',
-        'drain',
-        '--insecure',
-        '--host', `${this.listenHost}:${this.sqlPort}`,
-        '--drain-wait', '10s',
-      ], { stdio: 'pipe' });
-      // 15s budget for drain — beyond that, SIGTERM will pick up.
-      const timer = setTimeout(() => {
-        try { quit.kill('SIGKILL'); } catch { /* already dead */ }
-        resolve();
-      }, 15_000);
-      quit.on('exit', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      quit.on('error', () => {
-        clearTimeout(timer);
-        resolve();
-      });
-    });
+  private removeRuntimeFiles(...paths: string[]): void {
+    for (const path of paths) {
+      try {
+        rmSync(path, { force: true });
+      } catch {
+        /* best effort */
+      }
+    }
+  }
+
+  private runSerialized<T>(operation: () => Promise<T>): Promise<T> {
+    const run = this.lifecycleTail.then(operation, operation);
+    this.lifecycleTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   }
 
   /**
@@ -275,7 +401,11 @@ export class CockroachManager {
    */
   private async portListening(): Promise<boolean> {
     return new Promise((resolve) => {
-      const socket = createConnection({ host: this.listenHost, port: this.sqlPort, timeout: 500 });
+      const socket = createConnection({
+        host: this.listenHost,
+        port: this.sqlPort,
+        timeout: 500,
+      });
       socket.once('connect', () => {
         socket.end();
         resolve(true);
@@ -300,14 +430,17 @@ export class CockroachManager {
     const bin = this.getBinaryPath();
     if (!existsSync(bin)) return false;
     return new Promise((resolve) => {
-      const proc = spawn(bin, [
-        'sql',
-        '--insecure',
-        '--host', `${this.listenHost}:${this.sqlPort}`,
-        '-e', 'SELECT 1',
-      ], { stdio: 'pipe' });
+      const proc = this.spawnImpl(
+        bin,
+        ['sql', '--insecure', '--host', `${this.listenHost}:${this.sqlPort}`, '-e', 'SELECT 1'],
+        { stdio: 'pipe' },
+      );
       const timer = setTimeout(() => {
-        try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+        try {
+          proc.kill('SIGKILL');
+        } catch {
+          /* already dead */
+        }
         resolve(false);
       }, 2000);
       proc.on('exit', (code) => {
@@ -321,19 +454,6 @@ export class CockroachManager {
     });
   }
 
-  private async waitForReady(): Promise<void> {
-    const deadline = Date.now() + this.startTimeoutMs;
-    while (Date.now() < deadline) {
-      if (await this.isCrdbResponding()) return;
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    throw new Error(
-      `CockroachDB did not accept SQL connections on ${this.listenHost}:${this.sqlPort} ` +
-      `within ${this.startTimeoutMs / 1000}s. Check logs in ` +
-      `${join(app.getPath('userData'), 'crdb-logs')}.`,
-    );
-  }
-
   /**
    * Ensure the `skytwin` database exists. CRDB doesn't auto-create
    * databases on first connect; the API would die with "database
@@ -343,12 +463,20 @@ export class CockroachManager {
     const bin = this.getBinaryPath();
     if (!existsSync(bin)) return;
     await new Promise<void>((resolve, reject) => {
-      const proc = spawn(bin, [
-        'sql',
-        '--insecure',
-        '--host', `${this.listenHost}:${this.sqlPort}`,
-        '-e', 'CREATE DATABASE IF NOT EXISTS skytwin;',
-      ], { stdio: 'pipe' });
+      const proc = this.spawnImpl(
+        bin,
+        [
+          'sql',
+          '--insecure',
+          '--host',
+          `${this.listenHost}:${this.sqlPort}`,
+          '-e',
+          'CREATE DATABASE IF NOT EXISTS skytwin;',
+        ],
+        {
+          stdio: 'pipe',
+        },
+      );
       proc.on('exit', (code) => {
         if (code === 0) resolve();
         else reject(new Error(`ensureDatabase: cockroach sql exited ${code}`));

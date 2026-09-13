@@ -4,16 +4,9 @@ import { randomBytes } from 'crypto';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
-import {
-  CockroachManager,
-  type CockroachStartResult,
-} from './cockroach-manager.js';
+import { CockroachManager, type CockroachStartResult } from './cockroach-manager.js';
 import { computeBundleMarker } from './bundle-marker.js';
-import {
-  extractionDone,
-  extractionProgress,
-  type ExtractionProgress,
-} from './extraction-progress.js';
+import { extractionDone, extractionProgress, type ExtractionProgress } from './extraction-progress.js';
 import { verifyServiceInstanceProof } from './service-instance-proof.js';
 
 export type ProcessState = 'running' | 'stopped' | 'starting' | 'error' | 'paused';
@@ -52,8 +45,7 @@ const RESTART_DELAYS = [1000, 2000, 4000, 8000, 16000, 30000];
  * shipping a forked SkyTwin build that should consent under a
  * different brand.
  */
-const BUNDLED_GOOGLE_CLIENT_ID =
-  '594829999930-kpjopcs1pak0rp0omimuegr5ugcv5l8h.apps.googleusercontent.com';
+const BUNDLED_GOOGLE_CLIENT_ID = '594829999930-kpjopcs1pak0rp0omimuegr5ugcv5l8h.apps.googleusercontent.com';
 
 /**
  * Manages the API server and worker as child processes.
@@ -67,7 +59,9 @@ const BUNDLED_GOOGLE_CLIENT_ID =
  */
 function countTarFiles(tarPath: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    const child = spawn('tar', ['-tzf', tarPath], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const child = spawn('tar', ['-tzf', tarPath], {
+      stdio: ['ignore', 'pipe', 'inherit'],
+    });
     let count = 0;
     child.stdout?.on('data', (chunk: Buffer) => {
       for (const byte of chunk) {
@@ -83,9 +77,27 @@ function countTarFiles(tarPath: string): Promise<number> {
 }
 
 export class ServiceManager {
-  private api: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
-  private worker: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
-  private web: ManagedProcess = { process: null, status: 'stopped', restartCount: 0, failureTimestamps: [], external: false };
+  private api: ManagedProcess = {
+    process: null,
+    status: 'stopped',
+    restartCount: 0,
+    failureTimestamps: [],
+    external: false,
+  };
+  private worker: ManagedProcess = {
+    process: null,
+    status: 'stopped',
+    restartCount: 0,
+    failureTimestamps: [],
+    external: false,
+  };
+  private web: ManagedProcess = {
+    process: null,
+    status: 'stopped',
+    restartCount: 0,
+    failureTimestamps: [],
+    external: false,
+  };
   private cockroach = new CockroachManager();
   private cockroachStatus: ProcessState = 'stopped';
   private onStatusChange: ((status: ServiceStatus) => void) | null = null;
@@ -93,6 +105,9 @@ export class ServiceManager {
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
   private sampleBootstrapAllowedThisLaunch = false;
+  private sampleLaunchEpoch = 0;
+  private sampleAbortController: AbortController | null = null;
+  private serviceLifecycleTail: Promise<void> = Promise.resolve();
 
   setStatusHandler(handler: (status: ServiceStatus) => void): void {
     this.onStatusChange = handler;
@@ -185,9 +200,7 @@ export class ServiceManager {
           }
           console.warn('[extract] Marker matches but api/dist/index.js missing — re-extracting.');
         } else {
-          console.log(
-            `[extract] Bundle changed (${markerSource}): ${installed} -> ${currentMarker}. Re-extracting.`,
-          );
+          console.log(`[extract] Bundle changed (${markerSource}): ${installed} -> ${currentMarker}. Re-extracting.`);
         }
       } catch {
         // Marker unreadable — fall through to re-extract.
@@ -233,11 +246,9 @@ export class ServiceManager {
       // all three platforms accepts this flag set (bsdtar on
       // macOS/Windows, gnu tar on Linux). stderr inherited so any
       // extraction error still surfaces in the user-facing console.
-      const child = spawn(
-        'tar',
-        ['-xzvf', tarPath, '-C', extractedRoot],
-        { stdio: ['ignore', 'pipe', 'inherit'] },
-      );
+      const child = spawn('tar', ['-xzvf', tarPath, '-C', extractedRoot], {
+        stdio: ['ignore', 'pipe', 'inherit'],
+      });
       let filesExtracted = 0;
       let lastEmittedPercent = -1;
       child.stdout?.on('data', (chunk: Buffer) => {
@@ -325,11 +336,9 @@ export class ServiceManager {
     // alone redeems nothing.
     const envOverride = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'];
     const bundledGoogleClientId =
-      envOverride !== undefined && envOverride !== ''
-        ? envOverride
-        : (BUNDLED_GOOGLE_CLIENT_ID || '');
+      envOverride !== undefined && envOverride !== '' ? envOverride : BUNDLED_GOOGLE_CLIENT_ID || '';
     return {
-      ...process.env as Record<string, string>,
+      ...(process.env as Record<string, string>),
       DESKTOP_MODE: 'true',
       // The desktop bundle ships without an IronClaw deployment; the
       // execution-router falls back to Direct/OpenClaw based on the
@@ -355,8 +364,7 @@ export class ServiceManager {
       // Loopback service credential. The API verifies it; the worker and the
       // idle-miner present it on `/api/events/ingest`. Without it, a packaged
       // install (NODE_ENV=production, bypass off) 401s every ingest POST.
-      SKYTWIN_SERVICE_TOKEN:
-        process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
+      SKYTWIN_SERVICE_TOKEN: process.env['SKYTWIN_SERVICE_TOKEN'] || this.getOrCreateServiceToken(),
     };
   }
 
@@ -365,7 +373,7 @@ export class ServiceManager {
    * re-run every launch. Pulled into a separate method so startAll() can
    * gate the API on migrations completing.
    */
-  private async runMigrations(): Promise<boolean> {
+  private async runMigrations(startup: CockroachStartResult): Promise<boolean> {
     const base = this.getResourcePath();
     const embeddedRoot = await this.ensureEmbeddedRoot();
     const fallbackSymlink = app.isPackaged
@@ -419,10 +427,16 @@ export class ServiceManager {
       // into a wrapped `require(x)` in CJS output, which then fails on
       // ESM targets ("file:// require"). Use Function-eval to bypass the
       // TS transform and get native runtime dynamic-import semantics.
-      const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<{ up?: () => Promise<void> }>;
+      const nativeImport = new Function('p', 'return import(p)') as (
+        p: string,
+      ) => Promise<{ up?: () => Promise<void> }>;
       const mod = await nativeImport(moduleUrl);
       if (typeof mod.up !== 'function') {
         console.error('[migrate] target has no up() export:', script);
+        return false;
+      }
+      if (!this.cockroach.isManagedStartCurrent(startup)) {
+        console.error('[migrate] CockroachDB ownership changed before migration; refusing to write.');
         return false;
       }
       await mod.up();
@@ -434,6 +448,48 @@ export class ServiceManager {
     }
   }
 
+  private beginSampleLaunch(): { epoch: number; signal: AbortSignal } {
+    this.sampleAbortController?.abort();
+    const controller = new AbortController();
+    this.sampleAbortController = controller;
+    this.sampleBootstrapAllowedThisLaunch = false;
+    const epoch = ++this.sampleLaunchEpoch;
+    return { epoch, signal: controller.signal };
+  }
+
+  private revokeSampleLaunch(): void {
+    this.sampleAbortController?.abort();
+    this.sampleAbortController = null;
+    this.sampleBootstrapAllowedThisLaunch = false;
+    ++this.sampleLaunchEpoch;
+  }
+
+  private isSampleLaunchCurrent(epoch: number, signal: AbortSignal, startup: CockroachStartResult): boolean {
+    return (
+      app.isPackaged &&
+      !signal.aborted &&
+      epoch === this.sampleLaunchEpoch &&
+      this.cockroach.isManagedStartCurrent(startup)
+    );
+  }
+
+  private isSampleAuthorityCurrent(epoch: number, signal: AbortSignal, startup: CockroachStartResult): boolean {
+    return this.sampleBootstrapAllowedThisLaunch && this.isSampleLaunchCurrent(epoch, signal, startup);
+  }
+
+  private isOwnedApiProcessCurrent(expectedProcess: ChildProcess): boolean {
+    return !this.api.external && this.api.process === expectedProcess && expectedProcess.exitCode === null;
+  }
+
+  private isSampleIngestCurrent(
+    startup: CockroachStartResult,
+    epoch: number,
+    signal: AbortSignal,
+    apiProcess: ChildProcess,
+  ): boolean {
+    return this.isSampleAuthorityCurrent(epoch, signal, startup) && this.isOwnedApiProcessCurrent(apiProcess);
+  }
+
   /**
    * Provision the account-free sample only for a packaged build using its
    * bundled loopback database. The database module enforces the same boundary
@@ -441,10 +497,13 @@ export class ServiceManager {
    */
   private async provisionPackagedSample(
     startup: CockroachStartResult,
+    epoch: number,
+    signal: AbortSignal,
   ): Promise<void> {
-    if (!app.isPackaged) return;
+    if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
 
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
     const moduleSymlink = join(
       embeddedRoot,
       'api',
@@ -475,6 +534,7 @@ export class ServiceManager {
         }) => Promise<{ created: boolean; userId: string }>;
       }>;
       const mod = await nativeImport(moduleUrl);
+      if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
       const env = this.getEnv();
       const result = await mod.provisionPackagedSample({
         packaged: app.isPackaged,
@@ -486,14 +546,13 @@ export class ServiceManager {
         managedDataDir: startup.dataDir,
         bundledDataDir: this.cockroach.getDataDir(),
       });
+      if (!this.isSampleLaunchCurrent(epoch, signal, startup)) return;
       // Retry the versioned fixture on every healthy launch. Each synthetic
       // signal carries a stable signalId, so the normal ingest dedupe path
       // resumes partial bootstraps without duplicating decisions or approvals.
       this.sampleBootstrapAllowedThisLaunch = true;
       console.log(
-        result.created
-          ? '[sample] Reserved sample identity provisioned.'
-          : '[sample] Sample identity already present.',
+        result.created ? '[sample] Reserved sample identity provisioned.' : '[sample] Sample identity already present.',
       );
     } catch (err) {
       // Sample availability must not prevent owners from opening their local
@@ -503,10 +562,16 @@ export class ServiceManager {
   }
 
   /** Populate a newly-created sample through the authenticated API boundary. */
-  private async ingestPackagedSample(): Promise<void> {
-    if (!app.isPackaged || !this.sampleBootstrapAllowedThisLaunch) return;
+  private async ingestPackagedSample(
+    startup: CockroachStartResult,
+    epoch: number,
+    signal: AbortSignal,
+    apiProcess: ChildProcess,
+  ): Promise<void> {
+    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
 
     const embeddedRoot = await this.ensureEmbeddedRoot();
+    if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
     const moduleSymlink = join(
       embeddedRoot,
       'api',
@@ -523,16 +588,25 @@ export class ServiceManager {
         ingestPackagedSampleSignals: (options: {
           apiUrl: string;
           serviceToken: string;
+          signal: AbortSignal;
+          authorizeRequest: () => Promise<boolean>;
         }) => Promise<{ ingested: number; total: number }>;
       }>;
       const mod = await nativeImport(moduleUrl);
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
       const env = this.getEnv();
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
       const result = await mod.ingestPackagedSampleSignals({
         // Keep the privileged request on the exact origin authenticated by
         // verifyOwnedApi(); localhost could resolve to another IPv6 listener.
         apiUrl: 'http://127.0.0.1:3100',
         serviceToken: env['SKYTWIN_SERVICE_TOKEN'] ?? '',
+        signal,
+        authorizeRequest: async () =>
+          this.isSampleIngestCurrent(startup, epoch, signal, apiProcess) &&
+          (await this.verifyOwnedApi(apiProcess, epoch, signal)),
       });
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
       console.log(`[sample] Ingested ${result.ingested}/${result.total} sample signals.`);
     } catch (err) {
       console.error('[sample] Signal ingestion incomplete:', err);
@@ -540,11 +614,23 @@ export class ServiceManager {
   }
 
   /** Prove that the API listener holds this install's service credential. */
-  private async verifyOwnedApi(): Promise<boolean> {
+  private async verifyOwnedApi(
+    expectedProcess?: ChildProcess,
+    epoch?: number,
+    launchSignal?: AbortSignal,
+  ): Promise<boolean> {
+    if (
+      launchSignal?.aborted ||
+      (epoch !== undefined && epoch !== this.sampleLaunchEpoch) ||
+      (expectedProcess && !this.isOwnedApiProcessCurrent(expectedProcess))
+    )
+      return false;
     const serviceToken = this.getEnv()['SKYTWIN_SERVICE_TOKEN'];
     if (!serviceToken) return false;
     const challenge = randomBytes(32).toString('hex');
     const controller = new AbortController();
+    const abortForLaunch = (): void => controller.abort();
+    launchSignal?.addEventListener('abort', abortForLaunch, { once: true });
     const timer = setTimeout(() => controller.abort(), 2_000);
     try {
       const url = new URL('http://127.0.0.1:3100/api/health/instance');
@@ -556,35 +642,46 @@ export class ServiceManager {
         challenge?: unknown;
         proof?: unknown;
       } | null;
-      return payload?.service === 'skytwin-api'
-        && payload.challenge === challenge
-        && verifyServiceInstanceProof(serviceToken, challenge, payload.proof);
+      return (
+        !launchSignal?.aborted &&
+        (epoch === undefined || epoch === this.sampleLaunchEpoch) &&
+        (!expectedProcess || this.isOwnedApiProcessCurrent(expectedProcess)) &&
+        payload?.service === 'skytwin-api' &&
+        payload.challenge === challenge &&
+        verifyServiceInstanceProof(serviceToken, challenge, payload.proof)
+      );
     } catch {
       return false;
     } finally {
       clearTimeout(timer);
+      launchSignal?.removeEventListener('abort', abortForLaunch);
     }
   }
 
   /** Run sample ingestion in the background after proving API ownership. */
-  private startPackagedSampleIngest(): void {
-    if (!app.isPackaged || !this.sampleBootstrapAllowedThisLaunch) return;
+  private startPackagedSampleIngest(startup: CockroachStartResult, epoch: number, signal: AbortSignal): void {
+    const apiProcess = this.api.process;
+    if (!apiProcess || !this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
     void (async () => {
-      if (!(await this.verifyOwnedApi())) {
+      if (!(await this.verifyOwnedApi(apiProcess, epoch, signal))) {
         console.warn('[sample] Signal ingestion skipped: API instance could not be authenticated.');
         return;
       }
-      await this.ingestPackagedSample();
+      if (!this.isSampleIngestCurrent(startup, epoch, signal, apiProcess)) return;
+      await this.ingestPackagedSample(startup, epoch, signal, apiProcess);
     })().catch((err) => {
       console.error('[sample] Background signal ingestion failed:', err);
     });
   }
 
-  async startAll(): Promise<void> {
+  startAll(): Promise<void> {
+    return this.runServiceLifecycle(() => this.startAllOwned());
+  }
+
+  private async startAllOwned(): Promise<void> {
     this.paused = false;
-    // This is launch-scoped authority. Never retain a prior successful sample
-    // bootstrap across a restart or a later attachment to a foreign listener.
-    this.sampleBootstrapAllowedThisLaunch = false;
+    const { epoch, signal } = this.beginSampleLaunch();
+    let startup: CockroachStartResult | null = null;
     // Extract the bundled embedded apps tarball before anything else so
     // every downstream method (CockroachManager, runMigrations, startApi,
     // startWeb, startWorker) sees a populated <userData>/embedded/ tree.
@@ -608,19 +705,23 @@ export class ServiceManager {
       this.cockroachStatus = 'running';
       this.emitStatus();
     } else {
-      const startup = await this.startCockroach();
+      startup = await this.startCockroach();
       // Migrations must complete after CRDB is up but before API starts;
       // otherwise API hits "relation does not exist" on first query and
       // crashlooks until restart-backoff exhausts.
-      if (this.cockroachStatus === 'running') {
-        const migrated = await this.runMigrations();
-        if (migrated && startup?.ownership === 'managed-child') {
-          await this.provisionPackagedSample(startup);
+      if (
+        this.cockroachStatus === 'running' &&
+        startup?.ownership === 'managed-child' &&
+        this.cockroach.isManagedStartCurrent(startup)
+      ) {
+        const migrated = await this.runMigrations(startup);
+        if (migrated && this.cockroach.isManagedStartCurrent(startup)) {
+          await this.provisionPackagedSample(startup, epoch, signal);
         } else if (migrated && app.isPackaged) {
-          console.warn(
-            '[sample] Provisioning skipped: CockroachDB listener is not owned by this desktop launch.',
-          );
+          console.warn('[sample] Provisioning skipped: CockroachDB listener is not owned by this desktop launch.');
         }
+      } else if (this.cockroachStatus === 'running' && app.isPackaged) {
+        console.warn('[migrate] Skipped: CockroachDB listener is not owned by this desktop launch.');
       }
     }
     await this.startApi();
@@ -639,7 +740,9 @@ export class ServiceManager {
     }, 3000);
 
     this.startHealthMonitoring();
-    if (apiReady) this.startPackagedSampleIngest();
+    if (apiReady && startup?.ownership === 'managed-child' && this.isSampleAuthorityCurrent(epoch, signal, startup)) {
+      this.startPackagedSampleIngest(startup, epoch, signal);
+    }
   }
 
   private startHealthMonitoring(): void {
@@ -672,9 +775,7 @@ export class ServiceManager {
     const now = Date.now();
     managed.failureTimestamps.push(now);
     // Trim old timestamps outside the window
-    managed.failureTimestamps = managed.failureTimestamps.filter(
-      (t) => now - t < FAILURE_WINDOW_MS,
-    );
+    managed.failureTimestamps = managed.failureTimestamps.filter((t) => now - t < FAILURE_WINDOW_MS);
 
     if (managed.failureTimestamps.length >= MAX_RESTARTS) {
       console.error(`[${name}] ${MAX_RESTARTS} failures in ${FAILURE_WINDOW_MS / 60000} minutes — marking as failed`);
@@ -716,9 +817,13 @@ export class ServiceManager {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 500);
     try {
-      const res = await fetch('http://localhost:3100/api/health', { signal: controller.signal });
+      const res = await fetch('http://localhost:3100/api/health', {
+        signal: controller.signal,
+      });
       if (!res.ok) return false;
-      const payload = (await res.json().catch(() => null)) as { service?: unknown } | null;
+      const payload = (await res.json().catch(() => null)) as {
+        service?: unknown;
+      } | null;
       return payload?.service === 'skytwin-api';
     } catch {
       return false;
@@ -783,7 +888,7 @@ export class ServiceManager {
         if (code !== 0 && !this.paused) {
           this.api.restartCount++;
           this.recordFailure(this.api, 'api');
-          if (this.api.status as ProcessState !== 'error') {
+          if ((this.api.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.api.restartCount);
             console.log(`[api] Restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
             setTimeout(() => this.startApi(), delay);
@@ -840,7 +945,7 @@ export class ServiceManager {
         if (code !== 0 && !this.paused) {
           this.web.restartCount++;
           this.recordFailure(this.web, 'web');
-          if (this.web.status as ProcessState !== 'error') {
+          if ((this.web.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.web.restartCount);
             console.log(`[web] Restarting in ${delay}ms (attempt ${this.web.restartCount})...`);
             setTimeout(() => this.startWeb(), delay);
@@ -901,7 +1006,7 @@ export class ServiceManager {
         if (code !== 0 && !this.paused) {
           this.worker.restartCount++;
           this.recordFailure(this.worker, 'worker');
-          if (this.worker.status as ProcessState !== 'error') {
+          if ((this.worker.status as ProcessState) !== 'error') {
             const delay = this.getRestartDelay(this.worker.restartCount);
             console.log(`[worker] Restarting in ${delay}ms (attempt ${this.worker.restartCount})...`);
             setTimeout(() => this.startWorker(), delay);
@@ -993,7 +1098,12 @@ export class ServiceManager {
     managed.status = 'stopped';
   }
 
-  async stopAll(): Promise<void> {
+  stopAll(): Promise<void> {
+    this.revokeSampleLaunch();
+    return this.runServiceLifecycle(() => this.stopAllOwned());
+  }
+
+  private async stopAllOwned(): Promise<void> {
     if (this.healthCheckTimer) {
       clearInterval(this.healthCheckTimer);
       this.healthCheckTimer = null;
@@ -1017,6 +1127,15 @@ export class ServiceManager {
     this.emitStatus();
   }
 
+  private runServiceLifecycle(operation: () => Promise<void>): Promise<void> {
+    const run = this.serviceLifecycleTail.then(operation, operation);
+    this.serviceLifecycleTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   getStatus(): ServiceStatus {
     const apiState = this.api.status;
     const workerState = this.worker.status;
@@ -1038,7 +1157,12 @@ export class ServiceManager {
       overall = 'degraded';
     }
 
-    return { api: apiState, worker: workerState, cockroach: cockroachState, overall };
+    return {
+      api: apiState,
+      worker: workerState,
+      cockroach: cockroachState,
+      overall,
+    };
   }
 
   getUptime(): number {
