@@ -46,8 +46,13 @@ export function isLoopbackApiBase(value: string): boolean {
 }
 
 export function isLocalOnlySamplePath(pathname: string): boolean {
+  // Express routing is case-insensitive by default. Classify with the same
+  // semantics so mixed-case spellings cannot bypass the local-only boundary
+  // before the proxy reaches a lower-case registered API route.
+  const normalizedPathname = pathname.toLowerCase();
   return LOCAL_ONLY_SAMPLE_PATHS.some(
-    (path) => pathname === path || pathname.startsWith(`${path}/`),
+    (path) =>
+      normalizedPathname === path || normalizedPathname.startsWith(`${path}/`),
   );
 }
 

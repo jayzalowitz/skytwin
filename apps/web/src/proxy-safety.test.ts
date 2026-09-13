@@ -22,6 +22,11 @@ describe('sample proxy boundary', () => {
     expect(isLocalOnlySamplePath('/api/v1/demo/simulation/commands')).toBe(true);
     expect(isLocalOnlySamplePath('/api/v1/demo/recipes')).toBe(false);
     expect(isLocalOnlySamplePath('/api/v1/demo/preview')).toBe(false);
+    expect(isLocalOnlySamplePath('/API/V1/DEMO/INFO')).toBe(true);
+    expect(isLocalOnlySamplePath('/Api/V1/Demo/Session')).toBe(true);
+    expect(
+      isLocalOnlySamplePath('/aPi/v1/dEmO/sImUlAtIoN/commands'),
+    ).toBe(true);
   });
 
   it('accepts only credential-free HTTP loopback API origins for sample forwarding', () => {
