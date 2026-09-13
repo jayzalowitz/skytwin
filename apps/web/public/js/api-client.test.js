@@ -143,6 +143,96 @@ describe('api client', () => {
     expect(renewedReads).toHaveLength(2);
   });
 
+  it('joins one renewal when parallel sample reads fail together', async () => {
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'old-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2030-01-01T00:00:00.000Z');
+
+    let releaseRenewal;
+    const renewal = new Promise((resolve) => {
+      releaseRenewal = resolve;
+    });
+    let sessionRequests = 0;
+    const fetchMock = vi.fn((url, options) => {
+      if (url === '/api/v1/demo/session') {
+        sessionRequests += 1;
+        return renewal;
+      }
+      if (options.headers.Authorization === 'Bearer old-token') {
+        return Promise.resolve(new Response('{}', { status: 401 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ id: url }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const reads = [
+      fetchJSON('/api/users/first'),
+      fetchJSON('/api/users/second'),
+    ];
+    await vi.waitFor(() => expect(sessionRequests).toBe(1));
+    releaseRenewal(new Response(JSON.stringify({
+      token: 'renewed-token',
+      userId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+      expiresAt: '2030-01-01T00:00:00.000Z',
+    }), {
+      status: 201,
+      headers: { 'Content-Type': 'application/json' },
+    }));
+
+    await expect(Promise.all(reads)).resolves.toEqual([
+      { id: '/api/users/first' },
+      { id: '/api/users/second' },
+    ]);
+    expect(sessionRequests).toBe(1);
+  });
+
+  it('does not renew a request that was sent before sample authority existed', async () => {
+    let releaseRequest;
+    const request = new Promise((resolve) => {
+      releaseRequest = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValue(request);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = fetchJSON('/api/users/anonymous');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'new-sample-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2030-01-01T00:00:00.000Z');
+    releaseRequest(new Response('{}', { status: 401 }));
+
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it('does not renew an old sample request after real authentication wins', async () => {
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'old-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2030-01-01T00:00:00.000Z');
+    let releaseRequest;
+    const request = new Promise((resolve) => {
+      releaseRequest = resolve;
+    });
+    const fetchMock = vi.fn().mockReturnValue(request);
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = fetchJSON('/api/users/sample');
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    values.set(KEY_SESSION_TOKEN, 'real-token');
+    values.set(KEY_USER_ID, '11111111-1111-4111-8111-111111111111');
+    releaseRequest(new Response('{}', { status: 401 }));
+
+    await expect(pending).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(values.get(KEY_SESSION_TOKEN)).toBe('real-token');
+  });
+
   it('never replaces a real session when a stale sample marker survives', async () => {
     sampleValues.set(KEY_TOUR_MODE, '1');
     sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
