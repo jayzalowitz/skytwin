@@ -33,11 +33,17 @@ const serviceManager = new ServiceManager();
 // Secure-device-backed "remember my vault passphrase" store (#401). Persists
 // safeStorage ciphertext only when a reviewed OS credential backend is active;
 // Linux `basic_text` is rejected. See passphrase-vault.ts.
-// Cast through the structural ports for the same reason desktop-preferences.ts
-// does — electron-store's ESM Conf inheritance doesn't survive `module: commonjs`.
-const passphraseStore = new Store<Record<string, string>>({
+// Adapt electron-store to the narrow vault port explicitly so startup can
+// enumerate every per-user entry without exposing the store implementation.
+const electronPassphraseStore = new Store<Record<string, string>>({
   name: 'skytwin-passphrase-vault',
-}) as unknown as PassphraseKeyValueStore;
+});
+const passphraseStore: PassphraseKeyValueStore = {
+  get: (key) => electronPassphraseStore.get(key),
+  set: (key, value) => electronPassphraseStore.set(key, value),
+  delete: (key) => electronPassphraseStore.delete(key),
+  keys: () => Object.keys(electronPassphraseStore.store),
+};
 const passphraseVault = new PassphraseVault(
   safeStorage as unknown as SafeStoragePort,
   passphraseStore,
@@ -182,6 +188,11 @@ async function runFirstLaunchChecks(): Promise<boolean> {
 }
 
 async function startApp(): Promise<void> {
+  // safeStorage backend discovery is reliable only after Electron is ready.
+  // Purge every legacy, unsupported, or backend-mismatched remembered secret
+  // before the renderer can request one, including records for inactive users.
+  passphraseVault.purgeUntrustedEntries();
+
   // First-launch dependency check
   const depsOk = await runFirstLaunchChecks();
   if (!depsOk) return;

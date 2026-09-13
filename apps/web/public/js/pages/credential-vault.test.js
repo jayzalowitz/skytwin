@@ -60,6 +60,7 @@ describe('credential vault truth boundary', () => {
     const text = normalizedText(container);
 
     expectInactiveBoundary(text);
+    expect(container.querySelector('strong')?.style.color).toBe('var(--danger)');
     expect(text).toContain(
       'This does not encrypt current OAuth token rows or new OAuth grants.',
     );

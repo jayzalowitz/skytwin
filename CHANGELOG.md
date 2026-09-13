@@ -16,6 +16,16 @@ All notable changes to SkyTwin will be documented in this file.
   encryption claims remain blocked until the implementation and packaged
   verification gates in the ADR pass.
 
+### Fixed (post-/review)
+
+- **Remembered vault passphrases now retain verifiable storage provenance.**
+  New desktop records carry a format version and the exact secure OS backend
+  that encrypted them. Startup deletes every legacy untagged, unsupported, or
+  backend-mismatched record across users without attempting decryption, so a
+  passphrase persisted by Linux `basic_text` cannot survive the hardened
+  boundary. The credential-vault plaintext warning also uses the design
+  system's security-alert color.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

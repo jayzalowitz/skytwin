@@ -73,6 +73,7 @@ interface ShellModuleStub {
 
 interface SafeStorageModuleStub {
   isEncryptionAvailable(): boolean;
+  getSelectedStorageBackend(): string;
   encryptString(plaintext: string): Buffer;
   decryptString(ciphertext: Buffer): string;
 }
@@ -135,6 +136,7 @@ const shell: ShellModuleStub = {
 // tests that exercise the passphrase-vault wiring don't need a real keychain.
 const safeStorage: SafeStorageModuleStub = {
   isEncryptionAvailable: vi.fn(() => true),
+  getSelectedStorageBackend: vi.fn(() => 'gnome_libsecret'),
   encryptString: vi.fn((plaintext: string) => Buffer.from(plaintext, 'utf8')),
   decryptString: vi.fn((ciphertext: Buffer) => ciphertext.toString('utf8')),
 };
