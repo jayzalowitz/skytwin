@@ -225,6 +225,7 @@ describe('sessionAuth middleware', () => {
       (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValue({
         id: demo.DEMO_USER_ID,
         is_demo: true,
+        created_at: new Date('2026-01-01T00:00:00.000Z'),
       });
       return { sessionAuth: auth.sessionAuth, issueDemoSession: demo.issueDemoSession };
     }
@@ -251,7 +252,7 @@ describe('sessionAuth middleware', () => {
       const mod = await loadDemoAuth();
       const demo = await import('../auth/demo-session.js');
       const db = await import('@skytwin/db');
-      let releaseLookup!: (value: { id: string; is_demo: boolean }) => void;
+      let releaseLookup!: (value: { id: string; is_demo: boolean; created_at: Date }) => void;
       (
         db.userRepository.findDemoById as ReturnType<typeof vi.fn>
       ).mockReturnValueOnce(
@@ -273,7 +274,11 @@ describe('sessionAuth middleware', () => {
         expect(db.userRepository.findDemoById).toHaveBeenCalledOnce(),
       );
       demo.revokeDemoSession(issued.token);
-      releaseLookup({ id: demo.DEMO_USER_ID, is_demo: true });
+      releaseLookup({
+        id: demo.DEMO_USER_ID,
+        is_demo: true,
+        created_at: new Date('2026-01-01T00:00:00.000Z'),
+      });
       await pending;
 
       expect(next).not.toHaveBeenCalled();
@@ -380,6 +385,63 @@ describe('sessionAuth middleware', () => {
       },
     );
 
+    it.each([
+      ['marker is cleared', null],
+      ['reserved row is replaced', {
+        id: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        is_demo: true,
+        created_at: new Date('2026-01-02T00:00:00.000Z'),
+      }],
+    ])('does not emit a paused allowlisted read after the database %s', async (_scenario, replacement) => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const db = await import('@skytwin/db');
+      const original = {
+        id: demo.DEMO_USER_ID,
+        is_demo: true,
+        created_at: new Date('2026-01-01T00:00:00.000Z'),
+      };
+      let current: typeof original | null = original;
+      (db.userRepository.findDemoById as ReturnType<typeof vi.fn>)
+        .mockImplementation(async () => current);
+      let markRouteStarted!: () => void;
+      let releaseRoute!: () => void;
+      const routeStarted = new Promise<void>((resolve) => { markRouteStarted = resolve; });
+      const routeRelease = new Promise<void>((resolve) => { releaseRoute = resolve; });
+      const app = express();
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      app.get(path, mod.sessionAuth, async (_req, res) => {
+        markRouteStarted();
+        await routeRelease;
+        res.json({ decisions: [{ id: 'must-not-escape' }] });
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const pending = fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        await routeStarted;
+        current = replacement;
+        releaseRoute();
+        const response = await pending;
+        expect(response.status).toBe(401);
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        await expect(response.json()).resolves.toMatchObject({
+          error: expect.stringMatching(/unavailable/i),
+        });
+        expect(db.userRepository.findDemoById).toHaveBeenCalledTimes(2);
+      } finally {
+        releaseRoute();
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
+        );
+      }
+    });
+
     it('preserves active downstream status, headers, and error handling', async () => {
       const mod = await loadDemoAuth();
       const demo = await import('../auth/demo-session.js');
@@ -436,6 +498,38 @@ describe('sessionAuth middleware', () => {
       } finally {
         await new Promise<void>((resolve, reject) =>
           server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+
+    it('preserves writeHead, write, and end after final authority proof', async () => {
+      const mod = await loadDemoAuth();
+      const demo = await import('../auth/demo-session.js');
+      const path = `/api/decisions/${demo.DEMO_USER_ID}`;
+      const app = express();
+      app.get(path, mod.sessionAuth, (_req, res) => {
+        res.writeHead(207, {
+          'Content-Type': 'text/plain; charset=utf-8',
+          'X-Sample-Stream': 'preserved',
+        });
+        res.write('buffered-');
+        res.end('response');
+      });
+      const server = app.listen(0, '127.0.0.1');
+      await new Promise<void>((resolve) => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('No test server port.');
+      const issued = mod.issueDemoSession();
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+          headers: { Authorization: `Bearer ${issued.token}` },
+        });
+        expect(response.status).toBe(207);
+        expect(response.headers.get('x-sample-stream')).toBe('preserved');
+        await expect(response.text()).resolves.toBe('buffered-response');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => error ? reject(error) : resolve()),
         );
       }
     });

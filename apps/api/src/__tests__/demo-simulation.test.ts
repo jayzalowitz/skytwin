@@ -14,10 +14,13 @@ import {
 import { createDemoSimulationRouter } from '../routes/demo-simulation.js';
 import { SampleSimulationService } from '../services/sample-simulation.js';
 
-function buildApp(service = new SampleSimulationService()): Express {
+function buildApp(
+  service = new SampleSimulationService(),
+  isSampleAvailable: () => Promise<boolean> = async () => true,
+): Express {
   const app = express();
   app.use(express.json());
-  app.use('/api/v1/demo/simulation', createDemoSimulationRouter(service));
+  app.use('/api/v1/demo/simulation', createDemoSimulationRouter(service, isSampleAvailable));
   app.use(
     (
       error: Error,
@@ -161,6 +164,81 @@ describe('isolated sample simulation', () => {
     expect(denied.status).toBe(401);
     expect(checks).toBe(2);
     expect(service.hasSessionForTests(identity.sessionKey)).toBe(false);
+  });
+
+  it('keeps a failed command retryable when the final fixture check throws', async () => {
+    let checks = 0;
+    let failFinalCheck = true;
+    const service = new SampleSimulationService();
+    const app = buildApp(service, async () => {
+      checks += 1;
+      if (failFinalCheck && checks === 2) throw new Error('transient final fixture check');
+      return true;
+    });
+    const issued = issueDemoSession();
+    const session = inspectDemoSession(issued.token)!;
+    const command = { type: 'approve' as const, proposalId: 'calendar-focus' as const };
+    const failed = await request(
+      app, 'POST', '/api/v1/demo/simulation/commands', issued.token, command,
+    );
+    expect(failed.status).toBe(500);
+    const unchanged = await service.getState(
+      session.sessionKey, session.expiresAtMs, undefined, session.signal,
+    );
+    expect(unchanged.revision).toBe(0);
+    expect(unchanged.proposals.find((item) => item.id === 'calendar-focus')?.status)
+      .toBe('pending');
+
+    failFinalCheck = false;
+    const retried = await request(
+      app, 'POST', '/api/v1/demo/simulation/commands', issued.token, command,
+    );
+    expect(retried.status).toBe(200);
+    expect(asState(retried.body).revision).toBe(1);
+  });
+
+  it('keeps prior state when a reset final fixture check throws', async () => {
+    let checks = 0;
+    let failFinalCheck = true;
+    const service = new SampleSimulationService();
+    const issued = issueDemoSession();
+    const session = inspectDemoSession(issued.token)!;
+    await service.command(
+      session.sessionKey,
+      session.expiresAtMs,
+      {
+        type: 'correct',
+        proposalId: 'focus-time-preference',
+        correctionId: 'prefer-afternoons',
+      },
+      undefined,
+      session.signal,
+    );
+    const app = buildApp(service, async () => {
+      checks += 1;
+      if (failFinalCheck && checks === 2) throw new Error('transient final fixture check');
+      return true;
+    });
+    const failed = await request(
+      app, 'POST', '/api/v1/demo/simulation/commands', issued.token, { type: 'reset' },
+    );
+    expect(failed.status).toBe(500);
+    const unchanged = await service.getState(
+      session.sessionKey, session.expiresAtMs, undefined, session.signal,
+    );
+    expect(unchanged.revision).toBe(1);
+    expect(unchanged.learning).toEqual([{
+      key: 'preferred_focus_window',
+      value: 'afternoon',
+      source: 'corrected',
+    }]);
+
+    failFinalCheck = false;
+    const retried = await request(
+      app, 'POST', '/api/v1/demo/simulation/commands', issued.token, { type: 'reset' },
+    );
+    expect(retried.status).toBe(200);
+    expect(asState(retried.body)).toMatchObject({ revision: 0, learning: [] });
   });
 
   it('keeps a discarded credential tombstoned instead of recreating its state', async () => {

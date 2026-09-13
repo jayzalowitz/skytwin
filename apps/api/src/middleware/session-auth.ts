@@ -1,6 +1,7 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
 import { sessionRepository, userRepository } from '@skytwin/db';
+import type { UserRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import {
   DEMO_USER_ID,
@@ -50,52 +51,114 @@ const DEV_AUTH_BYPASS =
 
 let bypassWarned = false;
 
+const MAX_BUFFERED_DEMO_RESPONSE_BYTES = 16 * 1024 * 1024;
+
+interface DemoAuthorityProof {
+  id: string;
+  createdAtMs: number;
+}
+
+function makeDemoAuthorityProof(user: UserRow): DemoAuthorityProof | null {
+  if (!(user.created_at instanceof Date)) return null;
+  const createdAtMs = user.created_at.getTime();
+  if (!Number.isFinite(createdAtMs)) return null;
+  return { id: user.id, createdAtMs };
+}
+
+function matchesDemoAuthorityProof(
+  user: UserRow | null,
+  expected: DemoAuthorityProof,
+): boolean {
+  if (!user) return false;
+  const current = makeDemoAuthorityProof(user);
+  return current?.id === expected.id && current.createdAtMs === expected.createdAtMs;
+}
+
+function responseChunkBytes(args: unknown[]): number {
+  const chunk = args[0];
+  if (chunk === undefined || chunk === null) return 0;
+  if (typeof chunk === 'string') {
+    const encoding = typeof args[1] === 'string' ? args[1] : 'utf8';
+    return Buffer.byteLength(chunk, encoding as BufferEncoding);
+  }
+  if (Buffer.isBuffer(chunk) || chunk instanceof Uint8Array) return chunk.byteLength;
+  return 0;
+}
+
 /**
- * Hold the exact demo authority through the first response boundary.
+ * Hold the exact demo authority through the complete downstream operation.
  *
  * Express does not await downstream middleware after `next()`, so checking only
  * before `next()` leaves every asynchronous repository route able to return
- * after this credential is discarded, replaced, or expires. Guard the Node
- * response primitives instead: `json`, `send`, HEAD handling, errors, and
- * streamed responses all reach writeHead/write/end before committing bytes.
+ * after this credential or its database fixture is revoked. Buffer the Node
+ * response primitives until `end()`, then revalidate both the process-local
+ * generation and database row incarnation before committing any bytes. The
+ * buffer is bounded and long-lived streams are deliberately not allowlisted.
  */
 function fenceDemoResponse(
   res: Response,
   session: VerifiedDemoSession,
+  authorityProof: DemoAuthorityProof,
 ): void {
   const originalWrite = res.write.bind(res);
   const originalEnd = res.end.bind(res);
   const originalWriteHead = res.writeHead.bind(res);
-  let boundary: 'pending' | 'allowed' | 'denying' | 'denied' = 'pending';
+  let boundary: 'pending' | 'verifying' | 'allowed' | 'denied' = 'pending';
+  let bufferedBytes = 0;
+  let bufferedHead: unknown[] | null = null;
+  const bufferedWrites: unknown[][] = [];
+  let bufferedEnd: unknown[] | null = null;
 
   const deny = (): void => {
-    if (boundary === 'denying' || boundary === 'denied') return;
-    boundary = 'denying';
+    if (boundary === 'denied' || boundary === 'allowed') return;
+    boundary = 'denied';
     const body = JSON.stringify({
       error: 'Sample session unavailable',
       message: 'Restart the sample tour to continue.',
     });
+    for (const name of res.getHeaderNames()) res.removeHeader(name);
     res.statusCode = 401;
-    res.removeHeader('Content-Encoding');
-    res.removeHeader('Content-Length');
-    res.removeHeader('ETag');
-    res.removeHeader('Last-Modified');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.setHeader('Content-Length', String(Buffer.byteLength(body)));
-    // originalEnd may implicitly invoke the guarded writeHead. The `denying`
-    // state lets that one internal call through with the replacement headers.
     Reflect.apply(originalEnd, res, [body]);
-    boundary = 'denied';
   };
 
-  const admit = (): boolean => {
-    if (boundary === 'allowed') return true;
-    if (boundary !== 'pending') return false;
-    if (isDemoSessionActive(session)) {
-      boundary = 'allowed';
-      return true;
+  const flush = (): void => {
+    if (boundary !== 'verifying' || !bufferedEnd) return;
+    boundary = 'allowed';
+    if (bufferedHead) Reflect.apply(originalWriteHead, res, bufferedHead);
+    for (const args of bufferedWrites) Reflect.apply(originalWrite, res, args);
+    Reflect.apply(originalEnd, res, bufferedEnd);
+  };
+
+  const verifyAndFlush = async (): Promise<void> => {
+    try {
+      if (!isDemoSessionActive(session)) {
+        deny();
+        return;
+      }
+      const currentDemoUser = await userRepository.findDemoById(DEMO_USER_ID);
+      const authorityMatches = matchesDemoAuthorityProof(currentDemoUser, authorityProof);
+      if (!authorityMatches || !isDemoSessionActive(session)) {
+        if (!authorityMatches) {
+          revokeDemoSessionByKey(session.sessionKey, session.expiresAtMs);
+        }
+        deny();
+        return;
+      }
+      flush();
+    } catch (error) {
+      log.warn('Failed to revalidate sample authority before response', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      deny();
     }
+  };
+
+  const appendBytes = (args: unknown[]): boolean => {
+    bufferedBytes += responseChunkBytes(args);
+    if (bufferedBytes <= MAX_BUFFERED_DEMO_RESPONSE_BYTES) return true;
     deny();
     return false;
   };
@@ -103,24 +166,26 @@ function fenceDemoResponse(
   res.writeHead = function guardedDemoWriteHead(
     ...args: unknown[]
   ): Response {
-    if (boundary === 'denying') {
+    if (boundary === 'allowed' || boundary === 'denied') {
       return Reflect.apply(originalWriteHead, res, args) as Response;
     }
-    if (!admit()) return res;
-    return Reflect.apply(originalWriteHead, res, args) as Response;
+    if (boundary !== 'pending') return res;
+    bufferedHead = args;
+    return res;
   } as Response['writeHead'];
 
   res.write = function guardedDemoWrite(...args: unknown[]): boolean {
-    if (!admit()) return false;
-    return Reflect.apply(originalWrite, res, args) as boolean;
+    if (boundary !== 'pending' || !appendBytes(args)) return false;
+    bufferedWrites.push(args);
+    return true;
   } as Response['write'];
 
   res.end = function guardedDemoEnd(...args: unknown[]): Response {
-    if (boundary === 'denying') {
-      return Reflect.apply(originalEnd, res, args) as Response;
-    }
-    if (!admit()) return res;
-    return Reflect.apply(originalEnd, res, args) as Response;
+    if (boundary !== 'pending' || !appendBytes(args)) return res;
+    bufferedEnd = args;
+    boundary = 'verifying';
+    void verifyAndFlush();
+    return res;
   } as Response['end'];
 }
 
@@ -255,6 +320,15 @@ export async function sessionAuth(
       });
       return;
     }
+    const authorityProof = makeDemoAuthorityProof(demoUser);
+    if (!authorityProof) {
+      revokeDemoSessionByKey(demoSession.sessionKey, demoSession.expiresAtMs);
+      res.status(401).json({
+        error: 'Sample session unavailable',
+        message: 'Restart the sample tour to continue.',
+      });
+      return;
+    }
     // The marker lookup is asynchronous. Replacement, discard, or expiry may
     // win while it is pending, so never hand stale authority to a downstream
     // repository route.
@@ -267,7 +341,7 @@ export async function sessionAuth(
     }
     req.authenticatedUserId = DEMO_USER_ID;
     req.demoAuthenticated = true;
-    fenceDemoResponse(res, demoSession);
+    fenceDemoResponse(res, demoSession, authorityProof);
     next();
     return;
   }

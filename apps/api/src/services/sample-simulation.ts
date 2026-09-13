@@ -471,6 +471,8 @@ export function parseSampleSimulationCommand(
 
 export class SampleSimulationService {
   private readonly records = new Map<string, SessionRecord>();
+  private readonly mutationGenerations = new Map<string, number>();
+  private nextMutationGeneration = 0;
   private readonly terminal = new SampleSimulationTerminal();
   private readonly policy: Pick<PolicyEvaluator, 'evaluate'>;
   private readonly maxSessions: number;
@@ -523,6 +525,7 @@ export class SampleSimulationService {
     command: SampleSimulationCommand,
     nowMs = this.clock(),
     signal?: AbortSignal,
+    beforeCommit: () => Promise<void> = async () => {},
   ): Promise<SampleSimulationStateResponse> {
     this.dropExpired(nowMs);
     this.assertActive(sessionKey, expiresAtMs, nowMs, signal);
@@ -531,132 +534,129 @@ export class SampleSimulationService {
       existing = makeRecord(expiresAtMs);
       this.putRecord(sessionKey, existing);
     }
-    if (command.type === 'reset') {
-      const reset = makeRecord(expiresAtMs);
-      this.putRecord(sessionKey, reset);
-      let presented: SampleSimulationStateResponse;
-      try {
-        presented = await this.present(reset, () =>
-          this.assertActive(sessionKey, expiresAtMs, this.clock(), signal),
-        );
-      } catch (error) {
-        if (this.records.get(sessionKey) === reset) {
-          this.records.set(sessionKey, existing);
-        }
-        throw error;
-      }
-      this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
-      if (this.records.get(sessionKey) !== reset) {
-        throw new SampleSimulationCommandError(
-          'The sample changed while reset was being prepared.',
-          409,
-        );
-      }
-      return presented;
-    }
-
-    const status = existing.statuses[command.proposalId];
-    if (status !== 'pending') {
+    if (command.type !== 'reset' && existing.statuses[command.proposalId] !== 'pending') {
       throw new SampleSimulationCommandError(
         'This fictional proposal has already been decided.',
         409,
       );
     }
 
-    const entry = catalog(existing).find(
-      (item) => item.id === command.proposalId,
-    )!;
-    // Build against the pre-command state and freeze it below. A later
-    // correction may change future predictions, but must never rewrite the
-    // evidence, preferences, or proposed action shown for an earlier choice.
-    const proposalBeforeCommand = await this.presentProposal(
-      entry,
-      existing,
-      () =>
-        this.assertActive(
-          sessionKey,
-          existing.expiresAtMs,
-          this.clock(),
-          signal,
-        ),
-    );
-    this.assertActive(
-      sessionKey,
-      existing.expiresAtMs,
-      this.clock(),
-      signal,
-    );
-    if (
-      this.records.get(sessionKey) !== existing ||
-      existing.statuses[command.proposalId] !== 'pending'
-    ) {
-      throw new SampleSimulationCommandError(
-        'The sample changed while this command was being checked.',
-        409,
-      );
-    }
+    // Reserve the next publication without exposing staged state. A later
+    // command replaces this generation and wins at the next async boundary.
+    const mutationGeneration = ++this.nextMutationGeneration;
+    this.mutationGenerations.set(sessionKey, mutationGeneration);
+    const mutationIsCurrent = (): boolean =>
+      this.records.get(sessionKey) === existing &&
+      this.mutationGenerations.get(sessionKey) === mutationGeneration;
 
-    const staged = cloneRecord(existing);
-    if (command.type === 'approve') {
-      if (!proposalBeforeCommand.policy.allowed) {
+    try {
+      if (command.type === 'reset') {
+        const reset = makeRecord(expiresAtMs);
+        const presented = await this.present(reset, () =>
+          this.assertActive(sessionKey, expiresAtMs, this.clock(), signal),
+        );
+        this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
+        if (!mutationIsCurrent()) {
+          throw new SampleSimulationCommandError(
+            'The sample changed while reset was being prepared.',
+            409,
+          );
+        }
+        await beforeCommit();
+        this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
+        if (!mutationIsCurrent()) {
+          throw new SampleSimulationCommandError(
+            'The sample changed while reset was being prepared.',
+            409,
+          );
+        }
+        this.putRecord(sessionKey, reset);
+        return presented;
+      }
+
+      const entry = catalog(existing).find((item) => item.id === command.proposalId)!;
+      // Freeze the proposal against pre-command state so later learning cannot
+      // rewrite the explanation presented for this choice.
+      const proposalBeforeCommand = await this.presentProposal(
+        entry,
+        existing,
+        () => this.assertActive(sessionKey, existing.expiresAtMs, this.clock(), signal),
+      );
+      this.assertActive(sessionKey, existing.expiresAtMs, this.clock(), signal);
+      if (!mutationIsCurrent() || existing.statuses[command.proposalId] !== 'pending') {
         throw new SampleSimulationCommandError(
-          'The current policy outcome does not allow this simulated approval.',
+          'The sample changed while this command was being checked.',
           409,
         );
       }
-      const receipt = this.terminal.complete(command.proposalId);
-      if (
-        receipt.externalEffects !== false ||
-        receipt.status !== 'simulated_completed'
-      ) {
-        throw new Error('Simulation terminal returned an unsafe receipt.');
-      }
-      staged.statuses[command.proposalId] = 'simulated_approved';
-      staged.resultMessages[command.proposalId] =
-        'Approved in simulation. No external action was sent.';
-    } else if (command.type === 'reject') {
-      staged.statuses[command.proposalId] = 'simulated_rejected';
-      staged.resultMessages[command.proposalId] =
-        'Rejected in simulation. Nothing was changed outside this session.';
-    } else {
-      staged.statuses[command.proposalId] = 'simulated_corrected';
-      staged.learning = [
-        {
+
+      const staged = cloneRecord(existing);
+      if (command.type === 'approve') {
+        if (!proposalBeforeCommand.policy.allowed) {
+          throw new SampleSimulationCommandError(
+            'The current policy outcome does not allow this simulated approval.',
+            409,
+          );
+        }
+        const receipt = this.terminal.complete(command.proposalId);
+        if (receipt.externalEffects !== false || receipt.status !== 'simulated_completed') {
+          throw new Error('Simulation terminal returned an unsafe receipt.');
+        }
+        staged.statuses[command.proposalId] = 'simulated_approved';
+        staged.resultMessages[command.proposalId] =
+          'Approved in simulation. No external action was sent.';
+      } else if (command.type === 'reject') {
+        staged.statuses[command.proposalId] = 'simulated_rejected';
+        staged.resultMessages[command.proposalId] =
+          'Rejected in simulation. Nothing was changed outside this session.';
+      } else {
+        staged.statuses[command.proposalId] = 'simulated_corrected';
+        staged.learning = [{
           key: 'preferred_focus_window',
           value: 'afternoon',
           source: 'corrected',
-        },
-      ];
-      staged.resultMessages[command.proposalId] =
-        'Correction learned for this sample session only.';
-    }
-    staged.proposalSnapshots[command.proposalId] = {
-      ...proposalBeforeCommand,
-      status: staged.statuses[command.proposalId],
-      allowedCommands: [],
-      correctionOptions: [],
-      resultMessage: staged.resultMessages[command.proposalId] ?? null,
-    };
-    staged.revision += 1;
-    const presented = await this.present(staged, () =>
-      this.assertActive(sessionKey, expiresAtMs, this.clock(), signal),
-    );
-    this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
-    if (
-      this.records.get(sessionKey) !== existing ||
-      existing.statuses[command.proposalId] !== 'pending'
-    ) {
-      throw new SampleSimulationCommandError(
-        'The sample changed while this command was being checked.',
-        409,
+        }];
+        staged.resultMessages[command.proposalId] =
+          'Correction learned for this sample session only.';
+      }
+      staged.proposalSnapshots[command.proposalId] = {
+        ...proposalBeforeCommand,
+        status: staged.statuses[command.proposalId],
+        allowedCommands: [],
+        correctionOptions: [],
+        resultMessage: staged.resultMessages[command.proposalId] ?? null,
+      };
+      staged.revision += 1;
+      const presented = await this.present(staged, () =>
+        this.assertActive(sessionKey, expiresAtMs, this.clock(), signal),
       );
+      this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
+      if (!mutationIsCurrent() || existing.statuses[command.proposalId] !== 'pending') {
+        throw new SampleSimulationCommandError(
+          'The sample changed while this command was being checked.',
+          409,
+        );
+      }
+      await beforeCommit();
+      this.assertActive(sessionKey, expiresAtMs, this.clock(), signal);
+      if (!mutationIsCurrent() || existing.statuses[command.proposalId] !== 'pending') {
+        throw new SampleSimulationCommandError(
+          'The sample changed while this command was being checked.',
+          409,
+        );
+      }
+      this.putRecord(sessionKey, staged);
+      return presented;
+    } finally {
+      if (this.mutationGenerations.get(sessionKey) === mutationGeneration) {
+        this.mutationGenerations.delete(sessionKey);
+      }
     }
-    this.putRecord(sessionKey, staged);
-    return presented;
   }
 
   discard(sessionKey: string): void {
     this.records.delete(sessionKey);
+    this.mutationGenerations.delete(sessionKey);
   }
 
   hasSessionForTests(sessionKey: string): boolean {

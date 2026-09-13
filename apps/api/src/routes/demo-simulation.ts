@@ -65,15 +65,11 @@ export function createDemoSimulationRouter(
 ): Router {
   const router = Router();
 
-  async function requireAvailableFixture(
-    req: AuthenticatedSampleRequest,
-    res: Response,
-  ): Promise<boolean> {
+  async function assertAvailableFixture(req: AuthenticatedSampleRequest): Promise<void> {
     const session = req.sampleSimulationSession;
     if (!session || !isDemoSessionActive(session)) {
       if (session) service.discard(session.sessionKey);
-      res.status(401).json({ error: 'Sample session is no longer active.' });
-      return false;
+      throw new SampleSimulationCommandError('Sample session is no longer active.', 401);
     }
     const available = await isSampleAvailable();
     // The availability check is asynchronous (a DB query in production).
@@ -81,14 +77,28 @@ export function createDemoSimulationRouter(
     // cannot return a late response or advance into the simulation service.
     if (!isDemoSessionActive(session)) {
       service.discard(session.sessionKey);
-      res.status(401).json({ error: 'Sample session is no longer active.' });
-      return false;
+      throw new SampleSimulationCommandError('Sample session is no longer active.', 401);
     }
-    if (available) return true;
+    if (available) return;
     revokeDemoSessionByKey(session.sessionKey, session.expiresAtMs);
     service.discard(session.sessionKey);
-    res.status(401).json({ error: 'Sample session is no longer available.' });
-    return false;
+    throw new SampleSimulationCommandError('Sample session is no longer available.', 401);
+  }
+
+  async function requireAvailableFixture(
+    req: AuthenticatedSampleRequest,
+    res: Response,
+  ): Promise<boolean> {
+    try {
+      await assertAvailableFixture(req);
+      return true;
+    } catch (error) {
+      if (error instanceof SampleSimulationCommandError) {
+        res.status(error.statusCode).json({ error: error.message });
+        return false;
+      }
+      throw error;
+    }
   }
 
   // Deletion is the one operation that accepts an authentically signed but
@@ -158,8 +168,8 @@ export function createDemoSimulationRouter(
           command,
           undefined,
           session.signal,
+          async () => assertAvailableFixture(req),
         );
-        if (!(await requireAvailableFixture(req, res))) return;
         res.json(state);
       } catch (error) {
         if (error instanceof SampleSimulationCommandError) {

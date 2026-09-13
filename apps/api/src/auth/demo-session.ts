@@ -77,7 +77,9 @@ function constantTimeEqual(left: string, right: string): boolean {
 }
 
 /**
- * Mint a short-lived, stateless credential for the reserved sample profile.
+ * Mint a short-lived credential for the reserved sample profile. The signed
+ * token carries no user state, but remains valid only while its process-local
+ * lifecycle entry is active.
  * It is deliberately separate from normal user sessions: callers cannot use
  * it to select an identity, and sessionAuth applies a strict read allowlist.
  */
