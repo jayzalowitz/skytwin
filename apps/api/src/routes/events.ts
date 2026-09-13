@@ -43,7 +43,6 @@ import type { AIProviderName } from '@skytwin/shared-types';
 import { emitInferenceReceipt, LlmClient } from '@skytwin/llm-client';
 import type { InferenceTrace, ProviderEntry, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
-import { InvariantViolationError } from '@skytwin/execution-router';
 import { generateKeyPairSync } from 'node:crypto';
 
 const log = createLogger('api:events');
@@ -780,16 +779,13 @@ export function createEventsRouter(): Router {
 
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
-          let executionClaimed = false;
+          let savedPlan: { id: string } | null = null;
           try {
-            executionClaimed = await inferenceReceiptRepository.claimExecutionForDecision(
+            savedPlan = await inferenceReceiptRepository.claimExecutionForDecision(
               userId,
               decision.id,
-              {
-                outcomeId: outcome.id,
-                explanationId: explanation.id,
-                selectedActionId: outcome.selectedAction.id,
-              },
+              { outcome, explanation },
+              [{ type: outcome.selectedAction.actionType, status: 'pending' }],
             );
           } catch (error) {
             // A commit may have succeeded even when its response was lost.
@@ -801,19 +797,14 @@ export function createEventsRouter(): Router {
               error: error instanceof Error ? error.message : String(error),
             });
           }
-          if (!executionClaimed) {
+          if (!savedPlan) {
             const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
             executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
           } else {
 
-          // Persist the DB execution plan before routing so streaming events can
-          // reference it via execution_events.plan_id.
-          const savedPlan = await executionRepository.createPlan({
-            decisionId: decision.id,
-            actionId: outcome.selectedAction.id,
-            status: 'running',
-            steps: [{ type: outcome.selectedAction.actionType, status: 'pending' }],
-          });
+          // The claim transaction created and bound this exact DB plan before
+          // dispatch, so every streamed event and terminal result has one
+          // immutable execution identity.
           outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
           if (user?.ironclaw_channel) {
             outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
@@ -832,6 +823,9 @@ export function createEventsRouter(): Router {
               riskAssessment,
               userId,
             )) {
+              if (event.planId !== savedPlan.id) {
+                throw new Error('Execution event did not match the claimed plan');
+              }
               if (event.payload && Object.keys(event.payload).length > 0) {
                 stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
               }
@@ -858,40 +852,15 @@ export function createEventsRouter(): Router {
             terminalPayload = {
               error: error instanceof Error ? error.message : String(error),
             };
-            if (error instanceof InvariantViolationError) {
-              // Input invariants are checked before adapter selection or
-              // dispatch, so this typed failure proves that no effect began.
-              terminalStatus = 'failed';
-              terminalEvent = {
-                planId: savedPlan.id,
-                eventType: 'plan_failed',
-                timestamp: new Date(),
-                payload: terminalPayload,
-              };
-              stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
-              await executionRepository.createEvent({
-                planId: savedPlan.id,
-                eventType: 'plan_failed',
-                payload: terminalPayload,
-              });
-              sseManager.emit(userId, 'decision:step', {
-                decisionId: decision.id,
-                actionType: outcome.selectedAction.actionType,
-                description: outcome.selectedAction.description,
-                ...terminalEvent,
-              });
-            } else {
-              // A generic stream failure may arrive after an adapter performed
-              // the effect but before its terminal event reached us. Leave the
-              // plan and guard running for reconciliation; never manufacture a
-              // failed result that could authorize a retry.
-              log.warn('Execution stream became ambiguous; reconciliation required', {
-                userId,
-                decisionId: decision.id,
-                planId: savedPlan.id,
-                error: terminalPayload['error'],
-              });
-            }
+            // The router's exported error classes are also available to
+            // adapters, so an exception's type cannot prove it happened before
+            // an effect. Leave the plan and guard running for reconciliation.
+            log.warn('Execution stream became ambiguous; reconciliation required', {
+              userId,
+              decisionId: decision.id,
+              planId: savedPlan.id,
+              error: terminalPayload['error'],
+            });
           }
 
           if (!terminalStatus) {

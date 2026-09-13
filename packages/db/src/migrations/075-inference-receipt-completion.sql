@@ -1,7 +1,10 @@
 -- Receipt emission can produce more than one row per explanation. Migration
 -- 074 may already have run, so evolve it here rather than rewriting history.
-ALTER TABLE inference_receipts
-  DROP CONSTRAINT IF EXISTS inference_receipts_decision_id_explanation_id_key;
+-- CockroachDB represents UNIQUE constraints as backing indexes and does not
+-- implement PostgreSQL's ALTER TABLE ... DROP CONSTRAINT form for them.
+-- DROP INDEX is idempotent here and removes the uniqueness constraint on both
+-- fresh installs and databases that already applied migration 074.
+DROP INDEX IF EXISTS inference_receipts_decision_id_explanation_id_key CASCADE;
 
 CREATE INDEX IF NOT EXISTS inference_receipts_explanation_idx
   ON inference_receipts (explanation_id, created_at ASC);

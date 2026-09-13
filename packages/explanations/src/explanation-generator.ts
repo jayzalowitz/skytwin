@@ -102,8 +102,10 @@ export class ExplanationGenerator {
       createdAt: new Date(),
     };
 
-    await this.repository.save(record);
-    return record;
+    // Persistence owns the durable identity and timestamps. Return that exact
+    // record so downstream receipt linkage never keeps the generator's
+    // pre-insert placeholder ID.
+    return this.repository.save(record);
   }
 
   /**

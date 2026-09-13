@@ -93,6 +93,9 @@ function completionFor(
         requiresApproval: continuationKind === 'approval',
         reasoning: 'test outcome',
         decidedAt: new Date('2026-09-10T00:00:00.000Z'),
+        policyVerdicts: selectedAction ? {
+          [selectedAction.id]: continuationKind === 'auto_execute' ? 'allowed' : 'requires-approval',
+        } : {},
       },
       explanation: {
         id: bundle.receipt.explanationId,
@@ -122,6 +125,19 @@ function authorityFor(completion: InferenceReceiptCompletionLinkage) {
     explanation: completion.continuation.outcome.reasoning,
     explanation_id: completion.explanationId,
     what_happened: completion.continuation.explanation.summary,
+    evidence_used: [{
+      __adapter_meta: true,
+      riskTier: completion.continuation.explanation.riskTier,
+      overallConfidence: completion.continuation.explanation.overallConfidence,
+      userId: completion.continuation.explanation.userId,
+    }],
+    preferences_invoked: [],
+    confidence_reasoning: completion.continuation.explanation.confidenceReasoning,
+    action_rationale: completion.continuation.explanation.actionRationale,
+    escalation_rationale: null,
+    correction_guidance: completion.continuation.explanation.correctionGuidance,
+    capability_provenance_node_id: null,
+    explanation_created_at: completion.continuation.explanation.createdAt,
   };
 }
 
@@ -245,6 +261,43 @@ describe('inferenceReceiptRepository', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['auto_execute', 'requires-approval'],
+    ['approval', 'allowed'],
+  ] as const)('rejects %s continuation without its exact policy verdict', async (kind, verdict) => {
+    const bundle = fixture();
+    const completion = completionFor(bundle, kind);
+    completion.continuation.outcome.policyVerdicts![
+      completion.continuation.outcome.selectedAction!.id
+    ] = verdict;
+
+    await expect(inferenceReceiptRepository.createManyForUser(bundle.receipt.userId, [{
+      bundle,
+      trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
+    }], completion)).resolves.toBeNull();
+    expect(mockWithTransaction).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing policy and malformed explanation authority before opening a transaction', async () => {
+    const bundle = fixture();
+    const missingPolicy = completionFor(bundle, 'auto_execute');
+    delete missingPolicy.continuation.outcome.policyVerdicts![
+      missingPolicy.continuation.outcome.selectedAction!.id
+    ];
+    expect(await inferenceReceiptRepository.createManyForUser(bundle.receipt.userId, [{
+      bundle,
+      trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
+    }], missingPolicy)).toBeNull();
+
+    const malformedExplanation = completionFor(bundle, 'approval');
+    malformedExplanation.continuation.explanation.evidenceUsed = null as unknown as [];
+    expect(await inferenceReceiptRepository.createManyForUser(bundle.receipt.userId, [{
+      bundle,
+      trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
+    }], malformedExplanation)).toBeNull();
+    expect(mockWithTransaction).not.toHaveBeenCalled();
+  });
+
   it('fails the transaction when any receipt cannot link to the owned explanation', async () => {
     const first = fixture();
     const completion = completionFor(first);
@@ -299,6 +352,9 @@ describe('inferenceReceiptRepository', () => {
     ['auto-execute flag', { auto_executed: false }],
     ['explanation id', { explanation_id: '88888888-8888-4888-8888-888888888888' }],
     ['explanation summary', { what_happened: 'a different explanation' }],
+    ['explanation evidence', { evidence_used: [] }],
+    ['explanation rationale', { action_rationale: 'a different rationale' }],
+    ['explanation timestamp', { explanation_created_at: new Date('2026-09-11T00:00:00.000Z') }],
   ] as const)('rejects a continuation when a concurrent evaluation changes the persisted %s', async (
     _field,
     drift,
@@ -370,25 +426,29 @@ describe('inferenceReceiptRepository', () => {
         outcome_auto_execute: true,
         outcome_requires_approval: false,
         risk_snapshot: JSON.parse(JSON.stringify(completion.continuation.outcome.riskAssessment)),
-        policy_snapshot: {},
+        policy_snapshot: completion.continuation.outcome.policyVerdicts,
         continuation_snapshot: completion.continuation,
-      }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [{ decision_id: 'decision' }], rowCount: 1 })
+      }], rowCount: 1 });
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ decision_id: completion.decisionId }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: '77777777-7777-4777-8777-777777777777' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ id: completion.continuation.outcome.id }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ decision_id: completion.decisionId }], rowCount: 1 })
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
 
     await expect(inferenceReceiptRepository.getContinuationForDecision('user', completion.decisionId))
       .resolves.toMatchObject({ effectState: 'ready', continuationKind: 'auto_execute' });
-    const claimAuthority = {
-      outcomeId: completion.continuation.outcome.id,
-      explanationId: completion.explanationId,
-      selectedActionId: completion.continuation.outcome.selectedAction!.id,
-    };
-    await expect(inferenceReceiptRepository.claimExecutionForDecision('user', completion.decisionId, claimAuthority))
-      .resolves.toBe(true);
-    await expect(inferenceReceiptRepository.claimExecutionForDecision('user', completion.decisionId, claimAuthority))
-      .resolves.toBe(false);
-    expect(mockQuery.mock.calls[1]![0]).toContain("g.effect_state = 'ready'");
-    expect(mockQuery.mock.calls[1]![0]).toContain('d.user_id = $1');
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(
+      'user', completion.decisionId, completion.continuation, [{ type: 'test_action' }],
+    )).resolves.toMatchObject({ id: '77777777-7777-4777-8777-777777777777' });
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(
+      'user', completion.decisionId, completion.continuation, [{ type: 'test_action' }],
+    )).resolves.toBeNull();
+    expect(mockTransactionQuery.mock.calls[0]![0]).toContain("g.effect_state = 'ready'");
+    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('d.user_id = $1');
+    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('g.continuation_snapshot = $7::JSONB');
+    expect(mockTransactionQuery.mock.calls[1]![0]).toContain('INSERT INTO execution_plans');
+    expect(mockTransactionQuery.mock.calls[3]![0]).toContain('source_execution_plan_id = $2');
   });
 
   it('classifies a legacy completion without a guard as restored and non-replayable', async () => {
@@ -452,6 +512,9 @@ describe('inferenceReceiptRepository', () => {
     expect(mockQuery.mock.calls[0]![0]).toContain('ep.id = $4');
     expect(mockQuery.mock.calls[0]![0]).toContain('ep.decision_id = g.decision_id');
     expect(mockQuery.mock.calls[0]![0]).toContain('ep.action_id = g.selected_action_id');
+    expect(mockQuery.mock.calls[0]![0]).toContain('g.source_execution_plan_id = ep.id');
+    expect(mockQuery.mock.calls[0]![0]).toContain('o.execution_plan_id = ep.id');
+    expect(mockQuery.mock.calls[0]![0]).toContain('er.success =');
     expect(mockQuery.mock.calls[0]![1]).toEqual(['user', 'decision', 'failed', 'plan']);
   });
 

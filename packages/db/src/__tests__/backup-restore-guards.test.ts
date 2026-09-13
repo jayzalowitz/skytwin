@@ -133,6 +133,21 @@ describe('validateBackupData', () => {
     expect(validateBackupData(validPayload())).toEqual([]);
   });
 
+  it('rejects a hostile non-UUID restored execution plan before any write', async () => {
+    const payload = validPayload();
+    const bundle = decisionBundle();
+    (bundle['ingestState'] as Record<string, unknown>)['sourceExecutionPlanId'] =
+      "x'); DROP TABLE users; --";
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].ingestState has inconsistent linkage or classification',
+    );
+    const result = await restoreBackup(payload);
+    expect(result).toMatchObject({ success: false, reason: 'invalid_data' });
+    expect(clientQuery).not.toHaveBeenCalled();
+  });
+
   it('accepts an explicit receipt-free schema-v1 archive', () => {
     const payload = validPayload();
     payload['schemaVersion'] = 1;

@@ -311,10 +311,9 @@ export const decisionRepository = {
   async recordOutcome(
     input: CreateOutcomeInput,
   ): Promise<DecisionOutcomeRow> {
-    // Idempotent on decision_id — re-ingesting the same signal (worker
-    // dedup miss, manual replay) re-runs the engine, and the new outcome
-    // replaces the prior one. The unique constraint at the DB layer keeps
-    // "one outcome per decision" but doesn't pin which outcome.
+    // Re-ingestion may replace the provisional outcome until receipt capture
+    // finalizes it. Once a guard exists, the exact captured outcome remains
+    // immutable continuation authority.
     const result = await query<DecisionOutcomeRow>(
       `INSERT INTO decision_outcomes (
         decision_id, selected_action_id, auto_executed,
@@ -328,6 +327,10 @@ export const decisionRepository = {
         escalation_reason = EXCLUDED.escalation_reason,
         explanation = EXCLUDED.explanation,
         confidence = EXCLUDED.confidence
+      WHERE NOT EXISTS (
+        SELECT 1 FROM decision_ingest_guards g
+        WHERE g.decision_id = EXCLUDED.decision_id
+      )
       RETURNING *`,
       [
         input.decisionId,
@@ -339,7 +342,11 @@ export const decisionRepository = {
         input.confidence,
       ],
     );
-    return result.rows[0]!;
+    const row = result.rows[0];
+    if (!row) {
+      throw new Error('Decision outcome is immutable after receipt finalization');
+    }
+    return row;
   },
 
   /**

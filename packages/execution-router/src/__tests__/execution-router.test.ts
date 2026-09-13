@@ -8,7 +8,11 @@ import type {
   RollbackResult,
 } from '@skytwin/shared-types';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
-import { ExecutionRouter, NoAdapterError, InvariantViolationError } from '../execution-router.js';
+import {
+  ExecutionRouter,
+  NoAdapterError,
+  InvariantViolationError,
+} from '../execution-router.js';
 import {
   AdapterRegistry,
   IRONCLAW_TRUST_PROFILE,
@@ -106,8 +110,8 @@ function createMockAdapter(name: string, skills?: Set<string>): IronClawAdapter 
 }
 
 /**
- * Adapter that throws from execute() — simulates failure before execution started.
- * Safe to fall back from because no action was performed.
+ * Adapter that throws after it has been invoked. The router cannot prove
+ * whether an effect happened, so this must never trigger fallback.
  */
 function createThrowingAdapter(name: string): IronClawAdapter {
   return {
@@ -122,7 +126,7 @@ function createThrowingAdapter(name: string): IronClawAdapter {
       };
     },
     async execute(_plan: ExecutionPlan): Promise<ExecutionResult> {
-      throw new Error(`${name} execution failed`);
+      throw new Error(`${name} execution response was ambiguous`);
     },
     async getStatus(_planId: string) {
       return 'failed';
@@ -319,30 +323,68 @@ describe('ExecutionRouter', () => {
       expect(result.output?.['fallbacks_attempted']).toBe(0);
     });
 
-    it('falls back to next adapter when primary throws', async () => {
+    it('does not fall back after any adapter-originated exception', async () => {
       registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
-      registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
+      const fallback = createMockAdapter('direct');
+      const fallbackExecute = vi.spyOn(fallback, 'execute');
+      registry.register('direct', fallback, DIRECT_TRUST_PROFILE);
 
       const action = makeAction();
       const risk = makeRiskAssessment();
 
-      const result = await router.executeWithRouting(action, risk, 'user-1');
-
-      expect(result.status).toBe('completed');
-      expect(result.output?.['adapter_used']).toBe('direct');
-      expect(result.output?.['fallbacks_attempted']).toBe(1);
+      await expect(router.executeWithRouting(action, risk, 'user-1'))
+        .rejects.toThrow('ambiguous');
+      expect(fallbackExecute).not.toHaveBeenCalled();
     });
 
-    it('throws NoAdapterError when all adapters throw', async () => {
+    it('surfaces the first adapter error without trying the rest', async () => {
       registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       registry.register('direct', createThrowingAdapter('direct'), DIRECT_TRUST_PROFILE);
 
       const action = makeAction();
       const risk = makeRiskAssessment();
 
-      await expect(router.executeWithRouting(action, risk, 'user-1')).rejects.toThrow(
-        NoAdapterError,
-      );
+      await expect(router.executeWithRouting(action, risk, 'user-1'))
+        .rejects.toThrow('ironclaw execution response was ambiguous');
+    });
+
+    it('does not fall back when an adapter commits and then throws ambiguously', async () => {
+      let committed = false;
+      const hostile = createMockAdapter('ironclaw');
+      hostile.execute = vi.fn(async () => {
+        committed = true;
+        throw new InvariantViolationError('response lost after commit');
+      });
+      const fallback = createMockAdapter('direct');
+      const fallbackExecute = vi.spyOn(fallback, 'execute');
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      registry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+
+      await expect(router.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+        .rejects.toThrow('response lost after commit');
+      expect(committed).toBe(true);
+      expect(fallbackExecute).not.toHaveBeenCalled();
+    });
+
+    it('does not stream through a fallback after an ambiguous commit-then-throw', async () => {
+      const hostile = createMockAdapter('ironclaw') as IronClawAdapter & {
+        executeStreaming(plan: ExecutionPlan): AsyncIterable<never>;
+      };
+      hostile.executeStreaming = async function* () {
+        throw new Error('stream response lost after commit');
+      };
+      const fallback = createMockAdapter('direct');
+      const fallbackExecute = vi.spyOn(fallback, 'execute');
+      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      registry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+
+      const stream = router.executeWithRoutingStreaming(makeAction(), makeRiskAssessment(), 'user-1');
+      await expect((async () => {
+        for await (const _event of stream) {
+          // consume
+        }
+      })()).rejects.toThrow('stream response lost after commit');
+      expect(fallbackExecute).not.toHaveBeenCalled();
     });
 
     it('rollback flows through the selected adapter after execution', async () => {

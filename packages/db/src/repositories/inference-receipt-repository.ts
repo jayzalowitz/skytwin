@@ -7,7 +7,12 @@ import {
   type InferenceReceiptExportV1,
 } from '@skytwin/shared-types';
 import { query, withTransaction } from '../connection.js';
-import type { CandidateActionRow, InferenceReceiptRow, PaginationOptions } from '../types.js';
+import type {
+  CandidateActionRow,
+  ExecutionPlanRow,
+  InferenceReceiptRow,
+  PaginationOptions,
+} from '../types.js';
 
 export interface CreateInferenceReceiptInput {
   bundle: InferenceReceiptExportV1;
@@ -75,9 +80,29 @@ function snapshotContinuation(value: unknown): DecisionContinuation | null {
         typeof outcome.decisionId !== 'string' || typeof outcome.autoExecute !== 'boolean' ||
         typeof outcome.requiresApproval !== 'boolean' || typeof outcome.reasoning !== 'string' ||
         !Array.isArray(outcome.allCandidates) || typeof explanation.id !== 'string' ||
-        typeof explanation.decisionId !== 'string' || typeof explanation.summary !== 'string') {
+        typeof explanation.decisionId !== 'string' || typeof explanation.userId !== 'string' ||
+        typeof explanation.summary !== 'string' || !Array.isArray(explanation.evidenceUsed) ||
+        !Array.isArray(explanation.preferencesInvoked) ||
+        typeof explanation.confidenceReasoning !== 'string' ||
+        typeof explanation.actionRationale !== 'string' ||
+        (explanation.escalationRationale !== undefined &&
+          typeof explanation.escalationRationale !== 'string') ||
+        typeof explanation.correctionGuidance !== 'string' ||
+        typeof explanation.riskTier !== 'string' ||
+        typeof explanation.overallConfidence !== 'string' ||
+        (explanation.capabilityProvenanceNodeId !== undefined &&
+          typeof explanation.capabilityProvenanceNodeId !== 'string') ||
+        instant(explanation.createdAt) === null) {
       return null;
     }
+    if (explanation.evidenceUsed.some((evidence) =>
+      !evidence || typeof evidence.evidenceId !== 'string' ||
+      typeof evidence.source !== 'string' || typeof evidence.summary !== 'string' ||
+      typeof evidence.relevance !== 'string')) return null;
+    if (explanation.preferencesInvoked.some((preference) =>
+      !preference || typeof preference.preferenceId !== 'string' ||
+      typeof preference.domain !== 'string' || typeof preference.key !== 'string' ||
+      typeof preference.confidence !== 'string' || typeof preference.howUsed !== 'string')) return null;
     if (outcome.selectedAction && (
       typeof outcome.selectedAction.id !== 'string' ||
       outcome.selectedAction.decisionId !== outcome.decisionId ||
@@ -94,6 +119,12 @@ function snapshotContinuation(value: unknown): DecisionContinuation | null {
   } catch {
     return null;
   }
+}
+
+function instant(value: unknown): string | null {
+  if (typeof value !== 'string' && !(value instanceof Date)) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 /** All methods require the authenticated owner; ownership is checked by join. */
@@ -116,6 +147,9 @@ export const inferenceReceiptRepository = {
     const expectedOutcome = continuation.outcome;
     const expectedExplanation = continuation.explanation;
     const expectedSelectedAction = expectedOutcome.selectedAction;
+    const selectedPolicyVerdict = expectedSelectedAction
+      ? expectedOutcome.policyVerdicts?.[expectedSelectedAction.id]
+      : undefined;
     const expectedKind = expectedOutcome.requiresApproval && expectedSelectedAction
       ? 'approval'
       : expectedOutcome.autoExecute && expectedSelectedAction ? 'auto_execute' : 'non_effect';
@@ -128,9 +162,30 @@ export const inferenceReceiptRepository = {
         expectedExplanation.decisionId !== finalization.decisionId ||
         expectedExplanation.id !== finalization.explanationId ||
         expectedKind !== finalization.continuationKind ||
-        (expectedOutcome.autoExecute && expectedOutcome.requiresApproval)) {
+        (expectedOutcome.autoExecute && expectedOutcome.requiresApproval) ||
+        (finalization.continuationKind === 'auto_execute' && selectedPolicyVerdict !== 'allowed') ||
+        (finalization.continuationKind === 'approval' && selectedPolicyVerdict !== 'requires-approval')) {
       return null;
     }
+    const expectedEvidence: unknown[] = expectedExplanation.evidenceUsed.map((evidence) => ({
+      evidenceId: evidence.evidenceId,
+      source: evidence.source,
+      summary: evidence.summary,
+      relevance: evidence.relevance,
+    }));
+    expectedEvidence.push({
+      __adapter_meta: true,
+      riskTier: expectedExplanation.riskTier,
+      overallConfidence: expectedExplanation.overallConfidence,
+      userId: expectedExplanation.userId,
+    });
+    const expectedPreferences = expectedExplanation.preferencesInvoked.map((preference) => JSON.stringify({
+      preferenceId: preference.preferenceId,
+      domain: preference.domain,
+      key: preference.key,
+      confidence: preference.confidence,
+      howUsed: preference.howUsed,
+    }));
     const verified: Array<{
       bundle: InferenceReceiptExportV1;
       result: ReturnType<typeof verifyInferenceReceiptExport>;
@@ -169,11 +224,23 @@ export const inferenceReceiptRepository = {
         explanation: string;
         explanation_id: string;
         what_happened: string;
+        evidence_used: unknown[];
+        preferences_invoked: string[];
+        confidence_reasoning: string;
+        action_rationale: string;
+        escalation_rationale: string | null;
+        correction_guidance: string;
+        capability_provenance_node_id: string | null;
+        explanation_created_at: Date;
       }>(
         `SELECT d.id, o.id AS outcome_id, o.selected_action_id,
            o.auto_executed, o.requires_approval,
            COALESCE(o.escalation_reason, o.explanation) AS explanation,
-           er.id AS explanation_id, er.what_happened
+           er.id AS explanation_id, er.what_happened, er.evidence_used,
+           er.preferences_invoked, er.confidence_reasoning, er.action_rationale,
+           er.escalation_rationale, er.correction_guidance,
+           er.capability_provenance_node_id,
+           er.created_at AS explanation_created_at
            FROM decisions d
            JOIN decision_outcomes o ON o.decision_id = d.id
            JOIN explanation_records er ON er.decision_id = d.id
@@ -188,7 +255,16 @@ export const inferenceReceiptRepository = {
           persistedAuthority.requires_approval !== expectedOutcome.requiresApproval ||
           persistedAuthority.explanation !== expectedOutcome.reasoning ||
           persistedAuthority.explanation_id !== expectedExplanation.id ||
-          persistedAuthority.what_happened !== expectedExplanation.summary) {
+          persistedAuthority.what_happened !== expectedExplanation.summary ||
+          canonicalJson(persistedAuthority.evidence_used) !== canonicalJson(expectedEvidence) ||
+          canonicalJson(persistedAuthority.preferences_invoked) !== canonicalJson(expectedPreferences) ||
+          persistedAuthority.confidence_reasoning !== expectedExplanation.confidenceReasoning ||
+          persistedAuthority.action_rationale !== expectedExplanation.actionRationale ||
+          persistedAuthority.escalation_rationale !== (expectedExplanation.escalationRationale ?? null) ||
+          persistedAuthority.correction_guidance !== expectedExplanation.correctionGuidance ||
+          persistedAuthority.capability_provenance_node_id !==
+            (expectedExplanation.capabilityProvenanceNodeId ?? null) ||
+          instant(persistedAuthority.explanation_created_at) !== instant(expectedExplanation.createdAt)) {
         throw new Error('Inference receipt continuation does not match persisted authority');
       }
       // recordOutcome owns the durable UUID; the engine's in-memory outcome
@@ -406,26 +482,73 @@ export const inferenceReceiptRepository = {
   async claimExecutionForDecision(
     userId: string,
     decisionId: string,
-    authority: { outcomeId: string; explanationId: string; selectedActionId: string },
-  ): Promise<boolean> {
-    const result = await query(
-      `UPDATE decision_ingest_guards AS g
-       SET effect_state = 'running', updated_at = now()
-       FROM decisions d
-       WHERE d.id = g.decision_id AND d.user_id = $1
-         AND g.decision_id = $2 AND g.effect_state = 'ready'
-         AND g.continuation_kind = 'auto_execute'
-         AND g.outcome_auto_execute IS TRUE
-         AND g.outcome_requires_approval IS FALSE
-         AND g.selected_action_id IS NOT NULL
-         AND g.continuation_snapshot IS NOT NULL
-         AND g.outcome_id = $3
-         AND g.receipt_explanation_id = $4
-         AND g.selected_action_id = $5
-       RETURNING g.decision_id`,
-      [userId, decisionId, authority.outcomeId, authority.explanationId, authority.selectedActionId],
-    );
-    return !!result.rows[0];
+    suppliedContinuation: DecisionContinuation,
+    steps: unknown[],
+  ): Promise<ExecutionPlanRow | null> {
+    const continuation = snapshotContinuation(suppliedContinuation);
+    const outcome = continuation?.outcome;
+    const explanation = continuation?.explanation;
+    const selectedAction = outcome?.selectedAction;
+    if (!continuation || !outcome || !explanation || !selectedAction ||
+        outcome.decisionId !== decisionId || explanation.decisionId !== decisionId ||
+        !outcome.autoExecute || outcome.requiresApproval ||
+        outcome.policyVerdicts?.[selectedAction.id] !== 'allowed') {
+      return null;
+    }
+
+    return withTransaction(async (client) => {
+      const locked = await client.query(
+        `SELECT g.decision_id
+         FROM decision_ingest_guards g
+         JOIN decisions d ON d.id = g.decision_id
+         JOIN decision_outcomes o ON o.id = g.outcome_id AND o.decision_id = g.decision_id
+         WHERE d.user_id = $1 AND g.decision_id = $2 AND g.effect_state = 'ready'
+           AND g.continuation_kind = 'auto_execute'
+           AND g.outcome_auto_execute IS TRUE AND g.outcome_requires_approval IS FALSE
+           AND g.outcome_id = $3 AND g.receipt_explanation_id = $4
+           AND g.selected_action_id = $5 AND o.selected_action_id = $5
+           AND o.auto_executed IS TRUE AND o.requires_approval IS FALSE
+           AND COALESCE(o.escalation_reason, o.explanation) = $6
+           AND g.continuation_snapshot = $7::JSONB
+           AND g.risk_snapshot = $8::JSONB AND g.policy_snapshot = $9::JSONB
+         FOR UPDATE OF g, d, o`,
+        [userId, decisionId, outcome.id, explanation.id, selectedAction.id,
+          outcome.reasoning, JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment),
+          JSON.stringify(outcome.policyVerdicts)],
+      );
+      if (!locked.rows[0]) return null;
+
+      const inserted = await client.query<ExecutionPlanRow>(
+        `INSERT INTO execution_plans (decision_id, action_id, status, steps)
+         VALUES ($1, $2, 'running', $3::JSONB)
+         RETURNING *`,
+        [decisionId, selectedAction.id, JSON.stringify(steps)],
+      );
+      const plan = inserted.rows[0];
+      if (!plan) throw new Error('Execution plan could not be persisted with its claim');
+
+      const linked = await client.query(
+        `UPDATE decision_outcomes
+         SET execution_plan_id = $1
+         WHERE id = $2 AND decision_id = $3 AND selected_action_id = $4
+           AND auto_executed IS TRUE AND requires_approval IS FALSE
+           AND COALESCE(escalation_reason, explanation) = $5
+         RETURNING id`,
+        [plan.id, outcome.id, decisionId, selectedAction.id, outcome.reasoning],
+      );
+      if (!linked.rows[0]) throw new Error('Execution plan could not bind to its outcome authority');
+
+      const claimed = await client.query(
+        `UPDATE decision_ingest_guards
+         SET effect_state = 'running', source_execution_plan_id = $2, updated_at = now()
+         WHERE decision_id = $1 AND effect_state = 'ready' AND outcome_id = $3
+           AND selected_action_id = $4 AND receipt_explanation_id = $5
+         RETURNING decision_id`,
+        [decisionId, plan.id, outcome.id, selectedAction.id, explanation.id],
+      );
+      if (!claimed.rows[0]) throw new Error('Execution guard claim could not bind to its plan');
+      return plan;
+    });
   },
 
   async markExecutionTerminalForDecision(
@@ -438,11 +561,17 @@ export const inferenceReceiptRepository = {
       `UPDATE decision_ingest_guards AS g
        SET effect_state = $3, source_execution_status = $3,
          source_execution_plan_id = $4, updated_at = now()
-       FROM decisions d, execution_plans ep
+       FROM decisions d, execution_plans ep, execution_results er, decision_outcomes o
        WHERE d.id = g.decision_id AND d.user_id = $1
          AND g.decision_id = $2 AND g.effect_state = 'running'
          AND ep.id = $4 AND ep.decision_id = g.decision_id
          AND ep.action_id = g.selected_action_id
+         AND g.source_execution_plan_id = ep.id
+         AND o.id = g.outcome_id AND o.decision_id = g.decision_id
+         AND o.selected_action_id = g.selected_action_id
+         AND o.execution_plan_id = ep.id
+         AND ep.status = $3 AND er.plan_id = ep.id
+         AND er.success = ($3 = 'completed')
        RETURNING g.decision_id`,
       [userId, decisionId, status, planId],
     );

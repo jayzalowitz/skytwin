@@ -583,7 +583,7 @@ describe('decisionRepository', () => {
       ]);
     });
 
-    it('upserts on decision_id (re-ingest replaces the prior outcome)', async () => {
+    it('upserts on decision_id only before receipt finalization', async () => {
       mockQuery.mockResolvedValue({ rows: [fakeOutcomeRow()], rowCount: 1 });
 
       await decisionRepository.recordOutcome({
@@ -599,6 +599,18 @@ describe('decisionRepository', () => {
       expect(sql).toContain('selected_action_id = EXCLUDED.selected_action_id');
       expect(sql).toContain('explanation = EXCLUDED.explanation');
       expect(sql).toContain('confidence = EXCLUDED.confidence');
+      expect(sql).toContain('NOT EXISTS');
+      expect(sql).toContain('decision_ingest_guards');
+    });
+
+    it('rejects post-capture outcome drift when the finalization fence wins', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      await expect(decisionRepository.recordOutcome({
+        decisionId: 'd-001',
+        explanation: 'Conflicting late evaluation',
+        confidence: 0.9,
+      })).rejects.toThrow('immutable after receipt finalization');
     });
   });
 
