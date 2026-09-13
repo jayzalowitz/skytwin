@@ -813,6 +813,27 @@ export class ServiceManager {
     }
   }
 
+  private async loadPackagedSampleIngestModule(moduleUrl: string): Promise<{
+    ingestPackagedSampleSignals: (options: {
+      apiUrl: string;
+      serviceToken: string;
+      signal: AbortSignal;
+      authorizeRequest: () => Promise<boolean>;
+    }) => Promise<{ ingested: number; total: number }>;
+  }> {
+    const nativeImport = new Function('p', 'return import(p)') as (
+      p: string,
+    ) => Promise<{
+      ingestPackagedSampleSignals: (options: {
+        apiUrl: string;
+        serviceToken: string;
+        signal: AbortSignal;
+        authorizeRequest: () => Promise<boolean>;
+      }) => Promise<{ ingested: number; total: number }>;
+    }>;
+    return nativeImport(moduleUrl);
+  }
+
   /** Populate a newly-created sample through the authenticated API boundary. */
   private async ingestPackagedSample(
     startup: CockroachStartResult,
@@ -836,15 +857,7 @@ export class ServiceManager {
     );
     try {
       const moduleUrl = pathToFileURL(realpathSync(moduleSymlink)).href;
-      const nativeImport = new Function('p', 'return import(p)') as (p: string) => Promise<{
-        ingestPackagedSampleSignals: (options: {
-          apiUrl: string;
-          serviceToken: string;
-          signal: AbortSignal;
-          authorizeRequest: () => Promise<boolean>;
-        }) => Promise<{ ingested: number; total: number }>;
-      }>;
-      const mod = await nativeImport(moduleUrl);
+      const mod = await this.loadPackagedSampleIngestModule(moduleUrl);
       if (!this.isSampleIngestCurrent(startup, epoch, signal, apiGeneration)) return;
       const requestSignal = AbortSignal.any([signal, apiGeneration.controller.signal]);
       if (!this.isSampleIngestCurrent(startup, epoch, requestSignal, apiGeneration)) return;

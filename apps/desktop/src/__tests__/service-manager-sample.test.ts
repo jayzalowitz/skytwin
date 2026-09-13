@@ -1,6 +1,9 @@
 import { createHmac } from "node:crypto";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const cockroachMockState = vi.hoisted(() => ({
@@ -96,6 +99,14 @@ interface SampleManagerInternals {
     signal: AbortSignal,
     generation: TestApiGeneration,
   ): Promise<void>;
+  loadPackagedSampleIngestModule(moduleUrl: string): Promise<{
+    ingestPackagedSampleSignals(options: {
+      apiUrl: string;
+      serviceToken: string;
+      signal: AbortSignal;
+      authorizeRequest: () => Promise<boolean>;
+    }): Promise<{ ingested: number; total: number }>;
+  }>;
   revokeApiGeneration(generation?: TestApiGeneration): void;
   stopProcess(
     process: {
@@ -665,6 +676,72 @@ describe("packaged sample startup sequencing", () => {
 
     expect(generation.controller.signal.aborted).toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("aborts an in-flight sample POST when its exact API generation is revoked", async () => {
+    const manager = internals();
+    const { startup, controller, generation } = authorize(manager);
+    const embeddedRoot = mkdtempSync(
+      join(tmpdir(), "skytwin-generation-ingest-"),
+    );
+    const moduleDir = join(
+      embeddedRoot,
+      "api",
+      "node_modules",
+      "@skytwin",
+      "db",
+      "dist",
+      "seeds",
+    );
+    mkdirSync(moduleDir, { recursive: true });
+    writeFileSync(
+      join(moduleDir, "packaged-sample.js"),
+      "test module placeholder",
+    );
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue(embeddedRoot);
+    let requestSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn((_input: string, init: RequestInit) => {
+      requestSignal = init.signal as AbortSignal;
+      return new Promise<Response>((resolve) => {
+        const finish = (): void => resolve(new Response(null, { status: 202 }));
+        if (requestSignal?.aborted) finish();
+        else requestSignal?.addEventListener("abort", finish, { once: true });
+      });
+    });
+    vi.stubGlobal("fetch", fetchImpl);
+    manager.loadPackagedSampleIngestModule = vi.fn().mockResolvedValue({
+      ingestPackagedSampleSignals: async (options) => {
+        await fetch("http://127.0.0.1:3100/api/events/ingest", {
+          method: "POST",
+          headers: { "x-skytwin-service-token": options.serviceToken },
+          signal: options.signal,
+        });
+        return { ingested: 1, total: 1 };
+      },
+    });
+
+    try {
+      const ingestion = manager.ingestPackagedSample(
+        startup,
+        1,
+        controller.signal,
+        generation,
+      );
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledOnce());
+      const requestInit = fetchImpl.mock.calls[0]?.[1];
+      expect(
+        (requestInit?.headers as Record<string, string>)[
+          "x-skytwin-service-token"
+        ],
+      ).toBe(generation.ingestCredential);
+
+      manager.revokeApiGeneration(generation);
+      await ingestion;
+
+      expect(requestSignal?.aborted).toBe(true);
+    } finally {
+      rmSync(embeddedRoot, { recursive: true, force: true });
+    }
   });
 
   it("authenticates the concrete API listener by challenge-response", async () => {
