@@ -18,6 +18,7 @@ const TAG_BYTES = 16;
 const SALT_BYTES = 16;
 const DEFAULT_TTL_MS = 3_600_000;
 const DEFAULT_LOCK_ACK_TIMEOUT_MS = 5_000;
+const DEFAULT_CHILD_EXIT_TIMEOUT_MS = 2_000;
 const MAX_SECRET_BYTES = 16 * 1024 * 1024;
 const MAX_DEVICE_WRAPPER_BYTES = 4_096;
 const KDF = {
@@ -47,6 +48,9 @@ export type VaultState = 'locked' | 'unlocked' | 'uninitialized';
 export type VaultStateResult =
   | { success: true; state: VaultState }
   | { success: false; error: 'vault_broker_unavailable' | 'ciphertext_invalid' };
+export type VaultLockResult =
+  | { success: true; generation: number }
+  | { success: false; error: 'vault_broker_unavailable'; generation: number };
 
 export interface BrokerContext {
   userId: string;
@@ -424,6 +428,7 @@ export class DesktopKeyBroker {
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly lockAckTimeoutMs: number;
+  private readonly childExitTimeoutMs: number;
   private readonly platform: NodeJS.Platform;
   private readonly deviceProtection?: DeviceProtectionPort;
   private readonly deviceStore?: DeviceWrapperStore;
@@ -434,6 +439,7 @@ export class DesktopKeyBroker {
       now?: () => number;
       ttlMs?: number;
       lockAckTimeoutMs?: number;
+      childExitTimeoutMs?: number;
       platform?: NodeJS.Platform;
       deviceProtection?: DeviceProtectionPort;
       deviceStore?: DeviceWrapperStore;
@@ -442,6 +448,7 @@ export class DesktopKeyBroker {
     this.now = options.now ?? Date.now;
     this.ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
     this.lockAckTimeoutMs = options.lockAckTimeoutMs ?? DEFAULT_LOCK_ACK_TIMEOUT_MS;
+    this.childExitTimeoutMs = options.childExitTimeoutMs ?? DEFAULT_CHILD_EXIT_TIMEOUT_MS;
     this.platform = options.platform ?? process.platform;
     this.deviceProtection = options.deviceProtection;
     this.deviceStore = options.deviceStore;
@@ -722,17 +729,18 @@ export class DesktopKeyBroker {
       : { success: false, error: 'vault_broker_unavailable' };
   }
 
-  async lock(userId: string): Promise<{ success: true; generation: number }> {
+  async lock(userId: string): Promise<VaultLockResult> {
     this.operationEpochs.set(userId, this.operationEpoch(userId) + 1);
     this.lockDepth.set(userId, (this.lockDepth.get(userId) ?? 0) + 1);
     const generation = this.generation(userId) + 1;
     this.generations.set(userId, generation);
     const previous = this.lockTails.get(userId) ?? Promise.resolve();
+    let barrierComplete = true;
     const current = previous.catch(() => undefined).then(async () => {
       const timer = this.timers.get(userId);
       if (timer) clearTimeout(timer);
       this.timers.delete(userId);
-      await this.drainChildren(userId, generation);
+      barrierComplete = await this.drainChildren(userId, generation);
       const old = this.unlocked.get(userId);
       this.unlocked.delete(userId);
       old?.key.fill(0);
@@ -740,7 +748,10 @@ export class DesktopKeyBroker {
     this.lockTails.set(userId, current);
     try {
       await current;
-      return { success: true, generation: this.generation(userId) };
+      const currentGeneration = this.generation(userId);
+      return barrierComplete
+        ? { success: true, generation: currentGeneration }
+        : { success: false, error: 'vault_broker_unavailable', generation: currentGeneration };
     } finally {
       const depth = (this.lockDepth.get(userId) ?? 1) - 1;
       if (depth === 0) this.lockDepth.delete(userId);
@@ -1014,7 +1025,7 @@ export class DesktopKeyBroker {
       const timer = this.timers.get(userId);
       if (timer) clearTimeout(timer);
       this.timers.delete(userId);
-      await this.drainChildren(userId, this.generation(userId));
+      if (!await this.drainChildren(userId, this.generation(userId))) return;
       if (this.operationEpoch(userId) !== operationEpoch) return;
       const old = this.unlocked.get(userId);
       old?.key.fill(0);
@@ -1043,13 +1054,14 @@ export class DesktopKeyBroker {
     }
   }
 
-  private async drainChildren(userId: string, generation: number): Promise<void> {
-    const waits: Promise<void>[] = [];
+  private async drainChildren(userId: string, generation: number): Promise<boolean> {
+    const waits: Promise<boolean>[] = [];
     for (const [child, binding] of this.children) {
       if (!binding.users.has(userId) && (binding.inFlight.get(userId) ?? 0) === 0) continue;
       waits.push(this.waitForChildLock(child, binding, userId, generation));
     }
-    await Promise.all(waits);
+    const results = await Promise.all(waits);
+    return results.every(Boolean);
   }
 
   private async waitForChildLock(
@@ -1057,21 +1069,23 @@ export class DesktopKeyBroker {
     binding: Binding,
     userId: string,
     generation: number,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const lockId = randomBytes(16).toString('hex');
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const acknowledged = new Promise<void>(resolve => {
-      const finish = () => {
+    let failAcknowledgement = () => {};
+    const acknowledged = new Promise<boolean>(resolve => {
+      let settled = false;
+      const settle = (result: boolean) => {
+        if (settled) return;
+        settled = true;
         if (timer) clearTimeout(timer);
         binding.lockAcks.delete(lockId);
-        resolve();
+        resolve(result);
       };
+      const finish = () => settle(true);
+      failAcknowledgement = () => settle(false);
       binding.lockAcks.set(lockId, { userId, generation, finish });
-      timer = setTimeout(() => {
-        try { child.kill(); } catch { /* child is already gone */ }
-        this.releaseChild(child, binding);
-        finish();
-      }, this.lockAckTimeoutMs);
+      timer = setTimeout(() => settle(false), this.lockAckTimeoutMs);
     });
     const sent = this.safeSend(child, {
       type: 'skytwin:vault:lock',
@@ -1079,11 +1093,55 @@ export class DesktopKeyBroker {
       userId,
       generation,
     });
-    if (!sent) {
-      try { child.kill(); } catch { /* child is already gone */ }
+    if (!sent) failAcknowledgement();
+    if (await acknowledged) return true;
+
+    if (await this.waitForExitAfterSignal(child, 'SIGTERM')) {
       this.releaseChild(child, binding);
+      return true;
     }
-    await acknowledged;
+    if (await this.waitForExitAfterSignal(child, 'SIGKILL')) {
+      this.releaseChild(child, binding);
+      return true;
+    }
+
+    // Retain the revoked-generation binding when termination cannot be proven.
+    // Future lock/unlock attempts must encounter and drain it again instead of
+    // silently treating the child as gone and reinstalling key material.
+    return false;
+  }
+
+  private async waitForExitAfterSignal(
+    child: ChildProcess,
+    signal: NodeJS.Signals,
+  ): Promise<boolean> {
+    if (this.childHasExited(child)) return true;
+    return await new Promise<boolean>(resolve => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (exited: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        child.removeListener('exit', onExit);
+        child.removeListener('close', onExit);
+        resolve(exited);
+      };
+      const onExit = () => finish(true);
+      child.once('exit', onExit);
+      child.once('close', onExit);
+      timer = setTimeout(() => finish(this.childHasExited(child)), this.childExitTimeoutMs);
+      try {
+        child.kill(signal);
+      } catch {
+        if (this.childHasExited(child)) finish(true);
+      }
+    });
+  }
+
+  private childHasExited(child: ChildProcess): boolean {
+    return (child.exitCode !== null && child.exitCode !== undefined)
+      || (child.signalCode !== null && child.signalCode !== undefined);
   }
 
   private releaseChild(child: ChildProcess, expected: Binding): void {

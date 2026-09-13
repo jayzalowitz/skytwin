@@ -8,8 +8,8 @@ All notable changes to SkyTwin will be documented in this file.
   0001 defines key custody, locked behavior, context-bound envelopes,
   crash-safe migration and rotation, backup/restore, deletion after key loss,
   the intentionally readable search-derivative boundary, and the supported
-  desktop-beta scope. A machine-readable inventory classifies all 861 columns
-  across the 91 live tables and ties each table to its currently discoverable
+  desktop-beta scope. A machine-readable inventory classifies all 872 columns
+  across the 93 live tables and ties each table to its currently discoverable
   SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
   classification drift, invalid ownership/boundary values, or weakened critical
   credential and dead-letter invariants. This is a reviewed design contract;
