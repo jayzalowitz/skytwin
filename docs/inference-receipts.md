@@ -96,6 +96,14 @@ sensitive because they contain the exact supplied request and response bytes;
 users should protect or delete those files according to their own retention
 needs.
 
+Receipt completion and continuation authority are finalized in one transaction.
+The continuation guard binds the owner-scoped persisted outcome flags, selected
+action, risk and policy snapshot, and exact explanation. Re-ingestion consumes
+that single snapshot; it never joins guard authority to later-mutated outcome or
+explanation rows. An execution stream error without typed pre-dispatch proof
+remains `running`/ambiguous for reconciliation and is never recorded as a
+terminal failure merely because the response stream broke.
+
 ## Security boundary
 
 Only a configured provider-specific attestation verifier can establish that supplied evidence matched a supported policy

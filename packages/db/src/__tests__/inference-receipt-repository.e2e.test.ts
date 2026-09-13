@@ -7,6 +7,8 @@
 
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import {
+  ConfidenceLevel,
+  RiskTier,
   sha256Hex,
   signInferenceReceipt,
   type InferenceReceiptExportV1,
@@ -16,6 +18,8 @@ import { Pool } from 'pg';
 import { closePool } from '../connection.js';
 import { collectBackup, restoreBackup } from '../backup/backup.js';
 import { inferenceReceiptRepository } from '../repositories/inference-receipt-repository.js';
+import { executionRepository } from '../repositories/execution-repository.js';
+import type { InferenceReceiptCompletionLinkage } from '../repositories/inference-receipt-repository.js';
 
 const E2E = process.env['E2E'] === 'true';
 const keys = generateKeyPairSync('ed25519');
@@ -29,9 +33,14 @@ interface Graph {
   userId: string;
   decisionId: string;
   explanationId: string;
+  outcomeId: string;
+  actionId: string | null;
 }
 
-async function createGraph(label: string): Promise<Graph> {
+async function createGraph(
+  label: string,
+  continuationKind: 'auto_execute' | 'approval' | 'non_effect' = 'non_effect',
+): Promise<Graph> {
   const user = await pool.query<{ id: string }>(
     `INSERT INTO users (email, name, trust_tier, autonomy_settings)
      VALUES ($1, $2, 'observer', '{}') RETURNING id`,
@@ -46,6 +55,30 @@ async function createGraph(label: string): Promise<Graph> {
     [userId],
   );
   const decisionId = decision.rows[0]!.id;
+  let actionId: string | null = null;
+  if (continuationKind !== 'non_effect') {
+    const action = await pool.query<{ id: string }>(
+      `INSERT INTO candidate_actions
+         (decision_id, action_type, description, parameters, predicted_user_preference,
+          risk_assessment, reversible, estimated_cost)
+       VALUES ($1, 'test_action', 'Test action', '{"domain":"test"}', 'high', $2, true, NULL)
+       RETURNING id`,
+      [decisionId, JSON.stringify(riskSnapshot('placeholder'))],
+    );
+    actionId = action.rows[0]!.id;
+    await pool.query(
+      'UPDATE candidate_actions SET risk_assessment = $1 WHERE id = $2',
+      [JSON.stringify(riskSnapshot(actionId)), actionId],
+    );
+  }
+  const outcome = await pool.query<{ id: string }>(
+    `INSERT INTO decision_outcomes
+       (decision_id, selected_action_id, auto_executed, requires_approval,
+        escalation_reason, explanation, confidence)
+     VALUES ($1, $2, $3, $4, $5, 'test outcome', 0.9) RETURNING id`,
+    [decisionId, actionId, continuationKind === 'auto_execute', continuationKind === 'approval',
+      continuationKind === 'approval' ? 'test outcome' : null],
+  );
   const explanation = await pool.query<{ id: string }>(
     `INSERT INTO explanation_records
        (decision_id, what_happened, evidence_used, preferences_invoked,
@@ -53,7 +86,67 @@ async function createGraph(label: string): Promise<Graph> {
      VALUES ($1, 'receipt test', '[]', '{}', 'fixture', 'fixture', 'fixture') RETURNING id`,
     [decisionId],
   );
-  return { userId, decisionId, explanationId: explanation.rows[0]!.id };
+  return {
+    userId,
+    decisionId,
+    explanationId: explanation.rows[0]!.id,
+    outcomeId: outcome.rows[0]!.id,
+    actionId,
+  };
+}
+
+function riskSnapshot(actionId: string) {
+  return {
+    actionId,
+    overallTier: RiskTier.LOW,
+    dimensions: {
+      reversibility: { tier: RiskTier.LOW, score: 0.1, reasoning: 'test' },
+      financial_impact: { tier: RiskTier.LOW, score: 0.1, reasoning: 'test' },
+      legal_sensitivity: { tier: RiskTier.LOW, score: 0.1, reasoning: 'test' },
+      privacy_sensitivity: { tier: RiskTier.LOW, score: 0.1, reasoning: 'test' },
+      relationship_sensitivity: { tier: RiskTier.LOW, score: 0.1, reasoning: 'test' },
+      operational_risk: { tier: RiskTier.LOW, score: 0.1, reasoning: 'test' },
+    },
+    reasoning: 'test risk',
+    assessedAt: '2026-09-12T00:00:00.000Z',
+  };
+}
+
+function completionForGraph(
+  graph: Graph,
+  continuationKind: 'auto_execute' | 'approval' | 'non_effect',
+): InferenceReceiptCompletionLinkage {
+  const selectedAction = graph.actionId ? {
+    id: graph.actionId, decisionId: graph.decisionId, actionType: 'test_action',
+    description: 'Test action', domain: 'test', parameters: {}, estimatedCostCents: 0,
+    reversible: true, confidence: ConfidenceLevel.HIGH, reasoning: 'test risk',
+  } : null;
+  const riskAssessment = graph.actionId
+    ? { ...riskSnapshot(graph.actionId), assessedAt: new Date('2026-09-12T00:00:00.000Z') }
+    : null;
+  return {
+    decisionId: graph.decisionId,
+    explanationId: graph.explanationId,
+    continuationKind,
+    confirmationLevel: continuationKind === 'approval' ? 'dual' : null,
+    continuation: {
+      outcome: {
+        id: graph.outcomeId, decisionId: graph.decisionId, selectedAction,
+        allCandidates: selectedAction ? [selectedAction] : [], riskAssessment,
+        allRiskAssessments: riskAssessment ? [riskAssessment] : [],
+        autoExecute: continuationKind === 'auto_execute',
+        requiresApproval: continuationKind === 'approval',
+        reasoning: 'test outcome', decidedAt: new Date('2026-09-12T00:00:00.000Z'),
+      },
+      explanation: {
+        id: graph.explanationId, decisionId: graph.decisionId, userId: graph.userId,
+        summary: 'receipt test', evidenceUsed: [], preferencesInvoked: [],
+        confidenceReasoning: 'fixture', actionRationale: 'fixture', correctionGuidance: 'fixture',
+        riskTier: RiskTier.LOW, overallConfidence: ConfidenceLevel.HIGH,
+        createdAt: new Date('2026-09-12T00:00:00.000Z'),
+      },
+    },
+  };
 }
 
 function receiptBundle(graph: Graph): InferenceReceiptExportV1 {
@@ -84,6 +177,20 @@ function receiptBundle(graph: Graph): InferenceReceiptExportV1 {
   };
 }
 
+async function deleteUserGraph(userId: string): Promise<void> {
+  const ownedPlans = `SELECT ep.id FROM execution_plans ep
+    JOIN decisions d ON d.id = ep.decision_id WHERE d.user_id = $1`;
+  const ownedDecisions = 'SELECT id FROM decisions WHERE user_id = $1';
+  await pool.query(`DELETE FROM execution_results WHERE plan_id IN (${ownedPlans})`, [userId]);
+  await pool.query(`DELETE FROM execution_events WHERE plan_id IN (${ownedPlans})`, [userId]);
+  await pool.query(`DELETE FROM decision_outcomes WHERE decision_id IN (${ownedDecisions})`, [userId]);
+  await pool.query(`DELETE FROM execution_plans WHERE decision_id IN (${ownedDecisions})`, [userId]);
+  await pool.query(`DELETE FROM candidate_actions WHERE decision_id IN (${ownedDecisions})`, [userId]);
+  await pool.query(`DELETE FROM explanation_records WHERE decision_id IN (${ownedDecisions})`, [userId]);
+  await pool.query('DELETE FROM decisions WHERE user_id = $1', [userId]);
+  await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+}
+
 describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   beforeAll(() => {
     const databaseUrl = process.env['DATABASE_URL'];
@@ -93,13 +200,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
 
   afterEach(async () => {
     for (const userId of createdUserIds) {
-      await pool.query(
-        `DELETE FROM explanation_records WHERE decision_id IN
-         (SELECT id FROM decisions WHERE user_id = $1)`,
-        [userId],
-      );
-      await pool.query('DELETE FROM decisions WHERE user_id = $1', [userId]);
-      await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+      await deleteUserGraph(userId);
     }
     createdUserIds.length = 0;
   });
@@ -116,23 +217,13 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     expect(await inferenceReceiptRepository.createManyForUser(other.userId, [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
-    }], {
-      decisionId: owner.decisionId,
-      explanationId: owner.explanationId,
-      continuationKind: 'non_effect',
-      confirmationLevel: null,
-    })).toBeNull();
+    }], completionForGraph(owner, 'non_effect'))).toBeNull();
     const created = await inferenceReceiptRepository.createManyForUser(owner.userId, [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
-    }], {
-      decisionId: owner.decisionId,
-      explanationId: owner.explanationId,
-      continuationKind: 'non_effect',
-      confirmationLevel: null,
-    });
+    }], completionForGraph(owner, 'non_effect'));
 
-    expect(created?.[0]).toMatchObject({
+    expect(created?.receipts[0]).toMatchObject({
       id: bundle.receipt.id,
       version: 1,
       decision_id: owner.decisionId,
@@ -169,19 +260,14 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   });
 
   it('admits exactly one immutable receipt batch under concurrent finalization', async () => {
-    const owner = await createGraph('concurrent-completion');
+    const owner = await createGraph('concurrent-completion', 'auto_execute');
     const first = receiptBundle(owner);
     const second = receiptBundle(owner);
     const input = (bundle: InferenceReceiptExportV1) => [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
     }];
-    const completion = {
-      decisionId: owner.decisionId,
-      explanationId: owner.explanationId,
-      continuationKind: 'auto_execute' as const,
-      confirmationLevel: null,
-    };
+    const completion = completionForGraph(owner, 'auto_execute');
 
     const settled = await Promise.allSettled([
       inferenceReceiptRepository.createManyForUser(owner.userId, input(first), completion),
@@ -210,37 +296,66 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   });
 
   it('allows only one concurrent ready-to-running execution claim', async () => {
-    const owner = await createGraph('concurrent-claim');
+    const owner = await createGraph('concurrent-claim', 'auto_execute');
     const bundle = receiptBundle(owner);
     await inferenceReceiptRepository.createManyForUser(owner.userId, [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
-    }], {
-      decisionId: owner.decisionId,
+    }], completionForGraph(owner, 'auto_execute'));
+    const claimAuthority = {
+      outcomeId: owner.outcomeId,
       explanationId: owner.explanationId,
-      continuationKind: 'auto_execute',
-      confirmationLevel: null,
-    });
+      selectedActionId: owner.actionId!,
+    };
 
     const claims = await Promise.all([
-      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId),
-      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId),
+      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId, claimAuthority),
+      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId, claimAuthority),
     ]);
     expect(claims.filter(Boolean)).toHaveLength(1);
   });
 
+  it('terminalizes only the exact owner, decision, selected action, and plan', async () => {
+    const owner = await createGraph('terminal-owner', 'auto_execute');
+    const other = await createGraph('terminal-other', 'auto_execute');
+    const bundle = receiptBundle(owner);
+    await inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle,
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(owner, 'auto_execute'));
+    const authority = {
+      outcomeId: owner.outcomeId,
+      explanationId: owner.explanationId,
+      selectedActionId: owner.actionId!,
+    };
+    expect(await inferenceReceiptRepository.claimExecutionForDecision(
+      owner.userId, owner.decisionId, authority,
+    )).toBe(true);
+    const ownerPlan = await executionRepository.createPlan({
+      decisionId: owner.decisionId, actionId: owner.actionId!, status: 'running', steps: [],
+    });
+    const otherPlan = await executionRepository.createPlan({
+      decisionId: other.decisionId, actionId: other.actionId!, status: 'running', steps: [],
+    });
+
+    expect(await inferenceReceiptRepository.markExecutionTerminalForDecision(
+      owner.userId, owner.decisionId, 'completed', otherPlan.id,
+    )).toBe(false);
+    expect(await inferenceReceiptRepository.markExecutionTerminalForDecision(
+      other.userId, owner.decisionId, 'completed', ownerPlan.id,
+    )).toBe(false);
+    expect(await inferenceReceiptRepository.markExecutionTerminalForDecision(
+      owner.userId, owner.decisionId, 'completed', ownerPlan.id,
+    )).toBe(true);
+  });
+
   it('round-trips a schema-v3 receipt backup with a non-replay restore tombstone', async () => {
-    const owner = await createGraph('backup-owner');
+    const owner = await createGraph('backup-owner', 'auto_execute');
     const bundle = receiptBundle(owner);
     const created = await inferenceReceiptRepository.createManyForUser(owner.userId, [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
-    }], {
-      decisionId: owner.decisionId,
-      explanationId: owner.explanationId,
-      continuationKind: 'auto_execute',
-      confirmationLevel: null,
-    });
+    }], completionForGraph(owner, 'auto_execute'));
     expect(created).not.toBeNull();
 
     const backup = await collectBackup(owner.userId);
@@ -263,9 +378,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       effectState: 'ready',
     });
 
-    await pool.query('DELETE FROM explanation_records WHERE decision_id = $1', [owner.decisionId]);
-    await pool.query('DELETE FROM decisions WHERE id = $1', [owner.decisionId]);
-    await pool.query('DELETE FROM users WHERE id = $1', [owner.userId]);
+    await deleteUserGraph(owner.userId);
 
     const restored = await restoreBackup(backup.data);
     expect(restored).toMatchObject({ success: true });
@@ -284,13 +397,17 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       receipt: bundle.receipt,
     }]);
     expect(typeof stored.rows[0]?.version).toBe('number');
-    await expect(inferenceReceiptRepository.getIngestStateForDecision(owner.userId, owner.decisionId))
+    await expect(inferenceReceiptRepository.getContinuationForDecision(owner.userId, owner.decisionId))
       .resolves.toMatchObject({
         effectState: 'restored_non_replay',
         sourceEffectState: 'ready',
         sourceExecutionStatus: null,
       });
-    await expect(inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId))
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId, {
+      outcomeId: owner.outcomeId,
+      explanationId: owner.explanationId,
+      selectedActionId: owner.actionId!,
+    }))
       .resolves.toBe(false);
   });
 });

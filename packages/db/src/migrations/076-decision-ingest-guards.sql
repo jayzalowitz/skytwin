@@ -5,6 +5,13 @@
 CREATE TABLE IF NOT EXISTS decision_ingest_guards (
   decision_id UUID PRIMARY KEY REFERENCES decisions(id) ON DELETE CASCADE,
   receipt_explanation_id UUID,
+  outcome_id UUID,
+  selected_action_id UUID,
+  outcome_auto_execute BOOLEAN,
+  outcome_requires_approval BOOLEAN,
+  risk_snapshot JSONB,
+  policy_snapshot JSONB,
+  continuation_snapshot JSONB,
   continuation_kind STRING NOT NULL,
   confirmation_level STRING,
   effect_state STRING NOT NULL,
@@ -31,6 +38,12 @@ CREATE TABLE IF NOT EXISTS decision_ingest_guards (
   CONSTRAINT decision_ingest_guards_source_execution_status_check CHECK (
     source_execution_status IS NULL OR source_execution_status IN ('completed', 'failed', 'ambiguous')
   ),
+  CONSTRAINT decision_ingest_guards_live_authority_check CHECK (
+    effect_state = 'restored_non_replay' OR
+    (outcome_id IS NOT NULL AND outcome_auto_execute IS NOT NULL AND
+      outcome_requires_approval IS NOT NULL AND policy_snapshot IS NOT NULL AND
+      continuation_snapshot IS NOT NULL)
+  ),
   CONSTRAINT decision_ingest_guards_receipt_explanation_fk
     FOREIGN KEY (receipt_explanation_id, decision_id)
     REFERENCES explanation_records (id, decision_id) ON DELETE CASCADE
@@ -42,9 +55,17 @@ CREATE TABLE IF NOT EXISTS decision_ingest_guards (
 INSERT INTO decision_ingest_guards (
   decision_id,
   receipt_explanation_id,
+  outcome_id,
+  selected_action_id,
+  outcome_auto_execute,
+  outcome_requires_approval,
+  risk_snapshot,
+  policy_snapshot,
+  continuation_snapshot,
   continuation_kind,
   confirmation_level,
   effect_state,
+  source_effect_state,
   source_execution_status,
   source_execution_plan_id,
   created_at,
@@ -53,12 +74,20 @@ INSERT INTO decision_ingest_guards (
 SELECT
   c.decision_id,
   c.explanation_id,
+  o.id,
+  o.selected_action_id,
+  o.auto_executed,
+  o.requires_approval,
+  ca.risk_assessment,
+  NULL,
+  NULL,
   CASE
     WHEN o.requires_approval IS TRUE THEN 'approval'
     WHEN o.auto_executed IS TRUE THEN 'auto_execute'
     ELSE 'non_effect'
   END,
   CASE WHEN o.requires_approval IS TRUE THEN 'dual' ELSE NULL END,
+  'restored_non_replay',
   CASE
     WHEN o.auto_executed IS NOT TRUE THEN 'non_effect'
     WHEN latest.result_success IS TRUE THEN 'completed'
@@ -76,6 +105,8 @@ SELECT
   now()
 FROM inference_receipt_completions c
 LEFT JOIN decision_outcomes o ON o.decision_id = c.decision_id
+LEFT JOIN candidate_actions ca
+  ON ca.id = o.selected_action_id AND ca.decision_id = c.decision_id
 LEFT JOIN LATERAL (
   SELECT ep.id AS plan_id, er.success AS result_success
   FROM execution_plans ep
