@@ -113,16 +113,26 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     const owner = await createGraph('owner');
     const other = await createGraph('other');
     const bundle = receiptBundle(owner);
-    expect(await inferenceReceiptRepository.createForUser(other.userId, {
+    expect(await inferenceReceiptRepository.createManyForUser(other.userId, [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], {
+      decisionId: owner.decisionId,
+      explanationId: owner.explanationId,
+      continuationKind: 'non_effect',
+      confirmationLevel: null,
     })).toBeNull();
-    const created = await inferenceReceiptRepository.createForUser(owner.userId, {
+    const created = await inferenceReceiptRepository.createManyForUser(owner.userId, [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], {
+      decisionId: owner.decisionId,
+      explanationId: owner.explanationId,
+      continuationKind: 'non_effect',
+      confirmationLevel: null,
     });
 
-    expect(created).toMatchObject({
+    expect(created?.[0]).toMatchObject({
       id: bundle.receipt.id,
       version: 1,
       decision_id: owner.decisionId,
@@ -169,6 +179,8 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     const completion = {
       decisionId: owner.decisionId,
       explanationId: owner.explanationId,
+      continuationKind: 'auto_execute' as const,
+      confirmationLevel: null,
     };
 
     const settled = await Promise.allSettled([
@@ -190,21 +202,51 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       [owner.decisionId],
     );
     expect(completions.rows).toHaveLength(1);
+    const guards = await pool.query(
+      `SELECT 1 FROM decision_ingest_guards WHERE decision_id = $1`,
+      [owner.decisionId],
+    );
+    expect(guards.rows).toHaveLength(1);
   });
 
-  it('round-trips a schema-v2 receipt backup as canonical untrusted metadata', async () => {
-    const owner = await createGraph('backup-owner');
+  it('allows only one concurrent ready-to-running execution claim', async () => {
+    const owner = await createGraph('concurrent-claim');
     const bundle = receiptBundle(owner);
-    const created = await inferenceReceiptRepository.createForUser(owner.userId, {
+    await inferenceReceiptRepository.createManyForUser(owner.userId, [{
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], {
+      decisionId: owner.decisionId,
+      explanationId: owner.explanationId,
+      continuationKind: 'auto_execute',
+      confirmationLevel: null,
+    });
+
+    const claims = await Promise.all([
+      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId),
+      inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId),
+    ]);
+    expect(claims.filter(Boolean)).toHaveLength(1);
+  });
+
+  it('round-trips a schema-v3 receipt backup with a non-replay restore tombstone', async () => {
+    const owner = await createGraph('backup-owner');
+    const bundle = receiptBundle(owner);
+    const created = await inferenceReceiptRepository.createManyForUser(owner.userId, [{
+      bundle,
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], {
+      decisionId: owner.decisionId,
+      explanationId: owner.explanationId,
+      continuationKind: 'auto_execute',
+      confirmationLevel: null,
     });
     expect(created).not.toBeNull();
 
     const backup = await collectBackup(owner.userId);
     expect(backup.success).toBe(true);
     if (!backup.success) return;
-    expect(backup.data.schemaVersion).toBe(2);
+    expect(backup.data.schemaVersion).toBe(3);
     expect(backup.data.decisions).toHaveLength(1);
     expect(backup.data.decisions[0]?.inferenceReceipts).toHaveLength(1);
     expect(backup.data.decisions[0]?.inferenceReceipts?.[0]).toMatchObject({
@@ -214,6 +256,12 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       receipt: bundle.receipt,
     });
     expect(typeof backup.data.decisions[0]?.inferenceReceipts?.[0]?.version).toBe('number');
+    expect(backup.data.decisions[0]?.ingestState).toMatchObject({
+      receiptCaptureComplete: true,
+      receiptExplanationId: owner.explanationId,
+      continuationKind: 'auto_execute',
+      effectState: 'ready',
+    });
 
     await pool.query('DELETE FROM explanation_records WHERE decision_id = $1', [owner.decisionId]);
     await pool.query('DELETE FROM decisions WHERE id = $1', [owner.decisionId]);
@@ -236,5 +284,13 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       receipt: bundle.receipt,
     }]);
     expect(typeof stored.rows[0]?.version).toBe('number');
+    await expect(inferenceReceiptRepository.getIngestStateForDecision(owner.userId, owner.decisionId))
+      .resolves.toMatchObject({
+        effectState: 'restored_non_replay',
+        sourceEffectState: 'ready',
+        sourceExecutionStatus: null,
+      });
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(owner.userId, owner.decisionId))
+      .resolves.toBe(false);
   });
 });

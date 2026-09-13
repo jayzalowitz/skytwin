@@ -17,7 +17,11 @@ const {
   mockSaveOutcome,
   mockGetProviders,
   mockCreateReceipts,
-  mockReceiptCaptureComplete,
+  mockGetIngestState,
+  mockClaimExecution,
+  mockMarkExecutionTerminal,
+  mockMarkNonEffect,
+  mockGetExplanation,
   mockEmitReceipt,
   mockLlmClient,
 } = vi.hoisted(() => ({
@@ -43,7 +47,11 @@ const {
   mockSaveOutcome: vi.fn(),
   mockGetProviders: vi.fn(),
   mockCreateReceipts: vi.fn(),
-  mockReceiptCaptureComplete: vi.fn(),
+  mockGetIngestState: vi.fn(),
+  mockClaimExecution: vi.fn(),
+  mockMarkExecutionTerminal: vi.fn(),
+  mockMarkNonEffect: vi.fn(),
+  mockGetExplanation: vi.fn(),
   mockEmitReceipt: vi.fn(),
   mockLlmClient: vi.fn(),
 }));
@@ -97,7 +105,10 @@ vi.mock('@skytwin/db', () => ({
   aiProviderRepository: { getEnabledForUser: mockGetProviders },
   inferenceReceiptRepository: {
     createManyForUser: mockCreateReceipts,
-    isCompleteForDecision: mockReceiptCaptureComplete,
+    getIngestStateForDecision: mockGetIngestState,
+    claimExecutionForDecision: mockClaimExecution,
+    markExecutionTerminalForDecision: mockMarkExecutionTerminal,
+    markNonEffectForDecision: mockMarkNonEffect,
   },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),
@@ -133,7 +144,7 @@ vi.mock('@skytwin/db', () => ({
       assessedAt: new Date(),
     })),
   },
-  explanationRepositoryAdapter: { getByDecisionId: vi.fn().mockResolvedValue(null) },
+  explanationRepositoryAdapter: { getByDecisionId: mockGetExplanation },
   policyRepositoryAdapter: {},
 }));
 
@@ -175,6 +186,25 @@ function buildApp(): Express {
     res.status(500).json({ error: err.message });
   });
   return app;
+}
+
+function ingestState(
+  effectState: 'non_effect' | 'ready' | 'running' | 'completed' | 'failed' | 'restored_non_replay',
+  continuationKind: 'auto_execute' | 'approval' | 'non_effect' =
+    effectState === 'ready' || effectState === 'running' || effectState === 'completed' || effectState === 'failed'
+      ? 'auto_execute'
+      : 'non_effect',
+) {
+  return {
+    receiptCaptureComplete: true,
+    receiptExplanationId: 'explanation-1',
+    continuationKind,
+    confirmationLevel: continuationKind === 'approval' ? 'dual' : null,
+    effectState,
+    sourceEffectState: null,
+    sourceExecutionStatus: null,
+    sourceExecutionPlanId: null,
+  };
 }
 
 async function request(app: Express, method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
@@ -252,7 +282,11 @@ describe('Events API routes', () => {
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
     mockGetProviders.mockResolvedValue([]);
     mockCreateReceipts.mockResolvedValue([]);
-    mockReceiptCaptureComplete.mockResolvedValue(true);
+    mockGetIngestState.mockResolvedValue(null);
+    mockClaimExecution.mockResolvedValue(true);
+    mockMarkExecutionTerminal.mockResolvedValue(true);
+    mockMarkNonEffect.mockResolvedValue(true);
+    mockGetExplanation.mockResolvedValue(null);
     mockEmitReceipt.mockReturnValue({ exportVersion: 1, receipt: { id: 'receipt-1' } });
     mockLlmClient.mockImplementation(function MockLlmClient() {
       return { hasProviders: true };
@@ -301,6 +335,11 @@ describe('Events API routes', () => {
       decisionId: 'decision-1', explanationId: '44444444-4444-4444-8444-444444444444',
     }, expect.objectContaining({ keyId: expect.any(String) }));
     expect(mockCreateReceipts).toHaveBeenCalledTimes(1);
+    expect(mockCreateReceipts).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      expect.any(Array),
+      expect.objectContaining({ continuationKind: 'approval', confirmationLevel: 'single' }),
+    );
     expect(mockCreateReceipts.mock.invocationCallOrder[0]).toBeLessThan(
       mockApprovalCreate.mock.invocationCallOrder[0]!,
     );
@@ -582,7 +621,7 @@ describe('Events API routes', () => {
         decisionId: 'decision-1', selectedAction: null, autoExecute: false,
         requiresApproval: false, reasoning: 'Previous partial run',
       });
-      mockReceiptCaptureComplete.mockResolvedValue(false);
+      mockGetIngestState.mockResolvedValue(null);
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
       });
@@ -591,19 +630,31 @@ describe('Events API routes', () => {
       expect(mockCreateReceipts).toHaveBeenCalled();
     });
 
-    it('reruns an approval decision when its required approval row is missing', async () => {
+    it('resumes approval creation after committed receipt capture without repeating inference', async () => {
       mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
       mockGetOutcome.mockResolvedValue({
-        decisionId: 'decision-1', selectedAction: { actionType: 'label_email', description: 'Label' },
+        decisionId: 'decision-1', selectedAction: {
+          id: 'action-1', decisionId: 'decision-1', actionType: 'label_email',
+          description: 'Label', parameters: {}, reversible: true,
+        },
         autoExecute: false, requiresApproval: true, reasoning: 'Previous partial run',
+        allCandidates: [],
       });
       mockApprovalFindByDecisionId.mockResolvedValue(null);
+      mockGetIngestState.mockResolvedValue(ingestState('non_effect', 'approval'));
+      mockGetExplanation.mockResolvedValue({
+        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+      });
+      mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-1', status: 'pending' }, created: true });
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
       });
       expect(res.status).toBe(200);
-      expect(mockEvaluate).toHaveBeenCalled();
-      expect(mockCreateReceipts).toHaveBeenCalled();
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockCreateReceipts).not.toHaveBeenCalled();
+      expect(mockApprovalCreate).toHaveBeenCalledWith(expect.objectContaining({
+        decisionId: 'decision-1', confirmationLevel: 'dual',
+      }));
     });
 
     it('skips evaluate / saveCandidates / approvalCreate when a previous outcome is recoverable', async () => {
@@ -625,6 +676,7 @@ describe('Events API routes', () => {
         id: 'ar-existing',
         status: 'pending',
       });
+      mockGetIngestState.mockResolvedValue(ingestState('non_effect', 'approval'));
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -661,6 +713,31 @@ describe('Events API routes', () => {
       );
     });
 
+    it('resumes committed informational work without repeating inference or receipt capture', async () => {
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1', selectedAction: null, autoExecute: false,
+        requiresApproval: false, reasoning: 'No action needed', allCandidates: [],
+      });
+      mockGetExplanation.mockResolvedValue({
+        id: 'explanation-1', summary: 'No action needed', riskTier: 'low', overallConfidence: 0.9,
+      });
+      mockGetIngestState.mockResolvedValue(ingestState('non_effect'));
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'travel_decision',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockCreateReceipts).not.toHaveBeenCalled();
+      expect(mockSseManager.emit).toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'decision:blocked-by-policy',
+        expect.objectContaining({ decisionId: 'decision-1' }),
+      );
+    });
+
     it('short-circuits an auto-executed re-ingest without re-running the action when a terminal execution_result exists', async () => {
       // The high-impact case the PR exists to fix: a previously-auto-
       // executed signal must NOT execute its action a second time.
@@ -679,6 +756,7 @@ describe('Events API routes', () => {
         plan: { id: 'plan-prev', decision_id: 'decision-1', status: 'completed' },
         result: { plan_id: 'plan-prev', success: true },
       });
+      mockGetIngestState.mockResolvedValue(ingestState('completed'));
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -706,12 +784,7 @@ describe('Events API routes', () => {
       );
     });
 
-    it('falls through when a previous auto-execute outcome exists but no execution_result is recorded (first attempt hung)', async () => {
-      // Critical edge case: outcome row was saved (decision-maker called
-      // saveOutcome) but execution never completed (hung HTTP call,
-      // killed process between createPlan and createResult). Short-
-      // circuiting here would silently abandon the action. The route
-      // must fall through and let this ingest finish the work.
+    it('suppresses replay when a previous execution is running without a terminal result', async () => {
       mockSaveDecision.mockImplementation(async (d: unknown) => ({
         decision: d,
         created: false,
@@ -729,6 +802,7 @@ describe('Events API routes', () => {
         plan: { id: 'plan-prev', decision_id: 'decision-1', status: 'running' },
         result: null,
       });
+      mockGetIngestState.mockResolvedValue(ingestState('running'));
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -737,10 +811,75 @@ describe('Events API routes', () => {
       });
 
       expect(res.status).toBe(200);
-      const body = res.body as { reIngested?: boolean };
-      expect(body.reIngested).toBeUndefined();
-      // The full pipeline must have run so the action gets retried.
-      expect(mockEvaluate).toHaveBeenCalled();
+      const body = res.body as { reIngested?: boolean; replaySuppressed?: boolean };
+      expect(body.reIngested).toBe(true);
+      expect(body.replaySuppressed).toBe(true);
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+    });
+
+    it('resumes a committed ready execution with one claim and no repeated inference', async () => {
+      async function* completedStream() {
+        yield { eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      }
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1',
+        selectedAction: {
+          id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
+          description: 'Create calendar event', domain: 'calendar', parameters: {},
+          reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+        },
+        autoExecute: true, requiresApproval: false, reasoning: 'Previous ready run', allCandidates: [],
+      });
+      mockGetExplanation.mockResolvedValue({
+        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+      });
+      mockGetIngestState.mockResolvedValue(ingestState('ready'));
+      mockGetExecutionRouter.mockResolvedValue({
+        executeWithRoutingStreaming: vi.fn(() => completedStream()),
+      });
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'gmail', type: 'email',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockCreateReceipts).not.toHaveBeenCalled();
+      expect(mockClaimExecution).toHaveBeenCalledTimes(1);
+      expect(mockClaimExecution.mock.invocationCallOrder[0]).toBeLessThan(
+        mockExecutionRepository.createPlan.mock.invocationCallOrder[0]!,
+      );
+      expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
+      expect(mockMarkExecutionTerminal).toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'decision-1', 'completed', 'plan-1',
+      );
+    });
+
+    it('never resumes a ready execution after a fail-closed approval exists', async () => {
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockGetOutcome.mockResolvedValue({
+        decisionId: 'decision-1', selectedAction: {
+          id: 'action-1', actionType: 'create_calendar_event', description: 'Create event',
+        },
+        autoExecute: true, requiresApproval: false, reasoning: 'Originally automatic',
+      });
+      mockApprovalFindByDecisionId.mockResolvedValue({ id: 'approval-1', status: 'pending' });
+      mockGetExplanation.mockResolvedValue({
+        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+      });
+      mockGetIngestState.mockResolvedValue(ingestState('ready'));
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockClaimExecution).not.toHaveBeenCalled();
+      expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
     });
 
     it('falls through to the normal pipeline when no previous outcome is recoverable (first attempt crashed before saving)', async () => {
@@ -768,6 +907,20 @@ describe('Events API routes', () => {
       // fired since we fell through.
       expect(mockEvaluate).toHaveBeenCalled();
     });
+  });
+
+  it('does not dispatch when the ready execution claim is ambiguous or already consumed', async () => {
+    mockClaimExecution.mockResolvedValue(false);
+    mockGetIngestState.mockResolvedValue(ingestState('running'));
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+    expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+    expect(mockGetExecutionRouter).not.toHaveBeenCalled();
   });
 
   it('re-emits decision:blocked-by-policy when re-ingestion falls through (previous outcome missing)', async () => {
@@ -834,6 +987,12 @@ describe('Events API routes', () => {
       success: false,
       error: 'No adapter can handle action type "create_calendar_event"',
     }));
+    expect(mockClaimExecution.mock.invocationCallOrder[0]).toBeLessThan(
+      mockExecutionRepository.createPlan.mock.invocationCallOrder[0]!,
+    );
+    expect(mockMarkExecutionTerminal).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'decision-1', 'failed', 'plan-1',
+    );
     const body = res.body as { execution: { status: string; planId: string } };
     expect(body.execution).toMatchObject({ status: 'failed', planId: 'plan-1' });
   });

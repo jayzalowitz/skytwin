@@ -18,7 +18,7 @@ import {
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 let userExists = false;
-const clientQuery = vi.fn(async (_sql?: unknown) => ({ rows: [], rowCount: 1 }));
+const clientQuery = vi.fn(async (_sql?: unknown, _args?: unknown[]) => ({ rows: [], rowCount: 1 }));
 
 vi.mock('../connection.js', () => ({
   query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
@@ -86,6 +86,18 @@ function decisionBundle(receipt = signedReceipt()): Record<string, unknown> {
       trusted: false,
       created_at: new Date(receipt.createdAt),
     }],
+    ingestState: {
+      decisionId: 'decision-a',
+      receiptCaptureComplete: true,
+      receiptExplanationId: 'explanation-a',
+      continuationKind: 'non_effect',
+      confirmationLevel: null,
+      effectState: 'non_effect',
+      sourceEffectState: null,
+      sourceExecutionStatus: null,
+      sourceExecutionPlanId: null,
+      completedAt: new Date(receipt.createdAt),
+    },
   };
 }
 
@@ -131,7 +143,7 @@ describe('validateBackupData', () => {
     expect(validateBackupData(payload)).toEqual([]);
   });
 
-  it('requires receipt collections in v2 and rejects them in v1 archives', () => {
+  it('keeps schema-v1/v2/v3 fields explicit and fail-safe', () => {
     const current = validPayload();
     current['decisions'] = [{
       decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
@@ -148,7 +160,24 @@ describe('validateBackupData', () => {
       explanations: [], inferenceReceipts: [],
     }];
     expect(validateBackupData(legacy)).toContain(
-      `decisions[0].inferenceReceipts requires schema version ${BACKUP_SCHEMA_VERSION}`,
+      'decisions[0].inferenceReceipts requires schema version 2',
+    );
+
+    const v2 = validPayload();
+    v2['schemaVersion'] = 2;
+    v2['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
+      explanations: [], inferenceReceipts: [],
+    }];
+    expect(validateBackupData(v2)).toEqual([]);
+
+    const v3WithoutState = validPayload();
+    v3WithoutState['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
+      explanations: [], inferenceReceipts: [],
+    }];
+    expect(validateBackupData(v3WithoutState)).toContain(
+      `decisions[0].ingestState is required by schema version ${BACKUP_SCHEMA_VERSION}`,
     );
   });
 
@@ -274,6 +303,27 @@ describe('restoreBackup guards', () => {
     payload['schemaVersion'] = 1;
     const result = await restoreBackup(payload);
     expect(result.success).toBe(true);
+  });
+
+  it('restores legacy decisions with a non-replay tombstone', async () => {
+    const payload = validPayload();
+    payload['schemaVersion'] = 2;
+    payload['decisions'] = [{
+      decision: {
+        id: 'decision-a', user_id: 'u1', situation_type: 'test', raw_event: {},
+        interpreted_situation: {}, domain: 'test', urgency: 'normal', metadata: {},
+        signal_id: null, created_at: new Date('2026-06-15T00:00:00.000Z'),
+      },
+      candidateActions: [], outcome: null, explanations: [], inferenceReceipts: [],
+    }];
+
+    await expect(restoreBackup(payload)).resolves.toMatchObject({ success: true });
+    const guardCall = clientQuery.mock.calls.find(([sql]) =>
+      typeof sql === 'string' && sql.includes('INSERT INTO decision_ingest_guards'));
+    expect(guardCall?.[1]).toEqual([
+      'decision-a', null, 'non_effect', null, null, 'ambiguous', null,
+      new Date('2026-06-15T00:00:00.000Z'),
+    ]);
   });
 
   it('aborts instead of reporting a receipt whose linkage insert affected no row', async () => {

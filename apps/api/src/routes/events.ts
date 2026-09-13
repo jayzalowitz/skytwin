@@ -32,7 +32,9 @@ import {
 } from '@skytwin/db';
 import type {
   DecisionContext,
+  DecisionOutcome,
   ExecutionEvent,
+  ExplanationRecord,
   RiskAssessment,
   EpisodicMemory,
 } from '@skytwin/shared-types';
@@ -326,6 +328,11 @@ export function createEventsRouter(): Router {
       // so duplicate ingests don't re-fire UI notifications etc.
       const { created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision);
 
+      let resumedAfterReceiptCapture: {
+        outcome: DecisionOutcome;
+        explanation: ExplanationRecord;
+      } | null = null;
+
       // 1c. Re-ingestion short-circuit. When `decisionCreated` is false the
       // (user_id, signal_id) was already evaluated on a prior ingest — the
       // decision row, candidate_actions, decision_outcome, and any approval
@@ -341,71 +348,77 @@ export function createEventsRouter(): Router {
       //     that auto-execute; observer/suggest are already gated by the
       //     approval-row idempotency from #289).
       //
-      // Three completeness checks decide whether the previous attempt is
-      // recoverable enough to short-circuit:
-      //
-      //   1. Was an outcome row saved at all? (saveOutcome runs inside
-      //      decisionMaker.evaluate.) If null, the first ingest crashed
-      //      before even recording the verdict — fall through.
-      //   2. Was the outcome an auto-execute one? If yes, also require a
-      //      terminal `execution_result` row. The outcome is saved BEFORE
-      //      the action runs (decision-maker → recordOutcome → events.ts
-      //      → createPlan → execute → createResult), so a saved outcome
-      //      with no execution_result means the action hung mid-flight
-      //      or the process died between saveOutcome and createResult.
-      //      Fall through so the re-ingestion finishes the work — short-
-      //      circuiting here would leave the user thinking the email was
-      //      sent when it wasn't.
-      //   3. If `requiresApproval` is true, the approval row's existence
-      //      is the durable record of completion — `approvalRepository.create`
-      //      is idempotent and re-running it on a re-ingest would be a
-      //      no-op anyway, so this case is always safe to short-circuit
-      //      regardless of approval-row state.
+      // Before receipt finalization, re-evaluation is safe because approval or
+      // execution cannot have started. Afterwards, only idempotent approval /
+      // informational work or a one-time ready→running execution claim resumes.
       if (!decisionCreated) {
-        const [previousOutcome, receiptCaptureComplete] = await Promise.all([
+        const [previousOutcome, ingestState] = await Promise.all([
           decisionRepositoryAdapter.getOutcome(decision.id),
-          inferenceReceiptRepository.isCompleteForDecision(userId, decision.id),
+          inferenceReceiptRepository.getIngestStateForDecision(userId, decision.id),
         ]);
-        // The completion marker is committed atomically with the receipt batch.
-        // Without it, the prior request may have crashed after saving its
-        // explanation but before receipts/approval/execution were durable.
-        let recoverable = previousOutcome !== null && receiptCaptureComplete;
-        let executionTerminal: { status: 'completed' | 'failed'; planId: string } | null = null;
-        const previousApproval = previousOutcome?.requiresApproval
+        const previousExplanation = previousOutcome
+          ? await explanationRepositoryAdapter.getByDecisionId(decision.id)
+          : null;
+        // An approval created by a fail-closed auto-execution escalation also
+        // blocks a later ready-state resume, even though the stored outcome
+        // itself still says autoExecute.
+        const previousApproval = previousOutcome
           ? await approvalRepository.findByDecisionId(decision.id, userId)
           : null;
-        if (previousOutcome?.requiresApproval) recoverable = recoverable && previousApproval !== null;
-        if (previousOutcome && previousOutcome.autoExecute) {
-          const previousExec = await executionRepository.getByDecisionId(decision.id);
-          if (!previousExec || !previousExec.result) {
-            // Auto-execute outcome with no terminal execution_result — the
-            // first attempt didn't finish (hung HTTP call, crashed worker,
-            // killed process between createPlan and createResult). Fall
-            // through and let this ingest complete the action.
-            recoverable = false;
-          } else {
-            executionTerminal = {
-              status: previousExec.result.success ? 'completed' : 'failed',
-              planId: previousExec.plan.id,
-            };
-          }
-        }
+        const previousExec = previousOutcome?.autoExecute
+          ? await executionRepository.getByDecisionId(decision.id)
+          : null;
+        const executionTerminal = previousExec?.result
+          ? { status: previousExec.result.success ? 'completed' as const : 'failed' as const,
+              planId: previousExec.plan.id }
+          : ingestState?.sourceExecutionStatus
+            ? { status: ingestState.sourceExecutionStatus, planId: ingestState.sourceExecutionPlanId }
+            : ingestState?.effectState === 'running' || ingestState?.effectState === 'restored_non_replay'
+              ? { status: 'ambiguous' as const, planId: ingestState.sourceExecutionPlanId }
+              : null;
+        const captured = ingestState?.receiptCaptureComplete === true;
+        const resumeApproval = captured && previousOutcome?.requiresApproval &&
+          previousApproval === null && previousExplanation !== null &&
+          ingestState.continuationKind === 'approval' && ingestState.effectState === 'non_effect';
+        const resumeExecution = captured && previousOutcome?.autoExecute &&
+          previousApproval === null && previousExplanation !== null &&
+          ingestState.continuationKind === 'auto_execute' &&
+          ingestState.effectState === 'ready';
+        const resumeNonEffect = captured && previousOutcome !== null &&
+          !previousOutcome.requiresApproval && !previousOutcome.autoExecute &&
+          previousExplanation !== null && ingestState.continuationKind === 'non_effect' &&
+          ingestState.effectState === 'non_effect';
 
-        if (recoverable && previousOutcome) {
-          const previousExplanation = await (
-            // Refetch the persisted explanation so the short-circuit
-            // response carries the same `{ summary, riskTier, confidence }`
-            // shape the first-time response did, instead of a null that
-            // would make the endpoint's contract branch-dependent.
-            explanationRepositoryAdapter.getByDecisionId(decision.id)
-          );
+        if (resumeApproval || resumeExecution || resumeNonEffect) {
+          resumedAfterReceiptCapture = {
+            outcome: {
+              ...previousOutcome,
+              ...(resumeApproval
+                ? { confirmationLevel: ingestState.confirmationLevel ?? 'dual' }
+                : {}),
+            },
+            explanation: previousExplanation,
+          };
+          log.info('Resuming post-receipt work for re-ingested signal', {
+            userId,
+            decisionId: decision.id,
+            effectState: ingestState.effectState,
+            operation: resumeApproval ? 'approval' : resumeExecution ? 'execution_claim' : 'non_effect',
+          });
+        } else if (ingestState && (
+          ingestState.effectState === 'restored_non_replay' ||
+          ingestState.effectState === 'running' ||
+          ingestState.effectState === 'completed' ||
+          ingestState.effectState === 'failed' || captured
+        )) {
           log.info('Suppressed pipeline for re-ingested signal', {
             userId,
             decisionId: decision.id,
             hadApproval: previousApproval !== null,
             hadExplanation: previousExplanation !== null,
-            requiredApproval: previousOutcome.requiresApproval,
-            autoExecuted: previousOutcome.autoExecute,
+            requiredApproval: previousOutcome?.requiresApproval ?? null,
+            autoExecuted: previousOutcome?.autoExecute ?? null,
+            effectState: ingestState.effectState,
             executionStatus: executionTerminal?.status ?? null,
           });
           res.json({
@@ -416,7 +429,7 @@ export function createEventsRouter(): Router {
               urgency: decision.urgency,
               summary: decision.summary,
             },
-            outcome: {
+            outcome: previousOutcome ? {
               selectedAction: previousOutcome.selectedAction
                 ? {
                     actionType: previousOutcome.selectedAction.actionType,
@@ -426,7 +439,7 @@ export function createEventsRouter(): Router {
               autoExecute: previousOutcome.autoExecute,
               requiresApproval: previousOutcome.requiresApproval,
               reasoning: previousOutcome.reasoning,
-            },
+            } : null,
             explanation: previousExplanation
               ? {
                   summary: previousExplanation.summary,
@@ -442,19 +455,30 @@ export function createEventsRouter(): Router {
               ? { id: previousApproval.id, status: previousApproval.status }
               : null,
             reIngested: true,
+            replaySuppressed: ingestState.effectState === 'restored_non_replay' ||
+              ingestState.effectState === 'running',
           });
           return;
+        } else {
+          log.info('Re-ingestion before receipt finalization; running inference pipeline to completion', {
+            userId,
+            decisionId: decision.id,
+            previousOutcomePresent: previousOutcome !== null,
+            previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
+            ingestState: ingestState?.effectState ?? null,
+          });
         }
-        log.info('Re-ingestion with incomplete previous attempt; running pipeline to completion', {
-          userId,
-          decisionId: decision.id,
-          previousOutcomePresent: previousOutcome !== null,
-          previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
-        });
       }
 
       // 2. Get user record (trust tier must come from DB, never from caller)
       const user = await userRepository.findById(userId);
+
+      let outcome: DecisionOutcome;
+      let explanation: ExplanationRecord;
+      if (resumedAfterReceiptCapture) {
+        outcome = resumedAfterReceiptCapture.outcome;
+        explanation = resumedAfterReceiptCapture.explanation;
+      } else {
 
       // 3. Get the twin profile (used internally for preferences)
       await twinService.getOrCreateProfile(userId);
@@ -554,19 +578,35 @@ export function createEventsRouter(): Router {
         });
 
       // 7. Evaluate through decision maker
-      const outcome = await decisionMaker.evaluate(context);
+      outcome = await decisionMaker.evaluate(context);
 
       // 8. Generate explanation
-      const explanation = await explanationGenerator.generate(
+      explanation = await explanationGenerator.generate(
         decision,
         outcome,
         context,
       );
 
+      const awarenessOnly = outcome.requiresApproval && !!outcome.selectedAction &&
+        isAwarenessOnly(decision, outcome);
+      if (awarenessOnly) {
+        log.info('Awareness-disposition candidate', {
+          decisionId: decision.id,
+          situationType: decision.situationType,
+          actionType: outcome.selectedAction?.actionType,
+          gateEnabled: awarenessDispositionGateEnabled(),
+        });
+      }
+      if (awarenessOnly && awarenessDispositionGateEnabled()) {
+        outcome.requiresApproval = false;
+        await decisionRepositoryAdapter.saveOutcome(outcome);
+      }
+
       // An LLM-backed decision cannot proceed to approval or execution until
       // every completed inference has a receipt linked to its real explanation.
       // The repository inserts the batch atomically and derives ownership from
-      // the decision; raw inference bytes are verified here but never stored.
+      // the decision. Raw bytes remain in transient request memory until their
+      // references are released; the repository never persists them.
       {
         const signingKey = getReceiptSigningKey();
         const inputs = (receiptAwareLlm?.traces ?? []).map((trace) => {
@@ -590,14 +630,21 @@ export function createEventsRouter(): Router {
         const persisted = await inferenceReceiptRepository.createManyForUser(userId, inputs, {
           decisionId: decision.id,
           explanationId: explanation.id,
+          continuationKind: outcome.requiresApproval && outcome.selectedAction
+            ? 'approval'
+            : outcome.autoExecute && outcome.selectedAction ? 'auto_execute' : 'non_effect',
+          confirmationLevel: outcome.requiresApproval && outcome.selectedAction
+            ? outcome.confirmationLevel === 'dual' ? 'dual' : 'single'
+            : null,
         });
         if (!persisted || persisted.length !== inputs.length) {
           throw new Error('Inference receipts could not be persisted; decision execution stopped');
         }
       }
+      }
 
       // 8b. Persist candidate actions so alternatives are available for approval UI
-      if (outcome.allCandidates.length > 0) {
+      if (!resumedAfterReceiptCapture && outcome.allCandidates.length > 0) {
         try {
           await decisionRepositoryAdapter.saveCandidates(outcome.allCandidates);
         } catch (err: unknown) {
@@ -632,27 +679,6 @@ export function createEventsRouter(): Router {
       // under FYI, not To-dos. Never gates an injection-guard escalation (see
       // isAwarenessOnly). Phase 0 logs the candidate with no behaviour change;
       // Phase 1 (AWARENESS_DISPOSITION_GATE=on, default off) does the suppression.
-      const awarenessOnly =
-        outcome.requiresApproval &&
-        !!outcome.selectedAction &&
-        isAwarenessOnly(decision, outcome);
-      if (awarenessOnly) {
-        log.info('Awareness-disposition candidate', {
-          decisionId: decision.id,
-          situationType: decision.situationType,
-          actionType: outcome.selectedAction?.actionType,
-          gateEnabled: awarenessDispositionGateEnabled(),
-        });
-      }
-      if (awarenessOnly && awarenessDispositionGateEnabled()) {
-        // Phase 1: flip the PERSISTED outcome so the approval branch below is
-        // skipped (no row, no approval:new SSE) and needsYou() buckets it as FYI.
-        // selectedAction stays non-null, so decision:blocked-by-policy stays
-        // silent. saveOutcome upserts the existing row (ON CONFLICT DO UPDATE).
-        outcome.requiresApproval = false;
-        await decisionRepositoryAdapter.saveOutcome(outcome);
-      }
-
       if (outcome.requiresApproval && outcome.selectedAction) {
         // Create an approval request so the user can review it. We include
         // `parameters` here so the dashboard can render *what specifically*
@@ -735,8 +761,26 @@ export function createEventsRouter(): Router {
           });
           approvalRequest = escalationResult.row;
           approvalNewlyCreated = escalationResult.created;
+          const markedNonEffect = await inferenceReceiptRepository.markNonEffectForDecision(
+            userId,
+            decision.id,
+          );
+          if (!markedNonEffect) {
+            throw new Error('Execution guard could not be converted to manual approval');
+          }
         } else {
           prepareEmailActionForExecution(outcome.selectedAction, user);
+
+          // This compare-and-set is the only autonomous dispatch authority.
+          // A lost commit response leaves `running`, which retries never replay.
+          const executionClaimed = await inferenceReceiptRepository.claimExecutionForDecision(
+            userId,
+            decision.id,
+          );
+          if (!executionClaimed) {
+            const state = await inferenceReceiptRepository.getIngestStateForDecision(userId, decision.id);
+            executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
+          } else {
 
           // Persist the DB execution plan before routing so streaming events can
           // reference it via execution_events.plan_id.
@@ -823,6 +867,12 @@ export function createEventsRouter(): Router {
             error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
             rollbackAvailable: outcome.selectedAction.reversible,
           });
+          await inferenceReceiptRepository.markExecutionTerminalForDecision(
+            userId,
+            decision.id,
+            terminalStatus,
+            savedPlan.id,
+          );
 
           executionResult = {
             status: terminalStatus,
@@ -852,6 +902,7 @@ export function createEventsRouter(): Router {
             status: terminalStatus,
             eventType: terminalEvent?.eventType,
           });
+          }
         } // end if (riskAssessment) — escalation branch above handles null
       }
 

@@ -18,7 +18,7 @@ The backup is scoped to the data that *is* your twin:
 | Account | `users` |
 | Twin profile + its full version history | `twin_profiles`, `twin_profile_versions` |
 | Learned preferences | `preferences` |
-| Decisions (with candidate actions, outcomes, and explanations) | `decisions`, `candidate_actions`, `decision_outcomes`, `explanation_records` |
+| Decisions (with candidate actions, outcomes, explanations, inference receipts, and portable non-replay state) | `decisions`, `candidate_actions`, `decision_outcomes`, `explanation_records`, `inference_receipts`, `inference_receipt_completions`, `decision_ingest_guards` |
 
 ### What it deliberately does **not** contain
 
@@ -100,9 +100,12 @@ The schema version is checked before any write: an archive produced by a newer
 build (higher `BACKUP_SCHEMA_VERSION`) is rejected with `unsupported_schema`
 rather than partially imported.
 
-Schema version 2 adds inference receipts. Current builds still accept receipt-free
-schema-version-1 archives, while older builds reject version 2 instead of
-silently restoring the rest of the archive without its receipts.
+Schema version 2 adds inference receipts. Schema version 3 adds receipt-completion
+authority plus the autonomous-effect classification and any known terminal plan
+reference. Restored decisions are historical data, not queued work: every
+restored decision receives a `restored_non_replay` guard. Current builds still
+accept schema-version-1 and -2 archives and apply the same fail-safe tombstone;
+older builds reject newer schemas instead of silently dropping safety state.
 
 ## Exit codes
 

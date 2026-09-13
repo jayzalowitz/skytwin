@@ -79,16 +79,18 @@ through the library API.
 ## Privacy, retention, and deletion
 
 Receipt rows contain identifiers and inference metadata. Canonical logical
-input/output and verification-evidence bytes exist only while the route validates
-and inserts the metadata receipt; they are not written to the receipt table.
+input/output and verification-evidence bytes live in transient request memory
+while the route validates and inserts the metadata receipt, and may remain there
+until JavaScript references are released and garbage collection runs. They are
+never written to the receipt or ingest-guard tables.
 Receipt rows are not yet
 application-level encrypted; operators should use full-disk encryption, as
 documented in the privacy policy. They cascade-delete with their decision or
 user and can be explicitly deleted atomically through the authenticated decision receipt
 route. User backups include the canonical receipt metadata; restore verifies its
 self-contained metadata seal and exact linkage before writing it. Because an
-embedded key is not an identity trust root, restored rows are explicitly marked
-`imported_unverified` until a trust-aware verification process promotes them.
+embedded key is not an identity trust root, restored rows retain their signed
+status but are stored with `trusted=false`; no restore-time process promotes them.
 Standalone verification exports are more
 sensitive because they contain the exact supplied request and response bytes;
 users should protect or delete those files according to their own retention
