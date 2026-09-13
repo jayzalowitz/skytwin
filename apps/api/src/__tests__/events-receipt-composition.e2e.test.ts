@@ -11,12 +11,14 @@ const {
   mockReevaluate,
   mockExecute,
   mockGetToken,
+  mockPolicyEvaluate,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
   mockReevaluate: vi.fn(),
   mockExecute: vi.fn(),
   mockGetToken: vi.fn(),
+  mockPolicyEvaluate: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -47,9 +49,20 @@ vi.mock('@skytwin/twin-model', () => ({
   }),
 }));
 
-vi.mock('@skytwin/policy-engine', () => ({ PolicyEvaluator: vi.fn() }));
+vi.mock('@skytwin/policy-engine', () => ({
+  PolicyEvaluator: vi.fn(function PolicyEvaluator() {
+    return { evaluate: mockPolicyEvaluate };
+  }),
+}));
 vi.mock('../execution-setup.js', () => ({
-  getExecutionRouter: vi.fn(async () => ({ executeWithRoutingStreaming: mockExecute })),
+  getExecutionRouter: vi.fn(async () => ({
+    prepareExecution: vi.fn(async (_action: unknown, risk: RiskAssessment) => ({
+      handle: {}, adapterName: 'direct', planId: crypto.randomUUID(),
+      riskAssessment: risk, streaming: true, fallbacksAttempted: 0,
+      routingDecision: { selectedAdapter: 'direct', reasoning: 'Direct prepared.' },
+    })),
+    executePreparedStreaming: vi.fn((_prepared: unknown, ...args: unknown[]) => mockExecute(...args)),
+  })),
 }));
 vi.mock('../memory-setup.js', () => ({
   getMemoryPortForUser: vi.fn(async () => ({
@@ -141,6 +154,9 @@ describe.skipIf(!E2E)('E2E: event receipt authority composition', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetToken.mockResolvedValue({ access_token: 'credential-secret' });
+    mockPolicyEvaluate.mockResolvedValue({
+      allowed: true, requiresApproval: false, reason: 'Current policy allows execution.',
+    });
   });
 
   afterEach(async () => {
@@ -225,10 +241,9 @@ describe.skipIf(!E2E)('E2E: event receipt authority composition', () => {
     const capturedAction = stored.rows[0]!.continuation_snapshot.outcome.selectedAction!;
     expect(capturedAction.parameters).not.toHaveProperty('accessToken');
     expect(capturedAction.parameters).not.toHaveProperty('executionPlanId');
-    expect(executed!.parameters).toMatchObject({
-      accessToken: 'credential-secret',
-      executionPlanId: expect.any(String),
-    });
+    expect(executed!.parameters).toMatchObject({ executionPlanId: expect.any(String) });
+    expect(executed!.parameters).not.toHaveProperty('accessToken');
+    expect(mockGetToken).not.toHaveBeenCalled();
     if (actionType === 'draft_email') {
       expect(mockReevaluate).toHaveBeenCalledTimes(1);
       expect(capturedAction).toMatchObject({ actionType: 'send_reply', reversible: false });

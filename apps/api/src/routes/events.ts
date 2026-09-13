@@ -377,10 +377,24 @@ export function createEventsRouter(): Router {
         const previousApproval = previousOutcome
           ? await approvalRepository.findByDecisionId(decision.id, userId)
           : null;
+        const persistedDisposition = previousOutcome?.selectedAction
+          ? await executionAdmissionRepository.findReceiptExecutionDisposition(
+              userId,
+              decision.id,
+              previousOutcome.selectedAction.id,
+            )
+          : null;
         // Terminal truth comes only from the guard transition bound to the
         // exact owner/decision/action plan. A standalone execution_result may
         // have committed while terminalization's response was false or lost.
-        const executionTerminal = ingestState?.sourceExecutionStatus && (
+        const executionTerminal = persistedDisposition
+          ? {
+              status: persistedDisposition.status,
+              planId: ingestState?.sourceExecutionPlanId ?? null,
+              error: persistedDisposition.reason,
+              explanationId: persistedDisposition.explanationId,
+            }
+          : ingestState?.sourceExecutionStatus && (
           ingestState.effectState === 'completed' ||
           ingestState.effectState === 'failed' ||
           ingestState.effectState === 'restored_non_replay'
@@ -451,12 +465,12 @@ export function createEventsRouter(): Router {
                 : null,
               autoExecute: previousOutcome.autoExecute,
               requiresApproval: previousOutcome.requiresApproval,
-              reasoning: previousOutcome.reasoning,
+              reasoning: persistedDisposition?.reason ?? previousOutcome.reasoning,
             } : null,
             explanation: previousExplanation
               ? {
-                  summary: previousExplanation.summary,
-                  riskTier: previousExplanation.riskTier,
+                  summary: persistedDisposition?.summary ?? previousExplanation.summary,
+                  riskTier: persistedDisposition?.riskTier ?? previousExplanation.riskTier,
                   confidence: previousExplanation.overallConfidence,
                 }
               : null,
@@ -469,7 +483,7 @@ export function createEventsRouter(): Router {
               : null,
             reIngested: true,
             replaySuppressed: ingestState.effectState === 'restored_non_replay' ||
-              ingestState.effectState === 'running',
+              ingestState.effectState === 'running' || persistedDisposition !== null,
           });
           return;
         } else {
@@ -598,7 +612,8 @@ export function createEventsRouter(): Router {
       // attribution. Prepare every possible outbound candidate and run the
       // complete risk/policy/ranking pass again before outcome persistence,
       // explanation generation, and receipt capture. Credentials are excluded
-      // here and injected only into a separate execution copy after the claim.
+      // here and materialized inside the built-in handler only after the final
+      // one-shot dispatch claim.
       if (outcome.autoExecute && outcome.selectedAction &&
           isOutboundEmailAction(outcome.selectedAction.actionType)) {
         for (const candidate of outcome.allCandidates) {
@@ -765,31 +780,55 @@ export function createEventsRouter(): Router {
           const approvalVisibleParametersEsc = isOutboundEmailAction(outcome.selectedAction.actionType)
             ? annotateEmailAttributionPreview(visibleParametersEsc, user)
             : visibleParametersEsc;
-          const escalationResult = await approvalRepository.create({
+          const escalationResult = await inferenceReceiptRepository.escalateExecutionToApproval({
             userId,
             decisionId: decision.id,
+            continuation: { outcome, explanation },
             candidateAction: serializeApprovalCandidate(outcome.selectedAction, approvalVisibleParametersEsc),
             reason: 'Auto-execute path could not verify a persisted risk assessment for this candidate. Escalated to manual approval to fail closed (#371).',
             urgency: decision.urgency,
             confirmationLevel: 'single',
           });
-          approvalRequest = escalationResult.row;
-          approvalNewlyCreated = escalationResult.created;
-          const markedNonEffect = await inferenceReceiptRepository.markNonEffectForDecision(
-            userId,
-            decision.id,
-          );
-          if (!markedNonEffect) {
-            throw new Error('Execution guard could not be converted to manual approval');
+          if (escalationResult) {
+            approvalRequest = escalationResult.row;
+            approvalNewlyCreated = escalationResult.created;
+          } else {
+            const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
+            executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
           }
         } else {
           const executionRouter = await getRouter();
-          const prepared = await executionRouter.prepareExecution(
-            outcome.selectedAction,
-            riskAssessment,
-            userId,
-            { streaming: true, ironclawChannel: user?.ironclaw_channel ?? undefined },
-          );
+          let prepared: Awaited<ReturnType<typeof executionRouter.prepareExecution>> | null = null;
+          try {
+            prepared = await executionRouter.prepareExecution(
+              outcome.selectedAction,
+              riskAssessment,
+              userId,
+              { streaming: true, ironclawChannel: user?.ironclaw_channel ?? undefined },
+            );
+          } catch (error) {
+            const provenNoRequest = error instanceof NoRequestExecutionError;
+            const disposition = await executionAdmissionRepository.recordReceiptPreparationDisposition({
+              userId,
+              decisionId: decision.id,
+              actionId: outcome.selectedAction.id,
+              ambiguous: !provenNoRequest,
+              reason: provenNoRequest
+                ? normalizeExecutionError(error)
+                : 'Adapter preparation outcome could not be classified before dispatch.',
+            });
+            if (disposition) {
+              executionResult = {
+                status: disposition.status,
+                planId: null,
+                error: disposition.reason,
+              };
+            } else {
+              const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
+              executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
+            }
+          }
+          if (prepared) {
           const executionRisk = prepared.riskAssessment;
           let currentAuthorityRevision: string | null = null;
           let currentPolicyAuthorityRevision: string | null = null;
@@ -862,20 +901,25 @@ export function createEventsRouter(): Router {
             const visibleParameters = isOutboundEmailAction(outcome.selectedAction.actionType)
               ? annotateEmailAttributionPreview(preparedVisibleParameters, user)
               : preparedVisibleParameters;
-            const escalation = await approvalRepository.create({
+            const escalation = await inferenceReceiptRepository.escalateExecutionToApproval({
               userId,
               decisionId: decision.id,
+              continuation: { outcome, explanation },
               candidateAction: serializeApprovalCandidate(outcome.selectedAction, visibleParameters),
               reason: `The prepared ${prepared.adapterName} execution path requires approval: ${claimPolicy.reason}`,
               urgency: decision.urgency,
               confirmationLevel: claimPolicy.confirmationLevel ?? 'single',
+              dispatch: {
+                adapterName: prepared.adapterName,
+                riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+                policySnapshot: claimPolicy as unknown as Record<string, unknown>,
+              },
             });
-            approvalRequest = escalation.row;
-            approvalNewlyCreated = escalation.created;
-            if (!await inferenceReceiptRepository.markNonEffectForDecision(userId, decision.id)) {
-              throw new Error('Prepared execution guard could not be converted to manual approval');
+            if (escalation) {
+              approvalRequest = escalation.row;
+              approvalNewlyCreated = escalation.created;
+              preparedRiskSettledWithoutEffect = true;
             }
-            preparedRiskSettledWithoutEffect = true;
           }
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
@@ -1143,6 +1187,7 @@ export function createEventsRouter(): Router {
                 eventType: terminalEvent?.eventType,
               });
             }
+          }
           }
           }
         } // end if (riskAssessment) — escalation branch above handles null

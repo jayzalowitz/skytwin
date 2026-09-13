@@ -12,6 +12,7 @@ import {
 } from '@skytwin/shared-types';
 import { query, withTransaction } from '../connection.js';
 import type {
+  ApprovalRequestRow,
   CandidateActionRow,
   ExecutionPlanRow,
   InferenceReceiptRow,
@@ -72,6 +73,20 @@ export interface PreparedDecisionDispatch {
   executionPlanId: string;
   adapterName: string;
   riskSnapshot: Record<string, unknown>;
+}
+
+export interface EscalateDecisionToApprovalInput {
+  userId: string;
+  decisionId: string;
+  continuation: DecisionContinuation;
+  candidateAction: Record<string, unknown>;
+  reason: string;
+  urgency: string;
+  confirmationLevel: 'single' | 'dual';
+  expiresAt?: Date;
+  dispatch?: Omit<PreparedDecisionDispatch, 'executionPlanId'> & {
+    policySnapshot: Record<string, unknown>;
+  };
 }
 
 function canonicalJson(value: unknown): string {
@@ -584,6 +599,139 @@ export const inferenceReceiptRepository = {
       );
       if (!claimed.rows[0]) throw new Error('Execution guard claim could not bind to its plan');
       return { ...plan, dispatchAuthorityUpdatedAt: claimed.rows[0].updated_at };
+    });
+  },
+
+  /**
+   * Convert one exact ready receipt into a pending approval atomically. The
+   * owner/guard lock order matches autonomous claim, so an execution plan and
+   * an escalation approval can never both win for the same receipt.
+   */
+  async escalateExecutionToApproval(
+    input: EscalateDecisionToApprovalInput,
+  ): Promise<{ row: ApprovalRequestRow; created: boolean } | null> {
+    const continuation = snapshotContinuation(input.continuation);
+    const outcome = continuation?.outcome;
+    const explanation = continuation?.explanation;
+    const selectedAction = outcome?.selectedAction;
+    const selectedParameters = selectedAction?.parameters as Record<string, unknown> | undefined;
+    const {
+      accessToken: _omittedAccessToken,
+      rawData: _omittedRawData,
+      ...visibleParameters
+    } = selectedParameters ?? {};
+    const expectedCandidateAction = selectedAction ? JSON.parse(JSON.stringify({
+      id: selectedAction.id,
+      actionType: selectedAction.actionType,
+      description: selectedAction.description,
+      domain: selectedAction.domain,
+      parameters: visibleParameters,
+      estimatedCostCents: selectedAction.estimatedCostCents,
+      costZeroIntent: selectedAction.costZeroIntent,
+      provenance: selectedAction.provenance,
+      reversible: selectedAction.reversible,
+      confidence: selectedAction.confidence,
+      reasoning: selectedAction.reasoning,
+    })) as Record<string, unknown> : null;
+    const candidateAction = JSON.parse(JSON.stringify(input.candidateAction)) as Record<string, unknown>;
+    if (!continuation || !outcome || !explanation || !selectedAction ||
+        outcome.decisionId !== input.decisionId || explanation.decisionId !== input.decisionId ||
+        !expectedCandidateAction || canonicalJson(candidateAction) !== canonicalJson(expectedCandidateAction) ||
+        selectedAction.decisionId !== input.decisionId ||
+        !outcome.autoExecute || outcome.requiresApproval ||
+        (input.dispatch && (
+          input.dispatch.riskSnapshot['actionId'] !== selectedAction.id ||
+          normalizeMemoryActionAdapterName(input.dispatch.adapterName) !== input.dispatch.adapterName
+        ))) {
+      return null;
+    }
+
+    return withTransaction(async (client) => {
+      const owner = await client.query(
+        'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+        [input.userId],
+      );
+      if (!owner.rows[0]) return null;
+
+      const locked = await client.query(
+        `SELECT g.decision_id
+           FROM decision_ingest_guards g
+           JOIN decisions d ON d.id = g.decision_id
+           JOIN decision_outcomes o ON o.id = g.outcome_id AND o.decision_id = g.decision_id
+          WHERE d.user_id = $1 AND g.decision_id = $2 AND g.effect_state = 'ready'
+            AND g.continuation_kind = 'auto_execute'
+            AND g.outcome_auto_execute IS TRUE AND g.outcome_requires_approval IS FALSE
+            AND g.outcome_id = $3 AND g.receipt_explanation_id = $4
+            AND g.selected_action_id = $5 AND o.selected_action_id = $5
+            AND o.auto_executed IS TRUE AND o.requires_approval IS FALSE
+            AND COALESCE(o.escalation_reason, o.explanation) = $6
+            AND g.continuation_snapshot = $7::JSONB
+            AND g.risk_snapshot IS NOT DISTINCT FROM $8::JSONB
+            AND g.policy_snapshot = $9::JSONB
+            AND NOT EXISTS (
+              SELECT 1 FROM execution_admission_barriers b
+               WHERE b.user_id = $1 AND b.decision_id = $2 AND b.action_id = $5
+            )
+          FOR UPDATE OF g, d, o`,
+        [input.userId, input.decisionId, outcome.id, explanation.id, selectedAction.id,
+          outcome.reasoning, JSON.stringify(continuation),
+          JSON.stringify(outcome.riskAssessment ?? null),
+          JSON.stringify(outcome.policyVerdicts ?? {})],
+      );
+      if (!locked.rows[0]) return null;
+
+      const inserted = await client.query<ApprovalRequestRow>(
+        `INSERT INTO approval_requests
+           (user_id, decision_id, candidate_action, reason, urgency, status,
+            requested_at, expires_at, confirmation_level)
+         VALUES ($1, $2, $3::JSONB, $4, $5, 'pending', now(), $6, $7)
+         ON CONFLICT (decision_id) DO NOTHING
+         RETURNING *`,
+        [input.userId, input.decisionId, JSON.stringify(candidateAction),
+          input.reason, input.urgency,
+          input.expiresAt ?? new Date(Date.now() + 24 * 60 * 60 * 1000),
+          input.confirmationLevel],
+      );
+      let approval = inserted.rows[0];
+      let created = true;
+      if (!approval) {
+        const existing = await client.query<ApprovalRequestRow>(
+          `SELECT * FROM approval_requests
+            WHERE decision_id = $1 AND user_id = $2 FOR UPDATE`,
+          [input.decisionId, input.userId],
+        );
+        approval = existing.rows[0];
+        created = false;
+      }
+      if (!approval || approval.status !== 'pending' ||
+          canonicalJson(approval.candidate_action) !== canonicalJson(candidateAction) ||
+          approval.reason !== input.reason || approval.urgency !== input.urgency ||
+          approval.confirmation_level !== input.confirmationLevel) {
+        throw new Error('Existing approval conflicts with receipt escalation authority.');
+      }
+
+      const consumed = await client.query(
+        `UPDATE decision_ingest_guards
+            SET effect_state = 'non_effect',
+                continuation_kind = 'approval',
+                dispatch_adapter_name = $3,
+                dispatch_risk_snapshot = $4::JSONB,
+                dispatch_policy_snapshot = $5::JSONB,
+                confirmation_level = $6,
+                updated_at = now()
+          WHERE decision_id = $1 AND selected_action_id = $2
+            AND effect_state = 'ready'
+          RETURNING decision_id`,
+        [input.decisionId, selectedAction.id,
+          input.dispatch?.adapterName ?? null,
+          input.dispatch ? JSON.stringify(input.dispatch.riskSnapshot) : null,
+          input.dispatch ? JSON.stringify(input.dispatch.policySnapshot) : null,
+          input.confirmationLevel],
+      );
+      if (!consumed.rows[0]) {
+        throw new Error('Receipt escalation authority could not be consumed.');
+      }
+      return { row: approval, created };
     });
   },
 

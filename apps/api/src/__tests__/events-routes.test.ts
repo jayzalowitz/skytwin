@@ -26,6 +26,9 @@ const {
   mockMarkExecutionFailedBeforeDispatch,
   mockMarkNonEffect,
   mockRecordPolicyDenial,
+  mockRecordPreparationDisposition,
+  mockFindExecutionDisposition,
+  mockEscalateExecutionToApproval,
   mockGetExplanation,
   mockEmitReceipt,
   mockLlmClient,
@@ -64,6 +67,9 @@ const {
   mockMarkExecutionFailedBeforeDispatch: vi.fn(),
   mockMarkNonEffect: vi.fn(),
   mockRecordPolicyDenial: vi.fn(),
+  mockRecordPreparationDisposition: vi.fn(),
+  mockFindExecutionDisposition: vi.fn(),
+  mockEscalateExecutionToApproval: vi.fn(),
   mockGetExplanation: vi.fn(),
   mockEmitReceipt: vi.fn(),
   mockLlmClient: vi.fn(),
@@ -120,7 +126,11 @@ vi.mock('@skytwin/db', () => ({
   },
   oauthRepository: { getToken: mockGetOAuthToken },
   executionRepository: mockExecutionRepository,
-  executionAdmissionRepository: { recordPolicyDenial: mockRecordPolicyDenial },
+  executionAdmissionRepository: {
+    recordPolicyDenial: mockRecordPolicyDenial,
+    recordReceiptPreparationDisposition: mockRecordPreparationDisposition,
+    findReceiptExecutionDisposition: mockFindExecutionDisposition,
+  },
   userRepository: { findById: mockFindUser },
   aiProviderRepository: { getEnabledForUser: mockGetProviders },
   inferenceReceiptRepository: {
@@ -131,6 +141,7 @@ vi.mock('@skytwin/db', () => ({
     markExecutionTerminalForDecision: mockMarkExecutionTerminal,
     markExecutionFailedBeforeDispatchForDecision: mockMarkExecutionFailedBeforeDispatch,
     markNonEffectForDecision: mockMarkNonEffect,
+    escalateExecutionToApproval: mockEscalateExecutionToApproval,
   },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),
@@ -370,6 +381,16 @@ describe('Events API routes', () => {
       explanationId: 'policy-denial-explanation-1',
       evidence: { kind: 'execution_policy_denial' },
     });
+    mockRecordPreparationDisposition.mockResolvedValue({
+      explanationId: 'preparation-disposition-explanation-1',
+      status: 'failed',
+      reason: 'No adapter was available before request start.',
+    });
+    mockFindExecutionDisposition.mockResolvedValue(null);
+    mockEscalateExecutionToApproval.mockResolvedValue({
+      row: { id: 'approval-risk-escalation', status: 'pending' },
+      created: true,
+    });
     mockGetExplanation.mockResolvedValue(null);
     mockEmitReceipt.mockReturnValue({ exportVersion: 1, receipt: { id: 'receipt-1' } });
     mockLlmClient.mockImplementation(function MockLlmClient() {
@@ -569,10 +590,6 @@ describe('Events API routes', () => {
       reason: 'The selected adapter raises this action above the automatic threshold.',
       confirmationLevel: 'single',
     });
-    mockApprovalCreate.mockResolvedValue({
-      row: { id: 'approval-risk-escalation', status: 'pending' },
-      created: true,
-    });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
       userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
@@ -583,14 +600,16 @@ describe('Events API routes', () => {
       actionId: 'action-1',
       overallTier: 'critical',
     });
-    expect(mockApprovalCreate).toHaveBeenCalledWith(expect.objectContaining({
+    expect(mockEscalateExecutionToApproval).toHaveBeenCalledWith(expect.objectContaining({
       reason: expect.stringContaining('selected adapter raises this action'),
       confirmationLevel: 'single',
+      dispatch: expect.objectContaining({
+        adapterName: 'openclaw',
+        riskSnapshot: expect.objectContaining({ overallTier: 'critical' }),
+      }),
     }));
-    expect(mockMarkNonEffect).toHaveBeenCalledWith(
-      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-      'decision-1',
-    );
+    expect(mockApprovalCreate).not.toHaveBeenCalled();
+    expect(mockMarkNonEffect).not.toHaveBeenCalled();
     expect(mockClaimExecution).not.toHaveBeenCalled();
     expect(executePreparedStreaming).not.toHaveBeenCalled();
   });
@@ -650,6 +669,126 @@ describe('Events API routes', () => {
         reason: 'The prepared execution path was blocked by current policy.',
       }),
     );
+  });
+
+  it('durably closes a proven pre-request preparation refusal without claiming execution', async () => {
+    mockGetExecutionRouter.mockResolvedValue({
+      prepareExecution: vi.fn().mockRejectedValue(
+        new NoRequestExecutionError('No exact ready adapter can handle this action.'),
+      ),
+    });
+    mockRecordPreparationDisposition.mockResolvedValue({
+      explanationId: 'preparation-refusal-explanation-1',
+      status: 'failed',
+      reason: '[redacted:execution-error]',
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect((res.body as { execution: unknown }).execution).toEqual({
+      status: 'failed',
+      planId: null,
+      error: '[redacted:execution-error]',
+    });
+    expect(mockRecordPreparationDisposition).toHaveBeenCalledWith(expect.objectContaining({
+      decisionId: 'decision-1',
+      actionId: 'action-1',
+      ambiguous: false,
+      reason: '[redacted:execution-error]',
+    }));
+    expect(mockClaimExecution).not.toHaveBeenCalled();
+  });
+
+  it('consumes retry authority when preparation cannot prove a pre-request refusal', async () => {
+    mockGetExecutionRouter.mockResolvedValue({
+      prepareExecution: vi.fn().mockRejectedValue(new Error('transport state was lost')),
+    });
+    mockRecordPreparationDisposition.mockResolvedValue({
+      explanationId: 'preparation-ambiguous-explanation-1',
+      status: 'ambiguous',
+      reason: 'Adapter preparation outcome could not be classified before dispatch.',
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect((res.body as { execution: unknown }).execution).toEqual({
+      status: 'ambiguous',
+      planId: null,
+      error: 'Adapter preparation outcome could not be classified before dispatch.',
+    });
+    expect(mockRecordPreparationDisposition).toHaveBeenCalledWith(expect.objectContaining({
+      decisionId: 'decision-1', actionId: 'action-1', ambiguous: true,
+    }));
+    expect(mockClaimExecution).not.toHaveBeenCalled();
+  });
+
+  it('does not claim or dispatch when atomic prepared-risk escalation loses its authority', async () => {
+    mockGetExecutionRouter.mockResolvedValue({
+      prepareExecution: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
+        handle: {}, adapterName: 'openclaw', planId: 'plan-1', streaming: true,
+        riskAssessment: { ...sourceRisk, overallTier: 'critical' },
+        routingDecision: { selectedAdapter: 'openclaw', reasoning: 'OpenClaw prepared.' },
+      })),
+      executePreparedStreaming: vi.fn(),
+    });
+    mockCurrentPolicyEvaluate.mockResolvedValue({
+      allowed: true, requiresApproval: true, reason: 'Prepared risk requires approval.',
+      confirmationLevel: 'single',
+    });
+    mockEscalateExecutionToApproval.mockResolvedValue(null);
+    mockGetIngestState.mockResolvedValue(ingestState('running', 'auto_execute'));
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect((res.body as { execution: unknown }).execution).toEqual({
+      status: 'ambiguous', planId: null,
+    });
+    expect(mockClaimExecution).not.toHaveBeenCalled();
+    expect(mockApprovalCreate).not.toHaveBeenCalled();
+  });
+
+  it('suppresses retry and hydrates the persisted prepared-risk denial projection', async () => {
+    mockSaveDecision.mockImplementation(async (decision: unknown) => ({ decision, created: false }));
+    mockGetIngestState.mockResolvedValue(ingestState('non_effect', 'auto_execute'));
+    mockFindExecutionDisposition.mockResolvedValue({
+      explanationId: 'execution-policy-denial-1',
+      status: 'blocked',
+      reason: 'The selected adapter is above the current policy ceiling.',
+      summary: 'Execution was blocked before dispatch.',
+      riskTier: 'critical',
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      reIngested: true,
+      outcome: { reasoning: 'The selected adapter is above the current policy ceiling.' },
+      explanation: {
+        summary: 'Execution was blocked before dispatch.',
+        riskTier: 'critical',
+      },
+      execution: {
+        status: 'blocked',
+        planId: null,
+        error: 'The selected adapter is above the current policy ceiling.',
+        explanationId: 'execution-policy-denial-1',
+      },
+    });
+    expect(mockEvaluate).not.toHaveBeenCalled();
+    expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+    expect(mockClaimExecution).not.toHaveBeenCalled();
   });
 
   it('resumes from the persisted continuation after a capture commit response is lost', async () => {

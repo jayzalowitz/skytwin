@@ -655,11 +655,10 @@ describe('DbCredentialProvider', () => {
       dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
     };
 
-    await expect(provider.startDispatch(input)).resolves.toMatchObject({
-      success: true,
-      accessToken: 'read-token',
-      capability: 'capability',
-    });
+    const dispatch = await provider.startDispatch(input);
+    expect(dispatch).toMatchObject({ success: true, capability: 'capability' });
+    expect(dispatch).not.toHaveProperty('accessToken');
+    expect(dispatch.success && provider.consumeDispatchCredential(dispatch)).toBe('read-token');
     expect(mockCredentialDispatchLeaseRepository.bindCredential).toHaveBeenCalledWith({
       userId: input.userId, provider: input.provider, decisionId: input.decisionId,
       actionId: input.actionId, executionPlanId: input.executionPlanId,
@@ -698,9 +697,10 @@ describe('DbCredentialProvider', () => {
       dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
     };
 
-    await expect(provider.startDispatch(input)).resolves.toMatchObject({
-      success: true, accessToken: 'fresh-access',
-    });
+    const dispatch = await provider.startDispatch(input);
+    expect(dispatch).toMatchObject({ success: true });
+    expect(dispatch).not.toHaveProperty('accessToken');
+    expect(dispatch.success && provider.consumeDispatchCredential(dispatch)).toBe('fresh-access');
     expect(mockOauthRepository.rotateTokenIfCurrent).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedCredentialRevision: 'revision-1',
@@ -754,9 +754,10 @@ describe('DbCredentialProvider', () => {
       dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
     };
 
-    await expect(provider.startDispatch(input)).resolves.toMatchObject({
-      success: true, accessToken: 'legacy-access',
-    });
+    const dispatch = await provider.startDispatch(input);
+    expect(dispatch).toMatchObject({ success: true });
+    expect(dispatch).not.toHaveProperty('accessToken');
+    expect(dispatch.success && provider.consumeDispatchCredential(dispatch)).toBe('legacy-access');
     expect(mockOauthRepository.updateEncryptedIfCurrent).toHaveBeenCalledWith(
       expect.objectContaining({
         expectedCredentialRevision: 'revision-1',
@@ -813,6 +814,46 @@ describe('DbCredentialProvider', () => {
     });
     expect(mockCredentialDispatchLeaseRepository.terminalize).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('cannot consume plaintext after the local vault session expires post-bind', async () => {
+    let keyLive = true;
+    provider = new DbCredentialProvider({
+      get: () => keyLive ? Buffer.alloc(32, 7) : null,
+      getGeneration: () => keyLive ? 'vault-generation-1' : null,
+    });
+    mockCredentialVaultMetaRepository.getForUser.mockResolvedValue({
+      vault_state: 'unlocked', vault_generation: 'vault-generation-1',
+    });
+    mockOauthRepository.getToken.mockResolvedValue({
+      id: 'encrypted-row', credential_revision: 'revision-1', account_email: 'a@example.com',
+      access_token: null, refresh_token: null,
+      encrypted_access_token: Buffer.from('ciphertext'),
+      encrypted_refresh_token: Buffer.from('refresh-ciphertext'),
+      expires_at: new Date(Date.now() + 120_000), scopes: [],
+    });
+    mockReadColumn.mockReturnValueOnce({ success: true, value: 'decrypted-access' });
+    mockCredentialDispatchLeaseRepository.bindCredential.mockResolvedValue({
+      success: true,
+      grant: {
+        accountEmail: 'a@example.com', oauthTokenId: 'encrypted-row',
+        capability: 'dispatch-capability', leaseGeneration: 'dispatch-generation',
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const grant = await provider.startDispatch({
+      userId: 'user_1', provider: 'google', decisionId: 'decision_1',
+      actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
+      policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
+    });
+    expect(grant.success).toBe(true);
+    keyLive = false;
+    expect(grant.success && provider.consumeDispatchCredential(grant)).toBeNull();
+    // Consumption is one-shot even if the old process-local session appears again.
+    keyLive = true;
+    expect(grant.success && provider.consumeDispatchCredential(grant)).toBeNull();
   });
 
   it('fails closed when disconnect wins before the request-start claim', async () => {

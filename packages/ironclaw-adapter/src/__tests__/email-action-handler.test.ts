@@ -32,7 +32,7 @@ function decodeRaw(raw: string): string {
 }
 
 describe('EmailActionHandler outbound sends', () => {
-  it('returns a known failed result when credential resolution proves no request started', async () => {
+  it('keeps planning credential-free and refuses a missing credential after dispatch authority', async () => {
     const handler = new EmailActionHandler(new NoopCredentialProvider());
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -46,7 +46,8 @@ describe('EmailActionHandler outbound sends', () => {
         dispatchLeaseGeneration: 'generation-1',
       },
     });
-    await expect(handler.prepareRequestStart(step)).rejects.toThrow('No credential');
+    const preparation = await handler.prepareRequestStart(step);
+    await expect(handler.execute(step, preparation)).rejects.toThrow('No credential');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -163,17 +164,19 @@ describe('EmailActionHandler outbound sends', () => {
     expect(mime).toContain(SKYTWIN_EMAIL_ATTRIBUTION_TEXT);
   });
 
-  it('keeps a started credential dispatch ambiguous on a provider 500 and blocks replay', async () => {
+  it('keeps a started credential dispatch ambiguous on a provider 500', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 500 }));
     vi.stubGlobal('fetch', fetchMock);
     const credentialProvider: CredentialProvider = {
-      getAccessToken: vi.fn().mockResolvedValue({
+      getAccessToken: vi.fn(),
+      startDispatch: vi.fn().mockResolvedValue({
         success: true,
-        accessToken: 'leased-access',
-        oauthTokenId: 'oauth-1',
-        credentialRevision: 'revision-1',
-        accountEmail: 'work@example.com',
+        capability: 'dispatch-capability-1',
+        leaseGeneration: 'dispatch-generation-1',
+        executionPlanId: 'plan-1',
+        userId: 'user-1',
       }),
+      consumeDispatchCredential: vi.fn(() => 'leased-access'),
     };
     const handler = new EmailActionHandler(credentialProvider);
     const step = makeStep({
@@ -196,7 +199,6 @@ describe('EmailActionHandler outbound sends', () => {
     const preparation = await handler.prepareRequestStart(step);
     await expect(handler.execute(step, preparation)).rejects.toThrow('outcome is ambiguous');
 
-    await expect(handler.execute(step, preparation)).rejects.toThrow('invalid or already consumed');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

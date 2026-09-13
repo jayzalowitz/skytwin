@@ -167,12 +167,147 @@ export interface ExecutionPolicyDenialRecord {
   evidence: Record<string, unknown>;
 }
 
+export interface ReceiptPreparationDispositionInput {
+  userId: string;
+  decisionId: string;
+  actionId: string;
+  ambiguous: boolean;
+  reason: string;
+}
+
+export interface ReceiptExecutionDisposition {
+  explanationId: string;
+  kind: 'execution_policy_denial' | 'execution_preparation_refusal' |
+    'execution_preparation_ambiguous';
+  status: 'blocked' | 'failed' | 'ambiguous';
+  reason: string;
+  summary: string;
+  riskTier: string | null;
+}
+
 /**
  * Durable one-shot authority for adapters that cannot deduplicate a replay.
  * The local running plan and its user-visible linkage land in the same
  * transaction as admission, before an adapter can be invoked.
  */
 export const executionAdmissionRepository = {
+  /** Close a ready receipt after routing proves no request, or retain an
+   * ambiguous non-replay state when preparation cannot prove that boundary. */
+  async recordReceiptPreparationDisposition(
+    input: ReceiptPreparationDispositionInput,
+  ): Promise<ReceiptExecutionDisposition | null> {
+    const reason = normalizeMemoryActionText(input.reason);
+    if (!reason) throw new Error('Execution preparation disposition reason is invalid.');
+    const kind = input.ambiguous
+      ? 'execution_preparation_ambiguous' as const
+      : 'execution_preparation_refusal' as const;
+    const status = input.ambiguous ? 'ambiguous' as const : 'failed' as const;
+    const summary = input.ambiguous
+      ? 'SkyTwin stopped automatic replay because adapter preparation could not prove that no request started.'
+      : 'SkyTwin deliberately did not execute because no prepared adapter path was available.';
+    const evidence = {
+      schemaVersion: 1,
+      kind,
+      scope: 'receipt',
+      decisionId: input.decisionId,
+      actionId: input.actionId,
+      status,
+      reason,
+    };
+    return withTransaction(async (client) => {
+      const owner = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [input.userId]);
+      if (!owner.rows[0]) return null;
+      const guard = await client.query(
+        `SELECT g.decision_id
+           FROM decision_ingest_guards g
+           JOIN decisions d ON d.id = g.decision_id AND d.user_id = $1
+          WHERE g.decision_id = $2 AND g.selected_action_id = $3
+            AND g.effect_state = 'ready' AND g.continuation_kind = 'auto_execute'
+          FOR UPDATE OF g, d`,
+        [input.userId, input.decisionId, input.actionId],
+      );
+      if (!guard.rows[0]) return null;
+      const explanation = await client.query<{ id: string }>(
+        `INSERT INTO explanation_records (
+           decision_id, type, what_happened, evidence_used, preferences_invoked,
+           confidence_reasoning, action_rationale, escalation_rationale,
+           correction_guidance
+         ) VALUES ($1, $2, $3, $4::JSONB, ARRAY[]::STRING[], $5, $6, $7, $8)
+         RETURNING id`,
+        [input.decisionId, kind, summary, JSON.stringify([evidence]),
+          input.ambiguous
+            ? 'The preparation boundary returned an unclassified outcome, so retry authority was consumed.'
+            : 'All eligible adapters returned trusted pre-request refusals.',
+          'No external action is authorized from this receipt.', reason,
+          'Review adapter availability and create a new decision before trying again.'],
+      );
+      const explanationId = explanation.rows[0]?.id;
+      if (!explanationId) throw new Error('Preparation disposition explanation was not persisted.');
+      const closed = await client.query(
+        `UPDATE decision_ingest_guards
+            SET effect_state = $3,
+                source_execution_status = $4,
+                updated_at = now()
+          WHERE decision_id = $1 AND selected_action_id = $2
+            AND effect_state = 'ready'
+          RETURNING decision_id`,
+        [input.decisionId, input.actionId,
+          input.ambiguous ? 'running' : 'non_effect',
+          input.ambiguous ? 'ambiguous' : null],
+      );
+      if (!closed.rows[0]) throw new Error('Preparation disposition guard could not be consumed.');
+      return { explanationId, kind, status, reason, summary, riskTier: null };
+    });
+  },
+
+  /** Typed, bounded terminal projection used by lost-response receipt replay. */
+  async findReceiptExecutionDisposition(
+    userId: string,
+    decisionId: string,
+    actionId: string,
+  ): Promise<ReceiptExecutionDisposition | null> {
+    const result = await query<{
+      id: string;
+      type: ReceiptExecutionDisposition['kind'];
+      what_happened: string;
+      evidence_used: unknown;
+    }>(
+      `SELECT er.id, er.type, er.what_happened, er.evidence_used
+         FROM decision_ingest_guards g
+         JOIN decisions d ON d.id = g.decision_id AND d.user_id = $1
+         JOIN explanation_records er ON er.decision_id = g.decision_id
+        WHERE g.decision_id = $2 AND g.selected_action_id = $3
+          AND g.effect_state <> 'ready'
+          AND er.type IN ('execution_policy_denial', 'execution_preparation_refusal',
+                          'execution_preparation_ambiguous')
+          AND er.evidence_used->0->>'scope' = 'receipt'
+          AND er.evidence_used->0->>'decisionId' = $2::STRING
+          AND er.evidence_used->0->>'actionId' = $3::STRING
+          AND er.evidence_used->0->>'kind' = er.type
+        ORDER BY er.created_at DESC LIMIT 1`,
+      [userId, decisionId, actionId],
+    );
+    const row = result.rows[0];
+    const evidence = Array.isArray(row?.evidence_used) ? row.evidence_used[0] : null;
+    if (!row || !evidence || typeof evidence !== 'object') return null;
+    const projection = evidence as Record<string, unknown>;
+    if (projection['kind'] !== row.type || projection['scope'] !== 'receipt' ||
+        projection['decisionId'] !== decisionId || projection['actionId'] !== actionId) return null;
+    const reason = normalizeMemoryActionText(projection['reason']);
+    if (!reason) return null;
+    const status = row.type === 'execution_policy_denial' ? 'blocked'
+      : row.type === 'execution_preparation_ambiguous' ? 'ambiguous' : 'failed';
+    const riskTier = normalizeExecutionIdentifier(projection['riskTier'], 32);
+    return {
+      explanationId: row.id,
+      kind: row.type,
+      status,
+      reason,
+      summary: normalizeMemoryActionText(row.what_happened) ?? 'SkyTwin did not execute this action.',
+      riskTier,
+    };
+  },
+
   /** Atomically persists explanation-first truth for a proven pre-request denial. */
   async recordPolicyDenial(
     input: RecordExecutionPolicyDenialInput,
@@ -481,6 +616,34 @@ export const executionAdmissionRepository = {
         [input.userId],
       );
       if (!owner.rows[0]) throw new Error('Approval execution owner is unavailable.');
+
+      // Receipt claim and approval admission share owner -> receipt-guard lock
+      // order. A decision whose autonomous receipt already won can never mint a
+      // second plan through an approval row created by an older process.
+      const receiptGuard = await client.query<{
+        effect_state: string;
+        selected_action_id: string | null;
+        source_execution_plan_id: string | null;
+        continuation_kind: string | null;
+        confirmation_level: string | null;
+      }>(
+        `SELECT g.effect_state, g.selected_action_id, g.source_execution_plan_id,
+                g.continuation_kind, g.confirmation_level
+           FROM decision_ingest_guards g
+           JOIN decisions d ON d.id = g.decision_id AND d.user_id = $1
+          WHERE g.decision_id = $2
+          FOR UPDATE OF g, d`,
+        [input.userId, input.decisionId],
+      );
+      const receipt = receiptGuard.rows[0];
+      const exactApprovalAuthority = receipt?.effect_state === 'non_effect' &&
+        receipt.selected_action_id === input.actionId &&
+        receipt.source_execution_plan_id === null &&
+        receipt.continuation_kind === 'approval' &&
+        (receipt.confirmation_level === 'single' || receipt.confirmation_level === 'dual');
+      if (receipt && !exactApprovalAuthority) {
+        throw new Error('Approval execution conflicts with autonomous receipt authority.');
+      }
 
       const scope: ExecutionAdmissionScope = input.memoryOpportunityId ? 'memory' : 'approval';
       const idempotencyKey = input.memoryOpportunityId ?? input.approvalId;

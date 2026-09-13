@@ -570,14 +570,15 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
       for (const e of bundle.explanations) {
         await client.query(
           `INSERT INTO explanation_records (
-             id, decision_id, what_happened, evidence_used, preferences_invoked,
+             id, decision_id, type, what_happened, evidence_used, preferences_invoked,
              confidence_reasoning, action_rationale, escalation_rationale,
              correction_guidance, capability_provenance_node_id, created_at
            )
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
           [
             e.id,
             e.decision_id,
+            e.type ?? 'action',
             e.what_happened,
             JSON.stringify(e.evidence_used ?? []),
             e.preferences_invoked ?? [],

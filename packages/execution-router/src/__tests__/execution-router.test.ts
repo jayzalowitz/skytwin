@@ -1677,13 +1677,26 @@ describe('ExecutionRouter', () => {
               }
             : { success: false as const, error: 'disconnected' };
         },
+        async startDispatch(input) {
+          return state
+              ? {
+                success: true as const,
+                capability: input.dispatchCapability,
+                leaseGeneration: input.dispatchLeaseGeneration,
+                executionPlanId: input.executionPlanId,
+                userId: input.userId,
+              }
+            : { success: false as const, error: 'disconnected' };
+        },
+        consumeDispatchCredential() {
+          return state;
+        },
       };
       const authority = {
         start: vi.fn(async (input: Record<string, unknown>) => {
           starts.push(input);
           return state && input['expectedAuthorityRevision'] === authorityRevision &&
-              input['expectedPolicyAuthorityRevision'] === policyAuthorityRevision &&
-              input['expectedCredentialRevision'] === `revision-${state}`
+              input['expectedPolicyAuthorityRevision'] === policyAuthorityRevision
             ? {
                 success: true as const,
                 grant: {
@@ -1727,7 +1740,7 @@ describe('ExecutionRouter', () => {
       return new ExecutionRouter(localRegistry, credentials.authority);
     }
 
-    it('refuses unavailable Direct credentials before request-start with zero provider requests', async () => {
+    it('refuses malformed Direct parameters before request-start with zero provider requests', async () => {
       const handlers = new ActionHandlerRegistry();
       handlers.register(new EmailActionHandler(new NoopCredentialProvider()));
       const localRegistry = new AdapterRegistry();
@@ -1856,7 +1869,7 @@ describe('ExecutionRouter', () => {
       await buildReached.promise;
       credentials.setState(null);
       buildRelease.resolve();
-      await expect(collect).rejects.toBeInstanceOf(AmbiguousExecutionError);
+      await expect(collect).rejects.toBeInstanceOf(NoRequestExecutionError);
       expect(fetchSpy).not.toHaveBeenCalled();
       fetchSpy.mockRestore();
     });
