@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { open } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +18,8 @@ import {
 
 const mockRepo = vi.hoisted(() => ({
   findById: vi.fn(),
+  findActive: vi.fn(),
+  create: vi.fn(),
   transitionStatus: vi.fn(),
   checkpointProgress: vi.fn(),
   listWorkerOwnedNonterminal: vi.fn(),
@@ -23,6 +31,7 @@ import {
   pauseDownload,
   recoverOnBoot,
   runDownload,
+  startDownload,
   type DownloadRunnerDependencies,
 } from "../downloader.js";
 
@@ -106,6 +115,7 @@ beforeEach(() => {
   );
   mockRepo.checkpointProgress.mockResolvedValue(true);
   mockRepo.listWorkerOwnedNonterminal.mockResolvedValue([]);
+  mockRepo.findActive.mockResolvedValue(null);
 });
 
 describe("download runner ownership", () => {
@@ -129,9 +139,72 @@ describe("download runner ownership", () => {
     expect(mockRepo.findById).toHaveBeenCalledTimes(1);
     expect(deps.fetchArtifact).toHaveBeenCalledTimes(1);
   });
+
+  it("does not truncate an active runner's crash tail on duplicate start", async () => {
+    const dir = tempDir();
+    vi.stubEnv("SKYTWIN_LLAMA_MODELS", dir);
+    const model = MODEL_REGISTRY[0]!;
+    const targetPath = managedArtifactPath(dir, model);
+    const row = {
+      id: "active-download-id",
+      user_id: "user-id",
+      model_id: model.id,
+      target_path: targetPath,
+      total_bytes: model.exactBytes,
+      bytes_downloaded: 4,
+      sha256_expected: model.sha256,
+      status: "paused" as const,
+      error: null,
+      started_at: new Date(),
+      paused_at: new Date(),
+      completed_at: null,
+    };
+    const partial = `${targetPath}.${row.id}.partial`;
+    writeFileSync(partial, "1234567");
+    writeFileSync(
+      `${partial}.json`,
+      JSON.stringify({
+        schemaVersion: 1,
+        modelId: model.id,
+        revision: model.source.revision,
+        sourceUrl: model.source.downloadUrl,
+        exactBytes: model.exactBytes,
+        bytesDownloaded: 7,
+        validator: { etag: '"pinned"' },
+      }),
+    );
+
+    let releaseLookup!: () => void;
+    const lookupBarrier = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    mockRepo.findById.mockImplementationOnce(async () => {
+      await lookupBarrier;
+      return { ...row, status: "cancelled" as const };
+    });
+    mockRepo.findActive.mockResolvedValue(row);
+
+    const active = runDownload(
+      row,
+      dependencies({ findModel: () => model, modelDir: () => dir }),
+    );
+    await vi.waitFor(() => expect(mockRepo.findById).toHaveBeenCalledOnce());
+
+    try {
+      await expect(startDownload(row.user_id, row.model_id)).resolves.toEqual({
+        download: row,
+        resumed: true,
+      });
+      expect(statSync(partial).size).toBe(7);
+    } finally {
+      releaseLookup();
+      await active;
+    }
+  });
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0))
     rmSync(dir, { recursive: true, force: true });
 });

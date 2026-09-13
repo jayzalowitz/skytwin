@@ -342,7 +342,6 @@ export async function startDownload(
     if (existing !== null) {
       download = existing;
       resumed = existing.bytes_downloaded > 0;
-      partialBytes = prepareResumeReservationBytes(targetPath, existing, model);
     } else {
       // Check and reserve are serialized so concurrent starts cannot each
       // spend the same free bytes. Check before insert to avoid a stranded row.
@@ -378,16 +377,19 @@ export async function startDownload(
     }
 
     // If a runner is already executing for this row, skip kicking off a
-    // second one — two concurrent .partial writers would corrupt the file.
+    // second one before inspecting or truncating its live partial. A duplicate
+    // start must not roll the active writer back to its last DB checkpoint.
     if (inFlight.has(download.id)) return { download, resumed };
 
-    if (existing !== null)
+    if (existing !== null) {
+      partialBytes = prepareResumeReservationBytes(targetPath, existing, model);
       assertSufficientDisk(
         dir,
         model.exactBytes,
         partialBytes,
         diskReservations.totalBytes,
       );
+    }
     diskReservations.reserve(
       download.id,
       requiredAvailableBytes(model.exactBytes, partialBytes),
