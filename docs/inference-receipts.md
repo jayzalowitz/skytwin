@@ -105,12 +105,14 @@ canonical receipt metadata; restore verifies its self-contained metadata seal
 and exact linkage before writing it. Because an embedded key is not an identity
 trust root, restored rows are marked `imported_unverified`. This slice has no
 trust-aware promotion workflow, so they remain untrusted after restore.
-Canonical logical input/output and verification-evidence bytes exist only
-while the route validates and inserts receipt metadata; they are not written to
-the receipt table. Standalone verification bundles are more sensitive because
-they contain the supplied request and response bytes. The product does not
-export those bundles yet; integrators who create them should protect or delete
-the files according to their own retention needs.
+Canonical logical input/output and verification-evidence bytes live in
+transient request memory while the route validates and inserts receipt
+metadata, and may remain until JavaScript references are released and garbage
+collection runs. They are never written to the receipt or ingest-guard tables.
+Standalone verification bundles are more sensitive because they contain the
+supplied request and response bytes. The product does not export those bundles
+yet; integrators who create them should protect or delete the files according
+to their own retention needs.
 
 ## Security boundary
 

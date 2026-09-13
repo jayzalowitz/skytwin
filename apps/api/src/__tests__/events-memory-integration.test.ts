@@ -59,6 +59,10 @@ vi.mock('@skytwin/db', () => ({
   inferenceReceiptRepository: {
     isCompleteForDecision: vi.fn().mockResolvedValue(false),
     createManyForUser: vi.fn().mockResolvedValue([]),
+    getIngestStateForDecision: vi.fn().mockResolvedValue(null),
+    claimExecutionForDecision: vi.fn().mockResolvedValue(true),
+    markExecutionTerminalForDecision: vi.fn().mockResolvedValue(true),
+    markNonEffectForDecision: vi.fn().mockResolvedValue(true),
   },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),

@@ -19,8 +19,9 @@ export interface ReceiptSigningKey {
 
 /**
  * Finalize one boundary trace only after its durable decision and explanation
- * identifiers exist. The raw bytes are used for verification, then discarded
- * by the metadata-only repository.
+ * identifiers exist. Raw bytes remain in transient request memory until their
+ * references are released and garbage-collected; the repository never persists
+ * them.
  */
 export function emitInferenceReceipt(
   trace: InferenceTrace,
