@@ -26,7 +26,7 @@ provide a general at-rest source-field guarantee:
 | [`DbTokenStore`](../../packages/connectors/src/oauth/db-token-store.ts)                 | It can decrypt or lazily migrate OAuth rows when its process has a key. The worker's cache is never populated by API unlock, and API OAuth callbacks still write plaintext through [`oauthRepository`](../../packages/db/src/repositories/oauth-repository.ts).           |
 | [`TwinRepositoryAdapter`](../../packages/db/src/adapters/twin-repository-adapter.ts)    | Preference encryption is opt-in through a process-global provider. No production composition root calls it, profile fields are still plaintext, and direct backup SQL bypasses it.                                                                                        |
 | [`brain_pages` repository](../../packages/memory-gbrain-crdb-adapter/src/repository.ts) | Source text, generated tsvector, vectors, and metadata are readable from the database. The migration's ciphertext columns are not used.                                                                                                                                   |
-| [`PassphraseVault`](../../apps/desktop/src/passphrase-vault.ts)                         | The desktop can persist a `safeStorage` ciphertext of the passphrase when a reviewed secure OS credential backend is active; Linux `basic_text`, unknown, and unavailable backends fail closed. The renderer can request the plaintext passphrase, then sends it to the API over loopback HTTP. This is not the target broker design below. |
+| [`PassphraseVault`](../../apps/desktop/src/passphrase-vault.ts)                         | The desktop can persist a versioned `safeStorage` ciphertext tagged with the reviewed secure OS credential backend that wrote it; Linux `basic_text`, unknown, unavailable, legacy-untagged, and backend-mismatched records fail closed and are deleted. The renderer can request the plaintext passphrase, then sends it to the API over loopback HTTP. This is not the target broker design below. |
 | [`credential-vault` routes](../../apps/api/src/routes/credential-vault.ts)              | API-only init/unlock/lock works for the API cache. Rotation re-encrypts encrypted OAuth rows only; it does not rotate any preference, profile, or memory ciphertext.                                                                                                      |
 | [`ServiceManager`](../../apps/desktop/src/service-manager.ts)                           | Electron main currently forks separate API, web, and worker processes and supplies their runtime configuration through environment variables. There is no cryptographic broker or shared cross-process unlock state today.                                                |
 | [`skytwin-backup`](../backup-restore.md)                                                | The selected export is encrypted as a whole with a separate passphrase, but collection reads raw repository rows. It is not yet compatible with a completed source-field migration. Credentials are excluded.                                                             |
@@ -51,8 +51,10 @@ Filesystem and process-local surfaces are separate from the SQL inventory:
 - `<userData>/secrets/session-secret` and `service-token` are random secrets
   stored in plaintext owner-readable files (`0600`) by
   [`ServiceManager`](../../apps/desktop/src/service-manager.ts).
-- `skytwin-passphrase-vault` stores `safeStorage` ciphertext only with a
-  reviewed secure OS credential backend; the target replaces remembered-
+- `skytwin-passphrase-vault` stores versioned, backend-tagged `safeStorage`
+  ciphertext only with a reviewed secure OS credential backend. Once Electron
+  is ready, startup removes legacy-untagged, unsupported, and backend-mismatched
+  records across users without decrypting them. The target replaces remembered-
   passphrase storage with a device-wrapped random user key.
 - The dashboard currently stores a session token in renderer `localStorage`.
 - `.dxt` exports are plaintext with an unkeyed SHA-256 checksum, so they are not

@@ -50,12 +50,14 @@ const SECURE_LINUX_STORAGE_BACKENDS = new Set([
 
 /**
  * The subset of a key-value store (electron-store) this module depends on.
- * Values are base64-encoded safeStorage ciphertext strings.
+ * Values are JSON records containing a version, backend identity, and
+ * base64-encoded safeStorage ciphertext.
  */
 export interface PassphraseKeyValueStore {
   get(key: string): string | undefined;
   set(key: string, value: string): void;
   delete(key: string): void;
+  keys(): string[];
 }
 
 /** Result of an attempt to read a remembered passphrase. */
@@ -73,9 +75,40 @@ export type RememberWriteResult =
  * remembered passphrase without clobbering each other.
  */
 const STORE_KEY_PREFIX = 'vault-passphrase:';
+const STORED_RECORD_VERSION = 1;
+
+interface StoredPassphraseRecord {
+  version: typeof STORED_RECORD_VERSION;
+  backend: string;
+  ciphertext: string;
+}
 
 function storeKeyFor(userId: string): string {
   return `${STORE_KEY_PREFIX}${userId}`;
+}
+
+function parseStoredRecord(value: string): StoredPassphraseRecord | null {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const candidate = parsed as Record<string, unknown>;
+    if (
+      candidate.version !== STORED_RECORD_VERSION
+      || typeof candidate.backend !== 'string'
+      || candidate.backend === ''
+      || typeof candidate.ciphertext !== 'string'
+      || candidate.ciphertext === ''
+    ) {
+      return null;
+    }
+    return {
+      version: STORED_RECORD_VERSION,
+      backend: candidate.backend,
+      ciphertext: candidate.ciphertext,
+    };
+  } catch {
+    return null;
+  }
 }
 
 export class PassphraseVault {
@@ -99,16 +132,47 @@ export class PassphraseVault {
    * renderer hides the "Remember on this device?" prompt in that case).
    */
   isSupported(): boolean {
+    return this.currentBackend() !== null;
+  }
+
+  /**
+   * Remove records that cannot be proven to have been written by the secure
+   * backend selected for this process. Call this once after Electron's `ready`
+   * event so Linux backend discovery has completed.
+   *
+   * Pre-v1 values were bare base64 strings and did not record which backend
+   * wrote them. They are deliberately deleted without attempting decryption:
+   * an older release may have created them through Linux `basic_text`.
+   */
+  purgeUntrustedEntries(): number {
+    const backend = this.currentBackend();
+    let removed = 0;
+    for (const key of this.store.keys()) {
+      if (!key.startsWith(STORE_KEY_PREFIX)) continue;
+      const stored = this.store.get(key);
+      const record = stored === undefined ? null : parseStoredRecord(stored);
+      if (backend === null || record === null || record.backend !== backend) {
+        this.store.delete(key);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  private currentBackend(): string | null {
     try {
-      if (!this.safeStorage.isEncryptionAvailable()) return false;
-      if (this.platform !== 'linux') return true;
-      return SECURE_LINUX_STORAGE_BACKENDS.has(
-        this.safeStorage.getSelectedStorageBackend(),
-      );
+      if (!this.safeStorage.isEncryptionAvailable()) return null;
+      if (this.platform === 'darwin') return 'darwin:keychain';
+      if (this.platform === 'win32') return 'win32:dpapi';
+      if (this.platform !== 'linux') return null;
+      const backend = this.safeStorage.getSelectedStorageBackend();
+      return SECURE_LINUX_STORAGE_BACKENDS.has(backend)
+        ? `linux:${backend}`
+        : null;
     } catch {
       // Some Electron builds throw rather than return false when the platform
       // backend is missing. Treat any failure as "not supported" — fail safe.
-      return false;
+      return null;
     }
   }
 
@@ -119,7 +183,8 @@ export class PassphraseVault {
    * plaintext as a fallback.
    */
   remember(userId: string, passphrase: string): RememberWriteResult {
-    if (!this.isSupported()) {
+    const backend = this.currentBackend();
+    if (backend === null) {
       return { ok: false, reason: 'unsupported' };
     }
     if (passphrase.length === 0) {
@@ -128,7 +193,12 @@ export class PassphraseVault {
       return { ok: false, reason: 'empty_passphrase' };
     }
     const ciphertext = this.safeStorage.encryptString(passphrase);
-    this.store.set(storeKeyFor(userId), ciphertext.toString('base64'));
+    const record: StoredPassphraseRecord = {
+      version: STORED_RECORD_VERSION,
+      backend,
+      ciphertext: ciphertext.toString('base64'),
+    };
+    this.store.set(storeKeyFor(userId), JSON.stringify(record));
     return { ok: true };
   }
 
@@ -140,7 +210,8 @@ export class PassphraseVault {
    * the passphrase prompt; we proactively evict the bad entry.
    */
   getRemembered(userId: string): RememberedPassphraseResult {
-    if (!this.isSupported()) {
+    const backend = this.currentBackend();
+    if (backend === null) {
       // A previous build may have persisted through Linux `basic_text`.
       // Discard that entry instead of leaving a recoverable passphrase behind.
       this.forget(userId);
@@ -150,8 +221,13 @@ export class PassphraseVault {
     if (stored === undefined || stored === '') {
       return { ok: false, reason: 'not_found' };
     }
+    const record = parseStoredRecord(stored);
+    if (record === null || record.backend !== backend) {
+      this.forget(userId);
+      return { ok: false, reason: 'corrupt' };
+    }
     try {
-      const ciphertext = Buffer.from(stored, 'base64');
+      const ciphertext = Buffer.from(record.ciphertext, 'base64');
       const passphrase = this.safeStorage.decryptString(ciphertext);
       if (passphrase.length === 0) {
         // Decrypted to nothing — treat as corrupt rather than handing back an
@@ -170,12 +246,19 @@ export class PassphraseVault {
 
   /** Whether a remembered passphrase exists for `userId` (does not decrypt). */
   has(userId: string): boolean {
-    if (!this.isSupported()) {
+    const backend = this.currentBackend();
+    if (backend === null) {
       this.forget(userId);
       return false;
     }
     const stored = this.store.get(storeKeyFor(userId));
-    return stored !== undefined && stored !== '';
+    if (stored === undefined || stored === '') return false;
+    const record = parseStoredRecord(stored);
+    if (record === null || record.backend !== backend) {
+      this.forget(userId);
+      return false;
+    }
+    return true;
   }
 
   /**

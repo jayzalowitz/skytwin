@@ -404,7 +404,7 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Credential Vault</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:0.5rem;">
-        <strong style="color:var(--warning)">OAuth token encryption is not active in this build.</strong>
+        <strong style="color:var(--danger)">OAuth token encryption is not active in this build.</strong>
         Current production OAuth write paths store access and refresh tokens in plaintext.
         These controls manage preparatory API-local key state only. Protect the database with
         full-disk encryption until the production token path is migrated and verified.
