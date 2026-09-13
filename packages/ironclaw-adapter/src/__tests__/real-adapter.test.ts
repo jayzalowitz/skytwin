@@ -17,6 +17,10 @@ class TestActionHandler implements ActionHandler {
   }
 }
 
+class NoRollbackActionHandler extends TestActionHandler {
+  readonly supportsRollback = false;
+}
+
 class SlowActionHandler implements ActionHandler {
   readonly actionType = 'test_action';
   readonly domain = 'testing';
@@ -71,6 +75,18 @@ describe('DirectExecutionAdapter', () => {
     const plan = await adapter.buildPlan(action);
 
     expect(plan.rollbackSteps).toHaveLength(0);
+  });
+
+  it('does not advertise rollback when the selected handler lacks rollback authority', async () => {
+    const registry = new ActionHandlerRegistry();
+    registry.register(new NoRollbackActionHandler());
+    const adapter = new DirectExecutionAdapter(registry);
+
+    const plan = await adapter.buildPlan(makeAction({ reversible: true }));
+    expect(plan.rollbackSteps).toEqual([]);
+    const result = await adapter.execute(plan);
+    expect(result.output?.['rollback_available']).toBe(false);
+    await expect(adapter.rollback(plan.id)).resolves.toMatchObject({ success: false });
   });
 
   it('executes a plan using the handler', async () => {

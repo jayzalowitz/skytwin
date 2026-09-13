@@ -18,6 +18,7 @@ const {
   mockServiceCredentialRepository,
   mockCredentialRequirementRepository,
   mockSkillGapRepository,
+  mockGetPolicyAuthorityRevision,
 } = vi.hoisted(() => ({
   mockMemoryActionOpportunityRepository: {
     upsertFromSuggestion: vi.fn(),
@@ -51,6 +52,7 @@ const {
     isDispatchable: vi.fn(),
     findByScope: vi.fn(),
     observeTerminal: vi.fn(),
+    failBeforeDispatch: vi.fn(),
   },
   mockPolicyRepositoryAdapter: {
     getEnabledPolicies: vi.fn(),
@@ -64,6 +66,7 @@ const {
   mockSkillGapRepository: {
     log: vi.fn(),
   },
+  mockGetPolicyAuthorityRevision: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -79,6 +82,7 @@ vi.mock('@skytwin/db', () => ({
   serviceCredentialRepository: mockServiceCredentialRepository,
   credentialRequirementRepository: mockCredentialRequirementRepository,
   skillGapRepository: mockSkillGapRepository,
+  getPolicyAuthorityRevision: mockGetPolicyAuthorityRevision,
 }));
 
 const { runMemoryActionLoopJob } = await import('../jobs/memory-action-loop.js');
@@ -149,7 +153,9 @@ function mockCommon(opportunity = makeOpportunity()) {
     trust_tier: 'suggest',
     autonomy_settings: {},
     ironclaw_channel: 'skytwin',
+    execution_authority_revision: 'authority-revision-1',
   });
+  mockGetPolicyAuthorityRevision.mockResolvedValue('policy-authority-revision-1');
   mockDecisionRepository.create.mockResolvedValue({
     row: {
       id: '22222222-2222-2222-2222-222222222222',
@@ -184,6 +190,7 @@ function mockCommon(opportunity = makeOpportunity()) {
   mockExecutionAdmissionRepository.observeTerminal.mockResolvedValue({});
   mockExecutionAdmissionRepository.findByScope.mockResolvedValue(null);
   mockExecutionAdmissionRepository.isDispatchable.mockResolvedValue(true);
+  mockExecutionAdmissionRepository.failBeforeDispatch.mockResolvedValue({ status: 'failed' });
   mockSkillGapRepository.log.mockResolvedValue({
     id: 'skill-gap-1',
   });
@@ -323,6 +330,9 @@ describe('runMemoryActionLoopJob', () => {
       }),
     );
     expect(router.executeWithRouting).toHaveBeenCalledOnce();
+    expect(router.executeWithRouting.mock.calls[0]![0]).toMatchObject({
+      parameters: { executionPlanId: '44444444-4444-4444-4444-444444444444' },
+    });
     expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledWith(
       expect.objectContaining({
         decisionId: '22222222-2222-2222-2222-222222222222',
@@ -373,7 +383,15 @@ describe('runMemoryActionLoopJob', () => {
     });
 
     expect(router.executeWithRouting).not.toHaveBeenCalled();
-    expect(summary.executionAmbiguous).toBe(1);
+    expect(mockExecutionAdmissionRepository.failBeforeDispatch).toHaveBeenCalledWith({
+      admission: expect.objectContaining({ created: true }),
+      userId: 'user-1',
+      error: 'Execution owner or admitted graph was revoked before router invocation.',
+    });
+    expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'execution_failed' }),
+    );
+    expect(summary.executionFailed).toBe(1);
   });
 
   it('redacts echoed credentials and arbitrary adapter bodies from memory execution ledgers', async () => {
@@ -423,9 +441,8 @@ describe('runMemoryActionLoopJob', () => {
     expect(persisted).not.toContain(secret);
     expect(persisted).not.toContain('?access_token=');
     expect(persisted).not.toContain('echoed');
-    expect(persisted).toContain('[redacted:credential]');
     expect(persisted).toContain('[redacted:execution-error]');
-    expect(persisted).toContain('[redacted:unapproved-field]');
+    expect(persisted).toContain('[redacted:unapproved-evidence]');
   });
 
   it('rechecks a stored opportunity and fences a pause that lands after admission', async () => {
@@ -461,7 +478,8 @@ describe('runMemoryActionLoopJob', () => {
     expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledOnce();
     expect(mockExecutionAdmissionRepository.isDispatchable).not.toHaveBeenCalled();
     expect(router.executeWithRouting).not.toHaveBeenCalled();
-    expect(summary.executionAmbiguous).toBe(1);
+    expect(summary.executionFailed).toBe(1);
+    expect(mockExecutionAdmissionRepository.failBeforeDispatch).toHaveBeenCalledOnce();
   });
 
   it('records an ambiguous adapter outcome without a failed plan or retryable failure state', async () => {

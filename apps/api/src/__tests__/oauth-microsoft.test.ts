@@ -3,7 +3,9 @@ import {
   fetchMicrosoftUserInfo,
   resolveMicrosoftEnvConfig,
   providerSupportsRevoke,
+  resolveDisconnectToken,
 } from '../routes/oauth.js';
+import { encryptColumn } from '@skytwin/db';
 
 /**
  * Unit tests for the Microsoft (Entra / Outlook) OAuth helpers — the pure,
@@ -68,6 +70,48 @@ describe('providerSupportsRevoke (token-leak guard for disconnect)', () => {
   it('is false for any unknown provider (fail safe — never revoke blindly)', () => {
     expect(providerSupportsRevoke('slack')).toBe(false);
     expect(providerSupportsRevoke('')).toBe(false);
+  });
+});
+
+describe('resolveDisconnectToken', () => {
+  const key = Buffer.alloc(32, 4);
+  const base = {
+    id: 'token-1', user_id: 'user-1', provider: 'google', account_email: 'a@example.com',
+    account_provider_id: null, access_token: null, refresh_token: null,
+    encrypted_access_token: encryptColumn('access-secret', key),
+    encrypted_refresh_token: encryptColumn('refresh-secret', key),
+    encryption_iv: null, encryption_tag: null, encryption_key_version: 1,
+    expires_at: new Date(), scopes: [], created_at: new Date(), updated_at: new Date(),
+    credential_revision: 'revision-1', dispatch_generation: 'generation-1',
+    dispatch_state: 'disconnecting' as const,
+  };
+
+  it('revokes the decrypted refresh token rather than ciphertext or access token', () => {
+    expect(resolveDisconnectToken(base, key)).toEqual({ success: true, token: 'refresh-secret' });
+  });
+
+  it('fails closed while encrypted revocation material is locked', () => {
+    expect(resolveDisconnectToken(base, null)).toEqual({
+      success: false,
+      error: 'credential_vault_locked',
+    });
+  });
+
+  it('never revokes a leftover plaintext sibling of encrypted material', () => {
+    expect(resolveDisconnectToken({
+      ...base,
+      encrypted_refresh_token: null,
+      refresh_token: 'stale-plaintext-refresh',
+    }, key)).toEqual({ success: true, token: 'access-secret' });
+
+    expect(resolveDisconnectToken({
+      ...base,
+      encrypted_refresh_token: null,
+      refresh_token: 'stale-plaintext-refresh',
+    }, null)).toEqual({
+      success: false,
+      error: 'credential_vault_locked',
+    });
   });
 });
 

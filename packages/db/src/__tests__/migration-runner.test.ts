@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
   deriveOwnedTableManifest,
   getSkyTwinOwnedTableManifest,
@@ -28,9 +30,50 @@ describe('SkyTwin-owned table manifest', () => {
     const manifest = getSkyTwinOwnedTableManifest();
     expect(manifest.current).toContain('users');
     expect(manifest.current).toContain('execution_admission_barriers');
+    expect(manifest.current).toContain('credential_dispatch_leases');
     expect(manifest.current).not.toContain('capability_recipes');
     expect(manifest.all).toContain('capability_recipes');
     expect(new Set(manifest.current).size).toBe(manifest.current.length);
+  });
+});
+
+describe('typed execution evidence migration', () => {
+  const migration = readFileSync(fileURLToPath(new URL(
+    '../migrations/078-execution-admission-barriers.sql', import.meta.url,
+  )), 'utf8');
+  const schema = readFileSync(fileURLToPath(new URL('../schemas/schema.sql', import.meta.url)), 'utf8');
+  const evidenceTables = [
+    'execution_plans',
+    'execution_results',
+    'execution_events',
+    'memory_action_opportunities',
+    'execution_admission_barriers',
+  ];
+
+  it('stamps fresh schema rows as typed and adds legacy columns as untrusted', () => {
+    for (const table of evidenceTables) {
+      const definition = schema.match(new RegExp(
+        `CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`,
+      ))?.[0];
+      expect(definition, `missing schema definition for ${table}`).toBeDefined();
+      expect(definition).toContain('evidence_schema_version INT NOT NULL DEFAULT 1');
+      expect(migration).toContain(
+        `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS evidence_schema_version INT NOT NULL DEFAULT 0;`,
+      );
+      expect(migration).toContain(
+        `ALTER TABLE ${table} ALTER COLUMN evidence_schema_version SET DEFAULT 1;`,
+      );
+    }
+  });
+
+  it('scrubs only legacy evidence so rerunning cannot destroy typed rows', () => {
+    for (const table of evidenceTables) {
+      const update = migration.match(new RegExp(
+        `UPDATE ${table}[\\s\\S]*?WHERE evidence_schema_version < 1;`,
+      ))?.[0];
+      expect(update, `missing guarded scrub for ${table}`).toBeDefined();
+      expect(update).toContain('evidence_schema_version = 1');
+    }
   });
 });
 

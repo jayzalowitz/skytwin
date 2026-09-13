@@ -17,7 +17,6 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
 import {
   approvalRepository,
-  oauthRepository,
   executionRepository,
   userRepository,
   aiProviderRepository,
@@ -28,6 +27,7 @@ import {
   decisionRepositoryAdapter,
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
+  getPolicyAuthorityRevision,
   inferenceReceiptRepository,
 } from '@skytwin/db';
 import type {
@@ -40,8 +40,9 @@ import type {
   EpisodicMemory,
 } from '@skytwin/shared-types';
 import {
+  normalizeExecutionEventPayload,
+  normalizeExecutionEventType,
   normalizeExecutionError,
-  normalizeExecutionRecord,
   parseAutonomySettings,
   SituationType,
   TrustTier,
@@ -780,13 +781,19 @@ export function createEventsRouter(): Router {
             throw new Error('Execution guard could not be converted to manual approval');
           }
         } else {
+          let currentAuthorityRevision: string | null = null;
+          let currentPolicyAuthorityRevision: string | null = null;
           const evaluateCurrentExecutionPolicy = async () => {
+            currentAuthorityRevision = null;
+            currentPolicyAuthorityRevision = null;
             const currentUser = await userRepository.findById(userId);
             if (!currentUser) return {
               allowed: false,
               requiresApproval: true,
               reason: 'Execution owner no longer exists.',
             };
+            currentAuthorityRevision = currentUser.execution_authority_revision;
+            currentPolicyAuthorityRevision = await getPolicyAuthorityRevision();
             const currentPolicies = await policyRepositoryAdapter.getAllPolicies();
             return new PolicyEvaluator(policyRepositoryAdapter).evaluate(
               outcome.selectedAction!,
@@ -836,6 +843,8 @@ export function createEventsRouter(): Router {
             parameters: {
               ...outcome.selectedAction.parameters,
               executionPlanId: savedPlan.id,
+              credentialAuthorityRevision: currentAuthorityRevision,
+              credentialPolicyAuthorityRevision: currentPolicyAuthorityRevision,
             },
           };
           if (user?.ironclaw_channel) {
@@ -846,15 +855,19 @@ export function createEventsRouter(): Router {
           const executionRouter = await getRouter();
           let terminalEvent: ExecutionEvent | null = null;
           let terminalStatus: 'completed' | 'failed' | null = null;
+          let preDispatchClosed = false;
           const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
+          const admittedStepIds = executionSteps.map((_step, index) => `step-${index + 1}`);
+          let nextAdmittedStepIndex = 0;
+          let activeAdmittedStepId: string | null = null;
           let terminalPayload: Record<string, unknown> = {};
 
+          let preDispatchFailure: string | null = null;
           try {
             const dispatchPolicy = await evaluateCurrentExecutionPolicy();
             if (!dispatchPolicy.allowed || dispatchPolicy.requiresApproval) {
-              throw new Error(`Current policy no longer permits automatic dispatch: ${dispatchPolicy.reason}`);
-            }
-            if (!await inferenceReceiptRepository.isExecutionDispatchableForDecision(
+              preDispatchFailure = `Current policy no longer permits automatic dispatch: ${dispatchPolicy.reason}`;
+            } else if (!await inferenceReceiptRepository.isExecutionDispatchableForDecision(
               userId,
               decision.id,
               savedPlan.id,
@@ -862,15 +875,26 @@ export function createEventsRouter(): Router {
               executionSteps,
               dispatchPolicy as unknown as Record<string, unknown>,
             )) {
-              throw new Error('Execution owner or receipt authority was revoked before dispatch');
+              preDispatchFailure = 'Execution owner or receipt authority was revoked before dispatch';
             }
-            // Resolve the credential only after the final authority query. No
-            // other await separates this fresh row from the sole adapter call,
-            // so a prior token cannot survive a disconnect or rotation that
-            // happened while routing/policy checks were in flight.
-            const tokenRow = await oauthRepository.getToken(userId, 'google');
-            const accessToken = tokenRow?.access_token ?? undefined;
-            if (accessToken) executionAction.parameters['accessToken'] = accessToken;
+          } catch (error) {
+            preDispatchFailure = error instanceof Error ? error.message : String(error);
+          }
+
+          if (preDispatchFailure) {
+            try {
+              const recorded = await inferenceReceiptRepository
+                .markExecutionFailedBeforeDispatchForDecision(
+                  userId, decision.id, savedPlan.id, preDispatchFailure,
+                );
+              executionResult = recorded
+                ? { status: 'failed', planId: savedPlan.id }
+                : { status: 'ambiguous', planId: savedPlan.id };
+            } catch {
+              executionResult = { status: 'ambiguous', planId: savedPlan.id };
+            }
+            preDispatchClosed = true;
+          } else try {
             for await (const event of executionRouter.executeWithRoutingStreaming(
               executionAction,
               riskAssessment,
@@ -879,20 +903,46 @@ export function createEventsRouter(): Router {
               if (event.planId !== savedPlan.id) {
                 throw new Error('Execution event did not match the claimed plan');
               }
+              const safeEventType = normalizeExecutionEventType(event.eventType);
+              let safeStepId: string | undefined;
+              if (safeEventType === 'step_started' || safeEventType === 'step_completed' ||
+                  safeEventType === 'step_failed') {
+                const expectedStepId = admittedStepIds[nextAdmittedStepIndex];
+                if (!expectedStepId || event.stepId !== expectedStepId) {
+                  throw new Error('Execution adapter emitted an unbound step identity');
+                }
+                safeStepId = expectedStepId;
+                if (safeEventType === 'step_started') {
+                  if (activeAdmittedStepId !== null) {
+                    throw new Error('Execution adapter emitted overlapping step starts');
+                  }
+                  activeAdmittedStepId = expectedStepId;
+                } else {
+                  if (activeAdmittedStepId !== null && activeAdmittedStepId !== expectedStepId) {
+                    throw new Error('Execution adapter emitted a result for another active step');
+                  }
+                  activeAdmittedStepId = null;
+                  nextAdmittedStepIndex += 1;
+                }
+              } else if (event.stepId !== undefined) {
+                throw new Error('Execution adapter attached a step identity to a plan event');
+              }
+              if (safeEventType === 'unknown' ||
+                  !(event.timestamp instanceof Date) || Number.isNaN(event.timestamp.getTime())) {
+                throw new Error('Execution adapter emitted malformed event identity');
+              }
               if (terminalEvent) {
                 throw new Error(`Execution stream emitted an event after ${terminalEvent.eventType}`);
               }
-              const safePayload = normalizeExecutionRecord(event.payload ?? {}, {
-                secretValues: [accessToken],
-              });
+              const safePayload = normalizeExecutionEventPayload(event.payload ?? {});
               if (Object.keys(safePayload).length > 0) {
-                stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: safePayload });
+                stepOutputs.push({ stepId: safeStepId, eventType: safeEventType, payload: safePayload });
               }
               terminalPayload = safePayload;
               await executionRepository.createEvent({
                 planId: savedPlan.id,
-                stepId: event.stepId,
-                eventType: event.eventType,
+                stepId: safeStepId,
+                eventType: safeEventType,
                 payload: safePayload,
               });
               sseManager.emit(userId, 'decision:step', {
@@ -900,15 +950,15 @@ export function createEventsRouter(): Router {
                 actionType: outcome.selectedAction.actionType,
                 description: outcome.selectedAction.description,
                 planId: event.planId,
-                stepId: event.stepId,
-                eventType: event.eventType,
+                stepId: safeStepId,
+                eventType: safeEventType,
                 timestamp: event.timestamp,
                 payload: safePayload,
               });
 
-              if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
-                terminalEvent = event;
-                terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
+              if (safeEventType === 'plan_completed' || safeEventType === 'plan_failed') {
+                terminalEvent = { ...event, stepId: safeStepId, eventType: safeEventType };
+                terminalStatus = safeEventType === 'plan_completed' ? 'completed' : 'failed';
               }
             }
           } catch (error) {
@@ -928,7 +978,9 @@ export function createEventsRouter(): Router {
             });
           }
 
-          if (!terminalStatus) {
+          if (preDispatchClosed) {
+            // The exact no-effect terminalization above owns the result.
+          } else if (!terminalStatus) {
             executionResult = { status: 'ambiguous', planId: savedPlan.id };
           } else {
             await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
@@ -941,7 +993,9 @@ export function createEventsRouter(): Router {
               success: terminalStatus === 'completed',
               outputs: fullOutputs,
               error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
-              rollbackAvailable: outcome.selectedAction.reversible,
+              rollbackAvailable: typeof terminalPayload['rollback_available'] === 'boolean'
+                ? terminalPayload['rollback_available']
+                : outcome.selectedAction.reversible,
             });
 
             let terminalGuardCommitted = false;

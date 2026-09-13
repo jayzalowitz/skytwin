@@ -21,6 +21,7 @@ const PLAN = {
   action_id: '66666666-6666-4666-8666-666666666666',
   status: 'running',
   steps: [{ status: 'pending', type: 'create_task' }],
+  evidence_schema_version: 1,
   created_at: new Date('2026-09-13T00:00:00Z'),
   updated_at: new Date('2026-09-13T00:00:00Z'),
 };
@@ -59,6 +60,7 @@ const BARRIER = {
   },
   status: 'in_progress' as const,
   observed_result: {},
+  evidence_schema_version: 1,
   created_at: new Date('2026-09-13T00:00:00Z'),
   updated_at: new Date('2026-09-13T00:00:00Z'),
 };
@@ -207,8 +209,9 @@ describe('executionAdmissionRepository', () => {
 
   it('accepts exact terminal reconciliation and rejects conflicting truth', async () => {
     const observed = { planId: PLAN.id, status: 'completed' };
+    const normalizedObserved = { ...observed, output: {}, error: null };
     mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
-      rows: [{ ...BARRIER, status: 'completed', observed_result: observed }],
+      rows: [{ ...BARRIER, status: 'completed', observed_result: normalizedObserved }],
     });
     await expect(executionAdmissionRepository.observeTerminal({
       id: BARRIER.id,
@@ -218,7 +221,7 @@ describe('executionAdmissionRepository', () => {
     })).resolves.toMatchObject({ status: 'completed' });
 
     mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({
-      rows: [{ ...BARRIER, status: 'completed', observed_result: observed }],
+      rows: [{ ...BARRIER, status: 'completed', observed_result: normalizedObserved }],
     });
     await expect(executionAdmissionRepository.observeTerminal({
       id: BARRIER.id,
@@ -251,7 +254,7 @@ describe('executionAdmissionRepository', () => {
     expect(persisted).not.toContain(secret);
     expect(persisted).not.toContain('?access_token=');
     expect(persisted).not.toContain('echoed');
-    expect(persisted).toContain('[redacted:credential]');
+    expect(persisted).toContain('[redacted:unapproved-evidence]');
     expect(persisted).toContain('[redacted:execution-error]');
   });
 

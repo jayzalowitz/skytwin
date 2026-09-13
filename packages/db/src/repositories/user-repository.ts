@@ -1,5 +1,11 @@
 import { query, withTransaction } from '../connection.js';
 import type { UserRow } from '../types.js';
+import { assertNoActiveExecutionsWithClient } from './user-purge-repository.js';
+import {
+  bumpPolicyAuthorityWithClient,
+  lockPolicyAuthorityWithClient,
+} from './policy-repository.js';
+import { invalidateOAuthAccountsForUserWithClient } from './oauth-repository.js';
 
 /**
  * Input for creating a new user.
@@ -117,7 +123,7 @@ export const userRepository = {
   ): Promise<UserRow | null> {
     const result = await query<UserRow>(
       `UPDATE users
-       SET autonomy_settings = $1, updated_at = now()
+       SET autonomy_settings = $1, execution_authority_revision = gen_random_uuid(), updated_at = now()
        WHERE id = $2
        RETURNING *`,
       [JSON.stringify(settings), id],
@@ -187,7 +193,7 @@ export const userRepository = {
   ): Promise<UserRow | null> {
     const result = await query<UserRow>(
       `UPDATE users
-       SET trust_tier = $1, updated_at = now()
+       SET trust_tier = $1, execution_authority_revision = gen_random_uuid(), updated_at = now()
        WHERE id = $2
        RETURNING *`,
       [trustTier, id],
@@ -214,9 +220,20 @@ export const userRepository = {
    */
   async delete(id: string): Promise<boolean> {
     return withTransaction(async (client) => {
+      const owner = await client.query<{ id: string; email: string }>(
+        'SELECT id, email FROM users WHERE id = $1 FOR UPDATE', [id],
+      );
+      if (!owner.rows[0]) return false;
+      await assertNoActiveExecutionsWithClient(client, id);
+      await invalidateOAuthAccountsForUserWithClient(client, id, owner.rows[0].email);
+      const removesPolicies = Boolean((await client.query(
+        'SELECT 1 FROM action_policies WHERE user_id = $1 LIMIT 1', [id],
+      )).rows[0]);
+      if (removesPolicies) await lockPolicyAuthorityWithClient(client);
       // Delete in dependency order
       await client.query('DELETE FROM feedback_events WHERE user_id = $1', [id]);
       await client.query('DELETE FROM approval_requests WHERE user_id = $1', [id]);
+      await client.query('DELETE FROM credential_dispatch_leases WHERE user_id = $1', [id]);
       await client.query('DELETE FROM execution_admission_barriers WHERE user_id = $1', [id]);
       await client.query(
         `DELETE FROM explanation_records WHERE decision_id IN
@@ -262,6 +279,9 @@ export const userRepository = {
       await client.query('DELETE FROM connected_accounts WHERE user_id = $1', [id]);
 
       const result = await client.query('DELETE FROM users WHERE id = $1', [id]);
+      if (removesPolicies && (result.rowCount ?? 0) > 0) {
+        await bumpPolicyAuthorityWithClient(client);
+      }
       return (result.rowCount ?? 0) > 0;
     });
   },

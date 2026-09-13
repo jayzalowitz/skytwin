@@ -13,6 +13,7 @@ export interface UserRow {
   name: string;
   trust_tier: string;
   autonomy_settings: Record<string, unknown>;
+  execution_authority_revision: string;
   ironclaw_channel: string | null;
   /** BCP-47-ish language tag from the connector identity (#486). Null until synced. */
   language: string | null;
@@ -206,6 +207,7 @@ export interface ExecutionPlanRow {
   action_id: string | null;
   status: string;
   steps: unknown[];
+  evidence_schema_version: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -217,6 +219,7 @@ export interface ExecutionResultRow {
   outputs: Record<string, unknown>;
   error: string | null;
   rollback_available: boolean;
+  evidence_schema_version: number;
   completed_at: Date;
 }
 
@@ -226,6 +229,7 @@ export interface ExecutionEventRow {
   step_id: string | null;
   event_type: string;
   payload: Record<string, unknown>;
+  evidence_schema_version: number;
   created_at: Date;
 }
 
@@ -258,6 +262,7 @@ export interface MemoryActionOpportunityRow {
   policy_reason: string | null;
   route_reason: string | null;
   next_step: string | null;
+  evidence_schema_version: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -335,6 +340,11 @@ export interface OAuthTokenRow {
   scopes: string[];
   created_at: Date;
   updated_at: Date;
+  /** Exact OAuth grant revision; changes on every credential mutation. */
+  credential_revision: string;
+  /** Generation used to fence dispatch when disconnect begins. */
+  dispatch_generation: string;
+  dispatch_state: 'active' | 'disconnecting';
 }
 
 /**
@@ -350,6 +360,30 @@ export interface OAuthTokenRowWithEncrypted extends OAuthTokenRow {
   encryption_key_version: number;
 }
 
+export interface CredentialDispatchLeaseRow {
+  id: string;
+  user_id: string;
+  oauth_token_id: string;
+  provider: string;
+  account_email: string;
+  credential_revision: string;
+  credential_generation: string;
+  vault_generation: string | null;
+  policy_authority_revision: string;
+  action_id: string;
+  decision_id: string;
+  execution_plan_id: string;
+  authority_kind: 'admission' | 'receipt';
+  authority_id: string;
+  capability_hash: string;
+  lease_generation: string;
+  state: 'request_started' | 'completed' | 'failed' | 'ambiguous';
+  acquired_at: Date;
+  request_started_at: Date;
+  expires_at: Date;
+  terminal_at: Date | null;
+}
+
 // ============================================================================
 // Credential Vault Metadata
 // ============================================================================
@@ -359,6 +393,8 @@ export interface CredentialVaultMetaRow {
   passphrase_salt: Buffer;
   passphrase_hash: Buffer;
   current_key_version: number;
+  vault_state: 'locked' | 'unlocked';
+  vault_generation: string;
   created_at: Date;
   rotated_at: Date | null;
 }

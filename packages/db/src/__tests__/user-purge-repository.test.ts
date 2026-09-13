@@ -47,10 +47,10 @@ function setupDeleteCounts(counts: Record<string, number>): void {
   // return a no-op result for BEGIN / COMMIT.
   mockClient.query.mockImplementation((sql: string) => {
     if (typeof sql !== 'string') return { rows: [], rowCount: 0 };
-    if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
+    if (sql.includes('SELECT id, email FROM users WHERE id = $1 FOR UPDATE')) {
       return counts['users'] === 0
         ? { rows: [], rowCount: 0 }
-        : { rows: [{ id: USER_ID }], rowCount: 1 };
+        : { rows: [{ id: USER_ID, email: 'owner@example.test' }], rowCount: 1 };
     }
     if (sql.includes('AS active_count')) {
       return { rows: [{ active_count: 0 }], rowCount: 1 };
@@ -165,8 +165,8 @@ describe('userPurgeRepository.purgeUser', () => {
   it('rolls back when a delete throws (transactional all-or-nothing)', async () => {
     let deleteCount = 0;
     mockClient.query.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
-        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      if (sql.includes('SELECT id, email FROM users WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: USER_ID, email: 'owner@example.test' }], rowCount: 1 };
       }
       if (sql.includes('AS active_count')) return { rows: [{ active_count: 0 }], rowCount: 1 };
       if (sql.includes('DELETE FROM') && ++deleteCount === 3) {
@@ -192,14 +192,18 @@ describe('userPurgeRepository.purgeUser', () => {
       (c) => typeof c[0] === 'string' && c[0].includes('DELETE FROM'),
     );
     for (const call of paramCalls) {
-      expect(call[1]).toEqual([USER_ID]);
+      if (String(call[0]).includes('oauth_new_user_authorizations')) {
+        expect(call[1]?.[0]).toMatch(/^[a-f0-9]{64}$/);
+      } else {
+        expect(call[1]).toEqual([USER_ID]);
+      }
     }
   });
 
   it('refuses to erase an active or ambiguous execution graph', async () => {
     mockClient.query.mockImplementation((sql: string) => {
-      if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
-        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      if (sql.includes('SELECT id, email FROM users WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: USER_ID, email: 'owner@example.test' }], rowCount: 1 };
       }
       if (sql.includes('AS active_count')) {
         return { rows: [{ active_count: 1 }], rowCount: 1 };
@@ -218,14 +222,58 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
   });
 
+  it('advances only the deleted owner account tombstones before removing the user', async () => {
+    setupDeleteCounts({ users: 1 });
+    mockClient.query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id, email FROM users WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: USER_ID, email: 'Owner@Example.Test' }], rowCount: 1 };
+      }
+      if (sql.includes('AS active_count')) return { rows: [{ active_count: 0 }], rowCount: 1 };
+      if (sql.includes('SELECT DISTINCT provider, lower(trim(account_email))')) {
+        return {
+          rows: [
+            { provider: 'google', account_email: 'other-google@example.test' },
+            { provider: 'microsoft', account_email: 'work@example.test' },
+          ],
+          rowCount: 2,
+        };
+      }
+      const match = sql.match(/DELETE FROM\s+([a-z_]+)/i);
+      return { rows: [], rowCount: match?.[1] === 'users' ? 1 : 0 };
+    });
+
+    await userPurgeRepository.purgeUser(USER_ID);
+
+    const tombstones = mockClient.query.mock.calls
+      .filter((call) => String(call[0]).includes('oauth_account_connection_authority'))
+      .map((call) => call[1]);
+    expect(tombstones.map((params) => params[0])).toEqual([
+      'google', 'google', 'microsoft',
+    ]);
+    for (const params of tombstones) {
+      expect(params[1]).toMatch(/^[a-f0-9]{64}$/);
+    }
+    expect(JSON.stringify(tombstones)).not.toContain('@example.test');
+    const pendingCleanup = mockClient.query.mock.calls.find((call) =>
+      String(call[0]).includes('DELETE FROM oauth_new_user_authorizations'));
+    expect(pendingCleanup?.[1]?.[0]).toMatch(/^[a-f0-9]{64}$/);
+    const tombstoneIndex = Math.max(...mockClient.query.mock.calls
+      .map((call, index) => String(call[0]).includes('oauth_account_connection_authority')
+        ? index
+        : -1));
+    const deleteIndex = mockClient.query.mock.calls.findIndex((call) =>
+      String(call[0]).includes('DELETE FROM users'));
+    expect(tombstoneIndex).toBeLessThan(deleteIndex);
+  });
+
   it('locks the demo predicate and purges selected demo graphs in one transaction', async () => {
     setupDeleteCounts({ users: 1 });
     mockClient.query.mockImplementation((sql: string) => {
       if (sql.includes('SELECT id FROM users WHERE is_demo = true FOR UPDATE')) {
-        return { rows: [{ id: USER_ID }], rowCount: 1 };
+        return { rows: [{ id: USER_ID, email: 'owner@example.test' }], rowCount: 1 };
       }
-      if (sql.includes('SELECT id FROM users WHERE id = $1 FOR UPDATE')) {
-        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      if (sql.includes('SELECT id, email FROM users WHERE id = $1 FOR UPDATE')) {
+        return { rows: [{ id: USER_ID, email: 'owner@example.test' }], rowCount: 1 };
       }
       if (sql.includes('AS active_count')) return { rows: [{ active_count: 0 }], rowCount: 1 };
       const match = sql.match(/DELETE FROM\s+([a-z_]+)/i);

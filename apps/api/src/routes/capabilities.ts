@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, executionRepository, query } from '@skytwin/db';
+import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, executionRepository, oauthRepository, CredentialDispatchConflictError, query } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { Request } from 'express';
 import { createLogger } from '@skytwin/core';
@@ -529,12 +529,17 @@ export function createCapabilitiesRouter(): Router {
           // Delete the oauth_tokens row — this removes the credential from the
           // SkyTwin DB. Best-effort provider-side revocation is a TODO for the
           // connector layer (#178 follow-up).
-          await query(
-            'DELETE FROM oauth_tokens WHERE id = $1',
-            [server.oauth_token_id],
-          );
+          await oauthRepository.deleteById(userId, server.oauth_token_id);
           log.info('Revoked OAuth token for MCP server', { serverId: id, tokenId: server.oauth_token_id });
         } catch (err) {
+          if (err instanceof CredentialDispatchConflictError) {
+            res.status(409).json({
+              error: err.message,
+              code: err.code,
+              retryAfter: err.retryAfter?.toISOString() ?? null,
+            });
+            return;
+          }
           // OAuth revocation failure should not block the uninstall
           log.warn('Failed to revoke OAuth token during uninstall', {
             serverId: id,
@@ -659,8 +664,11 @@ export function createCapabilitiesRouter(): Router {
         try {
           router = await getExecutionRouter();
         } catch (err) {
-          routerError = err instanceof Error ? err.message : String(err);
-          log.warn('Execution router unavailable for regret rollback', { serverId: id, error: routerError });
+          routerError = 'Execution router unavailable';
+          log.warn('Execution router unavailable for regret rollback', {
+            serverId: id,
+            error: err instanceof Error ? err.name : 'unknown_error',
+          });
         }
       }
 
@@ -696,21 +704,24 @@ export function createCapabilitiesRouter(): Router {
             planId: target.executionPlanId,
             adapterUsed: target.adapterUsed,
             result: 'rollback_failed',
-            message: routerError
-              ? `Execution router unavailable: ${routerError}`
-              : 'Execution router unavailable',
+            message: routerError ?? 'Execution router unavailable',
           });
           continue;
         }
 
         const rollback = await router.rollback(target.executionPlanId, target.adapterUsed);
+        const rollbackMessage = rollback.result.success
+          ? 'The recorded adapter confirmed rollback completion.'
+          : rollback.noAdapter
+            ? 'The recorded execution adapter is unavailable for rollback.'
+            : 'The recorded adapter could not confirm rollback completion.';
 
         undone.push({
           actionId: target.actionId,
           planId: target.executionPlanId,
           adapterUsed: rollback.adapterUsed,
           result: rollback.result.success ? 'rolled_back' : 'rollback_failed',
-          message: rollback.result.message,
+          message: rollbackMessage,
         });
 
         // Audit trail (Safety Invariant #2): record every rollback attempt as
@@ -729,7 +740,7 @@ export function createCapabilitiesRouter(): Router {
               actionId: target.actionId,
               adapterUsed: rollback.adapterUsed,
               success: rollback.result.success,
-              message: rollback.result.message,
+              message: rollbackMessage,
               withinHours,
             },
           });

@@ -11,10 +11,48 @@ CREATE TABLE IF NOT EXISTS users (
   name STRING NOT NULL,
   trust_tier STRING NOT NULL DEFAULT 'observer',
   autonomy_settings JSONB NOT NULL DEFAULT '{}',
+  execution_authority_revision UUID NOT NULL DEFAULT gen_random_uuid(),
   ironclaw_channel STRING DEFAULT 'skytwin',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS execution_policy_authority (
+  singleton BOOL PRIMARY KEY DEFAULT true CHECK (singleton),
+  revision UUID NOT NULL DEFAULT gen_random_uuid(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO execution_policy_authority (singleton) VALUES (true) ON CONFLICT (singleton) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS oauth_connection_authority (
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider STRING NOT NULL,
+  generation UUID NOT NULL DEFAULT gen_random_uuid(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, provider)
+);
+CREATE TABLE IF NOT EXISTS oauth_account_connection_authority (
+  provider STRING NOT NULL,
+  account_key STRING NOT NULL,
+  generation UUID NOT NULL DEFAULT gen_random_uuid(),
+  invalidated_at TIMESTAMPTZ,
+  expires_at TIMESTAMPTZ NOT NULL DEFAULT (now() + INTERVAL '15 minutes'),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (provider, account_key)
+) WITH (ttl_expiration_expression = 'expires_at');
+CREATE TABLE IF NOT EXISTS oauth_new_user_authorizations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider STRING NOT NULL,
+  issued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  claimed_owner_key STRING,
+  claimed_account_key STRING,
+  claimed_owner_generation UUID,
+  claim_generation UUID,
+  CHECK (expires_at > issued_at)
+) WITH (ttl_expiration_expression = 'expires_at');
+CREATE INDEX IF NOT EXISTS oauth_new_user_authorizations_expires_idx
+  ON oauth_new_user_authorizations (expires_at);
 
 CREATE TABLE IF NOT EXISTS connected_accounts (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -188,6 +226,7 @@ CREATE TABLE IF NOT EXISTS execution_plans (
   action_id UUID REFERENCES candidate_actions(id),
   status STRING NOT NULL DEFAULT 'pending',
   steps JSONB NOT NULL DEFAULT '[]',
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   INDEX (decision_id)
@@ -200,6 +239,7 @@ CREATE TABLE IF NOT EXISTS execution_results (
   outputs JSONB NOT NULL DEFAULT '{}',
   error STRING,
   rollback_available BOOL NOT NULL DEFAULT false,
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -209,6 +249,7 @@ CREATE TABLE IF NOT EXISTS execution_events (
   step_id STRING,
   event_type STRING NOT NULL,
   payload JSONB NOT NULL DEFAULT '{}',
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_execution_events_plan ON execution_events (plan_id, created_at ASC);
@@ -432,6 +473,7 @@ CREATE TABLE IF NOT EXISTS memory_action_opportunities (
   policy_reason STRING,
   route_reason STRING,
   next_step STRING,
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, fingerprint)
@@ -470,6 +512,7 @@ CREATE TABLE IF NOT EXISTS execution_admission_barriers (
   status STRING NOT NULL DEFAULT 'in_progress'
     CHECK (status IN ('in_progress', 'completed', 'failed', 'ambiguous')),
   observed_result JSONB NOT NULL DEFAULT '{}'::JSONB,
+  evidence_schema_version INT NOT NULL DEFAULT 1,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE (user_id, scope, idempotency_key),
@@ -489,3 +532,39 @@ CREATE TABLE IF NOT EXISTS execution_admission_barriers (
 );
 CREATE INDEX IF NOT EXISTS execution_admission_barriers_plan_idx
   ON execution_admission_barriers (execution_plan_id);
+
+CREATE TABLE IF NOT EXISTS credential_dispatch_leases (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  oauth_token_id UUID NOT NULL,
+  provider STRING NOT NULL,
+  account_email STRING NOT NULL,
+  credential_revision UUID NOT NULL,
+  credential_generation UUID NOT NULL,
+  vault_generation UUID,
+  policy_authority_revision UUID NOT NULL,
+  action_id UUID NOT NULL,
+  decision_id UUID NOT NULL,
+  execution_plan_id UUID NOT NULL,
+  authority_kind STRING NOT NULL CHECK (authority_kind IN ('admission', 'receipt')),
+  authority_id UUID NOT NULL,
+  capability_hash STRING NOT NULL UNIQUE,
+  lease_generation UUID NOT NULL,
+  state STRING NOT NULL CHECK (
+    state IN ('request_started', 'completed', 'failed', 'ambiguous')
+  ),
+  acquired_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  request_started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  terminal_at TIMESTAMPTZ,
+  UNIQUE (execution_plan_id),
+  CONSTRAINT credential_dispatch_decision_owner_fk
+    FOREIGN KEY (decision_id, user_id) REFERENCES decisions (id, user_id),
+  CONSTRAINT credential_dispatch_action_decision_fk
+    FOREIGN KEY (action_id, decision_id) REFERENCES candidate_actions (id, decision_id),
+  CONSTRAINT credential_dispatch_plan_graph_fk
+    FOREIGN KEY (execution_plan_id, decision_id, action_id)
+    REFERENCES execution_plans (id, decision_id, action_id)
+);
+CREATE INDEX IF NOT EXISTS credential_dispatch_leases_token_state_idx
+  ON credential_dispatch_leases (oauth_token_id, state, expires_at);

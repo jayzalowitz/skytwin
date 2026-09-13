@@ -26,6 +26,14 @@ describe('KeyCache', () => {
     expect(retrieved!.equals(key)).toBe(true);
   });
 
+  it('binds a cached key to its durable vault generation', () => {
+    const cache = new KeyCache({ ttlMs: 60_000 });
+    cache.set('user-generation', makeKey(), 'generation-1');
+    expect(cache.getGeneration('user-generation')).toBe('generation-1');
+    cache.evict('user-generation');
+    expect(cache.getGeneration('user-generation')).toBeNull();
+  });
+
   it('returns null for an unknown user', () => {
     const cache = new KeyCache({ ttlMs: 60_000 });
     expect(cache.get('nobody')).toBeNull();

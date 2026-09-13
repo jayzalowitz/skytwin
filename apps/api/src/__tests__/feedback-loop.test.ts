@@ -67,6 +67,7 @@ const {
     isDispatchable: vi.fn(),
     findByScope: vi.fn(),
     observeTerminal: vi.fn(),
+    failBeforeDispatch: vi.fn(),
   },
   fakeExecutionRepo: {
     finalizeAdmittedPlan: vi.fn(),
@@ -139,6 +140,7 @@ vi.mock('@skytwin/db', () => ({
     updatePolicy: vi.fn(),
     deletePolicy: vi.fn(),
   },
+  getPolicyAuthorityRevision: vi.fn().mockResolvedValue('policy-authority-revision-1'),
   withTransaction: fakeWithTransaction,
 }));
 
@@ -243,7 +245,10 @@ beforeEach(() => {
     signal_id: null,
     created_at: new Date(),
   });
-  fakeUserRepo.findById.mockResolvedValue({ id: USER_ID, trust_tier: 'moderate_autonomy', ironclaw_channel: 'skytwin' });
+  fakeUserRepo.findById.mockResolvedValue({
+    id: USER_ID, trust_tier: 'moderate_autonomy', ironclaw_channel: 'skytwin',
+    execution_authority_revision: 'authority-revision-1',
+  });
   fakeOauthRepo.getToken.mockResolvedValue(null);
   fakeExecutionRouter.executeWithRouting.mockResolvedValue({
     planId: 'plan-1',
@@ -265,6 +270,7 @@ beforeEach(() => {
   fakeExecutionAdmissionRepo.observeTerminal.mockResolvedValue({});
   fakeExecutionAdmissionRepo.findByScope.mockResolvedValue(null);
   fakeExecutionAdmissionRepo.isDispatchable.mockResolvedValue(true);
+  fakeExecutionAdmissionRepo.failBeforeDispatch.mockResolvedValue({ status: 'failed' });
   fakeExecutionRepo.finalizeAdmittedPlan.mockResolvedValue({});
   fakeWithTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
     fn({ query: vi.fn() }),
@@ -498,7 +504,10 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(executedAction).toMatchObject({
       actionType: 'send_reply',
       reversible: false,
-      parameters: { draftBody: expect.stringContaining('send exactly this body') },
+      parameters: {
+        draftBody: expect.stringContaining('send exactly this body'),
+        executionPlanId: '44444444-4444-4444-8444-444444444444',
+      },
     });
     expect(executedRisk).toEqual(admission.riskSnapshot);
   });
@@ -520,6 +529,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       trust_tier: 'moderate_autonomy',
       autonomy_settings: { paused: true },
       ironclaw_channel: 'skytwin',
+      execution_authority_revision: 'authority-revision-paused',
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
@@ -553,7 +563,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
-      execution: { status: 'ambiguous', error: 'Execution authority was revoked before dispatch' },
+      execution: { status: 'failed', error: 'Execution authority was revoked before dispatch' },
     });
     expect(fakeExecutionAdmissionRepo.isDispatchable).not.toHaveBeenCalled();
     expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
@@ -714,11 +724,10 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     );
   });
 
-  it('resolves the latest credential after the final gate and redacts echoed adapter evidence', async () => {
+  it('keeps credentials out of the admitted/API action and redacts echoed adapter evidence', async () => {
     const secret = 'rotated-approval-token';
-    fakeOauthRepo.getToken.mockResolvedValueOnce({ access_token: secret });
     fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (candidate) => {
-      expect(candidate.parameters['accessToken']).toBe(secret);
+      expect(candidate.parameters).not.toHaveProperty('accessToken');
       return {
         planId: 'adapter-plan-failed', status: 'failed', startedAt: new Date(),
         completedAt: new Date(),
@@ -740,11 +749,9 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
 
     expect(fakeExecutionAdmissionRepo.isDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
-      fakeOauthRepo.getToken.mock.invocationCallOrder[0]!,
-    );
-    expect(fakeOauthRepo.getToken.mock.invocationCallOrder[0]).toBeLessThan(
       fakeExecutionRouter.executeWithRouting.mock.invocationCallOrder[0]!,
     );
+    expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
     const persisted = JSON.stringify({
       barrier: fakeExecutionAdmissionRepo.observeTerminal.mock.calls,
       result: fakeExecutionRepo.finalizeAdmittedPlan.mock.calls,
@@ -753,12 +760,11 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(persisted).not.toContain(secret);
     expect(persisted).not.toContain('?access_token=');
     expect(persisted).not.toContain('echoed');
-    expect(persisted).toContain('[redacted:credential]');
+    expect(persisted).toContain('[redacted:unapproved-evidence]');
     expect(persisted).toContain('[redacted:execution-error]');
   });
 
-  it('does not carry an earlier credential through a final-gate disconnect', async () => {
-    fakeOauthRepo.getToken.mockResolvedValueOnce(null);
+  it('delegates final credential resolution to the adapter dispatch boundary', async () => {
     fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (candidate) => {
       expect(candidate.parameters).not.toHaveProperty('accessToken');
       return {
@@ -771,9 +777,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       action: 'approve', userId: USER_ID,
     });
 
-    expect(fakeExecutionAdmissionRepo.isDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
-      fakeOauthRepo.getToken.mock.invocationCallOrder[0]!,
-    );
+    expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
     expect(fakeExecutionRouter.executeWithRouting).toHaveBeenCalledOnce();
   });
 
@@ -824,12 +828,17 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       execution: {
-        status: 'ambiguous',
+        status: 'failed',
         planId: '44444444-4444-4444-8444-444444444444',
         error: 'Execution authority was revoked before dispatch',
       },
     });
     expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+    expect(fakeExecutionAdmissionRepo.failBeforeDispatch).toHaveBeenCalledWith({
+      admission: expect.objectContaining({ created: true }),
+      userId: USER_ID,
+      error: 'Execution authority was revoked before router invocation.',
+    });
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

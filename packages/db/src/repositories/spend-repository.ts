@@ -29,20 +29,26 @@ export const spendRepository = {
    * Record a new spend event (when an action is approved/executed).
    */
   async create(input: CreateSpendRecordInput): Promise<SpendRecordRow> {
-    const result = await query<SpendRecordRow>(
-      `INSERT INTO spend_records (user_id, action_id, decision_id, estimated_cost_cents, actual_cost_cents, registry_id)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [
+    return withTransaction(async (client) => {
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [input.userId]);
+      const result = await client.query<SpendRecordRow>(
+        `INSERT INTO spend_records (user_id, action_id, decision_id, estimated_cost_cents, actual_cost_cents, registry_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`, [
         input.userId,
         input.actionId,
         input.decisionId,
         input.estimatedCostCents,
         input.actualCostCents ?? null,
         input.registryId ?? null,
-      ],
-    );
-    return result.rows[0]!;
+        ],
+      );
+      await client.query(
+        'UPDATE users SET execution_authority_revision = gen_random_uuid() WHERE id = $1',
+        [input.userId],
+      );
+      return result.rows[0]!;
+    });
   },
 
   /**
@@ -97,14 +103,20 @@ export const spendRepository = {
    * Reconcile a spend record with the actual cost after execution.
    */
   async reconcile(actionId: string, actualCostCents: number): Promise<SpendRecordRow | null> {
-    const result = await query<SpendRecordRow>(
-      `UPDATE spend_records
-       SET actual_cost_cents = $1, reconciled_at = now()
-       WHERE action_id = $2
-       RETURNING *`,
-      [actualCostCents, actionId],
-    );
-    return result.rows[0] ?? null;
+    return withTransaction(async (client) => {
+      const result = await client.query<SpendRecordRow>(
+        `UPDATE spend_records
+         SET actual_cost_cents = $1, reconciled_at = now()
+         WHERE action_id = $2
+         RETURNING *`, [actualCostCents, actionId],
+      );
+      const row = result.rows[0];
+      if (row) await client.query(
+        'UPDATE users SET execution_authority_revision = gen_random_uuid() WHERE id = $1',
+        [row.user_id],
+      );
+      return row ?? null;
+    });
   },
 
   /**
@@ -118,6 +130,7 @@ export const spendRepository = {
     windowHours: number = 24,
   ): Promise<{ allowed: boolean; currentTotal: number; record: SpendRecordRow | null }> {
     return withTransaction(async (client) => {
+      await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [input.userId]);
       // Read current total within the transaction (CockroachDB serializable isolation
       // ensures no concurrent transaction can insert between this read and our write)
       const totalResult = await client.query<{ total: string | null }>(
@@ -146,6 +159,11 @@ export const spendRepository = {
           input.actualCostCents ?? null,
           input.registryId ?? null,
         ],
+      );
+
+      await client.query(
+        'UPDATE users SET execution_authority_revision = gen_random_uuid() WHERE id = $1',
+        [input.userId],
       );
 
       return {

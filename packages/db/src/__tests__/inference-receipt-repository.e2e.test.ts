@@ -18,13 +18,20 @@ import {
 import { ExplanationGenerator } from '@skytwin/explanations';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
-import { closePool } from '../connection.js';
+import { closePool, withTransaction } from '../connection.js';
 import { collectBackup, restoreBackup } from '../backup/backup.js';
 import { inferenceReceiptRepository } from '../repositories/inference-receipt-repository.js';
 import { executionRepository } from '../repositories/execution-repository.js';
 import { executionAdmissionRepository } from '../repositories/execution-admission-repository.js';
-import { oauthRepository } from '../repositories/oauth-repository.js';
+import {
+  CredentialConnectionAuthorityError,
+  CredentialDisconnectInProgressError,
+  oauthRepository,
+} from '../repositories/oauth-repository.js';
+import { credentialDispatchLeaseRepository } from '../repositories/credential-dispatch-lease-repository.js';
+import { credentialVaultMetaRepository } from '../repositories/credential-vault-meta-repository.js';
 import { userPurgeRepository } from '../repositories/user-purge-repository.js';
+import { policyRepository } from '../repositories/policy-repository.js';
 import { decisionRepository } from '../repositories/decision-repository.js';
 import { explanationRepositoryAdapter } from '../adapters/explanation-repository-adapter.js';
 import { cleanupLegacyFlatDecisions } from '../seeds/legacy-decision-cleanup.js';
@@ -246,10 +253,51 @@ function receiptBundle(graph: Graph): InferenceReceiptExportV1 {
   };
 }
 
+async function prepareCredentialDispatch(label: string) {
+  const graph = await createGraph(label, 'auto_execute');
+  await inferenceReceiptRepository.createManyForUser(graph.userId, [{
+    bundle: receiptBundle(graph),
+    trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+  }], completionForGraph(graph, 'auto_execute'));
+  const plan = await inferenceReceiptRepository.claimExecutionForDecision(
+    graph.userId,
+    graph.decisionId,
+    completionForGraph(graph, 'auto_execute').continuation,
+    [],
+    CURRENT_ALLOWED_POLICY,
+  );
+  if (!plan || !graph.actionId) throw new Error('Credential dispatch fixture was not claimed.');
+  const accountEmail = `lease-${randomUUID()}@example.test`;
+  const token = await oauthRepository.saveTokenForAccount({
+    userId: graph.userId,
+    provider: 'google',
+    accountEmail,
+    accessToken: 'lease-access-token',
+    refreshToken: 'lease-refresh-token',
+    expiresAt: new Date(Date.now() + 3_600_000),
+    scopes: ['gmail.modify'],
+  });
+  const authority = await pool.query<{ execution_authority_revision: string }>(
+    'SELECT execution_authority_revision FROM users WHERE id = $1', [graph.userId],
+  );
+  const policyAuthority = await pool.query<{ revision: string }>(
+    'SELECT revision FROM execution_policy_authority WHERE singleton = true',
+  );
+  return {
+    graph,
+    plan,
+    token,
+    accountEmail,
+    authorityRevision: authority.rows[0]!.execution_authority_revision,
+    policyAuthorityRevision: policyAuthority.rows[0]!.revision,
+  };
+}
+
 async function deleteUserGraph(userId: string): Promise<void> {
   const ownedPlans = `SELECT ep.id FROM execution_plans ep
     JOIN decisions d ON d.id = ep.decision_id WHERE d.user_id = $1`;
   const ownedDecisions = 'SELECT id FROM decisions WHERE user_id = $1';
+  await pool.query('DELETE FROM credential_dispatch_leases WHERE user_id = $1', [userId]);
   await pool.query('DELETE FROM execution_admission_barriers WHERE user_id = $1', [userId]);
   await pool.query(`DELETE FROM execution_results WHERE plan_id IN (${ownedPlans})`, [userId]);
   await pool.query(`DELETE FROM execution_events WHERE plan_id IN (${ownedPlans})`, [userId]);
@@ -294,28 +342,600 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       scopes: ['gmail.readonly'],
     });
     await pool.query(
-      `UPDATE oauth_tokens SET access_token = 'rotated-access', refresh_token = 'rotated-refresh'
+      `UPDATE oauth_tokens SET credential_revision = gen_random_uuid(),
+                               dispatch_generation = gen_random_uuid()
        WHERE id = $1`,
       [original.id],
     );
     await expect(oauthRepository.rotateTokenIfCurrent({
       id: original.id, userId: owner.userId, provider: 'google',
       expectedAccessToken: 'old-access', expectedRefreshToken: 'old-refresh',
+      expectedCredentialRevision: original.credential_revision,
       accessToken: 'late-access', refreshToken: 'late-refresh', expiresAt,
       scopes: ['gmail.readonly'],
     })).resolves.toBeNull();
     await expect(oauthRepository.getToken(owner.userId, 'google')).resolves.toMatchObject({
-      access_token: 'rotated-access', refresh_token: 'rotated-refresh',
+      access_token: 'old-access', refresh_token: 'old-refresh',
     });
 
     await oauthRepository.deleteAllForProvider(owner.userId, 'google');
     await expect(oauthRepository.rotateTokenIfCurrent({
       id: original.id, userId: owner.userId, provider: 'google',
-      expectedAccessToken: 'rotated-access', expectedRefreshToken: 'rotated-refresh',
+      expectedAccessToken: 'old-access', expectedRefreshToken: 'old-refresh',
+      expectedCredentialRevision: original.credential_revision,
       accessToken: 'late-access', refreshToken: 'late-refresh', expiresAt,
       scopes: ['gmail.readonly'],
     })).resolves.toBeNull();
     await expect(oauthRepository.getToken(owner.userId, 'google')).resolves.toBeNull();
+  });
+
+  it('does not let a provider response paused before vault initialization write plaintext afterward', async () => {
+    const owner = await createGraph('oauth-refresh-vault-init-fence');
+    const original = await oauthRepository.saveTokenForAccount({
+      userId: owner.userId,
+      provider: 'google',
+      accountEmail: `oauth-vault-init-${owner.userId}@example.test`,
+      accessToken: 'access-before-provider-wait',
+      refreshToken: 'refresh-before-provider-wait',
+      expiresAt: new Date('2026-09-13T01:00:00Z'),
+      scopes: ['gmail.readonly'],
+    });
+
+    // This creation represents /vault/init committing while the provider call
+    // is paused. The late response still holds the exact pre-init row revision,
+    // but plaintext persistence must now lose to the durable vault boundary.
+    await credentialVaultMetaRepository.create(
+      owner.userId,
+      Buffer.alloc(16, 7),
+      Buffer.alloc(32, 9),
+    );
+    await expect(oauthRepository.updateAccessTokenIfCurrent({
+      id: original.id,
+      userId: owner.userId,
+      provider: 'google',
+      expectedCredentialRevision: original.credential_revision,
+      accessToken: 'late-plaintext-provider-response',
+      expiresAt: new Date('2026-09-13T03:00:00Z'),
+    })).resolves.toBe(false);
+    await expect(oauthRepository.rotateTokenIfCurrent({
+      id: original.id,
+      userId: owner.userId,
+      provider: 'google',
+      expectedAccessToken: 'access-before-provider-wait',
+      expectedRefreshToken: 'refresh-before-provider-wait',
+      expectedCredentialRevision: original.credential_revision,
+      accessToken: 'late-rotated-plaintext-access',
+      refreshToken: 'late-rotated-plaintext-refresh',
+      expiresAt: new Date('2026-09-13T03:00:00Z'),
+      scopes: ['gmail.readonly'],
+    })).resolves.toBeNull();
+    await expect(oauthRepository.getToken(owner.userId, 'google')).resolves.toMatchObject({
+      access_token: 'access-before-provider-wait',
+      credential_revision: original.credential_revision,
+    });
+  });
+
+  it('does not let a callback exchanged under an old connection epoch resurrect a disconnect', async () => {
+    const owner = await createGraph('oauth-callback-fence');
+    const accountEmail = `callback-${owner.userId}@example.test`;
+    const callbackGeneration = await oauthRepository.getOrCreateConnectionAuthority(
+      owner.userId, 'google',
+    );
+    await oauthRepository.saveTokenForAccount({
+      userId: owner.userId, provider: 'google', accountEmail,
+      accessToken: 'old-access', refreshToken: 'old-refresh',
+      expiresAt: new Date(Date.now() + 60_000), scopes: ['openid'],
+      expectedConnectionGeneration: callbackGeneration,
+    });
+
+    const begun = await oauthRepository.beginDisconnect(owner.userId, 'google', accountEmail);
+    expect(begun.status).toBe('ready');
+    if (begun.status !== 'ready') return;
+    await expect(oauthRepository.completeDisconnect(
+      owner.userId, 'google', begun.accounts,
+    )).resolves.toBe(1);
+
+    await expect(oauthRepository.saveTokenForAccount({
+      userId: owner.userId, provider: 'google', accountEmail,
+      accessToken: 'late-callback-access', refreshToken: 'late-callback-refresh',
+      expiresAt: new Date(Date.now() + 60_000), scopes: ['openid'],
+      expectedConnectionGeneration: callbackGeneration,
+    })).rejects.toBeInstanceOf(CredentialConnectionAuthorityError);
+    await expect(oauthRepository.getTokenByAccount(
+      owner.userId, 'google', accountEmail,
+    )).resolves.toBeNull();
+
+    const freshGeneration = await oauthRepository.getOrCreateConnectionAuthority(
+      owner.userId, 'google',
+    );
+    expect(freshGeneration).not.toBe(callbackGeneration);
+    const fresh = await oauthRepository.saveTokenForAccount({
+      userId: owner.userId, provider: 'google', accountEmail,
+      accessToken: 'fresh-access', refreshToken: 'fresh-refresh',
+      expiresAt: new Date(Date.now() + 60_000), scopes: ['openid'],
+      expectedConnectionGeneration: freshGeneration,
+    });
+    expect(fresh).toMatchObject({ access_token: 'fresh-access' });
+
+    await expect(oauthRepository.deleteById(owner.userId, fresh.id)).resolves.toBe(true);
+    await expect(oauthRepository.saveTokenForAccount({
+      userId: owner.userId, provider: 'google', accountEmail,
+      accessToken: 'late-after-delete', refreshToken: 'late-after-delete',
+      expiresAt: new Date(Date.now() + 60_000), scopes: ['openid'],
+      expectedConnectionGeneration: freshGeneration,
+    })).rejects.toBeInstanceOf(CredentialConnectionAuthorityError);
+
+    const unrelatedEmail = `unrelated-${randomUUID()}@example.test`;
+    const newUserAuthorizationId = await oauthRepository.issueNewUserAuthorization(
+      'google', new Date(Date.now() + 60_000),
+    );
+    const ownerRow = await pool.query<{ email: string }>(
+      'SELECT email FROM users WHERE id = $1', [owner.userId],
+    );
+    const ownerAuthorizationId = await oauthRepository.issueNewUserAuthorization(
+      'google', new Date(Date.now() + 60_000),
+    );
+    await expect(oauthRepository.beginDisconnect(owner.userId, 'google', accountEmail))
+      .resolves.toMatchObject({ status: 'not_found' });
+    await expect(oauthRepository.claimNewUserAuthorization({
+      authorizationId: ownerAuthorizationId,
+      provider: 'google',
+      accountEmail: ownerRow.rows[0]!.email,
+      userName: 'Existing owner',
+      trustTier: 'observer',
+    })).rejects.toBeInstanceOf(CredentialConnectionAuthorityError);
+    const claim = await oauthRepository.claimNewUserAuthorization({
+      authorizationId: newUserAuthorizationId,
+      provider: 'google',
+      accountEmail: unrelatedEmail,
+      userName: 'Unrelated signup',
+      trustTier: 'observer',
+    });
+    createdUserIds.push(claim.userId);
+    await expect(oauthRepository.saveTokenForAccount({
+      userId: claim.userId, provider: 'google', accountEmail: unrelatedEmail,
+      accessToken: 'unrelated-access', refreshToken: 'unrelated-refresh',
+      expiresAt: new Date(Date.now() + 60_000), scopes: ['openid'],
+      newUserAuthorization: { id: newUserAuthorizationId, claimGeneration: claim.claimGeneration },
+    })).resolves.toMatchObject({ access_token: 'unrelated-access' });
+
+    const pausedEmail = `paused-${randomUUID()}@example.test`;
+    const pausedAuthorizationId = await oauthRepository.issueNewUserAuthorization(
+      'google', new Date(Date.now() + 60_000),
+    );
+    const pausedClaim = await oauthRepository.claimNewUserAuthorization({
+      authorizationId: pausedAuthorizationId,
+      provider: 'google',
+      accountEmail: pausedEmail,
+      userName: 'Paused signup',
+      trustTier: 'observer',
+    });
+    createdUserIds.push(pausedClaim.userId);
+    await expect(oauthRepository.beginDisconnect(pausedClaim.userId, 'google', pausedEmail))
+      .resolves.toMatchObject({ status: 'not_found' });
+    await expect(oauthRepository.saveTokenForAccount({
+      userId: pausedClaim.userId, provider: 'google', accountEmail: pausedEmail,
+      accessToken: 'must-not-persist', refreshToken: 'must-not-persist',
+      expiresAt: new Date(Date.now() + 60_000), scopes: ['openid'],
+      newUserAuthorization: {
+        id: pausedAuthorizationId, claimGeneration: pausedClaim.claimGeneration,
+      },
+    })).rejects.toBeInstanceOf(CredentialConnectionAuthorityError);
+    await expect(oauthRepository.getTokenByAccount(
+      pausedClaim.userId, 'google', pausedEmail,
+    )).resolves.toBeNull();
+  });
+
+  it('rejects a pre-purge account-unknown callback without recreating the user', async () => {
+    const owner = await createGraph('oauth-new-user-purge-fence');
+    const user = await pool.query<{ email: string }>('SELECT email FROM users WHERE id = $1', [owner.userId]);
+    const accountEmail = user.rows[0]!.email;
+    const authorizationId = await oauthRepository.issueNewUserAuthorization(
+      'google', new Date(Date.now() + 60_000),
+    );
+    const claimedAuthorizationId = await oauthRepository.issueNewUserAuthorization(
+      'google', new Date(Date.now() + 60_000),
+    );
+    await oauthRepository.claimNewUserAuthorization({
+      authorizationId: claimedAuthorizationId,
+      provider: 'google',
+      accountEmail,
+      userName: 'Existing owner',
+      trustTier: 'observer',
+    });
+
+    await expect(userPurgeRepository.purgeUser(owner.userId)).resolves.toMatchObject({
+      userExisted: true,
+    });
+    await expect(oauthRepository.claimNewUserAuthorization({
+      authorizationId,
+      provider: 'google',
+      accountEmail,
+      userName: 'Must not be recreated',
+      trustTier: 'observer',
+    })).rejects.toBeInstanceOf(CredentialConnectionAuthorityError);
+    const recreated = await pool.query('SELECT id FROM users WHERE email = $1', [accountEmail]);
+    expect(recreated.rows).toHaveLength(0);
+    const pending = await pool.query<{ claimed_owner_key: string | null; claimed_account_key: string | null }>(
+      `SELECT claimed_owner_key, claimed_account_key
+         FROM oauth_new_user_authorizations WHERE id = $1`, [authorizationId],
+    );
+    expect(pending.rows).toEqual([{ claimed_owner_key: null, claimed_account_key: null }]);
+    const claimedPending = await pool.query(
+      'SELECT id FROM oauth_new_user_authorizations WHERE id = $1', [claimedAuthorizationId],
+    );
+    expect(claimedPending.rows).toHaveLength(0);
+    const accountFences = await pool.query<{ account_key: string }>(
+      'SELECT account_key FROM oauth_account_connection_authority WHERE provider = $1',
+      ['google'],
+    );
+    expect(accountFences.rows.length).toBeGreaterThan(0);
+    expect(accountFences.rows.every((row) => /^[a-f0-9]{64}$/.test(row.account_key))).toBe(true);
+    expect(JSON.stringify(accountFences.rows)).not.toContain(accountEmail);
+  });
+
+  it('serializes request-start against disconnect and keeps secrets out of lease evidence', async () => {
+    const fixture = await prepareCredentialDispatch('credential-race');
+    const startInput = {
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: fixture.accountEmail,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      expectedOAuthTokenId: fixture.token.id,
+      expectedCredentialRevision: fixture.token.credential_revision,
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+    };
+
+    const [startSettled, disconnectSettled] = await Promise.allSettled([
+      credentialDispatchLeaseRepository.start(startInput),
+      oauthRepository.beginDisconnect(
+        fixture.graph.userId, 'google', fixture.accountEmail,
+      ),
+    ]);
+    for (const outcome of [startSettled, disconnectSettled]) {
+      if (outcome.status === 'rejected') {
+        expect(outcome.reason).toMatchObject({ code: '40001' });
+      }
+    }
+    // A Cockroach serialization loser is known rolled back, not an ambiguous
+    // commit. Retry it against the durable winner and assert its typed result.
+    const startResult = startSettled.status === 'fulfilled'
+      ? startSettled.value
+      : await credentialDispatchLeaseRepository.start(startInput);
+    const disconnectResult = disconnectSettled.status === 'fulfilled'
+      ? disconnectSettled.value
+      : await oauthRepository.beginDisconnect(
+          fixture.graph.userId, 'google', fixture.accountEmail,
+        );
+    if (startResult.success) {
+      expect(disconnectResult.status).toBe('pending');
+      const durable = await pool.query<{
+        capability_hash: string;
+        credential_revision: string;
+        credential_generation: string;
+      }>(
+        `SELECT capability_hash, credential_revision, credential_generation
+           FROM credential_dispatch_leases WHERE execution_plan_id = $1`,
+        [fixture.plan.id],
+      );
+      expect(durable.rows[0]).toMatchObject({
+        credential_revision: fixture.token.credential_revision,
+        credential_generation: fixture.token.dispatch_generation,
+      });
+      expect(JSON.stringify(durable.rows[0])).not.toContain('lease-access-token');
+      expect(JSON.stringify(durable.rows[0])).not.toContain('lease-refresh-token');
+      expect(JSON.stringify(durable.rows[0])).not.toContain(startResult.grant.capability);
+
+      await expect(credentialDispatchLeaseRepository.terminalize({
+        userId: fixture.graph.userId,
+        executionPlanId: fixture.plan.id,
+        capability: startResult.grant.capability,
+        leaseGeneration: startResult.grant.leaseGeneration,
+        state: 'completed',
+      })).resolves.toBe(true);
+      await expect(credentialDispatchLeaseRepository.terminalize({
+        userId: fixture.graph.userId,
+        executionPlanId: fixture.plan.id,
+        capability: startResult.grant.capability,
+        leaseGeneration: startResult.grant.leaseGeneration,
+        state: 'completed',
+      })).resolves.toBe(false);
+      await expect(oauthRepository.beginDisconnect(
+        fixture.graph.userId, 'google', fixture.accountEmail,
+      )).resolves.toMatchObject({ status: 'ready' });
+    } else {
+      expect(startResult.code).toBe('credential_unavailable');
+      expect(disconnectResult.status).toBe('ready');
+      expect(await pool.query(
+        'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+        [fixture.plan.id],
+      )).toMatchObject({ rowCount: 0 });
+    }
+  });
+
+  it('serializes request-start against exact refresh and vault-rotation mutations', async () => {
+    for (const mutation of ['refresh', 'vault-rotation'] as const) {
+      const fixture = await prepareCredentialDispatch(`credential-${mutation}`);
+      const input = {
+        userId: fixture.graph.userId,
+        provider: 'google',
+        accountEmail: fixture.accountEmail,
+        decisionId: fixture.graph.decisionId,
+        actionId: fixture.graph.actionId!,
+        executionPlanId: fixture.plan.id,
+        expectedOAuthTokenId: fixture.token.id,
+        expectedCredentialRevision: fixture.token.credential_revision,
+        expectedAuthorityRevision: fixture.authorityRevision,
+        expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      };
+      if (mutation === 'vault-rotation') {
+        await pool.query(
+          'UPDATE oauth_tokens SET encrypted_access_token = $1 WHERE id = $2',
+          [Buffer.from('old-packed-value'), fixture.token.id],
+        );
+      }
+      const runMutation = () => mutation === 'refresh'
+        ? oauthRepository.updateAccessTokenIfCurrent({
+            id: fixture.token.id,
+            userId: fixture.graph.userId,
+            provider: 'google',
+            expectedCredentialRevision: fixture.token.credential_revision,
+            accessToken: 'refreshed-access',
+            expiresAt: new Date(Date.now() + 60_000),
+          })
+        : withTransaction(async (client) => {
+            await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [fixture.graph.userId]);
+            await oauthRepository.listEncryptedForUser(fixture.graph.userId, client);
+            return oauthRepository.rotateEncrypted(fixture.token.id, {
+              encryptedAccessToken: Buffer.from('new-packed-value'),
+              encryptedRefreshToken: null,
+              keyVersion: 2,
+            }, client);
+          });
+      const [startSettled, mutationSettled] = await Promise.allSettled([
+        credentialDispatchLeaseRepository.start(input),
+        runMutation(),
+      ]);
+      for (const outcome of [startSettled, mutationSettled]) {
+        if (outcome.status === 'rejected') {
+          expect(outcome.reason).toMatchObject({ code: '40001' });
+        }
+      }
+      const started = startSettled.status === 'fulfilled'
+        ? startSettled.value
+        : await credentialDispatchLeaseRepository.start(input);
+      const mutated = mutationSettled.status === 'fulfilled'
+        ? mutationSettled.value
+        : await runMutation();
+      expect(Number(started.success) + Number(mutated)).toBe(1);
+      if (started.success) {
+        await expect(credentialDispatchLeaseRepository.terminalize({
+          userId: fixture.graph.userId,
+          executionPlanId: fixture.plan.id,
+          capability: started.grant.capability,
+          leaseGeneration: started.grant.leaseGeneration,
+          state: 'completed',
+        })).resolves.toBe(true);
+      } else {
+        expect(started.code).toBe('credential_unavailable');
+      }
+    }
+  });
+
+  it('blocks reconnect during remote revoke and rejects stale completion after a later reconnect', async () => {
+    const fixture = await prepareCredentialDispatch('disconnect-generation');
+    const first = await oauthRepository.beginDisconnect(
+      fixture.graph.userId, 'google', fixture.accountEmail,
+    );
+    expect(first.status).toBe('ready');
+    if (first.status !== 'ready') return;
+    await expect(oauthRepository.saveTokenForAccount({
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: fixture.accountEmail,
+      accessToken: 'reconnected-access',
+      refreshToken: 'reconnected-refresh',
+      expiresAt: new Date(Date.now() + 60_000),
+      scopes: ['gmail.readonly'],
+    })).rejects.toBeInstanceOf(CredentialDisconnectInProgressError);
+    await expect(oauthRepository.completeDisconnect(
+      fixture.graph.userId, 'google', first.accounts,
+    )).resolves.toBe(1);
+    await oauthRepository.saveTokenForAccount({
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: fixture.accountEmail,
+      accessToken: 'reconnected-access',
+      refreshToken: 'reconnected-refresh',
+      expiresAt: new Date(Date.now() + 60_000),
+      scopes: ['gmail.readonly'],
+    });
+    const second = await oauthRepository.beginDisconnect(
+      fixture.graph.userId, 'google', fixture.accountEmail,
+    );
+    expect(second.status).toBe('ready');
+    if (second.status !== 'ready') return;
+
+    await expect(oauthRepository.completeDisconnect(
+      fixture.graph.userId, 'google', first.accounts,
+    )).resolves.toBe(0);
+    await expect(oauthRepository.completeDisconnect(
+      fixture.graph.userId, 'google', second.accounts,
+    )).resolves.toBe(1);
+  });
+
+  it('rejects owner/account mismatch and replay, and keeps an overdue started grant ambiguous', async () => {
+    const fixture = await prepareCredentialDispatch('credential-mismatch');
+    const other = await createGraph('credential-other', 'auto_execute');
+    const base = {
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: fixture.accountEmail,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      expectedOAuthTokenId: fixture.token.id,
+      expectedCredentialRevision: fixture.token.credential_revision,
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+    };
+    await expect(credentialDispatchLeaseRepository.start({
+      ...base,
+      userId: other.userId,
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(credentialDispatchLeaseRepository.start({
+      ...base,
+      accountEmail: 'other@example.test',
+    })).resolves.toMatchObject({ success: false, code: 'credential_unavailable' });
+
+    const started = await credentialDispatchLeaseRepository.start({
+      ...base,
+      now: new Date(Date.now() - 2_000),
+      ttlMs: 1_000,
+    });
+    expect(started.success).toBe(true);
+    await expect(credentialDispatchLeaseRepository.start(base)).resolves.toMatchObject({
+      success: false,
+      code: 'dispatch_replayed',
+    });
+    await expect(oauthRepository.beginDisconnect(
+      fixture.graph.userId, 'google', fixture.accountEmail,
+    )).resolves.toMatchObject({ status: 'pending', retryAfter: null });
+    await expect(pool.query<{ state: string }>(
+      'SELECT state FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rows: [{ state: 'ambiguous' }] });
+    await expect(credentialDispatchLeaseRepository.terminalize({
+      userId: fixture.graph.userId,
+      executionPlanId: fixture.plan.id,
+      capability: started.success ? started.grant.capability : '',
+      leaseGeneration: started.success ? started.grant.leaseGeneration : '',
+      state: 'completed',
+    })).resolves.toBe(true);
+    await expect(oauthRepository.beginDisconnect(
+      fixture.graph.userId, 'google', fixture.accountEmail,
+    )).resolves.toMatchObject({ status: 'ready' });
+  });
+
+  it('lets a committed pause or vault lock fence win before request-start authority', async () => {
+    const paused = await prepareCredentialDispatch('pause-before-start');
+    const pauseClient = await pool.connect();
+    try {
+      await pauseClient.query('BEGIN');
+      await pauseClient.query(
+        `UPDATE users SET autonomy_settings = jsonb_set(autonomy_settings, '{paused}', 'true'::JSONB)
+          WHERE id = $1`,
+        [paused.graph.userId],
+      );
+      const pendingStart = credentialDispatchLeaseRepository.start({
+        userId: paused.graph.userId, provider: 'google', accountEmail: paused.accountEmail,
+        decisionId: paused.graph.decisionId, actionId: paused.graph.actionId!,
+        executionPlanId: paused.plan.id, expectedOAuthTokenId: paused.token.id,
+        expectedCredentialRevision: paused.token.credential_revision,
+        expectedAuthorityRevision: paused.authorityRevision,
+        expectedPolicyAuthorityRevision: paused.policyAuthorityRevision,
+      });
+      await pauseClient.query('COMMIT');
+      await expect(pendingStart).resolves.toMatchObject({
+        success: false,
+        code: 'authority_revoked',
+      });
+    } finally {
+      await pauseClient.query('ROLLBACK').catch(() => undefined);
+      pauseClient.release();
+    }
+
+    const locked = await prepareCredentialDispatch('vault-lock-before-start');
+    const materializedRevision = locked.token.credential_revision;
+    await oauthRepository.fenceVaultLock(locked.graph.userId);
+    await expect(credentialDispatchLeaseRepository.start({
+      userId: locked.graph.userId, provider: 'google', accountEmail: locked.accountEmail,
+      decisionId: locked.graph.decisionId, actionId: locked.graph.actionId!,
+      executionPlanId: locked.plan.id, expectedOAuthTokenId: locked.token.id,
+      expectedCredentialRevision: materializedRevision,
+      expectedAuthorityRevision: locked.authorityRevision,
+      expectedPolicyAuthorityRevision: locked.policyAuthorityRevision,
+    })).resolves.toMatchObject({ success: false, code: 'credential_unavailable' });
+  });
+
+  it('rejects a request-start claim after a trust or policy authority revision changes', async () => {
+    const fixture = await prepareCredentialDispatch('authority-revision-before-start');
+    await pool.query(
+      `UPDATE users
+          SET trust_tier = 'observer', execution_authority_revision = gen_random_uuid()
+        WHERE id = $1`,
+      [fixture.graph.userId],
+    );
+    await expect(credentialDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: fixture.accountEmail,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      expectedOAuthTokenId: fixture.token.id,
+      expectedCredentialRevision: fixture.token.credential_revision,
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+
+    const policyFixture = await prepareCredentialDispatch('policy-revision-before-start');
+    await pool.query(
+      `UPDATE execution_policy_authority
+          SET revision = gen_random_uuid(), updated_at = now()
+        WHERE singleton = true`,
+    );
+    await expect(credentialDispatchLeaseRepository.start({
+      userId: policyFixture.graph.userId,
+      provider: 'google',
+      accountEmail: policyFixture.accountEmail,
+      decisionId: policyFixture.graph.decisionId,
+      actionId: policyFixture.graph.actionId!,
+      executionPlanId: policyFixture.plan.id,
+      expectedOAuthTokenId: policyFixture.token.id,
+      expectedCredentialRevision: policyFixture.token.credential_revision,
+      expectedAuthorityRevision: policyFixture.authorityRevision,
+      expectedPolicyAuthorityRevision: policyFixture.policyAuthorityRevision,
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [policyFixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('fences another user\'s request-start when purge removes a global policy', async () => {
+    const policyOwner = await createGraph('cross-user-policy-owner');
+    await policyRepository.createPolicy({
+      userId: policyOwner.userId,
+      name: 'Temporary global policy',
+      domain: 'email',
+      rules: [],
+      isActive: true,
+    });
+    const fixture = await prepareCredentialDispatch('cross-user-policy-dispatch');
+
+    await expect(userPurgeRepository.purgeUser(policyOwner.userId)).resolves.toMatchObject({
+      userExisted: true,
+    });
+    await expect(credentialDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: fixture.accountEmail,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      expectedOAuthTokenId: fixture.token.id,
+      expectedCredentialRevision: fixture.token.credential_revision,
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
   });
 
   it('inserts, reads, and deletes only through the exact decision owner', async () => {

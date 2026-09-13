@@ -66,6 +66,8 @@ export interface RollbackResult {
 export interface ActionHandler {
   readonly actionType: string;
   readonly domain: string;
+  /** False when this runtime cannot safely undo an executed action. */
+  readonly supportsRollback?: boolean;
   canHandle(actionType: string): boolean;
   execute(step: ExecutionStep): Promise<StepResult>;
   rollback(step: ExecutionStep): Promise<StepResult>;

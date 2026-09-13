@@ -6,7 +6,8 @@ import type { Express } from 'express';
 
 const { mockVaultMetaRepo, mockOAuthRepo, mockWithTransaction, mockKeyCache } = vi.hoisted(() => {
   // Capture the transaction fn so tests can inspect / replace it
-  const mockWithTransaction = vi.fn(async (fn: (client: unknown) => Promise<unknown>) => fn({}));
+  const mockWithTransaction = vi.fn(async (fn: (client: unknown) => Promise<unknown>) =>
+    fn({ query: vi.fn().mockResolvedValue({ rows: [{ id: 'owner' }] }) }));
 
   return {
     mockVaultMetaRepo: {
@@ -14,14 +15,17 @@ const { mockVaultMetaRepo, mockOAuthRepo, mockWithTransaction, mockKeyCache } = 
       create: vi.fn(),
       incrementKeyVersion: vi.fn(),
       rotatePassphrase: vi.fn(),
+      unlockIfCurrent: vi.fn(),
     },
     mockOAuthRepo: {
       listEncryptedForUser: vi.fn(),
-      rotateEncrypted: vi.fn(),
+      rotateEncrypted: vi.fn().mockResolvedValue(true),
+      fenceVaultLock: vi.fn().mockResolvedValue(0),
     },
     mockWithTransaction,
     mockKeyCache: {
       get: vi.fn(),
+      getGeneration: vi.fn(),
       has: vi.fn(),
       set: vi.fn(),
       evict: vi.fn(),
@@ -116,9 +120,11 @@ beforeEach(() => {
   _resetRotateRateLimitForTests();
   mockKeyCache.has.mockReturnValue(false);
   mockKeyCache.get.mockReturnValue(null);
+  mockKeyCache.getGeneration.mockReturnValue(null);
   // Default withTransaction: execute the fn and return its result
   mockWithTransaction.mockImplementation(
-    async (fn: (client: unknown) => Promise<unknown>) => fn({}),
+    async (fn: (client: unknown) => Promise<unknown>) =>
+      fn({ query: vi.fn().mockResolvedValue({ rows: [{ id: 'owner' }] }) }),
   );
 });
 
@@ -142,6 +148,8 @@ describe('GET /api/credential-vault/status', () => {
       passphrase_salt: Buffer.alloc(32),
       passphrase_hash: Buffer.alloc(32),
       current_key_version: 1,
+      vault_state: 'locked',
+      vault_generation: 'vault-generation-1',
       created_at: new Date(),
       rotated_at: null,
     });
@@ -160,10 +168,13 @@ describe('GET /api/credential-vault/status', () => {
       passphrase_salt: Buffer.alloc(32),
       passphrase_hash: Buffer.alloc(32),
       current_key_version: 1,
+      vault_state: 'unlocked',
+      vault_generation: 'vault-generation-1',
       created_at: new Date(),
       rotated_at: null,
     });
     mockKeyCache.has.mockReturnValue(true);
+    mockKeyCache.getGeneration.mockReturnValue('vault-generation-1');
 
     const res = await req(buildApp(), 'GET', '/api/credential-vault/status');
     expect(res.status).toBe(200);
@@ -195,6 +206,8 @@ describe('POST /api/credential-vault/init', () => {
       passphrase_salt: Buffer.alloc(32),
       passphrase_hash: Buffer.alloc(32),
       current_key_version: 1,
+      vault_state: 'locked',
+      vault_generation: 'vault-generation-1',
       created_at: new Date(),
       rotated_at: null,
     });
@@ -213,6 +226,8 @@ describe('POST /api/credential-vault/init', () => {
       passphrase_salt: Buffer.alloc(32),
       passphrase_hash: Buffer.alloc(32),
       current_key_version: 1,
+      vault_state: 'unlocked',
+      vault_generation: 'vault-generation-created',
       created_at: new Date(),
       rotated_at: null,
     });
@@ -223,7 +238,9 @@ describe('POST /api/credential-vault/init', () => {
     expect(res.status).toBe(200);
     expect((res.body as Record<string, unknown>)['ok']).toBe(true);
     expect(mockVaultMetaRepo.create).toHaveBeenCalledOnce();
-    expect(mockKeyCache.set).toHaveBeenCalledWith(USER_ID, expect.any(Buffer));
+    expect(mockKeyCache.set).toHaveBeenCalledWith(
+      USER_ID, expect.any(Buffer), 'vault-generation-created',
+    );
   });
 });
 
@@ -247,6 +264,8 @@ describe('POST /api/credential-vault/unlock', () => {
       passphrase_salt: Buffer.alloc(32, 0x01), // 32 bytes
       passphrase_hash: Buffer.alloc(32, 0xff), // won't match anything real
       current_key_version: 1,
+      vault_state: 'locked',
+      vault_generation: 'vault-generation-1',
       created_at: new Date(),
       rotated_at: null,
     });
@@ -268,6 +287,8 @@ describe('POST /api/credential-vault/unlock', () => {
         passphrase_salt: Buffer.alloc(32, 0x01),
         passphrase_hash: Buffer.alloc(32, 0xff),
         current_key_version: 1,
+        vault_state: 'locked',
+        vault_generation: 'vault-generation-1',
         created_at: new Date(),
         rotated_at: null,
       });
@@ -292,7 +313,11 @@ describe('POST /api/credential-vault/lock', () => {
     const res = await req(buildApp(), 'POST', '/api/credential-vault/lock');
     expect(res.status).toBe(200);
     expect((res.body as Record<string, unknown>)['ok']).toBe(true);
+    expect(mockOAuthRepo.fenceVaultLock).toHaveBeenCalledWith(USER_ID);
     expect(mockKeyCache.evict).toHaveBeenCalledWith(USER_ID);
+    expect(mockOAuthRepo.fenceVaultLock.mock.invocationCallOrder[0]).toBeLessThan(
+      mockKeyCache.evict.mock.invocationCallOrder[0]!,
+    );
   });
 
   it('returns 200 when vault is already locked (idempotent)', async () => {
@@ -355,6 +380,8 @@ async function buildMetaRow(passphrase: string) {
     passphrase_salt: salt,
     passphrase_hash: hash,
     current_key_version: 1,
+    vault_state: 'unlocked' as const,
+    vault_generation: 'vault-generation-1',
     created_at: new Date(),
     rotated_at: null,
   };
@@ -411,6 +438,8 @@ describe('POST /api/credential-vault/rotate', () => {
         passphrase_salt: Buffer.alloc(32, 0x01),
         passphrase_hash: Buffer.alloc(32, 0xff), // won't match
         current_key_version: 1,
+        vault_state: 'locked',
+        vault_generation: 'vault-generation-1',
         created_at: new Date(),
         rotated_at: null,
       });
@@ -434,7 +463,9 @@ describe('POST /api/credential-vault/rotate', () => {
     const meta = await buildMetaRow(passphrase);
     mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
     mockOAuthRepo.listEncryptedForUser.mockResolvedValueOnce([]);
-    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce(2);
+    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce({
+      keyVersion: 2, vaultGeneration: 'vault-generation-2',
+    });
 
     const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
       currentPassphrase: passphrase,
@@ -445,7 +476,9 @@ describe('POST /api/credential-vault/rotate', () => {
     expect(body['status']).toBe('rotated');
     expect(body['tokensReencrypted']).toBe(0);
     expect(body['keyVersion']).toBe(2);
-    expect(mockKeyCache.set).toHaveBeenCalledWith(USER_ID, expect.any(Buffer));
+    expect(mockKeyCache.set).toHaveBeenCalledWith(
+      USER_ID, expect.any(Buffer), 'vault-generation-2',
+    );
   });
 
   it('happy path: re-encrypts token rows and bumps keyVersion', async () => {
@@ -484,8 +517,10 @@ describe('POST /api/credential-vault/rotate', () => {
 
     mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
     mockOAuthRepo.listEncryptedForUser.mockResolvedValueOnce([fakeRow]);
-    mockOAuthRepo.rotateEncrypted.mockResolvedValueOnce(undefined);
-    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce(2);
+    mockOAuthRepo.rotateEncrypted.mockResolvedValueOnce(true);
+    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce({
+      keyVersion: 2, vaultGeneration: 'vault-generation-2',
+    });
 
     const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
       currentPassphrase: passphrase,
@@ -497,7 +532,9 @@ describe('POST /api/credential-vault/rotate', () => {
     expect(body['tokensReencrypted']).toBe(1);
     expect(body['keyVersion']).toBe(2);
     expect(mockOAuthRepo.rotateEncrypted).toHaveBeenCalledOnce();
-    expect(mockKeyCache.set).toHaveBeenCalledWith(USER_ID, expect.any(Buffer));
+    expect(mockKeyCache.set).toHaveBeenCalledWith(
+      USER_ID, expect.any(Buffer), 'vault-generation-2',
+    );
   });
 
   it('rotates access-only rows (no refresh token) without skipping them', async () => {
@@ -531,8 +568,10 @@ describe('POST /api/credential-vault/rotate', () => {
 
     mockVaultMetaRepo.getForUser.mockResolvedValueOnce(meta);
     mockOAuthRepo.listEncryptedForUser.mockResolvedValueOnce([accessOnlyRow]);
-    mockOAuthRepo.rotateEncrypted.mockResolvedValueOnce(undefined);
-    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce(2);
+    mockOAuthRepo.rotateEncrypted.mockResolvedValueOnce(true);
+    mockVaultMetaRepo.rotatePassphrase.mockResolvedValueOnce({
+      keyVersion: 2, vaultGeneration: 'vault-generation-2',
+    });
 
     const res = await req(buildApp(), 'POST', '/api/credential-vault/rotate', {
       currentPassphrase: passphrase,

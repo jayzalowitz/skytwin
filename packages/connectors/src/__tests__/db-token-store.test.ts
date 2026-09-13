@@ -16,6 +16,7 @@ function createMockRepo() {
     saveToken: vi.fn(),
     deleteToken: vi.fn(),
     updateAccessToken: vi.fn(),
+    updateAccessTokenIfCurrent: vi.fn().mockResolvedValue(true),
   };
 }
 
@@ -101,6 +102,8 @@ describe('DbTokenStore', () => {
   it('refreshIfExpired refreshes token when expired', async () => {
     const pastDate = new Date(Date.now() - 60 * 1000); // 1 min ago
     repo.getToken.mockResolvedValue({
+      id: 'token-row',
+      credential_revision: 'revision-1',
       access_token: 'expired-token',
       refresh_token: 'refresh-456',
       expires_at: pastDate,
@@ -116,14 +119,13 @@ describe('DbTokenStore', () => {
       provider: 'google',
     });
 
-    repo.updateAccessToken.mockResolvedValue({});
-
     const result = await store.refreshIfExpired('user1', 'google');
     expect(result.accessToken).toBe('new-access-token');
     expect(mockRefresh).toHaveBeenCalledWith(oauthConfig, 'refresh-456');
-    expect(repo.updateAccessToken).toHaveBeenCalledWith(
-      'user1', 'google', 'new-access-token', newExpiry,
-    );
+    expect(repo.updateAccessTokenIfCurrent).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'token-row', userId: 'user1', provider: 'google',
+      expectedCredentialRevision: 'revision-1', accessToken: 'new-access-token', expiresAt: newExpiry,
+    }));
   });
 
   it('refreshIfExpired throws when no token exists', async () => {
@@ -137,6 +139,8 @@ describe('DbTokenStore', () => {
     // Token expires in 30 seconds — within the 60s buffer
     const almostExpired = new Date(Date.now() + 30 * 1000);
     repo.getToken.mockResolvedValue({
+      id: 'token-row',
+      credential_revision: 'revision-1',
       access_token: 'almost-expired',
       refresh_token: 'refresh-456',
       expires_at: almostExpired,
@@ -151,10 +155,28 @@ describe('DbTokenStore', () => {
       scopes: ['email'],
       provider: 'google',
     });
-    repo.updateAccessToken.mockResolvedValue({});
-
     const result = await store.refreshIfExpired('user1', 'google');
     expect(result.accessToken).toBe('refreshed');
     expect(mockRefresh).toHaveBeenCalled();
+  });
+
+  it('rejects a late provider refresh when disconnect or rotation changed the exact revision', async () => {
+    repo.getToken.mockResolvedValue({
+      id: 'token-row', credential_revision: 'revision-before-refresh',
+      access_token: 'expired-token', refresh_token: 'refresh-456',
+      expires_at: new Date(Date.now() - 60_000), scopes: ['email'],
+    });
+    mockRefresh.mockResolvedValue({
+      accessToken: 'late-access', refreshToken: 'refresh-456',
+      expiresAt: new Date(Date.now() + 3_600_000), scopes: ['email'], provider: 'google',
+    });
+    repo.updateAccessTokenIfCurrent.mockResolvedValue(false);
+
+    await expect(store.refreshIfExpired('user1', 'google')).rejects.toThrow(
+      'refusing stale refresh result',
+    );
+    expect(repo.updateAccessTokenIfCurrent).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'token-row', expectedCredentialRevision: 'revision-before-refresh',
+    }));
   });
 });

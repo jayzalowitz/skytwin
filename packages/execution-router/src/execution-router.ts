@@ -91,6 +91,27 @@ export class AmbiguousExecutionError extends Error {
   }
 }
 
+const ADAPTER_RESERVED_OUTPUT_KEYS = new Set([
+  'adapter_used',
+  'routing_decision',
+  'fallbacks_attempted',
+  'fallback_skipped_reason',
+  'adapter_plan_id',
+  'status',
+  'success',
+  'rollback_available',
+]);
+
+/** Remove fields whose durable meaning can only be authored by this router. */
+function stripAdapterReservedOutput(
+  output: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  if (!output) return {};
+  return Object.fromEntries(
+    Object.entries(output).filter(([key]) => !ADAPTER_RESERVED_OUTPUT_KEYS.has(key)),
+  );
+}
+
 function assertValidExecutionInputs(
   action: CandidateAction,
   riskAssessment: RiskAssessment,
@@ -149,6 +170,51 @@ function assertExecutionPermitted(
         `Safety Invariant #1.`,
     );
   }
+}
+
+function bindTrustedDispatchAction(action: CandidateAction, userId: string): CandidateAction {
+  const parameters = { ...action.parameters };
+  for (const key of ['accessToken', 'access_token', 'refreshToken', 'refresh_token', 'authorization']) {
+    delete parameters[key];
+  }
+  parameters['userId'] = userId;
+  return { ...action, parameters };
+}
+
+function bindTrustedPlanContext(
+  plan: ExecutionPlan,
+  action: CandidateAction,
+  userId: string,
+): ExecutionPlan {
+  const expectedPlanId = action.parameters['executionPlanId'];
+  if (typeof expectedPlanId === 'string' && plan.id !== expectedPlanId) {
+    throw new InvariantViolationError('Adapter build plan did not preserve the admitted execution identity.');
+  }
+  const bind = (
+    step: ExecutionPlan['steps'][number],
+    index: number,
+    kind: 'step' | 'rollback',
+  ): ExecutionPlan['steps'][number] => ({
+    ...step,
+    // Step identity is router-authored. Adapter-provided identifiers are
+    // untrusted evidence and may contain credentials or forge another step.
+    id: `${kind}-${index + 1}`,
+    parameters: {
+      ...step.parameters,
+      userId,
+      credentialActionId: action.id,
+      credentialDecisionId: action.decisionId,
+      credentialExecutionPlanId: plan.id,
+      credentialAuthorityRevision: action.parameters['credentialAuthorityRevision'],
+      credentialPolicyAuthorityRevision: action.parameters['credentialPolicyAuthorityRevision'],
+    },
+  });
+  return {
+    ...plan,
+    action,
+    steps: plan.steps.map((step, index) => bind(step, index, 'step')),
+    rollbackSteps: plan.rollbackSteps.map((step, index) => bind(step, index, 'rollback')),
+  };
 }
 
 /**
@@ -257,6 +323,7 @@ export class ExecutionRouter {
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
     const routingDecision = await this.route(action, riskAssessment, userId);
+    const dispatchAction = bindTrustedDispatchAction(action, userId);
 
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
     const attemptedAdapters: string[] = [];
@@ -276,17 +343,28 @@ export class ExecutionRouter {
       }
 
       try {
-        const plan = await entry.adapter.buildPlan(action);
+        const builtPlan = await entry.adapter.buildPlan(dispatchAction);
+        const plan = bindTrustedPlanContext(builtPlan, dispatchAction, userId);
         const result = await entry.adapter.execute(plan);
+
+        if (result.planId !== plan.id) {
+          throw new AmbiguousExecutionError(
+            `Adapter "${adapterName}" returned terminal truth for a different execution plan`,
+          );
+        }
 
         if (result.status === 'completed') {
           return {
             ...result,
             output: {
-              ...result.output,
+              ...stripAdapterReservedOutput(result.output),
               adapter_used: adapterName,
               routing_decision: routingDecision.selectedAdapter,
               fallbacks_attempted: attemptedAdapters.length - 1,
+              adapter_plan_id: plan.id,
+              status: result.status,
+              success: true,
+              rollback_available: plan.rollbackSteps.length > 0,
             },
           };
         }
@@ -303,11 +381,15 @@ export class ExecutionRouter {
         return {
           ...result,
           output: {
-            ...result.output,
+            ...stripAdapterReservedOutput(result.output),
             adapter_used: adapterName,
             routing_decision: routingDecision.selectedAdapter,
             fallbacks_attempted: attemptedAdapters.length - 1,
             fallback_skipped_reason: 'previous adapter returned non-completed status, fallback unsafe',
+            adapter_plan_id: plan.id,
+            status: result.status,
+            success: false,
+            rollback_available: plan.rollbackSteps.length > 0,
           },
         };
       } catch (error) {
@@ -395,14 +477,22 @@ export class ExecutionRouter {
 
     try {
       const result = await entry.adapter.rollback(planId);
-      return { result, adapterUsed, noAdapter: false };
+      return {
+        result: {
+          success: result.success,
+          message: result.success
+            ? 'The recorded adapter confirmed rollback completion.'
+            : 'The recorded adapter could not confirm rollback completion.',
+        },
+        adapterUsed,
+        noAdapter: false,
+      };
     } catch (err) {
-      // Adapter threw mid-rollback — surface as a failed (not "no adapter")
-      // result so the caller reports the failure honestly rather than a stub.
+      // Adapter text is untrusted evidence and may echo provider secrets.
       return {
         result: {
           success: false,
-          message: `Rollback via adapter "${adapterUsed}" threw: ${err instanceof Error ? err.message : String(err)}`,
+          message: 'The recorded adapter rollback outcome is unavailable.',
         },
         adapterUsed,
         noAdapter: false,
@@ -424,6 +514,7 @@ export class ExecutionRouter {
     assertValidExecutionInputs(action, riskAssessment);
     assertExecutionPermitted(action, context);
     const routingDecision = await this.route(action, riskAssessment, userId);
+    const dispatchAction = bindTrustedDispatchAction(action, userId);
     const adapterChain = [routingDecision.selectedAdapter, ...routingDecision.fallbackChain];
     const attemptedAdapters: string[] = [];
     let firstAttemptCompleted = false;
@@ -438,22 +529,64 @@ export class ExecutionRouter {
       if (!entry) continue;
 
       try {
-        const plan = await entry.adapter.buildPlan(action);
+        const builtPlan = await entry.adapter.buildPlan(dispatchAction);
+        const plan = bindTrustedPlanContext(builtPlan, dispatchAction, userId);
 
         if (hasStreamingExecution(entry.adapter)) {
           let terminalEvent: ExecutionEvent | null = null;
+          let activeStepId: string | null = null;
+          let nextStepIndex = 0;
           for await (const event of entry.adapter.executeStreaming(plan)) {
             const isTerminal = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
+            if (event.planId !== plan.id) {
+              throw new Error('Adapter stream emitted an event for a different execution plan');
+            }
             if (terminalEvent) {
               throw new Error(`Adapter emitted an event after terminal ${terminalEvent.eventType}`);
             }
+            let canonicalStepId: string | undefined;
+            if (event.eventType === 'step_started' || event.eventType === 'step_completed' ||
+                event.eventType === 'step_failed') {
+              const expectedStep = plan.steps[nextStepIndex];
+              if (!expectedStep || event.stepId !== expectedStep.id) {
+                throw new Error('Adapter stream emitted an event with an unbound step identity');
+              }
+              canonicalStepId = expectedStep.id;
+              if (event.eventType === 'step_started') {
+                if (activeStepId !== null) {
+                  throw new Error('Adapter stream emitted duplicate or overlapping step starts');
+                }
+                activeStepId = expectedStep.id;
+              } else {
+                if (activeStepId !== null && activeStepId !== expectedStep.id) {
+                  throw new Error('Adapter stream emitted a result for a different active step');
+                }
+                activeStepId = null;
+                nextStepIndex += 1;
+              }
+            } else if (event.stepId !== undefined) {
+              throw new Error('Adapter stream attached a step identity to a plan event');
+            }
+            const adapterPayload = { ...event.payload };
+            for (const key of [
+              'adapter_used', 'routing_decision', 'fallbacks_attempted', 'fallback_skipped_reason',
+              'adapter_plan_id', 'status', 'success', 'rollback_available',
+            ]) delete adapterPayload[key];
             const routedEvent = {
               ...event,
+              stepId: canonicalStepId,
               payload: {
-                ...event.payload,
+                ...adapterPayload,
                 adapter_used: adapterName,
                 routing_decision: routingDecision.selectedAdapter,
                 fallbacks_attempted: attemptedAdapters.length - 1,
+                ...(isTerminal
+                  ? {
+                      status: event.eventType === 'plan_completed' ? 'completed' : 'failed',
+                      success: event.eventType === 'plan_completed',
+                      rollback_available: plan.rollbackSteps.length > 0,
+                    }
+                  : {}),
               },
             };
             if (isTerminal) terminalEvent = routedEvent;
@@ -469,6 +602,9 @@ export class ExecutionRouter {
         }
 
         const result = await entry.adapter.execute(plan);
+        if (result.planId !== plan.id) {
+          throw new Error('Adapter returned terminal truth for a different execution plan');
+        }
         if (result.status !== 'completed' && result.status !== 'failed') {
           throw new Error(`Adapter returned non-terminal status ${result.status}`);
         }
@@ -476,15 +612,19 @@ export class ExecutionRouter {
         firstAttemptCompleted = true;
 
         yield {
-          planId: result.planId,
+          planId: plan.id,
           eventType: status,
           timestamp: result.completedAt ?? new Date(),
           payload: {
-            ...result.output,
+            ...stripAdapterReservedOutput(result.output),
             error: result.error,
             adapter_used: adapterName,
             routing_decision: routingDecision.selectedAdapter,
             fallbacks_attempted: attemptedAdapters.length - 1,
+            status: result.status,
+            success: result.status === 'completed',
+            rollback_available: plan.rollbackSteps.length > 0,
+            adapter_plan_id: plan.id,
             fallback_skipped_reason: result.status === 'completed'
               ? undefined
               : 'previous adapter returned non-completed status, fallback unsafe',

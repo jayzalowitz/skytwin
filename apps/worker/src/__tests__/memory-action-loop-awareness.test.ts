@@ -42,6 +42,7 @@ const {
     isDispatchable: vi.fn(async () => true),
     findByScope: vi.fn(async () => null),
     observeTerminal: vi.fn(async () => ({})),
+    failBeforeDispatch: vi.fn(async () => ({ status: 'failed' })),
   };
   return {
     mockApprovalRepository: { create: vi.fn(async () => ({ row: { id: 'approval-1' } })) },
@@ -64,6 +65,7 @@ const {
         trust_tier: 'observer',
         autonomy_settings: {},
         ironclaw_channel: null,
+        execution_authority_revision: 'authority-revision-1',
       })),
     },
     noop,
@@ -83,6 +85,7 @@ vi.mock('@skytwin/db', () => ({
   serviceCredentialRepository: noop,
   skillGapRepository: noop,
   userRepository: mockUserRepository,
+  getPolicyAuthorityRevision: vi.fn(async () => 'policy-authority-revision-1'),
 }));
 
 // ── Import after mocks ──────────────────────────────────────────────────────

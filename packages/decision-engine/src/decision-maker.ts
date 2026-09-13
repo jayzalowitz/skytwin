@@ -663,6 +663,10 @@ export class DecisionMaker {
         parameters: {
           emailId: emailId,
           replyType: 'acknowledgment',
+          replyToFrom: typeof decision.rawData['from'] === 'string'
+            ? decision.rawData['from'] : '',
+          replyToSubject: typeof decision.rawData['subject'] === 'string'
+            ? decision.rawData['subject'] : '',
         },
         estimatedCostCents: 0,
         reversible: false,

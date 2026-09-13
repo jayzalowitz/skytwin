@@ -17,6 +17,7 @@ import {
   TaskActionHandler,
   type IronClawAdapter,
 } from '@skytwin/ironclaw-adapter';
+import { workerCredentialKeyCache } from '../credential-key-cache.js';
 import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
 import {
   AdapterRegistry,
@@ -31,6 +32,7 @@ import {
 } from '@skytwin/execution-router';
 import {
   approvalRepository,
+  accessLogRepository,
   credentialRequirementRepository,
   decisionRepository,
   decisionRepositoryAdapter,
@@ -39,6 +41,7 @@ import {
   explanationRepository,
   memoryActionOpportunityRepository,
   policyRepositoryAdapter,
+  getPolicyAuthorityRevision,
   serviceCredentialRepository,
   skillGapRepository,
   userRepository,
@@ -49,8 +52,8 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
+  normalizeAdapterOutput,
   normalizeExecutionError,
-  normalizeExecutionRecord,
   parseAutonomySettings,
   RiskTier,
   SituationType,
@@ -371,7 +374,11 @@ async function executeAllowedOpportunity(
     outcomeSnapshot: Record<string, unknown>;
   } | null = null;
 
+  let currentAuthorityRevision: string | null = null;
+  let currentPolicyAuthorityRevision: string | null = null;
   const evaluateCurrentPolicy = async (): Promise<PolicyDecision> => {
+    currentAuthorityRevision = null;
+    currentPolicyAuthorityRevision = null;
     const currentUser = await userRepository.findById(userId);
     if (!currentUser) {
       return {
@@ -380,6 +387,8 @@ async function executeAllowedOpportunity(
         reason: 'Execution owner no longer exists.',
       };
     }
+    currentAuthorityRevision = currentUser.execution_authority_revision;
+    currentPolicyAuthorityRevision = await getPolicyAuthorityRevision();
     const evaluator = deps.policyEvaluator ?? new PolicyEvaluator(policyRepositoryAdapter);
     const policies = deps.loadPolicies
       ? await deps.loadPolicies()
@@ -463,12 +472,55 @@ async function executeAllowedOpportunity(
           ...admissionAuthority,
           policySnapshot: dispatchPolicy as unknown as Record<string, unknown>,
         })) {
-      throw new AmbiguousExecutionError('Execution owner or admitted graph was revoked before dispatch.');
+      try {
+        await executionAdmissionRepository.failBeforeDispatch({
+          admission,
+          userId,
+          error: 'Execution owner or admitted graph was revoked before router invocation.',
+        });
+      } catch {
+        throw new AmbiguousExecutionError(
+          'Execution owner or admitted graph could not be reconciled before dispatch.',
+        );
+      }
+      const report = buildReport(
+        opportunity,
+        'execution_failed',
+        'Current authority no longer permits this admitted action.',
+        'Review current policy and pause state before creating another opportunity.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: 'Execution was refused before router invocation.',
+        },
+      );
+      await bestEffortMemoryLedger('record pre-dispatch memory refusal', () =>
+        memoryActionOpportunityRepository.markStatus({
+          id: opportunity.id,
+          status: 'execution_failed',
+          report,
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: 'Execution was refused before router invocation.',
+          nextStep: report.nextStep,
+        }));
+      return report;
     }
 
     let result: Awaited<ReturnType<typeof router.executeWithRouting>>;
     try {
-      result = await router.executeWithRouting(candidate, riskAssessment, userId);
+      result = await router.executeWithRouting({
+        ...candidate,
+        parameters: {
+          ...candidate.parameters,
+          executionPlanId: admission.plan.id,
+          credentialAuthorityRevision: currentAuthorityRevision,
+          credentialPolicyAuthorityRevision: currentPolicyAuthorityRevision,
+        },
+      }, riskAssessment, userId);
       if (result.status !== 'completed' && result.status !== 'failed') {
         throw new AmbiguousExecutionError(
           `Memory action execution returned non-terminal status ${result.status}`,
@@ -511,7 +563,7 @@ async function executeAllowedOpportunity(
     }
 
     const terminalStatus: 'completed' | 'failed' = result.status;
-    const safeOutput = normalizeExecutionRecord(result.output ?? {});
+    const safeOutput = normalizeAdapterOutput(result.output ?? {});
     const safeError = result.error ? normalizeExecutionError(result.error) : undefined;
     const adapterName = adapterUsedFromResult(safeOutput) ?? routing.selectedAdapter;
     const observed = {
@@ -541,7 +593,9 @@ async function executeAllowedOpportunity(
         success: terminalStatus === 'completed',
         outputs: { ...safeOutput, adapter_plan_id: result.planId },
         error: safeError,
-        rollbackAvailable: candidate.reversible,
+        rollbackAvailable: typeof safeOutput['rollback_available'] === 'boolean'
+          ? safeOutput['rollback_available']
+          : candidate.reversible,
       }));
 
     const status: MemoryActionOpportunityStatus =
@@ -1035,7 +1089,11 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
   }
 
   const handlerRegistry = new ActionHandlerRegistry();
-  const credentialProvider = new DbCredentialProvider();
+  const credentialProvider = new DbCredentialProvider(
+    workerCredentialKeyCache,
+    { recordAccess: (input) => accessLogRepository.record(input) },
+    'worker',
+  );
   handlerRegistry.register(new EmailActionHandler(credentialProvider));
   handlerRegistry.register(new CalendarActionHandler(credentialProvider));
   handlerRegistry.register(new FinanceActionHandler());

@@ -251,11 +251,23 @@ export type {
 export { DEMO_RECIPES, findDemoRecipe } from './demo-recipes.js';
 
 export {
+  normalizeAdapterOutput,
   normalizeExecutionError,
-  normalizeExecutionEvidence,
-  normalizeExecutionRecord,
+  normalizeExecutionEventPayload,
+  normalizeExecutionEventType,
+  normalizeExecutionPlanSteps,
+  normalizeExecutionIdentifier,
+  normalizeExecutionObservation,
+  normalizeMemoryActionAdapterName,
+  normalizeMemoryActionIdentifier,
+  normalizeMemoryActionReference,
+  normalizeMemoryActionReport,
+  normalizeMemoryActionText,
 } from './execution-evidence.js';
-export type { NormalizeExecutionEvidenceOptions } from './execution-evidence.js';
+export type {
+  NormalizedAdapterOutput,
+  NormalizeExecutionEvidenceOptions,
+} from './execution-evidence.js';
 
 export type {
   FsScanRoot,

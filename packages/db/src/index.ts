@@ -58,6 +58,7 @@ export type {
   InferenceReceiptRow,
   FeedbackEventRow,
   OAuthTokenRow,
+  CredentialDispatchLeaseRow,
   SignalRow,
   PreferenceProposalRow,
   TwinExportRow,
@@ -96,6 +97,7 @@ export {
   twinRepository,
   decisionRepository,
   policyRepository,
+  getPolicyAuthorityRevision,
   explanationRepository,
   inferenceReceiptRepository,
   feedbackRepository,
@@ -116,6 +118,11 @@ export type {
 
 export {
   oauthRepository,
+  credentialDispatchLeaseRepository,
+  CredentialDispatchConflictError,
+  CredentialDisconnectInProgressError,
+  CredentialVaultLockedError,
+  CredentialConnectionAuthorityError,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   approvalRepository,
@@ -129,6 +136,12 @@ export {
   watchRepository,
   watchRunRepository,
   executionAdmissionRepository,
+} from './repositories/index.js';
+export type {
+  CredentialDispatchGrant,
+  CredentialDispatchTerminalState,
+  StartCredentialDispatchInput,
+  StartCredentialDispatchResult,
 } from './repositories/index.js';
 export type {
   ConnectorHealthRow,

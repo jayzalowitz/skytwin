@@ -1,5 +1,10 @@
 import type { PoolClient } from 'pg';
 import { withTransaction } from '../connection.js';
+import {
+  bumpPolicyAuthorityWithClient,
+  lockPolicyAuthorityWithClient,
+} from './policy-repository.js';
+import { invalidateOAuthAccountsForUserWithClient } from './oauth-repository.js';
 
 /**
  * Delete every row belonging to a single user, in a single CRDB
@@ -58,6 +63,10 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
   // ── 1. Leaves that chain off decisions / execution_plans / twin_profiles
   //       (FK via non-user-id columns — would block the user delete
   //       cascade if left in place)
+  {
+    table: 'credential_dispatch_leases',
+    sql: `DELETE FROM credential_dispatch_leases WHERE user_id = $1`,
+  },
   {
     table: 'execution_admission_barriers',
     sql: `DELETE FROM execution_admission_barriers WHERE user_id = $1`,
@@ -136,6 +145,8 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
   },
 ];
 
+const AUXILIARY_COUNT_TABLES = ['oauth_new_user_authorizations'] as const;
+
 async function execAndCount(
   client: PoolClient,
   sql: string,
@@ -153,6 +164,8 @@ export async function assertNoActiveExecutionsWithClient(
     `SELECT (
        (SELECT count(*) FROM execution_admission_barriers
          WHERE user_id = $1 AND status IN ('in_progress', 'ambiguous'))
+       + (SELECT count(*) FROM credential_dispatch_leases
+         WHERE user_id = $1 AND state IN ('request_started', 'ambiguous'))
        + (SELECT count(*) FROM decision_ingest_guards g
          JOIN decisions d ON d.id = g.decision_id
          WHERE d.user_id = $1 AND g.effect_state = 'running')
@@ -176,19 +189,33 @@ export async function assertNoActiveExecutionsWithClient(
 
 async function purgeUserWithClient(client: PoolClient, userId: string): Promise<PurgeUserResult> {
   // Admission and purge share this owner-first serializable lock order.
-  const owner = await client.query<{ id: string }>(
-    'SELECT id FROM users WHERE id = $1 FOR UPDATE',
+  const owner = await client.query<{ id: string; email: string }>(
+    'SELECT id, email FROM users WHERE id = $1 FOR UPDATE',
     [userId],
   );
   if (!owner.rows[0]) {
-    const counts = Object.fromEntries(DELETE_PLAN.map(({ table }) => [table, 0]));
+    const counts = Object.fromEntries([
+      ...DELETE_PLAN.map(({ table }) => [table, 0] as const),
+      ...AUXILIARY_COUNT_TABLES.map((table) => [table, 0] as const),
+    ]);
     return { counts, total: 0, userExisted: false };
   }
 
   await assertNoActiveExecutionsWithClient(client, userId);
 
-  const counts: Record<string, number> = {};
-  let total = 0;
+  const oauthFence = await invalidateOAuthAccountsForUserWithClient(
+    client, userId, owner.rows[0].email,
+  );
+
+  const removesPolicies = Boolean((await client.query(
+    'SELECT 1 FROM action_policies WHERE user_id = $1 LIMIT 1', [userId],
+  )).rows[0]);
+  if (removesPolicies) await lockPolicyAuthorityWithClient(client);
+
+  const counts: Record<string, number> = {
+    oauth_new_user_authorizations: oauthFence.pendingAuthorizationsDeleted,
+  };
+  let total = oauthFence.pendingAuthorizationsDeleted;
   let userExisted = false;
   for (const { table, sql } of DELETE_PLAN) {
     const n = await execAndCount(client, sql, userId);
@@ -196,6 +223,7 @@ async function purgeUserWithClient(client: PoolClient, userId: string): Promise<
     total += n;
     if (table === 'users') userExisted = n > 0;
   }
+  if (removesPolicies && userExisted) await bumpPolicyAuthorityWithClient(client);
   return { counts, total, userExisted };
 }
 

@@ -12,11 +12,11 @@ import {
   feedbackRepository,
   mempalaceRepository,
   memoryActionOpportunityRepository,
-  oauthRepository,
   userRepository,
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
+  getPolicyAuthorityRevision,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
@@ -32,8 +32,8 @@ import type {
 } from '@skytwin/shared-types';
 import {
   ConfidenceLevel,
+  normalizeAdapterOutput,
   normalizeExecutionError,
-  normalizeExecutionRecord,
   TrustTier,
 } from '@skytwin/shared-types';
 import { readAutonomy } from '../cost-gate.js';
@@ -780,6 +780,7 @@ export function createApprovalsRouter(): Router {
             }
 
             const dispatchUser = await userRepository.findById(body.userId);
+            const dispatchPolicyRevision = await getPolicyAuthorityRevision();
             const dispatchPolicies = await policyRepositoryAdapter.getAllPolicies();
             const dispatchPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
             const dispatchPolicy = await dispatchPolicyEvaluator.evaluate(
@@ -797,20 +798,26 @@ export function createApprovalsRouter(): Router {
                   ...admissionAuthority,
                   policySnapshot: dispatchPolicy as unknown as Record<string, unknown>,
                 })) {
-              executionResult = {
-                status: 'ambiguous',
-                planId: admission.plan.id,
-                error: 'Execution authority was revoked before dispatch',
-              };
+              try {
+                await executionAdmissionRepository.failBeforeDispatch({
+                  admission,
+                  userId: body.userId,
+                  error: 'Execution authority was revoked before router invocation.',
+                });
+                executionResult = {
+                  status: 'failed',
+                  planId: admission.plan.id,
+                  error: 'Execution authority was revoked before dispatch',
+                };
+              } catch {
+                executionResult = {
+                  status: 'ambiguous',
+                  planId: admission.plan.id,
+                  error: 'Execution authority could not be reconciled before dispatch',
+                };
+              }
               break executionAttempt;
             }
-
-            // Credentials are deliberately excluded from the admission
-            // snapshot. Resolve one only after the final authority query, with
-            // no intervening await before the sole adapter request.
-            const tokenRow = await oauthRepository.getToken(body.userId, 'google');
-            const accessToken = tokenRow?.access_token ?? undefined;
-            if (accessToken) candidateAction.parameters['accessToken'] = accessToken;
 
             let result: Awaited<ReturnType<typeof executionRouter.executeWithRouting>>;
             try {
@@ -821,7 +828,15 @@ export function createApprovalsRouter(): Router {
               // lets the action through; the human already supplied the
               // confirmation the guard demanded.
               result = await executionRouter.executeWithRouting(
-                candidateAction,
+                {
+                  ...candidateAction,
+                  parameters: {
+                    ...candidateAction.parameters,
+                    executionPlanId: admission.plan.id,
+                    credentialAuthorityRevision: dispatchUser?.execution_authority_revision,
+                    credentialPolicyAuthorityRevision: dispatchPolicyRevision,
+                  },
+                },
                 admissionRisk,
                 body.userId,
                 { approved: true },
@@ -832,9 +847,7 @@ export function createApprovalsRouter(): Router {
                 );
               }
             } catch (dispatchError) {
-              const errMsg = normalizeExecutionError(dispatchError, {
-                secretValues: [accessToken],
-              });
+              const errMsg = normalizeExecutionError(dispatchError);
               await bestEffortApprovalLedger('record ambiguous approved execution admission', () =>
                 executionAdmissionRepository.observeTerminal({
                   id: admission.barrier.id,
@@ -851,11 +864,9 @@ export function createApprovalsRouter(): Router {
             }
 
             const terminalStatus: 'completed' | 'failed' = result.status;
-            const safeOutput = normalizeExecutionRecord(result.output ?? {}, {
-              secretValues: [accessToken],
-            });
+            const safeOutput = normalizeAdapterOutput(result.output ?? {});
             const safeError = result.error
-              ? normalizeExecutionError(result.error, { secretValues: [accessToken] })
+              ? normalizeExecutionError(result.error)
               : undefined;
             const adapterUsed = safeOutput['adapter_used'] ?? 'unknown';
             // Preserve the explicit adapter result before any persistence whose
@@ -891,7 +902,9 @@ export function createApprovalsRouter(): Router {
                 success: terminalStatus === 'completed',
                 outputs: { ...safeOutput, adapter_plan_id: result.planId },
                 error: safeError,
-                rollbackAvailable: candidateAction.reversible,
+                rollbackAvailable: typeof safeOutput['rollback_available'] === 'boolean'
+                  ? safeOutput['rollback_available']
+                  : candidateAction.reversible,
               }), { requestId, executionPlanId: admission.plan.id });
 
             // Record post-execution spend tagged with the action's

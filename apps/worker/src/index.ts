@@ -26,7 +26,7 @@ import {
   workerDeadLetterRepository,
 } from '@skytwin/db';
 import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
-import { KeyCache } from '@skytwin/credential-vault';
+import { workerCredentialKeyCache } from './credential-key-cache.js';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 import { buildIngestHeaders } from './ingest-headers.js';
 import { createPruneThrottle } from './label-signal-pruner.js';
@@ -84,7 +84,7 @@ const userCircuitBreakers = new Map<string, CircuitBreaker>();
  * once IPC lands, the worker's DbTokenStore instances will decrypt and
  * lazy-migrate without any further code change.
  */
-const workerKeyCache = new KeyCache({ ttlMs: 60 * 60 * 1000 });
+const workerKeyCache = workerCredentialKeyCache;
 
 /**
  * Persistent cursor for Gmail's History API. Survives worker restarts so
