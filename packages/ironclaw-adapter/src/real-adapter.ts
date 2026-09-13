@@ -41,6 +41,7 @@ const ROUTER_CONTROL_KEYS = new Set([
 interface IronClawRequestStartProof {
   planId: string;
   streaming: boolean;
+  executionChannel: string;
 }
 
 function normalizedOutboundKey(key: string): string {
@@ -209,12 +210,14 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
     plan: ExecutionPlan,
     context?: ExecutionPlanBuildContext,
   ): Promise<ExecutionRequestPreparation> {
+    const executionChannel = plan.executionChannel ?? this.channelId;
     const proof: IronClawRequestStartProof = {
       planId: plan.id,
       streaming: context?.streaming === true,
+      executionChannel,
     };
     this.requestStartProofs.add(proof);
-    return { proof };
+    return { proof, executionChannel };
   }
 
   private consumeRequestStartProof(
@@ -227,7 +230,9 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
     const valid = typeof proof === 'object' && proof !== null &&
       this.requestStartProofs.has(proof) &&
       (proof as IronClawRequestStartProof).planId === plan.id &&
-      (proof as IronClawRequestStartProof).streaming === streaming;
+      (proof as IronClawRequestStartProof).streaming === streaming &&
+      (proof as IronClawRequestStartProof).executionChannel ===
+        (plan.executionChannel ?? this.channelId);
     if (typeof proof === 'object' && proof !== null) this.requestStartProofs.delete(proof);
     if (!valid) throw new Error('IronClaw request-start preparation proof is invalid or already consumed.');
     return true;
@@ -464,6 +469,11 @@ export class RealIronClawAdapter implements IronClawEnhancedAdapter {
         content: JSON.stringify({
           planId: plan.id,
           decisionId: plan.decisionId,
+          trustedExecution: {
+            userId: plan.executionOwnerId ?? 'skytwin-system',
+            ownerId: this.ownerId,
+            channel: plan.executionChannel ?? this.channelId,
+          },
           action: {
             type: plan.action.actionType,
             domain: plan.action.domain,

@@ -185,7 +185,9 @@ export type {
   ExecutionAdmissionRow,
   ExecutionAdmissionScope,
   ExecutionAdmissionStatus,
+  ExecutionPolicyDenialRecord,
   ObserveExecutionInput,
+  RecordExecutionPolicyDenialInput,
 } from './execution-admission-repository.js';
 
 export { mcpServerRepository } from './mcp-server-repository.js';

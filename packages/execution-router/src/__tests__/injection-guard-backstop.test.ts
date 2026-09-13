@@ -76,6 +76,17 @@ function okAdapter(name: string): IronClawAdapter {
         output: { adapter_used: name },
       };
     },
+    ...(name === 'direct' ? {
+      async prepareRequestStart() {
+        return {
+          credentialBinding: {
+            provider: 'google',
+            oauthTokenId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            credentialRevision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          },
+        };
+      },
+    } : {}),
     async getStatus() {
       return 'completed' as const;
     },

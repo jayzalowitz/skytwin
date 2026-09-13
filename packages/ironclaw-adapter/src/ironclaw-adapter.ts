@@ -31,6 +31,20 @@ export interface ExecutionPlanBuildContext {
 export interface ExecutionRequestPreparation {
   /** Adapter-private proof produced before durable request-start authority is claimed. */
   proof?: unknown;
+  /**
+   * Non-secret OAuth row identity prepared by the built-in Direct adapter.
+   * The router accepts this only from that reserved adapter and binds it in
+   * the same transaction as the final request-start authority check.
+   */
+  credentialBinding?: {
+    provider: string;
+    accountEmail?: string;
+    oauthTokenId: string;
+    credentialRevision: string;
+    vaultGeneration?: string;
+  };
+  /** Effective trusted outbound channel resolved by the built-in IronClaw adapter. */
+  executionChannel?: string;
 }
 
 /**

@@ -25,6 +25,7 @@ const {
   mockMarkExecutionTerminal,
   mockMarkExecutionFailedBeforeDispatch,
   mockMarkNonEffect,
+  mockRecordPolicyDenial,
   mockGetExplanation,
   mockEmitReceipt,
   mockLlmClient,
@@ -62,6 +63,7 @@ const {
   mockMarkExecutionTerminal: vi.fn(),
   mockMarkExecutionFailedBeforeDispatch: vi.fn(),
   mockMarkNonEffect: vi.fn(),
+  mockRecordPolicyDenial: vi.fn(),
   mockGetExplanation: vi.fn(),
   mockEmitReceipt: vi.fn(),
   mockLlmClient: vi.fn(),
@@ -118,6 +120,7 @@ vi.mock('@skytwin/db', () => ({
   },
   oauthRepository: { getToken: mockGetOAuthToken },
   executionRepository: mockExecutionRepository,
+  executionAdmissionRepository: { recordPolicyDenial: mockRecordPolicyDenial },
   userRepository: { findById: mockFindUser },
   aiProviderRepository: { getEnabledForUser: mockGetProviders },
   inferenceReceiptRepository: {
@@ -185,7 +188,25 @@ vi.mock('../workflows/grocery-reorder.js', () => ({ processGroceryReorder: vi.fn
 vi.mock('../workflows/travel-decision.js', () => ({ processTravelDecision: vi.fn() }));
 
 vi.mock('../execution-setup.js', () => ({
-  getExecutionRouter: mockGetExecutionRouter,
+  getExecutionRouter: async (...args: unknown[]) => {
+    const router = await mockGetExecutionRouter(...args) as Record<string, unknown>;
+    if (typeof router['prepareExecution'] === 'function') return router;
+    const stream = router['executeWithRoutingStreaming'] as (
+      ...streamArgs: unknown[]
+    ) => AsyncIterable<unknown>;
+    return {
+      ...router,
+      prepareExecution: vi.fn(async (_action: unknown, risk: Record<string, unknown>) => ({
+        handle: {}, adapterName: 'ironclaw', planId: 'plan-1',
+        riskAssessment: risk, streaming: true,
+        routingDecision: { selectedAdapter: 'ironclaw', reasoning: 'IronClaw prepared.' },
+      })),
+      executePreparedStreaming: vi.fn((
+        _prepared: unknown,
+        ...streamArgs: unknown[]
+      ) => stream(...streamArgs)),
+    };
+  },
 }));
 
 vi.mock('../middleware/require-ownership.js', () => ({
@@ -345,6 +366,10 @@ describe('Events API routes', () => {
     mockMarkExecutionTerminal.mockResolvedValue(true);
     mockMarkExecutionFailedBeforeDispatch.mockResolvedValue(true);
     mockMarkNonEffect.mockResolvedValue(true);
+    mockRecordPolicyDenial.mockResolvedValue({
+      explanationId: 'policy-denial-explanation-1',
+      evidence: { kind: 'execution_policy_denial' },
+    });
     mockGetExplanation.mockResolvedValue(null);
     mockEmitReceipt.mockReturnValue({ exportVersion: 1, receipt: { id: 'receipt-1' } });
     mockLlmClient.mockImplementation(function MockLlmClient() {
@@ -518,6 +543,113 @@ describe('Events API routes', () => {
     expect(res.status).toBe(500);
     expect(mockApprovalCreate).not.toHaveBeenCalled();
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+  });
+
+  it('converts auto-execution into a pending approval when the prepared adapter raises risk', async () => {
+    const executePreparedStreaming = vi.fn(async function* () {
+      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+    });
+    mockGetExecutionRouter.mockResolvedValue({
+      prepareExecution: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
+        handle: {},
+        adapterName: 'openclaw',
+        planId: 'plan-1',
+        riskAssessment: { ...sourceRisk, overallTier: 'critical' },
+        streaming: true,
+        routingDecision: {
+          selectedAdapter: 'openclaw',
+          reasoning: 'OpenClaw is the exact ready adapter.',
+        },
+      })),
+      executePreparedStreaming,
+    });
+    mockCurrentPolicyEvaluate.mockResolvedValue({
+      allowed: true,
+      requiresApproval: true,
+      reason: 'The selected adapter raises this action above the automatic threshold.',
+      confirmationLevel: 'single',
+    });
+    mockApprovalCreate.mockResolvedValue({
+      row: { id: 'approval-risk-escalation', status: 'pending' },
+      created: true,
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockCurrentPolicyEvaluate.mock.calls[0]![3]).toMatchObject({
+      actionId: 'action-1',
+      overallTier: 'critical',
+    });
+    expect(mockApprovalCreate).toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringContaining('selected adapter raises this action'),
+      confirmationLevel: 'single',
+    }));
+    expect(mockMarkNonEffect).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      'decision-1',
+    );
+    expect(mockClaimExecution).not.toHaveBeenCalled();
+    expect(executePreparedStreaming).not.toHaveBeenCalled();
+  });
+
+  it('durably closes a prepared adapter risk denial as a blocked non-effect', async () => {
+    const executePreparedStreaming = vi.fn(async function* () {
+      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+    });
+    mockGetExecutionRouter.mockResolvedValue({
+      prepareExecution: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
+        handle: {},
+        adapterName: 'openclaw',
+        planId: 'plan-1',
+        riskAssessment: { ...sourceRisk, overallTier: 'critical' },
+        streaming: true,
+        fallbacksAttempted: 0,
+        routingDecision: {
+          selectedAdapter: 'openclaw',
+          reasoning: 'OpenClaw is the exact ready adapter.',
+        },
+      })),
+      executePreparedStreaming,
+    });
+    mockCurrentPolicyEvaluate.mockResolvedValue({
+      allowed: false,
+      requiresApproval: false,
+      reason: 'The prepared adapter exceeds the execution policy ceiling.',
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect((res.body as { execution: unknown }).execution).toEqual({
+      status: 'blocked',
+      planId: null,
+      error: 'The prepared execution path was blocked by current policy.',
+    });
+    expect(mockRecordPolicyDenial).toHaveBeenCalledWith(expect.objectContaining({
+      scope: 'receipt',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      decisionId: 'decision-1',
+      actionId: 'action-1',
+      adapterName: 'openclaw',
+      riskSnapshot: expect.objectContaining({ overallTier: 'critical' }),
+      policySnapshot: expect.objectContaining({ allowed: false }),
+    }));
+    expect(mockClaimExecution).not.toHaveBeenCalled();
+    expect(mockApprovalCreate).not.toHaveBeenCalled();
+    expect(executePreparedStreaming).not.toHaveBeenCalled();
+    expect(mockSseManager.emit).toHaveBeenCalledWith(
+      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      'decision:blocked-by-policy',
+      expect.objectContaining({
+        decisionId: 'decision-1',
+        reason: 'The prepared execution path was blocked by current policy.',
+      }),
+    );
   });
 
   it('resumes from the persisted continuation after a capture commit response is lost', async () => {
@@ -1125,8 +1257,8 @@ describe('Events API routes', () => {
       expect(mockEvaluate).not.toHaveBeenCalled();
       expect(mockCreateReceipts).not.toHaveBeenCalled();
       expect(mockClaimExecution).toHaveBeenCalledTimes(1);
-      expect(mockClaimExecution.mock.invocationCallOrder[0]).toBeLessThan(
-        mockGetExecutionRouter.mock.invocationCallOrder[0]!,
+      expect(mockGetExecutionRouter.mock.invocationCallOrder[0]).toBeLessThan(
+        mockClaimExecution.mock.invocationCallOrder[0]!,
       );
       expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
       expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
@@ -1159,9 +1291,16 @@ describe('Events API routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+      expect((res.body as { execution: { status: string } }).execution.status).toBe('blocked');
       expect(mockClaimExecution).not.toHaveBeenCalled();
-      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
+      expect(mockRecordPolicyDenial).toHaveBeenCalledWith(expect.objectContaining({
+        scope: 'receipt',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        decisionId: 'decision-1',
+        actionId: 'action-1',
+        policySnapshot: expect.objectContaining({ allowed: false }),
+      }));
     });
 
     it('fences a policy change after recovered work is claimed but before dispatch', async () => {
@@ -1262,7 +1401,7 @@ describe('Events API routes', () => {
     expect(res.status).toBe(200);
     expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
-    expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+    expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
   });
 
   it('does not dispatch when an execution claim commits but its response is lost', async () => {
@@ -1276,7 +1415,7 @@ describe('Events API routes', () => {
     expect(res.status).toBe(200);
     expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
-    expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+    expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -1364,8 +1503,8 @@ describe('Events API routes', () => {
     expect(mockExecutionRepository.updatePlanStatus).not.toHaveBeenCalled();
     expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
     expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
-    expect(mockClaimExecution.mock.invocationCallOrder[0]).toBeLessThan(
-      mockGetExecutionRouter.mock.invocationCallOrder[0]!,
+    expect(mockGetExecutionRouter.mock.invocationCallOrder[0]).toBeLessThan(
+      mockClaimExecution.mock.invocationCallOrder[0]!,
     );
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
     const body = res.body as { execution: { status: string; planId: string } };

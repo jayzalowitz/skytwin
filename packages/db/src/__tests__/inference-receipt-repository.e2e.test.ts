@@ -157,6 +157,8 @@ function admissionAuthority(graph: Graph) {
     reversible: true,
   };
   return {
+    executionPlanId: graph.actionId!,
+    adapterName: 'ironclaw',
     riskSnapshot: risk,
     sourceRiskSnapshot: risk,
     policySnapshot: { allowed: true, requiresApproval: false, reason: 'e2e policy allowed' },
@@ -173,6 +175,15 @@ function admissionAuthority(graph: Graph) {
       actionRationale: 'e2e action fixture',
       correctionGuidance: 'Review the terminal observation.',
     },
+  };
+}
+
+function receiptDispatch(graph: Graph, adapterName = 'ironclaw') {
+  return {
+    executionPlanId: graph.actionId!,
+    adapterName,
+    riskSnapshot: completionForGraph(graph, 'auto_execute').continuation.outcome
+      .riskAssessment as unknown as Record<string, unknown>,
   };
 }
 
@@ -262,7 +273,11 @@ function receiptBundle(graph: Graph): InferenceReceiptExportV1 {
   };
 }
 
-async function prepareCredentialDispatch(label: string, existingUserId?: string) {
+async function prepareCredentialDispatch(
+  label: string,
+  existingUserId?: string,
+  adapterName = 'direct',
+) {
   const graph = await createGraph(label, 'auto_execute', existingUserId);
   await inferenceReceiptRepository.createManyForUser(graph.userId, [{
     bundle: receiptBundle(graph),
@@ -274,6 +289,7 @@ async function prepareCredentialDispatch(label: string, existingUserId?: string)
     completionForGraph(graph, 'auto_execute').continuation,
     [],
     CURRENT_ALLOWED_POLICY,
+    receiptDispatch(graph, adapterName),
   );
   if (!plan || !graph.actionId) throw new Error('Credential dispatch fixture was not claimed.');
   const accountEmail = `lease-${randomUUID()}@example.test`;
@@ -286,8 +302,12 @@ async function prepareCredentialDispatch(label: string, existingUserId?: string)
     expiresAt: new Date(Date.now() + 3_600_000),
     scopes: ['gmail.modify'],
   });
-  const authority = await pool.query<{ execution_authority_revision: string }>(
-    'SELECT execution_authority_revision FROM users WHERE id = $1', [graph.userId],
+  const authority = await pool.query<{
+    execution_authority_revision: string;
+    ironclaw_channel: string | null;
+  }>(
+    `SELECT execution_authority_revision, ironclaw_channel
+       FROM users WHERE id = $1`, [graph.userId],
   );
   const policyAuthority = await pool.query<{ revision: string }>(
     'SELECT revision FROM execution_policy_authority WHERE singleton = true',
@@ -298,6 +318,7 @@ async function prepareCredentialDispatch(label: string, existingUserId?: string)
     token,
     accountEmail,
     authorityRevision: authority.rows[0]!.execution_authority_revision,
+    executionChannel: authority.rows[0]!.ironclaw_channel ?? undefined,
     policyAuthorityRevision: policyAuthority.rows[0]!.revision,
   };
 }
@@ -596,6 +617,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: fixture.token.credential_revision,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     };
@@ -658,7 +680,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
         fixture.graph.userId, 'google', fixture.accountEmail,
       )).resolves.toMatchObject({ status: 'ready' });
     } else {
-      expect(startResult.code).toBe('credential_unavailable');
+      expect(startResult.code).toBe('authority_revoked');
       // The generic request-start fence may win before the exact credential
       // bind loses. A concurrently observed pending response is truthful even
       // though the compatibility caller subsequently terminalizes no-effect.
@@ -674,15 +696,18 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   });
 
   it('fences non-credential replay/purge without blocking unrelated OAuth changes', async () => {
-    const fixture = await prepareCredentialDispatch('generic-dispatch');
+    const fixture = await prepareCredentialDispatch('generic-dispatch', undefined, 'ironclaw');
     const input = {
       userId: fixture.graph.userId,
       decisionId: fixture.graph.decisionId,
       actionId: fixture.graph.actionId!,
       executionPlanId: fixture.plan.id,
       adapterName: 'ironclaw',
+      expectedExecutionChannel: fixture.executionChannel,
+      expectedUserExecutionChannel: fixture.executionChannel,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
       now: new Date(Date.now() - 2_000),
@@ -742,7 +767,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   });
 
   it('serializes MCP pending opt-in discovery with exact tool request-start', async () => {
-    const fixture = await prepareCredentialDispatch('mcp-opt-in-fence');
+    const fixture = await prepareCredentialDispatch('mcp-opt-in-fence', undefined, 'mcp-host');
     const server = await pool.query<{ id: string }>(
       `INSERT INTO mcp_servers (user_id, display_name, transport, status)
        VALUES ($1, 'E2E MCP', 'stdio', 'active') RETURNING id`,
@@ -759,6 +784,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       mcpToolName: 'send_email',
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     });
@@ -784,7 +810,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   });
 
   it('keeps an explicitly rejected destructive MCP tool denied at request start', async () => {
-    const fixture = await prepareCredentialDispatch('mcp-rejected-opt-in');
+    const fixture = await prepareCredentialDispatch('mcp-rejected-opt-in', undefined, 'mcp-host');
     const server = await pool.query<{ id: string }>(
       `INSERT INTO mcp_servers (user_id, display_name, transport, status)
        VALUES ($1, 'Rejected MCP', 'stdio', 'active') RETURNING id`,
@@ -808,12 +834,87 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       mcpToolName: 'send_email',
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
   });
 
-  it('allows only its exact generic capability to refresh and bind a credential', async () => {
+  it.each(['paused', 'dormant', 'failed', 'uninstalled'] as const)(
+    'denies an MCP server in %s state at the locked request-start check',
+    async (status) => {
+      const fixture = await prepareCredentialDispatch(
+        `mcp-${status}-fence`, undefined, 'mcp-host',
+      );
+      const server = await pool.query<{ id: string }>(
+        `INSERT INTO mcp_servers (user_id, display_name, transport, status)
+         VALUES ($1, $2, 'stdio', $3) RETURNING id`,
+        [fixture.graph.userId, `MCP ${status}`, status],
+      );
+
+      await expect(executionDispatchLeaseRepository.start({
+        userId: fixture.graph.userId,
+        decisionId: fixture.graph.decisionId,
+        actionId: fixture.graph.actionId!,
+        executionPlanId: fixture.plan.id,
+        adapterName: 'mcp-host',
+        mcpServerId: server.rows[0]!.id,
+        mcpToolName: 'send_email',
+        expectedAuthorityRevision: fixture.authorityRevision,
+        expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+        expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
+        expectedAdmissionAuthorityId: fixture.graph.decisionId,
+        expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+      })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+      await expect(pool.query(
+        'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+        [fixture.plan.id],
+      )).resolves.toMatchObject({ rowCount: 0 });
+    },
+  );
+
+  it('orders a committed MCP pause ahead of a competing request-start claim', async () => {
+    const fixture = await prepareCredentialDispatch('mcp-pause-race', undefined, 'mcp-host');
+    const server = await pool.query<{ id: string }>(
+      `INSERT INTO mcp_servers (user_id, display_name, transport, status)
+       VALUES ($1, 'MCP pause race', 'stdio', 'active') RETURNING id`,
+      [fixture.graph.userId],
+    );
+    const mutation = await pool.connect();
+    try {
+      await mutation.query('BEGIN');
+      await mutation.query(
+        `UPDATE mcp_servers SET status = 'paused' WHERE id = $1`,
+        [server.rows[0]!.id],
+      );
+      const start = executionDispatchLeaseRepository.start({
+        userId: fixture.graph.userId,
+        decisionId: fixture.graph.decisionId,
+        actionId: fixture.graph.actionId!,
+        executionPlanId: fixture.plan.id,
+        adapterName: 'mcp-host',
+        mcpServerId: server.rows[0]!.id,
+        mcpToolName: 'send_email',
+        expectedAuthorityRevision: fixture.authorityRevision,
+        expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+        expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
+        expectedAdmissionAuthorityId: fixture.graph.decisionId,
+        expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await mutation.query('COMMIT');
+      await expect(start).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    } finally {
+      await mutation.query('ROLLBACK').catch(() => undefined);
+      mutation.release();
+    }
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('binds the exact prepared credential at request start and fences later refresh', async () => {
     const fixture = await prepareCredentialDispatch('credential-refresh-proof');
     const started = await executionDispatchLeaseRepository.start({
       userId: fixture.graph.userId,
@@ -822,13 +923,21 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       executionPlanId: fixture.plan.id,
       adapterName: 'direct',
       credentialProvider: 'google',
+      credentialAccountEmail: fixture.accountEmail,
+      expectedOAuthTokenId: fixture.token.id,
+      expectedCredentialRevision: fixture.token.credential_revision,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     });
     expect(started.success).toBe(true);
     if (!started.success) return;
+    expect(started.grant.credential).toEqual({
+      accountEmail: fixture.accountEmail,
+      oauthTokenId: fixture.token.id,
+    });
     await expect(oauthRepository.rotateTokenIfCurrent({
       id: fixture.token.id,
       userId: fixture.graph.userId,
@@ -840,30 +949,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       refreshToken: fixture.token.refresh_token!,
       expiresAt: new Date(Date.now() + 3_600_000),
       scopes: fixture.token.scopes,
-      dispatchProof: {
-        userId: fixture.graph.userId,
-        provider: 'google',
-        executionPlanId: fixture.plan.id,
-        capability: started.grant.capability,
-        leaseGeneration: started.grant.leaseGeneration,
-      },
-    })).resolves.toMatchObject({ access_token: 'refreshed-under-proof' });
-    const refreshed = await oauthRepository.getTokenByAccount(
-      fixture.graph.userId, 'google', fixture.accountEmail,
-    );
-    expect(refreshed).not.toBeNull();
-    await expect(executionDispatchLeaseRepository.bindCredential({
-      userId: fixture.graph.userId,
-      provider: 'google',
-      accountEmail: fixture.accountEmail,
-      decisionId: fixture.graph.decisionId,
-      actionId: fixture.graph.actionId!,
-      executionPlanId: fixture.plan.id,
-      capability: started.grant.capability,
-      leaseGeneration: started.grant.leaseGeneration,
-      expectedOAuthTokenId: fixture.token.id,
-      expectedCredentialRevision: refreshed!.credential_revision,
-    })).resolves.toMatchObject({ success: true });
+    })).resolves.toBeNull();
   });
 
   it('blocks a second same-provider dispatch before refresh while a bound request is unresolved', async () => {
@@ -876,25 +962,17 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       executionPlanId: first.plan.id,
       adapterName: 'direct',
       credentialProvider: 'google',
+      credentialAccountEmail: first.accountEmail,
+      expectedOAuthTokenId: first.token.id,
+      expectedCredentialRevision: first.token.credential_revision,
       expectedAuthorityRevision: first.authorityRevision,
       expectedPolicyAuthorityRevision: first.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(first.graph).riskSnapshot,
       expectedAdmissionAuthorityId: first.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: first.plan.dispatchAuthorityUpdatedAt.toISOString(),
     });
     expect(started.success).toBe(true);
     if (!started.success) return;
-    await expect(executionDispatchLeaseRepository.bindCredential({
-      userId: first.graph.userId,
-      provider: 'google',
-      accountEmail: first.accountEmail,
-      decisionId: first.graph.decisionId,
-      actionId: first.graph.actionId!,
-      executionPlanId: first.plan.id,
-      capability: started.grant.capability,
-      leaseGeneration: started.grant.leaseGeneration,
-      expectedOAuthTokenId: first.token.id,
-      expectedCredentialRevision: first.token.credential_revision,
-    })).resolves.toMatchObject({ success: true });
 
     await expect(executionDispatchLeaseRepository.start({
       userId: second.graph.userId,
@@ -903,8 +981,12 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       executionPlanId: second.plan.id,
       adapterName: 'direct',
       credentialProvider: 'google',
+      credentialAccountEmail: second.accountEmail,
+      expectedOAuthTokenId: second.token.id,
+      expectedCredentialRevision: second.token.credential_revision,
       expectedAuthorityRevision: second.authorityRevision,
       expectedPolicyAuthorityRevision: second.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(second.graph).riskSnapshot,
       expectedAdmissionAuthorityId: second.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: second.plan.dispatchAuthorityUpdatedAt.toISOString(),
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
@@ -915,7 +997,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   });
 
   it('rejects generic request-start after a route/build pause lets owner authority change', async () => {
-    const fixture = await prepareCredentialDispatch('generic-authority-drift');
+    const fixture = await prepareCredentialDispatch('generic-authority-drift', undefined, 'ironclaw');
     await pool.query(
       `UPDATE users SET autonomy_settings = '{"paused":true}'::JSONB,
                         execution_authority_revision = gen_random_uuid()
@@ -928,8 +1010,11 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       actionId: fixture.graph.actionId!,
       executionPlanId: fixture.plan.id,
       adapterName: 'ironclaw',
+      expectedExecutionChannel: fixture.executionChannel,
+      expectedUserExecutionChannel: fixture.executionChannel,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
@@ -939,8 +1024,35 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     )).resolves.toMatchObject({ rowCount: 0 });
   });
 
+  it('refuses a credential-shaped adapter before a receipt claim can persist it', async () => {
+    const graph = await createGraph('secret-adapter-receipt-claim', 'auto_execute');
+    await inferenceReceiptRepository.createManyForUser(graph.userId, [{
+      bundle: receiptBundle(graph),
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(graph, 'auto_execute'));
+    const dispatch = {
+      ...receiptDispatch(graph),
+      adapterName: ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+    };
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(
+      graph.userId,
+      graph.decisionId,
+      completionForGraph(graph, 'auto_execute').continuation,
+      [],
+      CURRENT_ALLOWED_POLICY,
+      dispatch,
+    )).resolves.toBeNull();
+    await expect(pool.query(
+      `SELECT dispatch_adapter_name, effect_state FROM decision_ingest_guards
+        WHERE decision_id = $1`,
+      [graph.decisionId],
+    )).resolves.toMatchObject({
+      rows: [{ dispatch_adapter_name: null, effect_state: 'ready' }],
+    });
+  });
+
   it('rejects stale IronClaw channel authority after a pre-dispatch channel change', async () => {
-    const fixture = await prepareCredentialDispatch('ironclaw-channel-drift');
+    const fixture = await prepareCredentialDispatch('ironclaw-channel-drift', undefined, 'ironclaw');
     const updated = await userRepository.updateIronClawChannel(
       fixture.graph.userId,
       'replacement-channel',
@@ -954,8 +1066,11 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       actionId: fixture.graph.actionId!,
       executionPlanId: fixture.plan.id,
       adapterName: 'ironclaw',
+      expectedExecutionChannel: fixture.executionChannel,
+      expectedUserExecutionChannel: fixture.executionChannel,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
@@ -965,8 +1080,61 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     )).resolves.toMatchObject({ rowCount: 0 });
   });
 
+  it('rejects a mismatched IronClaw channel with an otherwise current authority revision', async () => {
+    const fixture = await prepareCredentialDispatch(
+      'ironclaw-channel-value-mismatch', undefined, 'ironclaw',
+    );
+    await expect(executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'ironclaw',
+      expectedExecutionChannel: fixture.executionChannel,
+      expectedUserExecutionChannel: 'wrong-channel',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('persists the exact adapter-resolved channel when the user channel is unset', async () => {
+    const fixture = await prepareCredentialDispatch(
+      'ironclaw-effective-default-channel', undefined, 'ironclaw',
+    );
+    await pool.query('UPDATE users SET ironclaw_channel = NULL WHERE id = $1', [fixture.graph.userId]);
+    const started = await executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'ironclaw',
+      expectedExecutionChannel: 'configured-default-channel',
+      expectedUserExecutionChannel: undefined,
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    });
+    expect(started.success).toBe(true);
+    await expect(pool.query(
+      `SELECT execution_channel FROM credential_dispatch_leases
+        WHERE execution_plan_id = $1`,
+      [fixture.plan.id],
+    )).resolves.toMatchObject({
+      rows: [{ execution_channel: 'configured-default-channel' }],
+    });
+  });
+
   it('orders an in-flight channel mutation ahead of a competing request-start claim', async () => {
-    const fixture = await prepareCredentialDispatch('ironclaw-channel-lock-race');
+    const fixture = await prepareCredentialDispatch('ironclaw-channel-lock-race', undefined, 'ironclaw');
     const mutation = await pool.connect();
     try {
       await mutation.query('BEGIN');
@@ -983,8 +1151,11 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
         actionId: fixture.graph.actionId!,
         executionPlanId: fixture.plan.id,
         adapterName: 'ironclaw',
+        expectedExecutionChannel: fixture.executionChannel,
+        expectedUserExecutionChannel: fixture.executionChannel,
         expectedAuthorityRevision: fixture.authorityRevision,
         expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+        expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
         expectedAdmissionAuthorityId: fixture.graph.decisionId,
         expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
       });
@@ -1005,7 +1176,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   });
 
   it('rejects generic request-start after its exact admission authority changes', async () => {
-    const fixture = await prepareCredentialDispatch('generic-admission-drift');
+    const fixture = await prepareCredentialDispatch('generic-admission-drift', undefined, 'openclaw');
     await pool.query(
       `UPDATE decision_ingest_guards
           SET updated_at = updated_at + INTERVAL '1 second'
@@ -1020,6 +1191,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       adapterName: 'openclaw',
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       expectedAdmissionAuthorityId: fixture.graph.decisionId,
       expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
@@ -1043,6 +1215,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
         expectedCredentialRevision: fixture.token.credential_revision,
         expectedAuthorityRevision: fixture.authorityRevision,
         expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+        expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
       };
       if (mutation === 'vault-rotation') {
         await pool.query(
@@ -1093,7 +1266,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
           state: 'completed',
         })).resolves.toBe(true);
       } else {
-        expect(started.code).toBe('credential_unavailable');
+        expect(started.code).toBe('authority_revoked');
       }
     }
   });
@@ -1154,6 +1327,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: fixture.token.credential_revision,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
     };
     await expect(credentialDispatchLeaseRepository.start({
       ...base,
@@ -1162,8 +1336,10 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     await expect(credentialDispatchLeaseRepository.start({
       ...base,
       accountEmail: 'other@example.test',
-    })).resolves.toMatchObject({ success: false, code: 'credential_unavailable' });
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
 
+    const exactStarted = await credentialDispatchLeaseRepository.start(base);
+    expect(exactStarted).toMatchObject({ success: true });
     await expect(credentialDispatchLeaseRepository.start(base)).resolves.toMatchObject({
       success: false,
       code: 'dispatch_replayed',
@@ -1181,6 +1357,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: overdue.token.credential_revision,
       expectedAuthorityRevision: overdue.authorityRevision,
       expectedPolicyAuthorityRevision: overdue.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(overdue.graph).riskSnapshot,
     };
     const started = await credentialDispatchLeaseRepository.start({
       ...overdueBase,
@@ -1228,6 +1405,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
         expectedCredentialRevision: paused.token.credential_revision,
         expectedAuthorityRevision: paused.authorityRevision,
         expectedPolicyAuthorityRevision: paused.policyAuthorityRevision,
+        expectedRiskSnapshot: receiptDispatch(paused.graph).riskSnapshot,
       });
       await pauseClient.query('COMMIT');
       await expect(pendingStart).resolves.toMatchObject({
@@ -1249,7 +1427,8 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: materializedRevision,
       expectedAuthorityRevision: locked.authorityRevision,
       expectedPolicyAuthorityRevision: locked.policyAuthorityRevision,
-    })).resolves.toMatchObject({ success: false, code: 'credential_unavailable' });
+      expectedRiskSnapshot: receiptDispatch(locked.graph).riskSnapshot,
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
   });
 
   it('rejects a request-start claim after a trust or policy authority revision changes', async () => {
@@ -1271,6 +1450,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: fixture.token.credential_revision,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
     await expect(pool.query(
       'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
@@ -1294,6 +1474,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: policyFixture.token.credential_revision,
       expectedAuthorityRevision: policyFixture.authorityRevision,
       expectedPolicyAuthorityRevision: policyFixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(policyFixture.graph).riskSnapshot,
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
     await expect(pool.query(
       'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
@@ -1326,6 +1507,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: fixture.token.credential_revision,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedRiskSnapshot: receiptDispatch(fixture.graph).riskSnapshot,
     })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
   });
 
@@ -1719,6 +1901,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       );
       await expect(inferenceReceiptRepository.claimExecutionForDecision(
         owner.userId, owner.decisionId, continuation, executionSteps, CURRENT_ALLOWED_POLICY,
+        receiptDispatch(owner),
       )).resolves.toBeNull();
       await pool.query(
         `UPDATE decision_ingest_guards SET ${column} = $2::JSONB WHERE decision_id = $1`,
@@ -1729,9 +1912,11 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     const claims = await Promise.all([
       inferenceReceiptRepository.claimExecutionForDecision(
         owner.userId, owner.decisionId, continuation, [], CURRENT_ALLOWED_POLICY,
+        receiptDispatch(owner),
       ),
       inferenceReceiptRepository.claimExecutionForDecision(
         owner.userId, owner.decisionId, continuation, [], CURRENT_ALLOWED_POLICY,
+        receiptDispatch(owner),
       ),
     ]);
     expect(claims.filter(Boolean)).toHaveLength(1);
@@ -1745,12 +1930,14 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
       owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
       CURRENT_ALLOWED_POLICY,
+      receiptDispatch(owner),
     )).resolves.toBe(true);
     const liveReceiptAuthority = [
       ['policy_snapshot', continuation.outcome.policyVerdicts ?? {}],
       ['continuation_snapshot', continuation],
       ['risk_snapshot', continuation.outcome.riskAssessment],
       ['dispatch_policy_snapshot', CURRENT_ALLOWED_POLICY],
+      ['dispatch_risk_snapshot', receiptDispatch(owner).riskSnapshot],
     ] as const;
     for (const [column, original] of liveReceiptAuthority) {
       await pool.query(
@@ -1760,6 +1947,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
         owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
         CURRENT_ALLOWED_POLICY,
+        receiptDispatch(owner),
       )).resolves.toBe(false);
       await pool.query(
         `UPDATE decision_ingest_guards SET ${column} = $2::JSONB WHERE decision_id = $1`,
@@ -1767,12 +1955,28 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       );
     }
     await pool.query(
+      `UPDATE decision_ingest_guards SET dispatch_adapter_name = 'tampered-adapter'
+        WHERE decision_id = $1`,
+      [owner.decisionId],
+    );
+    await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
+      owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
+      CURRENT_ALLOWED_POLICY,
+      receiptDispatch(owner),
+    )).resolves.toBe(false);
+    await pool.query(
+      `UPDATE decision_ingest_guards SET dispatch_adapter_name = $2
+        WHERE decision_id = $1`,
+      [owner.decisionId, receiptDispatch(owner).adapterName],
+    );
+    await pool.query(
       `UPDATE execution_plans SET steps = '[{"type":"tampered"}]'::JSONB WHERE id = $1`,
       [plan.id],
     );
     await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
       owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
       CURRENT_ALLOWED_POLICY,
+      receiptDispatch(owner),
     )).resolves.toBe(false);
     await pool.query('UPDATE execution_plans SET steps = $2::JSONB WHERE id = $1', [
       plan.id, JSON.stringify(executionSteps),
@@ -1781,6 +1985,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       owner.userId, owner.decisionId, plan.id,
       continuation, executionSteps,
       { allowed: true, requiresApproval: false, reason: 'changed after claim' },
+      receiptDispatch(owner),
     )).resolves.toBe(false);
     await pool.query(
       `UPDATE users SET autonomy_settings = '{"paused":true}'::JSONB WHERE id = $1`,
@@ -1789,6 +1994,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
       owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
       CURRENT_ALLOWED_POLICY,
+      receiptDispatch(owner),
     )).resolves.toBe(false);
   });
 
@@ -1857,6 +2063,18 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       );
     }
     await pool.query(
+      `UPDATE execution_admission_barriers SET adapter_name = 'tampered-adapter'
+        WHERE id = $1`,
+      [admitted.barrier.id],
+    );
+    await expect(executionAdmissionRepository.isDispatchable(
+      admitted, exactAdmission,
+    )).resolves.toBe(false);
+    await pool.query(
+      `UPDATE execution_admission_barriers SET adapter_name = $2 WHERE id = $1`,
+      [admitted.barrier.id, exactAdmission.adapterName],
+    );
+    await pool.query(
       `UPDATE execution_plans SET steps = '[{"type":"tampered"}]'::JSONB WHERE id = $1`,
       [admitted.plan.id],
     );
@@ -1919,6 +2137,206 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       [owner.outcomeId],
     );
     expect(linked.rows[0]!.execution_plan_id).toBe(admitted.plan.id);
+  });
+
+  it('persists redacted explanation-first evidence for receipt and approval policy denials', async () => {
+    const receiptOwner = await createGraph('receipt-policy-denial', 'auto_execute');
+    await inferenceReceiptRepository.createManyForUser(receiptOwner.userId, [{
+      bundle: receiptBundle(receiptOwner),
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    }], completionForGraph(receiptOwner, 'auto_execute'));
+    const receiptAction = completionForGraph(receiptOwner, 'auto_execute')
+      .continuation.outcome.selectedAction!;
+    const secretValues = [
+      ['sk-proj-', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+      ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+      ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
+      ['ya29.', 'a0AfH6SMBabcdefghijklmnopqrstuvwxyz'].join(''),
+      'https://operator.example.test/callback?access_token=hidden-token',
+    ];
+    const receiptDenial = await executionAdmissionRepository.recordPolicyDenial({
+      scope: 'receipt',
+      userId: receiptOwner.userId,
+      decisionId: receiptOwner.decisionId,
+      actionId: receiptOwner.actionId!,
+      adapterName: secretValues[0]!,
+      actionSnapshot: receiptAction as unknown as Record<string, unknown>,
+      riskSnapshot: {
+        ...riskSnapshot(receiptOwner.actionId!),
+        reasoning: secretValues[1],
+      },
+      policySnapshot: {
+        allowed: false,
+        requiresApproval: false,
+        reason: secretValues[4],
+        blockingPolicy: {
+          name: secretValues[2],
+          description: secretValues[3],
+          rules: secretValues,
+        },
+      },
+      reason: secretValues[4]!,
+    });
+    expect(receiptDenial).not.toBeNull();
+
+    const approvalOwner = await createGraph('approval-policy-denial', 'approval');
+    const approvalAction = completionForGraph(approvalOwner, 'approval')
+      .continuation.outcome.selectedAction!;
+    const approval = await pool.query<{ id: string }>(
+      `INSERT INTO approval_requests
+         (user_id, decision_id, candidate_action, reason, urgency, status, responded_at)
+       VALUES ($1, $2, $3::JSONB, 'approved before current policy changed',
+               'normal', 'approved', now())
+       RETURNING id`,
+      [approvalOwner.userId, approvalOwner.decisionId, JSON.stringify(approvalAction)],
+    );
+    const approvalDenial = await executionAdmissionRepository.recordPolicyDenial({
+      scope: 'approval',
+      userId: approvalOwner.userId,
+      decisionId: approvalOwner.decisionId,
+      actionId: approvalOwner.actionId!,
+      approvalId: approval.rows[0]!.id,
+      adapterName: secretValues[1]!,
+      actionSnapshot: approvalAction as unknown as Record<string, unknown>,
+      riskSnapshot: riskSnapshot(approvalOwner.actionId!),
+      policySnapshot: {
+        allowed: false,
+        requiresApproval: true,
+        confirmationLevel: 'dual',
+        blockingPolicy: { name: secretValues[3] },
+      },
+      reason: `Current policy ${secretValues[2]} requires dual confirmation.`,
+    });
+    expect(approvalDenial).not.toBeNull();
+    await expect(executionAdmissionRepository.admitApprovalExecution({
+      userId: approvalOwner.userId,
+      approvalId: approval.rows[0]!.id,
+      decisionId: approvalOwner.decisionId,
+      actionId: approvalOwner.actionId!,
+      steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(approvalOwner),
+    })).rejects.toThrow('Approval execution admission authority is unavailable');
+    const consumedApproval = await pool.query<{
+      execution_denied_at: Date | null;
+      execution_denial_explanation_id: string | null;
+    }>(
+      `SELECT execution_denied_at, execution_denial_explanation_id
+         FROM approval_requests WHERE id = $1`,
+      [approval.rows[0]!.id],
+    );
+    expect(consumedApproval.rows[0]?.execution_denied_at).toBeInstanceOf(Date);
+    expect(consumedApproval.rows[0]?.execution_denial_explanation_id)
+      .toBe(approvalDenial!.explanationId);
+
+    for (const [owner, denial] of [
+      [receiptOwner, receiptDenial],
+      [approvalOwner, approvalDenial],
+    ] as const) {
+      const stored = await pool.query<{ evidence_used: unknown }>(
+        `SELECT evidence_used FROM explanation_records
+          WHERE id = $1 AND decision_id = $2 AND type = 'execution_policy_denial'`,
+        [denial!.explanationId, owner.decisionId],
+      );
+      expect(stored.rows).toHaveLength(1);
+      const storedJson = JSON.stringify(stored.rows[0]!.evidence_used);
+      expect(storedJson).toContain('SnapshotSha256');
+      for (const secret of secretValues) expect(storedJson).not.toContain(secret);
+
+      const backup = await collectBackup(owner.userId);
+      expect(backup.success).toBe(true);
+      if (backup.success) {
+        const exported = JSON.stringify(backup.data);
+        for (const secret of secretValues) expect(exported).not.toContain(secret);
+      }
+    }
+
+    const receiptState = await inferenceReceiptRepository.getContinuationForDecision(
+      receiptOwner.userId,
+      receiptOwner.decisionId,
+    );
+    expect(receiptState).toMatchObject({ effectState: 'non_effect' });
+    await expect(executionAdmissionRepository.recordPolicyDenial({
+      scope: 'receipt',
+      userId: receiptOwner.userId,
+      decisionId: receiptOwner.decisionId,
+      actionId: receiptOwner.actionId!,
+      adapterName: secretValues[0]!,
+      actionSnapshot: receiptAction as unknown as Record<string, unknown>,
+      riskSnapshot: {
+        ...riskSnapshot(receiptOwner.actionId!),
+        reasoning: secretValues[1],
+      },
+      policySnapshot: {
+        allowed: false,
+        requiresApproval: false,
+        reason: secretValues[4],
+        blockingPolicy: {
+          name: secretValues[2], description: secretValues[3], rules: secretValues,
+        },
+      },
+      reason: secretValues[4]!,
+    })).resolves.toEqual(receiptDenial);
+  });
+
+  it('serializes approval denial against executable admission', async () => {
+    const owner = await createGraph('approval-denial-race', 'approval');
+    const selectedAction = completionForGraph(owner, 'approval')
+      .continuation.outcome.selectedAction!;
+    const approval = await pool.query<{ id: string }>(
+      `INSERT INTO approval_requests
+         (user_id, decision_id, candidate_action, reason, urgency, status, responded_at)
+       VALUES ($1, $2, $3::JSONB, 'approved before race', 'normal', 'approved', now())
+       RETURNING id`,
+      [owner.userId, owner.decisionId, JSON.stringify(selectedAction)],
+    );
+    const denialInput = {
+      scope: 'approval' as const,
+      userId: owner.userId,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      approvalId: approval.rows[0]!.id,
+      adapterName: 'openclaw',
+      actionSnapshot: selectedAction as unknown as Record<string, unknown>,
+      riskSnapshot: riskSnapshot(owner.actionId!),
+      policySnapshot: { allowed: false, requiresApproval: false, reason: 'race deny' },
+      reason: 'Current policy denied this exact execution path.',
+    };
+    const admissionInput = {
+      userId: owner.userId,
+      approvalId: approval.rows[0]!.id,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
+    };
+
+    const [denial, admission] = await Promise.allSettled([
+      executionAdmissionRepository.recordPolicyDenial(denialInput),
+      executionAdmissionRepository.admitApprovalExecution(admissionInput),
+    ]);
+    const denialWon = denial.status === 'fulfilled' && denial.value !== null;
+    const admissionWon = admission.status === 'fulfilled';
+    expect(Number(denialWon) + Number(admissionWon)).toBe(1);
+
+    const durable = await pool.query<{
+      denied: boolean;
+      barriers: string;
+      running_plans: string;
+    }>(
+      `SELECT ar.execution_denied_at IS NOT NULL AS denied,
+              count(DISTINCT b.id)::STRING AS barriers,
+              count(DISTINCT ep.id) FILTER (WHERE ep.status = 'running')::STRING AS running_plans
+         FROM approval_requests ar
+         LEFT JOIN execution_admission_barriers b
+           ON b.user_id = ar.user_id AND b.scope = 'approval' AND b.idempotency_key = ar.id
+         LEFT JOIN execution_plans ep ON ep.id = b.execution_plan_id
+        WHERE ar.id = $1
+        GROUP BY ar.execution_denied_at`,
+      [approval.rows[0]!.id],
+    );
+    expect(durable.rows[0]).toEqual(denialWon
+      ? { denied: true, barriers: '0', running_plans: '0' }
+      : { denied: false, barriers: '1', running_plans: '1' });
   });
 
   it('freezes a memory opportunity into a non-replay state before dispatch', async () => {
@@ -2146,6 +2564,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     const ownerPlan = await inferenceReceiptRepository.claimExecutionForDecision(
       owner.userId, owner.decisionId, completionForGraph(owner, 'auto_execute').continuation, [],
       CURRENT_ALLOWED_POLICY,
+      receiptDispatch(owner),
     );
     expect(ownerPlan).not.toBeNull();
     const otherPlan = await executionRepository.createPlan({
@@ -2236,6 +2655,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       completionForGraph(owner, 'auto_execute').continuation,
       [],
       CURRENT_ALLOWED_POLICY,
+      receiptDispatch(owner),
     )).resolves.toBeNull();
   });
 });

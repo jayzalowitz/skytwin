@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { normalizeMemoryActionAdapterName } from '@skytwin/shared-types';
 import { withTransaction } from '../connection.js';
 import type { CredentialDispatchLeaseRow, OAuthTokenRow } from '../types.js';
 
@@ -11,9 +12,16 @@ export interface StartExecutionDispatchInput {
   actionId: string;
   executionPlanId: string;
   adapterName: string;
+  expectedRiskSnapshot: Record<string, unknown>;
+  expectedExecutionChannel?: string;
+  expectedUserExecutionChannel?: string;
   mcpServerId?: string;
   mcpToolName?: string;
   credentialProvider?: string;
+  expectedOAuthTokenId?: string;
+  expectedCredentialRevision?: string;
+  credentialAccountEmail?: string;
+  expectedVaultGeneration?: string;
   expectedAuthorityRevision: string;
   expectedPolicyAuthorityRevision: string;
   expectedAdmissionAuthorityId: string;
@@ -26,6 +34,10 @@ export interface ExecutionDispatchGrant {
   capability: string;
   leaseGeneration: string;
   expiresAt: Date;
+  credential?: {
+    accountEmail: string;
+    oauthTokenId: string;
+  };
 }
 
 export interface CredentialMutationLeaseProof {
@@ -87,6 +99,20 @@ interface AuthorityRow {
   authority_kind: 'admission' | 'receipt';
   authority_id: string;
   authority_updated_at: Date;
+  adapter_name: string | null;
+  risk_snapshot: Record<string, unknown> | null;
+}
+
+function canonicalJson(value: unknown): string {
+  if (value instanceof Date) return JSON.stringify(value.toISOString());
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
 }
 
 function hashCapability(capability: string): string {
@@ -152,6 +178,16 @@ export async function authorizeCredentialMutationWithClient(
 /** Cross-process request-start fence for every execution adapter. */
 export const executionDispatchLeaseRepository = {
   async start(input: StartExecutionDispatchInput): Promise<StartExecutionDispatchResult> {
+    if (normalizeMemoryActionAdapterName(input.adapterName) !== input.adapterName) {
+      return {
+        success: false,
+        code: 'authority_revoked',
+        error: 'Adapter identity is not a canonical durable identifier.',
+      };
+    }
+    if (!input.expectedRiskSnapshot || input.expectedRiskSnapshot['actionId'] !== input.actionId) {
+      return { success: false, code: 'authority_revoked', error: 'Exact execution risk authority is required.' };
+    }
     const now = input.now ?? new Date();
     const expiresAt = new Date(now.getTime() + Math.max(1_000, input.ttlMs ?? LEASE_TTL_MS));
     const capability = randomBytes(32).toString('base64url');
@@ -163,8 +199,9 @@ export const executionDispatchLeaseRepository = {
         id: string;
         autonomy_settings: Record<string, unknown>;
         execution_authority_revision: string;
+        ironclaw_channel: string | null;
       }>(
-        `SELECT id, autonomy_settings, execution_authority_revision
+        `SELECT id, autonomy_settings, execution_authority_revision, ironclaw_channel
            FROM users WHERE id = $1 FOR UPDATE`,
         [input.userId],
       );
@@ -183,6 +220,10 @@ export const executionDispatchLeaseRepository = {
           owner.rows[0].execution_authority_revision !== input.expectedAuthorityRevision) {
         return { success: false, code: 'authority_revoked', error: 'Execution owner is unavailable.' };
       }
+      if (input.adapterName === 'ironclaw' &&
+          (owner.rows[0].ironclaw_channel ?? undefined) !== input.expectedUserExecutionChannel) {
+        return { success: false, code: 'authority_revoked', error: 'IronClaw channel authority changed before request start.' };
+      }
 
       const policyAuthority = await client.query<{ revision: string }>(
         `SELECT revision FROM execution_policy_authority
@@ -198,7 +239,7 @@ export const executionDispatchLeaseRepository = {
         }
         const server = await client.query(
           `SELECT id FROM mcp_servers
-            WHERE id = $1 AND user_id = $2 FOR UPDATE`,
+            WHERE id = $1 AND user_id = $2 AND status = 'active' FOR UPDATE`,
           [input.mcpServerId, input.userId],
         );
         const pending = await client.query(
@@ -215,7 +256,8 @@ export const executionDispatchLeaseRepository = {
 
       const authority = await client.query<AuthorityRow>(
         `SELECT 'admission' AS authority_kind, b.id AS authority_id,
-                b.updated_at AS authority_updated_at
+                b.updated_at AS authority_updated_at,
+                b.adapter_name, b.risk_snapshot
            FROM execution_admission_barriers b
            JOIN execution_plans ep ON ep.id = b.execution_plan_id
              AND ep.decision_id = b.decision_id AND ep.action_id = b.action_id
@@ -224,7 +266,9 @@ export const executionDispatchLeaseRepository = {
             AND ep.status = 'running'
          UNION ALL
          SELECT 'receipt' AS authority_kind, g.decision_id AS authority_id,
-                g.updated_at AS authority_updated_at
+                g.updated_at AS authority_updated_at,
+                g.dispatch_adapter_name AS adapter_name,
+                g.dispatch_risk_snapshot AS risk_snapshot
            FROM decision_ingest_guards g
            JOIN decisions d ON d.id = g.decision_id AND d.user_id = $1
            JOIN execution_plans ep ON ep.id = g.source_execution_plan_id
@@ -238,11 +282,23 @@ export const executionDispatchLeaseRepository = {
       if (!authority.rows[0] ||
           authority.rows[0].authority_id !== input.expectedAdmissionAuthorityId ||
           authority.rows[0].authority_updated_at.toISOString() !==
-            input.expectedAdmissionAuthorityUpdatedAt) {
+            input.expectedAdmissionAuthorityUpdatedAt ||
+          authority.rows[0].adapter_name !== input.adapterName ||
+          canonicalJson(authority.rows[0].risk_snapshot) !==
+            canonicalJson(input.expectedRiskSnapshot)) {
         return { success: false, code: 'authority_revoked', error: 'Execution authority is unavailable.' };
       }
 
+      let credentialRow: DispatchTokenRow | undefined;
+      let credentialVaultGeneration: string | null = null;
       if (input.credentialProvider) {
+        if (!input.expectedOAuthTokenId || !input.expectedCredentialRevision) {
+          return {
+            success: false,
+            code: 'authority_revoked',
+            error: 'Exact prepared OAuth credential authority is required.',
+          };
+        }
         const resolving = await client.query(
           `SELECT id FROM credential_dispatch_leases
             WHERE user_id = $1 AND provider = $2
@@ -257,22 +313,67 @@ export const executionDispatchLeaseRepository = {
             error: 'Credential dispatch is already active for this provider.',
           };
         }
+
+        const vault = await client.query<{
+          vault_state: 'locked' | 'unlocked';
+          vault_generation: string;
+        }>(
+          `SELECT vault_state, vault_generation
+             FROM user_credential_vault_meta WHERE user_id = $1 FOR UPDATE`,
+          [input.userId],
+        );
+        const vaultRow = vault.rows[0];
+        if ((vaultRow && (vaultRow.vault_state !== 'unlocked' ||
+            vaultRow.vault_generation !== input.expectedVaultGeneration)) ||
+            (!vaultRow && input.expectedVaultGeneration !== undefined)) {
+          return {
+            success: false,
+            code: 'authority_revoked',
+            error: 'Prepared OAuth credential vault authority is stale.',
+          };
+        }
+        credentialVaultGeneration = vaultRow?.vault_generation ?? null;
+        const token = await client.query<DispatchTokenRow>(
+          `SELECT * FROM oauth_tokens
+            WHERE id = $1 AND user_id = $2 AND provider = $3
+              AND credential_revision = $4
+              AND ($5::STRING IS NULL OR account_email = $5)
+            ORDER BY updated_at DESC LIMIT 1 FOR UPDATE`,
+          [input.expectedOAuthTokenId, input.userId, input.credentialProvider,
+            input.expectedCredentialRevision, input.credentialAccountEmail ?? null],
+        );
+        credentialRow = token.rows[0];
+        if (!credentialRow || credentialRow.dispatch_state !== 'active' ||
+            credentialRow.expires_at <= now) {
+          return {
+            success: false,
+            code: 'authority_revoked',
+            error: `Prepared ${input.credentialProvider} credential is unavailable for dispatch.`,
+          };
+        }
       }
 
       const inserted = await client.query<CredentialDispatchLeaseRow>(
         `INSERT INTO credential_dispatch_leases (
-           user_id, adapter_name, provider, mcp_server_id, mcp_tool_name,
+           user_id, oauth_token_id, provider, account_email,
+           credential_revision, credential_generation, vault_generation,
+           adapter_name, risk_snapshot, execution_channel, mcp_server_id, mcp_tool_name,
            execution_authority_revision, policy_authority_revision,
            action_id, decision_id, execution_plan_id,
            authority_kind, authority_id, authority_updated_at,
            capability_hash, lease_generation, state,
            acquired_at, request_started_at, expires_at
          ) VALUES (
-           $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-           $11, $12, $13, $14, $15, 'request_started', $16, $16, $17
+           $1, $2, $3, $4, $5, $6, $7, $8, $9::JSONB, $10, $11, $12,
+           $13, $14, $15, $16, $17, $18, $19, $20, $21, $22,
+           'request_started', $23, $23, $24
          ) RETURNING *`,
-        [input.userId, input.adapterName, input.credentialProvider ?? null,
-          input.mcpServerId ?? null, input.mcpToolName ?? null,
+        [input.userId, credentialRow?.id ?? null, input.credentialProvider ?? null,
+          credentialRow?.account_email ?? null, credentialRow?.credential_revision ?? null,
+          credentialRow?.dispatch_generation ?? null, credentialVaultGeneration,
+          input.adapterName, JSON.stringify(input.expectedRiskSnapshot),
+          input.expectedExecutionChannel ?? null, input.mcpServerId ?? null,
+          input.mcpToolName ?? null,
           input.expectedAuthorityRevision, input.expectedPolicyAuthorityRevision,
           input.actionId, input.decisionId, input.executionPlanId,
           authority.rows[0].authority_kind, authority.rows[0].authority_id,
@@ -280,7 +381,20 @@ export const executionDispatchLeaseRepository = {
           now, expiresAt],
       );
       if (!inserted.rows[0]) throw new Error('Execution dispatch lease was not persisted.');
-      return { success: true, grant: { capability, leaseGeneration, expiresAt } };
+      return {
+        success: true,
+        grant: {
+          capability,
+          leaseGeneration,
+          expiresAt,
+          ...(credentialRow ? {
+            credential: {
+              accountEmail: credentialRow.account_email,
+              oauthTokenId: credentialRow.id,
+            },
+          } : {}),
+        },
+      };
     });
   },
 
@@ -427,16 +541,12 @@ export const credentialDispatchLeaseRepository = {
       ...input,
       adapterName: 'direct',
       credentialProvider: input.provider,
+      credentialAccountEmail: input.accountEmail,
       expectedAdmissionAuthorityId: authorityId,
       expectedAdmissionAuthorityUpdatedAt: authorityUpdatedAt,
     });
     if (!started.success) return started;
-    const bound = await executionDispatchLeaseRepository.bindCredential({
-      ...input,
-      capability: started.grant.capability,
-      leaseGeneration: started.grant.leaseGeneration,
-    });
-    if (!bound.success) {
+    if (!started.grant.credential) {
       await executionDispatchLeaseRepository.terminalize({
         userId: input.userId,
         executionPlanId: input.executionPlanId,
@@ -444,8 +554,21 @@ export const credentialDispatchLeaseRepository = {
         leaseGeneration: started.grant.leaseGeneration,
         state: 'failed',
       });
+      return {
+        success: false,
+        code: 'credential_unavailable',
+        error: 'Exact prepared OAuth credential authority was not bound.',
+      };
     }
-    return bound;
+    return {
+      success: true,
+      grant: {
+        capability: started.grant.capability,
+        leaseGeneration: started.grant.leaseGeneration,
+        expiresAt: started.grant.expiresAt,
+        ...started.grant.credential,
+      },
+    };
   },
   terminalize: executionDispatchLeaseRepository.terminalize,
 };

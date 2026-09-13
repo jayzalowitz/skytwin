@@ -30,8 +30,7 @@ describe('CalendarActionHandler credential dispatch', () => {
     const handler = new CalendarActionHandler(new NoopCredentialProvider());
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const result = await handler.execute(makeStep());
-    expect(result).toMatchObject({ success: false, error: expect.stringContaining('No credential') });
+    await expect(handler.prepareRequestStart(makeStep())).rejects.toThrow('No credential');
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -43,31 +42,22 @@ describe('CalendarActionHandler credential dispatch', () => {
   it('keeps a started dispatch ambiguous on a provider timeout response and blocks replay', async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 408 }));
     vi.stubGlobal('fetch', fetchMock);
-    const startDispatch = vi.fn()
-      .mockResolvedValueOnce({
+    const credentialProvider: CredentialProvider = {
+      getAccessToken: vi.fn().mockResolvedValue({
         success: true,
         accessToken: 'leased-access',
         oauthTokenId: 'oauth-1',
         credentialRevision: 'revision-1',
         accountEmail: 'work@example.com',
-        capability: 'capability-1',
-        leaseGeneration: 'lease-generation-1',
-        executionPlanId: 'plan-1',
-        userId: 'user-1',
-      })
-      .mockResolvedValueOnce({ success: false, error: 'Execution credential lease already exists.' });
-    const terminalizeDispatch = vi.fn().mockResolvedValue(true);
-    const credentialProvider: CredentialProvider = {
-      getAccessToken: vi.fn(),
-      startDispatch,
-      terminalizeDispatch,
+      }),
     };
     const handler = new CalendarActionHandler(credentialProvider);
 
-    await expect(handler.execute(makeStep())).rejects.toThrow('outcome is ambiguous');
-    expect(terminalizeDispatch).not.toHaveBeenCalled();
+    const step = makeStep();
+    const preparation = await handler.prepareRequestStart(step);
+    await expect(handler.execute(step, preparation)).rejects.toThrow('outcome is ambiguous');
 
-    await expect(handler.execute(makeStep())).rejects.toThrow('already exists');
+    await expect(handler.execute(step, preparation)).rejects.toThrow('invalid or already consumed');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

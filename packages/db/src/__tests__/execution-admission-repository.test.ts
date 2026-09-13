@@ -35,6 +35,7 @@ const BARRIER = {
   execution_plan_id: PLAN.id,
   outcome_id: '77777777-7777-4777-8777-777777777777',
   explanation_id: '88888888-8888-4888-8888-888888888888',
+  adapter_name: 'direct',
   risk_snapshot: {
     actionId: PLAN.action_id,
     overallTier: 'low',
@@ -65,7 +66,13 @@ const BARRIER = {
   updated_at: new Date('2026-09-13T00:00:00Z'),
 };
 const MEMORY_EVIDENCE = {
+  executionPlanId: PLAN.id,
+  adapterName: BARRIER.adapter_name,
   riskSnapshot: {
+    ...BARRIER.risk_snapshot,
+    assessedAt: new Date(BARRIER.risk_snapshot.assessedAt),
+  },
+  sourceRiskSnapshot: {
     ...BARRIER.risk_snapshot,
     assessedAt: new Date(BARRIER.risk_snapshot.assessedAt),
   },
@@ -85,6 +92,30 @@ describe('executionAdmissionRepository', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockQuery.mockResolvedValue({ rows: [] });
+  });
+
+  it.each([
+    ['sk-proj-', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+    ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+    ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
+    ['ya29.', 'a0AfH6SMBabcdefghijklmnopqrstuvwxyz'].join(''),
+  ])('refuses a credential-shaped admission adapter identity: %s', async (adapterName) => {
+    await expect(executionAdmissionRepository.admitMemoryExecution({
+      userId: BARRIER.user_id,
+      opportunityId: BARRIER.idempotency_key,
+      decisionId: BARRIER.decision_id,
+      actionId: BARRIER.action_id,
+      steps: [{ type: 'create_task', status: 'pending' }],
+      ...MEMORY_EVIDENCE,
+      adapterName,
+      report: {
+        opportunityId: BARRIER.idempotency_key,
+        status: 'execution_ambiguous',
+        title: 'Test', actionType: 'create_task', actionLabel: 'Create task',
+        summary: 'admitted', nextStep: 'reconcile', attemptedAt: new Date().toISOString(),
+      },
+    })).rejects.toThrow('snapshots conflict with requested authority');
+    expect(mockTransactionQuery).not.toHaveBeenCalled();
   });
 
   it('atomically admits a memory execution and freezes the opportunity before dispatch', async () => {
@@ -195,6 +226,8 @@ describe('executionAdmissionRepository', () => {
         userId: BARRIER.user_id,
         decisionId: BARRIER.decision_id,
         actionId: BARRIER.action_id,
+        executionPlanId: PLAN.id,
+        adapterName: BARRIER.adapter_name,
         steps: [{ type: 'create_task', status: 'pending' }],
         riskSnapshot: BARRIER.risk_snapshot,
         policySnapshot: BARRIER.policy_snapshot,

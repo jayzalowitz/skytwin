@@ -62,6 +62,8 @@ const {
   fakeExecutionRouter: {
     executeWithRoutingStreaming: vi.fn(async function* () {}),
     executeWithRouting: vi.fn(),
+    prepareExecution: vi.fn(),
+    executePrepared: vi.fn(),
   },
   fakeExecutionAdmissionRepo: {
     admitApprovalExecution: vi.fn(),
@@ -69,6 +71,7 @@ const {
     findByScope: vi.fn(),
     observeTerminal: vi.fn(),
     failBeforeDispatch: vi.fn(),
+    recordPolicyDenial: vi.fn(),
   },
   fakeExecutionRepo: {
     finalizeAdmittedPlan: vi.fn(),
@@ -259,6 +262,19 @@ beforeEach(() => {
     error: 'no execution in test',
     output: {},
   });
+  fakeExecutionRouter.prepareExecution.mockImplementation(async (
+    _action: unknown,
+    risk: Record<string, unknown>,
+  ) => ({
+    handle: {}, adapterName: 'direct',
+    planId: '44444444-4444-4444-8444-444444444444',
+    riskAssessment: risk, streaming: false,
+    routingDecision: { selectedAdapter: 'direct', reasoning: 'Direct prepared.' },
+  }));
+  fakeExecutionRouter.executePrepared.mockImplementation(async (
+    _prepared: unknown,
+    ...args: unknown[]
+  ) => fakeExecutionRouter.executeWithRouting(...args));
   fakeExecutionAdmissionRepo.admitApprovalExecution.mockResolvedValue({
     created: true,
     barrier: {
@@ -273,6 +289,10 @@ beforeEach(() => {
   fakeExecutionAdmissionRepo.findByScope.mockResolvedValue(null);
   fakeExecutionAdmissionRepo.isDispatchable.mockResolvedValue(true);
   fakeExecutionAdmissionRepo.failBeforeDispatch.mockResolvedValue({ status: 'failed' });
+  fakeExecutionAdmissionRepo.recordPolicyDenial.mockResolvedValue({
+    explanationId: 'policy-denial-explanation-1',
+    evidence: { kind: 'execution_policy_denial' },
+  });
   fakeExecutionRepo.finalizeAdmittedPlan.mockResolvedValue({});
   fakeWithTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
     fn({ query: vi.fn() }),
@@ -546,6 +566,110 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
     expect(fakeExecutionAdmissionRepo.admitApprovalExecution).not.toHaveBeenCalled();
     expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+  });
+
+  it('leaves a single-confirmation approval pending when exact preparation now requires dual confirmation', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'delete_account',
+      description: 'Delete the account',
+      domain: 'account',
+      parameters: { accountId: 'acct-1' },
+      estimatedCostCents: 0,
+      costZeroIntent: 'verified_zero',
+      reversible: false,
+      confidence: 'high',
+      reasoning: 'Stored request requires fresh classification.',
+      provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ error: 'confirmation_level_changed' });
+    expect(fakeExecutionRouter.prepareExecution).toHaveBeenCalledTimes(1);
+    expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+    expect(fakeFeedbackRepo.create).not.toHaveBeenCalled();
+    expect(fakeExecutionAdmissionRepo.admitApprovalExecution).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it('reports a known blocked result when policy changes after approval but before admission', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'create_task',
+      description: 'Create task from memory',
+      domain: 'tasks',
+      parameters: {
+        opportunityId: '11111111-1111-1111-1111-111111111111',
+        summary: 'Prepared task',
+      },
+      reversible: true,
+      estimatedCostCents: 0,
+      confidence: 'high',
+      reasoning: 'Prepared memory action.',
+      provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'approved', responded_at: new Date(),
+    });
+    fakeUserRepo.findById
+      .mockResolvedValueOnce({
+        id: USER_ID,
+        trust_tier: 'moderate_autonomy',
+        autonomy_settings: {},
+        ironclaw_channel: 'skytwin',
+        execution_authority_revision: 'authority-revision-1',
+      })
+      .mockResolvedValueOnce({
+        id: USER_ID,
+        trust_tier: 'moderate_autonomy',
+        autonomy_settings: { paused: true },
+        ironclaw_channel: 'skytwin',
+        execution_authority_revision: 'authority-revision-2',
+      });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: {
+        status: 'blocked',
+        error: 'Execution is paused by current user or operator policy.',
+      },
+    });
+    expect(fakeApprovalRepo.respond).toHaveBeenCalledOnce();
+    expect(fakeExecutionAdmissionRepo.admitApprovalExecution).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executePrepared).not.toHaveBeenCalled();
+    expect(fakeExecutionAdmissionRepo.recordPolicyDenial).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'approval',
+        approvalId: 'app-1',
+        adapterName: 'direct',
+        riskSnapshot: expect.objectContaining({ actionId: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc' }),
+        policySnapshot: expect.objectContaining({ allowed: false, dispatchDenied: true }),
+      }),
+    );
+    expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: '11111111-1111-1111-1111-111111111111',
+        status: 'blocked_by_policy',
+        policyReason: 'Execution is paused by current user or operator policy.',
+      }),
+    );
   });
 
   it('refuses dispatch if admitted canonical parameters are tampered before the final fence', async () => {

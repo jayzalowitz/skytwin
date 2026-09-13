@@ -119,7 +119,10 @@ export interface MemoryActionLoopJobDeps {
   fetchBundle?: (userId: string, maxSuggestions: number) => Promise<DailyMemorySuggestionBundle>;
   policyEvaluator?: Pick<PolicyEvaluator, 'evaluate'>;
   loadPolicies?: () => Promise<ActionPolicy[]>;
-  getExecutionRouter?: () => Promise<Pick<ExecutionRouter, 'route' | 'executeWithRouting'>>;
+  getExecutionRouter?: () => Promise<
+    Pick<ExecutionRouter, 'prepareExecution' | 'executePrepared'> |
+    Pick<ExecutionRouter, 'route' | 'executeWithRouting'>
+  >;
 }
 
 let workerExecutionRouter: ExecutionRouter | null = null;
@@ -361,7 +364,7 @@ async function executeAllowedOpportunity(
   deps: MemoryActionLoopJobDeps,
 ): Promise<MemoryActionLoopReport> {
   const getRouter = deps.getExecutionRouter ?? getWorkerExecutionRouter;
-  let routing: Awaited<ReturnType<Awaited<ReturnType<typeof getRouter>>['route']>>;
+  let prepared: Awaited<ReturnType<ExecutionRouter['prepareExecution']>>;
   let admissionAttempted = false;
   const admittedSteps = [{ type: candidate.actionType, status: 'pending' }];
   const actionSnapshot = serializeCandidate(candidate);
@@ -369,6 +372,8 @@ async function executeAllowedOpportunity(
     userId: string;
     decisionId: string;
     actionId: string;
+    executionPlanId: string;
+    adapterName: string;
     steps: typeof admittedSteps;
     riskSnapshot: Record<string, unknown>;
     policySnapshot: Record<string, unknown>;
@@ -379,7 +384,9 @@ async function executeAllowedOpportunity(
   let currentAuthorityRevision: string | null = null;
   let currentPolicyAuthorityRevision: string | null = null;
   let currentIronclawChannel: string | null = null;
-  const evaluateCurrentPolicy = async (): Promise<PolicyDecision> => {
+  const evaluateCurrentPolicy = async (
+    executionRisk: RiskAssessment,
+  ): Promise<PolicyDecision> => {
     currentAuthorityRevision = null;
     currentPolicyAuthorityRevision = null;
     currentIronclawChannel = null;
@@ -402,16 +409,96 @@ async function executeAllowedOpportunity(
       candidate,
       policies,
       parseTrustTier(currentUser.trust_tier),
-      riskAssessment,
+      executionRisk,
       readAutonomy(currentUser.autonomy_settings),
     );
   };
   try {
     const router = await getRouter();
-    routing = await router.route(candidate, riskAssessment, userId);
-    const admissionPolicy = await evaluateCurrentPolicy();
-    if (!admissionPolicy.allowed || admissionPolicy.requiresApproval) {
-      throw new Error(`Current policy no longer permits automatic admission: ${admissionPolicy.reason}`);
+    if (!('prepareExecution' in router) || !('executePrepared' in router)) {
+      throw new NoRequestExecutionError('Execution router does not support exact prepared authority.');
+    }
+    const preparationUser = await userRepository.findById(userId);
+    prepared = await router.prepareExecution(candidate, riskAssessment, userId, {
+      streaming: false,
+      ironclawChannel: preparationUser?.ironclaw_channel ?? undefined,
+    });
+    const executionRisk = prepared.riskAssessment;
+    const routing = prepared.routingDecision;
+    const admissionPolicy = await evaluateCurrentPolicy(executionRisk);
+    if (!admissionPolicy.allowed) {
+      await recordOutcomeAndExplanation(candidate, executionRisk, {
+        autoExecuted: false,
+        requiresApproval: false,
+        reason: admissionPolicy.reason,
+        policyDecision: admissionPolicy,
+      });
+      const report = buildReport(
+        opportunity,
+        'blocked_by_policy',
+        `Policy blocked the prepared ${prepared.adapterName} path: ${admissionPolicy.reason}`,
+        'Update policy/autonomy settings or ignore this opportunity.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          adapterName: prepared.adapterName,
+          policyReason: admissionPolicy.reason,
+          routeReason: routing.reasoning,
+        },
+      );
+      await memoryActionOpportunityRepository.markStatus({
+        id: opportunity.id,
+        status: 'blocked_by_policy',
+        report,
+        decisionId: candidate.decisionId,
+        adapterName: prepared.adapterName,
+        policyReason: admissionPolicy.reason,
+        routeReason: routing.reasoning,
+        nextStep: report.nextStep,
+      });
+      return report;
+    }
+    if (admissionPolicy.requiresApproval) {
+      await recordOutcomeAndExplanation(candidate, executionRisk, {
+        autoExecuted: false,
+        requiresApproval: true,
+        reason: admissionPolicy.reason,
+        policyDecision: admissionPolicy,
+      });
+      const approval = await approvalRepository.create({
+        userId,
+        decisionId: candidate.decisionId,
+        candidateAction: serializeCandidate(candidate),
+        reason: admissionPolicy.reason,
+        urgency: 'normal',
+        confirmationLevel: admissionPolicy.confirmationLevel ?? 'single',
+      });
+      const report = buildReport(
+        opportunity,
+        'queued_approval',
+        `The selected ${prepared.adapterName} path requires approval: ${admissionPolicy.reason}`,
+        'Review the approval request before this exact action is prepared again.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          approvalRequestId: approval.row.id,
+          adapterName: prepared.adapterName,
+          policyReason: admissionPolicy.reason,
+          routeReason: routing.reasoning,
+        },
+      );
+      await memoryActionOpportunityRepository.markStatus({
+        id: opportunity.id,
+        status: 'queued_approval',
+        report,
+        decisionId: candidate.decisionId,
+        approvalRequestId: approval.row.id,
+        adapterName: prepared.adapterName,
+        policyReason: admissionPolicy.reason,
+        routeReason: routing.reasoning,
+        nextStep: report.nextStep,
+      });
+      return report;
     }
     const admittedReport = buildReport(
       opportunity,
@@ -437,8 +524,10 @@ async function executeAllowedOpportunity(
       userId,
       decisionId: candidate.decisionId,
       actionId: candidate.id,
+      executionPlanId: prepared.planId,
+      adapterName: prepared.adapterName,
       steps: admittedSteps,
-      riskSnapshot: riskAssessment as unknown as Record<string, unknown>,
+      riskSnapshot: executionRisk as unknown as Record<string, unknown>,
       policySnapshot: admissionPolicy as unknown as Record<string, unknown>,
       actionSnapshot,
       outcomeSnapshot,
@@ -447,9 +536,10 @@ async function executeAllowedOpportunity(
     const admission = await executionAdmissionRepository.admitMemoryExecution({
       ...admissionAuthority,
       opportunityId: opportunity.id,
+      sourceRiskSnapshot: riskAssessment as unknown as Record<string, unknown>,
       preEffectOutcome: {
         explanation: preEffectReason,
-        confidence: riskTierToConfidence(riskAssessment.overallTier),
+        confidence: riskTierToConfidence(executionRisk.overallTier),
       },
       preEffectExplanation: {
         whatHappened: 'SkyTwin admitted a memory-derived action after policy evaluation and before adapter dispatch.',
@@ -459,7 +549,7 @@ async function executeAllowedOpportunity(
           opportunityId: opportunity.id,
         }],
         preferencesInvoked: [],
-        confidenceReasoning: riskAssessment.reasoning,
+        confidenceReasoning: executionRisk.reasoning,
         actionRationale: candidate.reasoning,
         escalationRationale: null,
         correctionGuidance:
@@ -470,7 +560,7 @@ async function executeAllowedOpportunity(
     if (!admission.created) {
       return reportForExistingAdmission(opportunity, admission, deps.now);
     }
-    const dispatchPolicy = await evaluateCurrentPolicy();
+    const dispatchPolicy = await evaluateCurrentPolicy(executionRisk);
     if (JSON.stringify(serializeCandidate(candidate)) !== JSON.stringify(actionSnapshot) ||
         !dispatchPolicy.allowed || dispatchPolicy.requiresApproval ||
         !await executionAdmissionRepository.isDispatchable(admission, {
@@ -515,9 +605,9 @@ async function executeAllowedOpportunity(
       return report;
     }
 
-    let result: Awaited<ReturnType<typeof router.executeWithRouting>>;
+    let result: Awaited<ReturnType<typeof router.executePrepared>>;
     try {
-      result = await router.executeWithRouting({
+      result = await router.executePrepared(prepared, {
         ...candidate,
         parameters: {
           ...candidate.parameters,
@@ -527,7 +617,7 @@ async function executeAllowedOpportunity(
           dispatchAuthorityId: admission.barrier.id,
           dispatchAuthorityUpdatedAt: admission.barrier.updated_at.toISOString(),
         },
-      }, riskAssessment, userId, {
+      }, executionRisk, userId, {
         ironclawChannel: currentIronclawChannel ?? undefined,
       });
       if (result.status !== 'completed' && result.status !== 'failed') {

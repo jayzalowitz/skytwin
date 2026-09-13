@@ -29,6 +29,7 @@ import {
   policyRepositoryAdapter,
   getPolicyAuthorityRevision,
   inferenceReceiptRepository,
+  executionAdmissionRepository,
 } from '@skytwin/db';
 import type {
   DecisionContext,
@@ -782,6 +783,14 @@ export function createEventsRouter(): Router {
             throw new Error('Execution guard could not be converted to manual approval');
           }
         } else {
+          const executionRouter = await getRouter();
+          const prepared = await executionRouter.prepareExecution(
+            outcome.selectedAction,
+            riskAssessment,
+            userId,
+            { streaming: true, ironclawChannel: user?.ironclaw_channel ?? undefined },
+          );
+          const executionRisk = prepared.riskAssessment;
           let currentAuthorityRevision: string | null = null;
           let currentPolicyAuthorityRevision: string | null = null;
           let currentIronclawChannel: string | null = null;
@@ -803,7 +812,7 @@ export function createEventsRouter(): Router {
               outcome.selectedAction!,
               currentPolicies,
               currentUser.trust_tier as TrustTier,
-              riskAssessment,
+              executionRisk,
               parseAutonomySettings(currentUser.autonomy_settings),
             );
           };
@@ -812,6 +821,62 @@ export function createEventsRouter(): Router {
           // future authority. Re-evaluate current user/operator pause and all
           // current policies immediately before consuming ready authority.
           const claimPolicy = await evaluateCurrentExecutionPolicy();
+          let preparedRiskSettledWithoutEffect = false;
+          if (!claimPolicy.allowed) {
+            const {
+              accessToken: _omitDeniedToken,
+              rawData: _omitDeniedRawData,
+              ...deniedVisibleParameters
+            } = outcome.selectedAction.parameters as Record<string, unknown>;
+            const denial = await executionAdmissionRepository.recordPolicyDenial({
+              scope: 'receipt',
+              userId,
+              decisionId: decision.id,
+              actionId: outcome.selectedAction.id,
+              adapterName: prepared.adapterName,
+              actionSnapshot: {
+                decisionId: decision.id,
+                ...serializeApprovalCandidate(outcome.selectedAction, deniedVisibleParameters),
+              },
+              riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+              policySnapshot: claimPolicy as unknown as Record<string, unknown>,
+              reason: claimPolicy.reason,
+            });
+            if (!denial) {
+              throw new Error('Prepared execution denial evidence could not be persisted');
+            }
+            executionResult = {
+              status: 'blocked',
+              planId: null,
+              error: typeof denial.evidence['reason'] === 'string'
+                ? denial.evidence['reason']
+                : 'The prepared execution path was blocked by current policy.',
+            };
+            preparedRiskSettledWithoutEffect = true;
+          } else if (claimPolicy.requiresApproval) {
+            const {
+              accessToken: _omitPreparedToken,
+              rawData: _omitPreparedRawData,
+              ...preparedVisibleParameters
+            } = outcome.selectedAction.parameters as Record<string, unknown>;
+            const visibleParameters = isOutboundEmailAction(outcome.selectedAction.actionType)
+              ? annotateEmailAttributionPreview(preparedVisibleParameters, user)
+              : preparedVisibleParameters;
+            const escalation = await approvalRepository.create({
+              userId,
+              decisionId: decision.id,
+              candidateAction: serializeApprovalCandidate(outcome.selectedAction, visibleParameters),
+              reason: `The prepared ${prepared.adapterName} execution path requires approval: ${claimPolicy.reason}`,
+              urgency: decision.urgency,
+              confirmationLevel: claimPolicy.confirmationLevel ?? 'single',
+            });
+            approvalRequest = escalation.row;
+            approvalNewlyCreated = escalation.created;
+            if (!await inferenceReceiptRepository.markNonEffectForDecision(userId, decision.id)) {
+              throw new Error('Prepared execution guard could not be converted to manual approval');
+            }
+            preparedRiskSettledWithoutEffect = true;
+          }
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
           let savedPlan: { id: string; dispatchAuthorityUpdatedAt: Date } | null = null;
@@ -823,6 +888,11 @@ export function createEventsRouter(): Router {
               { outcome, explanation },
               executionSteps,
               claimPolicy as unknown as Record<string, unknown>,
+              {
+                executionPlanId: prepared.planId,
+                adapterName: prepared.adapterName,
+                riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+              },
             );
           } catch (error) {
             // A commit may have succeeded even when its response was lost.
@@ -834,10 +904,10 @@ export function createEventsRouter(): Router {
               error: error instanceof Error ? error.message : String(error),
             });
           }
-          if (!savedPlan) {
+          if (!savedPlan && !preparedRiskSettledWithoutEffect) {
             const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
             executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
-          } else {
+          } else if (savedPlan) {
 
           // The claim transaction created and bound this exact DB plan before
           // dispatch, so every streamed event and terminal result has one
@@ -853,8 +923,6 @@ export function createEventsRouter(): Router {
               dispatchAuthorityUpdatedAt: savedPlan.dispatchAuthorityUpdatedAt.toISOString(),
             },
           };
-          // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
-          const executionRouter = await getRouter();
           let terminalEvent: ExecutionEvent | null = null;
           let terminalStatus: 'completed' | 'failed' | null = null;
           let preDispatchClosed = false;
@@ -876,6 +944,11 @@ export function createEventsRouter(): Router {
               { outcome, explanation },
               executionSteps,
               dispatchPolicy as unknown as Record<string, unknown>,
+              {
+                executionPlanId: prepared.planId,
+                adapterName: prepared.adapterName,
+                riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+              },
             )) {
               preDispatchFailure = 'Execution owner or receipt authority was revoked before dispatch';
             }
@@ -897,9 +970,10 @@ export function createEventsRouter(): Router {
             }
             preDispatchClosed = true;
           } else try {
-            for await (const event of executionRouter.executeWithRoutingStreaming(
+            for await (const event of executionRouter.executePreparedStreaming(
+              prepared,
               executionAction,
-              riskAssessment,
+              executionRisk,
               userId,
               { ironclawChannel: currentIronclawChannel ?? undefined },
             )) {
@@ -1117,10 +1191,13 @@ export function createEventsRouter(): Router {
       // before reaching this code, and if it doesn't (the first attempt
       // crashed before saving outcome), we WANT the SSE to fire because the
       // user never saw it the first time.
-      if (!outcome.selectedAction && !approvalRequest && !executionResult) {
+      if ((!outcome.selectedAction && !approvalRequest && !executionResult) ||
+          executionResult?.status === 'blocked') {
         sseManager.emit(userId, 'decision:blocked-by-policy', {
           decisionId: decision.id,
-          reason: outcome.reasoning,
+          reason: executionResult?.status === 'blocked'
+            ? executionResult.error
+            : outcome.reasoning,
           domain: decision.domain,
           situationType: decision.situationType,
           urgency: decision.urgency,

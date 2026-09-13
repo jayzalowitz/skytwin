@@ -2,6 +2,7 @@ import {
   normalizeAdapterOutput,
   normalizeExecutionError,
   normalizeExecutionPlanSteps,
+  normalizeMemoryActionAdapterName,
   snapshotInferenceReceiptExport,
   verifyInferenceReceiptExport,
   type AttestationVerificationInput,
@@ -65,6 +66,12 @@ export interface DecisionContinuationBundle {
 
 export interface ClaimedExecutionPlan extends ExecutionPlanRow {
   dispatchAuthorityUpdatedAt: Date;
+}
+
+export interface PreparedDecisionDispatch {
+  executionPlanId: string;
+  adapterName: string;
+  riskSnapshot: Record<string, unknown>;
 }
 
 function canonicalJson(value: unknown): string {
@@ -492,6 +499,7 @@ export const inferenceReceiptRepository = {
     suppliedContinuation: DecisionContinuation,
     steps: unknown[],
     refreshedPolicySnapshot: Record<string, unknown>,
+    dispatch: PreparedDecisionDispatch,
   ): Promise<ClaimedExecutionPlan | null> {
     const continuation = snapshotContinuation(suppliedContinuation);
     const outcome = continuation?.outcome;
@@ -502,7 +510,9 @@ export const inferenceReceiptRepository = {
         !outcome.autoExecute || outcome.requiresApproval ||
         outcome.policyVerdicts?.[selectedAction.id] !== 'allowed' ||
         refreshedPolicySnapshot['allowed'] !== true ||
-        refreshedPolicySnapshot['requiresApproval'] !== false) {
+        refreshedPolicySnapshot['requiresApproval'] !== false ||
+        !dispatch || dispatch.riskSnapshot['actionId'] !== selectedAction.id ||
+        normalizeMemoryActionAdapterName(dispatch.adapterName) !== dispatch.adapterName) {
       return null;
     }
 
@@ -538,10 +548,11 @@ export const inferenceReceiptRepository = {
       if (!locked.rows[0]) return null;
 
       const inserted = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
-         VALUES ($1, $2, 'running', $3::JSONB, 1)
+        `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, $3, 'running', $4::JSONB, 1)
          RETURNING *`,
-        [decisionId, selectedAction.id, JSON.stringify(normalizeExecutionPlanSteps(steps))],
+        [dispatch.executionPlanId, decisionId, selectedAction.id,
+          JSON.stringify(normalizeExecutionPlanSteps(steps))],
       );
       const plan = inserted.rows[0];
       if (!plan) throw new Error('Execution plan could not be persisted with its claim');
@@ -560,12 +571,16 @@ export const inferenceReceiptRepository = {
       const claimed = await client.query<{ decision_id: string; updated_at: Date }>(
         `UPDATE decision_ingest_guards
          SET effect_state = 'running', source_execution_plan_id = $2,
-             dispatch_policy_snapshot = $6::JSONB, updated_at = now()
+             dispatch_policy_snapshot = $6::JSONB,
+             dispatch_adapter_name = $7,
+             dispatch_risk_snapshot = $8::JSONB,
+             updated_at = now()
          WHERE decision_id = $1 AND effect_state = 'ready' AND outcome_id = $3
            AND selected_action_id = $4 AND receipt_explanation_id = $5
          RETURNING decision_id, updated_at`,
         [decisionId, plan.id, outcome.id, selectedAction.id, explanation.id,
-          JSON.stringify(refreshedPolicySnapshot)],
+          JSON.stringify(refreshedPolicySnapshot), dispatch.adapterName,
+          JSON.stringify(dispatch.riskSnapshot)],
       );
       if (!claimed.rows[0]) throw new Error('Execution guard claim could not bind to its plan');
       return { ...plan, dispatchAuthorityUpdatedAt: claimed.rows[0].updated_at };
@@ -580,6 +595,7 @@ export const inferenceReceiptRepository = {
     suppliedContinuation: DecisionContinuation,
     steps: unknown[],
     refreshedPolicySnapshot: Record<string, unknown>,
+    dispatch: PreparedDecisionDispatch,
   ): Promise<boolean> {
     const continuation = snapshotContinuation(suppliedContinuation);
     const outcome = continuation?.outcome;
@@ -590,7 +606,10 @@ export const inferenceReceiptRepository = {
         !outcome.autoExecute || outcome.requiresApproval ||
         outcome.policyVerdicts?.[selectedAction.id] !== 'allowed' ||
         refreshedPolicySnapshot['allowed'] !== true ||
-        refreshedPolicySnapshot['requiresApproval'] !== false) {
+        refreshedPolicySnapshot['requiresApproval'] !== false ||
+        !dispatch || dispatch.executionPlanId !== planId ||
+        dispatch.riskSnapshot['actionId'] !== selectedAction.id ||
+        normalizeMemoryActionAdapterName(dispatch.adapterName) !== dispatch.adapterName) {
       return false;
     }
     const result = await query(
@@ -608,12 +627,15 @@ export const inferenceReceiptRepository = {
        WHERE g.decision_id = $2 AND g.effect_state = 'running'
          AND g.source_execution_plan_id = $3
          AND g.dispatch_policy_snapshot = $4::JSONB
-         AND g.continuation_snapshot = $5::JSONB
-         AND g.risk_snapshot = $6::JSONB
-         AND g.policy_snapshot = $7::JSONB
-         AND ep.steps = $8::JSONB
+         AND g.dispatch_adapter_name = $5
+         AND g.dispatch_risk_snapshot = $6::JSONB
+         AND g.continuation_snapshot = $7::JSONB
+         AND g.risk_snapshot = $8::JSONB
+         AND g.policy_snapshot = $9::JSONB
+         AND ep.steps = $10::JSONB
          AND (u.autonomy_settings->>'paused') IS DISTINCT FROM 'true'`,
       [userId, decisionId, planId, JSON.stringify(refreshedPolicySnapshot),
+        dispatch.adapterName, JSON.stringify(dispatch.riskSnapshot),
         JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment),
         JSON.stringify(outcome.policyVerdicts ?? {}), JSON.stringify(normalizeExecutionPlanSteps(steps))],
     );

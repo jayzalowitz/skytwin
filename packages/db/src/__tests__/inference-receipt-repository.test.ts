@@ -411,6 +411,11 @@ describe('inferenceReceiptRepository', () => {
 
   it('reads the owner-scoped guard and claims ready execution only once', async () => {
     const completion = completionFor(fixture(), 'auto_execute');
+    const dispatch = {
+      executionPlanId: '77777777-7777-4777-8777-777777777777',
+      adapterName: 'ironclaw',
+      riskSnapshot: completion.continuation.outcome.riskAssessment as unknown as Record<string, unknown>,
+    };
     mockQuery
       .mockResolvedValueOnce({ rows: [{
         receipt_capture_complete: true,
@@ -443,10 +448,12 @@ describe('inferenceReceiptRepository', () => {
     await expect(inferenceReceiptRepository.claimExecutionForDecision(
       'user', completion.decisionId, completion.continuation, [{ type: 'test_action' }],
       { allowed: true, requiresApproval: false, reason: 'current policy allowed' },
+      dispatch,
     )).resolves.toMatchObject({ id: '77777777-7777-4777-8777-777777777777' });
     await expect(inferenceReceiptRepository.claimExecutionForDecision(
       'user', completion.decisionId, completion.continuation, [{ type: 'test_action' }],
       { allowed: true, requiresApproval: false, reason: 'current policy allowed' },
+      dispatch,
     )).resolves.toBeNull();
     expect(mockTransactionQuery.mock.calls[1]![0]).toContain("g.effect_state = 'ready'");
     expect(mockTransactionQuery.mock.calls[1]![0]).toContain('d.user_id = $1');
@@ -458,15 +465,49 @@ describe('inferenceReceiptRepository', () => {
 
   it('cannot claim ready execution with a paused or approval-required current verdict', async () => {
     const completion = completionFor(fixture(), 'auto_execute');
+    const dispatch = {
+      executionPlanId: '77777777-7777-4777-8777-777777777777',
+      adapterName: 'ironclaw',
+      riskSnapshot: completion.continuation.outcome.riskAssessment as unknown as Record<string, unknown>,
+    };
     await expect(inferenceReceiptRepository.claimExecutionForDecision(
       'user', completion.decisionId, completion.continuation, [],
       { allowed: false, requiresApproval: true, reason: 'operator paused' },
+      dispatch,
     )).resolves.toBeNull();
     await expect(inferenceReceiptRepository.claimExecutionForDecision(
       'user', completion.decisionId, completion.continuation, [],
       { allowed: true, requiresApproval: true, reason: 'policy changed' },
+      dispatch,
     )).resolves.toBeNull();
     expect(mockTransactionQuery).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['sk-proj-', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+    ['ghp_', 'abcdefghijklmnopqrstuvwxyz0123456789'].join(''),
+    ['AKIA', 'IOSFODNN7EXAMPLE'].join(''),
+    ['ya29.', 'a0AfH6SMBabcdefghijklmnopqrstuvwxyz'].join(''),
+  ])('does not persist or replay a credential-shaped receipt adapter identity: %s', async (adapterName) => {
+    const completion = completionFor(fixture(), 'auto_execute');
+    const dispatch = {
+      executionPlanId: '77777777-7777-4777-8777-777777777777',
+      adapterName,
+      riskSnapshot: completion.continuation.outcome.riskAssessment as unknown as Record<string, unknown>,
+    };
+    await expect(inferenceReceiptRepository.claimExecutionForDecision(
+      'user', completion.decisionId, completion.continuation, [],
+      { allowed: true, requiresApproval: false, reason: 'current policy allowed' },
+      dispatch,
+    )).resolves.toBeNull();
+    await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
+      'user', completion.decisionId, dispatch.executionPlanId,
+      completion.continuation, [],
+      { allowed: true, requiresApproval: false, reason: 'current policy allowed' },
+      dispatch,
+    )).resolves.toBe(false);
+    expect(mockTransactionQuery).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it('classifies a legacy completion without a guard as restored and non-replayable', async () => {
