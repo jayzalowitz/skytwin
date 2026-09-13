@@ -33,20 +33,15 @@
  * store) so the core logic is unit-testable without spawning Electron.
  */
 
+import { resolveSecureStorageBackend, type SecureStorageBackendPort } from './secure-storage-backend.js';
+
 /** The subset of Electron's `safeStorage` this module depends on. */
-export interface SafeStoragePort {
+export interface SafeStoragePort extends SecureStorageBackendPort {
   isEncryptionAvailable(): boolean;
   getSelectedStorageBackend(): string;
   encryptString(plaintext: string): Buffer;
   decryptString(ciphertext: Buffer): string;
 }
-
-const SECURE_LINUX_STORAGE_BACKENDS = new Set([
-  'gnome_libsecret',
-  'kwallet',
-  'kwallet5',
-  'kwallet6',
-]);
 
 /**
  * The subset of a key-value store (electron-store) this module depends on.
@@ -160,20 +155,7 @@ export class PassphraseVault {
   }
 
   private currentBackend(): string | null {
-    try {
-      if (!this.safeStorage.isEncryptionAvailable()) return null;
-      if (this.platform === 'darwin') return 'darwin:keychain';
-      if (this.platform === 'win32') return 'win32:dpapi';
-      if (this.platform !== 'linux') return null;
-      const backend = this.safeStorage.getSelectedStorageBackend();
-      return SECURE_LINUX_STORAGE_BACKENDS.has(backend)
-        ? `linux:${backend}`
-        : null;
-    } catch {
-      // Some Electron builds throw rather than return false when the platform
-      // backend is missing. Treat any failure as "not supported" — fail safe.
-      return null;
-    }
+    return resolveSecureStorageBackend(this.safeStorage, this.platform);
   }
 
   /**

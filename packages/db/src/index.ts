@@ -24,8 +24,6 @@ export type {
   WorkerGenerationAuthorityClient,
   WorkerGenerationAuthorityOptions,
 } from './worker-generation-authority.js';
-export { sourceKeyRegistryRepository } from './repositories/source-key-registry-repository.js';
-export type { SourceKeyRegistryRow } from './repositories/source-key-registry-repository.js';
 
 // Request-scoped context (#408): AsyncLocalStorage carries the authoritative
 // userId across async boundaries so deep callees — including this repository
