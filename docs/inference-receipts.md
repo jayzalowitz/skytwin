@@ -57,8 +57,9 @@ Receipt rows contain identifiers and inference metadata. They are not yet
 application-level encrypted; operators should use full-disk encryption, as
 documented in the privacy policy. They cascade-delete with their decision or
 user and can be explicitly deleted atomically through the authenticated decision receipt
-route. User backups include the canonical receipt metadata and restores keep it
-linked to the restored explanation, but restored rows are explicitly marked
+route. User backups include the canonical receipt metadata; restore verifies its
+self-contained metadata seal and exact linkage before writing it. Because an
+embedded key is not an identity trust root, restored rows are explicitly marked
 `imported_unverified` until a trust-aware verification process promotes them.
 Standalone verification exports are more
 sensitive because they contain the exact supplied request and response bytes;
