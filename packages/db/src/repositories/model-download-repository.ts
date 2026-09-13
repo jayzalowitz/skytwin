@@ -123,7 +123,16 @@ export const modelDownloadRepository = {
        WHERE status IN ('pending', 'downloading', 'verifying', 'installing')
        ORDER BY started_at ASC`,
     );
-    return result.rows.map(normalizeModelDownloadRow);
+    const recoverable: ModelDownloadRow[] = [];
+    for (const row of result.rows) {
+      try {
+        recoverable.push(normalizeModelDownloadRow(row));
+      } catch {
+        // A malformed legacy byte count must not prevent later independent
+        // rows from reaching boot reconciliation.
+      }
+    }
+    return recoverable;
   },
 
   /**

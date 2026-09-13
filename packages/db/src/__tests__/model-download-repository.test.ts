@@ -111,6 +111,37 @@ describe("model download compare-and-set updates", () => {
     );
   });
 
+  it("isolates a malformed recovery row and returns the later valid row", async () => {
+    const base = {
+      user_id: "user-id",
+      model_id: "model-id",
+      target_path: "/models/model.gguf",
+      total_bytes: "1117320736",
+      sha256_expected: "a".repeat(64),
+      status: "pending",
+      error: null,
+      started_at: new Date(),
+      paused_at: null,
+      completed_at: null,
+    };
+    queryMock.mockResolvedValue({
+      rowCount: 2,
+      rows: [
+        { ...base, id: "malformed-first", bytes_downloaded: "unsafe" },
+        { ...base, id: "later-valid", bytes_downloaded: "0" },
+      ],
+    });
+
+    await expect(modelDownloadRepository.listWorkerOwnedNonterminal())
+      .resolves.toEqual([
+        expect.objectContaining({
+          id: "later-valid",
+          total_bytes: 1_117_320_736,
+          bytes_downloaded: 0,
+        }),
+      ]);
+  });
+
   it("bulk recovery keeps both transfer and verification resumable", async () => {
     queryMock.mockResolvedValue({ rowCount: 2, rows: [] });
     await expect(
