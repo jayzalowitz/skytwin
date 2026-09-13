@@ -706,12 +706,75 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       execution: {
         status: 'failed',
         planId: '44444444-4444-4444-8444-444444444444',
-        error: 'remote rejected',
+        error: '[redacted:execution-error]',
       },
     });
     expect(fakeExecutionAdmissionRepo.observeTerminal).toHaveBeenCalledWith(
       expect.objectContaining({ status: 'failed' }),
     );
+  });
+
+  it('resolves the latest credential after the final gate and redacts echoed adapter evidence', async () => {
+    const secret = 'rotated-approval-token';
+    fakeOauthRepo.getToken.mockResolvedValueOnce({ access_token: secret });
+    fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (candidate) => {
+      expect(candidate.parameters['accessToken']).toBe(secret);
+      return {
+        planId: 'adapter-plan-failed', status: 'failed', startedAt: new Date(),
+        completedAt: new Date(),
+        output: {
+          adapter_used: 'direct',
+          access_token: secret,
+          metadata: {
+            authorization: `Bearer ${secret}`,
+            responseUrl: `https://adapter.test/result?access_token=${secret}`,
+            body: { echoed: secret },
+          },
+        },
+        error: `remote echoed ${secret}`,
+      };
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(fakeExecutionAdmissionRepo.isDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
+      fakeOauthRepo.getToken.mock.invocationCallOrder[0]!,
+    );
+    expect(fakeOauthRepo.getToken.mock.invocationCallOrder[0]).toBeLessThan(
+      fakeExecutionRouter.executeWithRouting.mock.invocationCallOrder[0]!,
+    );
+    const persisted = JSON.stringify({
+      barrier: fakeExecutionAdmissionRepo.observeTerminal.mock.calls,
+      result: fakeExecutionRepo.finalizeAdmittedPlan.mock.calls,
+      response: res.body,
+    });
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain('?access_token=');
+    expect(persisted).not.toContain('echoed');
+    expect(persisted).toContain('[redacted:credential]');
+    expect(persisted).toContain('[redacted:execution-error]');
+  });
+
+  it('does not carry an earlier credential through a final-gate disconnect', async () => {
+    fakeOauthRepo.getToken.mockResolvedValueOnce(null);
+    fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (candidate) => {
+      expect(candidate.parameters).not.toHaveProperty('accessToken');
+      return {
+        planId: 'adapter-plan-completed', status: 'completed', startedAt: new Date(),
+        completedAt: new Date(), output: { adapter_used: 'direct' },
+      };
+    });
+
+    await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(fakeExecutionAdmissionRepo.isDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
+      fakeOauthRepo.getToken.mock.invocationCallOrder[0]!,
+    );
+    expect(fakeExecutionRouter.executeWithRouting).toHaveBeenCalledOnce();
   });
 
   it('does not dispatch when approval admission may have committed before response loss', async () => {

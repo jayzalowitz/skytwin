@@ -170,6 +170,51 @@ export const oauthRepository = {
     return result.rows[0] ?? null;
   },
 
+  /**
+   * Persist a refresh only while the exact row that authorized the remote
+   * refresh is still current. A disconnect deletes the row and a reconnect or
+   * rotation changes the access/refresh grant, so neither can be
+   * resurrected or overwritten by a late refresh response.
+   */
+  async rotateTokenIfCurrent(input: {
+    id: string;
+    userId: string;
+    provider: string;
+    expectedAccessToken: string | null;
+    expectedRefreshToken: string;
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: Date;
+    scopes: string[];
+  }): Promise<OAuthTokenRow | null> {
+    const result = await query<OAuthTokenRow>(
+      `UPDATE oauth_tokens
+       SET access_token = $1,
+           refresh_token = $2,
+           expires_at = $3,
+           scopes = $4,
+           updated_at = now()
+       WHERE id = $5
+         AND user_id = $6
+         AND provider = $7
+         AND access_token IS NOT DISTINCT FROM $8
+         AND refresh_token = $9
+       RETURNING *`,
+      [
+        input.accessToken,
+        input.refreshToken,
+        input.expiresAt,
+        input.scopes,
+        input.id,
+        input.userId,
+        input.provider,
+        input.expectedAccessToken,
+        input.expectedRefreshToken,
+      ],
+    );
+    return result.rows[0] ?? null;
+  },
+
   // ── Backwards-compat shims ─────────────────────────────────────────────
   // Older single-account callers; equivalent to operating on the first
   // (or all) row(s) for (userId, provider).

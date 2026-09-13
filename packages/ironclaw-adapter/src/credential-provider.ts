@@ -45,18 +45,27 @@ export class DbCredentialProvider implements CredentialProvider {
     if (existing) return existing;
 
     const scopes = Array.isArray(token.scopes) ? token.scopes : token.scopes ? [token.scopes] : [];
-    const refreshPromise = this.doGoogleRefresh(userId, provider, token.refresh_token, scopes)
+    const refreshPromise = this.doGoogleRefresh({
+      userId,
+      provider,
+      rowId: token.id,
+      expectedAccessToken: token.access_token,
+      refreshToken: token.refresh_token,
+      scopes,
+    })
       .finally(() => this.refreshLocks.delete(lockKey));
     this.refreshLocks.set(lockKey, refreshPromise);
     return refreshPromise;
   }
 
-  private async doGoogleRefresh(
-    userId: string,
-    provider: string,
-    refreshToken: string,
-    scopes: string[],
-  ): Promise<CredentialOutcome> {
+  private async doGoogleRefresh(input: {
+    userId: string;
+    provider: string;
+    rowId: string;
+    expectedAccessToken: string | null;
+    refreshToken: string;
+    scopes: string[];
+  }): Promise<CredentialOutcome> {
     const googleConfig = await this.getGoogleOAuthConfig();
     if (!googleConfig.success) return googleConfig;
 
@@ -66,7 +75,7 @@ export class DbCredentialProvider implements CredentialProvider {
       body: new URLSearchParams({
         client_id: googleConfig.clientId,
         client_secret: googleConfig.clientSecret,
-        refresh_token: refreshToken,
+        refresh_token: input.refreshToken,
         grant_type: 'refresh_token',
       }),
     });
@@ -87,17 +96,23 @@ export class DbCredentialProvider implements CredentialProvider {
     }
 
     const expiresAt = new Date(Date.now() + (payload.expires_in ?? 3600) * 1000);
-    const saved = await oauthRepository.saveToken(
-      userId,
-      provider,
-      payload.access_token,
-      payload.refresh_token ?? refreshToken,
+    const saved = await oauthRepository.rotateTokenIfCurrent({
+      id: input.rowId,
+      userId: input.userId,
+      provider: input.provider,
+      expectedAccessToken: input.expectedAccessToken,
+      expectedRefreshToken: input.refreshToken,
+      accessToken: payload.access_token,
+      refreshToken: payload.refresh_token ?? input.refreshToken,
       expiresAt,
-      scopes,
-    );
+      scopes: input.scopes,
+    });
 
-    if (!saved.access_token) {
-      return { success: false, error: 'Token refresh saved without access_token (vault locked?).' };
+    if (!saved?.access_token) {
+      return {
+        success: false,
+        error: 'OAuth credential changed or disconnected while refresh was in flight. Reconnect and retry.',
+      };
     }
     return { success: true, accessToken: saved.access_token };
   }

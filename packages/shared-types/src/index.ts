@@ -263,6 +263,13 @@ export type {
 } from './demo-recipes.js';
 export { DEMO_RECIPES, findDemoRecipe } from './demo-recipes.js';
 
+export {
+  normalizeExecutionError,
+  normalizeExecutionEvidence,
+  normalizeExecutionRecord,
+} from './execution-evidence.js';
+export type { NormalizeExecutionEvidenceOptions } from './execution-evidence.js';
+
 export type {
   FsScanRoot,
   RawSignal,

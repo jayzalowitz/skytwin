@@ -224,3 +224,34 @@ describe('executionRepository.finalizeAdmittedPlan', () => {
     expect(mockClientQuery).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('executionRepository execution evidence boundary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('normalizes adapter outputs and errors before the execution result insert', async () => {
+    const secret = 'db-result-token';
+    mockQuery.mockResolvedValueOnce({ rows: [{ plan_id: 'plan-1' }] });
+
+    await executionRepository.createResult({
+      planId: 'plan-1',
+      success: false,
+      outputs: {
+        adapter_used: 'direct',
+        access_token: secret,
+        responseUrl: `https://adapter.test/result?access_token=${secret}`,
+        body: { echoed: secret },
+      },
+      error: `remote echoed ${secret}`,
+    });
+
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    const persisted = JSON.stringify(params);
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain('?access_token=');
+    expect(persisted).not.toContain('echoed');
+    expect(persisted).toContain('[redacted:credential]');
+    expect(persisted).toContain('[redacted:execution-error]');
+  });
+});

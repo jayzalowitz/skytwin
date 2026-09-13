@@ -133,6 +133,37 @@ describe('oauthRepository (multi-account)', () => {
     });
   });
 
+  describe('rotateTokenIfCurrent', () => {
+    it('binds a late refresh write to the exact row revision and refresh grant', async () => {
+      const expiresAt = new Date('2026-09-13T03:00:00Z');
+      mockQuery.mockResolvedValue({ rows: [fakeRow({ access_token: 'new-access' })], rowCount: 1 });
+
+      await expect(oauthRepository.rotateTokenIfCurrent({
+        id: 'tok-1', userId: 'user-1', provider: 'google',
+        expectedAccessToken: 'old-access', expectedRefreshToken: 'old-refresh',
+        accessToken: 'new-access', refreshToken: 'new-refresh', expiresAt,
+        scopes: ['gmail.readonly'],
+      })).resolves.toMatchObject({ access_token: 'new-access' });
+
+      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(sql).toContain('AND access_token IS NOT DISTINCT FROM $8');
+      expect(sql).toContain('AND refresh_token = $9');
+      expect(params).toEqual([
+        'new-access', 'new-refresh', expiresAt, ['gmail.readonly'],
+        'tok-1', 'user-1', 'google', 'old-access', 'old-refresh',
+      ]);
+    });
+
+    it('returns null when disconnect or rotation invalidates the exact refresh authority', async () => {
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+      await expect(oauthRepository.rotateTokenIfCurrent({
+        id: 'tok-1', userId: 'user-1', provider: 'google',
+        expectedAccessToken: 'old-access', expectedRefreshToken: 'old-refresh',
+        accessToken: 'late-access', refreshToken: 'old-refresh', expiresAt: new Date(), scopes: [],
+      })).resolves.toBeNull();
+    });
+  });
+
   describe('saveToken (legacy)', () => {
     it('reuses the existing row\'s account_email for backward-compat', async () => {
       // First call: getToken finds an existing row.

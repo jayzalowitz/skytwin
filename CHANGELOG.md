@@ -161,6 +161,19 @@ All notable changes to SkyTwin will be documented in this file.
   current policy, and user/operator pause immediately before invoking an adapter.
   Recovered ready work renews policy authority at its one-shot claim and cannot
   use a receipt-era allow verdict after policy or pause state changes.
+- Final dispatch gates now compare the live persisted receipt/admission risk,
+  receipt-era policy, refreshed dispatch policy, canonical action/outcome, and
+  execution-plan steps with the exact expected snapshots. A tampered field can
+  no longer ride an otherwise valid owner/plan linkage into an adapter call.
+- Adapter results pass through one recursive allowlist-oriented evidence
+  boundary before admission, execution-result, event, memory, or SSE ledgers
+  persist them. Credential-shaped keys, authorization headers, URLs, arbitrary
+  response bodies, nested secrets, and free-form remote errors are redacted
+  while terminal status and one-shot reconciliation identity remain intact.
+- Approval and event execution resolve OAuth credentials only after the final
+  authority check and immediately before the sole adapter call. Google refresh
+  writes now compare-and-swap the exact token-row access and refresh grant, so
+  a late refresh cannot resurrect a disconnect or overwrite a newer rotation.
 
 ## [0.6.102.0] - 2026-08-27
 

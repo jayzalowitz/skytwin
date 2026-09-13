@@ -1,4 +1,5 @@
 import { query, withTransaction } from '../connection.js';
+import { normalizeExecutionError, normalizeExecutionRecord } from '@skytwin/shared-types';
 import type { ExecutionEventRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
 
 function canonicalJson(value: unknown): string {
@@ -163,6 +164,8 @@ export const executionRepository = {
   async createResult(
     input: CreateExecutionResultInput,
   ): Promise<ExecutionResultRow> {
+    const outputs = normalizeExecutionRecord(input.outputs ?? {});
+    const error = input.error ? normalizeExecutionError(input.error) : null;
     const result = await query<ExecutionResultRow>(
       `INSERT INTO execution_results (plan_id, success, outputs, error, rollback_available, completed_at)
        VALUES ($1, $2, $3, $4, $5, now())
@@ -170,8 +173,8 @@ export const executionRepository = {
       [
         input.planId,
         input.success,
-        JSON.stringify(input.outputs ?? {}),
-        input.error ?? null,
+        JSON.stringify(outputs),
+        error,
         input.rollbackAvailable ?? false,
       ],
     );
@@ -186,7 +189,8 @@ export const executionRepository = {
    */
   async finalizeAdmittedPlan(input: FinalizeAdmittedExecutionInput): Promise<ExecutionPlanRow> {
     return withTransaction(async (client) => {
-      const outputs = JSON.parse(JSON.stringify(input.outputs ?? {})) as Record<string, unknown>;
+      const outputs = normalizeExecutionRecord(input.outputs ?? {});
+      const error = input.error ? normalizeExecutionError(input.error) : null;
       const locked = await client.query<ExecutionPlanRow>(
         `SELECT ep.* FROM execution_plans ep
          JOIN decisions d ON d.id = ep.decision_id AND d.user_id = $1
@@ -209,7 +213,7 @@ export const executionRepository = {
          VALUES ($1, $2, $3::JSONB, $4, $5, now())
          ON CONFLICT (plan_id) DO NOTHING`,
         [input.planId, input.success, JSON.stringify(outputs),
-          input.error ?? null, input.rollbackAvailable ?? false],
+          error, input.rollbackAvailable ?? false],
       );
       const persistedResult = await client.query<ExecutionResultRow>(
         `SELECT * FROM execution_results WHERE plan_id = $1`,
@@ -218,7 +222,7 @@ export const executionRepository = {
       const result = persistedResult.rows[0];
       if (!result || result.success !== input.success ||
           canonicalJson(result.outputs) !== canonicalJson(outputs) ||
-          (result.error ?? null) !== (input.error ?? null) ||
+          (result.error ?? null) !== error ||
           result.rollback_available !== (input.rollbackAvailable ?? false)) {
         throw new Error('Admitted execution result conflicts with persisted terminal truth.');
       }
@@ -350,6 +354,7 @@ export const executionRepository = {
   },
 
   async createEvent(input: CreateExecutionEventInput): Promise<ExecutionEventRow> {
+    const payload = normalizeExecutionRecord(input.payload ?? {});
     const result = await query<ExecutionEventRow>(
       `INSERT INTO execution_events (plan_id, step_id, event_type, payload)
        VALUES ($1, $2, $3, $4)
@@ -358,7 +363,7 @@ export const executionRepository = {
         input.planId,
         input.stepId ?? null,
         input.eventType,
-        JSON.stringify(input.payload ?? {}),
+        JSON.stringify(payload),
       ],
     );
     return result.rows[0]!;
