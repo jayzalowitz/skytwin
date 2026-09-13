@@ -77,4 +77,68 @@ describe('atomic reasoning-mode provider replacement', () => {
     )).rejects.toThrow('serialization failure');
     expect(withTransactionMock).toHaveBeenCalledOnce();
   });
+
+  it('preserves a stored credential only when the endpoint authority is unchanged', async () => {
+    const existing = {
+      provider: 'openai', api_key: 'stored-secret', base_url: 'https://gateway.example/v1',
+    };
+    const inserted = {
+      ...existing, base_url: 'https://gateway.example/v2', model: 'gpt', priority: 0, enabled: true,
+    };
+    clientQueryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [existing] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [inserted] });
+
+    await aiProviderRepository.replaceAllWithReasoningMode(
+      'user-1',
+      'bring_your_own_provider',
+      [{ provider: 'openai', model: 'gpt', baseUrl: 'https://gateway.example/v2', priority: 0 }],
+    );
+
+    expect(clientQueryMock.mock.calls[3]![1]).toEqual([
+      'user-1', 'openai', 'stored-secret', 'gpt', 'https://gateway.example/v2', 0, true,
+    ]);
+  });
+
+  it('fails the replacement before deleting when an endpoint changes without a fresh key', async () => {
+    clientQueryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        provider: 'openai', api_key: 'stored-secret', base_url: 'https://gateway.example/v1',
+      }] });
+
+    await expect(aiProviderRepository.replaceAllWithReasoningMode(
+      'user-1',
+      'bring_your_own_provider',
+      [{ provider: 'openai', model: 'gpt', baseUrl: 'https://other.example/v1', priority: 0 }],
+    )).rejects.toMatchObject({ code: 'provider_credential_endpoint_changed' });
+
+    expect(clientQueryMock).toHaveBeenCalledTimes(2);
+    expect(clientQueryMock.mock.calls.every(([sql]) => !String(sql).includes('DELETE'))).toBe(true);
+  });
+
+  it('permits an endpoint authority change only with a supplied fresh credential', async () => {
+    clientQueryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        provider: 'openai', api_key: 'stored-secret', base_url: 'https://gateway.example/v1',
+      }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ provider: 'openai' }] });
+
+    await aiProviderRepository.replaceAllWithReasoningMode(
+      'user-1',
+      'bring_your_own_provider',
+      [{
+        provider: 'openai', apiKey: 'fresh-secret', model: 'gpt',
+        baseUrl: 'https://other.example/v1', priority: 0,
+      }],
+    );
+
+    expect(clientQueryMock.mock.calls[3]![1]).toEqual([
+      'user-1', 'openai', 'fresh-secret', 'gpt', 'https://other.example/v1', 0, true,
+    ]);
+  });
 });

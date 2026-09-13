@@ -50,4 +50,29 @@ describe('settings provider mutation gate', () => {
     await window.saveAIProvidersHandler('aaaaaaaa-bbbb-cccc-dddd-000000000001');
     expect(api.saveAIProviders).not.toHaveBeenCalled();
   });
+
+  it('removes persisted privacy claims immediately when an endpoint draft changes', async () => {
+    api.fetchSettings.mockResolvedValue({
+      aiProviders: [{
+        provider: 'ollama', model: 'qwen', baseUrl: 'http://localhost:11434',
+        priority: 0, enabled: true,
+        privacy: {
+          executionLocation: 'on_device', networkScope: 'loopback',
+          retention: { summary: 'Persisted boundary disclosure.' },
+          pricing: { kind: 'zero' },
+        },
+      }],
+      reasoningMode: { mode: 'on_device', requiresConfirmation: false },
+    });
+    const container = document.getElementById('page-content');
+    await renderSettings(container, 'aaaaaaaa-bbbb-cccc-dddd-000000000001');
+    const before = document.querySelector('[data-region="provider-boundary"]');
+    expect(before?.textContent).toContain('Persisted boundary disclosure.');
+
+    window.aiUpdateField(0, 'baseUrl', 'https://remote.example');
+
+    const after = document.querySelector('[data-region="provider-boundary"]');
+    expect(after?.textContent).toContain('after this endpoint is validated and saved');
+    expect(after?.textContent).not.toContain('Persisted boundary disclosure.');
+  });
 });

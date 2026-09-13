@@ -1,3 +1,5 @@
+import type { AIProviderName } from './ai-provider.js';
+
 /** Where a provider executes relative to the SkyTwin installation. */
 export type ProviderExecutionLocation = 'on_device' | 'remote_service';
 
@@ -18,6 +20,8 @@ export type ProviderAttestationPolicy = 'not_applicable' | 'required';
 
 export type ProviderRetentionClass =
   | 'process_only'
+  | 'local_runtime'
+  | 'operator_unknown'
   | 'provider_terms'
   | 'provider_declared';
 
@@ -84,6 +88,46 @@ export function parseReasoningMode(value: unknown): ReasoningMode | null {
   return typeof value === 'string' && REASONING_MODES.includes(value as ReasoningMode)
     ? (value as ReasoningMode)
     : null;
+}
+
+/**
+ * Canonical network authority used to decide whether a persisted credential
+ * may be reused. Paths may change without changing who receives the secret;
+ * scheme, host, or effective port changes require a fresh credential.
+ *
+ * An omitted Ollama URL means the adapter's fixed loopback default. Other
+ * omitted URLs remain provider-owned defaults and are deliberately distinct
+ * from every caller-supplied endpoint.
+ */
+export function providerCredentialEndpointAuthority(
+  provider: AIProviderName,
+  baseUrl: string | null | undefined,
+): string {
+  if (baseUrl === null || baseUrl === undefined || baseUrl.length === 0) {
+    return provider === 'ollama'
+      ? 'http://localhost:11434'
+      : `provider-default:${provider}`;
+  }
+  const parsed = new URL(baseUrl);
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      || parsed.username.length > 0
+      || parsed.password.length > 0) {
+    throw new Error('Provider endpoint must be an HTTP(S) URL without embedded credentials');
+  }
+  return parsed.origin;
+}
+
+export function hasSameProviderCredentialEndpoint(
+  provider: AIProviderName,
+  previousBaseUrl: string | null | undefined,
+  nextBaseUrl: string | null | undefined,
+): boolean {
+  try {
+    return providerCredentialEndpointAuthority(provider, previousBaseUrl)
+      === providerCredentialEndpointAuthority(provider, nextBaseUrl);
+  } catch {
+    return false;
+  }
 }
 
 export type ProviderVerificationStatus =

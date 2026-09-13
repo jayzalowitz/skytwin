@@ -129,7 +129,12 @@ export type {
   ExecutionRuntimeVersionSummary,
 } from './execution-runtime-versions.js';
 
-export { REASONING_MODES, parseReasoningMode } from './reasoning-mode.js';
+export {
+  REASONING_MODES,
+  hasSameProviderCredentialEndpoint,
+  parseReasoningMode,
+  providerCredentialEndpointAuthority,
+} from './reasoning-mode.js';
 export type {
   ProviderAttestationPolicy,
   ProviderConfidentiality,
