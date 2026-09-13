@@ -87,7 +87,7 @@ function stubbornChild(): ChildProcess {
   return child;
 }
 
-function generationWorker(onRevoke: () => void): ChildProcess {
+function generationWorker(): ChildProcess {
   const child = new EventEmitter() as ChildProcess;
   Object.assign(child, {
     pid: 7655,
@@ -98,7 +98,9 @@ function generationWorker(onRevoke: () => void): ChildProcess {
     stderr: new PassThrough(),
     kill: vi.fn((signal: NodeJS.Signals) => {
       if (signal === "SIGTERM") {
-        onRevoke();
+        // `kill()` only requests delivery; it does not synchronously run the
+        // worker's signal handler or prove exit. Model that boundary by
+        // emitting close on a later turn.
         queueMicrotask(() => child.emit("close", null, "SIGTERM"));
       }
       return true;
@@ -125,7 +127,7 @@ describe("ServiceManager API error lifecycle", () => {
     else process.env["SESSION_SECRET"] = previousSessionSecret;
   });
 
-  it("stops the generation worker and blocks writes or replacement when API error has no exit proof", async () => {
+  it("awaits generation worker shutdown and blocks replacement when API error has no exit proof", async () => {
     vi.useFakeTimers();
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
@@ -133,11 +135,7 @@ describe("ServiceManager API error lifecycle", () => {
       typeof ServiceManager
     > &
       ManagerInternals;
-    let workerRevoked = false;
-    let postRevocationWrites = 0;
-    const worker = generationWorker(() => {
-      workerRevoked = true;
-    });
+    const worker = generationWorker();
     manager.worker = {
       process: worker,
       status: "running",
@@ -157,19 +155,17 @@ describe("ServiceManager API error lifecycle", () => {
     const generation = await manager.startApi(startup);
     expect(generation).not.toBeNull();
     processState.child?.emit("error", new Error("spawn channel failed"));
-    queueMicrotask(() => {
-      if (!workerRevoked) postRevocationWrites++;
-    });
 
     expect(generation?.controller.signal.aborted).toBe(true);
     expect(manager.apiGeneration).toBeNull();
     expect(manager.api.process).toBe(processState.child);
+    expect(worker.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(manager.worker.process).toBe(worker);
+    expect(processState.fork).toHaveBeenCalledOnce();
     await vi.runAllTimersAsync();
     await Promise.resolve();
 
-    expect(worker.kill).toHaveBeenCalledWith("SIGTERM");
     expect(manager.worker.process).toBeNull();
-    expect(postRevocationWrites).toBe(0);
     expect(processState.child?.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
     expect(processState.child?.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
     expect(manager.api.process).toBe(processState.child);

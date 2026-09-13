@@ -25,7 +25,7 @@ import {
   accessLogRepository,
   workerDeadLetterRepository,
 } from '@skytwin/db';
-import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
+import { CircuitBreaker, createLogger } from '@skytwin/core';
 import { KeyCache } from '@skytwin/credential-vault';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 import { buildIngestHeaders } from './ingest-headers.js';
@@ -53,6 +53,12 @@ import {
 import { extractErrorCode } from './oauth-error-code.js';
 import { recordPermanentOAuthFailure } from './oauth-circuit.js';
 import { DeadLetterTracker } from './dead-letter.js';
+import {
+  createWorkerGenerationAdmission,
+  isWorkerGenerationRevoked,
+} from './generation-admission.js';
+import { forwardSignalToApi as forwardSignalUnderAdmission } from './signal-forwarder.js';
+import { createWorkerLifecycle } from './worker-lifecycle.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -186,7 +192,8 @@ function getCircuitBreaker(userId: string): CircuitBreaker {
  * the worker polls their connected services.
  */
 
-let running = true;
+const generationAdmission = createWorkerGenerationAdmission();
+const workerLifecycle = createWorkerLifecycle(generationAdmission);
 let lastIronClawToolRefreshAt = 0;
 const IRONCLAW_TOOL_REFRESH_MS = 15 * 60 * 1000;
 
@@ -195,35 +202,32 @@ interface UserConnectors {
   connectors: SignalConnector[];
 }
 
+function beginWorkerShutdown(reason: string): void {
+  workerLifecycle.beginShutdown(reason);
+}
+
+async function waitForNextPoll(timeoutMs: number): Promise<void> {
+  if (!generationAdmission.isActive()) return;
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(finish, timeoutMs);
+    function finish(): void {
+      clearTimeout(timer);
+      generationAdmission.signal.removeEventListener('abort', finish);
+      resolve();
+    }
+    generationAdmission.signal.addEventListener('abort', finish, { once: true });
+  });
+}
+
 /**
  * Forward a signal to the API for processing, with retry on transient failures.
  */
 async function forwardSignalToApi(signal: RawSignal, userId: string): Promise<void> {
-  const url = `${config.apiBaseUrl}/api/events/ingest`;
-  const body = JSON.stringify({
-    ...signal.data,
-    source: signal.source,
-    type: signal.type,
-    signalId: signal.id,
-    userId,
+  await forwardSignalUnderAdmission(signal, userId, {
+    apiBaseUrl: config.apiBaseUrl,
+    admission: generationAdmission,
+    headers: () => buildIngestHeaders(),
   });
-
-  await withRetry(async () => {
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: buildIngestHeaders(),
-      body,
-    });
-
-    if (!resp.ok) {
-      if ([429, 500, 502, 503].includes(resp.status)) {
-        throw new RetryableHttpError(resp.status, `API ingest failed: ${resp.status}`, null);
-      }
-      throw new Error(`API ingest failed: ${resp.status}`);
-    }
-
-    return resp;
-  }, { maxRetries: 2, baseDelayMs: 500 });
 
   log.info(`Forwarded signal ${signal.id} (${signal.source}/${signal.type}) for user ${userId}`);
 }
@@ -240,6 +244,7 @@ function markSignalForwarded(signal: RawSignal, userId: string): void {
  * Poll connectors for a single user, guarded by per-user circuit breaker.
  */
 async function pollUser(userConnectors: UserConnectors): Promise<void> {
+  if (!generationAdmission.isActive()) return;
   const breaker = getCircuitBreaker(userConnectors.userId);
 
   if (!breaker.canExecute()) {
@@ -252,18 +257,22 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
   let hadFailure = false;
 
   for (const connector of userConnectors.connectors) {
+    if (!generationAdmission.isActive()) return;
     // Per-connector flag so the heal at the bottom of this iteration
     // reflects THIS connector's outcome, not the loop-wide state. A
     // failing Gmail must not block the success heal for a working
     // Calendar (#377).
     let thisConnectorFailed = false;
     try {
-      const signals = await connector.poll();
+      const signals = await connector.poll(generationAdmission.signal);
+      generationAdmission.requireActive();
       for (const signal of signals) {
+        generationAdmission.requireActive();
         if (hasForwardedSignal(signal, userConnectors.userId)) {
           continue;
         }
         await forwardSignalToApi(signal, userConnectors.userId);
+        generationAdmission.requireActive();
         markSignalForwarded(signal, userConnectors.userId);
       }
       // Only now is it safe to advance the connector's durable cursor. A
@@ -272,8 +281,11 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       // the next poll re-delivers those messages instead of skipping them
       // forever. Connectors without staged cursors implement this as a no-op
       // (or not at all — it is optional on the interface).
+      generationAdmission.requireActive();
       await connector.commitCursor?.();
+      generationAdmission.requireActive();
     } catch (error) {
+      if (isWorkerGenerationRevoked(error) || !generationAdmission.isActive()) return;
       hadFailure = true;
       thisConnectorFailed = true;
 
@@ -316,7 +328,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
     // thisConnectorFailed (not the loop-wide hadFailure) so a working
     // Calendar isn't stuck in 'needs_reauth' because Gmail failed in
     // the same cycle.
-    if (!thisConnectorFailed) {
+    if (!thisConnectorFailed && generationAdmission.isActive()) {
       try {
         await connectorHealthRepository.upsert({
           userId: userConnectors.userId,
@@ -335,6 +347,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
     }
   }
 
+  if (!generationAdmission.isActive()) return;
   if (hadFailure) {
     breaker.recordFailure();
   } else {
@@ -344,7 +357,9 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
   // Opportunistic email_label_signals prune. Throttled internally to once
   // per 24h per user. Runs after the poll so it doesn't delay signal
   // forwarding; errors can't propagate (the throttle swallows them).
-  await pruneLabelSignalsForUser(userConnectors.userId);
+  if (generationAdmission.isActive()) {
+    await pruneLabelSignalsForUser(userConnectors.userId);
+  }
 }
 
 async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
@@ -668,12 +683,14 @@ async function main(): Promise<void> {
 
   // Discover users and set up connectors
   let userConnectors = await connectUserConnectors(await discoverUsers());
+  generationAdmission.requireActive();
   if (userConnectors.length === 0) {
     log.info('No users with connected accounts yet — waiting for first connection');
   } else {
     log.info(`Tracking ${userConnectors.length} user(s)`);
   }
   await refreshIronClawToolsIfDue(true);
+  generationAdmission.requireActive();
 
   clearTimeout(startupTimer);
   let pollCount = 0;
@@ -763,10 +780,12 @@ async function main(): Promise<void> {
   let lastWatchSchedulerAt = 0;
 
   // Poll loop
-  while (running) {
+  while (workerLifecycle.isRunning()) {
     for (const uc of userConnectors) {
+      if (!generationAdmission.isActive()) break;
       await pollUser(uc);
     }
+    if (!generationAdmission.isActive()) break;
 
     pollCount++;
 
@@ -1091,9 +1110,10 @@ async function main(): Promise<void> {
       }
     }
 
+    if (!generationAdmission.isActive()) break;
     await refreshIronClawToolsIfDue();
 
-    await new Promise((resolve) => setTimeout(resolve, config.workerPollIntervalMs));
+    await waitForNextPoll(config.workerPollIntervalMs);
   }
 
   // Graceful shutdown
@@ -1110,16 +1130,17 @@ async function main(): Promise<void> {
 // Graceful shutdown handlers
 process.on('SIGINT', () => {
   log.info('Received SIGINT, shutting down gracefully...');
-  running = false;
+  beginWorkerShutdown('Worker received SIGINT');
 });
 
 process.on('SIGTERM', () => {
   log.info('Received SIGTERM, shutting down gracefully...');
-  running = false;
+  beginWorkerShutdown('Worker received SIGTERM');
 });
 
 // Start the worker
 void main().catch((error) => {
+  if (isWorkerGenerationRevoked(error)) return;
   log.error('Fatal error', { error: error instanceof Error ? error.message : String(error) });
   process.exit(1);
 });

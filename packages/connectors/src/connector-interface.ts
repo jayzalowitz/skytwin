@@ -39,9 +39,10 @@ export interface SignalConnector {
 
   /**
    * Manually poll for new signals. Returns all signals available since
-   * the last poll.
+   * the last poll. A supplied signal cancels active provider requests and
+   * must be checked before retry attempts or signal emission.
    */
-  poll(): Promise<RawSignal[]>;
+  poll(signal?: AbortSignal): Promise<RawSignal[]>;
 
   /**
    * Register a handler to be called when new signals arrive.

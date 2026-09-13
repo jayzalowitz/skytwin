@@ -1307,9 +1307,9 @@ export class ServiceManager {
     this.revokeApiGeneration(generation);
     this.api.status = 'error';
     this.emitStatus();
-    // An `error` event is not proof that the OS process exited. Stop the
-    // generation-bound worker before it can present this generation's ingest
-    // credential again, retain the exact API handle, and do not start any
+    // An `error` event is not proof that the OS process exited. Request the
+    // worker's abortable admission shutdown immediately, but do not assume
+    // signal delivery ran synchronously: retain each exact handle and start no
     // replacement until every child yields exit/close proof.
     await this.stopDataServicesOwned();
     this.scheduleApiRestart(startup, 'child process error');

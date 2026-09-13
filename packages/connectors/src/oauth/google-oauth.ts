@@ -153,6 +153,7 @@ export class OAuthRefreshError extends Error {
 export async function refreshAccessToken(
   config: GoogleOAuthConfig,
   refreshToken: string,
+  signal?: AbortSignal,
 ): Promise<OAuthTokenSet> {
   const body = new URLSearchParams({
     refresh_token: refreshToken,
@@ -169,6 +170,7 @@ export async function refreshAccessToken(
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
+    signal,
   });
 
   if (!response.ok) {
