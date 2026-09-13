@@ -1,10 +1,14 @@
 import type { PoolClient } from 'pg';
+import { assertNoActiveExecutionsWithClient } from '../repositories/user-purge-repository.js';
 
 /** Remove obsolete flat seed decisions in dependency-safe order. */
 export async function cleanupLegacyFlatDecisions(
   client: PoolClient,
   userId: string,
 ): Promise<number> {
+  // Callers hold the user's row lock before reaching this helper. Refuse to
+  // erase an admission/ambiguity tombstone while an external effect may run.
+  await assertNoActiveExecutionsWithClient(client, userId);
   const flatDecisionFilter =
     `SELECT id FROM decisions WHERE user_id = $1 AND raw_event->'data' IS NULL`;
   const flatPlanFilter =

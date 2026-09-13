@@ -49,6 +49,7 @@ const {
   },
   mockExecutionAdmissionRepository: {
     admitMemoryExecution: vi.fn(),
+    isDispatchable: vi.fn(),
     findByScope: vi.fn(),
     observeTerminal: vi.fn(),
   },
@@ -183,6 +184,7 @@ function mockCommon(opportunity = makeOpportunity()) {
   });
   mockExecutionAdmissionRepository.observeTerminal.mockResolvedValue({});
   mockExecutionAdmissionRepository.findByScope.mockResolvedValue(null);
+  mockExecutionAdmissionRepository.isDispatchable.mockResolvedValue(true);
   mockSkillGapRepository.log.mockResolvedValue({
     id: 'skill-gap-1',
   });
@@ -341,6 +343,40 @@ describe('runMemoryActionLoopJob', () => {
     );
   });
 
+  it('does not dispatch when the exact owner/admission fence is revoked', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy',
+      autonomy_settings: {
+        maxSpendPerActionCents: 0, maxDailySpendCents: 0,
+        allowedDomains: [], blockedDomains: [], requireApprovalForIrreversible: true,
+      },
+      ironclaw_channel: null,
+    });
+    mockExecutionAdmissionRepository.isDispatchable.mockResolvedValue(false);
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {},
+        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'direct',
+      }),
+      executeWithRouting: vi.fn(),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'allowed',
+      }) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(router.executeWithRouting).not.toHaveBeenCalled();
+    expect(summary.executionAmbiguous).toBe(1);
+  });
+
   it('records an ambiguous adapter outcome without a failed plan or retryable failure state', async () => {
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
@@ -381,15 +417,10 @@ describe('runMemoryActionLoopJob', () => {
         nextStep: expect.stringContaining('Reconcile'),
       }),
     );
-    expect(mockDecisionRepository.recordOutcome).toHaveBeenCalledWith(
+    expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledWith(
       expect.objectContaining({
-        autoExecuted: true,
-        explanation: expect.stringContaining('requires reconciliation'),
-      }),
-    );
-    expect(mockExplanationRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        whatHappened: expect.stringContaining('terminal confirmation was unavailable'),
+        preEffectOutcome: expect.objectContaining({ explanation: expect.stringContaining('before adapter dispatch') }),
+        preEffectExplanation: expect.objectContaining({ whatHappened: expect.stringContaining('before adapter dispatch') }),
       }),
     );
   });

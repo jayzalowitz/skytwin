@@ -14,7 +14,10 @@
 
 import { pathToFileURL } from 'node:url';
 import { getPool, withTransaction, closePool } from '../connection.js';
-import { userPurgeRepository } from '../repositories/user-purge-repository.js';
+import {
+  assertNoActiveExecutionsWithClient,
+  userPurgeRepository,
+} from '../repositories/user-purge-repository.js';
 import { seedUpsert } from './upsert.js';
 import {
   assertDemoSafe,
@@ -78,6 +81,7 @@ async function main(): Promise<void> {
       conflict: ['id'],
       update: 'all',
     });
+    await assertNoActiveExecutionsWithClient(client, DEMO_USER_ID);
     await seedUpsert(client, {
       table: 'twin_profiles',
       row: { user_id: DEMO_USER_ID, version: 1 },

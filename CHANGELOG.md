@@ -137,6 +137,23 @@ All notable changes to SkyTwin will be documented in this file.
 - **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
 - **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 describes the actual checkpoint and boot-reconciliation contract; the reviewed SQL-corpus digest now covers the combined 95-table, 885-column schema through migration 074, including the locally readable inference-receipt metadata boundary.
 
+### Fixed
+
+- Migration rollback now removes only an independently checked, DDL-derived
+  manifest of SkyTwin-owned tables and preserves unrelated objects colocated in
+  `public`. CI verifies a fresh disposable Cockroach down/up cycle across owned
+  tables, normalized columns/defaults/generated expressions, constraints, and
+  secondary/partial index definitions; locality and partition equivalence are
+  intentionally outside that claim.
+- Effect admission now binds the exact owner, decision, action, plan, outcome,
+  ExplanationRecord, risk snapshot, and policy snapshot before dispatch. Memory
+  auto-execution persists its pre-effect outcome and explanation atomically with
+  the one-shot barrier; terminal adapter observations remain separate.
+- Account purge, demo reset, and legacy seed cleanup now refuse active or
+  ambiguous execution graphs. Admission and purge share an owner-first
+  serializable lock order, and every effect path rechecks owner/graph authority
+  immediately before invoking an adapter.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

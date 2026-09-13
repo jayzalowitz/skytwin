@@ -129,6 +129,25 @@ function riskSnapshot(actionId: string) {
   };
 }
 
+function admissionAuthority(graph: Graph) {
+  return {
+    riskSnapshot: riskSnapshot(graph.actionId!),
+    policySnapshot: { allowed: true, reason: 'e2e policy allowed' },
+  };
+}
+
+function memoryPreEffect() {
+  return {
+    preEffectOutcome: { explanation: 'admitted before dispatch', confidence: 0.9 },
+    preEffectExplanation: {
+      whatHappened: 'Memory execution admitted before dispatch.',
+      confidenceReasoning: 'e2e risk fixture',
+      actionRationale: 'e2e action fixture',
+      correctionGuidance: 'Review the terminal observation.',
+    },
+  };
+}
+
 function completionForGraph(
   graph: Graph,
   continuationKind: 'auto_execute' | 'approval' | 'non_effect',
@@ -647,6 +666,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     });
     expect(admitted).toMatchObject({ created: true, barrier: { status: 'in_progress' } });
     const duplicate = await executionAdmissionRepository.admitApprovalExecution({
@@ -655,6 +675,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     });
     expect(duplicate.created).toBe(false);
     expect(duplicate.plan.id).toBe(admitted.plan.id);
@@ -664,6 +685,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: other.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     })).rejects.toThrow('conflicts with requested authority');
     await expect(executionAdmissionRepository.admitApprovalExecution({
       userId: owner.userId,
@@ -671,6 +693,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: other.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     })).rejects.toThrow('conflicts with requested authority');
     await expect(executionAdmissionRepository.admitApprovalExecution({
       userId: owner.userId,
@@ -678,6 +701,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'different_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     })).rejects.toThrow('conflicts with requested authority');
 
     const observed = {
@@ -720,6 +744,8 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
 
   it('freezes a memory opportunity into a non-replay state before dispatch', async () => {
     const owner = await createGraph('memory-admission', 'auto_execute');
+    // Memory admission owns creation of the immutable pre-effect outcome.
+    await pool.query('DELETE FROM decision_outcomes WHERE id = $1', [owner.outcomeId]);
     const opportunity = await pool.query<{ id: string }>(
       `INSERT INTO memory_action_opportunities
          (user_id, fingerprint, suggestion_id, title, reason, suggested_action,
@@ -744,6 +770,8 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
+      ...memoryPreEffect(),
       report,
     });
     const duplicate = await executionAdmissionRepository.admitMemoryExecution({
@@ -752,6 +780,8 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
+      ...memoryPreEffect(),
       report,
     });
     expect(duplicate.created).toBe(false);
@@ -765,9 +795,22 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       status: 'execution_ambiguous',
       execution_plan_id: admitted.plan.id,
     });
+    const linkedEvidence = await pool.query(
+      `SELECT o.auto_executed, o.requires_approval, er.what_happened
+       FROM execution_admission_barriers b
+       JOIN decision_outcomes o ON o.id = b.outcome_id AND o.decision_id = b.decision_id
+       JOIN explanation_records er ON er.id = b.explanation_id AND er.decision_id = b.decision_id
+       WHERE b.id = $1`,
+      [admitted.barrier.id],
+    );
+    expect(linkedEvidence.rows[0]).toMatchObject({
+      auto_executed: true,
+      requires_approval: false,
+      what_happened: 'Memory execution admitted before dispatch.',
+    });
   });
 
-  it('purges a user after a durable admission without violating authority FKs', async () => {
+  it('refuses account purge while a durable admission remains live', async () => {
     const owner = await createGraph('admission-purge', 'approval');
     const approval = await pool.query<{ id: string }>(
       `INSERT INTO approval_requests
@@ -784,21 +827,69 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     });
     expect(await pool.query(
       'SELECT execution_plan_id FROM decision_outcomes WHERE id = $1',
       [owner.outcomeId],
     )).toMatchObject({ rows: [{ execution_plan_id: admitted.plan.id }] });
 
-    const purged = await userPurgeRepository.purgeUser(owner.userId);
-    expect(purged.userExisted).toBe(true);
-    expect(purged.counts['execution_admission_barriers']).toBe(1);
+    await expect(userPurgeRepository.purgeUser(owner.userId)).rejects.toMatchObject({
+      code: 'active_execution_admission',
+    });
     expect(await pool.query('SELECT 1 FROM users WHERE id = $1', [owner.userId]))
-      .toMatchObject({ rowCount: 0 });
-    createdUserIds.splice(createdUserIds.indexOf(owner.userId), 1);
+      .toMatchObject({ rowCount: 1 });
+    expect(await pool.query('SELECT 1 FROM execution_admission_barriers WHERE id = $1', [admitted.barrier.id]))
+      .toMatchObject({ rowCount: 1 });
   });
 
-  it('cleans legacy seed decisions after a durable admission in safe order', async () => {
+  it('serializes account purge against approval admission without erasing live authority', async () => {
+    const owner = await createGraph('admission-purge-race', 'approval');
+    const approval = await pool.query<{ id: string }>(
+      `INSERT INTO approval_requests
+         (user_id, decision_id, candidate_action, reason, urgency, status, responded_at)
+       VALUES ($1, $2, $3::JSONB, 'purge race', 'normal', 'approved', now())
+       RETURNING id`,
+      [owner.userId, owner.decisionId, JSON.stringify({
+        id: owner.actionId, actionType: 'test_action', description: 'Test action',
+      })],
+    );
+    const blocker = await pool.connect();
+    await blocker.query('BEGIN');
+    await blocker.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [owner.userId]);
+
+    const admissionPromise = executionAdmissionRepository.admitApprovalExecution({
+      userId: owner.userId,
+      approvalId: approval.rows[0]!.id,
+      decisionId: owner.decisionId,
+      actionId: owner.actionId!,
+      steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
+    });
+    const purgePromise = userPurgeRepository.purgeUser(owner.userId);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    await blocker.query('COMMIT');
+    blocker.release();
+
+    const [admission, purge] = await Promise.allSettled([admissionPromise, purgePromise]);
+    expect([admission, purge].filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    if (admission.status === 'fulfilled') {
+      expect(purge.status).toBe('rejected');
+      expect(await pool.query(
+        'SELECT 1 FROM execution_admission_barriers WHERE id = $1',
+        [admission.value.barrier.id],
+      )).toMatchObject({ rowCount: 1 });
+      expect(await pool.query('SELECT 1 FROM users WHERE id = $1', [owner.userId]))
+        .toMatchObject({ rowCount: 1 });
+    } else {
+      expect(purge.status).toBe('fulfilled');
+      expect(await pool.query('SELECT 1 FROM users WHERE id = $1', [owner.userId]))
+        .toMatchObject({ rowCount: 0 });
+      createdUserIds.splice(createdUserIds.indexOf(owner.userId), 1);
+    }
+  });
+
+  it('refuses legacy seed cleanup while an admitted effect may continue', async () => {
     const owner = await createGraph('admission-seed-cleanup', 'approval');
     const approval = await pool.query<{ id: string }>(
       `INSERT INTO approval_requests
@@ -815,12 +906,15 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     });
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      expect(await cleanupLegacyFlatDecisions(client, owner.userId)).toBe(1);
-      await client.query('COMMIT');
+      await expect(cleanupLegacyFlatDecisions(client, owner.userId)).rejects.toMatchObject({
+        code: 'active_execution_admission',
+      });
+      await client.query('ROLLBACK');
     } catch (error) {
       await client.query('ROLLBACK');
       throw error;
@@ -831,9 +925,9 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     expect(await pool.query(
       'SELECT 1 FROM execution_admission_barriers WHERE id = $1',
       [admitted.barrier.id],
-    )).toMatchObject({ rowCount: 0 });
+    )).toMatchObject({ rowCount: 1 });
     expect(await pool.query('SELECT 1 FROM decisions WHERE id = $1', [owner.decisionId]))
-      .toMatchObject({ rowCount: 0 });
+      .toMatchObject({ rowCount: 1 });
   });
 
   it('replays the production demo reset across a complete admitted decision graph', async () => {
@@ -854,12 +948,12 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
+      ...admissionAuthority(owner),
     });
 
-    await expect(resetDemoUsers()).resolves.toBe(1);
+    await expect(resetDemoUsers()).rejects.toMatchObject({ code: 'active_execution_admission' });
     expect(await pool.query('SELECT 1 FROM users WHERE id = $1', [owner.userId]))
-      .toMatchObject({ rowCount: 0 });
-    createdUserIds.splice(createdUserIds.indexOf(owner.userId), 1);
+      .toMatchObject({ rowCount: 1 });
   });
 
   it('terminalizes only the exact owner, decision, selected action, and plan', async () => {

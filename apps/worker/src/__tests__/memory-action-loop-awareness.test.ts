@@ -39,6 +39,7 @@ const {
       barrier: { id: 'barrier-1', status: 'in_progress' },
       plan: { id: 'plan-1' },
     })),
+    isDispatchable: vi.fn(async () => true),
     findByScope: vi.fn(async () => null),
     observeTerminal: vi.fn(async () => ({})),
   };

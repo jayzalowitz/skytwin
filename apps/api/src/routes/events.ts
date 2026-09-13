@@ -823,6 +823,13 @@ export function createEventsRouter(): Router {
           let terminalPayload: Record<string, unknown> = {};
 
           try {
+            if (!await inferenceReceiptRepository.isExecutionDispatchableForDecision(
+              userId,
+              decision.id,
+              savedPlan.id,
+            )) {
+              throw new Error('Execution owner or receipt authority was revoked before dispatch');
+            }
             for await (const event of executionRouter.executeWithRoutingStreaming(
               executionAction,
               riskAssessment,
