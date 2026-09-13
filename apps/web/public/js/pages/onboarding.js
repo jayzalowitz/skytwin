@@ -476,12 +476,12 @@ function renderWelcome() {
       </button>
     </div>
 
-    <!-- Private-AI reassurance: the app auto-picks the best local model for this
-         computer (filled in async below), so a non-technical user never has to
-         choose a model or paste an API key. "Change" opens Settings → AI. -->
+    <!-- Local-model recommendation: this endpoint can establish artifact fit,
+         but it cannot prove that the separate llama.cpp runtime is installed.
+         Keep this state distinct from runtime readiness. -->
     <div id="onb-ai-line" style="font-size:0.76rem;color:var(--text-muted);background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.55rem 0.7rem;margin-bottom:0.85rem;display:flex;align-items:center;gap:0.5rem;">
       <span aria-hidden="true">🔒</span>
-      <span id="onb-ai-text">Your AI runs privately on this computer — checking what fits best…</span>
+      <span id="onb-ai-text">Checking which maintained local model fits this computer…</span>
     </div>
 
     <details style="margin-bottom:0.5rem;">
@@ -510,16 +510,19 @@ function renderWelcome() {
     </div>
   `);
 
-  // Auto-pick the best local model for this machine and reassure the user it's
-  // handled. Best-effort: if the probe fails, keep the generic private line.
+  // Recommend an artifact without claiming the separate llama.cpp runtime is
+  // ready. Best-effort: if the probe fails, keep the generic checking line.
   fetchLocalModelRecommendation()
     .then((rec) => {
       const el = document.getElementById('onb-ai-text');
       if (!el) return;
       if (rec?.model) {
+        const size = Number.isFinite(rec.downloadGB)
+          ? ` (~${escapeHtml(String(rec.downloadGB))} GB)`
+          : '';
         el.innerHTML =
-          `Your AI runs privately on this computer — we'll use <strong>${escapeHtml(rec.model.displayName)}</strong> ` +
-          `(~${escapeHtml(String(rec.downloadGB))} GB), picked to fit your machine. ` +
+          `Recommended local model: <strong>${escapeHtml(rec.model.displayName)}</strong>${size}. ` +
+          `Download it in Settings → AI; local inference also requires a compatible llama.cpp runtime. ` +
           `<button class="btn-link" data-action="onb-open-ai-settings" type="button" ` +
           `style="font-size:0.76rem;color:var(--iris);background:none;border:none;cursor:pointer;padding:0;">Change</button>`;
       } else if (rec?.reason) {

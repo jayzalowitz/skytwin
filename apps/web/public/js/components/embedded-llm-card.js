@@ -190,9 +190,9 @@ async function renderCardInto(container, userId) {
   if (completed && !active) {
     body = `
       <div style="padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
-        <div style="font-weight: 500; color: var(--success);">✓ Your twin's brain is installed</div>
+        <div style="font-weight: 500; color: var(--success);">✓ Local model artifact verified</div>
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
-          ${escapeHtml(completed.modelId)} · ready for local use
+          ${escapeHtml(completed.modelId)} · a compatible llama.cpp runtime is still required for local inference
         </div>
       </div>
     `;
@@ -202,7 +202,7 @@ async function renderCardInto(container, userId) {
   } else {
     body = `
       <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
-        Your twin works fully offline once a brain is installed. We'll download it once into SkyTwin's managed local storage. No API keys, no per-message costs.
+        SkyTwin can run a verified model locally once both the model artifact and a compatible llama.cpp runtime are available. Downloading the artifact does not install the runtime.
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: stretch;">
         <select class="form-input" id="embedded-model-select" style="flex: 1;">

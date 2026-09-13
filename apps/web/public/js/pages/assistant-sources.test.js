@@ -72,4 +72,14 @@ describe('onboarding capability copy', () => {
     expect(onboardingSource).toContain('scanning your code projects');
     expect(onboardingSource).toContain('project metadata only');
   });
+
+  it('distinguishes an artifact recommendation from local runtime readiness', () => {
+    expect(onboardingSource).toContain(
+      'local inference also requires a compatible llama.cpp runtime',
+    );
+    expect(onboardingSource).not.toContain(
+      'Your AI runs privately on this computer',
+    );
+    expect(onboardingSource).not.toContain("we'll use <strong>");
+  });
 });
