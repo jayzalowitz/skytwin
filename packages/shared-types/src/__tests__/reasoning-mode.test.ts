@@ -39,10 +39,13 @@ describe('provider credential endpoint authority', () => {
 
   it('treats an omitted Ollama URL as its fixed loopback default', () => {
     expect(providerCredentialEndpointAuthority('ollama', undefined))
-      .toBe('http://localhost:11434');
+      .toBe('http://127.0.0.1:11434');
+    expect(hasSameProviderCredentialEndpoint(
+      'ollama', null, 'http://127.0.0.1:11434/api/chat',
+    )).toBe(true);
     expect(hasSameProviderCredentialEndpoint(
       'ollama', null, 'http://localhost:11434/api/chat',
-    )).toBe(true);
+    )).toBe(false);
   });
 
   it('fails closed for malformed or credential-bearing endpoints', () => {
