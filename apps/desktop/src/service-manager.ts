@@ -1545,9 +1545,12 @@ export class ServiceManager {
   ): Promise<void> {
     if (process.platform === 'win32') {
       // Windows: SIGTERM is unreliable, use taskkill for force termination
-      try {
-        if (proc.pid) {
-          execSync(`taskkill /F /T /PID ${proc.pid}`, { stdio: 'ignore' });
+        try {
+          if (proc.pid) {
+            execSync(`taskkill /F /T /PID ${proc.pid}`, {
+              stdio: 'ignore',
+              timeout: SERVICE_KILL_TIMEOUT_MS,
+            });
           console.log(`[${name}] Terminated via taskkill (PID ${proc.pid})`);
         }
       } catch {
