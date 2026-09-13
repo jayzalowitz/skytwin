@@ -112,6 +112,10 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     const owner = await createGraph('owner');
     const other = await createGraph('other');
     const bundle = receiptBundle(owner);
+    expect(await inferenceReceiptRepository.createForUser(other.userId, {
+      bundle,
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    })).toBeNull();
     const created = await inferenceReceiptRepository.createForUser(owner.userId, {
       bundle,
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
