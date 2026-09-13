@@ -9,6 +9,7 @@ export interface PackagedSampleEnvironment {
   desktopMode: string | undefined;
   nodeEnv: string | undefined;
   databaseUrl: string | undefined;
+  bundledDatabaseUrl: string | undefined;
   packaged: boolean;
 }
 
@@ -34,6 +35,8 @@ function fixtureSignalId(index: number): string {
   return `51a7e000-${PACKAGED_SAMPLE_FIXTURE_ID_SEGMENT}-4000-8000-${String(index + 1).padStart(12, '0')}`;
 }
 
+class NonRetryableSampleIngestError extends Error {}
+
 /**
  * This bootstrap is deliberately narrower than the developer demo fixture.
  * It is valid only inside the packaged desktop runtime and only against the
@@ -55,7 +58,12 @@ export function assertPackagedSampleSafe(
   if ((env.nodeEnv ?? '').toLowerCase() !== 'production') {
     return { ok: false, reason: 'NODE_ENV=production is required' };
   }
-  if (!env.databaseUrl || !isLocalDbTarget(env.databaseUrl)) {
+  if (
+    !env.databaseUrl ||
+    !env.bundledDatabaseUrl ||
+    env.databaseUrl !== env.bundledDatabaseUrl ||
+    !isLocalDbTarget(env.databaseUrl)
+  ) {
     return {
       ok: false,
       reason: 'sample bootstrap requires the bundled loopback database',
@@ -127,6 +135,9 @@ export async function ingestPackagedSampleSignals(options: {
   serviceToken: string;
   userId?: string;
   fetchImpl?: typeof fetch;
+  requestTimeoutMs?: number;
+  maxAttempts?: number;
+  retryDelayMs?: number;
 }): Promise<PackagedSampleIngestResult> {
   if (!options.serviceToken)
     throw new Error('loopback service credential is required');
@@ -150,33 +161,65 @@ export async function ingestPackagedSampleSignals(options: {
   const userId = options.userId ?? DEMO_USER_ID;
   if (userId !== DEMO_USER_ID)
     throw new Error('sample ingest is restricted to the reserved identity');
+  const requestTimeoutMs = options.requestTimeoutMs ?? 5_000;
+  const maxAttempts = options.maxAttempts ?? 3;
+  const retryDelayMs = options.retryDelayMs ?? 250;
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1 || requestTimeoutMs > 30_000)
+    throw new Error('sample ingest request timeout must be between 1 and 30000 ms');
+  if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5)
+    throw new Error('sample ingest max attempts must be between 1 and 5');
+  if (!Number.isInteger(retryDelayMs) || retryDelayMs < 0 || retryDelayMs > 5_000)
+    throw new Error('sample ingest retry delay must be between 0 and 5000 ms');
 
   let ingested = 0;
   for (const [index, signal] of DEMO_SIGNALS.entries()) {
-    const response = await fetchImpl(
-      new URL('/api/events/ingest', apiUrl).toString(),
-      {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          'x-skytwin-service-token': options.serviceToken,
-        },
-        body: JSON.stringify({
-          userId,
-          signalId: fixtureSignalId(index),
-          source: signal.source,
-          type: signal.type,
-          data: {
-            ...signal.data,
-            sampleFixtureVersion: PACKAGED_SAMPLE_FIXTURE_VERSION,
-          },
-        }),
+    const requestUrl = new URL('/api/events/ingest', apiUrl).toString();
+    const requestBody = JSON.stringify({
+      userId,
+      signalId: fixtureSignalId(index),
+      source: signal.source,
+      type: signal.type,
+      data: {
+        ...signal.data,
+        sampleFixtureVersion: PACKAGED_SAMPLE_FIXTURE_VERSION,
       },
-    );
-    if (!response.ok) {
-      throw new Error(
-        `sample signal ingest failed with HTTP ${response.status}`,
-      );
+    });
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller = new AbortController();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const timeoutPromise = new Promise<never>((_resolve, reject) => {
+          timeout = setTimeout(() => {
+            controller.abort();
+            reject(new Error('sample signal ingest request timed out'));
+          }, requestTimeoutMs);
+        });
+        const response = await Promise.race([
+          fetchImpl(requestUrl, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'x-skytwin-service-token': options.serviceToken,
+            },
+            body: requestBody,
+            signal: controller.signal,
+          }),
+          timeoutPromise,
+        ]);
+        if (response.ok) break;
+        const retryable = response.status === 408 || response.status === 429 || response.status >= 500;
+        const error = new Error(`sample signal ingest failed with HTTP ${response.status}`);
+        if (!retryable) throw new NonRetryableSampleIngestError(error.message);
+        if (attempt === maxAttempts) throw error;
+      } catch (error) {
+        if (error instanceof NonRetryableSampleIngestError || attempt === maxAttempts) throw error;
+      } finally {
+        if (timeout !== undefined) clearTimeout(timeout);
+      }
+      if (retryDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
     }
     ingested++;
   }

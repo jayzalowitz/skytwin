@@ -11,6 +11,7 @@ import {
   extractionProgress,
   type ExtractionProgress,
 } from './extraction-progress.js';
+import { verifyServiceInstanceProof } from './service-instance-proof.js';
 
 export type ProcessState = 'running' | 'stopped' | 'starting' | 'error' | 'paused';
 
@@ -461,6 +462,7 @@ export class ServiceManager {
           desktopMode: string | undefined;
           nodeEnv: string | undefined;
           databaseUrl: string | undefined;
+          bundledDatabaseUrl: string | undefined;
           packaged: boolean;
         }) => Promise<{ created: boolean; userId: string }>;
       }>;
@@ -471,6 +473,7 @@ export class ServiceManager {
         desktopMode: env['DESKTOP_MODE'],
         nodeEnv: env['NODE_ENV'],
         databaseUrl: env['DATABASE_URL'],
+        bundledDatabaseUrl: this.cockroach.getConnectionString(),
       });
       // Retry the versioned fixture on every healthy launch. Each synthetic
       // signal carries a stable signalId, so the normal ingest dedupe path
@@ -514,13 +517,56 @@ export class ServiceManager {
       const mod = await nativeImport(moduleUrl);
       const env = this.getEnv();
       const result = await mod.ingestPackagedSampleSignals({
-        apiUrl: env['API_BASE_URL'] ?? 'http://127.0.0.1:3100',
+        // Keep the privileged request on the exact origin authenticated by
+        // verifyOwnedApi(); localhost could resolve to another IPv6 listener.
+        apiUrl: 'http://127.0.0.1:3100',
         serviceToken: env['SKYTWIN_SERVICE_TOKEN'] ?? '',
       });
       console.log(`[sample] Ingested ${result.ingested}/${result.total} sample signals.`);
     } catch (err) {
       console.error('[sample] Signal ingestion incomplete:', err);
     }
+  }
+
+  /** Prove that the API listener holds this install's service credential. */
+  private async verifyOwnedApi(): Promise<boolean> {
+    const serviceToken = this.getEnv()['SKYTWIN_SERVICE_TOKEN'];
+    if (!serviceToken) return false;
+    const challenge = randomBytes(32).toString('hex');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 2_000);
+    try {
+      const url = new URL('http://127.0.0.1:3100/api/health/instance');
+      url.searchParams.set('challenge', challenge);
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) return false;
+      const payload = (await response.json().catch(() => null)) as {
+        service?: unknown;
+        challenge?: unknown;
+        proof?: unknown;
+      } | null;
+      return payload?.service === 'skytwin-api'
+        && payload.challenge === challenge
+        && verifyServiceInstanceProof(serviceToken, challenge, payload.proof);
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Run sample ingestion in the background after proving API ownership. */
+  private startPackagedSampleIngest(): void {
+    if (!app.isPackaged || !this.sampleBootstrapAllowedThisLaunch) return;
+    void (async () => {
+      if (!(await this.verifyOwnedApi())) {
+        console.warn('[sample] Signal ingestion skipped: API instance could not be authenticated.');
+        return;
+      }
+      await this.ingestPackagedSample();
+    })().catch((err) => {
+      console.error('[sample] Background signal ingestion failed:', err);
+    });
   }
 
   async startAll(): Promise<void> {
@@ -562,7 +608,6 @@ export class ServiceManager {
     if (apiReady) {
       this.api.restartCount = 0;
       this.api.failureTimestamps = [];
-      await this.ingestPackagedSample();
     }
     await this.startWeb();
     await this.startWorker();
@@ -574,6 +619,7 @@ export class ServiceManager {
     }, 3000);
 
     this.startHealthMonitoring();
+    if (apiReady) this.startPackagedSampleIngest();
   }
 
   private startHealthMonitoring(): void {

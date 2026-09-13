@@ -13,6 +13,7 @@ describe('packaged sample safety', () => {
     desktopMode: 'true',
     nodeEnv: 'production',
     databaseUrl: 'postgresql://root@127.0.0.1:26257/skytwin',
+    bundledDatabaseUrl: 'postgresql://root@127.0.0.1:26257/skytwin',
   } as const;
 
   it('allows only the packaged production desktop against loopback', () => {
@@ -31,6 +32,15 @@ describe('packaged sample safety', () => {
         ...safe,
         databaseUrl: 'postgresql://db.example.com/skytwin',
       }).ok,
+    ).toBe(false);
+    expect(
+      assertPackagedSampleSafe({
+        ...safe,
+        databaseUrl: 'postgresql://root@127.0.0.1:26258/other',
+      }).ok,
+    ).toBe(false);
+    expect(
+      assertPackagedSampleSafe({ ...safe, bundledDatabaseUrl: undefined }).ok,
     ).toBe(false);
   });
 
@@ -144,5 +154,48 @@ describe('packaged sample safety', () => {
         fetchImpl,
       }),
     ).rejects.toThrow(/loopback API URL/);
+  });
+
+  it('times out a hung request and exhausts a bounded retry budget', async () => {
+    const fetchImpl = vi.fn(() => new Promise<Response>(() => undefined));
+    await expect(
+      ingestPackagedSampleSignals({
+        apiUrl: 'http://127.0.0.1:3100',
+        serviceToken: 'local-secret',
+        fetchImpl,
+        requestTimeoutMs: 5,
+        maxAttempts: 2,
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow(/timed out/);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries a transient response with the exact same stable event payload', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValue({ ok: true, status: 202 });
+    await ingestPackagedSampleSignals({
+      apiUrl: 'http://127.0.0.1:3100',
+      serviceToken: 'local-secret',
+      fetchImpl,
+      maxAttempts: 2,
+      retryDelayMs: 0,
+    });
+    expect(fetchImpl.mock.calls[0]?.[1]?.body).toBe(fetchImpl.mock.calls[1]?.[1]?.body);
+  });
+
+  it('does not retry a terminal client response', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue({ ok: false, status: 401 });
+    await expect(
+      ingestPackagedSampleSignals({
+        apiUrl: 'http://127.0.0.1:3100',
+        serviceToken: 'local-secret',
+        fetchImpl,
+        maxAttempts: 3,
+        retryDelayMs: 0,
+      }),
+    ).rejects.toThrow(/HTTP 401/);
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 });

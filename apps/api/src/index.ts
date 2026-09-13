@@ -2,6 +2,10 @@ import express, { type Application } from 'express';
 import { loadConfig, validate } from '@skytwin/config';
 import { createLogger } from '@skytwin/core';
 import { assertSessionSecret } from './startup-assertions.js';
+import {
+  createServiceInstanceProof,
+  SERVICE_INSTANCE_CHALLENGE_PATTERN,
+} from './auth/service-instance-proof.js';
 
 const log = createLogger('api');
 import { createEventsRouter } from './routes/events.js';
@@ -218,6 +222,31 @@ app.get('/api/health/ready', async (_req, res) => {
     checks,
     dbLatencyMs: dbHealth.latencyMs,
     pool: poolStats ?? { totalCount: 0, idleCount: 0, waitingCount: 0 },
+  });
+});
+
+// Challenge-response used by the packaged desktop before it presents the
+// privileged loopback service credential to an API process. The credential
+// itself never crosses this unauthenticated boundary.
+app.get('/api/health/instance', (req, res) => {
+  const challenge = req.query['challenge'];
+  if (
+    typeof challenge !== 'string' ||
+    !SERVICE_INSTANCE_CHALLENGE_PATTERN.test(challenge)
+  ) {
+    res.status(400).json({ error: 'A 64-character hex challenge is required.' });
+    return;
+  }
+  const serviceToken = process.env['SKYTWIN_SERVICE_TOKEN'];
+  if (!serviceToken) {
+    res.status(503).json({ error: 'Service identity is not configured.' });
+    return;
+  }
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({
+    service: 'skytwin-api',
+    challenge,
+    proof: createServiceInstanceProof(serviceToken, challenge),
   });
 });
 
