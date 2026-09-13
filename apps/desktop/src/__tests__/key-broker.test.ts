@@ -155,6 +155,30 @@ describe('DesktopKeyBroker', () => {
     expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
   });
 
+  it('revokes an existing unlocked key when replacement unlock cannot drain a child', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 5,
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.onKill = () => { /* Signal accepted without proven termination. */ };
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'unlocked' });
+    expect(await broker.unlock(context.userId, 'correct horse battery staple')).toEqual({
+      success: false,
+      error: 'vault_locked',
+    });
+    expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(await broker.state(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+    expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+  });
+
   it('does not reopen from a device wrapper when lock completes during its registry read', async () => {
     const store = new PausableGetStore(), devices = new DeviceStore();
     const broker = new DesktopKeyBroker(store, { deviceProtection, deviceStore: devices, platform: 'darwin' });
@@ -177,6 +201,20 @@ describe('DesktopKeyBroker', () => {
     expect(broker.decrypt(context, encrypted.envelope)).toEqual({ success: true, plaintext: 'fixture-secret' });
     expect(broker.decrypt({ ...context, rowId: 'row-2' }, encrypted.envelope)).toEqual({ success: false, error: 'ciphertext_invalid' });
     expect(broker.decrypt({ ...context, purpose: 'provider_credentials' }, encrypted.envelope)).toMatchObject({ success: false });
+  });
+
+  it('round-trips plaintext at the advertised 16 MiB envelope limit', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const plaintext = 'x'.repeat(16 * 1024 * 1024);
+    const encrypted = broker.encrypt(context, plaintext);
+    expect(encrypted.success).toBe(true);
+    if (!encrypted.success) return;
+    expect(broker.decrypt(context, encrypted.envelope)).toEqual({ success: true, plaintext });
+    expect(broker.encrypt(context, `${plaintext}x`)).toEqual({
+      success: false,
+      error: 'ciphertext_invalid',
+    });
   });
 
   it('rejects malformed and oversized ciphertext without permissive base64 decoding', async () => {
@@ -298,6 +336,25 @@ describe('DesktopKeyBroker', () => {
     },
   );
 
+  it('does not report locked until an in-progress child barrier completes', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 25,
+      childExitTimeoutMs: 25,
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+
+    const locking = broker.lock(context.userId);
+    expect(await broker.state(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+    expect(await locking).toMatchObject({ success: true });
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
+  });
+
   it('waits for delayed child exit after the acknowledgement deadline', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore(), {
       lockAckTimeoutMs: 5,
@@ -349,10 +406,21 @@ describe('DesktopKeyBroker', () => {
       generation: 2,
     });
     expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(await broker.state(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
     expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
     expect(await broker.unlock(context.userId, 'correct horse battery staple'))
       .toEqual({ success: false, error: 'vault_locked' });
     expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL', 'SIGTERM', 'SIGKILL']);
+    expect(await broker.state(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
+    child.emit('exit');
+    expect(await broker.lock(context.userId)).toMatchObject({ success: true });
+    expect(await broker.state(context.userId)).toEqual({ success: true, state: 'locked' });
   });
 
   it('snapshots child owner grants instead of retaining a mutable set', async () => {

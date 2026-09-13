@@ -232,14 +232,35 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
 function b64(value: unknown, exact?: number, max = MAX_SECRET_BYTES): Buffer | null {
   if (
     typeof value !== 'string'
-    || value.length > Math.ceil(max * 4 / 3) + 4
-    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+    || value.length > Math.ceil(max / 3) * 4
+    || value.length % 4 !== 0
   ) return null;
+  const padding = value.endsWith('==') ? 2 : value.endsWith('=') ? 1 : 0;
+  const contentLength = value.length - padding;
+  if (
+    (padding === 1 && contentLength % 4 !== 3)
+    || (padding === 2 && contentLength % 4 !== 2)
+  ) return null;
+  for (let index = 0; index < contentLength; index += 1) {
+    const code = value.charCodeAt(index);
+    const isAlphabet =
+      (code >= 0x41 && code <= 0x5a)
+      || (code >= 0x61 && code <= 0x7a)
+      || (code >= 0x30 && code <= 0x39)
+      || code === 0x2b
+      || code === 0x2f;
+    if (!isAlphabet) return null;
+  }
   const output = Buffer.from(value, 'base64');
-  return output.toString('base64') === value
-    && (exact === undefined || output.length === exact)
-    ? output
-    : null;
+  if (
+    output.length > max
+    || output.toString('base64') !== value
+    || (exact !== undefined && output.length !== exact)
+  ) {
+    output.fill(0);
+    return null;
+  }
+  return output;
 }
 
 function isCanonicalB64(value: unknown, exact?: number, max?: number): boolean {
@@ -425,6 +446,7 @@ export class DesktopKeyBroker {
   private readonly initializing = new Set<string>();
   private readonly lockDepth = new Map<string, number>();
   private readonly lockTails = new Map<string, Promise<void>>();
+  private readonly containmentFailures = new Set<string>();
   private readonly now: () => number;
   private readonly ttlMs: number;
   private readonly lockAckTimeoutMs: number;
@@ -740,10 +762,16 @@ export class DesktopKeyBroker {
       const timer = this.timers.get(userId);
       if (timer) clearTimeout(timer);
       this.timers.delete(userId);
-      barrierComplete = await this.drainChildren(userId, generation);
+      try {
+        barrierComplete = await this.drainChildren(userId, generation);
+      } catch {
+        barrierComplete = false;
+      }
       const old = this.unlocked.get(userId);
       this.unlocked.delete(userId);
       old?.key.fill(0);
+      if (barrierComplete) this.containmentFailures.delete(userId);
+      else this.containmentFailures.add(userId);
     });
     this.lockTails.set(userId, current);
     try {
@@ -762,6 +790,10 @@ export class DesktopKeyBroker {
 
   async state(userId: string): Promise<VaultStateResult> {
     if (!isValidVaultUserId(userId)) return { success: false, error: 'ciphertext_invalid' };
+    if (
+      (this.lockDepth.get(userId) ?? 0) > 0
+      || this.containmentFailures.has(userId)
+    ) return { success: false, error: 'vault_broker_unavailable' };
     let raw: unknown;
     try {
       raw = await this.store.get(userId);
@@ -771,6 +803,10 @@ export class DesktopKeyBroker {
     if (raw === undefined) return { success: true, state: 'uninitialized' };
     const record = parseWrappedUserKey(raw);
     if (!record || record.userId !== userId) return { success: false, error: 'ciphertext_invalid' };
+    if (
+      (this.lockDepth.get(userId) ?? 0) > 0
+      || this.containmentFailures.has(userId)
+    ) return { success: false, error: 'vault_broker_unavailable' };
     return { success: true, state: this.active(userId) ? 'unlocked' : 'locked' };
   }
 
@@ -1025,16 +1061,28 @@ export class DesktopKeyBroker {
       const timer = this.timers.get(userId);
       if (timer) clearTimeout(timer);
       this.timers.delete(userId);
-      if (!await this.drainChildren(userId, this.generation(userId))) return;
-      if (this.operationEpoch(userId) !== operationEpoch) return;
+      const generation = this.generation(userId) + 1;
+      this.generations.set(userId, generation);
       const old = this.unlocked.get(userId);
+      this.unlocked.delete(userId);
       old?.key.fill(0);
+      let barrierComplete = false;
+      try {
+        barrierComplete = await this.drainChildren(userId, generation);
+      } catch {
+        barrierComplete = false;
+      }
+      if (!barrierComplete) {
+        this.containmentFailures.add(userId);
+        return;
+      }
+      this.containmentFailures.delete(userId);
+      if (this.operationEpoch(userId) !== operationEpoch) return;
       this.unlocked.set(userId, {
         key: Buffer.from(source),
         keyVersion,
         expiresAt: this.now() + this.ttlMs,
       });
-      this.generations.set(userId, this.generation(userId) + 1);
       const nextTimer = setTimeout(() => {
         void this.lock(userId).catch(() => undefined);
       }, this.ttlMs);
