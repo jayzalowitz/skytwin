@@ -3,8 +3,10 @@ export type {
   IronClawAdapter,
   IronClawEnhancedAdapter,
   IronClawCredentialInfo,
+  ExecutionPlanBuildContext,
+  ExecutionRequestPreparation,
 } from './ironclaw-adapter.js';
-export { isIronClawEnhancedAdapter } from './ironclaw-adapter.js';
+export { isIronClawEnhancedAdapter, PreRequestExecutionError } from './ironclaw-adapter.js';
 
 // Real adapter: talks to IronClaw's HTTP webhook API
 export { RealIronClawAdapter } from './real-adapter.js';

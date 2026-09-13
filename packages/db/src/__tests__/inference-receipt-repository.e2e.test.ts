@@ -28,11 +28,16 @@ import {
   CredentialDisconnectInProgressError,
   oauthRepository,
 } from '../repositories/oauth-repository.js';
-import { credentialDispatchLeaseRepository } from '../repositories/credential-dispatch-lease-repository.js';
+import {
+  credentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository,
+} from '../repositories/credential-dispatch-lease-repository.js';
 import { credentialVaultMetaRepository } from '../repositories/credential-vault-meta-repository.js';
 import { userPurgeRepository } from '../repositories/user-purge-repository.js';
+import { userRepository } from '../repositories/user-repository.js';
 import { policyRepository } from '../repositories/policy-repository.js';
 import { decisionRepository } from '../repositories/decision-repository.js';
+import { mcpServerChangelogRepository } from '../repositories/mcp-server-changelog-repository.js';
 import { explanationRepositoryAdapter } from '../adapters/explanation-repository-adapter.js';
 import { cleanupLegacyFlatDecisions } from '../seeds/legacy-decision-cleanup.js';
 import { resetDemoUsers } from '../seeds/demo-fixture.js';
@@ -58,14 +63,18 @@ interface Graph {
 async function createGraph(
   label: string,
   continuationKind: 'auto_execute' | 'approval' | 'non_effect' = 'non_effect',
+  existingUserId?: string,
 ): Promise<Graph> {
-  const user = await pool.query<{ id: string }>(
-    `INSERT INTO users (email, name, trust_tier, autonomy_settings)
-     VALUES ($1, $2, 'observer', '{}') RETURNING id`,
-    [`receipt-${label}-${randomUUID()}@example.test`, `Receipt ${label}`],
-  );
-  const userId = user.rows[0]!.id;
-  createdUserIds.push(userId);
+  let userId = existingUserId;
+  if (!userId) {
+    const user = await pool.query<{ id: string }>(
+      `INSERT INTO users (email, name, trust_tier, autonomy_settings)
+       VALUES ($1, $2, 'observer', '{}') RETURNING id`,
+      [`receipt-${label}-${randomUUID()}@example.test`, `Receipt ${label}`],
+    );
+    userId = user.rows[0]!.id;
+    createdUserIds.push(userId);
+  }
   const decision = await pool.query<{ id: string }>(
     `INSERT INTO decisions
        (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata)
@@ -253,8 +262,8 @@ function receiptBundle(graph: Graph): InferenceReceiptExportV1 {
   };
 }
 
-async function prepareCredentialDispatch(label: string) {
-  const graph = await createGraph(label, 'auto_execute');
+async function prepareCredentialDispatch(label: string, existingUserId?: string) {
+  const graph = await createGraph(label, 'auto_execute', existingUserId);
   await inferenceReceiptRepository.createManyForUser(graph.userId, [{
     bundle: receiptBundle(graph),
     trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
@@ -587,6 +596,8 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expectedCredentialRevision: fixture.token.credential_revision,
       expectedAuthorityRevision: fixture.authorityRevision,
       expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
     };
 
     const [startSettled, disconnectSettled] = await Promise.allSettled([
@@ -648,12 +659,374 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       )).resolves.toMatchObject({ status: 'ready' });
     } else {
       expect(startResult.code).toBe('credential_unavailable');
-      expect(disconnectResult.status).toBe('ready');
+      // The generic request-start fence may win before the exact credential
+      // bind loses. A concurrently observed pending response is truthful even
+      // though the compatibility caller subsequently terminalizes no-effect.
+      expect(['pending', 'ready']).toContain(disconnectResult.status);
+      await expect(oauthRepository.beginDisconnect(
+        fixture.graph.userId, 'google', fixture.accountEmail,
+      )).resolves.toMatchObject({ status: 'ready' });
       expect(await pool.query(
-        'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+        `SELECT state FROM credential_dispatch_leases WHERE execution_plan_id = $1`,
         [fixture.plan.id],
-      )).toMatchObject({ rowCount: 0 });
+      )).toMatchObject({ rows: [{ state: 'failed' }] });
     }
+  });
+
+  it('fences non-credential replay/purge without blocking unrelated OAuth changes', async () => {
+    const fixture = await prepareCredentialDispatch('generic-dispatch');
+    const input = {
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'ironclaw',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+      now: new Date(Date.now() - 2_000),
+      ttlMs: 1_000,
+    };
+    const started = await executionDispatchLeaseRepository.start(input);
+    expect(started.success).toBe(true);
+    if (!started.success) return;
+    await expect(pool.query(
+      `SELECT adapter_name, oauth_token_id, execution_authority_revision,
+              policy_authority_revision, state
+         FROM credential_dispatch_leases WHERE execution_plan_id = $1`,
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rows: [{
+      adapter_name: 'ironclaw',
+      oauth_token_id: null,
+      execution_authority_revision: fixture.authorityRevision,
+      policy_authority_revision: fixture.policyAuthorityRevision,
+      state: 'request_started',
+    }] });
+
+    await expect(executionDispatchLeaseRepository.start({
+      ...input, now: new Date(),
+    })).resolves.toMatchObject({ success: false, code: 'dispatch_replayed' });
+    await expect(pool.query<{ state: string }>(
+      'SELECT state FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rows: [{ state: 'ambiguous' }] });
+    await expect(userPurgeRepository.purgeUser(fixture.graph.userId))
+      .rejects.toMatchObject({ code: 'active_execution_admission' });
+    await expect(oauthRepository.updateAccessTokenByAccount(
+      fixture.graph.userId,
+      'google',
+      fixture.accountEmail,
+      'updated-unrelated-access',
+      new Date(Date.now() + 60_000),
+    )).resolves.toMatchObject({ access_token: 'updated-unrelated-access' });
+    await expect(oauthRepository.saveTokenForAccount({
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: `late-${randomUUID()}@example.test`,
+      accessToken: 'late-access',
+      refreshToken: 'late-refresh',
+      expiresAt: new Date(Date.now() + 60_000),
+      scopes: [],
+    })).resolves.toMatchObject({ provider: 'google' });
+    await expect(oauthRepository.beginDisconnect(
+      fixture.graph.userId, 'google', fixture.accountEmail,
+    )).resolves.toMatchObject({ status: 'ready' });
+    await expect(executionDispatchLeaseRepository.terminalize({
+      userId: fixture.graph.userId,
+      executionPlanId: fixture.plan.id,
+      capability: started.grant.capability,
+      leaseGeneration: started.grant.leaseGeneration,
+      state: 'completed',
+    })).resolves.toBe(true);
+  });
+
+  it('serializes MCP pending opt-in discovery with exact tool request-start', async () => {
+    const fixture = await prepareCredentialDispatch('mcp-opt-in-fence');
+    const server = await pool.query<{ id: string }>(
+      `INSERT INTO mcp_servers (user_id, display_name, transport, status)
+       VALUES ($1, 'E2E MCP', 'stdio', 'active') RETURNING id`,
+      [fixture.graph.userId],
+    );
+    const serverId = server.rows[0]!.id;
+    const started = await executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'mcp-host',
+      mcpServerId: serverId,
+      mcpToolName: 'send_email',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    });
+    expect(started.success).toBe(true);
+    if (!started.success) return;
+
+    await mcpServerChangelogRepository.addPendingOptIn(serverId, 'send_email', '2.0.0');
+    await expect(pool.query(
+      `SELECT 1 FROM pending_skill_opt_ins
+        WHERE server_id = $1 AND skill_name = 'send_email'`,
+      [serverId],
+    )).resolves.toMatchObject({ rowCount: 1 });
+
+    await executionDispatchLeaseRepository.terminalize({
+      userId: fixture.graph.userId,
+      executionPlanId: fixture.plan.id,
+      capability: started.grant.capability,
+      leaseGeneration: started.grant.leaseGeneration,
+      state: 'completed',
+    });
+    // The prompt survives the already-linearized request and blocks every
+    // later request until the user explicitly resolves it.
+  });
+
+  it('keeps an explicitly rejected destructive MCP tool denied at request start', async () => {
+    const fixture = await prepareCredentialDispatch('mcp-rejected-opt-in');
+    const server = await pool.query<{ id: string }>(
+      `INSERT INTO mcp_servers (user_id, display_name, transport, status)
+       VALUES ($1, 'Rejected MCP', 'stdio', 'active') RETURNING id`,
+      [fixture.graph.userId],
+    );
+    const serverId = server.rows[0]!.id;
+    await pool.query(
+      `INSERT INTO pending_skill_opt_ins
+         (server_id, skill_name, changelog_version, rejected_at)
+       VALUES ($1, 'send_email', '2.0.0', now())`,
+      [serverId],
+    );
+
+    await expect(executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'mcp-host',
+      mcpServerId: serverId,
+      mcpToolName: 'send_email',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+  });
+
+  it('allows only its exact generic capability to refresh and bind a credential', async () => {
+    const fixture = await prepareCredentialDispatch('credential-refresh-proof');
+    const started = await executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'direct',
+      credentialProvider: 'google',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    });
+    expect(started.success).toBe(true);
+    if (!started.success) return;
+    await expect(oauthRepository.rotateTokenIfCurrent({
+      id: fixture.token.id,
+      userId: fixture.graph.userId,
+      provider: 'google',
+      expectedAccessToken: fixture.token.access_token,
+      expectedRefreshToken: fixture.token.refresh_token!,
+      expectedCredentialRevision: fixture.token.credential_revision,
+      accessToken: 'refreshed-under-proof',
+      refreshToken: fixture.token.refresh_token!,
+      expiresAt: new Date(Date.now() + 3_600_000),
+      scopes: fixture.token.scopes,
+      dispatchProof: {
+        userId: fixture.graph.userId,
+        provider: 'google',
+        executionPlanId: fixture.plan.id,
+        capability: started.grant.capability,
+        leaseGeneration: started.grant.leaseGeneration,
+      },
+    })).resolves.toMatchObject({ access_token: 'refreshed-under-proof' });
+    const refreshed = await oauthRepository.getTokenByAccount(
+      fixture.graph.userId, 'google', fixture.accountEmail,
+    );
+    expect(refreshed).not.toBeNull();
+    await expect(executionDispatchLeaseRepository.bindCredential({
+      userId: fixture.graph.userId,
+      provider: 'google',
+      accountEmail: fixture.accountEmail,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      capability: started.grant.capability,
+      leaseGeneration: started.grant.leaseGeneration,
+      expectedOAuthTokenId: fixture.token.id,
+      expectedCredentialRevision: refreshed!.credential_revision,
+    })).resolves.toMatchObject({ success: true });
+  });
+
+  it('blocks a second same-provider dispatch before refresh while a bound request is unresolved', async () => {
+    const first = await prepareCredentialDispatch('provider-refresh-first');
+    const second = await prepareCredentialDispatch('provider-refresh-second', first.graph.userId);
+    const started = await executionDispatchLeaseRepository.start({
+      userId: first.graph.userId,
+      decisionId: first.graph.decisionId,
+      actionId: first.graph.actionId!,
+      executionPlanId: first.plan.id,
+      adapterName: 'direct',
+      credentialProvider: 'google',
+      expectedAuthorityRevision: first.authorityRevision,
+      expectedPolicyAuthorityRevision: first.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: first.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: first.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    });
+    expect(started.success).toBe(true);
+    if (!started.success) return;
+    await expect(executionDispatchLeaseRepository.bindCredential({
+      userId: first.graph.userId,
+      provider: 'google',
+      accountEmail: first.accountEmail,
+      decisionId: first.graph.decisionId,
+      actionId: first.graph.actionId!,
+      executionPlanId: first.plan.id,
+      capability: started.grant.capability,
+      leaseGeneration: started.grant.leaseGeneration,
+      expectedOAuthTokenId: first.token.id,
+      expectedCredentialRevision: first.token.credential_revision,
+    })).resolves.toMatchObject({ success: true });
+
+    await expect(executionDispatchLeaseRepository.start({
+      userId: second.graph.userId,
+      decisionId: second.graph.decisionId,
+      actionId: second.graph.actionId!,
+      executionPlanId: second.plan.id,
+      adapterName: 'direct',
+      credentialProvider: 'google',
+      expectedAuthorityRevision: second.authorityRevision,
+      expectedPolicyAuthorityRevision: second.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: second.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: second.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [second.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('rejects generic request-start after a route/build pause lets owner authority change', async () => {
+    const fixture = await prepareCredentialDispatch('generic-authority-drift');
+    await pool.query(
+      `UPDATE users SET autonomy_settings = '{"paused":true}'::JSONB,
+                        execution_authority_revision = gen_random_uuid()
+        WHERE id = $1`,
+      [fixture.graph.userId],
+    );
+    await expect(executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'ironclaw',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('rejects stale IronClaw channel authority after a pre-dispatch channel change', async () => {
+    const fixture = await prepareCredentialDispatch('ironclaw-channel-drift');
+    const updated = await userRepository.updateIronClawChannel(
+      fixture.graph.userId,
+      'replacement-channel',
+    );
+    expect(updated?.ironclaw_channel).toBe('replacement-channel');
+    expect(updated?.execution_authority_revision).not.toBe(fixture.authorityRevision);
+
+    await expect(executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'ironclaw',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('orders an in-flight channel mutation ahead of a competing request-start claim', async () => {
+    const fixture = await prepareCredentialDispatch('ironclaw-channel-lock-race');
+    const mutation = await pool.connect();
+    try {
+      await mutation.query('BEGIN');
+      await mutation.query(
+        `UPDATE users
+            SET ironclaw_channel = 'replacement-channel',
+                execution_authority_revision = gen_random_uuid(), updated_at = now()
+          WHERE id = $1`,
+        [fixture.graph.userId],
+      );
+      const start = executionDispatchLeaseRepository.start({
+        userId: fixture.graph.userId,
+        decisionId: fixture.graph.decisionId,
+        actionId: fixture.graph.actionId!,
+        executionPlanId: fixture.plan.id,
+        adapterName: 'ironclaw',
+        expectedAuthorityRevision: fixture.authorityRevision,
+        expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+        expectedAdmissionAuthorityId: fixture.graph.decisionId,
+        expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+      });
+      // The request-start transaction competes for the same owner row while
+      // the channel mutation is uncommitted. Committing establishes the only
+      // safe ordering: the stale revision must lose before any lease appears.
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      await mutation.query('COMMIT');
+      await expect(start).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    } finally {
+      await mutation.query('ROLLBACK').catch(() => undefined);
+      mutation.release();
+    }
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
+  });
+
+  it('rejects generic request-start after its exact admission authority changes', async () => {
+    const fixture = await prepareCredentialDispatch('generic-admission-drift');
+    await pool.query(
+      `UPDATE decision_ingest_guards
+          SET updated_at = updated_at + INTERVAL '1 second'
+        WHERE decision_id = $1`,
+      [fixture.graph.decisionId],
+    );
+    await expect(executionDispatchLeaseRepository.start({
+      userId: fixture.graph.userId,
+      decisionId: fixture.graph.decisionId,
+      actionId: fixture.graph.actionId!,
+      executionPlanId: fixture.plan.id,
+      adapterName: 'openclaw',
+      expectedAuthorityRevision: fixture.authorityRevision,
+      expectedPolicyAuthorityRevision: fixture.policyAuthorityRevision,
+      expectedAdmissionAuthorityId: fixture.graph.decisionId,
+      expectedAdmissionAuthorityUpdatedAt: fixture.plan.dispatchAuthorityUpdatedAt.toISOString(),
+    })).resolves.toMatchObject({ success: false, code: 'authority_revoked' });
+    await expect(pool.query(
+      'SELECT 1 FROM credential_dispatch_leases WHERE execution_plan_id = $1',
+      [fixture.plan.id],
+    )).resolves.toMatchObject({ rowCount: 0 });
   });
 
   it('serializes request-start against exact refresh and vault-rotation mutations', async () => {
@@ -791,32 +1164,50 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       accountEmail: 'other@example.test',
     })).resolves.toMatchObject({ success: false, code: 'credential_unavailable' });
 
-    const started = await credentialDispatchLeaseRepository.start({
-      ...base,
-      now: new Date(Date.now() - 2_000),
-      ttlMs: 1_000,
-    });
-    expect(started.success).toBe(true);
     await expect(credentialDispatchLeaseRepository.start(base)).resolves.toMatchObject({
       success: false,
       code: 'dispatch_replayed',
     });
+
+    const overdue = await prepareCredentialDispatch('credential-overdue');
+    const overdueBase = {
+      userId: overdue.graph.userId,
+      provider: 'google',
+      accountEmail: overdue.accountEmail,
+      decisionId: overdue.graph.decisionId,
+      actionId: overdue.graph.actionId!,
+      executionPlanId: overdue.plan.id,
+      expectedOAuthTokenId: overdue.token.id,
+      expectedCredentialRevision: overdue.token.credential_revision,
+      expectedAuthorityRevision: overdue.authorityRevision,
+      expectedPolicyAuthorityRevision: overdue.policyAuthorityRevision,
+    };
+    const started = await credentialDispatchLeaseRepository.start({
+      ...overdueBase,
+      now: new Date(Date.now() - 2_000),
+      ttlMs: 1_000,
+    });
+    expect(started.success).toBe(true);
+    await expect(credentialDispatchLeaseRepository.start(overdueBase)).resolves.toMatchObject({
+      success: false,
+      code: 'dispatch_replayed',
+    });
     await expect(oauthRepository.beginDisconnect(
-      fixture.graph.userId, 'google', fixture.accountEmail,
+      overdue.graph.userId, 'google', overdue.accountEmail,
     )).resolves.toMatchObject({ status: 'pending', retryAfter: null });
     await expect(pool.query<{ state: string }>(
       'SELECT state FROM credential_dispatch_leases WHERE execution_plan_id = $1',
-      [fixture.plan.id],
+      [overdue.plan.id],
     )).resolves.toMatchObject({ rows: [{ state: 'ambiguous' }] });
     await expect(credentialDispatchLeaseRepository.terminalize({
-      userId: fixture.graph.userId,
-      executionPlanId: fixture.plan.id,
+      userId: overdue.graph.userId,
+      executionPlanId: overdue.plan.id,
       capability: started.success ? started.grant.capability : '',
       leaseGeneration: started.success ? started.grant.leaseGeneration : '',
       state: 'completed',
     })).resolves.toBe(true);
     await expect(oauthRepository.beginDisconnect(
-      fixture.graph.userId, 'google', fixture.accountEmail,
+      overdue.graph.userId, 'google', overdue.accountEmail,
     )).resolves.toMatchObject({ status: 'ready' });
   });
 

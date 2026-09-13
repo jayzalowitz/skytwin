@@ -28,9 +28,10 @@ The backup is scoped to the data that *is* your twin:
   and exporting them in the clear would be a credential-leak hazard. Connectors
   (Gmail, Calendar, …) **re-authorize on the restored install** — the same one
   re-auth you do on any new device.
-- **Credential dispatch leases.** These machine-local request-start fences are
-  bound to exact OAuth rows and execution authority. They are never restored or
-  resumed; restored effect continuations remain non-replay tombstones.
+- **Execution dispatch leases.** These machine-local request-start fences bind
+  every adapter to exact execution authority; credential-backed direct actions
+  additionally bind the exact OAuth row and revision. They are never restored
+  or resumed; restored effect continuations remain non-replay tombstones.
 - **OAuth callback fences.** Account-unknown sign-in rows and account-revocation
   tombstones are machine-local, TTL-managed authority records and are never
   exported. They store only keyed digests of resolved account/owner identity,

@@ -119,6 +119,7 @@ export type {
 export {
   oauthRepository,
   credentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository,
   CredentialDispatchConflictError,
   CredentialDisconnectInProgressError,
   CredentialVaultLockedError,
@@ -140,6 +141,11 @@ export {
 export type {
   CredentialDispatchGrant,
   CredentialDispatchTerminalState,
+  ExecutionDispatchGrant,
+  StartExecutionDispatchInput,
+  StartExecutionDispatchResult,
+  BindCredentialDispatchInput,
+  BindCredentialDispatchResult,
   StartCredentialDispatchInput,
   StartCredentialDispatchResult,
 } from './repositories/index.js';

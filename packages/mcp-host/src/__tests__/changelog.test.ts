@@ -224,30 +224,16 @@ describe('McpHost execute hard-rail (pending opt-in)', () => {
     const blockedHost = new McpHost({ checkPendingOptIn });
 
     const client = makeFakeChangelogClient();
+    const callTool = vi.spyOn(client, 'callTool');
     injectFakeServer(blockedHost, serverConfig, client);
 
-    const plan = {
-      id: 'plan-1',
-      decisionId: 'decision-1',
-      action: {} as never,
-      steps: [
-        {
-          id: 'step-1',
-          order: 1,
-          type: 'send_email',
-          description: 'test',
-          parameters: { _mcpServerId: serverConfig.id, _mcpToolName: 'send_email' },
-          timeout: 5000,
-        },
-      ],
-      rollbackSteps: [],
-      createdAt: new Date(),
-    };
-
-    const result = await blockedHost.execute(plan);
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('requires explicit opt-in');
+    await expect(blockedHost.buildPlan({
+      id: 'action-1', decisionId: 'decision-1', actionType: 'send_email',
+      description: 'test', domain: 'email', reversible: false,
+      parameters: { mcpServerId: serverConfig.id, mcpToolName: 'send_email' },
+    } as never)).rejects.toThrow('requires explicit opt-in');
     expect(checkPendingOptIn).toHaveBeenCalledWith(serverConfig.id, 'send_email');
+    expect(callTool).not.toHaveBeenCalled();
   });
 
   it('allows execution when checkPendingOptIn returns false', async () => {
@@ -269,23 +255,11 @@ describe('McpHost execute hard-rail (pending opt-in)', () => {
     const entry = { config: serverConfig, handle: { id: serverConfig.id, status: 'running' as const }, client: fakeClient, circuit, stop: () => {} };
     (allowedHost as unknown as { servers: Map<string, typeof entry> }).servers.set(serverConfig.id, entry);
 
-    const plan = {
-      id: 'plan-2',
-      decisionId: 'decision-2',
-      action: {} as never,
-      steps: [
-        {
-          id: 'step-2',
-          order: 1,
-          type: 'send_email',
-          description: 'test',
-          parameters: { _mcpServerId: serverConfig.id, _mcpToolName: 'send_email' },
-          timeout: 5000,
-        },
-      ],
-      rollbackSteps: [],
-      createdAt: new Date(),
-    };
+    const plan = await allowedHost.buildPlan({
+      id: 'action-2', decisionId: 'decision-2', actionType: 'send_email',
+      description: 'test', domain: 'email', reversible: false,
+      parameters: { mcpServerId: serverConfig.id, mcpToolName: 'send_email' },
+    } as never);
 
     const result = await allowedHost.execute(plan);
     expect(result.status).toBe('completed');

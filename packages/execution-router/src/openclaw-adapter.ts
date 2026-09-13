@@ -7,7 +7,7 @@ import type {
   RollbackResult,
 } from '@skytwin/shared-types';
 import { OPENCLAW_ACTION_TYPES } from '@skytwin/shared-types';
-import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
+import { PreRequestExecutionError, type IronClawAdapter } from '@skytwin/ironclaw-adapter';
 
 /**
  * Credential requirement reported by an OpenClaw server.
@@ -66,6 +66,9 @@ export class OpenClawAdapter implements IronClawAdapter {
   }
 
   async buildPlan(action: CandidateAction): Promise<ExecutionPlan> {
+    if (!this.apiUrl) {
+      throw new PreRequestExecutionError('OpenClaw is not configured.');
+    }
     const planId = (action.parameters['executionPlanId'] as string | undefined)
       ?? `openclaw_plan_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = new Date();

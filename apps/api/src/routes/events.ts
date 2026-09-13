@@ -51,6 +51,7 @@ import type { AIProviderName } from '@skytwin/shared-types';
 import { emitInferenceReceipt, LlmClient } from '@skytwin/llm-client';
 import type { InferenceTrace, ProviderEntry, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
+import { NoRequestExecutionError } from '@skytwin/execution-router';
 import { generateKeyPairSync } from 'node:crypto';
 
 const log = createLogger('api:events');
@@ -783,9 +784,11 @@ export function createEventsRouter(): Router {
         } else {
           let currentAuthorityRevision: string | null = null;
           let currentPolicyAuthorityRevision: string | null = null;
+          let currentIronclawChannel: string | null = null;
           const evaluateCurrentExecutionPolicy = async () => {
             currentAuthorityRevision = null;
             currentPolicyAuthorityRevision = null;
+            currentIronclawChannel = null;
             const currentUser = await userRepository.findById(userId);
             if (!currentUser) return {
               allowed: false,
@@ -793,6 +796,7 @@ export function createEventsRouter(): Router {
               reason: 'Execution owner no longer exists.',
             };
             currentAuthorityRevision = currentUser.execution_authority_revision;
+            currentIronclawChannel = currentUser.ironclaw_channel;
             currentPolicyAuthorityRevision = await getPolicyAuthorityRevision();
             const currentPolicies = await policyRepositoryAdapter.getAllPolicies();
             return new PolicyEvaluator(policyRepositoryAdapter).evaluate(
@@ -810,7 +814,7 @@ export function createEventsRouter(): Router {
           const claimPolicy = await evaluateCurrentExecutionPolicy();
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
-          let savedPlan: { id: string } | null = null;
+          let savedPlan: { id: string; dispatchAuthorityUpdatedAt: Date } | null = null;
           const executionSteps = [{ type: outcome.selectedAction.actionType, status: 'pending' }];
           if (claimPolicy.allowed && !claimPolicy.requiresApproval) try {
             savedPlan = await inferenceReceiptRepository.claimExecutionForDecision(
@@ -845,12 +849,10 @@ export function createEventsRouter(): Router {
               executionPlanId: savedPlan.id,
               credentialAuthorityRevision: currentAuthorityRevision,
               credentialPolicyAuthorityRevision: currentPolicyAuthorityRevision,
+              dispatchAuthorityId: decision.id,
+              dispatchAuthorityUpdatedAt: savedPlan.dispatchAuthorityUpdatedAt.toISOString(),
             },
           };
-          if (user?.ironclaw_channel) {
-            executionAction.parameters['ironclawChannel'] = user.ironclaw_channel;
-          }
-
           // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
           const executionRouter = await getRouter();
           let terminalEvent: ExecutionEvent | null = null;
@@ -899,6 +901,7 @@ export function createEventsRouter(): Router {
               executionAction,
               riskAssessment,
               userId,
+              { ironclawChannel: currentIronclawChannel ?? undefined },
             )) {
               if (event.planId !== savedPlan.id) {
                 throw new Error('Execution event did not match the claimed plan');
@@ -967,15 +970,34 @@ export function createEventsRouter(): Router {
             terminalPayload = {
               error: normalizeExecutionError(error),
             };
+            if (error instanceof NoRequestExecutionError) {
+              try {
+                const recorded = await inferenceReceiptRepository
+                  .markExecutionFailedBeforeDispatchForDecision(
+                    userId,
+                    decision.id,
+                    savedPlan.id,
+                    terminalPayload['error'] as string,
+                  );
+                executionResult = recorded
+                  ? { status: 'failed', planId: savedPlan.id }
+                  : { status: 'ambiguous', planId: savedPlan.id };
+              } catch {
+                executionResult = { status: 'ambiguous', planId: savedPlan.id };
+              }
+              preDispatchClosed = true;
+            }
             // The router's exported error classes are also available to
             // adapters, so an exception's type cannot prove it happened before
             // an effect. Leave the plan and guard running for reconciliation.
-            log.warn('Execution stream became ambiguous; reconciliation required', {
-              userId,
-              decisionId: decision.id,
-              planId: savedPlan.id,
-              error: terminalPayload['error'],
-            });
+            if (!preDispatchClosed) {
+              log.warn('Execution stream became ambiguous; reconciliation required', {
+                userId,
+                decisionId: decision.id,
+                planId: savedPlan.id,
+                error: terminalPayload['error'],
+              });
+            }
           }
 
           if (preDispatchClosed) {

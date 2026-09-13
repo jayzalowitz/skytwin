@@ -318,6 +318,7 @@ describe('oauthRepository (multi-account)', () => {
       const [sql, params] = mockQuery.mock.calls[0]!;
       expect(String(sql)).toContain('credential_revision = $6');
       expect(String(sql)).toContain("state IN ('request_started', 'ambiguous')");
+      expect(String(sql)).toContain('l.provider = oauth_tokens.provider');
       expect(String(sql)).toContain('user_credential_vault_meta');
       expect(String(sql)).not.toContain('l.expires_at > now()');
       expect(params).toContain('stale-revision');

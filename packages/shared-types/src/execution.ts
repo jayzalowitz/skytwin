@@ -6,6 +6,10 @@ import { CandidateAction } from './decision.js';
 export interface ExecutionPlan {
   id: string;
   decisionId: string;
+  /** Router-authored execution owner. Never accepted from adapter plan output. */
+  executionOwnerId?: string;
+  /** Router-authored remote channel. Never accepted from candidate parameters. */
+  executionChannel?: string;
   action: CandidateAction;
   steps: ExecutionStep[];
   rollbackSteps: ExecutionStep[];

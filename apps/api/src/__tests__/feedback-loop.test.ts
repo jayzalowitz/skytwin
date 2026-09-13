@@ -18,6 +18,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
+import { NoRequestExecutionError } from '@skytwin/execution-router';
 
 const {
   fakeApprovalRepo,
@@ -264,6 +265,7 @@ beforeEach(() => {
       id: '55555555-5555-4555-8555-555555555555',
       status: 'in_progress',
       observed_result: {},
+      updated_at: new Date('2026-09-13T00:00:00.000Z'),
     },
     plan: { id: '44444444-4444-4444-8444-444444444444' },
   });
@@ -552,7 +554,12 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       snapshot.parameters['target'] = 'tampered-after-admission';
       return {
         created: true,
-        barrier: { id: '55555555-5555-4555-8555-555555555555', status: 'in_progress', observed_result: {} },
+        barrier: {
+          id: '55555555-5555-4555-8555-555555555555',
+          status: 'in_progress',
+          observed_result: {},
+          updated_at: new Date('2026-09-13T00:00:00.000Z'),
+        },
         plan: { id: '44444444-4444-4444-8444-444444444444' },
       };
     });
@@ -839,6 +846,67 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       userId: USER_ID,
       error: 'Execution authority was revoked before router invocation.',
     });
+  });
+
+  it('durably records router-proven no-request refusal as failed', async () => {
+    fakeExecutionRouter.executeWithRouting.mockRejectedValueOnce(
+      new NoRequestExecutionError('request-start authority refused'),
+    );
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: {
+        status: 'failed',
+        planId: '44444444-4444-4444-8444-444444444444',
+        error: 'Execution was refused before request start',
+      },
+    });
+    expect(fakeExecutionAdmissionRepo.failBeforeDispatch).toHaveBeenCalledWith({
+      admission: expect.objectContaining({ created: true }),
+      userId: USER_ID,
+      error: '[redacted:execution-error]',
+    });
+    expect(fakeExecutionAdmissionRepo.observeTerminal).not.toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'ambiguous' }),
+    );
+  });
+
+  it('lets request-start refuse an approval channel revision changed during a final await', async () => {
+    let channelChanged = false;
+    fakeUserRepo.findById.mockResolvedValue({
+      id: USER_ID, trust_tier: 'moderate_autonomy', autonomy_settings: {},
+      ironclaw_channel: 'old-channel', execution_authority_revision: 'old-channel-revision',
+    });
+    fakeExecutionAdmissionRepo.isDispatchable.mockImplementationOnce(async () => {
+      channelChanged = true;
+      return true;
+    });
+    fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (
+      action: { parameters: Record<string, unknown> },
+      _risk: unknown,
+      _userId: string,
+      context: { ironclawChannel?: string },
+    ) => {
+      expect(channelChanged).toBe(true);
+      expect(action.parameters['credentialAuthorityRevision']).toBe('old-channel-revision');
+      expect(context.ironclawChannel).toBe('old-channel');
+      throw new NoRequestExecutionError('channel authority changed before request start');
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: { status: 'failed', error: 'Execution was refused before request start' },
+    });
+    expect(fakeExecutionAdmissionRepo.failBeforeDispatch).toHaveBeenCalledOnce();
+    expect(fakeExecutionAdmissionRepo.observeTerminal).not.toHaveBeenCalled();
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

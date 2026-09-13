@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { validateManifest, isAdapterShape, REQUIRED_ADAPTER_METHODS } from '../adapter-manifest.js';
+import { RESERVED_ADAPTER_NAMES } from '../adapter-discovery.js';
 // ── Test helpers ─────────────────────────────────────────────────────
 
 function makeValidManifestInput(): Record<string, unknown> {
@@ -17,6 +18,14 @@ function makeValidManifestInput(): Record<string, unknown> {
     healthEndpoint: '/health',
   };
 }
+
+describe('adapter discovery authority names', () => {
+  it('reserves every adapter identity with privileged router semantics', () => {
+    expect(RESERVED_ADAPTER_NAMES).toEqual(new Set([
+      'ironclaw', 'direct', 'openclaw', 'mcp-host',
+    ]));
+  });
+});
 
 // ── Tests ────────────────────────────────────────────────────────────
 

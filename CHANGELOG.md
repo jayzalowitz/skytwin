@@ -58,10 +58,12 @@ All notable changes to SkyTwin will be documented in this file.
   durable request-start lease after routing and plan construction. The lease
   binds the exact owner, account row and revision, action, decision, plan, and
   admission/receipt authority while persisting no token or bearer capability.
-  Disconnect, reconnect, refresh, and rotation serialize on the credential row:
-  whichever wins first fences the other, and active/ambiguous requests produce
-  a typed pending response instead of a false completed disconnect. Plan replay
-  is refused and API admission snapshots never carry raw OAuth credentials.
+  Disconnect, reconnect, refresh, and rotation serialize on the credential row
+  and provider: whichever wins first fences the other, while unrelated
+  non-credential dispatches do not block OAuth updates. Active or ambiguous
+  requests produce a typed pending response instead of a false completed
+  disconnect. Plan replay is refused and API admission snapshots never carry
+  raw OAuth credentials.
   Once request-start is committed, elapsed
   time changes an overdue lease to durable ambiguity; it never authorizes a
   retry or lets credential mutation treat a possibly-started request as absent.
@@ -69,6 +71,24 @@ All notable changes to SkyTwin will be documented in this file.
   grant under the exact live vault generation and key version before returning
   or refreshing it. Vault initialization also fences provider responses that
   began before initialization from writing a late plaintext token.
+- Every adapter now consumes a durable one-shot request-start authority after
+  routing and plan construction. The claim rechecks the exact owner, current
+  policy, admission/receipt revision, action, decision, plan, and adapter; a
+  completed, failed, expired, or ambiguous claim cannot be replayed. Adapter
+  plans must preserve the admitted effect type, parameters, target, timeout,
+  and rollback shape before the claim is issued. Changing the trusted IronClaw
+  channel rotates the same owner authority revision, and an adapter-private
+  single-use preflight proof prevents a second endpoint-readiness await after
+  the request-start claim. Buffered streaming evidence has fixed event and byte
+  ceilings, including terminal payloads. MCP tool calls are attempted
+  once because the protocol does not provide a universal mutability or
+  idempotency contract; response loss remains durable ambiguity and cannot
+  trigger fallback execution. An action with an explicit MCP server or tool
+  target is pinned to the built-in MCP host, with exact server/tool authority
+  and no fallback to Direct, IronClaw, OpenClaw, or a discovered plugin.
+  IronClaw receives only the trusted execution envelope plus recursively
+  normalized action parameters; nested router-control fields and
+  credential-shaped values are stripped before the HTTP boundary.
 - Account-unknown Google callbacks now use a one-shot, DB-timestamped pending
   authority. After verified identity resolution, the claim is bound to the
   exact owner generation and a provider/account tombstone before token storage.

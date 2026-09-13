@@ -47,6 +47,7 @@ vi.mock('@skytwin/db', () => ({
   serviceCredentialRepository: mockServiceCredentialRepository,
   ironClawToolRepository: mockIronClawToolRepository,
   credentialRequirementRepository: { register: vi.fn() },
+  executionDispatchLeaseRepository: { start: vi.fn(), terminalize: vi.fn() },
 }));
 
 vi.mock('@skytwin/config', () => ({
