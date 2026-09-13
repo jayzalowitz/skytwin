@@ -806,27 +806,46 @@ async function runOwnedDownload(
             "Artifact body exceeded exact registry size",
           );
         }
-        await out.write(chunk);
-        totalBytes += chunk.length;
-        bytesSinceFlush += chunk.length;
-        if (bytesSinceFlush >= PROGRESS_FLUSH_BYTES) {
-          bytesSinceFlush = 0;
+        let chunkOffset = 0;
+        while (chunkOffset < chunk.length) {
+          const remaining = chunk.length - chunkOffset;
+          const { bytesWritten } = await out.write(
+            chunk,
+            chunkOffset,
+            remaining,
+          );
           if (
-            !(await commitDurableCheckpoint({
-              out,
-              partialPath,
-              downloadId: download.id,
-              model,
-              bytesDownloaded: totalBytes,
-              validator: responseValidator,
-            }))
+            !Number.isSafeInteger(bytesWritten) ||
+            bytesWritten <= 0 ||
+            bytesWritten > remaining
           ) {
-            throw new ArtifactTransferError(
-              "cancelled",
-              "Download state changed during transfer",
-            );
+            throw new Error("partial_artifact_write_made_no_progress");
           }
-          durableBytes = totalBytes;
+          chunkOffset += bytesWritten;
+          totalBytes += bytesWritten;
+          bytesSinceFlush += bytesWritten;
+          if (bytesSinceFlush >= PROGRESS_FLUSH_BYTES) {
+            bytesSinceFlush = 0;
+            if (
+              !(await commitDurableCheckpoint({
+                out,
+                partialPath,
+                downloadId: download.id,
+                model,
+                bytesDownloaded: totalBytes,
+                validator: responseValidator,
+              }))
+            ) {
+              throw new ArtifactTransferError(
+                "cancelled",
+                "Download state changed during transfer",
+              );
+            }
+            durableBytes = totalBytes;
+          }
+          if (handle.paused)
+            throw new ArtifactTransferError("cancelled", "Download was paused");
+          if (handle.cancelled) return;
         }
       }
       if (

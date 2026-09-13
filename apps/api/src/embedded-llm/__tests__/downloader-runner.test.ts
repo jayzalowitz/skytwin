@@ -260,6 +260,134 @@ describe("download runner cleanup and resumability", () => {
     ).toHaveLength(2);
   });
 
+  it("retries short writes until the complete response chunk is persisted", async () => {
+    const dir = tempDir();
+    const row = testRow(dir);
+    const fakeHandle = {
+      write: vi.fn().mockImplementation(
+        async (chunk: Uint8Array, _offset: number, length: number) => ({
+          bytesWritten: Math.min(1, length),
+          buffer: chunk,
+        }),
+      ),
+      sync: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      stat: vi.fn().mockResolvedValue({
+        isFile: () => true,
+        nlink: 1n,
+        size: 0n,
+        dev: 1n,
+        ino: 1n,
+      }),
+    };
+
+    await runDownload(
+      row,
+      dependencies({
+        openPartial: vi
+          .fn()
+          .mockResolvedValue(fakeHandle) as unknown as typeof open,
+        modelDir: () => dir,
+      }),
+    );
+
+    expect(fakeHandle.write.mock.calls.map((call) => call.slice(1))).toEqual([
+      [0, 4],
+      [1, 3],
+      [2, 2],
+      [3, 1],
+    ]);
+    expect(mockRepo.checkpointProgress).toHaveBeenCalledWith(row.id, bytes.length);
+    expect(mockRepo.transitionStatus).toHaveBeenCalledWith(
+      row.id,
+      ["downloading"],
+      "verifying",
+      { bytesDownloaded: bytes.length },
+    );
+  });
+
+  it("checkpoints only bytes written before a pause interrupts a short-write loop", async () => {
+    const dir = tempDir();
+    const row = testRow(dir);
+    const partial = `${row.target_path}.${row.id}.partial`;
+    const fakeHandle = {
+      write: vi.fn().mockImplementation(
+        async (chunk: Uint8Array, offset: number) => {
+          writeFileSync(partial, chunk.subarray(offset, offset + 1));
+          expect(await pauseDownload(row.id)).toBe(true);
+          return { bytesWritten: 1, buffer: chunk };
+        },
+      ),
+      sync: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      stat: vi.fn().mockResolvedValue({
+        isFile: () => true,
+        nlink: 1n,
+        size: 0n,
+        dev: 1n,
+        ino: 1n,
+      }),
+    };
+
+    await runDownload(
+      row,
+      dependencies({
+        openPartial: vi
+          .fn()
+          .mockResolvedValue(fakeHandle) as unknown as typeof open,
+        modelDir: () => dir,
+      }),
+    );
+
+    expect(fakeHandle.write).toHaveBeenCalledOnce();
+    expect(mockRepo.checkpointProgress).toHaveBeenCalledWith(row.id, 1);
+    expect(mockRepo.transitionStatus).toHaveBeenCalledWith(
+      row.id,
+      ["downloading"],
+      "paused",
+      { bytesDownloaded: 1 },
+    );
+  });
+
+  it("fails instead of spinning when a file write makes zero progress", async () => {
+    const dir = tempDir();
+    const row = testRow(dir);
+    const fakeHandle = {
+      write: vi.fn().mockResolvedValue({ bytesWritten: 0, buffer: bytes }),
+      sync: vi.fn().mockResolvedValue(undefined),
+      close: vi.fn().mockResolvedValue(undefined),
+      stat: vi.fn().mockResolvedValue({
+        isFile: () => true,
+        nlink: 1n,
+        size: 0n,
+        dev: 1n,
+        ino: 1n,
+      }),
+    };
+
+    await runDownload(
+      row,
+      dependencies({
+        openPartial: vi
+          .fn()
+          .mockResolvedValue(fakeHandle) as unknown as typeof open,
+        modelDir: () => dir,
+      }),
+    );
+
+    expect(fakeHandle.write).toHaveBeenCalledOnce();
+    expect(mockRepo.checkpointProgress).not.toHaveBeenCalled();
+    expect(mockRepo.transitionStatus).toHaveBeenCalledWith(
+      row.id,
+      ["downloading", "verifying", "installing"],
+      "failed",
+      {
+        error: "[download_io_error] Local model storage operation failed",
+        bytesDownloaded: 0,
+      },
+    );
+  });
+
   it("does not advance the durable pause boundary when file sync fails", async () => {
     const dir = tempDir();
     const row = testRow(dir);
@@ -268,8 +396,9 @@ describe("download runner cleanup and resumability", () => {
       releaseWrite = resolve;
     });
     const fakeHandle = {
-      write: vi.fn().mockImplementation(async () => {
+      write: vi.fn().mockImplementation(async (chunk: Uint8Array) => {
         releaseWrite();
+        return { bytesWritten: chunk.length, buffer: chunk };
       }),
       sync: vi.fn().mockRejectedValue(new Error("fsync failed")),
       close: vi.fn().mockResolvedValue(undefined),
@@ -337,6 +466,7 @@ describe("download runner cleanup and resumability", () => {
     const fakeHandle = {
       write: vi.fn().mockImplementation(async (chunk: Uint8Array) => {
         writeFileSync(partial, chunk);
+        return { bytesWritten: chunk.length, buffer: chunk };
       }),
       sync: vi.fn().mockResolvedValue(undefined),
       close: vi.fn().mockRejectedValue(new Error("close failed")),
