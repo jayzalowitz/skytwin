@@ -48,12 +48,16 @@ function app(userId?: string): Express {
   return instance;
 }
 
-async function request(instance: Express, method: string): Promise<{ status: number; body: unknown }> {
+async function request(
+  instance: Express,
+  method: string,
+  decisionId = DECISION,
+): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const server = instance.listen(0, () => {
       const address = server.address();
       if (!address || typeof address === 'string') return reject(new Error('missing address'));
-      fetch(`http://127.0.0.1:${address.port}/api/decisions/${DECISION}/receipt`, { method })
+      fetch(`http://127.0.0.1:${address.port}/api/decisions/${decisionId}/receipt`, { method })
         .then(async (response) => {
           const body = await response.json().catch(() => null);
           server.close();
@@ -69,6 +73,16 @@ describe('inference receipt routes', () => {
   it('requires an authenticated principal even when development auth bypass is enabled', async () => {
     expect((await request(app(), 'GET')).status).toBe(401);
     expect(mocks.findByDecisionForUser).not.toHaveBeenCalled();
+  });
+
+  it.each(['GET', 'DELETE'])('rejects a malformed decision ID before the %s repository call', async (method) => {
+    const response = await request(app(USER), method, 'not-a-uuid');
+    expect(response).toEqual({
+      status: 400,
+      body: { error: 'invalid_decision_id', message: 'Decision ID must be a UUID.' },
+    });
+    expect(mocks.findByDecisionForUser).not.toHaveBeenCalled();
+    expect(mocks.deleteByDecisionForUser).not.toHaveBeenCalled();
   });
 
   it('returns only the receipt found through the owner-scoped repository', async () => {

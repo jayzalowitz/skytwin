@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { decisionRepository, explanationRepository, inferenceReceiptRepository } from '@skytwin/db';
 import { snapshotInferenceReceipt, verifyInferenceReceiptSeal } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
-import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+import { bindUserIdParamValidator, bindUuidParamValidator } from '../middleware/validate-uuid.js';
 
 /**
  * Create the decisions query router.
@@ -10,6 +10,7 @@ import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 export function createDecisionsRouter(): Router {
   const router = Router();
   bindUserIdParamValidator(router);
+  bindUuidParamValidator(router, 'decisionId', 'invalid_decision_id', 'Decision ID');
   bindUserIdParamOwnership(router);
 
   /**
