@@ -53,26 +53,56 @@ export const inferenceReceiptRepository = {
     inputs: CreateInferenceReceiptInput[],
     completion: InferenceReceiptCompletionLinkage,
   ): Promise<InferenceReceiptRow[] | null> {
-    const verified = inputs.map((input) => ({
-      input,
-      result: verifyInferenceReceiptExport(input.bundle, {
-        trustedRecorderKeys: input.trustedRecorderKeys,
-        trustedProviderKeys: input.trustedProviderKeys,
-        verifyAttestation: input.verifyAttestation,
-      }),
-    }));
+    const verified: Array<{
+      bundle: InferenceReceiptExportV1;
+      result: ReturnType<typeof verifyInferenceReceiptExport>;
+    }> = [];
+    for (const input of inputs) {
+      const bundle = snapshotInferenceReceiptExport(input.bundle);
+      if (!bundle) return null;
+      verified.push({
+        bundle,
+        result: verifyInferenceReceiptExport(bundle, {
+          trustedRecorderKeys: input.trustedRecorderKeys,
+          trustedProviderKeys: input.trustedProviderKeys,
+          verifyAttestation: input.verifyAttestation,
+        }),
+      });
+    }
     if (verified.some(({ result }) => !result.valid || !result.trusted)) return null;
-    if (verified.some(({ input }) => {
-      const receipt = input.bundle.receipt;
+    if (verified.some(({ bundle }) => {
+      const receipt = bundle.receipt;
       return receipt.userId !== userId
         || receipt.decisionId !== completion.decisionId
         || receipt.explanationId !== completion.explanationId;
     })) return null;
 
     return withTransaction(async (client) => {
+      // The decision row is the per-capture serialization point. Without
+      // this lock, two first attempts can both insert different receipt IDs
+      // before racing on the completion marker, leaving one logical capture
+      // with evidence from two executions.
+      const authority = await client.query(
+        `SELECT d.id
+           FROM decisions d
+           JOIN explanation_records er ON er.decision_id = d.id
+          WHERE d.user_id = $1 AND d.id = $2 AND er.id = $3
+          FOR UPDATE OF d`,
+        [userId, completion.decisionId, completion.explanationId],
+      );
+      if (!authority.rows[0]) throw new Error('Inference receipt linkage was not persisted');
+
+      const existingCompletion = await client.query(
+        `SELECT explanation_id FROM inference_receipt_completions WHERE decision_id = $1`,
+        [completion.decisionId],
+      );
+      if (existingCompletion.rows[0]) {
+        throw new Error('Inference receipt capture was already finalized');
+      }
+
       const rows: InferenceReceiptRow[] = [];
-      for (const { input } of verified) {
-        const receipt = input.bundle.receipt;
+      for (const { bundle } of verified) {
+        const receipt = bundle.receipt;
         const result = await client.query<InferenceReceiptRow>(
           `INSERT INTO inference_receipts (id, version, decision_id, explanation_id, status, receipt, trusted)
            SELECT $2, $3, d.id, er.id, $6, $7::JSONB, true
@@ -80,7 +110,8 @@ export const inferenceReceiptRepository = {
            JOIN explanation_records er ON er.decision_id = d.id
            WHERE d.user_id = $1 AND d.id = $4 AND er.id = $5
              AND $1 = $8 AND $4 = $9 AND $5 = $10
-           RETURNING *`,
+           RETURNING id, version::INT4 AS version, decision_id, explanation_id,
+             status, receipt, trusted, created_at`,
           [userId, receipt.id, receipt.version, receipt.decisionId, receipt.explanationId,
             receipt.status, JSON.stringify(receipt), receipt.userId, receipt.decisionId, receipt.explanationId],
         );
@@ -93,9 +124,7 @@ export const inferenceReceiptRepository = {
          FROM decisions d
          JOIN explanation_records er ON er.decision_id = d.id
          WHERE d.user_id = $1 AND d.id = $2 AND er.id = $3
-         ON CONFLICT (decision_id) DO UPDATE SET
-           explanation_id = EXCLUDED.explanation_id,
-           completed_at = now()
+         ON CONFLICT (decision_id) DO NOTHING
          RETURNING decision_id`,
         [userId, completion.decisionId, completion.explanationId],
       );
