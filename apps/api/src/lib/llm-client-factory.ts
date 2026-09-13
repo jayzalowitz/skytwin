@@ -49,9 +49,9 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
-import { LlmClient } from "@skytwin/llm-client";
+import { clearEmbeddedPortCache, LlmClient } from "@skytwin/llm-client";
 import type { ProviderEntry } from "@skytwin/llm-client";
-import { inspectManagedActiveModel } from "@skytwin/embedded-llm";
+import { ACTIVE_MODEL_MANIFEST } from "@skytwin/embedded-llm";
 
 /** Module-level singleton so we construct the client once per process */
 let _cached: LlmClient | null | undefined;
@@ -191,7 +191,10 @@ function hasLlamaModel(env: Record<string, string | undefined>): boolean {
   const modelDir =
     env["SKYTWIN_LLAMA_MODELS"] ??
     join(homedir(), ".skytwin", "models", "llama");
-  return inspectManagedActiveModel(modelDir).state === "verified";
+  // This synchronous function only decides whether to include the embedded
+  // provider in a cached chain. The async port factory performs the authoritative
+  // manifest, digest and runtime compatibility verification before use.
+  return existsSync(join(modelDir, ACTIVE_MODEL_MANIFEST));
 }
 
 /**
@@ -233,5 +236,14 @@ export function getLlmClientFromConfigFresh(
  * Reset the singleton. Only for tests.
  */
 export function _resetLlmClientCache(): void {
+  _cached = undefined;
+}
+
+/**
+ * Refresh every process-local layer that can retain managed-model discovery.
+ * Activation calls this only after the durable active manifest has switched.
+ */
+export function refreshManagedLlmRuntime(): void {
+  clearEmbeddedPortCache();
   _cached = undefined;
 }

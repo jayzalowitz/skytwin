@@ -10,6 +10,56 @@ beforeEach(() => {
 });
 
 describe("model download compare-and-set updates", () => {
+  it("normalizes CockroachDB INT8 byte strings before callers resume", async () => {
+    queryMock.mockResolvedValue({
+      rowCount: 1,
+      rows: [{
+        id: "id",
+        user_id: "user-id",
+        model_id: "model-id",
+        target_path: "/models/model.gguf",
+        total_bytes: "1117320736",
+        bytes_downloaded: "16777216",
+        sha256_expected: "a".repeat(64),
+        status: "paused",
+        error: null,
+        started_at: new Date(),
+        paused_at: new Date(),
+        completed_at: null,
+      }],
+    });
+    const row = await modelDownloadRepository.findById("id");
+    expect(row?.total_bytes).toBe(1_117_320_736);
+    expect(row?.bytes_downloaded).toBe(16_777_216);
+    expect(typeof row?.bytes_downloaded).toBe("number");
+  });
+
+  it.each(["01", "-1", "1.5", "9007199254740992"])(
+    "rejects unsafe or non-canonical CockroachDB INT8 bytes %s",
+    async (bytesDownloaded) => {
+      queryMock.mockResolvedValue({
+        rowCount: 1,
+        rows: [{
+          id: "id",
+          user_id: "user-id",
+          model_id: "model-id",
+          target_path: "/models/model.gguf",
+          total_bytes: "1117320736",
+          bytes_downloaded: bytesDownloaded,
+          sha256_expected: "a".repeat(64),
+          status: "paused",
+          error: null,
+          started_at: new Date(),
+          paused_at: new Date(),
+          completed_at: null,
+        }],
+      });
+      await expect(modelDownloadRepository.findById("id")).rejects.toThrow(
+        /model_downloads/,
+      );
+    },
+  );
+
   it("checkpoints progress only while the owning runner is downloading", async () => {
     queryMock.mockResolvedValue({ rowCount: 1, rows: [] });
     await expect(

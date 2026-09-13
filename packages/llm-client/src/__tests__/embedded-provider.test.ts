@@ -6,7 +6,7 @@ vi.mock('@skytwin/embedded-llm', () => ({
 
 import { createEmbeddedTextPort } from '@skytwin/embedded-llm';
 import {
-  _clearEmbeddedPortCache,
+  clearEmbeddedPortCache,
   generate as embeddedGenerate,
 } from '../providers/embedded.js';
 
@@ -20,11 +20,11 @@ beforeEach(() => {
     capabilities: { available: true, modelName: 'fake.gguf', contextWindow: 4096 },
     generate: generateMock,
   });
-  _clearEmbeddedPortCache();
+  clearEmbeddedPortCache();
 });
 
 afterEach(() => {
-  _clearEmbeddedPortCache();
+  clearEmbeddedPortCache();
 });
 
 describe('embedded provider', () => {
@@ -96,6 +96,15 @@ describe('embedded provider', () => {
     await embeddedGenerate('', 'auto', 'hi');
     await embeddedGenerate('', 'auto', 'hello');
     expect(createPortMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-discovers the automatic port after production cache invalidation', async () => {
+    generateMock.mockResolvedValue('first');
+    await embeddedGenerate('', 'auto', 'hi');
+    clearEmbeddedPortCache();
+    generateMock.mockResolvedValue('second');
+    await expect(embeddedGenerate('', 'auto', 'again')).resolves.toBe('second');
+    expect(createPortMock).toHaveBeenCalledTimes(2);
   });
 
   it('uses separate cache entries for different model paths', async () => {

@@ -20,16 +20,14 @@ CREATE TABLE IF NOT EXISTS model_downloads (
   -- registry lives in the `@skytwin/embedded-llm` package, not in DB.
   model_id STRING NOT NULL,
   -- Absolute path on the API host's filesystem where the final GGUF
-  -- will land. We download to `<target_path>.partial` and atomically
-  -- rename on success.
+  -- will land. Each attempt uses a row-id-namespaced partial plus a durable
+  -- validator sidecar; verified activation publishes a content-addressed copy.
   target_path STRING NOT NULL,
-  -- Total bytes per registry (matches registry.approxBytes at start,
-  -- gets corrected to Content-Length on first response if different).
+  -- Exact immutable registry byte count. A disagreeing response is rejected.
   total_bytes INT8 NOT NULL,
   bytes_downloaded INT8 NOT NULL DEFAULT 0,
-  -- SHA-256 hex (64 chars) from registry. Verified after download
-  -- completes; mismatch → status='failed'. Empty / all-zeros = skip
-  -- verification (placeholder hashes in v1 registry).
+  -- Mandatory SHA-256 from the immutable registry. It is verified before
+  -- activation; placeholder or malformed digests are rejected at module load.
   sha256_expected STRING NOT NULL,
   status STRING NOT NULL CHECK (status IN (
     'pending', 'downloading', 'paused', 'verifying', 'installing', 'complete', 'failed', 'cancelled'

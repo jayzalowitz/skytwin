@@ -14,7 +14,6 @@ import { bindUserIdParamValidator } from "../middleware/validate-uuid.js";
 import {
   cancelDownload,
   pauseDownload,
-  resolveModelDir,
   startDownload,
 } from "../embedded-llm/downloader.js";
 
@@ -56,9 +55,6 @@ async function loadOwnedDownload(
  *   GET  /api/embedded-llm/recommend-default?bracket=<bucket>
  *
  * Downloader (AC#2):
- *   GET  /api/embedded-llm/model-dir
- *     Reports the resolved model directory the API will write to —
- *     useful for "where's my model going?" debugging UX.
  *   POST /api/embedded-llm/downloads/start    body: { userId, modelId }
  *     Idempotent on (userId, modelId). Returns the row + `resumed` flag.
  *   GET  /api/embedded-llm/downloads/:id
@@ -109,10 +105,6 @@ export function createEmbeddedLlmRouter(): Router {
   });
 
   // ── Downloader (AC#2) ─────────────────────────────────────────
-
-  router.get("/model-dir", (_req, res) => {
-    res.json({ modelDir: resolveModelDir() });
-  });
 
   router.post("/downloads/start", requireOwnership, async (req, res, next) => {
     try {
@@ -249,7 +241,6 @@ export function createEmbeddedLlmRouter(): Router {
 interface DownloadJson {
   id: string;
   modelId: string;
-  targetPath: string;
   totalBytes: number;
   bytesDownloaded: number;
   status: string;
@@ -270,7 +261,6 @@ function rowToJson(r: import("@skytwin/db").ModelDownloadRow): DownloadJson {
   return {
     id: r.id,
     modelId: r.model_id,
-    targetPath: r.target_path,
     totalBytes,
     bytesDownloaded,
     status: r.status,

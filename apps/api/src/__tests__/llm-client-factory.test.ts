@@ -5,9 +5,11 @@ import { describe, it, expect, afterEach } from 'vitest';
 
 // We test the non-caching fresh variant to avoid cross-test contamination.
 import {
+  getLlmClientFromConfig,
   getLlmClientFromConfigFresh,
   _resetLlmClientCache,
   buildProviderChain,
+  refreshManagedLlmRuntime,
 } from '../lib/llm-client-factory.js';
 
 afterEach(() => {
@@ -112,6 +114,22 @@ describe('getLlmClientFromConfigFresh', () => {
     // Just verify it doesn't throw and returns a client
     const client = getLlmClientFromConfigFresh(env);
     expect(client).not.toBeNull();
+  });
+});
+
+describe('managed runtime refresh', () => {
+  it('rebuilds a singleton that was cached before a local model became available', () => {
+    const beforeInstall = getLlmClientFromConfig({ SKYTWIN_DISABLE_EMBEDDED: '1' });
+    expect(beforeInstall).toBeNull();
+
+    const afterInstall = {
+      SKYTWIN_LLAMACPP_BIN: '/bin/sh',
+      SKYTWIN_LLAMA_MODEL: '/etc/hosts',
+    };
+    expect(getLlmClientFromConfig(afterInstall)).toBeNull();
+
+    refreshManagedLlmRuntime();
+    expect(getLlmClientFromConfig(afterInstall)).not.toBeNull();
   });
 });
 

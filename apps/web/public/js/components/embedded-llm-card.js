@@ -13,7 +13,6 @@
 import {
   cancelModelDownload,
   escapeHtml,
-  fetchEmbeddedLlmModelDir,
   fetchEmbeddedLlmRegistry,
   fetchModelDownload,
   listUserModelDownloads,
@@ -39,10 +38,9 @@ function getCurrentUserId() {
 // Statuses that mean "something is in flight" — drives the polling
 // loop and keeps the card showing a progress UI rather than the picker.
 const ACTIVE_STATUSES = new Set(['pending', 'downloading', 'verifying', 'installing']);
+const CANCELLABLE_STATUSES = new Set(['pending', 'downloading', 'verifying']);
 // Subset where the backend can actually pause. pauseDownload() returns
 // ok:false for verifying/installing, so we hide the Pause button there.
-// Cancel still works through verify/install — the runner checks the
-// cancelled flag at phase boundaries.
 const PAUSABLE_STATUSES = new Set(['pending', 'downloading']);
 
 const POLL_INTERVAL_MS = 1000;
@@ -111,8 +109,10 @@ function downloadCardHtml(download, modelName) {
       const pauseBtn = isPausable
         ? `<button class="btn btn-outline btn-sm" data-action="embedded-pause-download" data-download-id="${escapeHtml(download.id)}">Pause</button>`
         : '';
-      return `${pauseBtn}
-              <button class="btn btn-outline btn-sm" data-action="embedded-cancel-download" data-download-id="${escapeHtml(download.id)}">Cancel</button>`;
+      const cancelBtn = CANCELLABLE_STATUSES.has(status)
+        ? `<button class="btn btn-outline btn-sm" data-action="embedded-cancel-download" data-download-id="${escapeHtml(download.id)}">Cancel</button>`
+        : '';
+      return `${pauseBtn}${cancelBtn}`;
     }
     if (isPaused) {
       return `<button class="btn btn-primary btn-sm" data-action="embedded-resume-download" data-download-id="${escapeHtml(download.id)}">Resume</button>
@@ -145,15 +145,13 @@ function downloadCardHtml(download, modelName) {
  * changes and the DOM gets replaced atomically.
  */
 async function renderCardInto(container, userId) {
-  const [registryRes, dirRes, listRes] = await Promise.allSettled([
+  const [registryRes, listRes] = await Promise.allSettled([
     fetchEmbeddedLlmRegistry(),
-    fetchEmbeddedLlmModelDir(),
     listUserModelDownloads(userId),
   ]);
   const models = registryRes.status === 'fulfilled' && Array.isArray(registryRes.value?.models)
     ? registryRes.value.models
     : [];
-  const modelDir = dirRes.status === 'fulfilled' ? dirRes.value?.modelDir ?? '' : '';
   const downloads = listRes.status === 'fulfilled' && Array.isArray(listRes.value?.downloads)
     ? listRes.value.downloads
     : [];
@@ -194,7 +192,7 @@ async function renderCardInto(container, userId) {
       <div style="padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
         <div style="font-weight: 500; color: var(--success);">✓ Your twin's brain is installed</div>
         <div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.25rem;">
-          ${escapeHtml(completed.modelId)} · saved to <code>${escapeHtml(completed.targetPath)}</code>
+          ${escapeHtml(completed.modelId)} · ready for local use
         </div>
       </div>
     `;
@@ -204,7 +202,7 @@ async function renderCardInto(container, userId) {
   } else {
     body = `
       <div style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 0.75rem;">
-        Your twin works fully offline once a brain is installed. We'll download it once and save it to <code>${escapeHtml(modelDir)}</code>. No API keys, no per-message costs.
+        Your twin works fully offline once a brain is installed. We'll download it once into SkyTwin's managed local storage. No API keys, no per-message costs.
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: stretch;">
         <select class="form-input" id="embedded-model-select" style="flex: 1;">

@@ -61,6 +61,36 @@ describe('artifact transfer validation', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it('always releases a redirected connection when body cancellation rejects', async () => {
+    const artifact = model();
+    const cancel = vi.fn().mockRejectedValue(new Error('cancel failed'));
+    const release = vi.fn().mockResolvedValue(undefined);
+    const redirect = response(302, {
+      location: 'https://us.aws.cdn.hf.co/object',
+      'x-repo-commit': artifact.source.revision,
+      'x-linked-size': '4',
+      'x-linked-etag': `"${artifact.sha256}"`,
+    });
+    Object.defineProperty(redirect, 'body', { value: { cancel } });
+    const final = response(200, {
+      'content-length': '4',
+      'content-type': 'application/octet-stream',
+      etag: '"fixed"',
+    }, 'data');
+    const dependencies: ArtifactFetchDependencies = {
+      request: vi.fn()
+        .mockResolvedValueOnce({ response: redirect, release })
+        .mockResolvedValueOnce({ response: final, release: vi.fn() }),
+      resolve: vi.fn().mockResolvedValue(['8.8.8.8']),
+    };
+
+    await expect(fetchApprovedArtifact(
+      artifact, 0, null, new AbortController().signal, dependencies,
+    )).resolves.toMatchObject({ finalUrl: 'https://us.aws.cdn.hf.co/object' });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects canonical and redirect URLs with non-default ports', async () => {
     const base = model();
     const initialWithPort: ModelEntry = {

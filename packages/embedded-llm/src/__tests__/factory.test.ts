@@ -8,7 +8,7 @@ vi.mock("../llama-cpp-backend.js", async () => {
   return { ...actual, findFirstGgufModel: vi.fn() };
 });
 vi.mock("../managed-model-store.js", () => ({
-  inspectManagedActiveModel: vi.fn(),
+  inspectManagedActiveModelAsync: vi.fn(),
 }));
 vi.mock("../runtime-compatibility.js", () => ({
   isLlamaCppBuildCompatible: vi.fn(() => true),
@@ -22,7 +22,7 @@ vi.mock("../whisper-cpp-backend.js", async () => {
 
 import { createEmbeddedSttPort, createEmbeddedTextPort } from "../factory.js";
 import { LlamaCppTextBackend } from "../llama-cpp-backend.js";
-import { inspectManagedActiveModel } from "../managed-model-store.js";
+import { inspectManagedActiveModelAsync } from "../managed-model-store.js";
 import { MODEL_REGISTRY } from "../model-registry.js";
 import { isLlamaCppBuildCompatible } from "../runtime-compatibility.js";
 import { detectEmbeddedRuntimes } from "../runtime-detector.js";
@@ -34,13 +34,13 @@ import {
 } from "../whisper-cpp-backend.js";
 
 const mockDetect = vi.mocked(detectEmbeddedRuntimes);
-const mockInspectManaged = vi.mocked(inspectManagedActiveModel);
+const mockInspectManaged = vi.mocked(inspectManagedActiveModelAsync);
 const mockCompatible = vi.mocked(isLlamaCppBuildCompatible);
 const mockFindWhisper = vi.mocked(findFirstWhisperModel);
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mockInspectManaged.mockReturnValue({ state: "missing" });
+  mockInspectManaged.mockResolvedValue({ state: "missing" });
   mockCompatible.mockReturnValue(true);
   delete process.env["SKYTWIN_LLAMA_MODEL"];
   delete process.env["SKYTWIN_WHISPER_MODEL"];
@@ -102,7 +102,7 @@ describe("createEmbeddedTextPort", () => {
       whisper: { available: false, binaryPath: null, modelDir: null },
       piper: { available: false, binaryPath: null, modelDir: null },
     });
-    mockInspectManaged.mockReturnValue({
+    mockInspectManaged.mockResolvedValue({
       state: "verified",
       path: "/models/qwen.gguf",
       manifest: {} as never,
@@ -137,7 +137,7 @@ describe("createEmbeddedTextPort", () => {
       whisper: { available: false, binaryPath: null, modelDir: null },
       piper: { available: false, binaryPath: null, modelDir: null },
     });
-    mockInspectManaged.mockReturnValue({
+    mockInspectManaged.mockResolvedValue({
       state: "verified",
       path: "/models/qwen.gguf",
       manifest: {} as never,

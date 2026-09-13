@@ -25,6 +25,42 @@ export interface ModelDownloadRow {
   completed_at: Date | null;
 }
 
+interface ModelDownloadDatabaseRow
+  extends Omit<ModelDownloadRow, "total_bytes" | "bytes_downloaded"> {
+  /** Cockroach INT8 values are strings in node-postgres' default parser. */
+  total_bytes: number | string;
+  bytes_downloaded: number | string;
+}
+
+function normalizeInt8(
+  value: number | string,
+  field: "total_bytes" | "bytes_downloaded",
+): number {
+  if (typeof value === "string" && !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`model_downloads.${field} is not a canonical non-negative INT8`);
+  }
+  const normalized = Number(value);
+  if (!Number.isSafeInteger(normalized) || normalized < 0) {
+    throw new Error(`model_downloads.${field} exceeds the safe byte-count range`);
+  }
+  return normalized;
+}
+
+function normalizeModelDownloadRow(
+  row: ModelDownloadDatabaseRow,
+): ModelDownloadRow {
+  const totalBytes = normalizeInt8(row.total_bytes, "total_bytes");
+  const bytesDownloaded = normalizeInt8(row.bytes_downloaded, "bytes_downloaded");
+  if (totalBytes <= 0 || bytesDownloaded > totalBytes) {
+    throw new Error("model_downloads byte counts are inconsistent");
+  }
+  return {
+    ...row,
+    total_bytes: totalBytes,
+    bytes_downloaded: bytesDownloaded,
+  };
+}
+
 export interface CreateModelDownloadInput {
   userId: string;
   modelId: string;
@@ -42,7 +78,7 @@ export interface CreateModelDownloadInput {
  */
 export const modelDownloadRepository = {
   async create(input: CreateModelDownloadInput): Promise<ModelDownloadRow> {
-    const result = await query<ModelDownloadRow>(
+    const result = await query<ModelDownloadDatabaseRow>(
       `INSERT INTO model_downloads
          (user_id, model_id, target_path, total_bytes, sha256_expected, status)
        VALUES ($1, $2, $3, $4, $5, 'pending')
@@ -57,36 +93,37 @@ export const modelDownloadRepository = {
     );
     const row = result.rows[0];
     if (!row) throw new Error("model download create returned no row");
-    return row;
+    return normalizeModelDownloadRow(row);
   },
 
   async findById(id: string): Promise<ModelDownloadRow | null> {
-    const result = await query<ModelDownloadRow>(
+    const result = await query<ModelDownloadDatabaseRow>(
       `SELECT * FROM model_downloads WHERE id = $1 LIMIT 1`,
       [id],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? normalizeModelDownloadRow(row) : null;
   },
 
   async listForUser(userId: string): Promise<ModelDownloadRow[]> {
-    const result = await query<ModelDownloadRow>(
+    const result = await query<ModelDownloadDatabaseRow>(
       `SELECT * FROM model_downloads
        WHERE user_id = $1
        ORDER BY started_at DESC
        LIMIT 50`,
       [userId],
     );
-    return result.rows;
+    return result.rows.map(normalizeModelDownloadRow);
   },
 
   /** Rows owned by a worker that cannot still be running after process restart. */
   async listWorkerOwnedNonterminal(): Promise<ModelDownloadRow[]> {
-    const result = await query<ModelDownloadRow>(
+    const result = await query<ModelDownloadDatabaseRow>(
       `SELECT * FROM model_downloads
        WHERE status IN ('downloading', 'verifying', 'installing')
        ORDER BY started_at ASC`,
     );
-    return result.rows;
+    return result.rows.map(normalizeModelDownloadRow);
   },
 
   /**
@@ -97,7 +134,7 @@ export const modelDownloadRepository = {
     userId: string,
     modelId: string,
   ): Promise<ModelDownloadRow | null> {
-    const result = await query<ModelDownloadRow>(
+    const result = await query<ModelDownloadDatabaseRow>(
       `SELECT * FROM model_downloads
        WHERE user_id = $1 AND model_id = $2
          AND status NOT IN ('complete', 'failed', 'cancelled')
@@ -105,7 +142,8 @@ export const modelDownloadRepository = {
        LIMIT 1`,
       [userId, modelId],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    return row ? normalizeModelDownloadRow(row) : null;
   },
 
   async updateProgress(id: string, bytesDownloaded: number): Promise<void> {

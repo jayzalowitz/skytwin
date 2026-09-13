@@ -22,7 +22,7 @@ import {
 } from "@skytwin/embedded-llm";
 
 export interface HardwareProfile {
-  /** Total physical RAM, GB (rounded). */
+  /** Total physical RAM, whole GB (floored to avoid overstating capacity). */
   ramGB: number;
   /** Free space on the volume that holds the model dir, GB (rounded). null if unknown. */
   freeDiskGB: number | null;
@@ -126,7 +126,7 @@ export function hasLlamaBinary(): boolean {
 
 /** Detect the machine's hardware profile. Pure reads; never throws. */
 export function detectHardware(): HardwareProfile {
-  const ramGB = Math.round(os.totalmem() / GB);
+  const ramGB = Math.floor(os.totalmem() / GB);
   return {
     ramGB,
     freeDiskGB: freeDiskGBFor(modelDir()),
@@ -152,6 +152,7 @@ export function recommendLocalModel(
   const ramFits = MODEL_REGISTRY.filter(
     (m) =>
       bracketRank(m.ramBracket) <= machineRank &&
+      m.minimumRamBytes <= hw.ramGB * GB &&
       m.supportedArchitectures.includes(hw.arch as "arm64" | "x64"),
   )
     .slice()
@@ -164,7 +165,7 @@ export function recommendLocalModel(
   const pick = ramFits.find(fitsDisk) ?? null;
 
   if (!pick) {
-    // Either nothing matches RAM (shouldn't happen — 4gb model exists) or disk is too tight.
+    const ramCompatible = ramFits.length > 0;
     const smallest = [...MODEL_REGISTRY].sort(
       (a, b) => a.approxBytes - b.approxBytes,
     )[0];
@@ -176,7 +177,9 @@ export function recommendLocalModel(
       fitsDisk: false,
       downloadGB: null,
       reason:
-        diskGB !== null && needGB !== null
+        !ramCompatible
+          ? `This computer has about ${hw.ramGB} GB of RAM, below the maintained local model's minimum requirement.`
+          : diskGB !== null && needGB !== null
           ? `Not enough free disk to install a local model — you have about ${diskGB} GB free and the smallest model needs about ${needGB} GB. Free up some space and retry.`
           : "Could not find a maintained local model compatible with this computer.",
       hardware: hw,

@@ -22,12 +22,13 @@ import {
   activateManagedModel,
   computeFileSha256Async,
   findById as findModelById,
-  inspectManagedActiveModel,
+  inspectManagedActiveModelAsync,
   managedArtifactPath,
   type ManagedModelInspection,
   type ModelEntry,
 } from "@skytwin/embedded-llm";
 import { createLogger } from "@skytwin/core";
+import { refreshManagedLlmRuntime } from "../lib/llm-client-factory.js";
 import {
   ArtifactTransferError,
   DiskReservationLedger,
@@ -185,6 +186,20 @@ export function restorePartialCheckpoint(
 } {
   let fd: number | null = null;
   try {
+    // Repository rows are normalized at the DB boundary, but keep this exported
+    // recovery primitive defensive against a raw node-postgres INT8 string.
+    const committedBytes = Number(download.bytes_downloaded);
+    if (
+      !Number.isSafeInteger(committedBytes) ||
+      committedBytes <= 0 ||
+      (typeof download.bytes_downloaded === "string" &&
+        String(committedBytes) !== download.bytes_downloaded)
+    ) {
+      throw new ArtifactTransferError(
+        "resume_state_mismatch",
+        "Database checkpoint was not a canonical safe byte count",
+      );
+    }
     fd = openSync(partialPath, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0));
     const partialStats = fstatSync(fd, { bigint: true });
     if (!partialStats.isFile() || partialStats.nlink !== 1n) {
@@ -202,9 +217,8 @@ export function restorePartialCheckpoint(
       state.revision === model.source.revision &&
       state.sourceUrl === model.source.downloadUrl &&
       state.exactBytes === model.exactBytes &&
-      state.bytesDownloaded >= download.bytes_downloaded &&
+      state.bytesDownloaded >= committedBytes &&
       localBytes >= state.bytesDownloaded &&
-      download.bytes_downloaded > 0 &&
       state.bytesDownloaded <= model.exactBytes &&
       Boolean(state.validator.etag || state.validator.lastModified);
     if (!agrees || state === null) {
@@ -215,10 +229,10 @@ export function restorePartialCheckpoint(
     }
     // The state file is persisted before the DB CAS. If a crash lands in that
     // small window, the DB's older checkpoint remains the committed boundary.
-    if (localBytes > download.bytes_downloaded)
-      ftruncateSync(fd, download.bytes_downloaded);
+    if (localBytes > committedBytes)
+      ftruncateSync(fd, committedBytes);
     return {
-      resumeFrom: download.bytes_downloaded,
+      resumeFrom: committedBytes,
       validator: state.validator,
       device: partialStats.dev,
       inode: partialStats.ino,
@@ -494,6 +508,7 @@ export interface DownloadRunnerDependencies {
   fetchArtifact: typeof fetchApprovedArtifact;
   hashFile: typeof computeFileSha256Async;
   activate: typeof activateManagedModel;
+  refreshRuntime: () => void;
   openPartial: typeof open;
   modelDir: () => string;
   inactivityTimeoutMs: number;
@@ -504,6 +519,7 @@ const DEFAULT_RUNNER_DEPENDENCIES: DownloadRunnerDependencies = {
   fetchArtifact: fetchApprovedArtifact,
   hashFile: computeFileSha256Async,
   activate: activateManagedModel,
+  refreshRuntime: refreshManagedLlmRuntime,
   openPartial: open,
   modelDir: resolveModelDir,
   inactivityTimeoutMs: DOWNLOAD_INACTIVITY_TIMEOUT_MS,
@@ -513,7 +529,7 @@ function runnerError(err: unknown, timedOut: boolean): string {
   if (timedOut) return "[timeout] Artifact transfer stalled; it can be resumed";
   if (err instanceof ArtifactTransferError)
     return `[${err.code}] ${err.message}`;
-  return `[download_io_error] ${err instanceof Error ? err.message : "Model download failed"}`;
+  return "[download_io_error] Local model storage operation failed";
 }
 
 function isResumableInterruption(
@@ -885,6 +901,10 @@ async function runOwnedDownload(
       return;
     phase = "installing";
     await dependencies.activate(modelDir, partialPath, model);
+    // The manifest switch is now authoritative. Drop both the API's provider
+    // chain and the embedded provider's automatic-port cache before reporting
+    // completion so the next request discovers this exact active artifact.
+    dependencies.refreshRuntime();
     try {
       unlinkSync(partialStatePath(partialPath));
     } catch {
@@ -934,6 +954,11 @@ async function runOwnedDownload(
       }
     }
     if (handle.cancelled || !acquired) return;
+    log.warn("Model download phase failed", {
+      downloadId: download.id,
+      phase,
+      error: err instanceof Error ? err.message : String(err),
+    });
     const error = runnerError(err, handle.timedOut);
     if (
       handle.paused ||
@@ -999,20 +1024,36 @@ async function runOwnedDownload(
  * from a file's presence.
  */
 export interface DownloadRecoveryDependencies {
-  inspectActive: (modelDir: string | null) => ManagedModelInspection;
+  inspectActive: (
+    modelDir: string | null,
+  ) => ManagedModelInspection | Promise<ManagedModelInspection>;
   modelDir: () => string;
+  maxAttempts?: number;
+  retryDelayMs?: number;
+  wait?: (delayMs: number) => Promise<void>;
 }
 
 const DEFAULT_RECOVERY_DEPENDENCIES: DownloadRecoveryDependencies = {
-  inspectActive: inspectManagedActiveModel,
+  inspectActive: inspectManagedActiveModelAsync,
   modelDir: resolveModelDir,
+  maxAttempts: 3,
+  retryDelayMs: 100,
+  wait: (delayMs) => new Promise((resolve) => setTimeout(resolve, delayMs)),
 };
 
 export async function recoverOnBoot(
   dependencies: DownloadRecoveryDependencies = DEFAULT_RECOVERY_DEPENDENCIES,
 ): Promise<void> {
-  try {
+  const maxAttempts = dependencies.maxAttempts ?? 3;
+  const retryDelayMs = dependencies.retryDelayMs ?? 100;
+  const wait = dependencies.wait ?? DEFAULT_RECOVERY_DEPENDENCIES.wait!;
+  if (!Number.isSafeInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10) {
+    throw new Error("model download recovery attempt bound is invalid");
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const orphaned = await modelDownloadRepository.listWorkerOwnedNonterminal();
+    if (orphaned.length === 0) return;
     let recovered = 0;
     for (const row of orphaned) {
       try {
@@ -1029,7 +1070,7 @@ export async function recoverOnBoot(
           continue;
         }
 
-        const active = dependencies.inspectActive(dependencies.modelDir());
+        const active = await dependencies.inspectActive(dependencies.modelDir());
         const installed =
           active.state === "verified" &&
           active.model.id === row.model_id &&
@@ -1069,12 +1110,20 @@ export async function recoverOnBoot(
     if (recovered > 0) {
       log.info("Reconciled orphaned model download workers", {
         count: recovered,
+        attempt,
       });
     }
-  } catch (err) {
-    // Don't crash the API if recovery fails — just log.
-    log.warn("Failed to recover orphaned downloads", {
-      error: err instanceof Error ? err.message : String(err),
-    });
+
+    // Authority is the database after every isolated attempt. A failed CAS may
+    // mean another actor resolved the row, so never infer incompleteness from
+    // the local loop alone.
+    const remaining = await modelDownloadRepository.listWorkerOwnedNonterminal();
+    if (remaining.length === 0) return;
+    if (attempt === maxAttempts) {
+      throw new Error(
+        `model download recovery left ${remaining.length} worker-owned row(s) after ${maxAttempts} attempt(s)`,
+      );
+    }
+    await wait(retryDelayMs);
   }
 }

@@ -16,6 +16,10 @@ function hw(overrides: Partial<HardwareProfile>): HardwareProfile {
 }
 
 describe("recommendLocalModel", () => {
+  it("does not round a below-minimum machine up into the 4 GB bracket", () => {
+    expect(recommendLocalModel(hw({ ramGB: 3 })).model).toBeNull();
+  });
+
   it("picks the maintained model that fits RAM, architecture and disk", () => {
     const rec = recommendLocalModel(
       hw({ ramGB: 32, freeDiskGB: 200, ramBracket: "32gb-plus" }),

@@ -112,14 +112,6 @@ getExecutionRouter().catch((err) =>
   }),
 );
 
-// Begin model-download reconciliation early, and await it before binding the
-// HTTP port below so a request cannot race an orphaned worker-owned row.
-const embeddedLlmRecovery = recoverEmbeddedLlmDownloads().catch((err) =>
-  log.warn('Failed to recover orphaned model downloads', {
-    error: err instanceof Error ? err.message : String(err),
-  }),
-);
-
 const app: Application = express();
 
 // Trust-proxy hop count — controls whether Express trusts upstream
@@ -386,7 +378,7 @@ app.use(
   ),
 ); // signed, sample-identity-bound, session-local fictional commands
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
-app.use('/api/system', createSystemRouter()); // public — hardware detection + local-model pick for onboarding (pre-auth)
+app.use('/api/system', createSystemRouter()); // public — minimized local-model pick for onboarding (pre-auth)
 app.use('/api/capabilities', sessionAuth, requireOwnership, requestContext, createCapabilitiesRouter());
 app.use('/api/risk-profile', sessionAuth, requireOwnership, requestContext, createRiskProfileRouter());
 app.use('/api/about-me', sessionAuth, requireOwnership, requestContext, createAboutMeRouter());
@@ -475,7 +467,16 @@ startupHangTimer.unref();
     process.exit(1);
   }
 
-  await embeddedLlmRecovery;
+  try {
+    await recoverEmbeddedLlmDownloads();
+  } catch (err) {
+    log.error(
+      `Local model recovery failed at startup: ${err instanceof Error ? err.message : String(err)}. Refusing to bind the port while worker-owned rows remain ambiguous.`,
+    );
+    clearTimeout(startupHangTimer);
+    process.exit(1);
+    return;
+  }
 
   server = app.listen(port, () => {
     clearTimeout(startupHangTimer);

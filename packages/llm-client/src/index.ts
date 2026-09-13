@@ -12,3 +12,4 @@ export type {
 export { toMessages, splitSystemAndConversation } from './messages.js';
 export { estimateLlmCostCents, isZeroCostProvider } from './cost.js';
 export { redactPromptPii } from './redact.js';
+export { clearEmbeddedPortCache } from './providers/embedded.js';

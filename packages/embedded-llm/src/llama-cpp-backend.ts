@@ -1,19 +1,17 @@
 import { spawn } from 'node:child_process';
 import {
-  closeSync,
   constants,
   existsSync,
-  fstatSync,
-  openSync,
   readdirSync,
   statSync,
 } from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type {
   EmbeddedTextCapabilities,
   EmbeddedTextPort,
 } from './text-port.js';
-import { computeFileDescriptorSha256 } from './managed-model-store.js';
+import { computeFileHandleSha256 } from './managed-model-store.js';
 
 export interface LlamaCppBackendOptions {
   binaryPath: string;
@@ -56,7 +54,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     opts: { maxTokens?: number; temperature?: number } = {},
   ): Promise<string> {
     const verifiedIdentity = this.verifiedModel
-      ? verifyModelForLaunch(this.modelPath, this.verifiedModel)
+      ? await verifyModelForLaunch(this.modelPath, this.verifiedModel)
       : null;
     const maxTokens = opts.maxTokens ?? 512;
     const temperature = opts.temperature ?? 0.7;
@@ -78,7 +76,13 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
       if (verifiedIdentity !== null) {
         try {
           const after = statSync(this.modelPath, { bigint: true });
-          if (after.dev !== verifiedIdentity.dev || after.ino !== verifiedIdentity.ino) {
+          if (
+            after.dev !== verifiedIdentity.dev ||
+            after.ino !== verifiedIdentity.ino ||
+            after.size !== verifiedIdentity.size ||
+            after.mtimeNs !== verifiedIdentity.mtimeNs ||
+            after.ctimeNs !== verifiedIdentity.ctimeNs
+          ) {
             child.kill('SIGKILL');
             reject(new Error('managed model changed at the runtime launch boundary'));
             return;
@@ -125,32 +129,64 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
   }
 }
 
-function verifyModelForLaunch(
+let managedModelHashTail: Promise<void> = Promise.resolve();
+
+async function withManagedModelHashSlot<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = managedModelHashTail;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  managedModelHashTail = previous.then(() => gate);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+async function verifyModelForLaunch(
   path: string,
   expected: { exactBytes: number; sha256: string },
-): { dev: bigint; ino: bigint } {
-  const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  try {
-    const before = fstatSync(fd, { bigint: true });
-    if (!before.isFile() || before.nlink !== 1n || Number(before.size) !== expected.exactBytes) {
-      throw new Error('managed model identity check failed before runtime launch');
+): Promise<{
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}> {
+  return withManagedModelHashSlot(async () => {
+    let handle: FileHandle | null = null;
+    try {
+      handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || before.nlink !== 1n || Number(before.size) !== expected.exactBytes) {
+        throw new Error('managed model identity check failed before runtime launch');
+      }
+      // Hash the descriptor already subjected to no-follow and identity checks.
+      // Async reads keep API health and unrelated requests responsive.
+      const actual = await computeFileHandleSha256(handle);
+      const after = await handle.stat({ bigint: true });
+      if (
+        actual !== expected.sha256 ||
+        after.size !== before.size ||
+        after.mtimeNs !== before.mtimeNs ||
+        after.ctimeNs !== before.ctimeNs
+      ) {
+        throw new Error('managed model integrity check failed before runtime launch');
+      }
+      return {
+        dev: after.dev,
+        ino: after.ino,
+        size: after.size,
+        mtimeNs: after.mtimeNs,
+        ctimeNs: after.ctimeNs,
+      };
+    } finally {
+      await handle?.close();
     }
-    // Hash the descriptor already subjected to the no-follow and identity
-    // checks. Reopening the pathname here would introduce a second race.
-    const actual = computeFileDescriptorSha256(fd);
-    const after = fstatSync(fd, { bigint: true });
-    if (
-      actual !== expected.sha256 ||
-      after.size !== before.size ||
-      after.mtimeNs !== before.mtimeNs ||
-      after.ctimeNs !== before.ctimeNs
-    ) {
-      throw new Error('managed model integrity check failed before runtime launch');
-    }
-    return { dev: before.dev, ino: before.ino };
-  } finally {
-    closeSync(fd);
-  }
+  });
 }
 
 

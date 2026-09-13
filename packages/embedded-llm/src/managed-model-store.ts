@@ -79,7 +79,7 @@ export function computeFileDescriptorSha256(fd: number): string {
   return hash.digest("hex");
 }
 
-async function computeHandleSha256(handle: FileHandle): Promise<string> {
+export async function computeFileHandleSha256(handle: FileHandle): Promise<string> {
   const hash = createHash("sha256");
   const buffer = Buffer.allocUnsafe(1024 * 1024);
   let offset = 0;
@@ -121,11 +121,17 @@ function isManifest(value: unknown): value is ManagedModelManifest {
   );
 }
 
-/** Fail closed: the runtime receives a path only after manifest, size and digest agree. */
-export function inspectManagedActiveModel(
+interface ManagedModelCandidate {
+  state: "candidate";
+  path: string;
+  manifest: ManagedModelManifest;
+  model: ModelEntry;
+}
+
+function resolveManagedModelCandidate(
   modelDir: string | null,
   registry: readonly ModelEntry[] = MODEL_REGISTRY,
-): ManagedModelInspection {
+): ManagedModelInspection | ManagedModelCandidate {
   if (!modelDir) return { state: "missing" };
   const manifestPath = join(modelDir, ACTIVE_MODEL_MANIFEST);
   if (!existsSync(manifestPath)) return { state: "missing" };
@@ -165,6 +171,17 @@ export function inspectManagedActiveModel(
     return { state: "invalid", reason: "manifest_registry_mismatch" };
   }
   const path = join(modelDir, expectedFilename);
+  return { state: "candidate", path, manifest, model };
+}
+
+/** Fail closed: the runtime receives a path only after manifest, size and digest agree. */
+export function inspectManagedActiveModel(
+  modelDir: string | null,
+  registry: readonly ModelEntry[] = MODEL_REGISTRY,
+): ManagedModelInspection {
+  const candidate = resolveManagedModelCandidate(modelDir, registry);
+  if (candidate.state !== "candidate") return candidate;
+  const { path, manifest, model } = candidate;
   try {
     const fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
     try {
@@ -189,6 +206,46 @@ export function inspectManagedActiveModel(
     }
   } catch {
     return { state: "invalid", reason: "artifact_unreadable" };
+  }
+  return { state: "verified", path, manifest, model };
+}
+
+/** Runtime-safe inspection: full descriptor hashing never blocks the event loop. */
+export async function inspectManagedActiveModelAsync(
+  modelDir: string | null,
+  registry: readonly ModelEntry[] = MODEL_REGISTRY,
+): Promise<ManagedModelInspection> {
+  const candidate = resolveManagedModelCandidate(modelDir, registry);
+  if (candidate.state !== "candidate") return candidate;
+  const { path, manifest, model } = candidate;
+  let handle: FileHandle | null = null;
+  try {
+    handle = await openFile(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    const before = await handle.stat({ bigint: true });
+    if (!before.isFile() || before.nlink !== 1n)
+      return { state: "invalid", reason: "artifact_unreadable" };
+    if (Number(before.size) !== model.exactBytes)
+      return { state: "invalid", reason: "artifact_size_mismatch" };
+    if ((await computeFileHandleSha256(handle)) !== model.sha256)
+      return { state: "invalid", reason: "artifact_digest_mismatch" };
+    const after = await handle.stat({ bigint: true });
+    if (
+      after.size !== before.size ||
+      after.mtimeNs !== before.mtimeNs ||
+      after.ctimeNs !== before.ctimeNs
+    ) {
+      return {
+        state: "invalid",
+        reason: "artifact_changed_during_verification",
+      };
+    }
+  } catch {
+    return { state: "invalid", reason: "artifact_unreadable" };
+  } finally {
+    await handle?.close();
   }
   return { state: "verified", path, manifest, model };
 }
@@ -254,7 +311,7 @@ async function activateManagedModelUnlocked(
         `artifact_size_mismatch:${model.exactBytes}:${staged.size}`,
       );
     stagedIdentity = { dev: staged.dev, ino: staged.ino };
-    const actual = await computeHandleSha256(source);
+    const actual = await computeFileHandleSha256(source);
     if (actual !== model.sha256)
       throw new Error(`artifact_digest_mismatch:${model.sha256}:${actual}`);
 
@@ -322,7 +379,7 @@ async function activateManagedModelUnlocked(
             !targetStats.isFile() ||
             targetStats.nlink !== 1n ||
             Number(targetStats.size) !== model.exactBytes ||
-            (await computeHandleSha256(targetHandle)) !== model.sha256
+            (await computeFileHandleSha256(targetHandle)) !== model.sha256
           ) {
             throw new Error("existing_managed_artifact_invalid");
           }
@@ -364,21 +421,31 @@ async function activateManagedModelUnlocked(
   const manifestPath = join(modelDir, ACTIVE_MODEL_MANIFEST);
   const temporary = `${manifestPath}.${randomUUID()}.tmp`;
   try {
-    const targetFd = openSync(
+    const targetHandle = await openFile(
       target,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
     );
     try {
-      const targetStats = assertRegularSingleLink(targetFd, "managed_artifact");
+      const targetStats = await targetHandle.stat({ bigint: true });
       if (
-        targetStats.size !== model.exactBytes ||
-        computeFileDescriptorSha256(targetFd) !== model.sha256
+        !targetStats.isFile() ||
+        targetStats.nlink !== 1n ||
+        Number(targetStats.size) !== model.exactBytes ||
+        (await computeFileHandleSha256(targetHandle)) !== model.sha256
       ) {
         throw new Error("managed_artifact_changed_before_manifest");
       }
-      fsyncSync(targetFd);
+      const afterHash = await targetHandle.stat({ bigint: true });
+      if (
+        afterHash.size !== targetStats.size ||
+        afterHash.mtimeNs !== targetStats.mtimeNs ||
+        afterHash.ctimeNs !== targetStats.ctimeNs
+      ) {
+        throw new Error("managed_artifact_changed_before_manifest");
+      }
+      await targetHandle.sync();
     } finally {
-      closeSync(targetFd);
+      await targetHandle.close();
     }
     writeFileSync(temporary, `${JSON.stringify(manifest, null, 2)}\n`, {
       encoding: "utf8",
@@ -456,12 +523,12 @@ export async function deleteInactiveManagedModel(
   );
 }
 
-function deleteInactiveManagedModelUnlocked(
+async function deleteInactiveManagedModelUnlocked(
   modelDir: string,
   modelId: string,
   registry: readonly ModelEntry[],
-): boolean {
-  const active = inspectManagedActiveModel(modelDir, registry);
+): Promise<boolean> {
+  const active = await inspectManagedActiveModelAsync(modelDir, registry);
   if (active.state === "invalid") throw new Error("active_model_state_invalid");
   if (active.state === "verified" && active.model.id === modelId) {
     throw new Error("active_model_requires_replacement");
@@ -516,7 +583,7 @@ export async function computeFileSha256Async(path: string): Promise<string> {
     const stats = await handle.stat({ bigint: true });
     if (!stats.isFile() || stats.nlink !== 1n)
       throw new Error("artifact_not_private_regular_file");
-    return await computeHandleSha256(handle);
+    return await computeFileHandleSha256(handle);
   } finally {
     await handle.close();
   }

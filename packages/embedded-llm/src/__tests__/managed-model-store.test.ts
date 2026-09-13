@@ -17,6 +17,7 @@ import {
   ACTIVE_MODEL_MANIFEST,
   deleteInactiveManagedModel,
   inspectManagedActiveModel,
+  inspectManagedActiveModelAsync,
   managedArtifactPath,
 } from "../managed-model-store.js";
 import { MODEL_REGISTRY, type ModelEntry } from "../model-registry.js";
@@ -59,6 +60,10 @@ describe("managed model activation", () => {
     expect(result.state).toBe("verified");
     if (result.state === "verified")
       expect(readFileSync(result.path)).toEqual(bytes);
+    await expect(inspectManagedActiveModelAsync(dir, [model])).resolves.toMatchObject({
+      state: "verified",
+      model: { id: model.id },
+    });
   });
 
   it("preserves the last good active model when replacement verification fails", async () => {
@@ -94,6 +99,10 @@ describe("managed model activation", () => {
     tampered[0] = tampered[0]! ^ 0xff;
     writeFileSync(managedArtifactPath(dir, model), tampered);
     expect(inspectManagedActiveModel(dir, [model])).toEqual({
+      state: "invalid",
+      reason: "artifact_digest_mismatch",
+    });
+    await expect(inspectManagedActiveModelAsync(dir, [model])).resolves.toEqual({
       state: "invalid",
       reason: "artifact_digest_mismatch",
     });

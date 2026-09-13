@@ -80,10 +80,9 @@ export {
 export {
   ACTIVE_MODEL_MANIFEST,
   activateManagedModel,
-  computeFileSha256,
   computeFileSha256Async,
   deleteInactiveManagedModel,
-  inspectManagedActiveModel,
+  inspectManagedActiveModelAsync,
   managedArtifactFilename,
   managedArtifactPath,
   type ManagedModelInspection,

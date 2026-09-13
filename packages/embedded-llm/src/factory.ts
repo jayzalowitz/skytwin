@@ -1,7 +1,7 @@
 import { LlamaCppTextBackend } from "./llama-cpp-backend.js";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { inspectManagedActiveModel } from "./managed-model-store.js";
+import { inspectManagedActiveModelAsync } from "./managed-model-store.js";
 import { isLlamaCppBuildCompatible } from "./runtime-compatibility.js";
 import { findFirstPiperModel, PiperTtsBackend } from "./piper-tts-backend.js";
 import { detectEmbeddedRuntimes } from "./runtime-detector.js";
@@ -31,7 +31,9 @@ export async function createEmbeddedTextPort(
   const manualPath = overrides.modelPath ?? process.env["SKYTWIN_LLAMA_MODEL"];
   const managedDir =
     info.llamaCpp.modelDir ?? join(homedir(), ".skytwin", "models", "llama");
-  const inspected = manualPath ? null : inspectManagedActiveModel(managedDir);
+  const inspected = manualPath
+    ? null
+    : await inspectManagedActiveModelAsync(managedDir);
   const compatibleManagedPath =
     inspected?.state === "verified" &&
     isLlamaCppBuildCompatible(binaryPath, inspected.model.runtime.minimumBuild)

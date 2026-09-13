@@ -30,7 +30,6 @@ vi.mock("../embedded-llm/downloader.js", () => ({
   startDownload: mockStartDownload,
   pauseDownload: mockPauseDownload,
   cancelDownload: mockCancelDownload,
-  resolveModelDir: () => "/tmp/skytwin-models",
 }));
 
 import { createEmbeddedLlmRouter } from "../routes/embedded-llm.js";
@@ -125,14 +124,13 @@ beforeEach(() => {
 });
 
 describe("GET /api/embedded-llm/model-dir", () => {
-  it("returns the resolved model directory", async () => {
-    const { status, body } = await req(
+  it("does not expose the host model directory", async () => {
+    const { status } = await req(
       buildApp(),
       "GET",
       "/api/embedded-llm/model-dir",
     );
-    expect(status).toBe(200);
-    expect(body["modelDir"]).toBe("/tmp/skytwin-models");
+    expect(status).toBe(404);
   });
 });
 
@@ -157,6 +155,8 @@ describe("POST /api/embedded-llm/downloads/start", () => {
     expect(dl["id"]).toBe(DOWNLOAD_ID);
     expect(dl["percent"]).toBe(50);
     expect(dl["status"]).toBe("downloading");
+    expect(dl).not.toHaveProperty("targetPath");
+    expect(JSON.stringify(dl)).not.toContain("/tmp/skytwin-models");
   });
 
   it("signals resumed=true when continuing a partial", async () => {

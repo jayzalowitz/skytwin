@@ -332,7 +332,6 @@ export async function fetchApprovedArtifact(
           "Artifact redirect chain was invalid",
         );
       }
-      await response.body?.cancel();
       await discard(response, release);
       url = new URL(location, url);
       continue;

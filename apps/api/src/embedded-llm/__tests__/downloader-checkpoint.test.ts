@@ -59,6 +59,21 @@ describe("durable partial checkpoints", () => {
     expect(statSync(partial).size).toBe(4);
   });
 
+  it("normalizes a raw Cockroach INT8 string before using it as a file offset", () => {
+    const { partial, model } = setup();
+    const restored = restorePartialCheckpoint(
+      partial,
+      {
+        model_id: model.id,
+        bytes_downloaded: "4" as unknown as number,
+      },
+      model,
+    );
+    expect(restored.resumeFrom).toBe(4);
+    expect(typeof restored.resumeFrom).toBe("number");
+    expect(statSync(partial).size).toBe(4);
+  });
+
   it("fails closed when the database and checkpoint disagree", () => {
     const { partial, model } = setup();
     expect(() =>

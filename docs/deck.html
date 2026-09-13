@@ -1247,7 +1247,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           </div>
           <div class="row">
             <p class="row-t"><span class="row-n">02</span>It sizes the model to your machine before you sign in.</p>
-            <p class="row-b">Two public endpoints read RAM, free disk, cores and architecture, then evaluate the maintained catalog. The current catalog is deliberately narrow: one Qwen2.5 1.5B Instruct Q4_K_M artifact pinned to an immutable upstream revision, exact byte count and SHA-256. The app can recommend it before sign-in; the user still starts the download, and a compatible llama.cpp runtime is required.</p>
+            <p class="row-b">The public recommendation endpoint evaluates RAM and free disk on the server but returns only the selected catalog model and a plain-language fit reason — not the raw host profile or filesystem paths. The current catalog is deliberately narrow: one Qwen2.5 1.5B Instruct Q4_K_M artifact pinned to an immutable upstream revision, exact byte count and SHA-256. The app can recommend it before sign-in; the user still starts the download, and a compatible llama.cpp runtime is required.</p>
           </div>
           <div class="row">
             <p class="row-t"><span class="row-n">03</span>Cloud is consent, not a default.</p>

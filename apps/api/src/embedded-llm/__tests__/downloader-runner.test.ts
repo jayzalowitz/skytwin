@@ -82,6 +82,7 @@ function dependencies(
     }),
     hashFile: vi.fn().mockResolvedValue(digest),
     activate: vi.fn(),
+    refreshRuntime: vi.fn(),
     openPartial: open,
     modelDir: () => "/tmp",
     inactivityTimeoutMs: 1_000,
@@ -171,7 +172,7 @@ describe("download runner cleanup and resumability", () => {
       ["downloading", "verifying", "installing"],
       "failed",
       expect.objectContaining({
-        error: "[download_io_error] open failed",
+        error: "[download_io_error] Local model storage operation failed",
         bytesDownloaded: 0,
       }),
     );
@@ -370,6 +371,7 @@ describe("download runner cleanup and resumability", () => {
     expect(deps.fetchArtifact).not.toHaveBeenCalled();
     expect(deps.hashFile).toHaveBeenCalledWith(partial);
     expect(deps.activate).toHaveBeenCalled();
+    expect(deps.refreshRuntime).toHaveBeenCalledTimes(1);
     expect(status).toBe("complete");
   });
 
@@ -442,11 +444,9 @@ describe("boot recovery", () => {
     const downloading = testRow(dir, "downloading");
     const verifying = { ...testRow(dir, "verifying"), id: "verify-id" };
     const installing = { ...testRow(dir, "installing"), id: "install-id" };
-    mockRepo.listWorkerOwnedNonterminal.mockResolvedValue([
-      downloading,
-      verifying,
-      installing,
-    ]);
+    mockRepo.listWorkerOwnedNonterminal
+      .mockResolvedValueOnce([downloading, verifying, installing])
+      .mockResolvedValueOnce([]);
     mockRepo.transitionStatus.mockResolvedValue(true);
     await recoverOnBoot({
       modelDir: () => dir,
@@ -491,7 +491,9 @@ describe("boot recovery", () => {
   it("fails an orphaned install when no matching verified active manifest exists", async () => {
     const dir = tempDir();
     const installing = testRow(dir, "installing");
-    mockRepo.listWorkerOwnedNonterminal.mockResolvedValue([installing]);
+    mockRepo.listWorkerOwnedNonterminal
+      .mockResolvedValueOnce([installing])
+      .mockResolvedValueOnce([]);
     mockRepo.transitionStatus.mockResolvedValue(true);
     await recoverOnBoot({
       modelDir: () => dir,
@@ -511,19 +513,60 @@ describe("boot recovery", () => {
     const dir = tempDir();
     const malformed = testRow(dir, "installing");
     const later = { ...testRow(dir, "downloading"), id: "later-id" };
-    mockRepo.listWorkerOwnedNonterminal.mockResolvedValue([malformed, later]);
+    mockRepo.listWorkerOwnedNonterminal
+      .mockResolvedValueOnce([malformed, later])
+      .mockResolvedValueOnce([malformed]);
     mockRepo.transitionStatus.mockResolvedValue(true);
-    await recoverOnBoot({
-      modelDir: () => dir,
-      inspectActive: () => {
-        throw new Error("malformed manifest row");
-      },
-    });
+    await expect(
+      recoverOnBoot({
+        modelDir: () => dir,
+        inspectActive: () => {
+          throw new Error("malformed manifest row");
+        },
+        maxAttempts: 1,
+      }),
+    ).rejects.toThrow(/left 1 worker-owned row/);
     expect(mockRepo.transitionStatus).toHaveBeenCalledWith(
       later.id,
       ["downloading"],
       "paused",
       { bytesDownloaded: later.bytes_downloaded },
     );
+  });
+
+  it("propagates an authoritative recovery query failure", async () => {
+    mockRepo.listWorkerOwnedNonterminal.mockRejectedValue(
+      new Error("recovery database unavailable"),
+    );
+
+    await expect(recoverOnBoot()).rejects.toThrow(
+      "recovery database unavailable",
+    );
+  });
+
+  it("retries an unresolved row within a fixed bound and verifies DB authority", async () => {
+    const dir = tempDir();
+    const row = testRow(dir, "downloading");
+    mockRepo.listWorkerOwnedNonterminal
+      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce([]);
+    mockRepo.transitionStatus
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    const wait = vi.fn().mockResolvedValue(undefined);
+
+    await recoverOnBoot({
+      modelDir: () => dir,
+      inspectActive: () => ({ state: "missing" }),
+      maxAttempts: 2,
+      retryDelayMs: 0,
+      wait,
+    });
+
+    expect(wait).toHaveBeenCalledTimes(1);
+    expect(mockRepo.transitionStatus).toHaveBeenCalledTimes(2);
+    expect(mockRepo.listWorkerOwnedNonterminal).toHaveBeenCalledTimes(4);
   });
 });
