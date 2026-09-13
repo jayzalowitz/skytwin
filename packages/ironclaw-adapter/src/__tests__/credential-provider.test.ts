@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { mockOauthRepository, mockServiceCredentialRepository, mockLoadConfig } = vi.hoisted(() => ({
   mockOauthRepository: {
     getToken: vi.fn(),
-    saveToken: vi.fn(),
+    rotateTokenIfCurrent: vi.fn(),
   },
   mockServiceCredentialRepository: {
     getAsMap: vi.fn(),
@@ -39,7 +39,7 @@ describe('DbCredentialProvider', () => {
     vi.restoreAllMocks();
     fetchMock.mockReset();
     mockOauthRepository.getToken.mockReset();
-    mockOauthRepository.saveToken.mockReset();
+    mockOauthRepository.rotateTokenIfCurrent.mockReset();
     mockServiceCredentialRepository.getAsMap.mockReset();
     mockLoadConfig.mockReset();
   });
@@ -56,7 +56,7 @@ describe('DbCredentialProvider', () => {
 
     expect(result).toEqual({ success: true, accessToken: 'access-123' });
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(mockOauthRepository.saveToken).not.toHaveBeenCalled();
+    expect(mockOauthRepository.rotateTokenIfCurrent).not.toHaveBeenCalled();
   });
 
   it('returns error when no token found for provider', async () => {
@@ -103,11 +103,14 @@ describe('DbCredentialProvider', () => {
   });
 
   it('successfully refreshes an expired Google token', async () => {
+    const updatedAt = new Date('2026-09-13T01:00:00Z');
     mockOauthRepository.getToken.mockResolvedValue({
+      id: 'token-row-1',
       access_token: 'old-access',
       refresh_token: 'refresh-123',
       expires_at: new Date(Date.now() - 1000),
       scopes: ['email', 'calendar'],
+      updated_at: updatedAt,
     });
 
     fetchMock.mockResolvedValue({
@@ -119,7 +122,7 @@ describe('DbCredentialProvider', () => {
       }),
     });
 
-    mockOauthRepository.saveToken.mockResolvedValue({
+    mockOauthRepository.rotateTokenIfCurrent.mockResolvedValue({
       access_token: 'new-access-456',
     });
 
@@ -132,14 +135,42 @@ describe('DbCredentialProvider', () => {
     expect(url).toBe('https://oauth2.googleapis.com/token');
     expect(init.method).toBe('POST');
 
-    expect(mockOauthRepository.saveToken).toHaveBeenCalledWith(
-      'user_1',
-      'google',
-      'new-access-456',
-      'new-refresh-789',
-      expect.any(Date),
-      ['email', 'calendar'],
+    expect(mockOauthRepository.rotateTokenIfCurrent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user_1',
+        provider: 'google',
+        id: 'token-row-1',
+        expectedAccessToken: 'old-access',
+        expectedRefreshToken: 'refresh-123',
+        accessToken: 'new-access-456',
+        refreshToken: 'new-refresh-789',
+        expiresAt: expect.any(Date),
+        scopes: ['email', 'calendar'],
+      }),
     );
+  });
+
+  it.each(['disconnect', 'rotation'])('fails closed when a %s wins while refresh is in flight', async () => {
+    mockOauthRepository.getToken.mockResolvedValue({
+      id: 'token-row-1',
+      access_token: 'old-access',
+      refresh_token: 'refresh-123',
+      expires_at: new Date(Date.now() - 1000),
+      scopes: ['email'],
+      updated_at: new Date('2026-09-13T01:00:00Z'),
+    });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ access_token: 'late-access', expires_in: 3600 }),
+    });
+    // A missing row or changed revision/refresh token both make the exact
+    // compare-and-swap update return no row.
+    mockOauthRepository.rotateTokenIfCurrent.mockResolvedValue(null);
+
+    await expect(provider.getAccessToken('user_1', 'google')).resolves.toEqual({
+      success: false,
+      error: 'OAuth credential changed or disconnected while refresh was in flight. Reconnect and retry.',
+    });
   });
 
   it('concurrent refresh requests for same user+provider return the same promise', async () => {
@@ -156,7 +187,7 @@ describe('DbCredentialProvider', () => {
     });
     fetchMock.mockReturnValue(pendingFetch);
 
-    mockOauthRepository.saveToken.mockResolvedValue({
+    mockOauthRepository.rotateTokenIfCurrent.mockResolvedValue({
       access_token: 'new-access-456',
     });
 
@@ -211,7 +242,7 @@ describe('DbCredentialProvider', () => {
       }),
     });
 
-    mockOauthRepository.saveToken.mockResolvedValue({
+    mockOauthRepository.rotateTokenIfCurrent.mockResolvedValue({
       access_token: 'retry-access',
     });
 
@@ -246,7 +277,7 @@ describe('DbCredentialProvider', () => {
       }),
     });
 
-    mockOauthRepository.saveToken.mockResolvedValue({
+    mockOauthRepository.rotateTokenIfCurrent.mockResolvedValue({
       access_token: 'new-access-from-db-creds',
     });
 

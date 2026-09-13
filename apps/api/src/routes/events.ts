@@ -39,7 +39,13 @@ import type {
   RiskAssessment,
   EpisodicMemory,
 } from '@skytwin/shared-types';
-import { parseAutonomySettings, SituationType, TrustTier } from '@skytwin/shared-types';
+import {
+  normalizeExecutionError,
+  normalizeExecutionRecord,
+  parseAutonomySettings,
+  SituationType,
+  TrustTier,
+} from '@skytwin/shared-types';
 import type { AIProviderName } from '@skytwin/shared-types';
 import { emitInferenceReceipt, LlmClient } from '@skytwin/llm-client';
 import type { InferenceTrace, ProviderEntry, ReceiptSigningKey } from '@skytwin/llm-client';
@@ -798,12 +804,13 @@ export function createEventsRouter(): Router {
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
           let savedPlan: { id: string } | null = null;
+          const executionSteps = [{ type: outcome.selectedAction.actionType, status: 'pending' }];
           if (claimPolicy.allowed && !claimPolicy.requiresApproval) try {
             savedPlan = await inferenceReceiptRepository.claimExecutionForDecision(
               userId,
               decision.id,
               { outcome, explanation },
-              [{ type: outcome.selectedAction.actionType, status: 'pending' }],
+              executionSteps,
               claimPolicy as unknown as Record<string, unknown>,
             );
           } catch (error) {
@@ -824,13 +831,11 @@ export function createEventsRouter(): Router {
           // The claim transaction created and bound this exact DB plan before
           // dispatch, so every streamed event and terminal result has one
           // immutable execution identity.
-          const tokenRow = await oauthRepository.getToken(userId, 'google');
           const executionAction: CandidateAction = {
             ...outcome.selectedAction,
             parameters: {
               ...outcome.selectedAction.parameters,
               executionPlanId: savedPlan.id,
-              ...(tokenRow ? { accessToken: tokenRow.access_token } : {}),
             },
           };
           if (user?.ironclaw_channel) {
@@ -853,10 +858,19 @@ export function createEventsRouter(): Router {
               userId,
               decision.id,
               savedPlan.id,
+              { outcome, explanation },
+              executionSteps,
               dispatchPolicy as unknown as Record<string, unknown>,
             )) {
               throw new Error('Execution owner or receipt authority was revoked before dispatch');
             }
+            // Resolve the credential only after the final authority query. No
+            // other await separates this fresh row from the sole adapter call,
+            // so a prior token cannot survive a disconnect or rotation that
+            // happened while routing/policy checks were in flight.
+            const tokenRow = await oauthRepository.getToken(userId, 'google');
+            const accessToken = tokenRow?.access_token ?? undefined;
+            if (accessToken) executionAction.parameters['accessToken'] = accessToken;
             for await (const event of executionRouter.executeWithRoutingStreaming(
               executionAction,
               riskAssessment,
@@ -868,21 +882,28 @@ export function createEventsRouter(): Router {
               if (terminalEvent) {
                 throw new Error(`Execution stream emitted an event after ${terminalEvent.eventType}`);
               }
-              if (event.payload && Object.keys(event.payload).length > 0) {
-                stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
+              const safePayload = normalizeExecutionRecord(event.payload ?? {}, {
+                secretValues: [accessToken],
+              });
+              if (Object.keys(safePayload).length > 0) {
+                stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: safePayload });
               }
-              terminalPayload = event.payload ?? terminalPayload;
+              terminalPayload = safePayload;
               await executionRepository.createEvent({
                 planId: savedPlan.id,
                 stepId: event.stepId,
                 eventType: event.eventType,
-                payload: event.payload ?? {},
+                payload: safePayload,
               });
               sseManager.emit(userId, 'decision:step', {
                 decisionId: decision.id,
                 actionType: outcome.selectedAction.actionType,
                 description: outcome.selectedAction.description,
-                ...event,
+                planId: event.planId,
+                stepId: event.stepId,
+                eventType: event.eventType,
+                timestamp: event.timestamp,
+                payload: safePayload,
               });
 
               if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
@@ -894,7 +915,7 @@ export function createEventsRouter(): Router {
             terminalStatus = null;
             terminalEvent = null;
             terminalPayload = {
-              error: error instanceof Error ? error.message : String(error),
+              error: normalizeExecutionError(error),
             };
             // The router's exported error classes are also available to
             // adapters, so an exception's type cannot prove it happened before

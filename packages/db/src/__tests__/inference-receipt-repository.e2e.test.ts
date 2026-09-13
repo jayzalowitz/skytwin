@@ -23,6 +23,7 @@ import { collectBackup, restoreBackup } from '../backup/backup.js';
 import { inferenceReceiptRepository } from '../repositories/inference-receipt-repository.js';
 import { executionRepository } from '../repositories/execution-repository.js';
 import { executionAdmissionRepository } from '../repositories/execution-admission-repository.js';
+import { oauthRepository } from '../repositories/oauth-repository.js';
 import { userPurgeRepository } from '../repositories/user-purge-repository.js';
 import { decisionRepository } from '../repositories/decision-repository.js';
 import { explanationRepositoryAdapter } from '../adapters/explanation-repository-adapter.js';
@@ -278,6 +279,43 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   afterAll(async () => {
     await closePool();
     await pool.end();
+  });
+
+  it('does not let a late OAuth refresh overwrite a rotation or resurrect a disconnect', async () => {
+    const owner = await createGraph('oauth-refresh-fence');
+    const expiresAt = new Date('2026-09-13T01:00:00Z');
+    const original = await oauthRepository.saveTokenForAccount({
+      userId: owner.userId,
+      provider: 'google',
+      accountEmail: `oauth-${owner.userId}@example.test`,
+      accessToken: 'old-access',
+      refreshToken: 'old-refresh',
+      expiresAt,
+      scopes: ['gmail.readonly'],
+    });
+    await pool.query(
+      `UPDATE oauth_tokens SET access_token = 'rotated-access', refresh_token = 'rotated-refresh'
+       WHERE id = $1`,
+      [original.id],
+    );
+    await expect(oauthRepository.rotateTokenIfCurrent({
+      id: original.id, userId: owner.userId, provider: 'google',
+      expectedAccessToken: 'old-access', expectedRefreshToken: 'old-refresh',
+      accessToken: 'late-access', refreshToken: 'late-refresh', expiresAt,
+      scopes: ['gmail.readonly'],
+    })).resolves.toBeNull();
+    await expect(oauthRepository.getToken(owner.userId, 'google')).resolves.toMatchObject({
+      access_token: 'rotated-access', refresh_token: 'rotated-refresh',
+    });
+
+    await oauthRepository.deleteAllForProvider(owner.userId, 'google');
+    await expect(oauthRepository.rotateTokenIfCurrent({
+      id: original.id, userId: owner.userId, provider: 'google',
+      expectedAccessToken: 'rotated-access', expectedRefreshToken: 'rotated-refresh',
+      accessToken: 'late-access', refreshToken: 'late-refresh', expiresAt,
+      scopes: ['gmail.readonly'],
+    })).resolves.toBeNull();
+    await expect(oauthRepository.getToken(owner.userId, 'google')).resolves.toBeNull();
   });
 
   it('inserts, reads, and deletes only through the exact decision owner', async () => {
@@ -656,6 +694,26 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
     }], completionForGraph(owner, 'auto_execute'));
     const continuation = completionForGraph(owner, 'auto_execute').continuation;
+    const executionSteps: unknown[] = [];
+
+    const receiptAuthority = [
+      ['policy_snapshot', continuation.outcome.policyVerdicts ?? {}],
+      ['continuation_snapshot', continuation],
+      ['risk_snapshot', continuation.outcome.riskAssessment],
+    ] as const;
+    for (const [column, original] of receiptAuthority) {
+      await pool.query(
+        `UPDATE decision_ingest_guards SET ${column} = '{"tampered":true}'::JSONB WHERE decision_id = $1`,
+        [owner.decisionId],
+      );
+      await expect(inferenceReceiptRepository.claimExecutionForDecision(
+        owner.userId, owner.decisionId, continuation, executionSteps, CURRENT_ALLOWED_POLICY,
+      )).resolves.toBeNull();
+      await pool.query(
+        `UPDATE decision_ingest_guards SET ${column} = $2::JSONB WHERE decision_id = $1`,
+        [owner.decisionId, JSON.stringify(original)],
+      );
+    }
 
     const claims = await Promise.all([
       inferenceReceiptRepository.claimExecutionForDecision(
@@ -674,10 +732,43 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       sourceExecutionPlanId: plan.id,
     });
     await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
-      owner.userId, owner.decisionId, plan.id, CURRENT_ALLOWED_POLICY,
+      owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
+      CURRENT_ALLOWED_POLICY,
     )).resolves.toBe(true);
+    const liveReceiptAuthority = [
+      ['policy_snapshot', continuation.outcome.policyVerdicts ?? {}],
+      ['continuation_snapshot', continuation],
+      ['risk_snapshot', continuation.outcome.riskAssessment],
+      ['dispatch_policy_snapshot', CURRENT_ALLOWED_POLICY],
+    ] as const;
+    for (const [column, original] of liveReceiptAuthority) {
+      await pool.query(
+        `UPDATE decision_ingest_guards SET ${column} = '{"tampered":true}'::JSONB WHERE decision_id = $1`,
+        [owner.decisionId],
+      );
+      await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
+        owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
+        CURRENT_ALLOWED_POLICY,
+      )).resolves.toBe(false);
+      await pool.query(
+        `UPDATE decision_ingest_guards SET ${column} = $2::JSONB WHERE decision_id = $1`,
+        [owner.decisionId, JSON.stringify(original)],
+      );
+    }
+    await pool.query(
+      `UPDATE execution_plans SET steps = '[{"type":"tampered"}]'::JSONB WHERE id = $1`,
+      [plan.id],
+    );
+    await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
+      owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
+      CURRENT_ALLOWED_POLICY,
+    )).resolves.toBe(false);
+    await pool.query('UPDATE execution_plans SET steps = $2::JSONB WHERE id = $1', [
+      plan.id, JSON.stringify(executionSteps),
+    ]);
     await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
       owner.userId, owner.decisionId, plan.id,
+      continuation, executionSteps,
       { allowed: true, requiresApproval: false, reason: 'changed after claim' },
     )).resolves.toBe(false);
     await pool.query(
@@ -685,7 +776,8 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       [owner.userId],
     );
     await expect(inferenceReceiptRepository.isExecutionDispatchableForDecision(
-      owner.userId, owner.decisionId, plan.id, CURRENT_ALLOWED_POLICY,
+      owner.userId, owner.decisionId, plan.id, continuation, executionSteps,
+      CURRENT_ALLOWED_POLICY,
     )).resolves.toBe(false);
   });
 
@@ -702,14 +794,15 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       })],
     );
 
-    const admitted = await executionAdmissionRepository.admitApprovalExecution({
+    const exactAdmission = {
       userId: owner.userId,
       approvalId: approval.rows[0]!.id,
       decisionId: owner.decisionId,
       actionId: owner.actionId!,
       steps: [{ type: 'test_action', status: 'pending' }],
       ...admissionAuthority(owner),
-    });
+    };
+    const admitted = await executionAdmissionRepository.admitApprovalExecution(exactAdmission);
     expect(admitted).toMatchObject({ created: true, barrier: { status: 'in_progress' } });
     const duplicate = await executionAdmissionRepository.admitApprovalExecution({
       userId: owner.userId,
@@ -729,6 +822,39 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       steps: [{ type: 'test_action', status: 'pending' }],
       ...admissionAuthority(owner),
     })).rejects.toThrow(/conflict.*requested authority/);
+
+    await expect(executionAdmissionRepository.isDispatchable(
+      admitted, exactAdmission,
+    )).resolves.toBe(true);
+    const barrierAuthority = [
+      ['risk_snapshot', exactAdmission.riskSnapshot],
+      ['policy_snapshot', exactAdmission.policySnapshot],
+      ['action_snapshot', exactAdmission.actionSnapshot],
+      ['outcome_snapshot', exactAdmission.outcomeSnapshot],
+    ] as const;
+    for (const [column, original] of barrierAuthority) {
+      await pool.query(
+        `UPDATE execution_admission_barriers SET ${column} = '{"tampered":true}'::JSONB WHERE id = $1`,
+        [admitted.barrier.id],
+      );
+      await expect(executionAdmissionRepository.isDispatchable(
+        admitted, exactAdmission,
+      )).resolves.toBe(false);
+      await pool.query(
+        `UPDATE execution_admission_barriers SET ${column} = $2::JSONB WHERE id = $1`,
+        [admitted.barrier.id, JSON.stringify(original)],
+      );
+    }
+    await pool.query(
+      `UPDATE execution_plans SET steps = '[{"type":"tampered"}]'::JSONB WHERE id = $1`,
+      [admitted.plan.id],
+    );
+    await expect(executionAdmissionRepository.isDispatchable(
+      admitted, exactAdmission,
+    )).resolves.toBe(false);
+    await pool.query('UPDATE execution_plans SET steps = $2::JSONB WHERE id = $1', [
+      admitted.plan.id, JSON.stringify(exactAdmission.steps),
+    ]);
     await expect(executionAdmissionRepository.admitApprovalExecution({
       userId: owner.userId,
       approvalId: approval.rows[0]!.id,

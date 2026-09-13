@@ -30,7 +30,12 @@ import type {
   MemoryActionLoopReport,
   MemoryActionOpportunityStatus,
 } from '@skytwin/shared-types';
-import { ConfidenceLevel, TrustTier } from '@skytwin/shared-types';
+import {
+  ConfidenceLevel,
+  normalizeExecutionError,
+  normalizeExecutionRecord,
+  TrustTier,
+} from '@skytwin/shared-types';
 import { readAutonomy } from '../cost-gate.js';
 import { isValidUserId as isValidUuid } from '../middleware/validate-uuid.js';
 import { getExecutionRouter } from '../execution-setup.js';
@@ -774,10 +779,6 @@ export function createApprovalsRouter(): Router {
               break executionAttempt;
             }
 
-            // Credentials are deliberately excluded from the persisted action
-            // snapshot. Fetch them only after admission, then re-check current
-            // authority after this final await and immediately before dispatch.
-            const tokenRow = await oauthRepository.getToken(body.userId, 'google');
             const dispatchUser = await userRepository.findById(body.userId);
             const dispatchPolicies = await policyRepositoryAdapter.getAllPolicies();
             const dispatchPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
@@ -803,9 +804,13 @@ export function createApprovalsRouter(): Router {
               };
               break executionAttempt;
             }
-            if (tokenRow) {
-              candidateAction.parameters['accessToken'] = tokenRow.access_token;
-            }
+
+            // Credentials are deliberately excluded from the admission
+            // snapshot. Resolve one only after the final authority query, with
+            // no intervening await before the sole adapter request.
+            const tokenRow = await oauthRepository.getToken(body.userId, 'google');
+            const accessToken = tokenRow?.access_token ?? undefined;
+            if (accessToken) candidateAction.parameters['accessToken'] = accessToken;
 
             let result: Awaited<ReturnType<typeof executionRouter.executeWithRouting>>;
             try {
@@ -827,9 +832,9 @@ export function createApprovalsRouter(): Router {
                 );
               }
             } catch (dispatchError) {
-              const errMsg = dispatchError instanceof Error
-                ? dispatchError.message
-                : String(dispatchError);
+              const errMsg = normalizeExecutionError(dispatchError, {
+                secretValues: [accessToken],
+              });
               await bestEffortApprovalLedger('record ambiguous approved execution admission', () =>
                 executionAdmissionRepository.observeTerminal({
                   id: admission.barrier.id,
@@ -846,14 +851,20 @@ export function createApprovalsRouter(): Router {
             }
 
             const terminalStatus: 'completed' | 'failed' = result.status;
-            const adapterUsed = result.output?.['adapter_used'] ?? 'unknown';
+            const safeOutput = normalizeExecutionRecord(result.output ?? {}, {
+              secretValues: [accessToken],
+            });
+            const safeError = result.error
+              ? normalizeExecutionError(result.error, { secretValues: [accessToken] })
+              : undefined;
+            const adapterUsed = safeOutput['adapter_used'] ?? 'unknown';
             // Preserve the explicit adapter result before any persistence whose
             // commit response can be lost. No later catch may rewrite it.
             executionResult = {
               status: terminalStatus,
               planId: admission.plan.id,
               adapterUsed,
-              ...(result.status === 'failed' ? { error: result.error ?? 'Execution failed' } : {}),
+              ...(result.status === 'failed' ? { error: safeError ?? 'Execution failed' } : {}),
             };
             observedTerminal = true;
             await bestEffortApprovalLedger('record terminal approved execution admission', () =>
@@ -866,8 +877,8 @@ export function createApprovalsRouter(): Router {
                   adapterPlanId: result.planId,
                   adapterUsed,
                   status: terminalStatus,
-                  output: result.output ?? {},
-                  error: result.error ?? null,
+                  output: safeOutput,
+                  error: safeError ?? null,
                 },
               }), { requestId, executionPlanId: admission.plan.id });
             await bestEffortApprovalLedger('finalize admitted approved execution plan', () =>
@@ -878,8 +889,8 @@ export function createApprovalsRouter(): Router {
                 planId: admission.plan.id,
                 status: terminalStatus,
                 success: terminalStatus === 'completed',
-                outputs: { ...(result.output ?? {}), adapter_plan_id: result.planId },
-                error: result.error,
+                outputs: { ...safeOutput, adapter_plan_id: result.planId },
+                error: safeError,
                 rollbackAvailable: candidateAction.reversible,
               }), { requestId, executionPlanId: admission.plan.id });
 
@@ -898,7 +909,7 @@ export function createApprovalsRouter(): Router {
             }
           }
         } catch (execError) {
-          const errMsg = execError instanceof Error ? execError.message : String(execError);
+          const errMsg = normalizeExecutionError(execError);
           if (observedTerminal) {
             log.error('Known approved execution result needs secondary-ledger reconciliation', {
               requestId,

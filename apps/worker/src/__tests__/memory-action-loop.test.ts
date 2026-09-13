@@ -376,6 +376,58 @@ describe('runMemoryActionLoopJob', () => {
     expect(summary.executionAmbiguous).toBe(1);
   });
 
+  it('redacts echoed credentials and arbitrary adapter bodies from memory execution ledgers', async () => {
+    const opportunity = makeOpportunity('create_task');
+    const secret = 'opaque-memory-token';
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
+        modifiedRiskAssessment: {}, reasoning: 'direct route',
+      }),
+      executeWithRouting: vi.fn().mockResolvedValue({
+        planId: 'adapter-plan-failed', status: 'failed', startedAt: new Date(),
+        completedAt: new Date(),
+        output: {
+          adapter_used: 'direct',
+          accessToken: secret,
+          headers: { authorization: `Bearer ${secret}` },
+          responseUrl: `https://adapter.test/result?access_token=${secret}`,
+          body: { echoed: secret },
+          summary: `opaque ${secret}`,
+        },
+        error: `adapter echoed ${secret}`,
+      }),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }) },
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(summary.executionFailed).toBe(1);
+    const persisted = JSON.stringify({
+      barrier: mockExecutionAdmissionRepository.observeTerminal.mock.calls,
+      result: mockExecutionRepository.finalizeAdmittedPlan.mock.calls,
+      memory: mockMemoryActionOpportunityRepository.markStatus.mock.calls,
+      report: summary.reports,
+    });
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain('?access_token=');
+    expect(persisted).not.toContain('echoed');
+    expect(persisted).toContain('[redacted:credential]');
+    expect(persisted).toContain('[redacted:execution-error]');
+    expect(persisted).toContain('[redacted:unapproved-field]');
+  });
+
   it('rechecks a stored opportunity and fences a pause that lands after admission', async () => {
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);

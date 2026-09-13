@@ -484,6 +484,9 @@ describe('Events API routes', () => {
     expect((executed!['parameters'] as Record<string, unknown>)).toMatchObject({
       accessToken: 'secret-token', executionPlanId: 'plan-1',
     });
+    expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetOAuthToken.mock.invocationCallOrder[0]!,
+    );
     if (actionType === 'draft_email') {
       expect(mockReevaluate).toHaveBeenCalledTimes(1);
       expect(capturedAction.actionType).toBe('send_reply');
@@ -1356,6 +1359,71 @@ describe('Events API routes', () => {
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
     const body = res.body as { execution: { status: string; planId: string } };
     expect(body.execution).toMatchObject({ status: 'ambiguous', planId: 'plan-1' });
+  });
+
+  it('redacts echoed credentials and arbitrary adapter bodies from event, result, and SSE evidence', async () => {
+    const secret = 'rotated-event-token';
+    mockGetOAuthToken.mockResolvedValueOnce({ access_token: secret });
+    const stream = vi.fn(async function* (candidate: Record<string, unknown>) {
+      expect((candidate['parameters'] as Record<string, unknown>)['accessToken']).toBe(secret);
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {
+          status: 'completed',
+          accessToken: secret,
+          headers: { authorization: `Bearer ${secret}` },
+          responseUrl: `https://adapter.test/result?access_token=${secret}`,
+          body: { echoed: secret },
+          summary: `opaque ${secret}`,
+        },
+      };
+    });
+    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetOAuthToken.mock.invocationCallOrder[0]!,
+    );
+    expect(mockGetOAuthToken.mock.invocationCallOrder[0]).toBeLessThan(
+      stream.mock.invocationCallOrder[0]!,
+    );
+    const stepSse = mockSseManager.emit.mock.calls.find((call) => call[1] === 'decision:step');
+    const evidence = JSON.stringify({
+      events: mockExecutionRepository.createEvent.mock.calls,
+      results: mockExecutionRepository.createResult.mock.calls,
+      stepSse,
+      response: res.body,
+    });
+    expect(evidence).not.toContain(secret);
+    expect(evidence).not.toContain('?access_token=');
+    expect(evidence).not.toContain('echoed');
+    expect(evidence).toContain('[redacted:credential]');
+    expect(evidence).toContain('[redacted:unapproved-field]');
+  });
+
+  it('does not carry a credential through a disconnect that completes at the final lookup', async () => {
+    mockGetOAuthToken.mockResolvedValueOnce(null);
+    const stream = vi.fn(async function* (candidate: Record<string, unknown>) {
+      expect(candidate['parameters']).not.toHaveProperty('accessToken');
+      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+    });
+    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
+      mockGetOAuthToken.mock.invocationCallOrder[0]!,
+    );
+    expect(stream).toHaveBeenCalledOnce();
   });
 
   it('rejects a terminal event from a different execution plan', async () => {

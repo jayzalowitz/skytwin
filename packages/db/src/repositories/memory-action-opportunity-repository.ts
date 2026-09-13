@@ -1,3 +1,4 @@
+import { normalizeExecutionRecord } from '@skytwin/shared-types';
 import type {
   ActionProvenance,
   DailyMemorySuggestion,
@@ -145,6 +146,18 @@ export const memoryActionOpportunityRepository = {
   async markStatus(
     input: MarkMemoryActionOpportunityInput,
   ): Promise<MemoryActionOpportunitySnapshot | null> {
+    const report = normalizeExecutionRecord(
+      input.report as unknown as Record<string, unknown>,
+      {
+        // These values are authored by buildReport, not copied from an
+        // adapter response. Adapter errors are normalized before they can be
+        // interpolated into the report.
+        trustedTextKeys: [
+          'title', 'actionLabel', 'summary', 'nextStep', 'policyReason',
+          'routeReason', 'attemptedAt',
+        ],
+      },
+    );
     const result = await query<MemoryActionOpportunityRow>(
       `UPDATE memory_action_opportunities
           SET status = $2,
@@ -162,7 +175,7 @@ export const memoryActionOpportunityRepository = {
       [
         input.id,
         input.status,
-        JSON.stringify(input.report),
+        JSON.stringify(report),
         input.decisionId ?? null,
         input.approvalRequestId ?? null,
         input.executionPlanId ?? null,

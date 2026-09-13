@@ -228,6 +228,33 @@ describe('executionAdmissionRepository', () => {
     })).rejects.toThrow('conflicts with its observed result');
   });
 
+  it('normalizes terminal adapter evidence before writing the admission barrier', async () => {
+    const secret = 'barrier-token';
+    const raw = {
+      planId: PLAN.id,
+      status: 'failed',
+      accessToken: secret,
+      responseUrl: `https://adapter.test/result?access_token=${secret}`,
+      body: { echoed: secret },
+      error: `remote echoed ${secret}`,
+    };
+    mockQuery.mockResolvedValueOnce({ rows: [{ ...BARRIER, status: 'failed' }] });
+
+    await executionAdmissionRepository.observeTerminal({
+      id: BARRIER.id,
+      userId: BARRIER.user_id,
+      status: 'failed',
+      result: raw,
+    });
+
+    const persisted = String(mockQuery.mock.calls[0]![1]![3]);
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain('?access_token=');
+    expect(persisted).not.toContain('echoed');
+    expect(persisted).toContain('[redacted:credential]');
+    expect(persisted).toContain('[redacted:execution-error]');
+  });
+
   it('requires the exact live owner, graph, explanation, and plan before dispatch', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [{ id: BARRIER.id }] });
     await expect(executionAdmissionRepository.isDispatchable({

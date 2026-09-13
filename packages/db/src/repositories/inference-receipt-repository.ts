@@ -522,9 +522,11 @@ export const inferenceReceiptRepository = {
            AND COALESCE(o.escalation_reason, o.explanation) = $6
            AND g.continuation_snapshot = $7::JSONB
            AND g.risk_snapshot = $8::JSONB
+           AND g.policy_snapshot = $9::JSONB
          FOR UPDATE OF g, d, o`,
         [userId, decisionId, outcome.id, explanation.id, selectedAction.id,
-          outcome.reasoning, JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment)],
+          outcome.reasoning, JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment),
+          JSON.stringify(outcome.policyVerdicts ?? {})],
       );
       if (!locked.rows[0]) return null;
 
@@ -568,8 +570,22 @@ export const inferenceReceiptRepository = {
     userId: string,
     decisionId: string,
     planId: string,
+    suppliedContinuation: DecisionContinuation,
+    steps: unknown[],
     refreshedPolicySnapshot: Record<string, unknown>,
   ): Promise<boolean> {
+    const continuation = snapshotContinuation(suppliedContinuation);
+    const outcome = continuation?.outcome;
+    const explanation = continuation?.explanation;
+    const selectedAction = outcome?.selectedAction;
+    if (!continuation || !outcome || !explanation || !selectedAction ||
+        outcome.decisionId !== decisionId || explanation.decisionId !== decisionId ||
+        !outcome.autoExecute || outcome.requiresApproval ||
+        outcome.policyVerdicts?.[selectedAction.id] !== 'allowed' ||
+        refreshedPolicySnapshot['allowed'] !== true ||
+        refreshedPolicySnapshot['requiresApproval'] !== false) {
+      return false;
+    }
     const result = await query(
       `SELECT g.decision_id
        FROM decision_ingest_guards g
@@ -585,8 +601,14 @@ export const inferenceReceiptRepository = {
        WHERE g.decision_id = $2 AND g.effect_state = 'running'
          AND g.source_execution_plan_id = $3
          AND g.dispatch_policy_snapshot = $4::JSONB
+         AND g.continuation_snapshot = $5::JSONB
+         AND g.risk_snapshot = $6::JSONB
+         AND g.policy_snapshot = $7::JSONB
+         AND ep.steps = $8::JSONB
          AND (u.autonomy_settings->>'paused') IS DISTINCT FROM 'true'`,
-      [userId, decisionId, planId, JSON.stringify(refreshedPolicySnapshot)],
+      [userId, decisionId, planId, JSON.stringify(refreshedPolicySnapshot),
+        JSON.stringify(continuation), JSON.stringify(outcome.riskAssessment),
+        JSON.stringify(outcome.policyVerdicts ?? {}), JSON.stringify(steps)],
     );
     return !!result.rows[0];
   },

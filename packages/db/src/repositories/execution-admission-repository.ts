@@ -1,4 +1,4 @@
-import type { MemoryActionLoopReport } from '@skytwin/shared-types';
+import { normalizeExecutionRecord, type MemoryActionLoopReport } from '@skytwin/shared-types';
 import { query, withTransaction } from '../connection.js';
 import type { CreateExplanationInput } from './explanation-repository.js';
 import type { ExecutionPlanRow } from '../types.js';
@@ -407,9 +407,17 @@ export const executionAdmissionRepository = {
        WHERE b.id = $1 AND b.user_id = $2 AND b.scope = $3
          AND b.idempotency_key = $4 AND b.status = 'in_progress'
          AND b.execution_plan_id = $5 AND ep.status = 'running'
+         AND b.risk_snapshot = $6::JSONB
+         AND b.policy_snapshot = $7::JSONB
+         AND b.action_snapshot = $8::JSONB
+         AND b.outcome_snapshot = $9::JSONB
+         AND ep.steps = $10::JSONB
          AND (u.autonomy_settings->>'paused') IS DISTINCT FROM 'true'`,
       [admission.barrier.id, admission.barrier.user_id, admission.barrier.scope,
-        admission.barrier.idempotency_key, admission.plan.id],
+        admission.barrier.idempotency_key, admission.plan.id,
+        JSON.stringify(authority.riskSnapshot), JSON.stringify(authority.policySnapshot),
+        JSON.stringify(authority.actionSnapshot), JSON.stringify(authority.outcomeSnapshot),
+        JSON.stringify(authority.steps)],
     );
     return !!result.rows[0];
   },
@@ -420,13 +428,14 @@ export const executionAdmissionRepository = {
           input.result['status'] !== input.status)) {
       throw new Error('Execution observation does not match its terminal status.');
     }
+    const observed = normalizeExecutionRecord(input.result);
     const result = await query<ExecutionAdmissionRow>(
       `UPDATE execution_admission_barriers
        SET status = $3, observed_result = $4::JSONB, updated_at = now()
        WHERE id = $1 AND user_id = $2 AND status = 'in_progress'
          AND execution_plan_id::STRING = ($4::JSONB)->>'planId'
        RETURNING *`,
-      [input.id, input.userId, input.status, JSON.stringify(input.result)],
+      [input.id, input.userId, input.status, JSON.stringify(observed)],
     );
     if (result.rows[0]) return result.rows[0];
 
@@ -436,7 +445,7 @@ export const executionAdmissionRepository = {
     );
     const row = existing.rows[0];
     if (row?.status === input.status &&
-        canonicalJson(row.observed_result) === canonicalJson(input.result)) {
+        canonicalJson(row.observed_result) === canonicalJson(observed)) {
       return row;
     }
     throw new Error('Execution admission terminal state conflicts with its observed result.');

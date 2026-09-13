@@ -49,6 +49,8 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
+  normalizeExecutionError,
+  normalizeExecutionRecord,
   parseAutonomySettings,
   RiskTier,
   SituationType,
@@ -473,7 +475,7 @@ async function executeAllowedOpportunity(
         );
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = normalizeExecutionError(err);
       await bestEffortMemoryLedger('record ambiguous execution admission', () =>
         executionAdmissionRepository.observeTerminal({
           id: admission.barrier.id,
@@ -509,14 +511,16 @@ async function executeAllowedOpportunity(
     }
 
     const terminalStatus: 'completed' | 'failed' = result.status;
-    const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
+    const safeOutput = normalizeExecutionRecord(result.output ?? {});
+    const safeError = result.error ? normalizeExecutionError(result.error) : undefined;
+    const adapterName = adapterUsedFromResult(safeOutput) ?? routing.selectedAdapter;
     const observed = {
       planId: admission.plan.id,
       adapterPlanId: result.planId,
       adapterName,
       status: terminalStatus,
-      output: result.output ?? {},
-      error: result.error ?? null,
+      output: safeOutput,
+      error: safeError ?? null,
     };
     // This is the primary terminal observation. Every write below it is a
     // repairable projection and must never change this known adapter result.
@@ -535,8 +539,8 @@ async function executeAllowedOpportunity(
         planId: admission.plan.id,
         status: terminalStatus,
         success: terminalStatus === 'completed',
-        outputs: { ...(result.output ?? {}), adapter_plan_id: result.planId },
-        error: result.error,
+        outputs: { ...safeOutput, adapter_plan_id: result.planId },
+        error: safeError,
         rollbackAvailable: candidate.reversible,
       }));
 
@@ -547,7 +551,7 @@ async function executeAllowedOpportunity(
       status,
       result.status === 'completed'
         ? `SkyTwin executed this memory action through ${adapterName}.`
-        : `SkyTwin tried ${adapterName}, but execution failed: ${result.error ?? 'unknown error'}.`,
+        : `SkyTwin tried ${adapterName}, but execution failed: ${safeError ?? 'unknown error'}.`,
       result.status === 'completed'
         ? 'Monitor feedback and keep the memory pattern available for future opportunities.'
         : 'Reconcile this admitted failure before creating a new opportunity.',
@@ -573,7 +577,7 @@ async function executeAllowedOpportunity(
     return report;
   } catch (err) {
     if (admissionAttempted) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = normalizeExecutionError(err);
       const recovered = admissionAuthority ? await executionAdmissionRepository
         .findByScope(userId, 'memory', opportunity.id, {
           ...admissionAuthority,
