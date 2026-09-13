@@ -1610,14 +1610,37 @@ export class ServiceManager {
     apiGeneration: ApiGeneration | null = null,
   ): Promise<void> {
     if (this.workerStartInFlight) return this.workerStartInFlight;
-    const operation = this.startWorkerOwned(startup, apiGeneration);
-    let latched!: Promise<void>;
-    latched = operation.finally(() => {
+
+    let resolveStart!: () => void;
+    let rejectStart!: (reason: unknown) => void;
+    const latched = new Promise<void>((resolve, reject) => {
+      resolveStart = resolve;
+      rejectStart = reject;
+    });
+    // Publish the operation before startWorkerOwned executes any synchronous
+    // precheck or status callback. A status listener may reenter startWorker;
+    // it must observe and join this exact operation.
+    this.workerStartInFlight = latched;
+    const clearLatch = (): void => {
       if (this.workerStartInFlight === latched) {
         this.workerStartInFlight = null;
       }
-    });
-    this.workerStartInFlight = latched;
+    };
+    try {
+      void this.startWorkerOwned(startup, apiGeneration).then(
+        () => {
+          clearLatch();
+          resolveStart();
+        },
+        (error: unknown) => {
+          clearLatch();
+          rejectStart(error);
+        },
+      );
+    } catch (error) {
+      clearLatch();
+      rejectStart(error);
+    }
     return latched;
   }
 

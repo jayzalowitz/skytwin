@@ -172,6 +172,43 @@ describe("ServiceManager worker start serialization", () => {
     expect(manager.worker.status).toBe("running");
   });
 
+  it("publishes the start latch before a synchronous status listener reenters", async () => {
+    const manager = new ServiceManager() as InstanceType<
+      typeof ServiceManager
+    > &
+      ManagerInternals;
+    const { startup, generation } = authorize(manager);
+    const worker = child(8206);
+    processState.fork.mockReturnValue(worker);
+    let releaseBundle: ((path: string) => void) | undefined;
+    manager.ensureEmbeddedRoot = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          releaseBundle = resolve;
+        }),
+    );
+    let reentrant: Promise<void> | undefined;
+    manager.setStatusHandler((status) => {
+      if (status.worker === "starting" && !reentrant) {
+        reentrant = manager.startWorker(startup, generation);
+      }
+    });
+
+    const first = manager.startWorker(startup, generation);
+
+    expect(reentrant).toBe(first);
+    expect(manager.ensureEmbeddedRoot).toHaveBeenCalledOnce();
+    expect(processState.fork).not.toHaveBeenCalled();
+
+    releaseBundle?.("/tmp/embedded");
+    await Promise.all([first, reentrant]);
+
+    expect(manager.ensureEmbeddedRoot).toHaveBeenCalledOnce();
+    expect(processState.fork).toHaveBeenCalledOnce();
+    expect(manager.worker.process).toBe(worker);
+    expect(manager.worker.status).toBe("running");
+  });
+
   it("coalesces a delayed restart that races an in-flight resume", async () => {
     vi.useFakeTimers();
     const info = vi.spyOn(console, "info").mockImplementation(() => undefined);
