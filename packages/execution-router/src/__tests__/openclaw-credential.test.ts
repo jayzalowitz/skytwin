@@ -317,6 +317,24 @@ describe('OpenClawAdapter credential_required handling', () => {
       await expect(adapter.execute(ambiguousPlan)).rejects.toThrow('outcome is ambiguous');
     });
 
+    it.each([
+      { success: true, status: 'failed' },
+      { success: false, status: 'completed' },
+      { success: true, status: 'running' },
+      { success: false, status: 'pending' },
+      { success: true, error: 'conflicting error' },
+      { status: 'completed', error: 'conflicting error' },
+      { status: 'running' },
+      { status: 'pending' },
+    ])('rejects inconsistent or non-terminal response %# as ambiguous', async (body) => {
+      const adapter = new OpenClawAdapter({ apiUrl: 'http://localhost:9000' });
+      const plan = await buildPlanFromAdapter(adapter);
+      fetchMock.mockResolvedValueOnce(jsonResponse(body));
+
+      await expect(adapter.execute(plan)).rejects.toThrow('outcome is ambiguous');
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    });
+
     it('does not trigger on null credential_required', async () => {
       const onCredentialNeeded = vi.fn() as MockFn;
 

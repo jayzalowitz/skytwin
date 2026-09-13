@@ -19,6 +19,7 @@ import {
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
+import { AmbiguousExecutionError } from '@skytwin/execution-router';
 import type {
   FeedbackEvent,
   CandidateAction,
@@ -146,7 +147,9 @@ function approvalMemoryStatus(
   executionResult?: { status: string } | null,
 ): MemoryActionOpportunityStatus {
   if (action === 'reject') return 'skipped';
-  return executionResult?.status === 'completed' ? 'auto_executed' : 'execution_failed';
+  if (executionResult?.status === 'completed') return 'auto_executed';
+  if (executionResult?.status === 'ambiguous') return 'execution_ambiguous';
+  return 'execution_failed';
 }
 
 function approvalMemoryCopy(input: {
@@ -172,6 +175,12 @@ function approvalMemoryCopy(input: {
     return {
       summary: `User approved and SkyTwin executed this memory action: ${input.actionLabel}.`,
       nextStep: 'Monitor feedback and keep the pattern available for future opportunities.',
+    };
+  }
+  if (input.status === 'execution_ambiguous') {
+    return {
+      summary: `User approved this memory action, but its execution outcome is unresolved: ${input.actionLabel}.`,
+      nextStep: 'Reconcile the adapter result before considering another execution.',
     };
   }
   return {
@@ -686,6 +695,11 @@ export function createApprovalsRouter(): Router {
             body.userId,
             { approved: true },
           );
+          if (result.status !== 'completed' && result.status !== 'failed') {
+            throw new AmbiguousExecutionError(
+              `Approved execution returned non-terminal status ${result.status}`,
+            );
+          }
 
           // Persist execution plan + result atomically
           const savedPlan = await withTransaction(async (client) => {
@@ -762,47 +776,54 @@ export function createApprovalsRouter(): Router {
             });
           }
         } catch (execError) {
-          // Execution failed after approval was recorded. Log the failure and persist
-          // a failed plan so the approval isn't silently orphaned with no execution record.
           const errMsg = execError instanceof Error ? execError.message : String(execError);
-          log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
+          if (execError instanceof AmbiguousExecutionError) {
+            // The adapter may have committed before terminal truth was lost.
+            // Do not fabricate a failed plan/result: retain an explicit
+            // reconciliation state and, critically, never suggest retry.
+            log.warn(`Execution outcome is ambiguous for approval ${requestId}`, { error: errMsg });
+            executionResult = { status: 'ambiguous', error: 'Execution outcome requires reconciliation' };
+          } else {
+            // A proven terminal/pre-effect failure may be recorded as failed.
+            log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
 
-          try {
-            const failedPlan = await withTransaction(async (client) => {
-              const planResult = await client.query(
-                `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
-                 VALUES (gen_random_uuid(), $1, NULL, 'failed', $2, now())
-                 RETURNING *`,
-                [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
-              );
-              const plan = planResult.rows[0];
-              if (!plan) throw new Error('Failed to persist failed execution plan');
-              await client.query(
-                `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
-                 VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
-                [plan.id, errMsg, candidateAction.reversible],
-              );
-              // #324: link even failed plans so the outcome's
-              // `execution_plan_id` is populated. The rollback site
-              // still reads `success` from `execution_results` before
-              // attempting rollback, so a failed plan link doesn't
-              // accidentally trigger rollback of nothing. "Latest
-              // plan wins" — overwrite to match backfill + read
-              // semantics; same duplication note as the success path
-              // applies.
-              await client.query(
-                `UPDATE decision_outcomes
-                   SET execution_plan_id = $1
-                 WHERE decision_id = $2`,
-                [plan.id, approval.decision_id],
-              );
-              return plan;
-            });
+            try {
+              const failedPlan = await withTransaction(async (client) => {
+                const planResult = await client.query(
+                  `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
+                   VALUES (gen_random_uuid(), $1, NULL, 'failed', $2, now())
+                   RETURNING *`,
+                  [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
+                );
+                const plan = planResult.rows[0];
+                if (!plan) throw new Error('Failed to persist failed execution plan');
+                await client.query(
+                  `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
+                   VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
+                  [plan.id, errMsg, candidateAction.reversible],
+                );
+                // #324: link even failed plans so the outcome's
+                // `execution_plan_id` is populated. The rollback site
+                // still reads `success` from `execution_results` before
+                // attempting rollback, so a failed plan link doesn't
+                // accidentally trigger rollback of nothing. "Latest
+                // plan wins" — overwrite to match backfill + read
+                // semantics; same duplication note as the success path
+                // applies.
+                await client.query(
+                  `UPDATE decision_outcomes
+                     SET execution_plan_id = $1
+                   WHERE decision_id = $2`,
+                  [plan.id, approval.decision_id],
+                );
+                return plan;
+              });
 
-            executionResult = { status: 'failed', planId: failedPlan.id, error: 'Execution failed' };
-          } catch (persistError) {
-            log.error('Failed to persist execution failure record', { error: persistError instanceof Error ? persistError.message : String(persistError), stack: persistError instanceof Error ? persistError.stack : undefined });
-            executionResult = { status: 'failed', error: 'Execution failed' };
+              executionResult = { status: 'failed', planId: failedPlan.id, error: 'Execution failed' };
+            } catch (persistError) {
+              log.error('Failed to persist execution failure record', { error: persistError instanceof Error ? persistError.message : String(persistError), stack: persistError instanceof Error ? persistError.stack : undefined });
+              executionResult = { status: 'failed', error: 'Execution failed' };
+            }
           }
         } finally {
           // Always strip sensitive credentials, even on error paths

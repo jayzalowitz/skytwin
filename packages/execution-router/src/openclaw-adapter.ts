@@ -152,9 +152,33 @@ export class OpenClawAdapter implements IronClawAdapter {
         }
 
         const result = await response.json() as Record<string, unknown>;
+        const explicitStatus = result['status'];
+        const explicitSuccess = result['success'];
+        if (explicitSuccess !== undefined && typeof explicitSuccess !== 'boolean') {
+          throw new Error('OpenClaw success field is not boolean');
+        }
+        if (explicitStatus !== undefined && explicitStatus !== 'completed' &&
+            explicitStatus !== 'failed' && explicitStatus !== 'pending' &&
+            explicitStatus !== 'running') {
+          throw new Error(`OpenClaw returned unknown status ${String(explicitStatus)}`);
+        }
+        if (explicitStatus === 'pending' || explicitStatus === 'running') {
+          throw new Error(`OpenClaw returned non-terminal status ${explicitStatus}`);
+        }
+        if ((explicitStatus === 'completed' && explicitSuccess === false) ||
+            (explicitStatus === 'failed' && explicitSuccess === true)) {
+          throw new Error('OpenClaw response contained conflicting terminal fields');
+        }
+        if ((explicitStatus === 'completed' || explicitSuccess === true) &&
+            typeof result['error'] === 'string' && result['error'].length > 0) {
+          throw new Error('OpenClaw success response also contained an error');
+        }
 
         // Check if OpenClaw is reporting that this skill needs credentials
         if (result['credential_required']) {
+          if (explicitStatus === 'completed' || explicitSuccess === true) {
+            throw new Error('OpenClaw credential failure conflicted with success');
+          }
           const credReq = result['credential_required'] as Record<string, unknown>;
           if (this.onCredentialNeeded) {
             try {
@@ -184,8 +208,7 @@ export class OpenClawAdapter implements IronClawAdapter {
           });
         }
 
-        const explicitStatus = result['status'];
-        if (result['success'] === false || explicitStatus === 'failed') {
+        if (explicitSuccess === false || explicitStatus === 'failed') {
           return this.recordExecutionResult({
             planId: plan.id,
             status: 'failed',
@@ -197,7 +220,7 @@ export class OpenClawAdapter implements IronClawAdapter {
             output: { adapter_used: 'openclaw', ...result },
           });
         }
-        if (result['success'] !== true && explicitStatus !== 'completed') {
+        if (explicitSuccess !== true && explicitStatus !== 'completed') {
           throw new Error('OpenClaw response did not contain an explicit terminal status');
         }
 

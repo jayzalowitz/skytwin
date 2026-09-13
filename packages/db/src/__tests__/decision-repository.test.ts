@@ -1,10 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockQuery = vi.fn();
+const mockTransactionQuery = vi.fn();
 
 vi.mock('../connection.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
-  withTransaction: vi.fn(),
+  withTransaction: (fn: (client: { query: typeof mockTransactionQuery }) => Promise<unknown>) =>
+    fn({ query: mockTransactionQuery }),
 }));
 
 const { decisionRepository } = await import('../repositories/decision-repository.js');
@@ -437,7 +439,10 @@ describe('decisionRepository', () => {
   describe('addCandidateAction', () => {
     it('inserts candidate action without explicit id', async () => {
       const row = fakeCandidateActionRow();
-      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+      mockTransactionQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'd-001' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [row], rowCount: 1 });
 
       const result = await decisionRepository.addCandidateAction({
         decisionId: 'd-001',
@@ -449,7 +454,9 @@ describe('decisionRepository', () => {
 
       expect(result).toEqual(row);
 
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      expect(mockTransactionQuery.mock.calls[0]![0]).toContain('FOR UPDATE');
+      expect(mockTransactionQuery.mock.calls[1]![0]).toContain('decision_ingest_guards');
+      const [sql, params] = mockTransactionQuery.mock.calls[2]!;
       expect(sql).toContain('INSERT INTO candidate_actions');
       expect(sql).toContain('RETURNING *');
       expect(params).toEqual([
@@ -466,7 +473,10 @@ describe('decisionRepository', () => {
 
     it('inserts candidate action with explicit id', async () => {
       const row = fakeCandidateActionRow({ id: 'ca-custom' });
-      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+      mockTransactionQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'd-001' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [row], rowCount: 1 });
 
       await decisionRepository.addCandidateAction({
         id: 'ca-custom',
@@ -479,26 +489,43 @@ describe('decisionRepository', () => {
         estimatedCost: 0,
       });
 
-      const [_sql, params] = mockQuery.mock.calls[0]!;
+      const [_sql, params] = mockTransactionQuery.mock.calls[2]!;
       expect(_sql).toContain('ON CONFLICT (id) DO UPDATE');
-      expect(_sql).toContain('decision_ingest_guards');
       expect(params![0]).toBe('ca-custom');
       expect(params![7]).toBe(false); // reversible
       expect(params![8]).toBe(0);     // estimatedCost
     });
 
     it('rejects candidate mutation after receipt finalization', async () => {
-      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+      mockTransactionQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'd-001' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [{ '?column?': 1 }], rowCount: 1 });
 
       await expect(decisionRepository.addCandidateAction({
         id: 'ca-custom', decisionId: 'd-001', actionType: 'send_reply',
         description: 'Send reply', predictedUserPreference: 'high',
         riskAssessment: {}, reversible: false,
       })).rejects.toThrow('immutable after receipt finalization');
+      expect(mockTransactionQuery).toHaveBeenCalledTimes(2);
+    });
+
+    it('rejects a fresh generated-id candidate after receipt finalization', async () => {
+      mockTransactionQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'd-001' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [{ '?column?': 1 }], rowCount: 1 });
+
+      await expect(decisionRepository.addCandidateAction({
+        decisionId: 'd-001', actionType: 'reply', description: 'Late candidate',
+        predictedUserPreference: 'high', riskAssessment: {},
+      })).rejects.toThrow('immutable after receipt finalization');
+      expect(mockTransactionQuery).toHaveBeenCalledTimes(2);
     });
 
     it('defaults reversible to true and estimatedCost to null', async () => {
-      mockQuery.mockResolvedValue({ rows: [fakeCandidateActionRow()], rowCount: 1 });
+      mockTransactionQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'd-001' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [fakeCandidateActionRow()], rowCount: 1 });
 
       await decisionRepository.addCandidateAction({
         decisionId: 'd-001',
@@ -508,10 +535,40 @@ describe('decisionRepository', () => {
         riskAssessment: {},
       });
 
-      const [_sql, params] = mockQuery.mock.calls[0]!;
+      const [_sql, params] = mockTransactionQuery.mock.calls[2]!;
       // Last two params should be defaults
       expect(params![params!.length - 2]).toBe(true);  // reversible
       expect(params![params!.length - 1]).toBeNull();   // estimatedCost
+    });
+  });
+
+  describe('updateCandidateRiskAssessment', () => {
+    it('locks the owning decision and persists risk before capture', async () => {
+      const row = fakeCandidateActionRow({ risk_assessment: { overallTier: 'high' } });
+      mockTransactionQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'd-001' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [row], rowCount: 1 });
+
+      await expect(decisionRepository.updateCandidateRiskAssessment(
+        'ca-001',
+        { overallTier: 'high' },
+      )).resolves.toEqual(row);
+      expect(mockTransactionQuery.mock.calls[0]![0]).toContain('FOR UPDATE OF d');
+      expect(mockTransactionQuery.mock.calls[1]![0]).toContain('decision_ingest_guards');
+      expect(mockTransactionQuery.mock.calls[2]![0]).toContain('UPDATE candidate_actions');
+    });
+
+    it('rejects risk drift after receipt finalization', async () => {
+      mockTransactionQuery
+        .mockResolvedValueOnce({ rows: [{ id: 'd-001' }], rowCount: 1 })
+        .mockResolvedValueOnce({ rows: [{ '?column?': 1 }], rowCount: 1 });
+
+      await expect(decisionRepository.updateCandidateRiskAssessment(
+        'ca-001',
+        { overallTier: 'high' },
+      )).rejects.toThrow('risk is immutable after receipt finalization');
+      expect(mockTransactionQuery).toHaveBeenCalledTimes(2);
     });
   });
 

@@ -320,6 +320,59 @@ describe('runMemoryActionLoopJob', () => {
     );
   });
 
+  it('records an ambiguous adapter outcome without a failed plan or retryable failure state', async () => {
+    const opportunity = makeOpportunity('create_task');
+    mockCommon(opportunity);
+    mockUserRepository.findById.mockResolvedValue({
+      id: 'user-1', trust_tier: 'high_autonomy',
+      autonomy_settings: {}, ironclaw_channel: null,
+    });
+    const policyEvaluator = {
+      evaluate: vi.fn().mockResolvedValue({
+        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+      }),
+    };
+    const router = {
+      route: vi.fn().mockResolvedValue({
+        selectedAdapter: 'ironclaw', fallbackChain: [], trustProfile: {},
+        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'preferred',
+      }),
+      executeWithRouting: vi.fn().mockResolvedValue({
+        planId: 'adapter-plan-unresolved', status: 'pending', startedAt: new Date(),
+      }),
+    };
+
+    const summary = await runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
+      policyEvaluator,
+      loadPolicies: async () => [],
+      getExecutionRouter: async () => router,
+    });
+
+    expect(summary.executionAmbiguous).toBe(1);
+    expect(summary.executionFailed).toBe(0);
+    expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+    expect(mockExecutionRepository.createResult).not.toHaveBeenCalled();
+    expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'execution_ambiguous',
+        nextStep: expect.stringContaining('Reconcile'),
+      }),
+    );
+    expect(mockDecisionRepository.recordOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({
+        autoExecuted: true,
+        explanation: expect.stringContaining('requires reconciliation'),
+      }),
+    );
+    expect(mockExplanationRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        whatHappened: expect.stringContaining('terminal confirmation was unavailable'),
+      }),
+    );
+  });
+
   it('marks outbound email memory actions irreversible before policy evaluation', async () => {
     const opportunity = makeOpportunity('draft_email');
     mockCommon(opportunity);

@@ -20,6 +20,7 @@ import {
 import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
 import {
   AdapterRegistry,
+  AmbiguousExecutionError,
   DIRECT_TRUST_PROFILE,
   ExecutionRouter,
   IRONCLAW_TRUST_PROFILE,
@@ -98,6 +99,7 @@ export interface MemoryActionLoopSummary {
   blocked: number;
   learningNeeded: number;
   executionFailed: number;
+  executionAmbiguous: number;
   skipped: number;
   reports: MemoryActionLoopReport[];
 }
@@ -131,6 +133,7 @@ export async function runMemoryActionLoopJob(
     blocked: 0,
     learningNeeded: 0,
     executionFailed: 0,
+    executionAmbiguous: 0,
     skipped: 0,
     reports: [],
   };
@@ -178,6 +181,7 @@ export async function runMemoryActionLoopJob(
         else if (report.status === 'blocked_by_policy') summary.blocked++;
         else if (report.status === 'learning_needed') summary.learningNeeded++;
         else if (report.status === 'execution_failed') summary.executionFailed++;
+        else if (report.status === 'execution_ambiguous') summary.executionAmbiguous++;
       }
     } catch (err) {
       requireJobAdmission(deps.signal);
@@ -372,6 +376,11 @@ async function executeAllowedOpportunity(
     // generation signal by the worker's fetch wrapper.
     const result = await runAdmitted(deps.signal, () =>
       router.executeWithRouting(candidate, riskAssessment, userId));
+    if (result.status !== 'completed' && result.status !== 'failed') {
+      throw new AmbiguousExecutionError(
+        `Memory action execution returned non-terminal status ${result.status}`,
+      );
+    }
     const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
       autoExecuted: result.status === 'completed',
@@ -427,14 +436,23 @@ async function executeAllowedOpportunity(
   } catch (err) {
     requireJobAdmission(deps.signal);
     const isGap = err instanceof NoAdapterError;
+    const isAmbiguous = err instanceof AmbiguousExecutionError;
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
-      autoExecuted: false,
+      // `autoExecuted` records that the autonomous dispatch path was taken,
+      // not a claim of remote success. The explanation below carries the
+      // unresolved terminal truth explicitly.
+      autoExecuted: isAmbiguous,
       requiresApproval: false,
+      executionAmbiguous: isAmbiguous,
       reason: isGap
         ? err.message
-        : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
+        : isAmbiguous
+          ? `Execution outcome requires reconciliation: ${err.message}`
+          : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
     });
-    const status: MemoryActionOpportunityStatus = isGap ? 'learning_needed' : 'execution_failed';
+    const status: MemoryActionOpportunityStatus = isGap
+      ? 'learning_needed'
+      : isAmbiguous ? 'execution_ambiguous' : 'execution_failed';
     if (isGap) {
       await logMemorySkillGap(userId, opportunity, candidate.decisionId, err.message);
     }
@@ -443,10 +461,14 @@ async function executeAllowedOpportunity(
       status,
       isGap
         ? `No configured adapter can handle ${candidate.actionType} yet.`
-        : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
+        : isAmbiguous
+          ? `Execution outcome is unresolved and must be reconciled: ${err.message}`
+          : `Execution failed before completion: ${err instanceof Error ? err.message : String(err)}`,
       isGap
         ? `Connect or teach an OpenClaw/IronClaw skill for ${candidate.actionType}, then retry.`
-        : 'Retry after the adapter error is resolved.',
+        : isAmbiguous
+          ? 'Reconcile the adapter result before considering another execution.'
+          : 'Retry after the adapter error is resolved.',
       deps.now,
       {
         decisionId: candidate.decisionId,
@@ -664,6 +686,7 @@ async function recordOutcomeAndExplanation(
   outcome: {
     autoExecuted: boolean;
     requiresApproval: boolean;
+    executionAmbiguous?: boolean;
     reason: string;
     policyDecision?: PolicyDecision;
   },
@@ -679,11 +702,13 @@ async function recordOutcomeAndExplanation(
   });
   await explanationRepository.create({
     decisionId: candidate.decisionId,
-    whatHappened: outcome.autoExecuted
-      ? 'SkyTwin executed a memory-derived action opportunity.'
-      : outcome.requiresApproval
-        ? 'SkyTwin prepared a memory-derived action and queued it for approval.'
-        : 'SkyTwin evaluated a memory-derived action and did not execute it.',
+    whatHappened: outcome.executionAmbiguous
+      ? 'SkyTwin dispatched a memory-derived action, but terminal confirmation was unavailable.'
+      : outcome.autoExecuted
+        ? 'SkyTwin executed a memory-derived action opportunity.'
+        : outcome.requiresApproval
+          ? 'SkyTwin prepared a memory-derived action and queued it for approval.'
+          : 'SkyTwin evaluated a memory-derived action and did not execute it.',
     evidenceUsed: [
       {
         memoryRefs: candidate.parameters['memoryRefs'],

@@ -28,6 +28,7 @@ const {
   fakeUserRepo,
   fakeOauthRepo,
   fakeExecutionRouter,
+  fakeWithTransaction,
 } = vi.hoisted(() => ({
   fakeApprovalRepo: {
     findById: vi.fn(),
@@ -59,6 +60,7 @@ const {
     executeWithRoutingStreaming: vi.fn(async function* () {}),
     executeWithRouting: vi.fn(),
   },
+  fakeWithTransaction: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -124,9 +126,7 @@ vi.mock('@skytwin/db', () => ({
     updatePolicy: vi.fn(),
     deletePolicy: vi.fn(),
   },
-  withTransaction: vi.fn().mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
-    fn({ query: vi.fn() }),
-  ),
+  withTransaction: fakeWithTransaction,
 }));
 
 vi.mock('../execution-setup.js', () => ({
@@ -240,6 +240,9 @@ beforeEach(() => {
     error: 'no execution in test',
     output: {},
   });
+  fakeWithTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
+    fn({ query: vi.fn() }),
+  );
 });
 
 describe('feedback loop — approval records an episode for memory boost', () => {
@@ -465,6 +468,51 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       }),
     );
     expect(markInput).not.toHaveProperty('routeReason');
+  });
+
+  it('does not persist an ambiguous approved execution as failed', async () => {
+    const storedAction = {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'create_task',
+      description: 'Create task from memory',
+      domain: 'tasks',
+      parameters: {
+        opportunityId: '11111111-1111-1111-1111-111111111111',
+        summary: 'Madrid launch checklist',
+      },
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: 'moderate',
+      reasoning: 'memory action loop',
+      provenance: 'user_originated',
+    };
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'pending',
+    });
+    fakeApprovalRepo.respond.mockResolvedValueOnce({
+      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
+      candidate_action: storedAction, status: 'approved', responded_at: new Date(),
+    });
+    fakeExecutionRouter.executeWithRouting.mockResolvedValueOnce({
+      planId: 'adapter-plan-unresolved', status: 'running', startedAt: new Date(),
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: { status: 'ambiguous', error: 'Execution outcome requires reconciliation' },
+    });
+    expect(fakeWithTransaction).not.toHaveBeenCalled();
+    expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'execution_ambiguous',
+        nextStep: expect.stringContaining('Reconcile'),
+      }),
+    );
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

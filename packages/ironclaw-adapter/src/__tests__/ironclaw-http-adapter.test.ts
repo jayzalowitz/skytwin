@@ -19,12 +19,13 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   };
 }
 
-function makeAdapter(): RealIronClawAdapter {
+function makeAdapter(overrides: { maxRetries?: number; preferChatCompletions?: boolean } = {}): RealIronClawAdapter {
   return new RealIronClawAdapter({
     apiUrl: 'http://localhost:4000',
     webhookSecret: 'test-secret-key',
     ownerId: 'test-owner',
-    maxRetries: 0, // No retries in tests for speed
+    maxRetries: overrides.maxRetries ?? 0, // No retries in tests for speed
+    preferChatCompletions: overrides.preferChatCompletions,
   });
 }
 
@@ -141,8 +142,8 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(result.error).toBe('Gmail API returned 403');
     });
 
-    it('leaves an HTTP error after dispatch ambiguous', async () => {
-      const adapter = makeAdapter();
+    it('leaves an HTTP error after dispatch ambiguous without retrying the POST', async () => {
+      const adapter = makeAdapter({ maxRetries: 2 });
 
       fetchMock.mockResolvedValue(
         new Response('Internal Server Error', { status: 500 }),
@@ -150,15 +151,17 @@ describe('RealIronClawAdapter (HTTP)', () => {
 
       const plan = await adapter.buildPlan(makeAction());
       await expect(adapter.execute(plan)).rejects.toThrow('500');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('leaves network response loss after dispatch ambiguous', async () => {
-      const adapter = makeAdapter();
+    it('leaves network response loss after dispatch ambiguous without retrying the POST', async () => {
+      const adapter = makeAdapter({ maxRetries: 2 });
 
       fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 
       const plan = await adapter.buildPlan(makeAction());
       await expect(adapter.execute(plan)).rejects.toThrow('ECONNREFUSED');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it('sanitizes sensitive parameters in the message', async () => {
@@ -222,7 +225,7 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(threadBody.thread_id).toBe(plan.id);
     });
 
-    it('infers completed status when metadata has no explicit status', async () => {
+    it('rejects completion prose when metadata has no explicit status', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockResolvedValueOnce(
@@ -237,12 +240,11 @@ describe('RealIronClawAdapter (HTTP)', () => {
       );
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
-
-      expect(result.status).toBe('completed');
+      await expect(adapter.execute(plan)).rejects.toThrow('omitted explicit execution status');
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
     });
 
-    it('infers failed status from error content when no metadata status', async () => {
+    it('rejects failure prose when metadata has no explicit status', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockResolvedValueOnce(
@@ -257,9 +259,37 @@ describe('RealIronClawAdapter (HTTP)', () => {
       );
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
+      await expect(adapter.execute(plan)).rejects.toThrow('omitted explicit execution status');
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    });
 
-      expect(result.status).toBe('failed');
+    it.each([
+      { status: 'completed', success: false },
+      { status: 'failed', success: true },
+      { status: 'completed', error: 'conflicting error' },
+      { status: 'running' },
+    ])('rejects inconsistent or non-terminal webhook metadata %#', async (metadata) => {
+      const adapter = makeAdapter();
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        content: 'untrusted prose', attachments: [], metadata,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+      const plan = await adapter.buildPlan(makeAction());
+      await expect(adapter.execute(plan)).rejects.toThrow();
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    });
+
+    it.each([
+      ['HTTP 500', () => Promise.resolve(new Response('lost', { status: 500 }))],
+      ['response loss', () => Promise.reject(new Error('response lost after commit'))],
+    ] as const)('does not retry an effect-bearing chat POST after %s', async (_label, reply) => {
+      const adapter = makeAdapter({ maxRetries: 2, preferChatCompletions: true });
+      fetchMock.mockImplementationOnce(reply);
+
+      const plan = await adapter.buildPlan(makeAction());
+      await expect(adapter.execute(plan)).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
     });
   });
 
