@@ -42,9 +42,11 @@ class PausableGetStore extends MemoryStore {
 }
 class FakeChild extends EventEmitter {
   sent: unknown[] = [];
+  killSignals: NodeJS.Signals[] = [];
   connected = true;
   killed = false;
   autoAck = true;
+  onKill: ((signal: NodeJS.Signals) => void) | null = null;
   send(value: unknown) {
     this.sent.push(value);
     const message = value as Record<string, unknown>;
@@ -60,7 +62,14 @@ class FakeChild extends EventEmitter {
     }
     return true;
   }
-  kill() { this.killed = true; this.connected = false; this.emit('exit'); return true; }
+  kill(signal: NodeJS.Signals = 'SIGTERM') {
+    this.killSignals.push(signal);
+    this.killed = true;
+    this.connected = false;
+    if (this.onKill) this.onKill(signal);
+    else this.emit('exit');
+    return true;
+  }
 }
 class DeviceStore {
   rows = new Map<string, string>();
@@ -289,15 +298,61 @@ describe('DesktopKeyBroker', () => {
     },
   );
 
-  it('kills a child that does not acknowledge a lock before the bounded deadline', async () => {
-    const broker = new DesktopKeyBroker(new MemoryStore(), { lockAckTimeoutMs: 10 });
+  it('waits for delayed child exit after the acknowledgement deadline', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 50,
+    });
     await broker.initialize(context.userId, 'correct horse battery staple');
     const child = new FakeChild();
     child.autoAck = false;
+    child.onKill = signal => {
+      if (signal === 'SIGTERM') setTimeout(() => child.emit('exit'), 10);
+    };
     broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
-    await broker.lock(context.userId);
-    expect(child.killed).toBe(true);
+    expect(await broker.lock(context.userId)).toMatchObject({ success: true });
+    expect(child.killSignals).toEqual(['SIGTERM']);
     expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+  });
+
+  it('escalates to SIGKILL and waits for forced child close', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 5,
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.onKill = signal => {
+      if (signal === 'SIGKILL') queueMicrotask(() => child.emit('close'));
+    };
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+
+    expect(await broker.lock(context.userId)).toMatchObject({ success: true });
+    expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  it('fails closed when kill signals do not produce an exit or close event', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 5,
+    });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.onKill = () => { /* Signal accepted without proven termination. */ };
+    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+
+    expect(await broker.lock(context.userId)).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+      generation: 2,
+    });
+    expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
+    expect(await broker.unlock(context.userId, 'correct horse battery staple'))
+      .toEqual({ success: false, error: 'vault_locked' });
+    expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL', 'SIGTERM', 'SIGKILL']);
   });
 
   it('snapshots child owner grants instead of retaining a mutable set', async () => {
