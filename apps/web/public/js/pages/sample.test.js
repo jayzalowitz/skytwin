@@ -187,6 +187,8 @@ describe('interactive sample page states', () => {
     );
     expect(source).toContain("!== '#/sample'");
     expect(source).toContain('_sampleGlobalsWired');
+    expect(source).toContain('_sampleOperationGeneration');
+    expect(source).toContain('finishSampleOperation(operationGeneration)');
     expect(source).toContain('renderApiError');
     expect(source).toContain("{ type: 'reset' }");
     expect(

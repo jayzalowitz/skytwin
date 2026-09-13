@@ -11,6 +11,26 @@ import { skyTwinExitTour } from './dashboard-view.js';
 let _sampleGlobalsWired = false;
 let _sampleBusy = false;
 let _sampleRenderGeneration = 0;
+let _sampleOperationGeneration = 0;
+let _sampleExitPending = false;
+
+function beginSampleOperation() {
+  if (_sampleBusy) return null;
+  _sampleBusy = true;
+  _sampleOperationGeneration += 1;
+  return _sampleOperationGeneration;
+}
+
+function finishSampleOperation(operationGeneration) {
+  if (operationGeneration === _sampleOperationGeneration) {
+    _sampleBusy = false;
+  }
+}
+
+function invalidateSampleOperations() {
+  _sampleOperationGeneration += 1;
+  _sampleBusy = false;
+}
 
 export function isSampleRenderCurrent(container, generation) {
   return (
@@ -231,7 +251,8 @@ async function loadInto(container, generation) {
 
 export async function renderSample(container) {
   const generation = ++_sampleRenderGeneration;
-  _sampleBusy = false;
+  invalidateSampleOperations();
+  _sampleExitPending = false;
   if (localStorage.getItem(KEY_TOUR_MODE) !== '1') {
     container.innerHTML = `
       <div class="sample-shell"><div class="card sample-state-card">
@@ -246,7 +267,6 @@ export async function renderSample(container) {
 }
 
 async function runCommand(element) {
-  if (_sampleBusy) return;
   const container = document.getElementById('page-content');
   if (!container) return;
   const generation = _sampleRenderGeneration;
@@ -256,7 +276,8 @@ async function runCommand(element) {
   const payload = { type: command, proposalId };
   const correctionId = element.getAttribute('data-correction-id');
   if (correctionId) payload.correctionId = correctionId;
-  _sampleBusy = true;
+  const operationGeneration = beginSampleOperation();
+  if (operationGeneration === null) return;
   container
     .querySelectorAll('[data-action="sample-command"]')
     .forEach((button) => {
@@ -273,7 +294,7 @@ async function runCommand(element) {
       renderSampleFailure(container, error);
     }
   } finally {
-    _sampleBusy = false;
+    finishSampleOperation(operationGeneration);
   }
 }
 
@@ -291,8 +312,8 @@ export function initSampleGlobals() {
     if (action === 'sample-command') {
       await runCommand(target);
     } else if (action === 'sample-reset') {
-      if (_sampleBusy) return;
-      _sampleBusy = true;
+      const operationGeneration = beginSampleOperation();
+      if (operationGeneration === null) return;
       const container = document.getElementById('page-content');
       const generation = _sampleRenderGeneration;
       try {
@@ -309,11 +330,16 @@ export function initSampleGlobals() {
           renderSampleFailure(container, error);
         }
       } finally {
-        _sampleBusy = false;
+        finishSampleOperation(operationGeneration);
       }
     } else if (action === 'sample-restart') {
+      const operationGeneration = beginSampleOperation();
+      if (operationGeneration === null) return;
       const container = document.getElementById('page-content');
-      if (!container) return;
+      if (!container) {
+        finishSampleOperation(operationGeneration);
+        return;
+      }
       const generation = ++_sampleRenderGeneration;
       container.innerHTML = renderSampleLoading();
       try {
@@ -325,15 +351,30 @@ export function initSampleGlobals() {
         if (isSampleRenderCurrent(container, generation)) {
           renderSampleFailure(container, error);
         }
+      } finally {
+        finishSampleOperation(operationGeneration);
       }
     } else if (action === 'api-retry') {
+      const operationGeneration = beginSampleOperation();
+      if (operationGeneration === null) return;
       const container = document.getElementById('page-content');
-      if (container) {
-        const generation = ++_sampleRenderGeneration;
-        await loadInto(container, generation);
+      try {
+        if (container) {
+          const generation = ++_sampleRenderGeneration;
+          await loadInto(container, generation);
+        }
+      } finally {
+        finishSampleOperation(operationGeneration);
       }
     } else if (action === 'exit-tour') {
-      if (localStorage.getItem(KEY_TOUR_MODE) === '1') {
+      if (
+        !_sampleExitPending &&
+        localStorage.getItem(KEY_TOUR_MODE) === '1'
+      ) {
+        _sampleExitPending = true;
+        _sampleRenderGeneration += 1;
+        invalidateSampleOperations();
+        _sampleBusy = true;
         await skyTwinExitTour();
       }
     }
