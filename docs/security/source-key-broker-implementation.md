@@ -17,13 +17,13 @@ Migration 073 defines the CockroachDB recovery-key registry and durable device
 wrapper deletion intent. The broker also supports explicit device opt-in, but
 only when Electron reports an exact reviewed OS protection backend; stored
 wrappers bind that backend, and corrupt, legacy, or backend-mismatched wrappers
-are purged while the mandatory recovery wrapper is retained. The desktop adapter in this
-initial patch is still an injected `WrappedKeyStore`; production composition
-must replace the temporary Electron-store adapter with the Cockroach-backed
-repository before any source field is encrypted. The API and worker child
-bindings currently have empty owner grants and therefore fail closed. The
-authenticated owner-grant client, owned-service identity proof, child lock-ack
-client, deletion-intent consumer, and production repository gateway remain
+are purged while the mandatory recovery wrapper is retained. The desktop
+adapter in this initial patch is still an injected `WrappedKeyStore`;
+production composition must replace the temporary Electron-store adapter with
+the Cockroach-backed repository before any source field is encrypted. The API
+and worker child bindings currently have empty owner grants and therefore fail
+closed. The authenticated owner-grant client, owned-service identity proof,
+child lock-ack client, deletion-intent consumer, and production repository gateway remain
 release blockers.
 
 Consequently, the public privacy policy remains unchanged: source fields are

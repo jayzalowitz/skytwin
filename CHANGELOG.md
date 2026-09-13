@@ -8,8 +8,8 @@ All notable changes to SkyTwin will be documented in this file.
   0001 defines key custody, locked behavior, context-bound envelopes,
   crash-safe migration and rotation, backup/restore, deletion after key loss,
   the intentionally readable search-derivative boundary, and the supported
-  desktop-beta scope. A machine-readable inventory classifies all 866 columns
-  across the 92 live tables and ties each table to its currently discoverable
+  desktop-beta scope. A machine-readable inventory classifies all 877 columns
+  across the 94 live tables and ties each table to its currently discoverable
   SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
   classification drift, invalid ownership/boundary values, or weakened critical
   credential and dead-letter invariants. This is a reviewed design contract;
@@ -23,6 +23,15 @@ All notable changes to SkyTwin will be documented in this file.
   corpus, proves both migration entry points use the shared ordered flow, and
   fails if that authority becomes recoverable source, global state, or an
   unreviewed SQL callsite.
+
+- **The first source-key custody slice lands without enabling an encryption
+  claim.** Migration 073 adds a passphrase-recovery-wrapper registry and a
+  content-free device-wrapper deletion intent. The Electron broker implements
+  versioned wrappers, purpose-separated keys, context-bound envelopes,
+  capability-scoped child access, and bounded lock acknowledgement. API and
+  worker children receive empty owner grants, and production still uses a
+  temporary Electron-store adapter instead of the CockroachDB registry, so no
+  production source field is encrypted by this foundation.
 
 ### Fixed (post-/review)
 
@@ -39,7 +48,7 @@ All notable changes to SkyTwin will be documented in this file.
   migration entry points cannot execute an unreviewed SQL path, and unsupported
   CockroachDB table DDL—including implicit-column forms—stops validation rather
   than producing an incomplete field list. Mutation tests bind the exact runner,
-  migration corpus, supported DDL, and 92-table/866-column inventory.
+  migration corpus, supported DDL, and 94-table/877-column inventory.
 
 ## [Unreleased] — Account-free interactive sample
 
