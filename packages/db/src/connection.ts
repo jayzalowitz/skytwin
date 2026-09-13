@@ -1,4 +1,5 @@
 import { Pool, PoolClient, QueryResult, QueryResultRow } from 'pg';
+import { createHash } from 'node:crypto';
 
 /**
  * Database configuration for CockroachDB connection.
@@ -141,6 +142,71 @@ const DEFAULT_CONFIG: DatabaseConfig = {
 };
 
 let pool: Pool | null = null;
+let workerGenerationAuthorityLossHandler: ((error: WorkerGenerationAuthorityError) => void) | null = null;
+
+export class WorkerGenerationAuthorityError extends Error {
+  readonly code = 'WORKER_GENERATION_AUTHORITY_REVOKED';
+
+  constructor(message = 'Worker generation is not authorized to access the database') {
+    super(message);
+    this.name = 'WorkerGenerationAuthorityError';
+  }
+}
+
+/**
+ * Install the worker process's synchronous revocation hook. The DB package
+ * remains usable without one; the packaged worker installs it so a durable
+ * authority failure closes non-DB admission even when an individual job would
+ * otherwise catch and classify a repository error as best-effort.
+ */
+export function setWorkerGenerationAuthorityLossHandler(
+  handler: ((error: WorkerGenerationAuthorityError) => void) | null,
+): void {
+  workerGenerationAuthorityLossHandler = handler;
+}
+
+function workerAuthorityError(message?: string): WorkerGenerationAuthorityError {
+  const error = new WorkerGenerationAuthorityError(message);
+  workerGenerationAuthorityLossHandler?.(error);
+  return error;
+}
+
+interface WorkerGenerationFence {
+  readonly id: string;
+  readonly secretHash: string;
+}
+
+function currentWorkerGenerationFence(): WorkerGenerationFence | null {
+  const id = process.env['SKYTWIN_WORKER_GENERATION_ID'];
+  const secret = process.env['SKYTWIN_WORKER_GENERATION_SECRET'];
+  if (id === undefined && secret === undefined) return null;
+  if (
+    !id ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id) ||
+    !secret ||
+    !/^[0-9a-f]{64}$/i.test(secret)
+  ) {
+    throw workerAuthorityError('Worker generation authority is incomplete or malformed');
+  }
+  return {
+    id,
+    secretHash: createHash('sha256').update(secret).digest('hex'),
+  };
+}
+
+async function lockWorkerGenerationAuthority(
+  client: Pick<PoolClient, 'query'>,
+  fence: WorkerGenerationFence,
+): Promise<void> {
+  const result = await client.query(
+    `SELECT id
+       FROM worker_generation_authority
+      WHERE id = $1 AND secret_hash = $2 AND active = true
+      FOR UPDATE`,
+    [fence.id, fence.secretHash],
+  );
+  if (result.rowCount !== 1) throw workerAuthorityError();
+}
 
 /**
  * Get or create the database connection pool.
@@ -192,7 +258,24 @@ export async function query<T extends QueryResultRow = QueryResultRow>(
 ): Promise<QueryResult<T>> {
   const p = getPool();
   const start = Date.now();
-  const result = await p.query<T>(text, params);
+  const fence = currentWorkerGenerationFence();
+  let result: QueryResult<T>;
+  if (!fence) {
+    result = await p.query<T>(text, params);
+  } else {
+    const client = await p.connect();
+    try {
+      await client.query('BEGIN');
+      await lockWorkerGenerationAuthority(client, fence);
+      result = await client.query<T>(text, params);
+      await client.query('COMMIT');
+    } catch (error) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
   const duration = Date.now() - start;
 
   if (duration > 1000) {
@@ -214,11 +297,13 @@ export async function withTransaction<T>(
 
   try {
     await client.query('BEGIN');
+    const fence = currentWorkerGenerationFence();
+    if (fence) await lockWorkerGenerationAuthority(client, fence);
     const result = await fn(client);
     await client.query('COMMIT');
     return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => undefined);
     throw error;
   } finally {
     client.release();

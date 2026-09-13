@@ -1,5 +1,6 @@
 import { getPool, closePool, withTransaction } from '../connection.js';
 import { seedDemoShowcase } from './demo-showcase.js';
+import { upsertSourceDemoUser } from './source-demo-user.js';
 
 /**
  * Seed the database with sample data for development.
@@ -12,43 +13,22 @@ async function seed(): Promise<void> {
     // ========================================================================
     // 1. Create a sample user with autonomy settings
     // ========================================================================
-    const userResult = await client.query(
-      `INSERT INTO users (id, email, name, trust_tier, autonomy_settings)
-       VALUES (
-         'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
-         'alex@example.com',
-         'Alex Thompson',
-         -- low_autonomy (not moderate): the trust bar only shows live *progress*
-         -- below the top tiers. At low_autonomy Alex is visibly climbing toward
-         -- "Handle most things" (50-approval threshold), which is the story the
-         -- demo wants — moderate_autonomy renders a flat "Maximum trust" dead-end.
-         'low_autonomy',
-         $1
-       )
-       ON CONFLICT (id) DO UPDATE SET
-         email = EXCLUDED.email,
-         name = EXCLUDED.name,
-         trust_tier = EXCLUDED.trust_tier,
-         autonomy_settings = EXCLUDED.autonomy_settings,
-         updated_at = now()
-       RETURNING id`,
-      [
-        JSON.stringify({
-          maxAutoSpend: 5000, // $50.00 in cents
-          autoApproveRecurring: true,
-          requireApprovalForNewVendors: true,
-          allowCalendarManagement: true,
-          allowEmailDrafts: true,
-          allowEmailSend: false,
-          notificationPreferences: {
-            email: true,
-            push: true,
-            sms: false,
-          },
-        }),
-      ],
-    );
-    const userId = userResult.rows[0].id;
+    // low_autonomy (not moderate): the trust bar only shows live *progress*
+    // below the top tiers. The helper also stamps `is_demo=true`, which is the
+    // authorization marker required by account-free sample discovery.
+    const userId = await upsertSourceDemoUser(client, {
+      maxAutoSpend: 5000, // $50.00 in cents
+      autoApproveRecurring: true,
+      requireApprovalForNewVendors: true,
+      allowCalendarManagement: true,
+      allowEmailDrafts: true,
+      allowEmailSend: false,
+      notificationPreferences: {
+        email: true,
+        push: true,
+        sms: false,
+      },
+    });
     console.log(`[seed] Created user: ${userId}`);
 
     // ========================================================================

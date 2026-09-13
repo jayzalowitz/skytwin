@@ -2,6 +2,7 @@ import { createLogger } from '@skytwin/core';
 import { lifebookRepository, mempalaceRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:domain-extraction');
 
@@ -26,6 +27,7 @@ export interface DomainExtractionDeps {
   llmClient?: LlmClient;
   /** Capability categories list passed to the prompt. */
   capabilityCategories?: string[];
+  signal?: AbortSignal;
 }
 
 /**
@@ -176,8 +178,9 @@ export async function extractDomainsForUser(
   userId: string,
   llmClient: LlmClient | undefined,
   capabilityCategories: string[],
+  signal?: AbortSignal,
 ): Promise<{ detected: number; persisted: number }> {
-  const summaryParts = await buildMemorySummary(userId);
+  const summaryParts = await runAdmitted(signal, () => buildMemorySummary(userId));
   if (summaryParts.drawerCount === 0 && summaryParts.topEntities.length === 0) {
     log.info('Skipping domain extraction — no memory yet', { userId });
     return { detected: 0, persisted: 0 };
@@ -190,7 +193,7 @@ export async function extractDomainsForUser(
     return { detected: 0, persisted: 0 };
   }
 
-  const result = await runPrompt({
+  const result = await runAdmitted(signal, () => runPrompt({
     promptName: 'domain-extraction',
     inputs: {
       memory_summary: memorySummary,
@@ -198,7 +201,7 @@ export async function extractDomainsForUser(
     },
     user: { userId },
     llmClient,
-  });
+  }));
 
   const domains = coerceDomainList(result.output);
   if (domains.length === 0) {
@@ -208,6 +211,7 @@ export async function extractDomainsForUser(
 
   let persisted = 0;
   for (const d of domains) {
+    requireJobAdmission(signal);
     try {
       const wing = await mempalaceRepository.getWingByName(userId, d.domainName)
         ?? await mempalaceRepository.createWing({
@@ -224,8 +228,10 @@ export async function extractDomainsForUser(
         suggestedCapabilities: d.suggested_capabilities.slice(0, 8),
         wingId: wing.id,
       });
+      requireJobAdmission(signal);
       persisted++;
     } catch (err) {
+      requireJobAdmission(signal);
       log.warn('Failed to persist domain', {
         userId,
         domainName: d.domainName,
@@ -243,6 +249,7 @@ export async function extractDomainsForUser(
  * and parallelizing wouldn't help — LLM throughput is the bottleneck).
  */
 export async function runDomainExtractionJob(deps: DomainExtractionDeps = {}): Promise<void> {
+  requireJobAdmission(deps.signal);
   const { llmClient, capabilityCategories } = deps;
   log.info('Running domain-extraction job');
 
@@ -263,11 +270,13 @@ export async function runDomainExtractionJob(deps: DomainExtractionDeps = {}): P
   let failed = 0;
 
   for (const userId of userIds) {
+    requireJobAdmission(deps.signal);
     try {
       const { detected, persisted } = await extractDomainsForUser(
         userId,
         llmClient,
         categories,
+        deps.signal,
       );
       totalDetected += detected;
       totalPersisted += persisted;
@@ -280,6 +289,7 @@ export async function runDomainExtractionJob(deps: DomainExtractionDeps = {}): P
     }
   }
 
+  requireJobAdmission(deps.signal);
   log.info('Domain-extraction complete', {
     users: userIds.length,
     detected: totalDetected,

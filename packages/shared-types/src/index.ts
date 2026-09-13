@@ -219,6 +219,7 @@ export type {
 
 export type {
   DemoInfoResponse,
+  DemoSessionResponse,
   DemoPreviewResponse,
 } from './demo.js';
 

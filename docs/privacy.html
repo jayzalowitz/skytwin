@@ -140,7 +140,7 @@
       <li><strong>Revoke at any time</strong> — go to <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and remove SkyTwin's access. SkyTwin will lose the ability to read your Gmail or Calendar immediately.</li>
       <li><strong>Delete everything in-app</strong> — Settings → "Delete everything about me" wipes your twin profile, every decision, every memory page, every preference, OAuth tokens, sessions, spend records — the whole footprint — in a single transaction. The endpoint (<code>DELETE /api/users/:userId?confirm=delete-my-data</code>) and underlying purge function (<code>userPurgeRepository.purgeUser</code> in <code>packages/db/src/repositories/user-purge-repository.ts</code>) execute the delete inside a CRDB serializable transaction, so a failure rolls back cleanly. The cascade list is exhaustive — every table backed by a <code>user_id → users(id)</code> foreign key carries <code>ON DELETE CASCADE</code> (see migration <code>061-cascade-cleanup.sql</code> from #413), and the chained children (e.g. <code>candidate_actions.decision_id</code>, <code>twin_profile_versions.profile_id</code>, <code>execution_plans.decision_id</code>) are deleted explicitly first. Your linked Google account stays connected at Google's end; SkyTwin just stops seeing it and forgets what it learned.</li>
       <li><strong>Delete local data</strong> — quitting the app and deleting the data directory (see locations above) removes all stored Google user data and derived twin records.</li>
-      <li><strong>Pause the twin</strong> — the SkyTwin desktop has a "Pause" control that stops all signal ingestion and decision processing without revoking OAuth access.</li>
+      <li><strong>Pause auto-execution</strong> — the Settings control routes actions that would otherwise run automatically to manual approval without revoking OAuth access. It does not stop account synchronization. The separate capability-server pause stops installed MCP tools, not Gmail or Calendar ingestion.</li>
     </ul>
 
     <h2>Children</h2>
@@ -153,7 +153,7 @@
     <p>Privacy questions, security disclosures, or data-handling concerns: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a> or, for security-sensitive matters, follow the disclosure process described in <a href="https://github.com/jayzalowitz/skytwin/blob/main/SECURITY.md">SECURITY.md</a>.</p>
 
     <footer>
-      <p>Last updated: 2026-08-27.</p>
+      <p>Last updated: 2026-09-13.</p>
       <p>Source for this page: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/privacy.html">docs/privacy.html</a> in the SkyTwin repository.</p>
     </footer>
   </div>

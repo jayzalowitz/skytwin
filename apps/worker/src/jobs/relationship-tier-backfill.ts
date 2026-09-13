@@ -6,6 +6,7 @@ import {
   getRecentPages,
   type RelationshipTier,
 } from '@skytwin/memory-gbrain-crdb-adapter';
+import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('relationship-tier-backfill');
 
@@ -33,6 +34,7 @@ export interface RelationshipTierBackfillOptions {
   batchSize?: number;
   /** Window for bidirectional-thread counting. Default 90 days. */
   windowDays?: number;
+  signal?: AbortSignal;
 }
 
 export interface RelationshipTierBackfillSummary {
@@ -54,6 +56,7 @@ export async function runRelationshipTierBackfillJob(
   userId: string,
   opts: RelationshipTierBackfillOptions = {},
 ): Promise<RelationshipTierBackfillSummary> {
+  requireJobAdmission(opts.signal);
   const batchSize = opts.batchSize ?? 500;
   const windowDays = opts.windowDays ?? 90;
 
@@ -67,8 +70,10 @@ export async function runRelationshipTierBackfillJob(
 
   let counts: Map<string, number>;
   try {
-    counts = await computeBidirectionalThreadCounts(userId, windowDays);
+    counts = await runAdmitted(opts.signal, () =>
+      computeBidirectionalThreadCounts(userId, windowDays));
   } catch (err) {
+    requireJobAdmission(opts.signal);
     log.warn('computeBidirectionalThreadCounts failed; skipping user', {
       userId,
       reason: err instanceof Error ? err.message : String(err),
@@ -81,9 +86,10 @@ export async function runRelationshipTierBackfillJob(
     metadata: unknown;
   }>;
   try {
-    const recent = await getRecentPages(userId, batchSize);
+    const recent = await runAdmitted(opts.signal, () => getRecentPages(userId, batchSize));
     pages = recent.map((p) => ({ id: p.id, metadata: p.metadata }));
   } catch (err) {
+    requireJobAdmission(opts.signal);
     log.warn('getRecentPages failed; skipping user', {
       userId,
       reason: err instanceof Error ? err.message : String(err),
@@ -92,6 +98,7 @@ export async function runRelationshipTierBackfillJob(
   }
 
   for (const page of pages) {
+    requireJobAdmission(opts.signal);
     summary.attempted++;
     const meta = (page.metadata ?? {}) as Record<string, unknown>;
     const contact =
@@ -113,12 +120,14 @@ export async function runRelationshipTierBackfillJob(
       const affected = await updatePageMetadata(userId, page.id, {
         relationshipTier: tier,
       });
+      requireJobAdmission(opts.signal);
       if (affected === 0) {
         summary.failed++;
         continue;
       }
       summary.updated++;
     } catch (err) {
+      requireJobAdmission(opts.signal);
       summary.failed++;
       log.warn('relationship-tier backfill: updatePageMetadata failed', {
         userId,
@@ -128,6 +137,7 @@ export async function runRelationshipTierBackfillJob(
     }
   }
 
+  requireJobAdmission(opts.signal);
   if (summary.attempted > 0) {
     log.info('relationship-tier backfill pass complete', {
       userId,

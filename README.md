@@ -142,6 +142,12 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 Grab the installer for your OS, double-click, and you're in. No terminal, no Docker, no Ollama, no `.env`. CockroachDB ships inside the bundle as a hash-verified native binary and an embedded llama.cpp model is the default LLM — nothing else to install.
 
+> **Release boundary:** published installers currently predate the guarded,
+> account-free sample session in this source tree. Check the release notes for
+> the exact features in an artifact. Desktop builds produced from current source
+> can open a short-lived, read-only sample; simulated approve, reject, correct,
+> and learn interactions in that packaged path are later work.
+
 | OS | Installer on the release page |
 |----|-------------------------------|
 | **macOS** (Apple Silicon) | `SkyTwin-…-arm64.dmg` |
@@ -166,9 +172,9 @@ The installer detects your OS, installs anything missing (Homebrew on mac, Node 
 
 To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
-**The first 60 seconds:**
+**The first 60 seconds in a development/source run:**
 1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
-2. Click **"Just show me around"** on the welcome screen to skip the OAuth setup entirely and poke at a fully populated example twin — Alex, who's alive on every surface: recent decisions, a daily briefing, **4 pending approvals you can actually click through and run**, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". Two more personas (Pat, a power user; Carol, a brand-new user) ship too, so the dev "Switch user" button tells three stories. The button is enabled whenever the seeded demo is loaded — and tells you exactly what to run (`pnpm db:seed`) when it isn't, instead of silently disappearing.
+2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the narrower, read-only sample authority used by packaged desktop builds.
 3. The welcome screen also shows a one-line **"your AI runs privately on this computer — we'll use `<model>`"** — the app detects your machine's RAM and free disk and picks the best local model that fits, so a non-technical user never has to choose a model or paste an API key. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
 5. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
@@ -247,18 +253,19 @@ machine to verify the platform-specific bits (Homebrew, NSIS, etc.).
 ### Running Tests
 
 ```bash
-pnpm test   # 3,800+ tests across 307 test files in 29 packages + 7 apps
+pnpm test   # 4,800+ tests across 400+ files in 30 packages + 8 apps
 ```
 
 ## Architecture
 
-SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 29 packages and 7 apps:
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 30 packages and 8 apps:
 
 ```
 apps/
   api/                HTTP API — decisions, user management, webhooks, /api/voice/*
   web/                Dashboard — review decisions, manage preferences, configure policies
   worker/             Background jobs — async execution, briefing generation, memory action loop, tier backfill
+  idle-miner-runner/  Desktop-managed child that scans approved project roots only while the machine is idle
   desktop/            Electron app — macOS (.dmg), Windows (.exe), Linux (.AppImage)
   mobile/             React Native (Expo) — QR pairing, push notifications, SSE, voice capture
   openclaw-bridge/    OpenClaw proxy — bridges local API to OpenClaw execution service
@@ -308,7 +315,7 @@ packages/
 | Build | Turborepo |
 | Desktop | Electron + electron-builder |
 | Mobile | React Native + Expo |
-| Testing | Vitest (3,800+ tests) |
+| Testing | Vitest (4,800+ tests) |
 | CI/CD | GitHub Actions |
 | Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and a Direct fallback — trust-ranked with automatic failover |
 
@@ -404,18 +411,18 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 | [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
 | [Launch-Readiness Report](./docs/launch-readiness-report.md) | Current launch-blocker status: what's code-done vs. external |
-| [Release Procedure](./docs/release-procedure.md) | How to cut a release (tag → build.yml → draft → publish) + the signing/auto-update gaps |
+| [Release Procedure](./docs/release-procedure.md) | How to cut a release (tag → build.yml → draft → publish) + signing and clean-artifact verification gates |
 
 ## Project Status
 
-SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — Tier 0 (bundled installer, in-app OAuth setup, Gmail wizard) shipped; Tier 1 (cold-load demo, signed binaries, mobile cut, safety + privacy debt) is the active pre-launch sprint tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). As of the 2026-06-14 audit ([`docs/launch-readiness-report.md`](./docs/launch-readiness-report.md)) the product is **launch-ready on the engineering side** — every code-writable launch criterion has shipped and the full suite (3,800+ tests) is green. The remaining blockers are external: code-signing certs (#368/#359), Google OAuth verification (#351), and mobile store assets + accounts (#369). The current shipped version is in the badge above and in [`CHANGELOG.md`](./CHANGELOG.md). Core decision pipeline, twin model, policy engine, and swappable memory layer are functional; Gmail and Google Calendar connectors run with real OAuth; desktop builds ship for all three platforms; the mobile app pairs via QR code and captures voice. v0.5.0.0 brought the one-command installer and a non-technical-user UX overhaul; the v0.6 series added the embedded local LLM (#187), tier-aware memory retrieval (#251), per-Lifebook surfaces (#193), the voice loop (mobile capture + Piper TTS), Epic A's cold-load demo unblocker (#358), and the Inbox-Intelligence briefing — a source-cited daily/weekly digest that splits to-dos from FYIs and now persists, routes, and reports memory-derived action opportunities (#484).
+SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — signed binaries, a verified packaged experience, the mobile cut, and safety/privacy debt remain pre-launch work tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). The 2026-06-14 source audit ([`docs/launch-readiness-report.md`](./docs/launch-readiness-report.md)) verified the development tree at that revision; it was not certification of the currently published installers or of every public-launch gate. Published releases lag the current source, and the packaged account-free sample in this release candidate is deliberately read-only. The report retains the code-signing, OAuth review, mobile, artifact-validation, and encryption/key-management blockers. Core decision pipeline, twin model, policy engine, and swappable memory layer are functional in source; Gmail and Google Calendar connectors run with real OAuth; desktop packaging targets all three platforms; and the mobile source supports QR pairing and voice capture. Consult the release badge, [`CHANGELOG.md`](./CHANGELOG.md), and each release's notes for what a downloadable artifact actually contains.
 
 **Free and open-source forever for personal use.** Team and hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure — see [`docs/launch-plan.md`](./docs/launch-plan.md) for the split.
 
-**What works today:**
+**What works in the development/source tree today:**
 - One-command install (`curl | bash`) on macOS, Linux, and WSL — installs every dependency, clones the repo, starts the services, opens the dashboard
 - "Ask your twin" widget on the dashboard — type any situation, get a predicted action with reasoning and confidence, no accounts required
-- Tour mode with a fully populated sample profile so you can poke at decisions, learnings, and approvals before connecting your own accounts
+- A fully populated development demo seed with mock approval actions, plus a separate guarded, read-only sample-session foundation for packaged desktop builds. The current published installers predate the packaged sample, and interactive packaged simulation remains follow-up work.
 - Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, persists memory-derived action opportunities, routes them through policy plus IronClaw/OpenClaw/Direct execution, reports queued/executed/blocked/learning-needed outcomes, and offers a "Power view" toggle for the technical detail behind each call
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
 - LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
@@ -428,7 +435,7 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - Embedded local LLM stack: llama.cpp text, whisper.cpp STT, Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`) — runs entirely on-device when binaries + models are present
 - SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
-- 3,800+ tests with CI/CD on GitHub Actions
+- 4,800+ tests with CI/CD on GitHub Actions
 
 **What's next:**
 - More connectors (Slack, Notion, bank feeds)

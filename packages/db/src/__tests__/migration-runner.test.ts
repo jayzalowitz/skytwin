@@ -1,5 +1,91 @@
-import { describe, it, expect } from 'vitest';
-import { splitSqlStatements, isIdempotentError } from '../migrations/001-initial.js';
+import { describe, it, expect, vi } from 'vitest';
+import {
+  splitSqlStatements,
+  isIdempotentError,
+  upOwned,
+  type OwnedMigrationClient,
+} from '../migrations/001-initial.js';
+
+function fakeMigrationClient(): OwnedMigrationClient & {
+  connect: ReturnType<typeof vi.fn>;
+  query: ReturnType<typeof vi.fn>;
+  end: ReturnType<typeof vi.fn>;
+} {
+  return {
+    connect: vi.fn().mockResolvedValue(undefined),
+    query: vi.fn().mockResolvedValue({ rows: [], rowCount: 0 }),
+    end: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+describe('owned desktop migration connection', () => {
+  it('performs no write when child authority is lost after the admin connection opens', async () => {
+    const admin = fakeMigrationClient();
+    const createClient = vi.fn(() => admin);
+
+    await expect(
+      upOwned({
+        connectionString: 'postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable',
+        authorize: () => false,
+        createClient,
+      }),
+    ).rejects.toThrow(/ownership changed/);
+
+    expect(createClient).toHaveBeenCalledOnce();
+    expect(admin.connect).toHaveBeenCalledOnce();
+    expect(admin.query).not.toHaveBeenCalled();
+    expect(admin.end).toHaveBeenCalledOnce();
+  });
+
+  it('does not write through a target connection opened after authority is revoked', async () => {
+    const admin = fakeMigrationClient();
+    const target = fakeMigrationClient();
+    const createClient = vi.fn()
+      .mockReturnValueOnce(admin)
+      .mockReturnValueOnce(target);
+    const authorize = vi.fn()
+      .mockReturnValueOnce(true)
+      .mockReturnValue(false);
+
+    await expect(
+      upOwned({
+        connectionString: 'postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable',
+        authorize,
+        createClient,
+      }),
+    ).rejects.toThrow(/ownership changed/);
+
+    expect(createClient.mock.calls[0]?.[0]).toContain('/defaultdb?');
+    expect(createClient.mock.calls[1]?.[0]).toContain('/skytwin?');
+    expect(admin.query).toHaveBeenCalledExactlyOnceWith('CREATE DATABASE IF NOT EXISTS skytwin');
+    expect(target.connect).toHaveBeenCalledOnce();
+    expect(target.query).not.toHaveBeenCalled();
+    expect(target.end).toHaveBeenCalledOnce();
+  });
+
+  it('rechecks authority before every statement on one fixed target client', async () => {
+    const admin = fakeMigrationClient();
+    const target = fakeMigrationClient();
+    const createClient = vi.fn()
+      .mockReturnValueOnce(admin)
+      .mockReturnValueOnce(target);
+    const authorize = vi.fn(() => target.query.mock.calls.length === 0);
+
+    await expect(
+      upOwned({
+        connectionString: 'postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable',
+        authorize,
+        createClient,
+      }),
+    ).rejects.toThrow(/ownership changed/);
+
+    expect(createClient).toHaveBeenCalledTimes(2);
+    expect(target.connect).toHaveBeenCalledOnce();
+    expect(target.query).toHaveBeenCalledOnce();
+    expect(String(target.query.mock.calls[0]?.[0])).toContain('CREATE TABLE IF NOT EXISTS users');
+    expect(target.end).toHaveBeenCalledOnce();
+  });
+});
 
 describe('splitSqlStatements', () => {
   it('splits statements on end-of-line semicolons', () => {

@@ -157,10 +157,13 @@ describe('embedding worker drain', () => {
       if (!job) break;
       try {
         const v = await hash.embed(job.pageContent);
-        store.updatePageEmbedding(job.pageId, v, hash.model);
-        store.markJobDone(job.id);
+        store.completeEmbeddingJob(job.id, job.leaseToken, v, hash.model);
       } catch (err) {
-        store.markJobFailed(job.id, err instanceof Error ? err.message : 'unknown');
+        store.markJobFailed(
+          job.id,
+          job.leaseToken,
+          err instanceof Error ? err.message : 'unknown',
+        );
       }
       drained++;
     }
@@ -190,7 +193,7 @@ describe('embedding worker drain', () => {
     for (let i = 0; i < 4; i++) {
       const job = store.leaseEmbeddingJob();
       if (!job) break;
-      store.markJobFailed(job.id, `attempt ${i} failure`);
+      store.markJobFailed(job.id, job.leaseToken, `attempt ${i} failure`);
     }
     expect(store.pendingEmbeddingJobs()).toBe(0);
   });

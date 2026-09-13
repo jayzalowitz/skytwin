@@ -13,6 +13,13 @@ their other hand and read along.
 > runnable against a fresh dev install. If you're recording the launch
 > video, this file is the script.
 
+> **Scope:** this operator script exercises the development seed after
+> `pnpm db:seed`; it is not a description of the currently published desktop
+> installers. Current source gives packaged builds a separate, short-lived,
+> read-only sample session. That packaged foundation can display allowed sample
+> views but cannot approve, reject, correct, learn, open settings, or run a mock
+> action. Those packaged interactions are later work.
+
 ---
 
 ## Before you start (30 seconds)
@@ -26,8 +33,8 @@ You'll need:
   ```
   Then open `http://localhost:3200`.
 
-If you'd rather not connect your real Gmail for the demo, the sample profile
-in step 1 covers the same ground without needing OAuth.
+If you'd rather not connect your real Gmail for this development demo, the
+seeded profile in step 1 covers the interactive walkthrough without OAuth.
 
 ---
 
@@ -41,11 +48,12 @@ start.
 
 **Two paths from here:**
 
-- **"Just show me around"** — gives you a pre-loaded user (Alex) who's alive
+- **"Just show me around"** — the development seed gives you a pre-loaded user
+  (Alex) who's alive
   across every surface: ~10 recent decisions, 4 pending approvals you can
   actually click through, a populated daily briefing, "What I've learned",
   Capabilities, Search, and a trust bar at 84% climbing toward "handle most
-  things". Two other personas ship too — **Pat** (a power user who handles
+  things". Two other personas are in the development seed too — **Pat** (a power user who handles
   everything) and **Carol** (a brand-new user earning her first trust) — so
   the dev "Switch user" button tells three different stories. No OAuth, no
   signal-ingestion wait. This is the demo path. (The showcase data lives in
@@ -97,8 +105,9 @@ change touches the approval buttons, it goes through `/review`.
 
 ## Step 3 — Connect Gmail (or use the seed) (45 seconds)
 
-**If you took the sample-profile path:** skip ahead to step 4. The sample
-profile already has connectors wired and signals flowing.
+**If you took the seeded development path:** skip ahead to step 4. The seed
+provides the mock connector data this operator walkthrough needs. This does not
+describe the packaged read-only sample session.
 
 **If you took the live-OAuth path:** click "Connect Gmail" from the dashboard
 or `#/connect-gmail`. The five-step wizard walks the user through the BYO
@@ -191,26 +200,30 @@ Click **Settings** in the sidebar. Three cards worth pointing out:
 
 ---
 
-## Step 7 — Hit the "pause everything" button (30 seconds)
+## Step 7 — Pause automatic action (30 seconds)
 
-**Goal:** close the demo on the panic button — the thing the user needs to
-trust before they leave the app running.
+**Goal:** close the demo on the automatic-action control, with its scope
+stated plainly before the user leaves the app running.
 
-Two ways to pause, both visible from Settings:
+Two controls share the same auto-execution semantics, but only one is in
+Settings:
 
 - **Per-user pause** — "Pause auto-execution" card. Click, confirm,
   optionally drop a reason. Every subsequent decision routes to manual
   approval until you resume. A sticky red banner appears at the top of
   every page reminding you you're paused; the Resume button lives on the
   banner so a panicked future-you doesn't have to navigate to find it.
-- **Operator kill switch** — `SKYTWIN_AUTO_EXECUTE_DISABLED=true` env
+- **Operator-only switch** — `SKYTWIN_AUTO_EXECUTE_DISABLED=true` env
   var on the API/worker process. Same semantics, controlled at the
   process level, can't be cleared from the UI. For self-hosters who
-  need a way to silence the system without rebooting it.
+  need a way to stop automatic action without rebooting it.
 
-End the demo here. Tell the viewer: *"If at any point I'm uncomfortable
-with what it's doing, that button is on every page."* That's what they
-remember.
+Do not call either one a whole-system pause: signal sync continues. The
+global "Pause everything" button is a separate MCP-capability control and
+does not pause the email/calendar path. Packaged desktop also has a tray
+control that pauses worker background processing while the ready API/web
+may remain available. End by showing Settings → Pause auto-execution and
+saying exactly that actions now require review.
 
 ---
 

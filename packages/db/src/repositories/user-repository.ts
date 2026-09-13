@@ -35,6 +35,19 @@ export const userRepository = {
   },
 
   /**
+   * Find the reserved sample identity only when it is explicitly marked as
+   * synthetic. This prevents a public sample session from ever attaching to
+   * an ordinary account that happens to occupy the reserved UUID.
+   */
+  async findDemoById(id: string): Promise<UserRow | null> {
+    const result = await query<UserRow>(
+      'SELECT * FROM users WHERE id = $1 AND is_demo = true',
+      [id],
+    );
+    return result.rows[0] ?? null;
+  },
+
+  /**
    * List all users, newest first. Intended for dev/admin tooling — there is
    * no per-user filtering here, so callers must gate access appropriately.
    */

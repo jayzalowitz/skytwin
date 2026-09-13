@@ -376,7 +376,12 @@ export class DbTokenStore implements OAuthTokenStore {
     await this.repo.deleteToken(userId, provider);
   }
 
-  async refreshIfExpired(userId: string, provider: string): Promise<OAuthTokenSet> {
+  async refreshIfExpired(
+    userId: string,
+    provider: string,
+    signal?: AbortSignal,
+  ): Promise<OAuthTokenSet> {
+    signal?.throwIfAborted();
     // Validate the provider up-front — fail loud on an unsupported provider
     // BEFORE fetching (and potentially decrypting) any stored secret. The
     // switch below keeps a defensive `default: throw` as a backstop.
@@ -385,6 +390,7 @@ export class DbTokenStore implements OAuthTokenStore {
     }
 
     const existing = await this.getToken(userId, provider);
+    signal?.throwIfAborted();
     if (!existing) {
       throw new Error(`No OAuth token found for user ${userId} provider ${provider}`);
     }
@@ -414,7 +420,9 @@ export class DbTokenStore implements OAuthTokenStore {
               'Construct DbTokenStore with a microsoftConfig to support Outlook.',
           );
         }
-        refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
+        refreshed = signal
+          ? await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken, signal)
+          : await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
         break;
       case 'google':
         if (!this.oauthConfig) {
@@ -423,11 +431,14 @@ export class DbTokenStore implements OAuthTokenStore {
               'Construct DbTokenStore with a googleConfig.',
           );
         }
-        refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+        refreshed = signal
+          ? await refreshAccessToken(this.oauthConfig, existing.refreshToken, signal)
+          : await refreshAccessToken(this.oauthConfig, existing.refreshToken);
         break;
       default:
         throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
     }
+    signal?.throwIfAborted();
 
     // Persist the new access token. If the row is currently stored
     // encrypted (key cache populated AND row has encrypted_access_token),
@@ -435,6 +446,7 @@ export class DbTokenStore implements OAuthTokenStore {
     // would keep returning the old, still-encrypted access token while
     // the new plaintext sat unread.
     const row = await this.repo.getToken(userId, provider);
+    signal?.throwIfAborted();
     const key = this.keyCache?.get(userId) ?? null;
     if (
       row?.id
@@ -443,8 +455,10 @@ export class DbTokenStore implements OAuthTokenStore {
       && this.repo.updateEncryptedAccessToken
     ) {
       const packed = packEncrypted(encrypt(refreshed.accessToken, key));
+      signal?.throwIfAborted();
       await this.repo.updateEncryptedAccessToken(row.id, packed, refreshed.expiresAt);
     } else {
+      signal?.throwIfAborted();
       await this.repo.updateAccessToken(
         userId,
         provider,

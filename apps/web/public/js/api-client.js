@@ -1,6 +1,13 @@
-import { KEY_SESSION_TOKEN } from './storage-keys.js';
+import {
+  KEY_DEMO_SESSION_EXPIRES_AT,
+  KEY_SESSION_TOKEN,
+  KEY_TOUR_MODE,
+  KEY_USER_ID,
+} from './storage-keys.js';
 
 const API = '/api';
+const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+let demoSessionPromise = null;
 
 /**
  * Escape HTML special characters to prevent XSS when inserting into innerHTML.
@@ -164,7 +171,22 @@ async function classifyHttpError(res) {
  * branch on `err.kind` rather than parsing `err.message`. Use
  * `renderApiError(err, retry)` for a consistent visual treatment.
  */
-export async function fetchJSON(url, options = {}) {
+export async function fetchJSON(url, options = {}, demoRenewed = false) {
+  const sampleExpiry = Date.parse(
+    localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ?? '',
+  );
+  if (
+    !demoRenewed &&
+    url !== `${API}/v1/demo/session` &&
+    localStorage.getItem(KEY_TOUR_MODE) === '1' &&
+    localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID &&
+    Number.isFinite(sampleExpiry) &&
+    sampleExpiry <= Date.now()
+  ) {
+    await startDemoSession();
+    return fetchJSON(url, options, true);
+  }
+
   let res;
   try {
     res = await fetch(url, {
@@ -183,6 +205,16 @@ export async function fetchJSON(url, options = {}) {
   }
 
   if (!res.ok) {
+    if (
+      res.status === 401 &&
+      !demoRenewed &&
+      url !== `${API}/v1/demo/session` &&
+      localStorage.getItem(KEY_TOUR_MODE) === '1' &&
+      localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID
+    ) {
+      await startDemoSession();
+      return fetchJSON(url, options, true);
+    }
     const apiErr = await classifyHttpError(res);
     if (apiErr.kind === 'offline') markApiOffline();
     throw apiErr;
@@ -417,6 +449,53 @@ export function fetchCredentialsStatus() {
 
 export function fetchDemoInfo() {
   return fetchJSON(`${API}/v1/demo/info`);
+}
+
+export async function startDemoSession() {
+  if (demoSessionPromise) return demoSessionPromise;
+  demoSessionPromise = (async () => {
+    const authStateAtStart = {
+      token: localStorage.getItem(KEY_SESSION_TOKEN),
+      expiresAt: localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT),
+      tourMode: localStorage.getItem(KEY_TOUR_MODE),
+      userId: localStorage.getItem(KEY_USER_ID),
+    };
+    const session = await fetchJSON(`${API}/v1/demo/session`, { method: 'POST' });
+    const authStateIsCurrent =
+      localStorage.getItem(KEY_SESSION_TOKEN) === authStateAtStart.token &&
+      localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) === authStateAtStart.expiresAt &&
+      localStorage.getItem(KEY_TOUR_MODE) === authStateAtStart.tourMode &&
+      localStorage.getItem(KEY_USER_ID) === authStateAtStart.userId;
+    // Pairing or sign-in may finish while this public request is in flight.
+    // Never let a late sample response overwrite or clear newer credentials.
+    if (!authStateIsCurrent) {
+      throw new Error('Authentication changed while the sample session was starting.');
+    }
+    const expiresAtMs = Date.parse(session?.expiresAt ?? '');
+    if (
+      typeof session?.token !== 'string' ||
+      session.token.length === 0 ||
+      session?.userId !== DEMO_USER_ID ||
+      !Number.isFinite(expiresAtMs) ||
+      expiresAtMs <= Date.now()
+    ) {
+      localStorage.removeItem(KEY_SESSION_TOKEN);
+      localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
+      localStorage.removeItem(KEY_TOUR_MODE);
+      if (localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID) {
+        localStorage.removeItem(KEY_USER_ID);
+      }
+      throw new Error('Sample session response was invalid.');
+    }
+    localStorage.setItem(KEY_SESSION_TOKEN, session.token);
+    localStorage.setItem(KEY_DEMO_SESSION_EXPIRES_AT, session.expiresAt);
+    return session;
+  })();
+  try {
+    return await demoSessionPromise;
+  } finally {
+    demoSessionPromise = null;
+  }
 }
 
 export function previewDemoDecision(situation) {

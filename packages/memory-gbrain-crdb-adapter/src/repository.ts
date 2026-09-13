@@ -825,21 +825,40 @@ export async function enqueueEmbeddingJob(userId: string, pageId: string): Promi
   );
 }
 
+export interface EmbeddingJobLease {
+  id: string;
+  userId: string;
+  pageId: string;
+  pageContent: string;
+  /** Exact database lease generation, round-tripped as TIMESTAMPTZ text. */
+  leaseToken: string;
+}
+
 /**
- * Lease the next pending embedding job using `SELECT FOR UPDATE SKIP LOCKED`.
- * Returns null if no pending job exists. The caller must call `markJobDone`
- * or `markJobFailed` once finished — leases auto-expire after 5 minutes.
+ * Lease the next available embedding job using `SELECT FOR UPDATE SKIP LOCKED`.
+ * Returns null if no job is available. The caller must pass the returned token
+ * to `completeEmbeddingJob` or `markJobFailed` once finished. An in-progress
+ * job becomes available again when its five-minute lease expires.
  *
- * CRDB serialisable transactions give us at-most-once claim semantics:
- * concurrent workers will not pick the same row.
+ * CRDB serialisable transactions prevent simultaneous claims. The returned
+ * lease token fences late completion by a worker whose lease was reclaimed.
  */
-export async function leaseEmbeddingJob(): Promise<{ id: string; userId: string; pageId: string; pageContent: string } | null> {
+export async function leaseEmbeddingJob(): Promise<EmbeddingJobLease | null> {
   return withTransaction(async (client) => {
+    await client.query(
+      `UPDATE brain_embedding_jobs
+          SET status = 'failed',
+              error = 'maximum embedding attempts exhausted after lease expiry',
+              leased_until = NULL
+        WHERE attempts >= 3
+          AND (status = 'pending' OR (status = 'in_progress' AND leased_until < now()))`,
+    );
     const claim = await client.query<{ id: string; user_id: string; page_id: string }>(
       `SELECT id, user_id, page_id
          FROM brain_embedding_jobs
-        WHERE status = 'pending'
-          AND (leased_until IS NULL OR leased_until < now())
+        WHERE attempts < 3
+          AND ((status = 'pending' AND (leased_until IS NULL OR leased_until < now()))
+            OR (status = 'in_progress' AND leased_until < now()))
         ORDER BY enqueued_at ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED`,
@@ -847,14 +866,17 @@ export async function leaseEmbeddingJob(): Promise<{ id: string; userId: string;
     const job = claim.rows[0];
     if (!job) return null;
 
-    await client.query(
+    const lease = await client.query<{ lease_token: string }>(
       `UPDATE brain_embedding_jobs
          SET status = 'in_progress',
              leased_until = now() + INTERVAL '5 minutes',
              attempts = attempts + 1
-       WHERE id = $1`,
+       WHERE id = $1
+       RETURNING leased_until::STRING AS lease_token`,
       [job.id],
     );
+    const leaseToken = lease.rows[0]?.lease_token;
+    if (!leaseToken) throw new Error('Embedding job lease update returned no lease token');
 
     const page = await client.query<{ content: string; title: string }>(
       `SELECT content, title FROM brain_pages WHERE id = $1`,
@@ -867,28 +889,90 @@ export async function leaseEmbeddingJob(): Promise<{ id: string; userId: string;
       userId: job.user_id,
       pageId: job.page_id,
       pageContent: `${title}\n${content}`.trim(),
+      leaseToken,
     };
   });
 }
 
-export async function markJobDone(jobId: string): Promise<void> {
-  await query(
+export async function markJobDone(jobId: string, leaseToken: string): Promise<boolean> {
+  const result = await query<{ id: string }>(
     `UPDATE brain_embedding_jobs
        SET status = 'completed', completed_at = now(), leased_until = NULL
-     WHERE id = $1`,
-    [jobId],
+     WHERE id = $1
+       AND status = 'in_progress'
+       AND leased_until = $2::TIMESTAMPTZ
+       AND leased_until > now()
+     RETURNING id`,
+    [jobId, leaseToken],
   );
+  return result.rows.length === 1;
 }
 
-export async function markJobFailed(jobId: string, errMsg: string): Promise<void> {
-  await query(
+export async function markJobFailed(
+  jobId: string,
+  leaseToken: string,
+  errMsg: string,
+): Promise<boolean> {
+  const result = await query<{ id: string }>(
     `UPDATE brain_embedding_jobs
        SET status = CASE WHEN attempts >= 3 THEN 'failed' ELSE 'pending' END,
-           error = $2,
+           error = $3,
            leased_until = NULL
-     WHERE id = $1`,
-    [jobId, errMsg.substring(0, 500)],
+     WHERE id = $1
+       AND status = 'in_progress'
+       AND leased_until = $2::TIMESTAMPTZ
+       AND leased_until > now()
+     RETURNING id`,
+    [jobId, leaseToken, errMsg.substring(0, 500)],
   );
+  return result.rows.length === 1;
+}
+
+/** Atomically persist an embedding and complete only its exact active lease. */
+export async function completeEmbeddingJob(
+  jobId: string,
+  leaseToken: string,
+  embedding: number[],
+  model: string,
+): Promise<boolean> {
+  return withTransaction(async (client) => {
+    const active = await client.query<{ page_id: string }>(
+      `SELECT page_id
+         FROM brain_embedding_jobs
+        WHERE id = $1
+          AND status = 'in_progress'
+          AND leased_until = $2::TIMESTAMPTZ
+          AND leased_until > now()
+        FOR UPDATE`,
+      [jobId, leaseToken],
+    );
+    const pageId = active.rows[0]?.page_id;
+    if (!pageId) return false;
+
+    await client.query(
+      `UPDATE brain_pages
+          SET embedding = $1::FLOAT8[],
+              embedding_model = $2,
+              embedding_dim = $3,
+              updated_at = now()
+        WHERE id = $4`,
+      [formatVector(embedding), model, embedding.length, pageId],
+    );
+    const completed = await client.query<{ id: string }>(
+      `UPDATE brain_embedding_jobs
+          SET status = 'completed', completed_at = now(), leased_until = NULL
+        WHERE id = $1
+          AND status = 'in_progress'
+          AND leased_until = $2::TIMESTAMPTZ
+          AND leased_until > now()
+        RETURNING id`,
+      [jobId, leaseToken],
+    );
+    if (completed.rows.length !== 1) {
+      throw new Error('Embedding job lease changed while completion was locked');
+    }
+    return true;
+  });
 }
 
 /**

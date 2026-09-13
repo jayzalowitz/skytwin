@@ -68,11 +68,17 @@ export function createEvalsRouter(): Router {
       const { userId } = req.params;
 
       const [profile, patterns, traits, temporalProfile] = await Promise.all([
-        twinService.getOrCreateProfile(userId),
+        req.demoAuthenticated
+          ? twinService.getProfile(userId)
+          : twinService.getOrCreateProfile(userId),
         twinService.getPatterns(userId),
         twinService.getTraits(userId),
         twinService.getTemporalProfile(userId),
       ]);
+      if (!profile) {
+        res.status(404).json({ error: 'Twin profile not found' });
+        return;
+      }
 
       // Group preferences and inferences by domain
       const domainStats = new Map<string, { preferences: number; inferences: number; confidence: string }>();
@@ -124,7 +130,13 @@ export function createEvalsRouter(): Router {
   router.get('/:userId/confidence', async (req, res, next) => {
     try {
       const { userId } = req.params;
-      const profile = await twinService.getOrCreateProfile(userId);
+      const profile = req.demoAuthenticated
+        ? await twinService.getProfile(userId)
+        : await twinService.getOrCreateProfile(userId);
+      if (!profile) {
+        res.status(404).json({ error: 'Twin profile not found' });
+        return;
+      }
 
       // "How well I know you" should reflect both explicit preferences and
       // auto-detected inferences — the user has no concept of the distinction

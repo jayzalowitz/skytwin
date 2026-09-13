@@ -10,14 +10,19 @@ import type { WhatWouldIDoResponse } from './twin.js';
 /**
  * Response from `GET /api/v1/demo/info`.
  *
- * `available: false` when the seeded demo user is missing OR the dev
- * auth-bypass isn't active (i.e. tour mode would land on a 401-riddled
- * dashboard in production). The server intentionally omits PII like email
- * and name even when the user exists.
+ * `available: false` when the seeded demo user is missing. The server
+ * intentionally omits PII like email and name even when the user exists.
  */
 export type DemoInfoResponse =
   | { available: false }
   | { available: true; userId: string };
+
+/** Response from `POST /api/v1/demo/session`. */
+export interface DemoSessionResponse {
+  token: string;
+  userId: string;
+  expiresAt: string;
+}
 
 /**
  * Response from `POST /api/v1/demo/preview`.

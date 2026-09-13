@@ -28,8 +28,8 @@ SkyTwin is a delegated judgment system that acts on behalf of users. Security is
 
 | Version | Supported |
 |---------|-----------|
-| 0.3.x   | Yes       |
-| < 0.3   | No        |
+| Latest published release | Yes |
+| Older releases | No; upgrade before requesting a fix |
 
 ## Security Design
 

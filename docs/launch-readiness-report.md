@@ -2,7 +2,13 @@
 
 **Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.61.0 · **Branch:** `jayzalowitz/pre-launch-dev-audit-toolchain`
 
-This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan) — this document is the *current-state truth*.
+This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan). Its checkmarks record the development/source revision named above; they are not certification of a later packaged artifact or the current published release.
+
+## 2026-09-13 packaged-sample release boundary
+
+Current source adds a guarded foundation for an account-free packaged demo: a short-lived credential bound to one reserved fictional identity and an explicit read allowlist. That foundation is deliberately read-only. It can expose allowed sample decisions and explanations, but it cannot approve, reject, edit, correct, learn, open settings, invoke connectors, or execute actions. Interactive simulation is a later slice.
+
+The currently published installers predate this packaged sample path. A public launch still requires building and verifying fresh artifacts in addition to clearing the signing, OAuth review, mobile/store, and encryption/key-management blockers retained below.
 
 ---
 
@@ -33,15 +39,16 @@ The issue inventory below remains the 2026-06-16 launch-readiness classification
 
 ## Bottom line
 
-**SkyTwin is launch-ready on the engineering side.** The decision pipeline, twin model, policy engine, memory layer, dashboard, and the new Inbox-Intelligence digest all work, are tested, and pass live QA with zero console errors. Every *code-writable* launch criterion in epic #357 has shipped.
+**The audited development/source revision passed its recorded engineering checks.** The decision pipeline, twin model, policy engine, memory layer, dashboard, and Inbox-Intelligence digest were tested and passed the live QA described below. That result does not establish that the currently published installers contain later source work, that a fresh release artifact has passed install validation, or that every code-side public-launch criterion is complete.
 
-The remaining launch blockers are **not code**:
+Recorded launch blockers include:
 
 1. **Procurement** — Apple Developer ($99/yr) + Windows EV code-signing certs (#368/#359). Until these land, the `.dmg`/`.exe` trip Gatekeeper/SmartScreen. This is the single biggest non-engineering blocker.
 2. **External review** — Google OAuth restricted-scope / brand verification (#351, multi-week CASA review) and mobile app-store review (#369/#360, needs Apple/Play accounts).
 3. **Design assets** — real multi-resolution mobile icons/splash to replace the 1×1 placeholders (#409/#369).
 
-…plus **one code task that needs a human decision first**: **#374** (encrypt user memory + preferences at rest). See [§ The one code-side launch task](#the-one-code-side-launch-task).
+4. **Code and architecture** — #374 (encrypt user memory + preferences at rest) requires the #401 key-management decision. See [§ Encryption and key-management detail](#encryption-and-key-management-detail). Packaged-sample interactivity and the other partial code-side items remain tracked under #357 and in the inventory below.
+5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems. The source-tree checks below do not substitute for this gate.
 
 ---
 
@@ -63,16 +70,16 @@ The remaining launch blockers are **not code**:
 |---|---|---|
 | 1 | Download a signed `.dmg`/`.exe`/store build | ⛔ external — certs (#368/#359), store accounts (#369) |
 | 2 | Install without Gatekeeper/SmartScreen warnings | ⛔ external — certs |
-| 3 | Reach a meaningful state ≤60s | ✅ tour mode is instant |
-| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | ✅ sample-profile path loads a fully-populated dashboard |
-| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ pipeline verified; tour shows a populated queue |
-| 6 | Understand *why* each decision was made | ✅ "What happened" log, click any row for full reasoning |
-| 7 | Approve/reject without confusion | ✅ microcopy intact (Just watch / Ask me first / Handle small stuff / …) |
-| 8 | Find a "pause everything" button | ✅ global **Pause everything** + Settings **Pause auto-execution** (#379) |
-| 9 | Find a "delete my data" button | ✅ Settings → **Download** + **Delete my data** (#376) |
+| 3 | Reach a meaningful state ≤60s | 🟡 development tour verified; current source adds a read-only packaged sample, but published installers predate it and a fresh artifact still needs validation |
+| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | 🟡 development seed loads a populated dashboard; the packaged source path is read-only and not present in published installers |
+| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ connected-account development pipeline verified; the read-only sample queue is not evidence for this criterion |
+| 6 | Understand *why* each decision was made | ✅ development/connected flow verified; current packaged-sample source can inspect allowlisted decision and explanation views |
+| 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; the packaged sample foundation cannot submit approvals or feedback |
+| 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |
+| 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
 | 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
 
-## The one code-side launch task
+## Encryption and key-management detail
 
 **[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). Re-audited 2026-06-16 (full code-state findings on the issue). The encryption **infrastructure shipped** via #520 — but it is **dormant** in production and **partial**, and the memory half has an architectural conflict that makes it a design task, not a wiring task:
 
@@ -81,7 +88,7 @@ The remaining launch blockers are **not code**:
 - **Partial:** `twin_profiles`' 7 `_encrypted` columns are unused, and `brain_pages` (user memory) is written plaintext (`insertPage()` in `packages/memory-gbrain-crdb-adapter/src/repository.ts` ignores the `_encrypted` columns).
 - **The hard part:** `brain_pages` is the *searchable* store. RRF retrieval needs `content_tsv @@ plainto_tsquery` (full-text, server-side) and the row's `embedding` (vector — pulled out and scored with `cosineSimilarity` in application code, brute-force; not a CRDB `<=>` operator). Both are derived from plaintext content, and a `tsvector` stores the lexemes in the clear — so encrypting `content` while keeping `content_tsv` queryable leaks it anyway, while encrypting the index breaks search; the embedding likewise has to be read back out in the clear to score. So memory-at-rest encryption needs a design (scope to non-searched columns, index-time decrypt, or searchable encryption), not just an `encryptColumn` call.
 
-**Why it isn't auto-fixable:** enabling the provider with a wrong/ephemeral master key is worse than shipping none (lost key → unrecoverable memory) — that's exactly the #374↔#401 decision — and the memory search-conflict needs a design call. **Recommended sequence:** decide #401 key management → enable the provider (makes the existing preference encryption live) → extend to `twin_profiles` (not searched, straightforward) → design `brain_pages` against the search conflict. Top engineering pre-launch item.
+**Why it isn't auto-fixable:** enabling the provider with a wrong/ephemeral master key is worse than shipping none (lost key → unrecoverable memory) — that's exactly the #374↔#401 decision — and the memory search-conflict needs a design call. **Recommended sequence for this task:** decide #401 key management → enable the provider (makes the existing preference encryption live) → extend to `twin_profiles` (not searched, straightforward) → design `brain_pages` against the search conflict.
 
 ## Issues closed this pass (shipped, verified in code)
 
@@ -114,7 +121,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#323](https://github.com/jayzalowitz/skytwin/issues/323) | 🟡 partial | — | — | AC3: wire `registryId` into MCP-action spend recording |
 | [#324](https://github.com/jayzalowitz/skytwin/issues/324) | 🟡 partial | — | yes | Rollback wiring + decision→execution-plan join follow-ups |
 | [#351](https://github.com/jayzalowitz/skytwin/issues/351) | ⛔ external | — | — | CASA assessor contract + Google review (post-launch) |
-| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | — | Code-writable launch criteria have shipped; rest is external |
+| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | partly | Source capabilities passed the dated audit; packaged-sample interactivity, fresh artifact validation, and the external launch gates remain |
 | [#359](https://github.com/jayzalowitz/skytwin/issues/359) | ⛔ external | **YES** | — | Apple Developer + Windows EV cert purchase/enroll |
 | [#360](https://github.com/jayzalowitz/skytwin/issues/360) | 🟡 partial | **YES** | yes | Mobile: #369 store-readiness gate is the bulk |
 | [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — needs #401 key-mgmt decision) + #375 follow-ups (assistant block, number/name). |
@@ -126,14 +133,14 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | ✅ closed | done | yes | Shipped + closed: resumable chunked voice upload end-to-end — `voice-chunker.ts` + `transcribeChunked()` (per-chunk retry, progress, cancel) + server `/upload/session`/`/chunk`/finalize + 3 test files. Only the airplane-mode manual smoke is device-only. |
 | [#387](https://github.com/jayzalowitz/skytwin/issues/387) | 🟡 partial | — | yes | Deep-link routing slice shipped + wired (tap → specific approval, scrolled into view; `deep-link.ts` + `App.tsx` + `ApprovalsScreen.tsx`, tested). Remaining: native inline Approve/Reject actions (iOS NSE + Android actions + EAS dev build — gated on #360/#404). |
 | [#399](https://github.com/jayzalowitz/skytwin/issues/399) | ⬜ not started | — | yes | Opt-in crash reporting (P3) |
-| [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ⬜ not started | — | yes | Backup/restore CLI (P3) |
+| [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ✅ closed | done | yes | Backup/restore CLI shipped with an encrypted authenticated archive and atomic fresh-user restore. |
 | [#401](https://github.com/jayzalowitz/skytwin/issues/401) | ⬜ not started | — | yes | OS-keychain for vault passphrase (P3) — pairs with #374 |
 | [#402](https://github.com/jayzalowitz/skytwin/issues/402) | 🟡 partial | — | yes | axe-core CI on web routes is code-fixable; full manual a11y is post-launch |
 | [#403](https://github.com/jayzalowitz/skytwin/issues/403) | ⬜ not started | — | yes | PWA manifest + service worker (P3) |
 | [#404](https://github.com/jayzalowitz/skytwin/issues/404) | ⬜ not started | — | — | EAS TestFlight/Play internal (P3, needs accounts) |
 | [#405](https://github.com/jayzalowitz/skytwin/issues/405) | ⬜ not started | — | yes | Demo recipe library (P3) |
 | [#406](https://github.com/jayzalowitz/skytwin/issues/406) | ⬜ not started | — | yes | Native macOS menu bar (P3) |
-| [#407](https://github.com/jayzalowitz/skytwin/issues/407) | ⬜ not started | — | yes | Worker dead-letter queue (P3) |
+| [#407](https://github.com/jayzalowitz/skytwin/issues/407) | ✅ closed | done | yes | Worker dead-letter queue shipped with durable failure records, operator inspection, and replayed/discarded resolution; the normal cadence reruns eligible jobs. |
 | [#408](https://github.com/jayzalowitz/skytwin/issues/408) | ⬜ not started | — | yes | AsyncLocalStorage request context (P3) |
 | [#409](https://github.com/jayzalowitz/skytwin/issues/409) | ⛔ external | — | — | Designer-made mobile icon/splash set |
 | [#410](https://github.com/jayzalowitz/skytwin/issues/410) | ⬜ not started | — | — | Pricing experiment (P3, business) |
@@ -155,7 +162,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 ## Recommended next actions (ordered)
 
 1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359). The certs alone aren't enough — `build.yml` currently skips signing (`CSC_IDENTITY_AUTO_DISCOVERY: 'false'`), so someone must also wire the cert secrets into its `package:*` steps (see launch-plan §1.3). Submit Google OAuth verification (#351) — multi-week.
-2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. Top engineering pre-launch item (the encryption schema + adapter already exist via #520; what remains is the default-on key-management policy decision).
+2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. The encryption schema + adapter already exist via #520; what remains is the default-on key-management policy decision.
 3. **Mobile cut-or-commit (#360):** decide whether mobile ships at launch. If yes: commission icon/splash assets (#409), land the EAS config + CI (#369/#404), then the native inline notification actions (#387's remaining half). If no: descope to a fast-follow.
 
 **Done since the 2026-06-14 audit (2026-06-16 update):** auto-update code half + user-facing banner/menu (#370, #523 — closed); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.

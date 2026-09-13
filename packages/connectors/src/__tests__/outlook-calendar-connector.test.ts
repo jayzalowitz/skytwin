@@ -82,6 +82,7 @@ describe('OutlookCalendarConnector', () => {
     const cursor = makeCursorStore();
     const conn = await connected(cursor);
     const signals = await conn.poll();
+    await conn.commitCursor();
 
     expect((fetchMock.mock.calls[0] as [string])[0]).toContain('/me/calendarView/delta');
     // Sends Prefer: UTC so dateTimes come back absolute.
@@ -201,7 +202,9 @@ describe('OutlookCalendarConnector', () => {
       .mockResolvedValueOnce(res(200, { value: [gevent({ id: 'a' })], '@odata.nextLink': 'NEXT1' }))
       .mockResolvedValueOnce(res(200, { value: [gevent({ id: 'b' })], '@odata.deltaLink': 'D2' }));
     const cursor = makeCursorStore();
-    const signals = await (await connected(cursor)).poll();
+    const conn = await connected(cursor);
+    const signals = await conn.poll();
+    await conn.commitCursor();
     expect(signals.map((s) => s.data.eventId)).toEqual(['a', 'b']);
     expect((fetchMock.mock.calls[1] as [string])[0]).toBe('NEXT1');
     expect(cursor.map.get(DELTA_KEY)).toBe('D2');
@@ -210,7 +213,9 @@ describe('OutlookCalendarConnector', () => {
   it('follows a stored deltaLink incrementally (no fresh bootstrap)', async () => {
     fetchMock.mockResolvedValueOnce(res(200, { value: [gevent({ id: 'i' })], '@odata.deltaLink': 'D2' }));
     const cursor = makeCursorStore({ [DELTA_KEY]: 'STORED' });
-    await (await connected(cursor)).poll();
+    const conn = await connected(cursor);
+    await conn.poll();
+    await conn.commitCursor();
     // Following the cursor emits only changed events — no full-window re-fetch.
     expect((fetchMock.mock.calls[0] as [string])[0]).toBe('STORED');
     expect(cursor.map.get(DELTA_KEY)).toBe('D2');
@@ -226,10 +231,12 @@ describe('OutlookCalendarConnector', () => {
     const conn = await connected(cursor);
 
     const first = await conn.poll();
+    await conn.commitCursor();
     expect(first.map((s) => s.data.eventId)).toEqual(['a', 'b']);
     expect((fetchMock.mock.calls[0] as [string])[0]).toContain('/me/calendarView/delta');
 
     const second = await conn.poll();
+    await conn.commitCursor();
     // Second poll FOLLOWS the stored deltaLink (incremental) — it must NOT
     // re-issue a full calendarView/delta bootstrap that would re-emit 'a'.
     expect((fetchMock.mock.calls[1] as [string])[0]).toBe('DL1');
@@ -242,7 +249,9 @@ describe('OutlookCalendarConnector', () => {
       .mockResolvedValueOnce(res(410, {}))
       .mockResolvedValueOnce(res(200, { value: [gevent({ id: 'r' })], '@odata.deltaLink': 'D4' }));
     const cursor = makeCursorStore({ [DELTA_KEY]: 'STALE' });
-    const signals = await (await connected(cursor)).poll();
+    const conn = await connected(cursor);
+    const signals = await conn.poll();
+    await conn.commitCursor();
     expect((fetchMock.mock.calls[1] as [string])[0]).toContain('/me/calendarView/delta');
     expect(signals.map((s) => s.data.eventId)).toEqual(['r']);
     expect(cursor.map.get(DELTA_KEY)).toBe('D4');
@@ -259,6 +268,7 @@ describe('OutlookCalendarConnector', () => {
     conn.onSignal((s) => hits.push(s.data.eventId as string));
 
     const signals = await conn.poll();
+    await conn.commitCursor();
     // partial: only the page-1 event, emitted (and handled) exactly once — the
     // mid-sync 410 must not re-bootstrap and double-fire.
     expect(signals.map((s) => s.data.eventId)).toEqual(['a']);
@@ -267,6 +277,30 @@ describe('OutlookCalendarConnector', () => {
     expect((fetchMock.mock.calls[1] as [string])[0]).toBe('NEXT1');
     // cursor advanced to the nextLink so the next poll resumes pagination
     expect(cursor.map.get(DELTA_KEY)).toBe('NEXT1');
+  });
+
+  it('replays an event in a new generation when downstream delivery is not acknowledged', async () => {
+    fetchMock
+      .mockResolvedValueOnce(res(200, {
+        value: [gevent({ id: 'replay-me' })],
+        '@odata.deltaLink': 'UNCOMMITTED',
+      }))
+      .mockResolvedValueOnce(res(200, {
+        value: [gevent({ id: 'replay-me' })],
+        '@odata.deltaLink': 'COMMITTED',
+      }));
+    const cursor = makeCursorStore();
+
+    const firstGeneration = await connected(cursor);
+    const first = await firstGeneration.poll();
+    await firstGeneration.disconnect();
+    const nextGeneration = await connected(cursor);
+    const replay = await nextGeneration.poll();
+    await nextGeneration.commitCursor();
+
+    expect(first.map((signal) => signal.data.eventId)).toEqual(['replay-me']);
+    expect(replay.map((signal) => signal.data.eventId)).toEqual(['replay-me']);
+    expect(cursor.map.get(DELTA_KEY)).toBe('COMMITTED');
   });
 
   it('poll() throws before connect()', async () => {

@@ -94,6 +94,7 @@ export class OutlookCalendarConnector implements SignalConnector {
   private handlers: SignalHandler[] = [];
   private connected = false;
   private deltaLink: string | null = null;
+  private pendingDeltaLink: string | null = null;
   private readonly userId: string;
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
@@ -104,13 +105,16 @@ export class OutlookCalendarConnector implements SignalConnector {
     this.cursorStore = cursorStore;
   }
 
-  async connect(): Promise<void> {
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft');
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal);
+    signal?.throwIfAborted();
     if (!token) {
       throw new Error('No Microsoft OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
       this.deltaLink = await this.cursorStore.get(this.userId, 'outlook_calendar', DELTA_LINK_KIND);
+      signal?.throwIfAborted();
     }
     this.connected = true;
   }
@@ -119,6 +123,7 @@ export class OutlookCalendarConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.deltaLink = null;
+    this.pendingDeltaLink = null;
   }
 
   onSignal(handler: SignalHandler): void {
@@ -135,11 +140,15 @@ export class OutlookCalendarConnector implements SignalConnector {
     return `${GRAPH_API}/me/calendarView/delta?${params.toString()}`;
   }
 
-  async poll(): Promise<RawSignal[]> {
+  async poll(signal?: AbortSignal): Promise<RawSignal[]> {
     if (!this.connected) {
       throw new Error('OutlookCalendarConnector is not connected. Call connect() first.');
     }
-    const accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
+    signal?.throwIfAborted();
+    const accessToken = (
+      await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal)
+    ).accessToken;
+    signal?.throwIfAborted();
 
     // Follow the stored deltaLink (incremental — changed events only) when we
     // have one; otherwise bootstrap a fresh now..now+30d window.
@@ -154,9 +163,10 @@ export class OutlookCalendarConnector implements SignalConnector {
     let rebootstrapped = false;
 
     while (url && pages < MAX_PAGES_PER_POLL) {
+      signal?.throwIfAborted();
       let resp: Response;
       try {
-        resp = await this.graphGet(url, accessToken);
+        resp = await this.graphGet(url, accessToken, signal);
       } catch (err) {
         if (err instanceof Error && err.message.includes('410')) {
           if (events.length === 0 && !rebootstrapped) {
@@ -173,7 +183,9 @@ export class OutlookCalendarConnector implements SignalConnector {
       }
 
       const body = (await resp.json()) as GraphDeltaPage;
+      signal?.throwIfAborted();
       for (const ev of body.value ?? []) {
+        signal?.throwIfAborted();
         if (!ev || typeof ev.id !== 'string') continue;
         if ('@removed' in ev) continue; // deletion tombstone
         if (!ev.start?.dateTime) continue; // malformed / no start time
@@ -192,32 +204,30 @@ export class OutlookCalendarConnector implements SignalConnector {
       }
     }
 
-    if (nextCursor) await this.persistCursor(nextCursor);
+    signal?.throwIfAborted();
+    if (nextCursor) this.pendingDeltaLink = nextCursor;
 
     // Single emit pass over the collected events, with conflicts computed
     // across the whole set.
     const conflicts = this.detectConflicts(events);
     const signals: RawSignal[] = [];
     for (const ev of events) {
-      const signal = this.eventToSignal(ev, conflicts.has(ev.id));
-      signals.push(signal);
-      for (const handler of this.handlers) handler(signal);
+      signal?.throwIfAborted();
+      const emittedSignal = this.eventToSignal(ev, conflicts.has(ev.id));
+      signals.push(emittedSignal);
+      for (const handler of this.handlers) handler(emittedSignal);
     }
     return signals;
   }
 
-  private async persistCursor(link: string): Promise<void> {
-    this.deltaLink = link;
+  async commitCursor(): Promise<void> {
+    const link = this.pendingDeltaLink;
+    if (link === null) return;
     if (this.cursorStore) {
-      try {
-        await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
-      } catch (err) {
-        console.warn(
-          `[outlook-calendar] Failed to persist delta cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      await this.cursorStore.save(this.userId, 'outlook_calendar', DELTA_LINK_KIND, link);
     }
+    this.deltaLink = link;
+    this.pendingDeltaLink = null;
   }
 
   private eventToSignal(event: GraphEvent, hasConflict: boolean): RawSignal {
@@ -312,22 +322,38 @@ export class OutlookCalendarConnector implements SignalConnector {
     return conflicts;
   }
 
-  private async graphGet(url: string, initialToken: string): Promise<Response> {
+  private async graphGet(
+    url: string,
+    initialToken: string,
+    signal?: AbortSignal,
+  ): Promise<Response> {
     let accessToken = initialToken;
     return withRetry(
       async () => {
-        const response = await fetch(url, {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            // Return event dateTimes in UTC (still without a Z suffix — see
-            // toUtcIso) so absolute-time math is correct regardless of the
-            // worker's or the user's calendar timezone.
-            Prefer: 'outlook.timezone="UTC"',
-          },
-        });
+        signal?.throwIfAborted();
+        let response: Response;
+        try {
+          response = await fetch(url, {
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              // Return event dateTimes in UTC (still without a Z suffix — see
+              // toUtcIso) so absolute-time math is correct regardless of the
+              // worker's or the user's calendar timezone.
+              Prefer: 'outlook.timezone="UTC"',
+            },
+            signal,
+          });
+        } catch (error) {
+          signal?.throwIfAborted();
+          throw error;
+        }
+        signal?.throwIfAborted();
         if (response.ok) return response;
         if (response.status === 401) {
-          accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
+          accessToken = (
+            await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal)
+          ).accessToken;
+          signal?.throwIfAborted();
           throw new RetryableHttpError(401, 'Graph calendarView: token expired', null);
         }
         if ([429, 500, 502, 503, 504].includes(response.status)) {

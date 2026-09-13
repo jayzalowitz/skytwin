@@ -1,6 +1,6 @@
 # Release Procedure
 
-How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-06-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
+How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-13 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
 
 Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
 
@@ -18,7 +18,7 @@ git push origin "v$(cat VERSION)"
 # Review the draft, then publish it manually.
 ```
 
-That's the mechanical flow. Read the rest before the **first** public release — there are two gaps (signing, auto-update manifests) you must close first, or accept.
+That's the mechanical flow. Read the rest before the **first** public release: update manifests ship, but signing and clean-artifact verification remain release gates. OAuth verification is a separate onboarding constraint.
 
 ---
 
@@ -37,7 +37,7 @@ The release is created as a **draft**. Nothing is public until a human opens the
 
 ## Pre-flight before the FIRST public release
 
-Two known gaps (both tracked; see the launch-readiness report). Until they close, a tag-push still produces a *usable but unsigned* draft release with no auto-update.
+The tag workflow produces a complete but unsigned draft with update manifests. Signing is the remaining install/update gate; clean-artifact verification decides whether that draft is publishable.
 
 ### 1. Code signing is NOT wired (#368 / #359)
 
@@ -96,19 +96,26 @@ The desktop app unpacks `<resources>/embedded/apps.tar.gz` into `<userData>/embe
 
 ---
 
-## Verifying a published release
+## Verifying the draft before publication
 
-After publishing the draft:
+Before clicking **Publish**, download the draft/CI `.dmg` and `.exe` artifacts on clean machines that have never seen SkyTwin and record evidence for every item below. A populated dashboard alone is not sufficient:
+
+1. The app reaches the fictional sample dashboard within 60 seconds with `SKYTWIN_DEV_AUTH_BYPASS` unset. `GET /api/v1/demo/info` reports availability before `POST /api/v1/demo/session` returns a credential fixed to the reserved sample user and a four-hour expiry.
+2. That credential can read a sample decision and its explanation, but receives an authorization denial for mutations, settings, credential/configuration changes, search, connector invocation, MCP/tool execution, paid or inference-bearing endpoints, SSE, and a request for any other user. Connector status and capability provenance/metrics reads may remain available. Minting a second session returns a distinct credential; the automated demo-session tests must also prove expired and tampered credentials are rejected.
+3. Provisioning succeeds only against the CockroachDB child attested to the app's canonical data directory. Repeat the first-launch attempt with an inherited or unrelated loopback `DATABASE_URL` and confirm the app refuses to initialize, migrate, seed, or route services to it.
+4. The API proves authenticated readiness for its exact spawn before web or worker become ready, and the worker's durable generation authority is active only for that generation.
+5. Verify normal tray pause stops the worker and suppresses delayed replacement while an exact ready API/web generation may remain available. Then pause once during startup and once during restart backoff; confirm the newer pause cancels recovery and contains any partial or failed generation. Resume must reuse the exact ready API/web generation when safe or otherwise rebuild API → durable authority → authenticated readiness → web, then start the worker. API or database authority loss must revoke and contain the generation, while an isolated web or worker crash may recover inside the still-ready API generation.
+
+Only after that gate passes should a human publish the draft. Then verify the public download target resolves:
 
 ```bash
-# the download links the README points at must resolve
 curl -fsSLI https://github.com/jayzalowitz/skytwin/releases/latest >/dev/null && echo "latest release reachable"
 ```
 
-Then a clean-machine smoke test: download the `.dmg` / `.exe` on a box that has never seen SkyTwin, install, and confirm it reaches a populated dashboard (sample-profile path) within 60s. Once signing + auto-update manifests land (gaps 1 + 2), also verify the unsigned-warning is gone and that installing release N then tagging N+1 self-updates within the ~6-hour poll window (the `auto-update.ts` `DEFAULT_CHECK_INTERVAL_MS` default).
+For a signed release, verify the unsigned-warning is gone and that installing signed release N then publishing signed N+1 self-updates within the ~6-hour poll window (the `auto-update.ts` `DEFAULT_CHECK_INTERVAL_MS` default). Confirm all three `latest*.yml` assets point at the signed N+1 artifacts.
 
 ---
 
 ## Rollback
 
-A bad release is rolled back by deleting/unpublishing the GitHub Release and the tag; no users are affected until a release is **published** (drafts are private). If a published release regressed, cut the next patch tag with the fix — electron-updater (once manifests ship) will pull users forward.
+A bad release is rolled back by deleting/unpublishing the GitHub Release and the tag; no users are affected until a release is **published** (drafts are private). If a published release regressed, cut the next signed patch tag with the fix — the shipped update manifests let electron-updater pull users forward.

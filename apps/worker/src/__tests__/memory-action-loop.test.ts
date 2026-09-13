@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { buildExecutableActionPlan } from '@skytwin/shared-types';
 import type {
   DailyMemorySuggestion,
+  DailyMemorySuggestionPage,
   MemoryActionOpportunitySnapshot,
 } from '@skytwin/shared-types';
 
@@ -343,5 +344,31 @@ describe('runMemoryActionLoopJob', () => {
         reversible: false,
       }),
     );
+  });
+
+  it('does not begin persistence when generation revokes during bundle collection', async () => {
+    const controller = new AbortController();
+    let release: ((value: {
+      suggestions: DailyMemorySuggestion[];
+      pagesById: Map<string, DailyMemorySuggestionPage>;
+    }) => void) | undefined;
+    const bundle = new Promise<{
+      suggestions: DailyMemorySuggestion[];
+      pagesById: Map<string, DailyMemorySuggestionPage>;
+    }>((resolve) => {
+      release = resolve;
+    });
+
+    const pending = runMemoryActionLoopJob({
+      userIds: ['user-1'],
+      fetchBundle: () => bundle,
+      signal: controller.signal,
+    });
+    controller.abort(new Error('generation revoked'));
+    release?.({ suggestions: [makeSuggestion()], pagesById: new Map() });
+
+    await expect(pending).rejects.toThrow('generation revoked');
+    expect(mockMemoryActionOpportunityRepository.upsertFromSuggestion).not.toHaveBeenCalled();
+    expect(mockMemoryActionOpportunityRepository.claimDueForUser).not.toHaveBeenCalled();
   });
 });

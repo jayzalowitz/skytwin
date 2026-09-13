@@ -36,6 +36,7 @@ export class GoogleCalendarConnector implements SignalConnector {
   private handlers: SignalHandler[] = [];
   private connected = false;
   private syncToken: string | null = null;
+  private pendingSyncToken: string | null = null;
   private readonly userId: string;
   private readonly tokenStore: OAuthTokenStore;
   private readonly cursorStore: CursorStore | null;
@@ -61,13 +62,16 @@ export class GoogleCalendarConnector implements SignalConnector {
     }
   }
 
-  async connect(): Promise<void> {
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google');
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google', signal);
+    signal?.throwIfAborted();
     if (!token) {
       throw new Error('No Google OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
       this.syncToken = await this.cursorStore.get(this.userId, 'google_calendar', SYNC_TOKEN_KIND);
+      signal?.throwIfAborted();
     }
     this.connected = true;
   }
@@ -76,28 +80,26 @@ export class GoogleCalendarConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.syncToken = null;
+    this.pendingSyncToken = null;
   }
 
-  private async persistSyncToken(token: string): Promise<void> {
-    this.syncToken = token;
+  async commitCursor(): Promise<void> {
+    const token = this.pendingSyncToken;
+    if (token === null) return;
     if (this.cursorStore) {
-      try {
-        await this.cursorStore.save(this.userId, 'google_calendar', SYNC_TOKEN_KIND, token);
-      } catch (err) {
-        console.warn(
-          `[google-calendar] Failed to persist sync token for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      await this.cursorStore.save(this.userId, 'google_calendar', SYNC_TOKEN_KIND, token);
     }
+    this.syncToken = token;
+    this.pendingSyncToken = null;
   }
 
   private syncRetryCount = 0;
 
-  async poll(): Promise<RawSignal[]> {
+  async poll(abortSignal?: AbortSignal): Promise<RawSignal[]> {
     if (!this.connected) {
       throw new Error('GoogleCalendarConnector is not connected. Call connect() first.');
     }
+    abortSignal?.throwIfAborted();
 
     const params = new URLSearchParams({
       singleEvents: 'true',
@@ -118,10 +120,24 @@ export class GoogleCalendarConnector implements SignalConnector {
     const url = `${CALENDAR_API}/calendars/${encodeURIComponent(this.calendarId)}/events?${params}`;
 
     const response = await withRetry(async () => {
-      const currentToken = await this.tokenStore.refreshIfExpired(this.userId, 'google');
-      const resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${currentToken.accessToken}` },
-      });
+      abortSignal?.throwIfAborted();
+      const currentToken = await this.tokenStore.refreshIfExpired(
+        this.userId,
+        'google',
+        abortSignal,
+      );
+      abortSignal?.throwIfAborted();
+      let resp: Response;
+      try {
+        resp = await fetch(url, {
+          headers: { Authorization: `Bearer ${currentToken.accessToken}` },
+          signal: abortSignal,
+        });
+      } catch (error) {
+        abortSignal?.throwIfAborted();
+        throw error;
+      }
+      abortSignal?.throwIfAborted();
 
       if (!resp.ok) {
         if (resp.status === 410) {
@@ -143,7 +159,7 @@ export class GoogleCalendarConnector implements SignalConnector {
       if (error instanceof Error && error.message === 'SYNC_TOKEN_EXPIRED' && this.syncRetryCount < 1) {
         this.syncToken = null;
         this.syncRetryCount++;
-        return this.poll();
+        return this.poll(abortSignal);
       }
       throw error;
     }).then((result) => {
@@ -161,12 +177,13 @@ export class GoogleCalendarConnector implements SignalConnector {
       nextSyncToken?: string;
       nextPageToken?: string;
     };
+    abortSignal?.throwIfAborted();
 
-    // Store sync token for next incremental poll. Persist via the cursor
-    // store so it survives worker restarts — without this, every restart
-    // would re-fetch the next 7 days of events and emit them all again.
+    // Stage the cursor only. The worker commits it after every returned
+    // signal has been accepted by the generation-bound API.
     if (data.nextSyncToken) {
-      await this.persistSyncToken(data.nextSyncToken);
+      abortSignal?.throwIfAborted();
+      this.pendingSyncToken = data.nextSyncToken;
     }
 
     const events = data.items ?? [];
@@ -176,11 +193,12 @@ export class GoogleCalendarConnector implements SignalConnector {
     const conflicts = this.detectConflicts(events);
 
     for (const event of events) {
-      const signal = this.eventToSignal(event, conflicts.has(event.id));
-      signals.push(signal);
+      abortSignal?.throwIfAborted();
+      const emittedSignal = this.eventToSignal(event, conflicts.has(event.id));
+      signals.push(emittedSignal);
 
       for (const handler of this.handlers) {
-        handler(signal);
+        handler(emittedSignal);
       }
     }
 

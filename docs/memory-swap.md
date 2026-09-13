@@ -168,8 +168,13 @@ same `OPENAI_EMBEDDING_BASE_URL` knob, point it at the server's port.
 the request path when a provider is fast (hash); when an external provider
 is configured, embedding is allowed to fail at write time and gets retried
 asynchronously. The `brain_embedding_jobs` table is a CRDB-native job queue
-with `SELECT FOR UPDATE SKIP LOCKED` lease semantics — workers that drain
-it can scale horizontally.
+with `SELECT FOR UPDATE SKIP LOCKED` lease semantics, so workers that drain
+it can scale horizontally. Each claim returns the exact database lease expiry
+as a token. Completion and failure require that still-active token; a late
+worker cannot overwrite a job another worker reclaimed. Successful completion
+updates the page embedding and terminalizes the job in one transaction.
+Expired in-progress jobs are claimable again, and a job abandoned three times
+is terminalized as failed instead of retrying forever.
 
 ## How hybrid mode works
 
@@ -220,11 +225,11 @@ follow-up: extract a pure factory.)
 
 ## Verifying the CRDB SQL paths
 
-The `@skytwin/memory-gbrain-crdb-adapter` package has 6 DB-gated integration
+The `@skytwin/memory-gbrain-crdb-adapter` package has 7 DB-gated integration
 tests covering `insertPage` + `hybridSearch`, entity/triple round-trip,
-episode persistence, the embedding job queue lifecycle, settings round-trip,
-and `countPages`. They're skipped by default (no live DB) and gated on
-`RUN_DB_TESTS=1`.
+episode persistence, the embedding job queue lifecycle and stale-lease fence,
+settings round-trip, and `countPages`. They're skipped by default (no live DB)
+and gated on `RUN_DB_TESTS=1`.
 
 To exercise them against a hermetic local CRDB:
 
@@ -288,10 +293,10 @@ consume their existing brain via a thin wrapper. The dashboard surfaces
 
 ## References
 
-- [#138](https://github.com/anthropics/skytwin/issues/138) — Replace
+- [#138](https://github.com/jayzalowitz/skytwin/issues/138) — Replace
   `@skytwin/mempalace` with GBrain (epic).
-- [#196](https://github.com/anthropics/skytwin/issues/196) — `@skytwin/memory-port` interface (shipped).
-- [#197](https://github.com/anthropics/skytwin/issues/197) — `@skytwin/memory-gbrain` + hybrid composer + CRDB adapter (this).
+- [#196](https://github.com/jayzalowitz/skytwin/issues/196) — `@skytwin/memory-port` interface (shipped).
+- [#197](https://github.com/jayzalowitz/skytwin/issues/197) — `@skytwin/memory-gbrain` + hybrid composer + CRDB adapter (this).
 - [`packages/memory-gbrain-crdb-adapter/src/repository.ts`](../packages/memory-gbrain-crdb-adapter/src/repository.ts) — RRF + vector + tsvector query layer.
 - [`packages/memory-hybrid/src/hybrid-port.ts`](../packages/memory-hybrid/src/hybrid-port.ts) — composer + diagnostics.
 - [`apps/api/src/memory-setup.ts`](../apps/api/src/memory-setup.ts) — backend factory, embedding provider selection.

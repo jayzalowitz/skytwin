@@ -19,6 +19,7 @@ export const STORAGE_KEY_PREFIX = 'skytwin_';
 export const KEY_USER_ID = 'skytwin_userId';
 export const KEY_ONBOARDED = 'skytwin_onboarded';
 export const KEY_SESSION_TOKEN = 'skytwin_session_token';
+export const KEY_DEMO_SESSION_EXPIRES_AT = 'skytwin_demo_session_expires_at';
 
 // ── Tour / demo ────────────────────────────────────────────────────────
 

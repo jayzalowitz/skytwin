@@ -2,6 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { InMemoryBrainStore } from '../in-memory-repository.js';
 import { HashEmbeddingProvider } from '../embedding.js';
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('InMemoryBrainStore — pages', () => {
   let store: InMemoryBrainStore;
   beforeEach(() => {
@@ -393,18 +397,70 @@ describe('InMemoryBrainStore — settings + embedding queue', () => {
     expect(job?.pageId).toBe(page.id);
     // Once leased, no other job is pending
     expect(store.leaseEmbeddingJob()).toBeNull();
-    store.markJobDone(job!.id);
+    expect(store.markJobDone(job!.id, job!.leaseToken)).toBe(true);
+  });
+
+  it('reclaims an in-progress job after its lease expires', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const store = new InMemoryBrainStore();
+    store.insertPage({ userId: 'u1', content: 'x', source: 'note' });
+    const firstLease = store.leaseEmbeddingJob();
+    expect(firstLease).not.toBeNull();
+
+    const retained = store.jobs.find((job) => job.id === firstLease!.id);
+    expect(retained?.status).toBe('in_progress');
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+
+    const reclaimed = store.leaseEmbeddingJob();
+    expect(reclaimed?.id).toBe(firstLease?.id);
+    expect(reclaimed?.leaseToken).not.toBe(firstLease?.leaseToken);
+    expect(retained?.attempts).toBe(2);
+  });
+
+  it('refuses a stale lease after another worker reclaims and completes the job', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const store = new InMemoryBrainStore();
+    const page = store.insertPage({ userId: 'u1', content: 'x', source: 'note' });
+    const stale = store.leaseEmbeddingJob()!;
+    vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    const current = store.leaseEmbeddingJob()!;
+
+    expect(store.completeEmbeddingJob(current.id, current.leaseToken, [0.2, 0.8], 'current')).toBe(true);
+    expect(store.completeEmbeddingJob(stale.id, stale.leaseToken, [0.9, 0.1], 'stale')).toBe(false);
+    expect(store.pages.get(page.id)?.embedding).toEqual([0.2, 0.8]);
+    expect(store.pages.get(page.id)?.embedding_model).toBe('current');
+  });
+
+  it('terminalizes a third abandoned attempt when its lease expires', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'));
+    const store = new InMemoryBrainStore();
+    store.insertPage({ userId: 'u1', content: 'x', source: 'note' });
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      expect(store.leaseEmbeddingJob()).not.toBeNull();
+      vi.advanceTimersByTime(5 * 60 * 1000 + 1);
+    }
+
+    expect(store.leaseEmbeddingJob()).toBeNull();
+    expect(store.jobs[0]).toMatchObject({
+      status: 'failed',
+      attempts: 3,
+      error: 'maximum embedding attempts exhausted after lease expiry',
+    });
   });
 
   it('markJobFailed re-queues until 3 attempts then fails', () => {
     const store = new InMemoryBrainStore();
     store.insertPage({ userId: 'u1', content: 'x', source: 'note' });
     let job = store.leaseEmbeddingJob();
-    store.markJobFailed(job!.id, 'attempt 1');
+    store.markJobFailed(job!.id, job!.leaseToken, 'attempt 1');
     job = store.leaseEmbeddingJob();
-    store.markJobFailed(job!.id, 'attempt 2');
+    store.markJobFailed(job!.id, job!.leaseToken, 'attempt 2');
     job = store.leaseEmbeddingJob();
-    store.markJobFailed(job!.id, 'attempt 3');
+    store.markJobFailed(job!.id, job!.leaseToken, 'attempt 3');
     // After 3 attempts → permanently failed; pending count drops.
     expect(store.pendingEmbeddingJobs()).toBe(0);
   });

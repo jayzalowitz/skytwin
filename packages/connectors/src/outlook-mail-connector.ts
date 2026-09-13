@@ -79,6 +79,7 @@ export class OutlookMailConnector implements SignalConnector {
   private readonly cursorStore: CursorStore | null;
   /** In-memory mirror of the persisted delta/continuation link for this session. */
   private deltaLink: string | null = null;
+  private pendingDeltaLink: string | null = null;
 
   constructor(userId: string, tokenStore: OAuthTokenStore, cursorStore: CursorStore | null = null) {
     this.userId = userId;
@@ -86,13 +87,16 @@ export class OutlookMailConnector implements SignalConnector {
     this.cursorStore = cursorStore;
   }
 
-  async connect(): Promise<void> {
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft');
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const token = await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal);
+    signal?.throwIfAborted();
     if (!token) {
       throw new Error('No Microsoft OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
       this.deltaLink = await this.cursorStore.get(this.userId, 'outlook', DELTA_LINK_KIND);
+      signal?.throwIfAborted();
     }
     this.connected = true;
   }
@@ -101,19 +105,24 @@ export class OutlookMailConnector implements SignalConnector {
     this.connected = false;
     this.handlers = [];
     this.deltaLink = null;
+    this.pendingDeltaLink = null;
   }
 
   onSignal(handler: SignalHandler): void {
     this.handlers.push(handler);
   }
 
-  async poll(): Promise<RawSignal[]> {
+  async poll(signal?: AbortSignal): Promise<RawSignal[]> {
     if (!this.connected) {
       throw new Error('OutlookMailConnector is not connected. Call connect() first.');
     }
-    const accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
+    signal?.throwIfAborted();
+    const accessToken = (
+      await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal)
+    ).accessToken;
+    signal?.throwIfAborted();
     // Start a fresh delta when we have no cursor, else resume the stored one.
-    return this.drainDelta(this.deltaLink ?? this.freshDeltaUrl(), accessToken);
+    return this.drainDelta(this.deltaLink ?? this.freshDeltaUrl(), accessToken, signal);
   }
 
   private freshDeltaUrl(): string {
@@ -133,7 +142,11 @@ export class OutlookMailConnector implements SignalConnector {
    * restart (that would re-fire handlers for those messages) — we stop and
    * return what we have; the next poll resumes from the last persisted cursor.
    */
-  private async drainDelta(startUrl: string, accessToken: string): Promise<RawSignal[]> {
+  private async drainDelta(
+    startUrl: string,
+    accessToken: string,
+    signal?: AbortSignal,
+  ): Promise<RawSignal[]> {
     const signals: RawSignal[] = [];
     let url: string | undefined = startUrl;
     let pages = 0;
@@ -141,9 +154,10 @@ export class OutlookMailConnector implements SignalConnector {
     let rebootstrapped = false;
 
     while (url && pages < MAX_PAGES_PER_POLL) {
+      signal?.throwIfAborted();
       let resp: Response;
       try {
-        resp = await this.graphGet(url, accessToken, 'delta');
+        resp = await this.graphGet(url, accessToken, 'delta', signal);
       } catch (err) {
         if (err instanceof Error && err.message.includes('410')) {
           if (signals.length === 0 && !rebootstrapped) {
@@ -160,16 +174,18 @@ export class OutlookMailConnector implements SignalConnector {
       }
 
       const body = (await resp.json()) as GraphDeltaPage;
+      signal?.throwIfAborted();
       for (const msg of body.value ?? []) {
+        signal?.throwIfAborted();
         if (!msg || typeof msg.id !== 'string') continue;
         // Skip deletion tombstones (carry `@removed`, no real body) and any
         // message with no `receivedDateTime` — fabricating "now" would
         // mis-rank it as just-arrived.
         if ('@removed' in msg) continue;
         if (!msg.receivedDateTime) continue;
-        const signal = this.messageToSignal(msg);
-        signals.push(signal);
-        for (const handler of this.handlers) handler(signal);
+        const emittedSignal = this.messageToSignal(msg);
+        signals.push(emittedSignal);
+        for (const handler of this.handlers) handler(emittedSignal);
       }
 
       pages += 1;
@@ -184,22 +200,19 @@ export class OutlookMailConnector implements SignalConnector {
       }
     }
 
-    if (nextCursor) await this.persistCursor(nextCursor);
+    signal?.throwIfAborted();
+    if (nextCursor) this.pendingDeltaLink = nextCursor;
     return signals;
   }
 
-  private async persistCursor(link: string): Promise<void> {
-    this.deltaLink = link;
+  async commitCursor(): Promise<void> {
+    const link = this.pendingDeltaLink;
+    if (link === null) return;
     if (this.cursorStore) {
-      try {
-        await this.cursorStore.save(this.userId, 'outlook', DELTA_LINK_KIND, link);
-      } catch (err) {
-        console.warn(
-          `[outlook] Failed to persist delta cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
+      await this.cursorStore.save(this.userId, 'outlook', DELTA_LINK_KIND, link);
     }
+    this.deltaLink = link;
+    this.pendingDeltaLink = null;
   }
 
   private headerValue(headers: GraphMessage['internetMessageHeaders'], name: string): string {
@@ -299,14 +312,33 @@ export class OutlookMailConnector implements SignalConnector {
    * Retry-After; 410 (delta expired) and other 4xx → a plain Error the caller
    * inspects (poll() re-bootstraps on 410).
    */
-  private async graphGet(url: string, initialToken: string, label: string): Promise<Response> {
+  private async graphGet(
+    url: string,
+    initialToken: string,
+    label: string,
+    signal?: AbortSignal,
+  ): Promise<Response> {
     let accessToken = initialToken;
     return withRetry(
       async () => {
-        const response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+        signal?.throwIfAborted();
+        let response: Response;
+        try {
+          response = await fetch(url, {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            signal,
+          });
+        } catch (error) {
+          signal?.throwIfAborted();
+          throw error;
+        }
+        signal?.throwIfAborted();
         if (response.ok) return response;
         if (response.status === 401) {
-          accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'microsoft')).accessToken;
+          accessToken = (
+            await this.tokenStore.refreshIfExpired(this.userId, 'microsoft', signal)
+          ).accessToken;
+          signal?.throwIfAborted();
           throw new RetryableHttpError(401, `Graph ${label}: token expired`, null);
         }
         if ([429, 500, 502, 503, 504].includes(response.status)) {

@@ -5,8 +5,25 @@
  */
 
 // Connection pool
-export { getPool, query, withTransaction, healthCheck, closePool, getPoolStats } from './connection.js';
+export {
+  getPool,
+  query,
+  withTransaction,
+  healthCheck,
+  closePool,
+  getPoolStats,
+  WorkerGenerationAuthorityError,
+  setWorkerGenerationAuthorityLossHandler,
+} from './connection.js';
 export type { DatabaseConfig } from './connection.js';
+export {
+  registerWorkerGenerationAuthority,
+  revokeWorkerGenerationAuthority,
+} from './worker-generation-authority.js';
+export type {
+  WorkerGenerationAuthorityClient,
+  WorkerGenerationAuthorityOptions,
+} from './worker-generation-authority.js';
 
 // Request-scoped context (#408): AsyncLocalStorage carries the authoritative
 // userId across async boundaries so deep callees — including this repository
@@ -35,6 +52,19 @@ export {
   type DemoGuardEnv,
   type DemoGuardResult,
 } from './seeds/demo-guard.js';
+
+export {
+  assertPackagedSampleSafe,
+  provisionPackagedSample,
+  provisionPackagedSampleWithClient,
+  ingestPackagedSampleSignals,
+  type PackagedSampleEnvironment,
+  type PackagedSampleProvisionOptions,
+  type PackagedSampleGuardResult,
+  type PackagedSampleProvisionResult,
+  type PackagedSampleIngestResult,
+  type OwnedSampleClient,
+} from './seeds/packaged-sample.js';
 
 // Row types
 export type {

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SkyTwin — a digital twin that learns what you'd want and does it</title>
-  <meta name="description" content="SkyTwin is an open-source, local-first personal assistant. It builds a structured model of your preferences from your inbox and calendar, then acts on your behalf — with explanations, trust tiers, spend limits, and a pause-everything switch. Local by default; cloud AI is opt-in.">
+  <meta name="description" content="SkyTwin is an open-source, local-first personal assistant. It builds a structured model of your preferences from your inbox and calendar, then acts on your behalf — with explanations, trust tiers, spend limits, and a manual-approval pause control. Local by default; cloud AI is opt-in.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/">
   <meta property="og:title" content="SkyTwin — it acts, it doesn't chat">
   <meta property="og:description" content="Open-source, local-first digital twin: reads your inbox + calendar, splits what needs you from what's just awareness, and acts within limits you set. Five minutes from cold start to trust.">
@@ -129,7 +129,7 @@
         <a href="deck.html">Deck</a>
         <a href="connect-gmail.html">Connect Gmail</a>
         <a href="https://github.com/jayzalowitz/skytwin">GitHub</a>
-        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download</a>
+        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Releases</a>
       </div>
     </div>
   </nav>
@@ -140,10 +140,10 @@
       <h1>A digital twin that learns what you'd want — and does it.</h1>
       <p class="lede">SkyTwin reads your inbox and calendar, builds a structured model of your preferences, and acts on your behalf. It splits what needs you from what's just awareness, explains every decision, and never does anything risky without asking. Local-first by default — cloud AI is opt-in.</p>
       <div class="actions">
-        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download desktop beta</a>
+        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">View beta releases</a>
         <a class="button" href="demo.html">See the 5-minute demo</a>
         <a class="button" href="https://github.com/jayzalowitz/skytwin">View source</a>
-        <span class="note">No account or inbox needed — explore with a sample profile.</span>
+        <span class="note">Published installers predate the account-free sample now in source.</span>
       </div>
       <img class="shot shot-hero" src="screenshots/briefing.png" alt="SkyTwin briefing — a daily digest that separates to-dos that need you from topics to catch up on, each with citations.">
     </section>
@@ -165,7 +165,7 @@
         <div class="card safe">
           <span class="tag">Safety</span>
           <h3>Trust you grant, not assume</h3>
-          <p>New twins start in observe-only mode and earn autonomy through your feedback. Spend limits are hard caps. Untrusted-origin content can never auto-run destructive work. One switch pauses everything.</p>
+          <p>New twins start in observe-only mode and earn autonomy through your feedback. Spend limits are hard caps. Untrusted-origin content can never auto-run destructive work. Settings can pause auto-execution and route otherwise allowed actions to you for approval.</p>
         </div>
         <div class="card">
           <span class="tag">Local-first</span>
@@ -177,11 +177,11 @@
 
     <section class="wrap">
       <h2>See it before you connect anything</h2>
-      <p class="section-lede">The demo path uses a seeded sample profile, so a stranger sees real decisions, real explanations, and real controls without touching a private inbox. <a href="demo.html">Walk the five-minute storyboard →</a></p>
+      <p class="section-lede">Current source includes a guarded, read-only sample session for packaged desktop builds, so a stranger can inspect fictional decisions and explanations without touching a private inbox. Published installers predate that foundation. Simulated approve, reject, correct, and learn interactions are a later slice. <a href="demo.html">See the demo boundaries and storyboard →</a></p>
       <div class="shot-grid">
-        <figure><img class="shot" loading="lazy" src="screenshots/onboarding.png" alt="Cold-start onboarding with a 'try a sample profile' path."><figcaption>Cold start — explore with a sample profile in seconds.</figcaption></figure>
-        <figure><img class="shot" loading="lazy" src="screenshots/approvals.png" alt="Approvals queue: approve, reject, or edit a proposed action."><figcaption>Approvals — yes, no, or edit; every answer teaches the model.</figcaption></figure>
-        <figure><img class="shot" loading="lazy" src="screenshots/settings.png" alt="Settings: autonomy level, spend limits, connected accounts, pause and delete controls."><figcaption>Settings — autonomy, spend limits, pause everything, delete my data.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/onboarding.png" alt="Cold-start onboarding with a 'try a sample profile' path."><figcaption>Cold start — current source can open a read-only sample session in seconds.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/approvals.png" alt="Read-only preview of an approvals queue and its proposed actions."><figcaption>Approvals — the packaged sample can inspect the proposal and why; it cannot submit an answer yet.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/settings.png" alt="Connected-product settings for autonomy level, spend limits, accounts, pause, and deletion."><figcaption>Settings — a connected-product surface, outside the packaged sample's read-only authority.</figcaption></figure>
         <figure><img class="shot" loading="lazy" src="screenshots/briefing.png" alt="The briefing digest with to-dos and topics."><figcaption>Briefing — what needs you, and what's just FYI.</figcaption></figure>
       </div>
     </section>
@@ -217,7 +217,7 @@
 
     <section class="wrap">
       <h2>Install</h2>
-      <p class="section-lede">Grab the desktop installer (<code>.dmg</code> / <code>.exe</code> / <code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code>) from <a href="https://github.com/jayzalowitz/skytwin/releases/latest">the latest release</a>. The app keeps itself current — it checks for updates in the background and offers a one-click restart when one's ready. Or build from source in one command on macOS / Linux / WSL:</p>
+      <p class="section-lede">Published desktop installers (<code>.dmg</code> / <code>.exe</code> / <code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code>) are available on <a href="https://github.com/jayzalowitz/skytwin/releases/latest">the releases page</a>, but those artifacts currently predate the guarded packaged sample path described above. Check each release's notes for its exact contents. The app checks for updates in the background and offers a one-click restart when one's ready. Or build the current development source on macOS / Linux / WSL:</p>
       <pre class="code"><code>curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash</code></pre>
       <p style="color:var(--text-dim);font-size:.88rem;margin-top:.8rem;">Beta builds aren't code-signed yet, so macOS Gatekeeper / Windows SmartScreen will warn on first launch — right-click → Open (macOS) or More info → Run anyway (Windows). Signing is in progress.</p>
     </section>

@@ -15,6 +15,7 @@ vi.mock('@skytwin/db', () => ({
     refreshExpiry: vi.fn(),
     touchLastActive: vi.fn(),
   },
+  userRepository: { findDemoById: vi.fn() },
 }));
 
 function mockReq(overrides: Partial<Request> = {}): Request {
@@ -41,6 +42,7 @@ describe('sessionAuth middleware', () => {
   const savedEnv = {
     SKYTWIN_DEV_AUTH_BYPASS: process.env['SKYTWIN_DEV_AUTH_BYPASS'],
     SKYTWIN_SERVICE_TOKEN: process.env['SKYTWIN_SERVICE_TOKEN'],
+    SESSION_SECRET: process.env['SESSION_SECRET'],
   };
 
   beforeEach(async () => {
@@ -58,6 +60,7 @@ describe('sessionAuth middleware', () => {
         refreshExpiry: vi.fn(),
         touchLastActive: vi.fn(),
       },
+      userRepository: { findDemoById: vi.fn() },
     }));
   });
 
@@ -197,6 +200,83 @@ describe('sessionAuth middleware', () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  describe('read-only sample credential', () => {
+    async function loadDemoAuth() {
+      process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
+      process.env['SESSION_SECRET'] = 'test-demo-session-secret-that-is-long-enough';
+      const auth = await import('../middleware/session-auth.js');
+      const demo = await import('../auth/demo-session.js');
+      const db = await import('@skytwin/db');
+      (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValue({
+        id: demo.DEMO_USER_ID,
+        is_demo: true,
+      });
+      return { sessionAuth: auth.sessionAuth, issueDemoSession: demo.issueDemoSession };
+    }
+
+    it('binds an allowlisted read to the reserved sample identity', async () => {
+      const mod = await loadDemoAuth();
+      const issued = mod.issueDemoSession();
+      const req = mockReq({
+        method: 'GET',
+        originalUrl: '/api/decisions/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        headers: { authorization: `Bearer ${issued.token}` },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      await mod.sessionAuth(req, res, next);
+
+      expect(next).toHaveBeenCalledOnce();
+      expect(req.authenticatedUserId).toBe('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+      expect(req.demoAuthenticated).toBe(true);
+    });
+
+    it('rejects mutations and non-allowlisted reads without falling through to DB sessions', async () => {
+      const mod = await loadDemoAuth();
+      const issued = mod.issueDemoSession();
+      const db = await import('@skytwin/db');
+
+      for (const [method, originalUrl] of [
+        ['POST', '/api/feedback'],
+        ['GET', '/api/users'],
+        ['GET', '/api/settings/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'],
+      ]) {
+        const req = mockReq({
+          method,
+          originalUrl,
+          headers: { authorization: `Bearer ${issued.token}` },
+        });
+        const res = mockRes();
+        const next = vi.fn();
+        await mod.sessionAuth(req, res, next);
+        expect(next).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(403);
+      }
+      expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+    });
+
+    it('revokes an issued sample credential when the database marker disappears', async () => {
+      const mod = await loadDemoAuth();
+      const issued = mod.issueDemoSession();
+      const db = await import('@skytwin/db');
+      (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+      const req = mockReq({
+        method: 'GET',
+        originalUrl: '/api/decisions/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        headers: { authorization: `Bearer ${issued.token}` },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      await mod.sessionAuth(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(401);
+      expect(req.authenticatedUserId).toBeUndefined();
+    });
   });
 
   // -------------------------------------------------------------------

@@ -126,6 +126,31 @@ describe('DbTokenStore', () => {
     );
   });
 
+  it('aborts an in-flight refresh without persisting a replacement token', async () => {
+    repo.getToken.mockResolvedValue({
+      access_token: 'expired-token',
+      refresh_token: 'refresh-456',
+      expires_at: new Date(Date.now() - 60_000),
+      scopes: ['email'],
+    });
+    mockRefresh.mockImplementation((_config, _token, signal) => {
+      return new Promise((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    const controller = new AbortController();
+    const refresh = store.refreshIfExpired('user1', 'google', controller.signal);
+    await vi.waitFor(() => expect(mockRefresh).toHaveBeenCalledOnce());
+    expect(mockRefresh).toHaveBeenCalledWith(oauthConfig, 'refresh-456', controller.signal);
+    const revoked = new Error('worker generation revoked');
+    const rejection = expect(refresh).rejects.toBe(revoked);
+
+    controller.abort(revoked);
+
+    await rejection;
+    expect(repo.updateAccessToken).not.toHaveBeenCalled();
+  });
+
   it('refreshIfExpired throws when no token exists', async () => {
     repo.getToken.mockResolvedValue(null);
     await expect(store.refreshIfExpired('user1', 'google')).rejects.toThrow(

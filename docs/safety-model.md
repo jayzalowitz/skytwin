@@ -85,6 +85,12 @@ The system takes an action with legal consequences the user didn't anticipate.
 
 Safety is not a single check. It is a series of overlapping defenses, each of which can independently prevent a bad outcome. If one layer fails, the others still protect the user.
 
+### Packaged Sample Boundary
+
+The account-free packaged sample is a separate read-only principal, not a user session and not a relaxation of the normal policy pipeline. `apps/api/src/auth/demo-session.ts` signs a four-hour credential fixed to one reserved synthetic identity and accepts only `GET`/`HEAD` requests on an explicit allowlist; settings, credentials, inference, search, long-lived streams, cross-user access, mutations, and execution remain outside that authority. The API revalidates the user's `is_demo` database marker on every request.
+
+The desktop provisions that identity only after proving the bundled CockroachDB child belongs to its canonical data directory. Each API spawn gets a fresh in-memory instance proof, and web/worker startup waits for authenticated readiness from that exact child. Before spawning the worker, the desktop manager stores the hash of a separate per-generation secret in `worker_generation_authority`; protected transactions lock and validate the presented capability against the active row, so durable revocation rejects late writes. API or database authority loss contains dependent services. Normal tray pause stops the worker and suppresses delayed replacement while exact ready API/web may remain; a concurrent pause cancels recovery and contains partial state. Resume reuses safe exact services or reconstructs them in order before starting the worker. Source of truth: `packages/db/src/seeds/packaged-sample.ts`, `apps/desktop/src/service-manager.ts`, and `packages/db/src/worker-generation-authority.ts`.
+
 ### Layer 1: Trust Tiers
 
 Every user has a trust tier that gates what the system can do autonomously. New users start at `OBSERVER` (no autonomy). Trust is earned through demonstrated correct decisions and consistent feedback.

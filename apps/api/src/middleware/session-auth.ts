@@ -1,7 +1,12 @@
 import { createHmac, timingSafeEqual } from 'crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { sessionRepository } from '@skytwin/db';
+import { sessionRepository, userRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
+import {
+  DEMO_USER_ID,
+  isDemoReadRequest,
+  verifyDemoSession,
+} from '../auth/demo-session.js';
 
 const log = createLogger('api:auth');
 
@@ -19,6 +24,8 @@ declare global {
        * loopback address. Never set for a human session.
        */
       serviceAuthenticated?: boolean;
+      /** True only for a signed, read-only session bound to the sample profile. */
+      demoAuthenticated?: boolean;
     }
   }
 }
@@ -154,6 +161,35 @@ export async function sessionAuth(
     ? authHeader.slice(7)
     : undefined;
   const token = bearerToken ?? queryToken;
+
+  // Account-free packaged tour. This principal is always bound to the one
+  // reserved synthetic identity and only reaches an explicit GET/HEAD
+  // allowlist. It never enters the normal session table and cannot mutate the
+  // fixture or select another user.
+  if (token && verifyDemoSession(token)) {
+    if (!isDemoReadRequest(req.method, req.originalUrl ?? req.url)) {
+      res.status(403).json({
+        error: 'Sample mode is read-only',
+        message: 'Start your own twin to make changes.',
+      });
+      return;
+    }
+    // The database marker is the revocation boundary for this stateless
+    // credential. Re-check it for every read so removing `is_demo`, deleting
+    // the fixture, or replacing the reserved row takes effect immediately.
+    const demoUser = await userRepository.findDemoById(DEMO_USER_ID);
+    if (!demoUser) {
+      res.status(401).json({
+        error: 'Sample session unavailable',
+        message: 'Restart the sample tour to continue.',
+      });
+      return;
+    }
+    req.authenticatedUserId = DEMO_USER_ID;
+    req.demoAuthenticated = true;
+    next();
+    return;
+  }
 
   // Loopback service credential (worker / idle-miner). Deliberately narrower
   // than the human session path: header-only (never `?token=`), and only from

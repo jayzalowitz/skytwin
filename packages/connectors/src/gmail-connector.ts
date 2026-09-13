@@ -100,13 +100,16 @@ export class GmailConnector implements SignalConnector {
     this.labelObserver = labelObserver;
   }
 
-  async connect(): Promise<void> {
-    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google');
+  async connect(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const token = await this.tokenStore.refreshIfExpired(this.userId, 'google', signal);
+    signal?.throwIfAborted();
     if (!token) {
       throw new Error('No Google OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
       this.historyId = await this.cursorStore.get(this.userId, 'gmail', HISTORY_ID_KIND);
+      signal?.throwIfAborted();
     }
     this.connected = true;
   }
@@ -127,26 +130,27 @@ export class GmailConnector implements SignalConnector {
   async commitCursor(): Promise<void> {
     const pending = this.pendingHistoryId;
     if (pending === null) return;
-    this.pendingHistoryId = null;
     await this.persistCursor(pending);
   }
 
-  async poll(): Promise<RawSignal[]> {
+  async poll(signal?: AbortSignal): Promise<RawSignal[]> {
     if (!this.connected) {
       throw new Error('GmailConnector is not connected. Call connect() first.');
     }
 
-    const accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'google')).accessToken;
+    signal?.throwIfAborted();
+    const accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'google', signal)).accessToken;
+    signal?.throwIfAborted();
 
     if (this.historyId === null) {
       // First poll for this user: bootstrap the cursor from a small batch
       // of recent unread mail. We surface those messages as signals on
       // first run so the user sees something immediately, then advance the
       // cursor to the latest historyId observed.
-      return this.bootstrapAndEmit(accessToken);
+      return this.bootstrapAndEmit(accessToken, signal);
     }
 
-    return this.pollHistorySince(accessToken, this.historyId);
+    return this.pollHistorySince(accessToken, this.historyId, signal);
   }
 
   onSignal(handler: SignalHandler): void {
@@ -167,12 +171,17 @@ export class GmailConnector implements SignalConnector {
    * historyId-derived cursor advancement is unchanged (the cursor still
    * picks the max across all observed messages).
    */
-  private async bootstrapAndEmit(accessToken: string): Promise<RawSignal[]> {
+  private async bootstrapAndEmit(
+    accessToken: string,
+    signal?: AbortSignal,
+  ): Promise<RawSignal[]> {
     const sentUrl = `${GMAIL_API}/users/me/messages?q=${encodeURIComponent('in:sent newer_than:7d')}&maxResults=10`;
     const unreadUrl = `${GMAIL_API}/users/me/messages?q=${encodeURIComponent('is:unread newer_than:1d')}&maxResults=10`;
 
-    const sentIds = await this.listMessageIds(sentUrl, accessToken);
-    const unreadIds = await this.listMessageIds(unreadUrl, accessToken);
+    const sentIds = await this.listMessageIds(sentUrl, accessToken, signal);
+    signal?.throwIfAborted();
+    const unreadIds = await this.listMessageIds(unreadUrl, accessToken, signal);
+    signal?.throwIfAborted();
 
     // Dedupe while preserving sent-first ordering.
     const seen = new Set<string>();
@@ -187,12 +196,14 @@ export class GmailConnector implements SignalConnector {
     if (ids.length === 0) {
       // Even with no messages we want a cursor for next poll. Use the
       // mailbox's current historyId from /users/me/profile.
-      const profile = await this.fetchProfileHistoryId(accessToken);
+      const profile = await this.fetchProfileHistoryId(accessToken, signal);
+      signal?.throwIfAborted();
       if (profile) await this.persistCursor(profile);
       return [];
     }
 
-    const { signals, maxHistoryId } = await this.fetchAndConvert(ids, accessToken);
+    const { signals, maxHistoryId } = await this.fetchAndConvert(ids, accessToken, signal);
+    signal?.throwIfAborted();
     // Staged, not persisted: these signals have not been forwarded yet.
     if (maxHistoryId) this.stageCursor(maxHistoryId);
     return signals;
@@ -207,10 +218,15 @@ export class GmailConnector implements SignalConnector {
    * surfaces "your Google connection has a problem" instead of silently
    * doing nothing forever — Copilot caught this on PR #252.
    */
-  private async listMessageIds(url: string, accessToken: string): Promise<string[]> {
+  private async listMessageIds(
+    url: string,
+    accessToken: string,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
     try {
-      const resp = await this.gmailGet(url, accessToken, 'list');
+      const resp = await this.gmailGet(url, accessToken, 'list', signal);
       const body = await resp.json() as { messages?: Array<{ id: string }> };
+      signal?.throwIfAborted();
       return (body.messages ?? []).map((m) => m.id);
     } catch (err) {
       if (err instanceof RetryableHttpError) {
@@ -230,7 +246,11 @@ export class GmailConnector implements SignalConnector {
    * 404 if the cursor is older than its retention window (~7 days) — in
    * that case we treat the cursor as lost and re-bootstrap.
    */
-  private async pollHistorySince(accessToken: string, startHistoryId: string): Promise<RawSignal[]> {
+  private async pollHistorySince(
+    accessToken: string,
+    startHistoryId: string,
+    signal?: AbortSignal,
+  ): Promise<RawSignal[]> {
     const params = new URLSearchParams({
       startHistoryId,
       historyTypes: 'messageAdded',
@@ -240,7 +260,7 @@ export class GmailConnector implements SignalConnector {
 
     let resp: Response;
     try {
-      resp = await this.gmailGet(historyUrl, accessToken, 'history');
+      resp = await this.gmailGet(historyUrl, accessToken, 'history', signal);
     } catch (err) {
       // history.list returns 404 when startHistoryId is too old. We don't
       // throw a retryable error for 404 (it'd just keep failing), so the
@@ -248,7 +268,7 @@ export class GmailConnector implements SignalConnector {
       if (err instanceof Error && err.message.includes('404')) {
         console.warn(`[gmail] History cursor too old for user ${this.userId} — re-bootstrapping`);
         this.historyId = null;
-        return this.bootstrapAndEmit(accessToken);
+        return this.bootstrapAndEmit(accessToken, signal);
       }
       throw err;
     }
@@ -257,6 +277,7 @@ export class GmailConnector implements SignalConnector {
       history?: Array<{ messagesAdded?: Array<{ message: { id: string } }> }>;
       historyId?: string;
     };
+    signal?.throwIfAborted();
 
     // Collect new message ids (deduped — a single thread can show up in
     // multiple history records as labels change).
@@ -274,7 +295,8 @@ export class GmailConnector implements SignalConnector {
     let maxHistoryId = body.historyId ?? startHistoryId;
     let signals: RawSignal[] = [];
     if (ids.length > 0) {
-      const result = await this.fetchAndConvert(ids, accessToken);
+      const result = await this.fetchAndConvert(ids, accessToken, signal);
+      signal?.throwIfAborted();
       signals = result.signals;
       // Prefer the larger of (response historyId, max observed message historyId).
       // Both are strings of monotonically-increasing integers; compare numerically.
@@ -302,12 +324,15 @@ export class GmailConnector implements SignalConnector {
   private async fetchAndConvert(
     ids: string[],
     accessToken: string,
+    signal?: AbortSignal,
   ): Promise<{ signals: RawSignal[]; maxHistoryId: string | null }> {
     const signals: RawSignal[] = [];
     let maxHistoryId: string | null = null;
 
     for (const id of ids) {
-      const detail = await this.fetchMessageDetail(id, accessToken);
+      signal?.throwIfAborted();
+      const detail = await this.fetchMessageDetail(id, accessToken, signal);
+      signal?.throwIfAborted();
       if (!detail) continue;
 
       if (detail.historyId) {
@@ -316,26 +341,36 @@ export class GmailConnector implements SignalConnector {
         }
       }
 
-      const signal = this.messageToSignal(detail);
-      signals.push(signal);
+      const emittedSignal = this.messageToSignal(detail);
+      signals.push(emittedSignal);
 
       // Issue #122: record (sender, label) evidence for the per-user label
       // model. Awaited so the writes are ordered relative to the signal
       // emission, but the call is exception-safe — observer failure must
       // not silence handlers.
       await this.recordLabelObservations(detail);
+      signal?.throwIfAborted();
 
       for (const handler of this.handlers) {
-        handler(signal);
+        handler(emittedSignal);
       }
     }
     return { signals, maxHistoryId };
   }
 
-  private async fetchProfileHistoryId(accessToken: string): Promise<string | null> {
+  private async fetchProfileHistoryId(
+    accessToken: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
     try {
-      const resp = await this.gmailGet(`${GMAIL_API}/users/me/profile`, accessToken, 'profile');
+      const resp = await this.gmailGet(
+        `${GMAIL_API}/users/me/profile`,
+        accessToken,
+        'profile',
+        signal,
+      );
       const body = await resp.json() as { historyId?: string };
+      signal?.throwIfAborted();
       return body.historyId ?? null;
     } catch (err) {
       // Symmetric with listMessageIds: transient failures degrade
@@ -360,20 +395,14 @@ export class GmailConnector implements SignalConnector {
   }
 
   private async persistCursor(historyId: string): Promise<void> {
-    this.historyId = historyId;
+    if (this.cursorStore) {
+      await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);
+    }
+    // Advance process-local state only after the durable write succeeds.
     // Any staged advance is superseded by this one; keep it from being
     // re-applied (possibly rewinding the cursor) by a later commit.
+    this.historyId = historyId;
     this.pendingHistoryId = null;
-    if (this.cursorStore) {
-      try {
-        await this.cursorStore.save(this.userId, 'gmail', HISTORY_ID_KIND, historyId);
-      } catch (err) {
-        console.warn(
-          `[gmail] Failed to persist history cursor for ${this.userId}:`,
-          err instanceof Error ? err.message : String(err),
-        );
-      }
-    }
   }
 
   /**
@@ -381,15 +410,30 @@ export class GmailConnector implements SignalConnector {
    * transient codes. 404 is *not* retried — the caller decides what 404
    * means (history.list uses it for "cursor expired").
    */
-  private async gmailGet(url: string, initialToken: string, label: string): Promise<Response> {
+  private async gmailGet(
+    url: string,
+    initialToken: string,
+    label: string,
+    signal?: AbortSignal,
+  ): Promise<Response> {
     let accessToken = initialToken;
     return withRetry(async () => {
-      const response = await fetch(url, {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
+      signal?.throwIfAborted();
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          signal,
+        });
+      } catch (error) {
+        signal?.throwIfAborted();
+        throw error;
+      }
+      signal?.throwIfAborted();
       if (response.ok) return response;
       if (response.status === 401) {
-        accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'google')).accessToken;
+        accessToken = (await this.tokenStore.refreshIfExpired(this.userId, 'google', signal)).accessToken;
+        signal?.throwIfAborted();
         throw new RetryableHttpError(401, `Gmail ${label}: token expired`, null);
       }
       if ([429, 500, 502, 503].includes(response.status)) {
@@ -407,6 +451,7 @@ export class GmailConnector implements SignalConnector {
   private async fetchMessageDetail(
     messageId: string,
     accessToken: string,
+    signal?: AbortSignal,
   ): Promise<GmailMessage | null> {
     // #251 Layer 1: classifier reads To/Cc (recipient count → broadcast vs.
     // personal), In-Reply-To (originated vs. reply for SENT mail), and
@@ -414,16 +459,20 @@ export class GmailConnector implements SignalConnector {
     // Adding these to metadataHeaders is cheap — Gmail returns one extra
     // header value per requested name and we only fetch when present.
     const url = `${GMAIL_API}/users/me/messages/${messageId}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date&metadataHeaders=List-Id&metadataHeaders=To&metadataHeaders=Cc&metadataHeaders=In-Reply-To&metadataHeaders=List-Unsubscribe`;
+    let response: Response;
     try {
-      const response = await this.gmailGet(url, accessToken, 'detail');
-      return response.json() as Promise<GmailMessage>;
+      response = await this.gmailGet(url, accessToken, 'detail', signal);
     } catch (error) {
+      signal?.throwIfAborted();
       console.warn(
         `[gmail] Error fetching message ${messageId}:`,
         error instanceof Error ? error.message : String(error),
       );
       return null;
     }
+    const message = await response.json() as GmailMessage;
+    signal?.throwIfAborted();
+    return message;
   }
 
   private messageToSignal(message: GmailMessage): RawSignal {
@@ -580,4 +629,3 @@ export function parseListId(raw: string): string {
   // Some senders ship the bare identifier with no angle brackets.
   return raw.trim().toLowerCase();
 }
-
