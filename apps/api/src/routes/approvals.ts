@@ -7,6 +7,8 @@ import {
   approvalRepository,
   decisionRepository,
   decisionRepositoryAdapter,
+  executionAdmissionRepository,
+  executionRepository,
   feedbackRepository,
   mempalaceRepository,
   memoryActionOpportunityRepository,
@@ -15,7 +17,6 @@ import {
   TwinRepositoryAdapter,
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
-  withTransaction,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
@@ -45,6 +46,21 @@ import {
 } from '../email-attribution.js';
 
 const log = createLogger('api:approvals');
+
+async function bestEffortApprovalLedger(
+  label: string,
+  write: () => Promise<unknown>,
+  context: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    log.error(`Failed to ${label}; durable admission remains non-replayable`, {
+      ...context,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 function parseCostZeroIntent(value: unknown): CandidateAction['costZeroIntent'] {
   if (value === undefined) return undefined;
@@ -186,7 +202,7 @@ function approvalMemoryCopy(input: {
   return {
     summary:
       `User approved this memory action, but execution failed: ${input.error ?? 'adapter or persistence failure'}.`,
-    nextStep: 'Fix adapter health or credentials; the memory action loop can retry after the cooldown.',
+    nextStep: 'Reconcile this admitted failure before creating a new opportunity.',
   };
 }
 
@@ -681,149 +697,158 @@ export function createApprovalsRouter(): Router {
         // returned for the null case before any state mutation.
         const riskAssessment = preflightRiskAssessment!;
 
+        let admissionAttempted = false;
+        let observedTerminal = false;
         try {
           const executionRouter = await getRouter();
-          // Approved-execution path: a human moved this through the approval
-          // flow (and, for dual-confirmation actions, clicked twice — the
-          // confirm-token check above enforces the count). Pass
-          // `{ approved: true }` so the router's injection-guard backstop
-          // lets the action through; the human already supplied the
-          // confirmation the guard demanded.
-          const result = await executionRouter.executeWithRouting(
-            candidateAction,
-            riskAssessment,
-            body.userId,
-            { approved: true },
-          );
-          if (result.status !== 'completed' && result.status !== 'failed') {
-            throw new AmbiguousExecutionError(
-              `Approved execution returned non-terminal status ${result.status}`,
-            );
-          }
-
-          // Persist execution plan + result atomically
-          const savedPlan = await withTransaction(async (client) => {
-            const planResult = await client.query(
-              `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
-               VALUES (gen_random_uuid(), $1, NULL, $2, $3, now())
-               RETURNING *`,
-              [
-                approval.decision_id,
-                result.status === 'completed' ? 'completed' : 'failed',
-                JSON.stringify(result.output?.['stepsCompleted']
-                  ? [{ type: candidateAction.actionType, status: result.status }]
-                  : []),
-              ],
-            );
-            const plan = planResult.rows[0];
-            if (!plan) throw new Error('Failed to persist execution plan');
-
-            await client.query(
-              `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
-               VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, now())`,
-              [
-                plan.id,
-                result.status === 'completed',
-                JSON.stringify(result.output ?? {}),
-                result.error ?? null,
-                candidateAction.reversible,
-              ],
-            );
-
-            // #324: link the decision's outcome to the plan we just
-            // created. Same-transaction guarantee: either both the
-            // plan + linkage land, or neither do. "Latest plan wins"
-            // — overwrite the outcome's FK on every new plan to
-            // match the migration 055 backfill (which picks the
-            // latest plan per decision) and the
-            // `executionRepository.getByDecisionId` read semantics
-            // (`ORDER BY created_at DESC LIMIT 1`).
-            //
-            // NOTE: this UPDATE duplicates the one in
-            // `executionRepository.createPlan`. Any new write site for
-            // execution_plans MUST either call `createPlan` (which
-            // does the UPDATE internally) or repeat this block with
-            // the same `WHERE decision_id = $2` predicate. Future
-            // refactor: route both approvals.ts inserts through
-            // `createPlan` to eliminate the duplication.
-            await client.query(
-              `UPDATE decision_outcomes
-                 SET execution_plan_id = $1
-               WHERE decision_id = $2`,
-              [plan.id, approval.decision_id],
-            );
-
-            return plan;
-          });
-
-          executionResult = {
-            status: result.status,
-            planId: savedPlan.id,
-            adapterUsed: result.output?.['adapter_used'] ?? 'unknown',
-          };
-
-          // Record post-execution spend tagged with the action's
-          // registry source (#323 AC#3). Only on success — a failed
-          // approved execution shouldn't charge the per-app budget.
-          // Best-effort: the helper swallows its own errors so a ledger
-          // write can't break the approval response. The spend cap was
-          // re-checked by the policy evaluation above before execution.
-          if (result.status === 'completed') {
-            await recordMcpActionSpend({
+          executionAttempt: {
+            admissionAttempted = true;
+            const admission = await executionAdmissionRepository.admitApprovalExecution({
               userId: body.userId,
+              approvalId: approval.id,
               decisionId: approval.decision_id,
-              action: candidateAction,
+              actionId: candidateAction.id,
+              steps: [{ type: candidateAction.actionType, status: 'pending' }],
+              memoryOpportunityId: memoryOpportunityIdFromAction(storedAction) ?? undefined,
             });
+            if (!admission.created) {
+              const recordedStatus = admission.barrier.status;
+              executionResult = {
+                status: recordedStatus === 'completed' || recordedStatus === 'failed'
+                  ? recordedStatus
+                  : 'ambiguous',
+                planId: admission.plan.id,
+                adapterUsed: admission.barrier.observed_result['adapterUsed'],
+                ...(recordedStatus === 'failed'
+                  ? { error: 'Execution failed' }
+                  : recordedStatus === 'completed'
+                    ? {}
+                    : { error: 'Execution outcome requires reconciliation' }),
+              };
+              log.warn('Duplicate approved execution was suppressed by durable admission', {
+                requestId,
+                executionPlanId: admission.plan.id,
+                admissionStatus: recordedStatus,
+              });
+              break executionAttempt;
+            }
+
+            let result: Awaited<ReturnType<typeof executionRouter.executeWithRouting>>;
+            try {
+              // Approved-execution path: a human moved this through the approval
+              // flow (and, for dual-confirmation actions, clicked twice — the
+              // confirm-token check above enforces the count). Pass
+              // `{ approved: true }` so the router's injection-guard backstop
+              // lets the action through; the human already supplied the
+              // confirmation the guard demanded.
+              result = await executionRouter.executeWithRouting(
+                candidateAction,
+                riskAssessment,
+                body.userId,
+                { approved: true },
+              );
+              if (result.status !== 'completed' && result.status !== 'failed') {
+                throw new AmbiguousExecutionError(
+                  `Approved execution returned non-terminal status ${result.status}`,
+                );
+              }
+            } catch (dispatchError) {
+              const errMsg = dispatchError instanceof Error
+                ? dispatchError.message
+                : String(dispatchError);
+              await bestEffortApprovalLedger('record ambiguous approved execution admission', () =>
+                executionAdmissionRepository.observeTerminal({
+                  id: admission.barrier.id,
+                  userId: body.userId,
+                  status: 'ambiguous',
+                  result: { planId: admission.plan.id, error: errMsg },
+                }), { requestId, executionPlanId: admission.plan.id });
+              executionResult = {
+                status: 'ambiguous',
+                planId: admission.plan.id,
+                error: 'Execution outcome requires reconciliation',
+              };
+              break executionAttempt;
+            }
+
+            const terminalStatus: 'completed' | 'failed' = result.status;
+            const adapterUsed = result.output?.['adapter_used'] ?? 'unknown';
+            // Preserve the explicit adapter result before any persistence whose
+            // commit response can be lost. No later catch may rewrite it.
+            executionResult = {
+              status: terminalStatus,
+              planId: admission.plan.id,
+              adapterUsed,
+              ...(result.status === 'failed' ? { error: result.error ?? 'Execution failed' } : {}),
+            };
+            observedTerminal = true;
+            await bestEffortApprovalLedger('record terminal approved execution admission', () =>
+              executionAdmissionRepository.observeTerminal({
+                id: admission.barrier.id,
+                userId: body.userId,
+                status: terminalStatus,
+                result: {
+                  planId: admission.plan.id,
+                  adapterPlanId: result.planId,
+                  adapterUsed,
+                  status: terminalStatus,
+                  output: result.output ?? {},
+                  error: result.error ?? null,
+                },
+              }), { requestId, executionPlanId: admission.plan.id });
+            await bestEffortApprovalLedger('finalize admitted approved execution plan', () =>
+              executionRepository.finalizeAdmittedPlan({
+                userId: body.userId,
+                decisionId: approval.decision_id,
+                actionId: candidateAction.id,
+                planId: admission.plan.id,
+                status: terminalStatus,
+                success: terminalStatus === 'completed',
+                outputs: { ...(result.output ?? {}), adapter_plan_id: result.planId },
+                error: result.error,
+                rollbackAvailable: candidateAction.reversible,
+              }), { requestId, executionPlanId: admission.plan.id });
+
+            // Record post-execution spend tagged with the action's
+            // registry source (#323 AC#3). Only on success — a failed
+            // approved execution shouldn't charge the per-app budget.
+            // Best-effort: the helper swallows its own errors so a ledger
+            // write can't break the approval response. The spend cap was
+            // re-checked by the policy evaluation above before execution.
+            if (result.status === 'completed') {
+              await recordMcpActionSpend({
+                userId: body.userId,
+                decisionId: approval.decision_id,
+                action: candidateAction,
+              });
+            }
           }
         } catch (execError) {
           const errMsg = execError instanceof Error ? execError.message : String(execError);
-          if (execError instanceof AmbiguousExecutionError) {
-            // The adapter may have committed before terminal truth was lost.
-            // Do not fabricate a failed plan/result: retain an explicit
-            // reconciliation state and, critically, never suggest retry.
-            log.warn(`Execution outcome is ambiguous for approval ${requestId}`, { error: errMsg });
-            executionResult = { status: 'ambiguous', error: 'Execution outcome requires reconciliation' };
+          if (observedTerminal) {
+            log.error('Known approved execution result needs secondary-ledger reconciliation', {
+              requestId,
+              error: errMsg,
+            });
+          } else if (admissionAttempted) {
+            // A lost admission commit response is indistinguishable from a
+            // durable in-progress barrier. Fail closed and never dispatch or
+            // fabricate a failed recovery plan.
+            log.warn(`Approved execution admission is ambiguous for ${requestId}`, { error: errMsg });
+            const memoryOpportunityId = memoryOpportunityIdFromAction(storedAction);
+            const recovered = await executionAdmissionRepository.findByScope(
+              body.userId,
+              memoryOpportunityId ? 'memory' : 'approval',
+              memoryOpportunityId ?? approval.id,
+            ).catch(() => null);
+            executionResult = {
+              status: 'ambiguous',
+              planId: recovered?.plan.id,
+              error: 'Execution outcome requires reconciliation',
+            };
           } else {
-            // A proven terminal/pre-effect failure may be recorded as failed.
             log.error(`Execution failed for approval ${requestId}`, { error: errMsg, stack: execError instanceof Error ? execError.stack : undefined });
-
-            try {
-              const failedPlan = await withTransaction(async (client) => {
-                const planResult = await client.query(
-                  `INSERT INTO execution_plans (id, decision_id, action_id, status, steps, created_at)
-                   VALUES (gen_random_uuid(), $1, NULL, 'failed', $2, now())
-                   RETURNING *`,
-                  [approval.decision_id, JSON.stringify([{ type: candidateAction.actionType, status: 'error' }])],
-                );
-                const plan = planResult.rows[0];
-                if (!plan) throw new Error('Failed to persist failed execution plan');
-                await client.query(
-                  `INSERT INTO execution_results (id, plan_id, success, outputs, error, rollback_available, completed_at)
-                   VALUES (gen_random_uuid(), $1, false, '{}', $2, $3, now())`,
-                  [plan.id, errMsg, candidateAction.reversible],
-                );
-                // #324: link even failed plans so the outcome's
-                // `execution_plan_id` is populated. The rollback site
-                // still reads `success` from `execution_results` before
-                // attempting rollback, so a failed plan link doesn't
-                // accidentally trigger rollback of nothing. "Latest
-                // plan wins" — overwrite to match backfill + read
-                // semantics; same duplication note as the success path
-                // applies.
-                await client.query(
-                  `UPDATE decision_outcomes
-                     SET execution_plan_id = $1
-                   WHERE decision_id = $2`,
-                  [plan.id, approval.decision_id],
-                );
-                return plan;
-              });
-
-              executionResult = { status: 'failed', planId: failedPlan.id, error: 'Execution failed' };
-            } catch (persistError) {
-              log.error('Failed to persist execution failure record', { error: persistError instanceof Error ? persistError.message : String(persistError), stack: persistError instanceof Error ? persistError.stack : undefined });
-              executionResult = { status: 'failed', error: 'Execution failed' };
-            }
+            executionResult = { status: 'failed', error: 'Execution failed before admission' };
           }
         } finally {
           // Always strip sensitive credentials, even on error paths

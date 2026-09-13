@@ -180,6 +180,7 @@ describe('memoryActionOpportunityRepository', () => {
     expect(retryable).toContain('suggested');
     expect(retryable).not.toContain('noted_awareness');
     expect(retryable).not.toContain('auto_executed');
+    expect(retryable).not.toContain('execution_failed');
   });
 
   it('round-trips the terminal noted_awareness status (parseStatus does not coerce it to suggested)', async () => {

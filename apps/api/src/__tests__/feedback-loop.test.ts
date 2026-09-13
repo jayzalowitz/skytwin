@@ -28,6 +28,8 @@ const {
   fakeUserRepo,
   fakeOauthRepo,
   fakeExecutionRouter,
+  fakeExecutionAdmissionRepo,
+  fakeExecutionRepo,
   fakeWithTransaction,
 } = vi.hoisted(() => ({
   fakeApprovalRepo: {
@@ -60,6 +62,14 @@ const {
     executeWithRoutingStreaming: vi.fn(async function* () {}),
     executeWithRouting: vi.fn(),
   },
+  fakeExecutionAdmissionRepo: {
+    admitApprovalExecution: vi.fn(),
+    findByScope: vi.fn(),
+    observeTerminal: vi.fn(),
+  },
+  fakeExecutionRepo: {
+    finalizeAdmittedPlan: vi.fn(),
+  },
   fakeWithTransaction: vi.fn(),
 }));
 
@@ -90,6 +100,8 @@ vi.mock('@skytwin/db', () => ({
   feedbackRepository: fakeFeedbackRepo,
   mempalaceRepository: fakeMempalaceRepo,
   memoryActionOpportunityRepository: fakeMemoryActionOpportunityRepo,
+  executionAdmissionRepository: fakeExecutionAdmissionRepo,
+  executionRepository: fakeExecutionRepo,
   oauthRepository: fakeOauthRepo,
   userRepository: fakeUserRepo,
   TwinRepositoryAdapter: vi.fn(function TwinRepositoryAdapter() {
@@ -240,6 +252,18 @@ beforeEach(() => {
     error: 'no execution in test',
     output: {},
   });
+  fakeExecutionAdmissionRepo.admitApprovalExecution.mockResolvedValue({
+    created: true,
+    barrier: {
+      id: '55555555-5555-4555-8555-555555555555',
+      status: 'in_progress',
+      observed_result: {},
+    },
+    plan: { id: '44444444-4444-4444-8444-444444444444' },
+  });
+  fakeExecutionAdmissionRepo.observeTerminal.mockResolvedValue({});
+  fakeExecutionAdmissionRepo.findByScope.mockResolvedValue(null);
+  fakeExecutionRepo.finalizeAdmittedPlan.mockResolvedValue({});
   fakeWithTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
     fn({ query: vi.fn() }),
   );
@@ -464,7 +488,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
         status: 'execution_failed',
         decisionId: 'dec-1',
         approvalRequestId: 'app-1',
-        nextStep: expect.stringContaining('retry'),
+        nextStep: expect.stringContaining('Reconcile'),
       }),
     );
     expect(markInput).not.toHaveProperty('routeReason');
@@ -506,13 +530,97 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(res.body).toMatchObject({
       execution: { status: 'ambiguous', error: 'Execution outcome requires reconciliation' },
     });
-    expect(fakeWithTransaction).not.toHaveBeenCalled();
+    expect(fakeExecutionRepo.finalizeAdmittedPlan).not.toHaveBeenCalled();
     expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         status: 'execution_ambiguous',
         nextStep: expect.stringContaining('Reconcile'),
       }),
     );
+  });
+
+  it('preserves a completed result and admitted plan when terminal writes lose their responses', async () => {
+    fakeExecutionRouter.executeWithRouting.mockResolvedValueOnce({
+      planId: 'adapter-plan-completed', status: 'completed', startedAt: new Date(),
+      completedAt: new Date(), output: { adapter_used: 'direct' },
+    });
+    fakeExecutionAdmissionRepo.observeTerminal.mockRejectedValueOnce(
+      new Error('terminal barrier commit response lost'),
+    );
+    fakeExecutionRepo.finalizeAdmittedPlan.mockRejectedValueOnce(
+      new Error('execution ledger commit response lost'),
+    );
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: {
+        status: 'completed',
+        planId: '44444444-4444-4444-8444-444444444444',
+        adapterUsed: 'direct',
+      },
+    });
+    expect(fakeExecutionAdmissionRepo.admitApprovalExecution).toHaveBeenCalledOnce();
+    expect(fakeExecutionRepo.finalizeAdmittedPlan).toHaveBeenCalledOnce();
+    expect(fakeExecutionRouter.executeWithRouting).toHaveBeenCalledOnce();
+  });
+
+  it('preserves an explicit failed result when terminal persistence is unavailable', async () => {
+    fakeExecutionRouter.executeWithRouting.mockResolvedValueOnce({
+      planId: 'adapter-plan-failed', status: 'failed', startedAt: new Date(),
+      completedAt: new Date(), output: { adapter_used: 'direct' }, error: 'remote rejected',
+    });
+    fakeExecutionAdmissionRepo.observeTerminal.mockRejectedValueOnce(
+      new Error('terminal store unavailable'),
+    );
+    fakeExecutionRepo.finalizeAdmittedPlan.mockRejectedValueOnce(
+      new Error('result store unavailable'),
+    );
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: {
+        status: 'failed',
+        planId: '44444444-4444-4444-8444-444444444444',
+        error: 'remote rejected',
+      },
+    });
+    expect(fakeExecutionAdmissionRepo.observeTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'failed' }),
+    );
+  });
+
+  it('does not dispatch when approval admission may have committed before response loss', async () => {
+    fakeExecutionAdmissionRepo.admitApprovalExecution.mockRejectedValueOnce(
+      new Error('admission commit response lost'),
+    );
+    fakeExecutionAdmissionRepo.findByScope.mockResolvedValueOnce({
+      created: false,
+      barrier: { status: 'in_progress' },
+      plan: { id: '44444444-4444-4444-8444-444444444444' },
+    });
+
+    const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve', userId: USER_ID,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      execution: {
+        status: 'ambiguous',
+        planId: '44444444-4444-4444-8444-444444444444',
+        error: 'Execution outcome requires reconciliation',
+      },
+    });
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+    expect(fakeExecutionRepo.finalizeAdmittedPlan).not.toHaveBeenCalled();
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

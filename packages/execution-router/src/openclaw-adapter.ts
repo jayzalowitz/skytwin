@@ -154,8 +154,12 @@ export class OpenClawAdapter implements IronClawAdapter {
         const result = await response.json() as Record<string, unknown>;
         const explicitStatus = result['status'];
         const explicitSuccess = result['success'];
+        const explicitError = result['error'];
         if (explicitSuccess !== undefined && typeof explicitSuccess !== 'boolean') {
           throw new Error('OpenClaw success field is not boolean');
+        }
+        if (explicitError !== undefined && explicitError !== null && typeof explicitError !== 'string') {
+          throw new Error('OpenClaw error field is not a string');
         }
         if (explicitStatus !== undefined && explicitStatus !== 'completed' &&
             explicitStatus !== 'failed' && explicitStatus !== 'pending' &&
@@ -170,7 +174,7 @@ export class OpenClawAdapter implements IronClawAdapter {
           throw new Error('OpenClaw response contained conflicting terminal fields');
         }
         if ((explicitStatus === 'completed' || explicitSuccess === true) &&
-            typeof result['error'] === 'string' && result['error'].length > 0) {
+            typeof explicitError === 'string' && explicitError.length > 0) {
           throw new Error('OpenClaw success response also contained an error');
         }
 

@@ -33,6 +33,14 @@ const {
     getEnabledPolicies: vi.fn(async () => []),
     createPlan: vi.fn(),
     createResult: vi.fn(),
+    finalizeAdmittedPlan: vi.fn(async () => ({})),
+    admitMemoryExecution: vi.fn(async () => ({
+      created: true,
+      barrier: { id: 'barrier-1', status: 'in_progress' },
+      plan: { id: 'plan-1' },
+    })),
+    findByScope: vi.fn(async () => null),
+    observeTerminal: vi.fn(async () => ({})),
   };
   return {
     mockApprovalRepository: { create: vi.fn(async () => ({ row: { id: 'approval-1' } })) },
@@ -67,6 +75,7 @@ vi.mock('@skytwin/db', () => ({
   decisionRepository: mockDecisionRepository,
   decisionRepositoryAdapter: mockDecisionRepositoryAdapter,
   executionRepository: noop,
+  executionAdmissionRepository: noop,
   explanationRepository: mockExplanationRepository,
   memoryActionOpportunityRepository: mockMemoryActionOpportunityRepository,
   policyRepositoryAdapter: noop,

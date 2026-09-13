@@ -1,6 +1,17 @@
 import { query, withTransaction } from '../connection.js';
 import type { ExecutionEventRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
 
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
 /**
  * Input for creating an execution plan.
  */
@@ -20,6 +31,13 @@ export interface CreateExecutionResultInput {
   outputs?: Record<string, unknown>;
   error?: string;
   rollbackAvailable?: boolean;
+}
+
+export interface FinalizeAdmittedExecutionInput extends CreateExecutionResultInput {
+  userId: string;
+  decisionId: string;
+  actionId: string;
+  status: 'completed' | 'failed';
 }
 
 export interface CreateExecutionEventInput {
@@ -158,6 +176,76 @@ export const executionRepository = {
       ],
     );
     return result.rows[0]!;
+  },
+
+  /**
+   * Materialize the secondary execution ledger for a plan that was durably
+   * admitted before dispatch. This operation is idempotent for the exact same
+   * terminal result, which lets callers reconcile a lost commit response
+   * without inventing a second plan or changing terminal truth.
+   */
+  async finalizeAdmittedPlan(input: FinalizeAdmittedExecutionInput): Promise<ExecutionPlanRow> {
+    return withTransaction(async (client) => {
+      const outputs = JSON.parse(JSON.stringify(input.outputs ?? {})) as Record<string, unknown>;
+      const locked = await client.query<ExecutionPlanRow>(
+        `SELECT ep.* FROM execution_plans ep
+         JOIN decisions d ON d.id = ep.decision_id AND d.user_id = $1
+         JOIN execution_admission_barriers b
+           ON b.execution_plan_id = ep.id AND b.user_id = d.user_id
+          AND b.decision_id = ep.decision_id AND b.action_id = ep.action_id
+         WHERE ep.id = $2 AND ep.decision_id = $3 AND ep.action_id = $4
+           AND b.status IN ('in_progress', $5)
+         FOR UPDATE OF ep, d, b`,
+        [input.userId, input.planId, input.decisionId, input.actionId, input.status],
+      );
+      const plan = locked.rows[0];
+      if (!plan || (plan.status !== 'running' && plan.status !== input.status)) {
+        throw new Error('Admitted execution plan authority is unavailable.');
+      }
+
+      await client.query(
+        `INSERT INTO execution_results
+           (plan_id, success, outputs, error, rollback_available, completed_at)
+         VALUES ($1, $2, $3::JSONB, $4, $5, now())
+         ON CONFLICT (plan_id) DO NOTHING`,
+        [input.planId, input.success, JSON.stringify(outputs),
+          input.error ?? null, input.rollbackAvailable ?? false],
+      );
+      const persistedResult = await client.query<ExecutionResultRow>(
+        `SELECT * FROM execution_results WHERE plan_id = $1`,
+        [input.planId],
+      );
+      const result = persistedResult.rows[0];
+      if (!result || result.success !== input.success ||
+          canonicalJson(result.outputs) !== canonicalJson(outputs) ||
+          (result.error ?? null) !== (input.error ?? null) ||
+          result.rollback_available !== (input.rollbackAvailable ?? false)) {
+        throw new Error('Admitted execution result conflicts with persisted terminal truth.');
+      }
+
+      const terminal = await client.query<ExecutionPlanRow>(
+        `UPDATE execution_plans ep
+         SET status = $2, updated_at = now()
+         WHERE ep.id = $1 AND ep.status IN ('running', $2)
+           AND EXISTS (
+             SELECT 1 FROM execution_results er
+             WHERE er.plan_id = ep.id AND er.success = ($2 = 'completed')
+           )
+         RETURNING ep.*`,
+        [input.planId, input.status],
+      );
+      if (!terminal.rows[0]) throw new Error('Admitted execution plan could not be terminalized.');
+      await client.query(
+        `UPDATE decision_outcomes o
+         SET execution_plan_id = $1
+         WHERE o.decision_id = $2 AND o.selected_action_id = $3
+           AND EXISTS (
+             SELECT 1 FROM decisions d WHERE d.id = o.decision_id AND d.user_id = $4
+           )`,
+        [input.planId, input.decisionId, input.actionId, input.userId],
+      );
+      return terminal.rows[0];
+    });
   },
 
   /**

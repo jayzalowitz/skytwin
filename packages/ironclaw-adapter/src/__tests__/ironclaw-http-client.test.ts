@@ -262,6 +262,17 @@ describe('IronClawHttpClient', () => {
       expect(result.error).toBe('Permission denied');
     });
 
+    it('rejects malformed error fields instead of treating them as terminal truth', () => {
+      const client = makeClient();
+      for (const status of ['completed', 'failed'] as const) {
+        expect(() => client.parseExecutionResult('plan_1', {
+          content: 'untrusted prose',
+          attachments: [],
+          metadata: { status, error: { message: 'malformed' } },
+        }, new Date())).toThrow('error field is not a string');
+      }
+    });
+
     it('rejects free-text execution responses without explicit terminal status', () => {
       const client = makeClient();
 

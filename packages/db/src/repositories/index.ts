@@ -51,6 +51,7 @@ export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
   CreateExecutionEventInput,
+  FinalizeAdmittedExecutionInput,
   ExecutionPlanWithResult,
   RollbackTarget,
 } from './execution-repository.js';
@@ -146,6 +147,17 @@ export type {
   MarkMemoryActionOpportunityInput,
   UpsertMemoryActionOpportunityInput,
 } from './memory-action-opportunity-repository.js';
+
+export { executionAdmissionRepository } from './execution-admission-repository.js';
+export type {
+  AdmitApprovalExecutionInput,
+  AdmitMemoryExecutionInput,
+  ExecutionAdmission,
+  ExecutionAdmissionRow,
+  ExecutionAdmissionScope,
+  ExecutionAdmissionStatus,
+  ObserveExecutionInput,
+} from './execution-admission-repository.js';
 
 export { mcpServerRepository } from './mcp-server-repository.js';
 export type { McpServerRow } from './mcp-server-repository.js';

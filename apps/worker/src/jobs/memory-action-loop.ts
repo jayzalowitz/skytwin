@@ -34,6 +34,7 @@ import {
   credentialRequirementRepository,
   decisionRepository,
   decisionRepositoryAdapter,
+  executionAdmissionRepository,
   executionRepository,
   explanationRepository,
   memoryActionOpportunityRepository,
@@ -354,36 +355,126 @@ async function executeAllowedOpportunity(
   policyDecision: PolicyDecision,
 ): Promise<MemoryActionLoopReport> {
   const getRouter = deps.getExecutionRouter ?? getWorkerExecutionRouter;
+  let routing: Awaited<ReturnType<Awaited<ReturnType<typeof getRouter>>['route']>>;
+  let admissionAttempted = false;
   try {
     const router = await getRouter();
-    const routing = await router.route(candidate, riskAssessment, userId);
-    const result = await router.executeWithRouting(candidate, riskAssessment, userId);
-    if (result.status !== 'completed' && result.status !== 'failed') {
-      throw new AmbiguousExecutionError(
-        `Memory action execution returned non-terminal status ${result.status}`,
-      );
-    }
-    const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
-    await recordOutcomeAndExplanation(candidate, riskAssessment, {
-      autoExecuted: result.status === 'completed',
-      requiresApproval: false,
-      reason: result.status === 'completed'
-        ? `Auto-executed after policy passed. ${policyDecision.reason}`
-        : `Execution did not complete. ${result.error ?? 'Unknown adapter failure.'}`,
-    });
-    const plan = await executionRepository.createPlan({
+    routing = await router.route(candidate, riskAssessment, userId);
+    const admittedReport = buildReport(
+      opportunity,
+      'execution_ambiguous',
+      'Execution was admitted and is awaiting a terminal adapter result.',
+      'Reconcile the admitted execution before considering another attempt.',
+      deps.now,
+      {
+        decisionId: candidate.decisionId,
+        adapterName: routing.selectedAdapter,
+        routeReason: routing.reasoning,
+      },
+    );
+    admissionAttempted = true;
+    const admission = await executionAdmissionRepository.admitMemoryExecution({
+      userId,
+      opportunityId: opportunity.id,
       decisionId: candidate.decisionId,
       actionId: candidate.id,
-      status: result.status === 'completed' ? 'completed' : 'failed',
-      steps: [{ type: candidate.actionType, status: result.status, adapterPlanId: result.planId }],
+      steps: [{ type: candidate.actionType, status: 'pending' }],
+      report: admittedReport,
     });
-    await executionRepository.createResult({
-      planId: plan.id,
-      success: result.status === 'completed',
-      outputs: { ...(result.output ?? {}), adapter_plan_id: result.planId },
-      error: result.error,
-      rollbackAvailable: candidate.reversible,
-    });
+    if (!admission.created) {
+      return reportForExistingAdmission(opportunity, admission, deps.now);
+    }
+
+    let result: Awaited<ReturnType<typeof router.executeWithRouting>>;
+    try {
+      result = await router.executeWithRouting(candidate, riskAssessment, userId);
+      if (result.status !== 'completed' && result.status !== 'failed') {
+        throw new AmbiguousExecutionError(
+          `Memory action execution returned non-terminal status ${result.status}`,
+        );
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      await bestEffortMemoryLedger('record ambiguous execution admission', () =>
+        executionAdmissionRepository.observeTerminal({
+          id: admission.barrier.id,
+          userId,
+          status: 'ambiguous',
+          result: { planId: admission.plan.id, error: message },
+        }));
+      await bestEffortMemoryLedger('record ambiguous execution explanation', () =>
+        recordOutcomeAndExplanation(candidate, riskAssessment, {
+          autoExecuted: true,
+          requiresApproval: false,
+          executionAmbiguous: true,
+          reason: `Execution outcome requires reconciliation: ${message}`,
+        }));
+      const report = buildReport(
+        opportunity,
+        'execution_ambiguous',
+        `Execution outcome is unresolved and must be reconciled: ${message}`,
+        'Reconcile the adapter result before considering another execution.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: message,
+        },
+      );
+      await bestEffortMemoryLedger('update ambiguous memory opportunity', () =>
+        memoryActionOpportunityRepository.markStatus({
+          id: opportunity.id,
+          status: 'execution_ambiguous',
+          report,
+          decisionId: candidate.decisionId,
+          executionPlanId: admission.plan.id,
+          adapterName: routing.selectedAdapter,
+          routeReason: message,
+          nextStep: report.nextStep,
+        }));
+      return report;
+    }
+
+    const terminalStatus: 'completed' | 'failed' = result.status;
+    const adapterName = adapterUsedFromResult(result.output) ?? routing.selectedAdapter;
+    const observed = {
+      planId: admission.plan.id,
+      adapterPlanId: result.planId,
+      adapterName,
+      status: terminalStatus,
+      output: result.output ?? {},
+      error: result.error ?? null,
+    };
+    // This is the primary terminal observation. Every write below it is a
+    // repairable projection and must never change this known adapter result.
+    await bestEffortMemoryLedger('record terminal execution admission', () =>
+      executionAdmissionRepository.observeTerminal({
+        id: admission.barrier.id,
+        userId,
+        status: terminalStatus,
+        result: observed,
+      }));
+    await bestEffortMemoryLedger('record terminal execution explanation', () =>
+      recordOutcomeAndExplanation(candidate, riskAssessment, {
+        autoExecuted: result.status === 'completed',
+        requiresApproval: false,
+        reason: result.status === 'completed'
+          ? `Auto-executed after policy passed. ${policyDecision.reason}`
+          : `Execution did not complete. ${result.error ?? 'Unknown adapter failure.'}`,
+      }));
+    await bestEffortMemoryLedger('finalize admitted execution plan', () =>
+      executionRepository.finalizeAdmittedPlan({
+        userId,
+        decisionId: candidate.decisionId,
+        actionId: candidate.id,
+        planId: admission.plan.id,
+        status: terminalStatus,
+        success: terminalStatus === 'completed',
+        outputs: { ...(result.output ?? {}), adapter_plan_id: result.planId },
+        error: result.error,
+        rollbackAvailable: candidate.reversible,
+      }));
 
     const status: MemoryActionOpportunityStatus =
       result.status === 'completed' ? 'auto_executed' : 'execution_failed';
@@ -395,27 +486,57 @@ async function executeAllowedOpportunity(
         : `SkyTwin tried ${adapterName}, but execution failed: ${result.error ?? 'unknown error'}.`,
       result.status === 'completed'
         ? 'Monitor feedback and keep the memory pattern available for future opportunities.'
-        : 'Retry after adapter health or credentials are fixed.',
+        : 'Reconcile this admitted failure before creating a new opportunity.',
       deps.now,
       {
         decisionId: candidate.decisionId,
-        executionPlanId: plan.id,
+        executionPlanId: admission.plan.id,
         adapterName,
         routeReason: routing.reasoning,
       },
     );
-    await memoryActionOpportunityRepository.markStatus({
-      id: opportunity.id,
-      status,
-      report,
-      decisionId: candidate.decisionId,
-      executionPlanId: plan.id,
-      adapterName,
-      routeReason: routing.reasoning,
-      nextStep: report.nextStep,
-    });
+    await bestEffortMemoryLedger('update terminal memory opportunity', () =>
+      memoryActionOpportunityRepository.markStatus({
+        id: opportunity.id,
+        status,
+        report,
+        decisionId: candidate.decisionId,
+        executionPlanId: admission.plan.id,
+        adapterName,
+        routeReason: routing.reasoning,
+        nextStep: report.nextStep,
+      }));
     return report;
   } catch (err) {
+    if (admissionAttempted) {
+      const message = err instanceof Error ? err.message : String(err);
+      const recovered = await executionAdmissionRepository
+        .findByScope(userId, 'memory', opportunity.id)
+        .catch(() => null);
+      const report = buildReport(
+        opportunity,
+        'execution_ambiguous',
+        `Execution admission could not be confirmed: ${message}`,
+        'Reconcile durable admission state before considering another execution.',
+        deps.now,
+        {
+          decisionId: candidate.decisionId,
+          executionPlanId: recovered?.plan.id,
+          routeReason: message,
+        },
+      );
+      await bestEffortMemoryLedger('freeze uncertain memory admission', () =>
+        memoryActionOpportunityRepository.markStatus({
+          id: opportunity.id,
+          status: 'execution_ambiguous',
+          report,
+          decisionId: candidate.decisionId,
+          executionPlanId: recovered?.plan.id,
+          routeReason: message,
+          nextStep: report.nextStep,
+        }));
+      return report;
+    }
     const isGap = err instanceof NoAdapterError;
     const isAmbiguous = err instanceof AmbiguousExecutionError;
     await recordOutcomeAndExplanation(candidate, riskAssessment, {
@@ -465,6 +586,40 @@ async function executeAllowedOpportunity(
       nextStep: report.nextStep,
     });
     return report;
+  }
+}
+
+function reportForExistingAdmission(
+  opportunity: MemoryActionOpportunitySnapshot,
+  admission: Awaited<ReturnType<typeof executionAdmissionRepository.admitMemoryExecution>>,
+  now?: Date,
+): MemoryActionLoopReport {
+  const completed = admission.barrier.status === 'completed';
+  return buildReport(
+    opportunity,
+    completed ? 'auto_executed' : 'execution_ambiguous',
+    completed
+      ? 'This memory action already completed; the duplicate attempt was suppressed.'
+      : 'A prior execution admission exists; the duplicate attempt was suppressed.',
+    completed
+      ? 'No action required.'
+      : 'Reconcile the admitted execution before creating another opportunity.',
+    now,
+    {
+      decisionId: admission.barrier.decision_id,
+      executionPlanId: admission.plan.id,
+      routeReason: `Execution admission is ${admission.barrier.status}; automatic replay is disabled.`,
+    },
+  );
+}
+
+async function bestEffortMemoryLedger(label: string, write: () => Promise<unknown>): Promise<void> {
+  try {
+    await write();
+  } catch (err) {
+    log.error(`Failed to ${label}; durable admission remains non-replayable`, {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 
