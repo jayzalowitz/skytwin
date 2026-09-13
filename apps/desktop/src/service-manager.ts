@@ -1249,34 +1249,25 @@ export class ServiceManager {
         console.error(`[api] ${data.toString().trim()}`);
       });
 
-      const handleApiLoss = (reason: string): void => {
+      const handleApiExit = (reason: string): void => {
         if (this.api.process !== apiProcess) return;
         if (this.terminatingProcesses.has(apiProcess)) return;
         if (generation) this.revokeApiGeneration(generation);
         this.api.process = null;
         this.api.status = 'stopped';
         this.emitStatus();
-        if (!this.paused && this.guardServiceDatabase(startup, 'before API restart')) {
-          this.api.restartCount++;
-          this.recordFailure(this.api, 'api');
-          if ((this.api.status as ProcessState) !== 'error') {
-            const delay = this.getRestartDelay(this.api.restartCount);
-            console.log(
-              `[api] ${reason}; restarting in ${delay}ms (attempt ${this.api.restartCount})...`,
-            );
-            void this.restartDataServicesAfterApiExit(startup, delay).catch((error) => {
-              console.error('[api] Safe restart failed:', error);
-            });
-          }
-        }
+        this.scheduleApiRestart(startup, reason);
       };
       apiProcess.on('error', (error) => {
         console.error('[api] Child process error:', error);
-        handleApiLoss('child process error');
+        if (!generation) return;
+        void this.recoverFromApiProcessError(apiProcess, generation, startup).catch((cleanupError) => {
+          console.error('[api] Child process termination could not be proven:', cleanupError);
+        });
       });
       apiProcess.on('exit', (code) => {
         console.log(`[api] Process exited with code ${code}`);
-        handleApiLoss(`process exited with code ${code}`);
+        handleApiExit(`process exited with code ${code}`);
       });
 
       this.api.status = 'running';
@@ -1293,6 +1284,33 @@ export class ServiceManager {
       this.emitStatus();
       return null;
     }
+  }
+
+  private scheduleApiRestart(startup: CockroachStartResult | null, reason: string): void {
+    if (this.paused || !this.guardServiceDatabase(startup, 'before API restart')) return;
+    this.api.restartCount++;
+    this.recordFailure(this.api, 'api');
+    if ((this.api.status as ProcessState) === 'error') return;
+    const delay = this.getRestartDelay(this.api.restartCount);
+    console.log(`[api] ${reason}; restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
+    void this.restartDataServicesAfterApiExit(startup, delay).catch((error) => {
+      console.error('[api] Safe restart failed:', error);
+    });
+  }
+
+  private async recoverFromApiProcessError(
+    apiProcess: ChildProcess,
+    generation: ApiGeneration,
+    startup: CockroachStartResult | null,
+  ): Promise<void> {
+    if (this.api.process !== apiProcess || this.terminatingProcesses.has(apiProcess)) return;
+    this.revokeApiGeneration(generation);
+    this.api.status = 'error';
+    this.emitStatus();
+    // An `error` event is not proof that the OS process exited. Keep the exact
+    // handle and do not start a replacement until TERM/KILL yields exit/close.
+    await this.stopProcess(this.api, 'api');
+    this.scheduleApiRestart(startup, 'child process error');
   }
 
   private restartDataServicesAfterApiExit(
