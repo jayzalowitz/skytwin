@@ -32,7 +32,7 @@ The Pages site was the project's public face and two of its load-bearing claims 
 
 ### Added
 
-- **A fail-closed boundary for strict confidential inference.** `@skytwin/near-confidential` defines client-nonce attestation, signer/TLS-SPKI/report-data bindings, channel-scoped signature retrieval, pinned policy, immutable exact-byte verification, and typed failures needed before this can become a selectable provider. The default transport sends no prompts: Node's ordinary `fetch` path cannot prove that attestation and inference share one TLS connection, and no packaged verifier has been approved yet. See `docs/confidential-inference.md`.
+- **A fail-closed boundary for strict confidential inference.** `@skytwin/near-confidential` defines client-nonce attestation, signer/TLS-SPKI/report-data bindings, channel-scoped signature retrieval, pinned policy, bounded transport stages and payloads, immutable exact-byte verification, and typed failures needed before this can become a selectable provider. The default transport sends no prompts: Node's ordinary `fetch` path cannot prove that attestation and inference share one TLS connection, and no packaged verifier has been approved yet. See `docs/confidential-inference.md`.
 
 ### Fixed
 - **Three claims in the rewritten policy were themselves inaccurate (codex review); all corrected before merge.**

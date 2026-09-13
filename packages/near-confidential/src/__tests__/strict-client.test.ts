@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
+  CONFIDENTIAL_RESOURCE_LIMITS,
   StrictConfidentialClient,
   isEligibleDirectModel,
 } from "../strict-client.js";
@@ -114,10 +115,17 @@ describe("strict confidential client", () => {
   it("binds a client nonce, attested signer and TLS SPKI before sending", async () => {
     const { client, transport, send } = fixture();
     expect((await client.generate(new Uint8Array([1]), policy)).ok).toBe(true);
-    expect(transport.openVerifiedChannel).toHaveBeenCalledWith({
-      policy,
-      nonce,
-    });
+    expect(transport.openVerifiedChannel).toHaveBeenCalledWith(
+      {
+        policy,
+        nonce,
+      },
+      expect.objectContaining({
+        timeoutMs: 120_000,
+        limits: CONFIDENTIAL_RESOURCE_LIMITS,
+        signal: expect.any(AbortSignal),
+      }),
+    );
     expect(send).toHaveBeenCalledOnce();
   });
 
@@ -463,6 +471,184 @@ describe("strict confidential client", () => {
       ok: true,
       chatId: "chat-123",
     });
+  });
+
+  it("binds transport and channel method authority before any later await", async () => {
+    const item = fixture();
+    const originalDiscover = item.transport.discoverModels;
+    const originalOpen = item.transport.openVerifiedChannel;
+    item.transport.discoverModels = vi.fn(async () => {
+      throw new Error("replacement catalog must not run");
+    });
+    item.transport.openVerifiedChannel = vi.fn(async () => {
+      throw new Error("replacement verifier must not run");
+    });
+
+    const replacementRetrieve = vi.fn(async () => {
+      throw new Error("replacement signature lookup must not run");
+    });
+    const replacementVerify = vi.fn(async () => false);
+    const replacementClose = vi.fn(async () => undefined);
+    item.send.mockImplementation(async () => {
+      item.channel.retrieveSignature = replacementRetrieve;
+      item.channel.verifyExactResponse = replacementVerify;
+      item.channel.close = replacementClose;
+      return {
+        bytes: new TextEncoder().encode('{"answer":"private"}\n'),
+        chatId: "chat-123",
+        modelId: model.id,
+      };
+    });
+
+    expect(
+      await item.client.generate(new Uint8Array([1]), policy),
+    ).toMatchObject({ ok: true });
+    expect(originalDiscover).toHaveBeenCalledOnce();
+    expect(originalOpen).toHaveBeenCalledOnce();
+    expect(replacementRetrieve).not.toHaveBeenCalled();
+    expect(replacementVerify).not.toHaveBeenCalled();
+    expect(replacementClose).not.toHaveBeenCalled();
+    expect(item.close).toHaveBeenCalledOnce();
+  });
+
+  it("rejects model identities that cannot be represented by the signed-text grammar", async () => {
+    const item = fixture();
+    expect(
+      await item.client.generate(new Uint8Array([1]), {
+        ...policy,
+        modelId: `${model.id}:variant`,
+      }),
+    ).toMatchObject({
+      code: "invalid_policy",
+      promptTransmitted: false,
+    });
+    expect(item.transport.discoverModels).not.toHaveBeenCalled();
+    expect(item.send).not.toHaveBeenCalled();
+  });
+
+  it("enforces request, catalog, attestation, response, and signature limits", async () => {
+    const oversizedRequest = fixture();
+    expect(
+      await oversizedRequest.client.generate(
+        new Uint8Array(CONFIDENTIAL_RESOURCE_LIMITS.maxRequestBytes + 1),
+        policy,
+      ),
+    ).toMatchObject({
+      code: "resource_limit_exceeded",
+      promptTransmitted: false,
+    });
+    expect(oversizedRequest.transport.discoverModels).not.toHaveBeenCalled();
+
+    const oversizedCatalog = fixture();
+    vi.mocked(oversizedCatalog.transport.discoverModels).mockResolvedValue(
+      Array.from(
+        { length: CONFIDENTIAL_RESOURCE_LIMITS.maxCatalogModels + 1 },
+        () => model,
+      ),
+    );
+    expect(
+      await oversizedCatalog.client.generate(new Uint8Array([1]), policy),
+    ).toMatchObject({
+      code: "resource_limit_exceeded",
+      promptTransmitted: false,
+    });
+    expect(
+      oversizedCatalog.transport.openVerifiedChannel,
+    ).not.toHaveBeenCalled();
+
+    const oversizedEvidence = fixture({
+      attestation: {
+        ...fixture().channel.evidence.attestation,
+        tdxQuote: new Uint8Array(
+          CONFIDENTIAL_RESOURCE_LIMITS.maxAttestationProofBytes + 1,
+        ),
+      },
+    });
+    expect(
+      await oversizedEvidence.client.generate(new Uint8Array([1]), policy),
+    ).toMatchObject({
+      code: "resource_limit_exceeded",
+      promptTransmitted: false,
+    });
+    expect(oversizedEvidence.send).not.toHaveBeenCalled();
+
+    const oversizedResponse = fixture();
+    oversizedResponse.send.mockResolvedValue({
+      bytes: new Uint8Array(CONFIDENTIAL_RESOURCE_LIMITS.maxResponseBytes + 1),
+      chatId: "chat-123",
+      modelId: model.id,
+    });
+    expect(
+      await oversizedResponse.client.generate(new Uint8Array([1]), policy),
+    ).toMatchObject({
+      code: "resource_limit_exceeded",
+      promptTransmitted: true,
+    });
+    expect(oversizedResponse.retrieveSignature).not.toHaveBeenCalled();
+
+    const oversizedSignature = fixture();
+    oversizedSignature.retrieveSignature.mockResolvedValue({
+      ...(await oversizedSignature.retrieveSignature()),
+      signature: "s".repeat(CONFIDENTIAL_RESOURCE_LIMITS.maxSignatureChars + 1),
+    });
+    expect(
+      await oversizedSignature.client.generate(new Uint8Array([1]), policy),
+    ).toMatchObject({
+      code: "resource_limit_exceeded",
+      promptTransmitted: true,
+    });
+    expect(oversizedSignature.verifyExactResponse).not.toHaveBeenCalled();
+  });
+
+  it("bounds every asynchronous transport stage and preserves transmission truth", async () => {
+    const never = () => new Promise<never>(() => undefined);
+    const deadlineClient = (item: ReturnType<typeof fixture>) =>
+      new StrictConfidentialClient(item.transport, {
+        now: () => 1_000_000,
+        nonce: () => nonce,
+        stageTimeoutMs: 5,
+      });
+
+    const catalog = fixture();
+    vi.mocked(catalog.transport.discoverModels).mockImplementation(never);
+    expect(
+      await deadlineClient(catalog).generate(new Uint8Array([1]), policy),
+    ).toMatchObject({ code: "catalog_unavailable", promptTransmitted: false });
+    expect(
+      vi.mocked(catalog.transport.discoverModels).mock.calls[0]?.[0].signal
+        .aborted,
+    ).toBe(true);
+
+    const open = fixture();
+    vi.mocked(open.transport.openVerifiedChannel).mockImplementation(never);
+    expect(
+      await deadlineClient(open).generate(new Uint8Array([1]), policy),
+    ).toMatchObject({ code: "verifier_unavailable", promptTransmitted: false });
+
+    const send = fixture();
+    send.send.mockImplementation(never);
+    expect(
+      await deadlineClient(send).generate(new Uint8Array([1]), policy),
+    ).toMatchObject({ code: "transport_failed", promptTransmitted: true });
+    expect(send.close).toHaveBeenCalledOnce();
+
+    const signature = fixture();
+    signature.retrieveSignature.mockImplementation(never);
+    expect(
+      await deadlineClient(signature).generate(new Uint8Array([1]), policy),
+    ).toMatchObject({ code: "signature_unavailable", promptTransmitted: true });
+
+    const verification = fixture();
+    verification.verifyExactResponse.mockImplementation(never);
+    expect(
+      await deadlineClient(verification).generate(new Uint8Array([1]), policy),
+    ).toMatchObject({ code: "transport_failed", promptTransmitted: true });
+
+    const close = fixture();
+    close.close.mockImplementation(never);
+    expect(
+      await deadlineClient(close).generate(new Uint8Array([1]), policy),
+    ).toMatchObject({ code: "transport_failed", promptTransmitted: true });
   });
 
   it("snapshots request and response bytes across an adversarial channel", async () => {

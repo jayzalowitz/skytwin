@@ -1,16 +1,38 @@
 export type ConfidentialFailureCode =
-  | 'invalid_policy' | 'verifier_unavailable' | 'catalog_unavailable' | 'catalog_ambiguous'
-  | 'model_ineligible' | 'endpoint_ineligible' | 'attestation_invalid' | 'attestation_stale'
-  | 'attestation_policy_mismatch' | 'tls_binding_invalid' | 'transport_failed'
-  | 'signature_unavailable' | 'response_signature_invalid' | 'response_signer_mismatch'
-  | 'response_provenance_mismatch';
+  | "invalid_policy"
+  | "verifier_unavailable"
+  | "catalog_unavailable"
+  | "catalog_ambiguous"
+  | "model_ineligible"
+  | "endpoint_ineligible"
+  | "attestation_invalid"
+  | "attestation_stale"
+  | "attestation_policy_mismatch"
+  | "tls_binding_invalid"
+  | "transport_failed"
+  | "signature_unavailable"
+  | "response_signature_invalid"
+  | "response_signer_mismatch"
+  | "response_provenance_mismatch"
+  | "resource_limit_exceeded";
 
-export interface ConfidentialFailure { ok: false; code: ConfidentialFailureCode; message: string; promptTransmitted: boolean }
-export interface ConfidentialModel { id: string; directEndpoint: string; verifiable: boolean; attestationSupported: boolean; vllmCompatible: boolean }
-export type SignatureAlgorithm = 'ecdsa-secp256k1' | 'ed25519';
-export type SignatureProvenance = 'provider_tee' | 'gateway';
-export type SignatureScheme = 'eip191-personal-sign' | 'ed25519-raw';
-export type SignedTextFormat = 'model:request_sha256:response_sha256';
+export interface ConfidentialFailure {
+  ok: false;
+  code: ConfidentialFailureCode;
+  message: string;
+  promptTransmitted: boolean;
+}
+export interface ConfidentialModel {
+  id: string;
+  directEndpoint: string;
+  verifiable: boolean;
+  attestationSupported: boolean;
+  vllmCompatible: boolean;
+}
+export type SignatureAlgorithm = "ecdsa-secp256k1" | "ed25519";
+export type SignatureProvenance = "provider_tee" | "gateway";
+export type SignatureScheme = "eip191-personal-sign" | "ed25519-raw";
+export type SignedTextFormat = "model:request_sha256:response_sha256";
 
 export interface AttestationPolicy {
   modelId: string;
@@ -24,7 +46,7 @@ export interface AttestationPolicy {
 }
 
 export interface ReportDataBinding {
-  scheme: 'sha256(signing_identity||tls_spki_sha256)||nonce';
+  scheme: "sha256(signing_identity||tls_spki_sha256)||nonce";
   signingIdentity: string;
   tlsSpkiSha256: string;
   nonceHex: string;
@@ -59,7 +81,11 @@ export interface VerifiedChannelEvidence {
   sameConnection: true;
 }
 
-export interface ExactResponse { bytes: Uint8Array; chatId: string; modelId: string }
+export interface ExactResponse {
+  bytes: Uint8Array;
+  chatId: string;
+  modelId: string;
+}
 
 /**
  * Verifier-normalized signature record. The raw NEAR endpoint currently returns
@@ -79,22 +105,54 @@ export interface NormalizedResponseSignatureRecord {
   provenance: SignatureProvenance;
 }
 
-export interface VerifiedConfidentialResponse { ok: true; bytes: Uint8Array; chatId: string; evidence: VerifiedChannelEvidence }
-export type ConfidentialResult = VerifiedConfidentialResponse | ConfidentialFailure;
+export interface VerifiedConfidentialResponse {
+  ok: true;
+  bytes: Uint8Array;
+  chatId: string;
+  evidence: VerifiedChannelEvidence;
+}
+export type ConfidentialResult =
+  VerifiedConfidentialResponse | ConfidentialFailure;
+
+export interface ConfidentialResourceLimits {
+  maxRequestBytes: number;
+  maxResponseBytes: number;
+  maxCatalogModels: number;
+  maxApprovedMeasurements: number;
+  maxAttestationProofBytes: number;
+  maxStringChars: number;
+  maxSignatureChars: number;
+}
+
+/** Every transport stage receives the same immutable limits and a stage-local abort signal. */
+export interface ConfidentialOperationContext {
+  readonly signal: AbortSignal;
+  readonly timeoutMs: number;
+  readonly limits: Readonly<ConfidentialResourceLimits>;
+}
 
 /** Opaque connection state remains behind this channel-scoped capability. */
 export interface VerifiedChannel {
   readonly evidence: VerifiedChannelEvidence;
-  send(requestBytes: Uint8Array): Promise<ExactResponse>;
-  retrieveSignature(input: { chatId: string; modelId: string; algorithm: SignatureAlgorithm }): Promise<NormalizedResponseSignatureRecord>;
-  verifyExactResponse(input: {
-    requestBytes: Uint8Array;
-    responseBytes: Uint8Array;
-    response: ExactResponse;
-    signature: NormalizedResponseSignatureRecord;
-    /** Verifies signature over signedText, including its domain/tag when present. */
-  }): Promise<boolean>;
-  close(): Promise<void>;
+  send(
+    requestBytes: Uint8Array,
+    context: ConfidentialOperationContext,
+  ): Promise<ExactResponse>;
+  retrieveSignature(
+    input: { chatId: string; modelId: string; algorithm: SignatureAlgorithm },
+    context: ConfidentialOperationContext,
+  ): Promise<NormalizedResponseSignatureRecord>;
+  verifyExactResponse(
+    input: {
+      requestBytes: Uint8Array;
+      responseBytes: Uint8Array;
+      response: ExactResponse;
+      signature: NormalizedResponseSignatureRecord;
+      /** Verifies signature over signedText, including its domain/tag when present. */
+    },
+    context: ConfidentialOperationContext,
+  ): Promise<boolean>;
+  close(context: ConfidentialOperationContext): Promise<void>;
 }
 
 /**
@@ -103,6 +161,11 @@ export interface VerifiedChannel {
  * binding before returning a channel that reuses that exact TLS connection.
  */
 export interface ConfidentialTransport {
-  discoverModels(): Promise<readonly ConfidentialModel[]>;
-  openVerifiedChannel(input: { policy: AttestationPolicy; nonce: Uint8Array }): Promise<VerifiedChannel | ConfidentialFailure>;
+  discoverModels(
+    context: ConfidentialOperationContext,
+  ): Promise<readonly ConfidentialModel[]>;
+  openVerifiedChannel(
+    input: { policy: AttestationPolicy; nonce: Uint8Array },
+    context: ConfidentialOperationContext,
+  ): Promise<VerifiedChannel | ConfidentialFailure>;
 }

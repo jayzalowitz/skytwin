@@ -1,10 +1,17 @@
-export { StrictConfidentialClient, isEligibleDirectModel } from './strict-client.js';
-export { UnavailableConfidentialTransport } from './unavailable-transport.js';
+export {
+  CONFIDENTIAL_RESOURCE_LIMITS,
+  StrictConfidentialClient,
+  isEligibleDirectModel,
+} from "./strict-client.js";
+export type { StrictConfidentialClientOptions } from "./strict-client.js";
+export { UnavailableConfidentialTransport } from "./unavailable-transport.js";
 export type {
   AttestationPolicy,
   ConfidentialFailure,
   ConfidentialFailureCode,
   ConfidentialModel,
+  ConfidentialOperationContext,
+  ConfidentialResourceLimits,
   ConfidentialResult,
   ConfidentialTransport,
   ExactResponse,
@@ -16,4 +23,4 @@ export type {
   VerifiedChannel,
   VerifiedChannelEvidence,
   VerifiedConfidentialResponse,
-} from './types.js';
+} from "./types.js";

@@ -15,6 +15,14 @@ The contract requires all of the following before prompt bytes may be sent:
 - TLS attestation is checked on the same live connection that will carry the
   prompt.
 
+The client snapshots the transport and channel method capabilities before any
+later asynchronous boundary. Every catalog, channel-open, send, signature,
+verification, and close stage has a bounded deadline and receives an abort
+signal. Fixed catalog, string, request, response, signature, and attestation
+proof limits are also passed to the transport and independently enforced at the
+client boundary. A production transport must apply those limits while reading
+from the network, before allocating an unbounded response body.
+
 After inference, the same channel retrieves `GET /v1/signature/{chat_id}`. The
 raw endpoint currently returns `text`, `signature`, `signing_address`, and
 `signing_algo`; it does not return model/chat identity, signature scheme, signed
