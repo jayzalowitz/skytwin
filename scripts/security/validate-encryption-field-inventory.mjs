@@ -35,6 +35,8 @@ const EXPECTED_SOURCES = [
 ];
 const EXPECTED_MIGRATION_RUNNER = "packages/db/src/migrations/001-initial.ts";
 const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
+const EXPECTED_MIGRATION_RUNNER_SHA256 =
+  "38c0b78baaa27b6115a00491e22307ac5ea65989a343842911fcea3f44915f6c";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
@@ -191,7 +193,11 @@ function tableBodies(sql) {
       if (char === ")") {
         depth -= 1;
         if (depth === 0) {
-          bodies.push({ table, body: sql.slice(openIndex + 1, index) });
+          bodies.push({
+            table,
+            body: sql.slice(openIndex + 1, index),
+            endIndex: index,
+          });
           break;
         }
       }
@@ -225,8 +231,18 @@ function parseColumnName(definition) {
 export function applySchemaSql(schema, rawSql) {
   const sql = stripComments(rawSql);
   for (const statement of splitSqlStatements(sql)) {
-    const create = tableBodies(statement)[0];
-    if (create) {
+    if (
+      /^CREATE\s+(?:(?:TEMP|TEMPORARY|UNLOGGED)\s+)?TABLE\b/i.test(statement)
+    ) {
+      const creates = tableBodies(statement);
+      const create = creates[0];
+      if (
+        creates.length !== 1 ||
+        !create ||
+        statement.slice(create.endIndex + 1).trim() !== ""
+      ) {
+        throw new Error(`unsupported schema-mutating DDL: ${statement}`);
+      }
       const columns = schema.get(create.table) ?? new Set();
       for (const definition of splitTopLevel(create.body)) {
         const column = parseColumnName(definition);
@@ -236,20 +252,29 @@ export function applySchemaSql(schema, rawSql) {
       continue;
     }
 
-    const dropTable = statement.match(
-      /^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([a-zA-Z_][\w]*)/i,
-    );
-    if (dropTable) {
+    if (/^DROP\s+TABLE\b/i.test(statement)) {
+      const dropTable = statement.match(
+        /^DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?([a-zA-Z_][\w]*)(?:\s+(?:CASCADE|RESTRICT))?$/i,
+      );
+      if (!dropTable) {
+        throw new Error(`unsupported schema-mutating DDL: ${statement}`);
+      }
       schema.delete(dropTable[1]);
       continue;
     }
 
+    if (!/^ALTER\s+TABLE\b/i.test(statement)) continue;
     const alter = statement.match(
       /^ALTER\s+TABLE\s+(?:IF\s+EXISTS\s+)?([a-zA-Z_][\w]*)\s+([\s\S]+)$/i,
     );
-    if (!alter) continue;
+    if (!alter) {
+      throw new Error(`unsupported schema-mutating DDL: ${statement}`);
+    }
     const table = alter[1];
     const action = alter[2].trim();
+    if (splitTopLevel(action).length !== 1) {
+      throw new Error(`unsupported schema-mutating DDL: ${statement}`);
+    }
 
     const renameTable = action.match(/^RENAME\s+TO\s+([a-zA-Z_][\w]*)$/i);
     if (renameTable) {
@@ -263,7 +288,7 @@ export function applySchemaSql(schema, rawSql) {
 
     const columns = schema.get(table) ?? new Set();
     const addColumn = action.match(
-      /^ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([a-zA-Z_][\w]*))/i,
+      /^ADD\s+COLUMN\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"([^"]+)"|([a-zA-Z_][\w]*))\s+[\s\S]+$/i,
     );
     if (addColumn) {
       columns.add(addColumn[1] ?? addColumn[2]);
@@ -271,7 +296,7 @@ export function applySchemaSql(schema, rawSql) {
       continue;
     }
     const dropColumn = action.match(
-      /^DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?(?:"([^"]+)"|([a-zA-Z_][\w]*))/i,
+      /^DROP\s+COLUMN\s+(?:IF\s+EXISTS\s+)?(?:"([^"]+)"|([a-zA-Z_][\w]*))(?:\s+(?:CASCADE|RESTRICT))?$/i,
     );
     if (dropColumn) {
       columns.delete(dropColumn[1] ?? dropColumn[2]);
@@ -286,7 +311,22 @@ export function applySchemaSql(schema, rawSql) {
       const to = renameColumn[3] ?? renameColumn[4];
       if (columns.delete(from)) columns.add(to);
       schema.set(table, columns);
+      continue;
     }
+    if (
+      /^ALTER\s+COLUMN\s+(?:IF\s+EXISTS\s+)?(?:"[^"]+"|[a-zA-Z_][\w]*)\s+[\s\S]+$/i.test(
+        action,
+      ) ||
+      /^ADD\s+CONSTRAINT\s+(?:"[^"]+"|[a-zA-Z_][\w]*)\s+[\s\S]+$/i.test(
+        action,
+      ) ||
+      /^DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?(?:"[^"]+"|[a-zA-Z_][\w]*)(?:\s+(?:CASCADE|RESTRICT))?$/i.test(
+        action,
+      )
+    ) {
+      continue;
+    }
+    throw new Error(`unsupported schema-mutating DDL: ${statement}`);
   }
   return schema;
 }
@@ -300,6 +340,14 @@ export function applySchemaSql(schema, rawSql) {
  */
 export function migrationRunnerContractErrors(source) {
   const errors = [];
+  const runnerHash = createHash("sha256")
+    .update(source.replaceAll("\r\n", "\n"))
+    .digest("hex");
+  if (runnerHash !== EXPECTED_MIGRATION_RUNNER_SHA256) {
+    errors.push(
+      "production migration runner must match the reviewed source baseline",
+    );
+  }
   const parsed = ts.createSourceFile(
     "migration-runner.ts",
     source,
@@ -312,15 +360,16 @@ export function migrationRunnerContractErrors(source) {
   let schemaReadNode;
   let schemaQueryNode;
   let sqlFilesDeclaration;
-  const entrypoints = new Set();
+  const entrypointFunctions = new Map();
+  const validEntrypoints = new Set();
 
-  function containsApplyMigrations(
+  function countApplyMigrations(
     node,
     entrypoint,
     root = false,
     conditionallySkipped = false,
   ) {
-    if (!root && ts.isFunctionLike(node)) return false;
+    if (!root && ts.isFunctionLike(node)) return 0;
     const nextConditionallySkipped =
       conditionallySkipped ||
       ts.isIfStatement(node) ||
@@ -331,6 +380,7 @@ export function migrationRunnerContractErrors(source) {
       ts.isForInStatement(node) ||
       ts.isForOfStatement(node) ||
       ts.isWhileStatement(node);
+    let count = 0;
     if (
       !nextConditionallySkipped &&
       ts.isAwaitExpression(node) &&
@@ -351,37 +401,34 @@ export function migrationRunnerContractErrors(source) {
           node.expression.arguments[1].expression.text === "options" &&
           node.expression.arguments[1].name.text === "authorize"))
     ) {
-      return true;
+      count += 1;
     }
-    let found = false;
     ts.forEachChild(node, (child) => {
-      if (
-        !found &&
-        containsApplyMigrations(
-          child,
-          entrypoint,
-          false,
-          nextConditionallySkipped,
-        )
-      )
-        found = true;
+      count += countApplyMigrations(
+        child,
+        entrypoint,
+        false,
+        nextConditionallySkipped,
+      );
     });
-    return found;
+    return count;
   }
 
   function visitEntrypoints(node) {
     if (
       ts.isFunctionDeclaration(node) &&
       (node.name?.text === "up" || node.name?.text === "upOwned") &&
-      node.body &&
-      containsApplyMigrations(node.body, node.name.text, true)
+      node.body
     ) {
-      entrypoints.add(node.name.text);
+      entrypointFunctions.set(node.name.text, node);
+      if (countApplyMigrations(node.body, node.name.text, true) === 1) {
+        validEntrypoints.add(node.name.text);
+      }
     }
     ts.forEachChild(node, visitEntrypoints);
   }
   visitEntrypoints(parsed);
-  if (!entrypoints.has("up") || !entrypoints.has("upOwned")) {
+  if (!validEntrypoints.has("up") || !validEntrypoints.has("upOwned")) {
     errors.push(
       "production migration runner must route CLI and owned entry points through the ordered migration flow",
     );
@@ -402,6 +449,126 @@ export function migrationRunnerContractErrors(source) {
   const clientName = ts.isIdentifier(clientParameter)
     ? clientParameter.text
     : undefined;
+
+  function queryReceiver(node) {
+    if (!ts.isCallExpression(node)) return undefined;
+    if (
+      ts.isPropertyAccessExpression(node.expression) &&
+      node.expression.name.text === "query"
+    ) {
+      return node.expression.expression;
+    }
+    if (
+      ts.isElementAccessExpression(node.expression) &&
+      ts.isStringLiteral(node.expression.argumentExpression) &&
+      node.expression.argumentExpression.text === "query"
+    ) {
+      return node.expression.expression;
+    }
+    return undefined;
+  }
+
+  function collectQueryCalls(node) {
+    const calls = [];
+    function visit(candidate) {
+      if (queryReceiver(candidate)) calls.push(candidate);
+      ts.forEachChild(candidate, visit);
+    }
+    if (node) visit(node);
+    return calls;
+  }
+
+  function isBootstrapQuery(node, receiverName) {
+    const receiver = queryReceiver(node);
+    return (
+      ts.isIdentifier(receiver) &&
+      receiver.text === receiverName &&
+      node.arguments.length === 1 &&
+      ts.isStringLiteral(node.arguments[0]) &&
+      node.arguments[0].text === "CREATE DATABASE IF NOT EXISTS skytwin"
+    );
+  }
+
+  const upQueries = collectQueryCalls(entrypointFunctions.get("up")?.body);
+  const upOwnedQueries = collectQueryCalls(
+    entrypointFunctions.get("upOwned")?.body,
+  );
+  if (
+    upQueries.length !== 1 ||
+    !isBootstrapQuery(upQueries[0], "pool") ||
+    upOwnedQueries.length !== 1 ||
+    !isBootstrapQuery(upOwnedQueries[0], "admin")
+  ) {
+    errors.push(
+      "production migration runner entry points must only execute the exact database bootstrap before the shared migration flow",
+    );
+  }
+
+  if (applyMigrations?.body && clientName) {
+    let schemaQueryCalls = 0;
+    let statementQueryCalls = 0;
+    let hasUnexpectedQuery = false;
+    let hasUnexpectedClientUse = false;
+
+    function isDirectQueryReceiver(node) {
+      const access = node.parent;
+      const call = access?.parent;
+      return (
+        ((ts.isPropertyAccessExpression(access) &&
+          access.expression === node &&
+          access.name.text === "query") ||
+          (ts.isElementAccessExpression(access) &&
+            access.expression === node &&
+            ts.isStringLiteral(access.argumentExpression) &&
+            access.argumentExpression.text === "query")) &&
+        ts.isCallExpression(call) &&
+        call.expression === access
+      );
+    }
+
+    function auditQueryCalls(node) {
+      const receiver = queryReceiver(node);
+      if (receiver) {
+        if (!ts.isIdentifier(receiver) || receiver.text !== clientName) {
+          hasUnexpectedQuery = true;
+        } else if (
+          node.arguments.length === 1 &&
+          ts.isIdentifier(node.arguments[0]) &&
+          node.arguments[0].text === "schema"
+        ) {
+          schemaQueryCalls += 1;
+        } else if (
+          node.arguments.length === 1 &&
+          ts.isIdentifier(node.arguments[0]) &&
+          node.arguments[0].text === "stmt"
+        ) {
+          statementQueryCalls += 1;
+        } else {
+          hasUnexpectedQuery = true;
+        }
+      }
+      if (
+        ts.isIdentifier(node) &&
+        node.text === clientName &&
+        !isDirectQueryReceiver(node)
+      ) {
+        hasUnexpectedClientUse = true;
+      }
+      ts.forEachChild(node, auditQueryCalls);
+    }
+    auditQueryCalls(applyMigrations.body);
+
+    if (
+      schemaQueryCalls !== 1 ||
+      statementQueryCalls !== 1 ||
+      hasUnexpectedQuery ||
+      hasUnexpectedClientUse
+    ) {
+      errors.push(
+        "production migration runner must not execute SQL outside the exact schema and per-statement migration queries",
+      );
+    }
+  }
 
   function visitOrderedFlow(node, conditionallySkipped = false) {
     if (node !== applyMigrations?.body && ts.isFunctionLike(node)) return;

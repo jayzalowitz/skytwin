@@ -126,9 +126,92 @@ test("schema reconstruction applies column and table DDL in statement order", ()
   ]);
 });
 
+test("schema reconstruction rejects table DDL it cannot fully consume", () => {
+  for (const sql of [
+    "ALTER TABLE users ADD COLUMN first STRING, ADD COLUMN second STRING;",
+    'ALTER TABLE "users" ADD COLUMN surprise STRING;',
+    "ALTER TABLE users ADD surprise STRING;",
+    "ALTER TABLE users SET (fillfactor = 70);",
+    'CREATE TABLE "quoted_table" (id UUID);',
+    "CREATE TABLE trailing_table (id UUID) LOCALITY GLOBAL;",
+    "DROP TABLE users, twin_profiles;",
+  ]) {
+    assert.throws(
+      () => applySchemaSql(new Map([["users", new Set(["id"])]]), sql),
+      /unsupported schema-mutating DDL/,
+    );
+  }
+});
+
 test("schema reconstruction is bound to the production migration runner order", () => {
   const runner = readFileSync(migrationRunnerPath, "utf8");
   assert.deepEqual(migrationRunnerContractErrors(runner), []);
+  const baselineError =
+    "production migration runner must match the reviewed source baseline";
+
+  const runnerMutations = [
+    [
+      "early shared-flow return",
+      runner.replace(
+        "  // Read and execute the entire schema as one batch.",
+        "  return;\n  // Read and execute the entire schema as one batch.",
+      ),
+    ],
+    [
+      "loop-hidden schema query",
+      runner.replace(
+        "await client.query(schema);",
+        "while (false) await client.query(schema);",
+      ),
+    ],
+    [
+      "statement-loop continue",
+      runner.replace(
+        "await client.query(stmt);",
+        "continue;\n        await client.query(stmt);",
+      ),
+    ],
+    [
+      "outer-loop break",
+      runner.replace(
+        "for (const file of sqlFiles) {",
+        "for (const file of sqlFiles) {\n    break;",
+      ),
+    ],
+    [
+      "early CLI return",
+      runner.replace(
+        "await applyMigrations(pool, () => true);",
+        "return;\n  await applyMigrations(pool, () => true);",
+      ),
+    ],
+    [
+      "schema path retarget",
+      runner.replace("'schemas', 'schema.sql'", "'schemas', 'alternate.sql'"),
+    ],
+    [
+      "selected-file path retarget",
+      runner.replace(
+        "readFileSync(join(__dirname, file), 'utf-8')",
+        "readFileSync(join(__dirname, file, '..', 'alternate.sql'), 'utf-8')",
+      ),
+    ],
+    [
+      "splitter filtering",
+      runner.replace(
+        ".filter((s) => s.length > 0);",
+        ".filter((s) => s.startsWith('CREATE'));",
+      ),
+    ],
+    ["benign source edit", `${runner}\n`],
+  ];
+  for (const [name, mutatedRunner] of runnerMutations) {
+    assert.notEqual(mutatedRunner, runner, `${name} mutation must apply`);
+    assert.ok(
+      migrationRunnerContractErrors(mutatedRunner).includes(baselineError),
+      `${name} must invalidate the reviewed runner baseline`,
+    );
+  }
 
   const unsorted = runner.replace(".sort();", ".reverse();");
   assert.ok(
@@ -225,6 +308,74 @@ test("schema reconstruction is bound to the production migration runner order", 
   );
   assert.ok(
     migrationRunnerContractErrors(disabledDevelopmentEntrypoint).includes(
+      "production migration runner must route CLI and owned entry points through the ordered migration flow",
+    ),
+  );
+
+  const unexpectedQueryError =
+    "production migration runner must not execute SQL outside the exact schema and per-statement migration queries";
+  for (const mutatedRunner of [
+    runner.replace(
+      "const schema = readFileSync(SCHEMA_PATH, 'utf-8');",
+      "await client.query('CREATE TABLE hidden_before (id UUID)');\n  const schema = readFileSync(SCHEMA_PATH, 'utf-8');",
+    ),
+    runner.replace(
+      "    console.log(`[migration] ${file}: applied ${applied} statement(s).`);\n  }\n}",
+      "    console.log(`[migration] ${file}: applied ${applied} statement(s).`);\n  }\n  await client.query('ALTER TABLE users ADD COLUMN hidden_after STRING');\n}",
+    ),
+    runner.replace(
+      "const schema = readFileSync(SCHEMA_PATH, 'utf-8');",
+      "const alias = client;\n  await alias.query('CREATE TABLE hidden_alias (id UUID)');\n  const schema = readFileSync(SCHEMA_PATH, 'utf-8');",
+    ),
+    runner.replace(
+      "const schema = readFileSync(SCHEMA_PATH, 'utf-8');",
+      "if (false) await client.query('CREATE TABLE hidden_conditional (id UUID)');\n  const schema = readFileSync(SCHEMA_PATH, 'utf-8');",
+    ),
+    runner.replace(
+      "await client.query(schema);",
+      "await client.query(schema);\n    await client.query(schema);",
+    ),
+  ]) {
+    assert.ok(
+      migrationRunnerContractErrors(mutatedRunner).includes(
+        unexpectedQueryError,
+      ),
+    );
+  }
+
+  const unexpectedEntrypointQueryError =
+    "production migration runner entry points must only execute the exact database bootstrap before the shared migration flow";
+  for (const mutatedRunner of [
+    runner.replace(
+      "await applyMigrations(pool, () => true);",
+      "await pool.query('CREATE TABLE hidden_cli_before (id UUID)');\n  await applyMigrations(pool, () => true);",
+    ),
+    runner.replace(
+      "await applyMigrations(pool, () => true);",
+      "await applyMigrations(pool, () => true);\n  await pool.query('ALTER TABLE users ADD COLUMN hidden_cli_after STRING');",
+    ),
+    runner.replace(
+      "await applyMigrations(target, options.authorize);",
+      "await target.query('CREATE TABLE hidden_owned_before (id UUID)');\n    await applyMigrations(target, options.authorize);",
+    ),
+    runner.replace(
+      "await applyMigrations(target, options.authorize);",
+      "await applyMigrations(target, options.authorize);\n    await target.query('ALTER TABLE users ADD COLUMN hidden_owned_after STRING');",
+    ),
+  ]) {
+    assert.ok(
+      migrationRunnerContractErrors(mutatedRunner).includes(
+        unexpectedEntrypointQueryError,
+      ),
+    );
+  }
+
+  const duplicatedSharedFlow = runner.replace(
+    "await applyMigrations(pool, () => true);",
+    "await applyMigrations(pool, () => true);\n  await applyMigrations(pool, () => true);",
+  );
+  assert.ok(
+    migrationRunnerContractErrors(duplicatedSharedFlow).includes(
       "production migration runner must route CLI and owned entry points through the ordered migration flow",
     ),
   );
