@@ -4,6 +4,7 @@ import {
   sha256Hex,
   receiptSealPayload,
   signInferenceReceipt,
+  snapshotInferenceReceiptExport,
   verifyInferenceReceiptExport,
   type InferenceReceiptExportV1,
 } from '../index.js';
@@ -75,6 +76,15 @@ describe('verifyInferenceReceiptExport', () => {
     });
   });
 
+  it('keeps unsupported schema versions distinct from malformed receipts', () => {
+    const exportVersion = bundle() as unknown as { exportVersion: number };
+    exportVersion.exportVersion = 2;
+    expect(verifyInferenceReceiptExport(exportVersion).code).toBe('UNSUPPORTED_VERSION');
+    const receiptVersion = bundle() as unknown as { receipt: { version: number } };
+    receiptVersion.receipt.version = 2;
+    expect(verifyInferenceReceiptExport(receiptVersion).code).toBe('UNSUPPORTED_VERSION');
+  });
+
   it('can explicitly verify confidential receipt integrity without asserting trust', () => {
     expect(verifyInferenceReceiptExport(bundle(), {
       now: new Date('2026-09-11'), integrityOnly: true,
@@ -128,6 +138,11 @@ describe('verifyInferenceReceiptExport', () => {
 
   it('rejects stale verified evidence', () => {
     expect(verifyInferenceReceiptExport(bundle(), trustedOptions(new Date('2026-09-13'))).code).toBe('STALE_VERIFICATION');
+  });
+
+  it('treats freshUntil equality as stale', () => {
+    expect(verifyInferenceReceiptExport(bundle(), trustedOptions(new Date('2026-09-12T00:00:00.000Z'))).code)
+      .toBe('STALE_VERIFICATION');
   });
 
   it('rejects future-dated and overlong verification windows', () => {
@@ -238,6 +253,63 @@ describe('verifyInferenceReceiptExport', () => {
     const malformed = conventionalBundle();
     Object.assign(malformed, { disclosure: 7 });
     expect(verifyInferenceReceiptExport(malformed, trustedOptions()).code).toBe('INVALID_RECEIPT');
+  });
+
+  it('materializes and deeply freezes one exact-own snapshot', () => {
+    const value = bundle();
+    const snapshot = snapshotInferenceReceiptExport(value);
+    expect(snapshot).not.toBe(value);
+    expect(snapshot?.receipt).not.toBe(value.receipt);
+    for (const item of [snapshot, snapshot?.receipt, snapshot?.receipt.cost,
+      snapshot?.receipt.seal, snapshot?.receipt.responseSignature]) {
+      expect(Object.isFrozen(item)).toBe(true);
+    }
+  });
+
+  it('does not let an attestation verifier mutate signed metadata after the seal check', () => {
+    const value = bundle();
+    const result = verifyInferenceReceiptExport(value, {
+      ...trustedOptions(),
+      verifyAttestation: ({ receipt }) => {
+        expect(Object.isFrozen(receipt)).toBe(true);
+        expect(Reflect.set(receipt, 'model', 'mutated-after-verification')).toBe(false);
+        return true;
+      },
+    });
+    expect(result).toMatchObject({ valid: true, trusted: true, code: 'PASS' });
+    expect(value.receipt.model).toBe('model-v1');
+  });
+
+  it('rejects inherited required fields instead of signing one view and serializing another', () => {
+    const value = conventionalBundle();
+    const { seal: _seal, provider: _provider, ...ownUnsigned } = value.receipt;
+    const inherited = Object.assign(Object.create({ provider: 'strict-provider' }), ownUnsigned);
+    const signatureBase64 = sign(null, receiptSealPayload(
+      ownUnsigned as Omit<InferenceReceiptExportV1['receipt'], 'seal'>,
+    ), recorder.privateKey).toString('base64');
+    value.receipt = Object.assign(inherited, { seal: {
+      algorithm: 'Ed25519', keyId: 'recorder-1', publicKeyPem: pem(recorder.publicKey), signatureBase64,
+    } });
+    expect(verifyInferenceReceiptExport(value, trustedOptions()).code).toBe('INVALID_RECEIPT');
+  });
+
+  it('rejects accessors, proxies, symbols, and non-enumerable members', () => {
+    const accessor = conventionalBundle();
+    Object.defineProperty(accessor.receipt, 'provider', { enumerable: true, configurable: true,
+      get: () => 'strict-provider' });
+    expect(verifyInferenceReceiptExport(accessor, trustedOptions()).code).toBe('INVALID_RECEIPT');
+
+    const proxied = conventionalBundle();
+    proxied.receipt = new Proxy(proxied.receipt, {});
+    expect(verifyInferenceReceiptExport(proxied, trustedOptions()).code).toBe('INVALID_RECEIPT');
+
+    const symbol = conventionalBundle() as InferenceReceiptExportV1 & { [key: symbol]: string };
+    symbol[Symbol('hidden')] = 'value';
+    expect(verifyInferenceReceiptExport(symbol, trustedOptions()).code).toBe('INVALID_RECEIPT');
+
+    const hidden = conventionalBundle();
+    Object.defineProperty(hidden.receipt, 'hidden', { value: true, enumerable: false });
+    expect(verifyInferenceReceiptExport(hidden, trustedOptions()).code).toBe('INVALID_RECEIPT');
   });
 
   it('matches the RFC 8785 UTF-16 property ordering rule', () => {

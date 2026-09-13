@@ -155,7 +155,10 @@ export {
   receiptSealPayload,
   sha256Hex,
   signInferenceReceipt,
+  snapshotInferenceReceipt,
+  snapshotInferenceReceiptExport,
   verifyInferenceReceiptExport,
+  verifyInferenceReceiptSeal,
 } from './inference-receipt.js';
 export type {
   AttestationVerificationInput,
