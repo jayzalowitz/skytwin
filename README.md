@@ -148,6 +148,7 @@ Grab the installer for your OS, double-click, and you're in. No terminal, no Doc
 > can open a short-lived sample whose database-backed surface remains read-only;
 > approve, reject, correct, and learn interactions run only in a separate,
 > session-local simulation that cannot reach providers or execution adapters.
+> Its browser credential is tab-scoped and [bypasses offline caching and replay](./apps/web/public/js/pwa/sw-policy.js).
 
 | OS | Installer on the release page |
 |----|-------------------------------|
@@ -175,7 +176,7 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
 **The first 60 seconds in a development/source run:**
 1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
-2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the narrower, read-only sample authority used by packaged desktop builds.
+2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the packaged build's read-only data authority and isolated, non-persistent simulation.
 3. The welcome screen also shows a one-line **"your AI runs privately on this computer — we'll use `<model>`"** — the app detects your machine's RAM and free disk and picks the best local model that fits, so a non-technical user never has to choose a model or paste an API key. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
 5. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.

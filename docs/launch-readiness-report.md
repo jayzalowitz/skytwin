@@ -6,7 +6,7 @@ This report is the output of a full launch-readiness pass: every open GitHub iss
 
 ## 2026-09-13 packaged-sample release boundary
 
-Current source adds a guarded foundation for an account-free packaged demo: a short-lived credential bound to one reserved fictional identity and an explicit read allowlist. That foundation is deliberately read-only. It can expose allowed sample decisions and explanations, but it cannot approve, reject, edit, correct, learn, open settings, invoke connectors, or execute actions. Interactive simulation is a later slice.
+Current source adds a guarded account-free packaged demo: a short-lived credential bound to one reserved fictional identity and an explicit read allowlist. Its database-backed product surface is deliberately read-only. Approve, reject, correct, reset, and learn interactions run only in a separate loopback-only simulation with bounded in-memory state. The simulation uses the real policy and explanation logic but cannot open settings, mutate the database, invoke connectors or providers, access credentials, or reach execution adapters. Browser authority is scoped to one tab and all `/api/v1/demo` traffic bypasses offline caching and replay. Source of truth: `apps/api/src/services/sample-simulation.ts`, `apps/web/public/js/sample-session.js`, and `apps/web/public/js/pwa/sw-policy.js`.
 
 The currently published installers predate this packaged sample path. A public launch still requires building and verifying fresh artifacts in addition to clearing the signing, OAuth review, mobile/store, and encryption/key-management blockers retained below.
 
@@ -47,7 +47,7 @@ Recorded launch blockers include:
 2. **External review** — Google OAuth restricted-scope / brand verification (#351, multi-week CASA review) and mobile app-store review (#369/#360, needs Apple/Play accounts).
 3. **Design assets** — real multi-resolution mobile icons/splash to replace the 1×1 placeholders (#409/#369).
 
-4. **Code and architecture** — #374 (encrypt user memory + preferences at rest) requires the #401 key-management decision. See [§ Encryption and key-management detail](#encryption-and-key-management-detail). Packaged-sample interactivity and the other partial code-side items remain tracked under #357 and in the inventory below.
+4. **Code and architecture** — #374 (encrypt user memory + preferences at rest) requires the #401 key-management decision. See [§ Encryption and key-management detail](#encryption-and-key-management-detail). Other partial code-side items remain tracked under #357 and in the inventory below.
 5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems. The source-tree checks below do not substitute for this gate.
 
 ---
@@ -70,11 +70,11 @@ Recorded launch blockers include:
 |---|---|---|
 | 1 | Download a signed `.dmg`/`.exe`/store build | ⛔ external — certs (#368/#359), store accounts (#369) |
 | 2 | Install without Gatekeeper/SmartScreen warnings | ⛔ external — certs |
-| 3 | Reach a meaningful state ≤60s | 🟡 development tour verified; current source adds a read-only packaged sample, but published installers predate it and a fresh artifact still needs validation |
-| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | 🟡 development seed loads a populated dashboard; the packaged source path is read-only and not present in published installers |
-| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ connected-account development pipeline verified; the read-only sample queue is not evidence for this criterion |
+| 3 | Reach a meaningful state ≤60s | 🟡 development tour verified; current source adds an interactive packaged sample, but published installers predate it and a fresh artifact still needs validation |
+| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | 🟡 development seed and the isolated packaged simulation both reach populated decisions; the packaged path is not present in published installers |
+| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ connected-account development pipeline verified; the fictional sample queue is not evidence for this criterion |
 | 6 | Understand *why* each decision was made | ✅ development/connected flow verified; current packaged-sample source can inspect allowlisted decision and explanation views |
-| 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; the packaged sample foundation cannot submit approvals or feedback |
+| 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; current source adds isolated packaged approve/reject/correct interactions, but a fresh artifact still needs validation |
 | 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |
 | 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
 | 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
@@ -121,7 +121,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#323](https://github.com/jayzalowitz/skytwin/issues/323) | 🟡 partial | — | — | AC3: wire `registryId` into MCP-action spend recording |
 | [#324](https://github.com/jayzalowitz/skytwin/issues/324) | 🟡 partial | — | yes | Rollback wiring + decision→execution-plan join follow-ups |
 | [#351](https://github.com/jayzalowitz/skytwin/issues/351) | ⛔ external | — | — | CASA assessor contract + Google review (post-launch) |
-| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | partly | Source capabilities passed the dated audit; packaged-sample interactivity, fresh artifact validation, and the external launch gates remain |
+| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | partly | Source capabilities passed the dated audit; fresh artifact validation and the external launch gates remain |
 | [#359](https://github.com/jayzalowitz/skytwin/issues/359) | ⛔ external | **YES** | — | Apple Developer + Windows EV cert purchase/enroll |
 | [#360](https://github.com/jayzalowitz/skytwin/issues/360) | 🟡 partial | **YES** | yes | Mobile: #369 store-readiness gate is the bulk |
 | [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — needs #401 key-mgmt decision) + #375 follow-ups (assistant block, number/name). |

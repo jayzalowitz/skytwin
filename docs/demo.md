@@ -16,9 +16,10 @@ their other hand and read along.
 > **Scope:** this operator script exercises the development seed after
 > `pnpm db:seed`; it is not a description of the currently published desktop
 > installers. Current source gives packaged builds a separate, short-lived,
-> read-only sample session. That packaged foundation can display allowed sample
-> views but cannot approve, reject, correct, learn, open settings, or run a mock
-> action. Those packaged interactions are later work.
+> account-free sample session. Its database-backed views remain read-only, while
+> a separate session-local simulation can approve, reject, correct, reset, and
+> learn from fixed fictional proposals. It cannot open settings, persist those
+> interactions, invoke providers or connectors, or run an execution adapter.
 
 ---
 
@@ -107,7 +108,7 @@ change touches the approval buttons, it goes through `/review`.
 
 **If you took the seeded development path:** skip ahead to step 4. The seed
 provides the mock connector data this operator walkthrough needs. This does not
-describe the packaged read-only sample session.
+describe the packaged sample's isolated, non-persistent simulation.
 
 **If you took the live-OAuth path:** click "Connect Gmail" from the dashboard
 or `#/connect-gmail`. The five-step wizard walks the user through the BYO
