@@ -351,10 +351,13 @@ export class ServiceManager {
       API_PORT: '3100',
       WORKER_PORT: '3101',
       API_BASE_URL: 'http://localhost:3100',
-      // CockroachManager owns the wire format; if the user has set
-      // DATABASE_URL explicitly we honor it (e.g. pointing at a hosted
-      // CRDB for power users), otherwise we use the bundled instance.
-      DATABASE_URL: process.env['DATABASE_URL'] || this.cockroach.getConnectionString(),
+      // A packaged desktop is a local-data product: its services must use
+      // the exact database child this launch attested. Shell inheritance is
+      // useful in development, but it is not authority to redirect a signed
+      // bundle to an arbitrary database.
+      DATABASE_URL: app.isPackaged
+        ? this.cockroach.getConnectionString()
+        : process.env['DATABASE_URL'] || this.cockroach.getConnectionString(),
       // API refuses to start in NODE_ENV=production without this; auto-
       // generate per-install. Persisted across launches.
       SESSION_SECRET: process.env['SESSION_SECRET'] || this.getOrCreateSessionSecret(),
@@ -411,12 +414,10 @@ export class ServiceManager {
     // either branch — likely a quirk in how Electron-shipped node + ESM
     // dynamic import + production-builder warnings interact.
     //
-    // The bulletproof path is to call `up()` directly from the Electron
-    // main process. Electron's main IS node, has full asar awareness,
-    // resolves pnpm symlinks, and shares one DB connection pool with
-    // ourselves — no child IPC overhead. The injected env vars
-    // (DATABASE_URL, SESSION_SECRET) live in process.env already from
-    // getEnv()'s spread.
+    // Call the migration package directly from Electron main so asar and
+    // pnpm-deploy paths resolve consistently. The package's upOwned() entry
+    // creates fixed, non-reconnecting pg clients and rechecks this launch's
+    // database capability before each write.
     console.log('[migrate] Running', script, '(in-process)');
     Object.assign(process.env, this.getEnv());
     try {
@@ -429,17 +430,31 @@ export class ServiceManager {
       // TS transform and get native runtime dynamic-import semantics.
       const nativeImport = new Function('p', 'return import(p)') as (
         p: string,
-      ) => Promise<{ up?: () => Promise<void> }>;
+      ) => Promise<{
+        upOwned?: (options: {
+          connectionString: string;
+          authorize: () => boolean;
+        }) => Promise<void>;
+      }>;
       const mod = await nativeImport(moduleUrl);
-      if (typeof mod.up !== 'function') {
-        console.error('[migrate] target has no up() export:', script);
+      if (typeof mod.upOwned !== 'function') {
+        console.error('[migrate] target has no upOwned() export:', script);
         return false;
       }
       if (!this.cockroach.isManagedStartCurrent(startup)) {
         console.error('[migrate] CockroachDB ownership changed before migration; refusing to write.');
         return false;
       }
-      await mod.up();
+      await mod.upOwned({
+        // Never inherit DATABASE_URL here. The migration capability is for
+        // the exact bundled listener attested by CockroachManager.
+        connectionString: this.cockroach.getConnectionString(),
+        authorize: () => this.cockroach.isManagedStartCurrent(startup),
+      });
+      if (!this.cockroach.isManagedStartCurrent(startup)) {
+        console.error('[migrate] CockroachDB ownership changed during migration; refusing startup.');
+        return false;
+      }
       console.log('[migrate] complete');
       return true;
     } catch (err) {
@@ -706,6 +721,14 @@ export class ServiceManager {
       this.emitStatus();
     } else {
       startup = await this.startCockroach();
+      if (
+        app.isPackaged &&
+        (startup?.ownership !== 'managed-child' || !this.cockroach.isManagedStartCurrent(startup))
+      ) {
+        this.cockroachStatus = 'error';
+        this.emitStatus();
+        throw new Error('Packaged startup requires the desktop-owned CockroachDB instance');
+      }
       // Migrations must complete after CRDB is up but before API starts;
       // otherwise API hits "relation does not exist" on first query and
       // crashlooks until restart-backoff exhausts.
@@ -717,11 +740,20 @@ export class ServiceManager {
         const migrated = await this.runMigrations(startup);
         if (migrated && this.cockroach.isManagedStartCurrent(startup)) {
           await this.provisionPackagedSample(startup, epoch, signal);
-        } else if (migrated && app.isPackaged) {
-          console.warn('[sample] Provisioning skipped: CockroachDB listener is not owned by this desktop launch.');
+          if (app.isPackaged && !this.cockroach.isManagedStartCurrent(startup)) {
+            this.cockroachStatus = 'error';
+            this.emitStatus();
+            throw new Error('CockroachDB ownership changed before packaged services could start');
+          }
+        } else if (app.isPackaged) {
+          this.cockroachStatus = 'error';
+          this.emitStatus();
+          throw new Error('Packaged startup requires migrations on the desktop-owned CockroachDB instance');
         }
       } else if (this.cockroachStatus === 'running' && app.isPackaged) {
-        console.warn('[migrate] Skipped: CockroachDB listener is not owned by this desktop launch.');
+        this.cockroachStatus = 'error';
+        this.emitStatus();
+        throw new Error('Packaged startup refused an unowned CockroachDB listener');
       }
     }
     await this.startApi();

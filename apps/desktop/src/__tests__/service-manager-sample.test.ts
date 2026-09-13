@@ -70,6 +70,7 @@ interface SampleManagerInternals {
   revokeSampleLaunch(): void;
   beginSampleLaunch(): { epoch: number; signal: AbortSignal };
   stopAll(): Promise<void>;
+  getEnv(): Record<string, string>;
 }
 
 interface SampleStartup {
@@ -109,6 +110,7 @@ function internals(): ServiceManager & SampleManagerInternals {
 
 describe("packaged sample startup sequencing", () => {
   const previousToken = process.env["SKYTWIN_SERVICE_TOKEN"];
+  const previousDatabaseUrl = process.env["DATABASE_URL"];
 
   beforeEach(() => {
     delete process.env["DATABASE_URL"];
@@ -120,6 +122,19 @@ describe("packaged sample startup sequencing", () => {
     if (previousToken === undefined)
       delete process.env["SKYTWIN_SERVICE_TOKEN"];
     else process.env["SKYTWIN_SERVICE_TOKEN"] = previousToken;
+    if (previousDatabaseUrl === undefined)
+      delete process.env["DATABASE_URL"];
+    else process.env["DATABASE_URL"] = previousDatabaseUrl;
+  });
+
+  it("pins packaged child services to the attested bundled database", () => {
+    process.env["DATABASE_URL"] =
+      "postgresql://root@127.0.0.1:39999/foreign?sslmode=disable";
+    const manager = internals();
+
+    expect(manager.getEnv()["DATABASE_URL"]).toBe(
+      "postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable",
+    );
   });
 
   it("does not await background sample ingestion before starting owner services", async () => {
@@ -160,7 +175,7 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.startPackagedSampleIngest).toHaveBeenCalledOnce();
   });
 
-  it("keeps a foreign pre-existing CockroachDB sample-free", async () => {
+  it("refuses packaged services when a foreign CockroachDB owns the port", async () => {
     const manager = internals();
     manager.cockroachStatus = "running";
     manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
@@ -179,16 +194,18 @@ describe("packaged sample startup sequencing", () => {
     manager.startHealthMonitoring = vi.fn();
     manager.ingestPackagedSample = vi.fn().mockResolvedValue(undefined);
 
-    await expect(manager.startAll()).resolves.toBeUndefined();
+    await expect(manager.startAll()).rejects.toThrow(
+      /requires the desktop-owned CockroachDB instance/,
+    );
     await Promise.resolve();
 
     expect(manager.runMigrations).not.toHaveBeenCalled();
     expect(manager.provisionPackagedSample).not.toHaveBeenCalled();
     expect(manager.sampleBootstrapAllowedThisLaunch).toBe(false);
     expect(manager.ingestPackagedSample).not.toHaveBeenCalled();
-    expect(manager.startApi).toHaveBeenCalledOnce();
-    expect(manager.startWeb).toHaveBeenCalledOnce();
-    expect(manager.startWorker).toHaveBeenCalledOnce();
+    expect(manager.startApi).not.toHaveBeenCalled();
+    expect(manager.startWeb).not.toHaveBeenCalled();
+    expect(manager.startWorker).not.toHaveBeenCalled();
   });
 
   it("does not present the service credential unless API ownership verifies", async () => {
@@ -238,6 +255,7 @@ describe("packaged sample startup sequencing", () => {
     });
     manager.cockroach.isManagedStartCurrent
       .mockReturnValueOnce(true)
+      .mockReturnValueOnce(true)
       .mockReturnValue(false);
     manager.runMigrations = vi.fn().mockResolvedValue(true);
     manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
@@ -247,10 +265,42 @@ describe("packaged sample startup sequencing", () => {
     manager.startWorker = vi.fn().mockResolvedValue(undefined);
     manager.startHealthMonitoring = vi.fn();
 
-    await manager.startAll();
+    await expect(manager.startAll()).rejects.toThrow(
+      /requires migrations on the desktop-owned CockroachDB instance/,
+    );
 
     expect(manager.runMigrations).toHaveBeenCalledOnce();
     expect(manager.provisionPackagedSample).not.toHaveBeenCalled();
+    expect(manager.startApi).not.toHaveBeenCalled();
+    expect(manager.startWeb).not.toHaveBeenCalled();
+    expect(manager.startWorker).not.toHaveBeenCalled();
+  });
+
+  it("refuses packaged services when owned migrations do not complete", async () => {
+    const manager = internals();
+    manager.cockroachStatus = "running";
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.waitForExternalApi = vi.fn().mockResolvedValue(false);
+    manager.startCockroach = vi.fn().mockResolvedValue({
+      ownership: "managed-child",
+      dataDir: "/tmp/skytwin-sample-test/crdb-data",
+      generation: 1,
+    });
+    manager.runMigrations = vi.fn().mockResolvedValue(false);
+    manager.provisionPackagedSample = vi.fn().mockResolvedValue(undefined);
+    manager.startApi = vi.fn().mockResolvedValue(undefined);
+    manager.startWeb = vi.fn().mockResolvedValue(undefined);
+    manager.startWorker = vi.fn().mockResolvedValue(undefined);
+    manager.startHealthMonitoring = vi.fn();
+
+    await expect(manager.startAll()).rejects.toThrow(
+      /requires migrations on the desktop-owned CockroachDB instance/,
+    );
+
+    expect(manager.provisionPackagedSample).not.toHaveBeenCalled();
+    expect(manager.startApi).not.toHaveBeenCalled();
+    expect(manager.startWeb).not.toHaveBeenCalled();
+    expect(manager.startWorker).not.toHaveBeenCalled();
   });
 
   it("revokes a deferred verifier before stop can hand the port to another listener", async () => {

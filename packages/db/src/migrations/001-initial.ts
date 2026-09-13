@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { Client } from 'pg';
 import { getPool, closePool } from '../connection.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -35,6 +36,44 @@ const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
  * but only inside a `--` comment line, not as a statement).
  */
 const IDEMPOTENT_DDL_CODES = new Set(['42710', '42P07', '42701']);
+const OWNED_MIGRATION_CONNECTION_TIMEOUT_MS = 5_000;
+const OWNED_MIGRATION_QUERY_TIMEOUT_MS = 120_000;
+
+interface MigrationQueryable {
+  query(text: string): Promise<unknown>;
+}
+
+export interface OwnedMigrationClient extends MigrationQueryable {
+  connect(): Promise<unknown>;
+  end(): Promise<void>;
+}
+
+export interface OwnedMigrationOptions {
+  /** Exact endpoint selected by the desktop-owned CockroachDB capability. */
+  connectionString: string;
+  /**
+   * Revalidates the desktop's child-process capability. This callback is
+   * checked after each non-reconnecting connection is established and
+   * immediately before every write.
+   */
+  authorize: () => boolean;
+  /** Test seam for proving connection and authority sequencing. */
+  createClient?: (connectionString: string) => OwnedMigrationClient;
+}
+
+function requireOwnedMigrationAuthority(authorize: () => boolean): void {
+  if (!authorize()) {
+    throw new Error('CockroachDB ownership changed; refusing migration write');
+  }
+}
+
+function migrationClient(connectionString: string): OwnedMigrationClient {
+  return new Client({
+    connectionString,
+    connectionTimeoutMillis: OWNED_MIGRATION_CONNECTION_TIMEOUT_MS,
+    query_timeout: OWNED_MIGRATION_QUERY_TIMEOUT_MS,
+  });
+}
 
 /**
  * Split a .sql migration file into individual statements.
@@ -133,26 +172,18 @@ export function isIdempotentError(error: unknown): boolean {
   );
 }
 
-/**
- * Run all migrations: schema.sql first, then SQL files 002–011 in order.
- */
-export async function up(): Promise<void> {
-  const pool = getPool();
-
-  // Ensure the database exists
-  try {
-    await pool.query('CREATE DATABASE IF NOT EXISTS skytwin');
-  } catch {
-    // Database may already exist or we may not have permissions; continue
-  }
-
+async function applyMigrations(
+  client: MigrationQueryable,
+  authorize: () => boolean,
+): Promise<void> {
   // Read and execute the entire schema as one batch.
   // Running it as a single query preserves statement ordering so FK
   // references resolve correctly (e.g. connected_accounts → users).
   const schema = readFileSync(SCHEMA_PATH, 'utf-8');
 
   try {
-    await pool.query(schema);
+    requireOwnedMigrationAuthority(authorize);
+    await client.query(schema);
   } catch (error) {
     // Use the same idempotency rule as the per-statement loop below —
     // DDL "already exists" is swallowed; 23505 (unique-violation) and
@@ -183,7 +214,8 @@ export async function up(): Promise<void> {
     let applied = 0;
     for (const stmt of statements) {
       try {
-        await pool.query(stmt);
+        requireOwnedMigrationAuthority(authorize);
+        await client.query(stmt);
         applied++;
       } catch (error) {
         if (isIdempotentError(error)) {
@@ -195,6 +227,64 @@ export async function up(): Promise<void> {
       }
     }
     console.log(`[migration] ${file}: applied ${applied} statement(s).`);
+  }
+}
+
+/**
+ * Run all migrations for CLI/development callers using the shared pool.
+ */
+export async function up(): Promise<void> {
+  const pool = getPool();
+
+  // Development deployments normally provision the database externally.
+  // Keep the historical best-effort create for compatibility.
+  try {
+    await pool.query('CREATE DATABASE IF NOT EXISTS skytwin');
+  } catch {
+    // Database may already exist or we may not have permissions; continue.
+  }
+
+  await applyMigrations(pool, () => true);
+}
+
+/**
+ * Run desktop migrations over fixed, non-reconnecting pg clients.
+ *
+ * A Pool may reconnect a later statement to a different process after the
+ * managed CockroachDB child exits and another listener takes the port. The
+ * packaged desktop therefore uses one direct client for database creation
+ * and one direct client for the complete migration corpus. Authority is
+ * rechecked after connect and before every write; if the owned child dies,
+ * the established socket fails instead of redirecting a later statement.
+ */
+export async function upOwned(options: OwnedMigrationOptions): Promise<void> {
+  const targetUrl = new URL(options.connectionString);
+  if (targetUrl.protocol !== 'postgresql:' && targetUrl.protocol !== 'postgres:') {
+    throw new Error('Owned migration connection must use PostgreSQL');
+  }
+  if (targetUrl.pathname !== '/skytwin') {
+    throw new Error('Owned migration connection must target the skytwin database');
+  }
+
+  const adminUrl = new URL(targetUrl);
+  adminUrl.pathname = '/defaultdb';
+  const createClient = options.createClient ?? migrationClient;
+  const admin = createClient(adminUrl.toString());
+  try {
+    await admin.connect();
+    requireOwnedMigrationAuthority(options.authorize);
+    await admin.query('CREATE DATABASE IF NOT EXISTS skytwin');
+  } finally {
+    await admin.end().catch(() => undefined);
+  }
+
+  const target = createClient(targetUrl.toString());
+  try {
+    await target.connect();
+    requireOwnedMigrationAuthority(options.authorize);
+    await applyMigrations(target, options.authorize);
+  } finally {
+    await target.end().catch(() => undefined);
   }
 }
 

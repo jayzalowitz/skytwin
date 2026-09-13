@@ -142,10 +142,6 @@ export class CockroachManager {
       console.log('[crdb] Already running on', `${this.listenHost}:${this.sqlPort}`);
       const authority = this.authority;
       if (authority && this.isAuthorityCurrent(authority)) {
-        await this.ensureDatabase();
-        if (!this.isAuthorityCurrent(authority)) {
-          throw new Error('CockroachDB ownership changed during database initialization');
-        }
         return this.resultFor(authority);
       }
       // A retained but unattested child must never lend its identity to the
@@ -238,10 +234,6 @@ export class CockroachManager {
       this.authority = authority;
       if (!this.isAuthorityCurrent(authority)) {
         throw new Error('CockroachDB ownership changed before database initialization');
-      }
-      await this.ensureDatabase();
-      if (!this.isAuthorityCurrent(authority)) {
-        throw new Error('CockroachDB ownership changed during database initialization');
       }
       return this.resultFor(authority);
     } catch (error) {
@@ -454,34 +446,4 @@ export class CockroachManager {
     });
   }
 
-  /**
-   * Ensure the `skytwin` database exists. CRDB doesn't auto-create
-   * databases on first connect; the API would die with "database
-   * skytwin does not exist" otherwise.
-   */
-  private async ensureDatabase(): Promise<void> {
-    const bin = this.getBinaryPath();
-    if (!existsSync(bin)) return;
-    await new Promise<void>((resolve, reject) => {
-      const proc = this.spawnImpl(
-        bin,
-        [
-          'sql',
-          '--insecure',
-          '--host',
-          `${this.listenHost}:${this.sqlPort}`,
-          '-e',
-          'CREATE DATABASE IF NOT EXISTS skytwin;',
-        ],
-        {
-          stdio: 'pipe',
-        },
-      );
-      proc.on('exit', (code) => {
-        if (code === 0) resolve();
-        else reject(new Error(`ensureDatabase: cockroach sql exited ${code}`));
-      });
-      proc.on('error', reject);
-    });
-  }
 }
