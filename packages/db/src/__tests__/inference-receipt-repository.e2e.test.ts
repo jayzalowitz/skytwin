@@ -14,6 +14,7 @@ import {
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { closePool } from '../connection.js';
+import { collectBackup, restoreBackup } from '../backup/backup.js';
 import { inferenceReceiptRepository } from '../repositories/inference-receipt-repository.js';
 
 const E2E = process.env['E2E'] === 'true';
@@ -155,5 +156,51 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     await expect(insert(1, 'unknown')).rejects.toMatchObject({ code: '23514' });
     await expect(insert(1, 'on_device', other.explanationId))
       .rejects.toMatchObject({ code: '23503' });
+  });
+
+  it('round-trips a schema-v2 receipt backup as canonical untrusted metadata', async () => {
+    const owner = await createGraph('backup-owner');
+    const bundle = receiptBundle(owner);
+    const created = await inferenceReceiptRepository.createForUser(owner.userId, {
+      bundle,
+      trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+    });
+    expect(created).not.toBeNull();
+
+    const backup = await collectBackup(owner.userId);
+    expect(backup.success).toBe(true);
+    if (!backup.success) return;
+    expect(backup.data.schemaVersion).toBe(2);
+    expect(backup.data.decisions).toHaveLength(1);
+    expect(backup.data.decisions[0]?.inferenceReceipts).toHaveLength(1);
+    expect(backup.data.decisions[0]?.inferenceReceipts?.[0]).toMatchObject({
+      id: bundle.receipt.id,
+      version: 1,
+      trusted: true,
+      receipt: bundle.receipt,
+    });
+    expect(typeof backup.data.decisions[0]?.inferenceReceipts?.[0]?.version).toBe('number');
+
+    await pool.query('DELETE FROM explanation_records WHERE decision_id = $1', [owner.decisionId]);
+    await pool.query('DELETE FROM decisions WHERE id = $1', [owner.decisionId]);
+    await pool.query('DELETE FROM users WHERE id = $1', [owner.userId]);
+
+    const restored = await restoreBackup(backup.data);
+    expect(restored).toMatchObject({ success: true });
+    const stored = await pool.query<{
+      version: number;
+      trusted: boolean;
+      receipt: unknown;
+    }>(
+      `SELECT version::INT4 AS version, trusted, receipt
+         FROM inference_receipts WHERE id = $1`,
+      [bundle.receipt.id],
+    );
+    expect(stored.rows).toEqual([{
+      version: 1,
+      trusted: false,
+      receipt: bundle.receipt,
+    }]);
+    expect(typeof stored.rows[0]?.version).toBe('number');
   });
 });
