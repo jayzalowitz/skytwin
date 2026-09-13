@@ -21,7 +21,11 @@ verification, and close stage has a bounded deadline and receives an abort
 signal. Fixed catalog, string, request, response, signature, and attestation
 proof limits are also passed to the transport and independently enforced at the
 client boundary. A production transport must apply those limits while reading
-from the network, before allocating an unbounded response body.
+from the network, before allocating an unbounded response body. If a channel
+operation ignores cancellation but later settles, the client waits for that
+settlement before closing so close cannot race the in-flight operation; a
+production transport must honor cancellation or eventually settle because
+JavaScript cannot forcibly terminate an opaque transport promise.
 
 After inference, the same channel retrieves `GET /v1/signature/{chat_id}`. The
 raw endpoint currently returns `text`, `signature`, `signing_address`, and

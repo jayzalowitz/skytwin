@@ -37,11 +37,16 @@ const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
 
 function fixture(evidenceOverrides: Record<string, unknown> = {}) {
-  const send = vi.fn(async (_bytes: Uint8Array) => ({
-    bytes: new TextEncoder().encode('{"answer":"private"}\n'),
-    chatId: "chat-123",
-    modelId: model.id,
-  }));
+  const send = vi.fn(
+    async (
+      _bytes: Uint8Array,
+      _context?: Parameters<VerifiedChannel["send"]>[1],
+    ) => ({
+      bytes: new TextEncoder().encode('{"answer":"private"}\n'),
+      chatId: "chat-123",
+      modelId: model.id,
+    }),
+  );
   const retrieveSignature = vi.fn(
     async (_input?: Parameters<VerifiedChannel["retrieveSignature"]>[0]) => ({
       chatId: "chat-123",
@@ -526,6 +531,24 @@ describe("strict confidential client", () => {
     expect(item.send).not.toHaveBeenCalled();
   });
 
+  it("rejects an oversized transport failure message before transmission", async () => {
+    const item = fixture();
+    vi.mocked(item.transport.openVerifiedChannel).mockResolvedValue({
+      ok: false,
+      code: "verifier_unavailable",
+      message: "x".repeat(CONFIDENTIAL_RESOURCE_LIMITS.maxStringChars + 1),
+      promptTransmitted: false,
+    });
+
+    expect(
+      await item.client.generate(new Uint8Array([1]), policy),
+    ).toMatchObject({
+      code: "resource_limit_exceeded",
+      promptTransmitted: false,
+    });
+    expect(item.send).not.toHaveBeenCalled();
+  });
+
   it("enforces request, catalog, attestation, response, and signature limits", async () => {
     const oversizedRequest = fixture();
     expect(
@@ -620,29 +643,104 @@ describe("strict confidential client", () => {
     ).toBe(true);
 
     const open = fixture();
-    vi.mocked(open.transport.openVerifiedChannel).mockImplementation(never);
+    let resolveOpen: ((value: VerifiedChannel) => void) | undefined;
+    vi.mocked(open.transport.openVerifiedChannel).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveOpen = resolve;
+        }),
+    );
     expect(
       await deadlineClient(open).generate(new Uint8Array([1]), policy),
     ).toMatchObject({ code: "verifier_unavailable", promptTransmitted: false });
+    expect(
+      vi.mocked(open.transport.openVerifiedChannel).mock.calls[0]?.[1].signal
+        .aborted,
+    ).toBe(true);
+    expect(open.close).not.toHaveBeenCalled();
+    resolveOpen?.(open.channel);
+    await vi.waitFor(() => expect(open.close).toHaveBeenCalledOnce());
 
     const send = fixture();
-    send.send.mockImplementation(never);
+    let resolveSend: (() => void) | undefined;
+    let sendSettled = false;
+    send.send.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSend = () => {
+            sendSettled = true;
+            resolve({
+              bytes: new Uint8Array([1]),
+              chatId: "late-chat",
+              modelId: model.id,
+            });
+          };
+        }),
+    );
+    send.close.mockImplementation(async () => {
+      expect(sendSettled).toBe(true);
+    });
     expect(
       await deadlineClient(send).generate(new Uint8Array([1]), policy),
     ).toMatchObject({ code: "transport_failed", promptTransmitted: true });
-    expect(send.close).toHaveBeenCalledOnce();
+    expect(send.send.mock.calls[0]?.[1]?.signal.aborted).toBe(true);
+    expect(send.close).not.toHaveBeenCalled();
+    resolveSend?.();
+    await vi.waitFor(() => expect(send.close).toHaveBeenCalledOnce());
 
     const signature = fixture();
-    signature.retrieveSignature.mockImplementation(never);
+    let resolveSignature: (() => void) | undefined;
+    let signatureSettled = false;
+    signature.retrieveSignature.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveSignature = () => {
+            signatureSettled = true;
+            resolve({
+              chatId: "chat-123",
+              modelId: model.id,
+              signedText: `${model.id}:${hash(new Uint8Array([1]))}:${hash(new TextEncoder().encode('{"answer":"private"}\n'))}`,
+              signature: "0xsigned",
+              signingIdentity: "0xattested",
+              algorithm: "ecdsa-secp256k1",
+              scheme: "eip191-personal-sign",
+              signedTextFormat: "model:request_sha256:response_sha256",
+              provenance: "provider_tee",
+            });
+          };
+        }),
+    );
+    signature.close.mockImplementation(async () => {
+      expect(signatureSettled).toBe(true);
+    });
     expect(
       await deadlineClient(signature).generate(new Uint8Array([1]), policy),
     ).toMatchObject({ code: "signature_unavailable", promptTransmitted: true });
+    expect(signature.close).not.toHaveBeenCalled();
+    resolveSignature?.();
+    await vi.waitFor(() => expect(signature.close).toHaveBeenCalledOnce());
 
     const verification = fixture();
-    verification.verifyExactResponse.mockImplementation(never);
+    let resolveVerification: ((value: boolean) => void) | undefined;
+    let verificationSettled = false;
+    verification.verifyExactResponse.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveVerification = (value) => {
+            verificationSettled = true;
+            resolve(value);
+          };
+        }),
+    );
+    verification.close.mockImplementation(async () => {
+      expect(verificationSettled).toBe(true);
+    });
     expect(
       await deadlineClient(verification).generate(new Uint8Array([1]), policy),
     ).toMatchObject({ code: "transport_failed", promptTransmitted: true });
+    expect(verification.close).not.toHaveBeenCalled();
+    resolveVerification?.(true);
+    await vi.waitFor(() => expect(verification.close).toHaveBeenCalledOnce());
 
     const close = fixture();
     close.close.mockImplementation(never);

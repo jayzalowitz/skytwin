@@ -63,11 +63,15 @@ interface StageSuccess<T> {
   value: T;
 }
 
-interface StageTimeout {
+interface StageTimeout<T> {
   timedOut: true;
+  settlement: Promise<StageSettlement<T>>;
 }
 
-type StageResult<T> = StageSuccess<T> | StageTimeout;
+type StageResult<T> = StageSuccess<T> | StageTimeout<T>;
+
+type StageSettlement<T> =
+  { status: "fulfilled"; value: T } | { status: "rejected" };
 
 async function runStage<T>(
   timeoutMs: number,
@@ -80,17 +84,26 @@ async function runStage<T>(
     limits: CONFIDENTIAL_RESOURCE_LIMITS,
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<StageTimeout>((resolve) => {
+  const operationPromise = Promise.resolve().then(() => operation(context));
+  const settlement: Promise<StageSettlement<T>> = operationPromise.then(
+    (value) => ({ status: "fulfilled", value }),
+    () => ({ status: "rejected" }),
+  );
+  const timeout = new Promise<StageTimeout<T>>((resolve) => {
     timer = setTimeout(() => {
       controller.abort();
-      resolve({ timedOut: true });
+      resolve({
+        timedOut: true,
+        settlement,
+      });
     }, timeoutMs);
   });
   try {
     return await Promise.race([
-      Promise.resolve()
-        .then(() => operation(context))
-        .then((value): StageSuccess<T> => ({ timedOut: false, value })),
+      operationPromise.then((value): StageSuccess<T> => ({
+        timedOut: false,
+        value,
+      })),
       timeout,
     ]);
   } finally {
@@ -120,6 +133,12 @@ function snapshotPreTransmissionFailure(
     const code = value.code;
     const message = value.message;
     if (!FAILURE_CODES.has(code) || typeof message !== "string") return null;
+    if (message.length > CONFIDENTIAL_RESOURCE_LIMITS.maxStringChars) {
+      return failure(
+        "resource_limit_exceeded",
+        "The confidential verifier failure exceeds its string limit.",
+      );
+    }
     return failure(code, message, false);
   } catch {
     return null;
@@ -516,6 +535,36 @@ export class StrictConfidentialClient {
     }
   }
 
+  private scheduleCloseAfterSettlement(
+    channel: BoundVerifiedChannel,
+    settlement: Promise<StageSettlement<unknown>>,
+  ): void {
+    void settlement.then(async () => {
+      await this.closeChannel(channel);
+    });
+  }
+
+  private async closeUnboundChannel(channel: VerifiedChannel): Promise<void> {
+    try {
+      const close = channel.close;
+      if (typeof close !== "function") return;
+      await runStage(this.stageTimeoutMs, (context) =>
+        close.call(channel, context),
+      );
+    } catch {
+      // A malformed channel is already a terminal failure. Cleanup is best effort.
+    }
+  }
+
+  private scheduleLateOpenCleanup(
+    settlement: Promise<StageSettlement<unknown>>,
+  ): void {
+    void settlement.then(async (opened) => {
+      if (opened.status !== "fulfilled" || isFailure(opened.value)) return;
+      await this.closeUnboundChannel(opened.value as VerifiedChannel);
+    });
+  }
+
   private async finishChannel(
     channel: BoundVerifiedChannel,
     result: ConfidentialResult,
@@ -639,6 +688,7 @@ export class StrictConfidentialClient {
         ),
       );
       if (opened.timedOut) {
+        this.scheduleLateOpenCleanup(opened.settlement);
         return failure(
           "verifier_unavailable",
           "The confidential verifier timed out while establishing a channel.",
@@ -665,6 +715,7 @@ export class StrictConfidentialClient {
     try {
       boundChannel = bindVerifiedChannel(channel);
     } catch {
+      await this.closeUnboundChannel(channel);
       return failure(
         "verifier_unavailable",
         "The confidential verifier returned a malformed channel.",
@@ -766,12 +817,11 @@ export class StrictConfidentialClient {
           boundChannel.send(Uint8Array.from(requestSnapshot), context),
         );
         if (sent.timedOut) {
-          return finish(
-            failure(
-              "transport_failed",
-              "The verified confidential request timed out.",
-              true,
-            ),
+          this.scheduleCloseAfterSettlement(boundChannel, sent.settlement);
+          return failure(
+            "transport_failed",
+            "The verified confidential request timed out.",
+            true,
           );
         }
         rawResponse = sent.value;
@@ -830,12 +880,11 @@ export class StrictConfidentialClient {
           ),
         );
         if (retrieved.timedOut) {
-          return finish(
-            failure(
-              "signature_unavailable",
-              "The response signature lookup timed out.",
-              true,
-            ),
+          this.scheduleCloseAfterSettlement(boundChannel, retrieved.settlement);
+          return failure(
+            "signature_unavailable",
+            "The response signature lookup timed out.",
+            true,
           );
         }
         signature = snapshotSignature(retrieved.value);
@@ -934,12 +983,14 @@ export class StrictConfidentialClient {
           ),
         );
         if (verification.timedOut) {
-          return finish(
-            failure(
-              "transport_failed",
-              "Exact response verification timed out.",
-              true,
-            ),
+          this.scheduleCloseAfterSettlement(
+            boundChannel,
+            verification.settlement,
+          );
+          return failure(
+            "transport_failed",
+            "Exact response verification timed out.",
+            true,
           );
         }
         verified = verification.value;

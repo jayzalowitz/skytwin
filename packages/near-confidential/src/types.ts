@@ -124,7 +124,12 @@ export interface ConfidentialResourceLimits {
   maxSignatureChars: number;
 }
 
-/** Every transport stage receives the same immutable limits and a stage-local abort signal. */
+/**
+ * Every transport stage receives the same immutable limits and a stage-local
+ * abort signal. Implementations must honor cancellation or eventually settle:
+ * after a timeout the client waits for settlement before closing the channel,
+ * so close never races an in-flight channel operation.
+ */
 export interface ConfidentialOperationContext {
   readonly signal: AbortSignal;
   readonly timeoutMs: number;
