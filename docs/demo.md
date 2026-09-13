@@ -13,6 +13,13 @@ their other hand and read along.
 > runnable against a fresh dev install. If you're recording the launch
 > video, this file is the script.
 
+> **Scope:** this operator script exercises the development seed after
+> `pnpm db:seed`; it is not a description of the currently published desktop
+> installers. Current source gives packaged builds a separate, short-lived,
+> read-only sample session. That packaged foundation can display allowed sample
+> views but cannot approve, reject, correct, learn, open settings, or run a mock
+> action. Those packaged interactions are later work.
+
 ---
 
 ## Before you start (30 seconds)
@@ -26,8 +33,8 @@ You'll need:
   ```
   Then open `http://localhost:3200`.
 
-If you'd rather not connect your real Gmail for the demo, the sample profile
-in step 1 covers the same ground without needing OAuth.
+If you'd rather not connect your real Gmail for this development demo, the
+seeded profile in step 1 covers the interactive walkthrough without OAuth.
 
 ---
 
@@ -41,11 +48,12 @@ start.
 
 **Two paths from here:**
 
-- **"Just show me around"** — gives you a pre-loaded user (Alex) who's alive
+- **"Just show me around"** — the development seed gives you a pre-loaded user
+  (Alex) who's alive
   across every surface: ~10 recent decisions, 4 pending approvals you can
   actually click through, a populated daily briefing, "What I've learned",
   Capabilities, Search, and a trust bar at 84% climbing toward "handle most
-  things". Two other personas ship too — **Pat** (a power user who handles
+  things". Two other personas are in the development seed too — **Pat** (a power user who handles
   everything) and **Carol** (a brand-new user earning her first trust) — so
   the dev "Switch user" button tells three different stories. No OAuth, no
   signal-ingestion wait. This is the demo path. (The showcase data lives in
@@ -97,8 +105,9 @@ change touches the approval buttons, it goes through `/review`.
 
 ## Step 3 — Connect Gmail (or use the seed) (45 seconds)
 
-**If you took the sample-profile path:** skip ahead to step 4. The sample
-profile already has connectors wired and signals flowing.
+**If you took the seeded development path:** skip ahead to step 4. The seed
+provides the mock connector data this operator walkthrough needs. This does not
+describe the packaged read-only sample session.
 
 **If you took the live-OAuth path:** click "Connect Gmail" from the dashboard
 or `#/connect-gmail`. The five-step wizard walks the user through the BYO

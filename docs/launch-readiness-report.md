@@ -2,7 +2,13 @@
 
 **Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.61.0 · **Branch:** `jayzalowitz/pre-launch-dev-audit-toolchain`
 
-This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan) — this document is the *current-state truth*.
+This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan). Its checkmarks record the development/source revision named above; they are not certification of a later packaged artifact or the current published release.
+
+## 2026-09-13 packaged-sample release boundary
+
+Current source adds a guarded foundation for an account-free packaged demo: a short-lived credential bound to one reserved fictional identity and an explicit read allowlist. That foundation is deliberately read-only. It can expose allowed sample decisions and explanations, but it cannot approve, reject, edit, correct, learn, open settings, invoke connectors, or execute actions. Interactive simulation is a later slice.
+
+The currently published installers predate this packaged sample path. A public launch still requires building and verifying fresh artifacts in addition to clearing the signing, OAuth review, mobile/store, and encryption/key-management blockers retained below.
 
 ---
 
@@ -33,15 +39,16 @@ The issue inventory below remains the 2026-06-16 launch-readiness classification
 
 ## Bottom line
 
-**SkyTwin is launch-ready on the engineering side.** The decision pipeline, twin model, policy engine, memory layer, dashboard, and the new Inbox-Intelligence digest all work, are tested, and pass live QA with zero console errors. Every *code-writable* launch criterion in epic #357 has shipped.
+**The audited development/source revision passed its recorded engineering checks.** The decision pipeline, twin model, policy engine, memory layer, dashboard, and Inbox-Intelligence digest were tested and passed the live QA described below. That result does not establish that the currently published installers contain later source work, that a fresh release artifact has passed install validation, or that every code-side public-launch criterion is complete.
 
-The remaining launch blockers are **not code**:
+Recorded launch blockers include:
 
 1. **Procurement** — Apple Developer ($99/yr) + Windows EV code-signing certs (#368/#359). Until these land, the `.dmg`/`.exe` trip Gatekeeper/SmartScreen. This is the single biggest non-engineering blocker.
 2. **External review** — Google OAuth restricted-scope / brand verification (#351, multi-week CASA review) and mobile app-store review (#369/#360, needs Apple/Play accounts).
 3. **Design assets** — real multi-resolution mobile icons/splash to replace the 1×1 placeholders (#409/#369).
 
-…plus **one code task that needs a human decision first**: **#374** (encrypt user memory + preferences at rest). See [§ The one code-side launch task](#the-one-code-side-launch-task).
+4. **Code and architecture** — #374 (encrypt user memory + preferences at rest) requires the #401 key-management decision. See [§ The one code-side launch task](#the-one-code-side-launch-task).
+5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems. The source-tree checks below do not substitute for this gate.
 
 ---
 
@@ -63,13 +70,13 @@ The remaining launch blockers are **not code**:
 |---|---|---|
 | 1 | Download a signed `.dmg`/`.exe`/store build | ⛔ external — certs (#368/#359), store accounts (#369) |
 | 2 | Install without Gatekeeper/SmartScreen warnings | ⛔ external — certs |
-| 3 | Reach a meaningful state ≤60s | ✅ tour mode is instant |
-| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | ✅ sample-profile path loads a fully-populated dashboard |
-| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ pipeline verified; tour shows a populated queue |
-| 6 | Understand *why* each decision was made | ✅ "What happened" log, click any row for full reasoning |
-| 7 | Approve/reject without confusion | ✅ microcopy intact (Just watch / Ask me first / Handle small stuff / …) |
-| 8 | Find a "pause everything" button | ✅ global **Pause everything** + Settings **Pause auto-execution** (#379) |
-| 9 | Find a "delete my data" button | ✅ Settings → **Download** + **Delete my data** (#376) |
+| 3 | Reach a meaningful state ≤60s | 🟡 development tour verified; current source adds a read-only packaged sample, but published installers predate it and a fresh artifact still needs validation |
+| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | 🟡 development seed loads a populated dashboard; the packaged source path is read-only and not present in published installers |
+| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ connected-account development pipeline verified; the read-only sample queue is not evidence for this criterion |
+| 6 | Understand *why* each decision was made | ✅ development/connected flow verified; current packaged-sample source can inspect allowlisted decision and explanation views |
+| 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; the packaged sample foundation cannot submit approvals or feedback |
+| 8 | Find a "pause everything" button | ✅ connected/development product exposes global **Pause everything** + Settings **Pause auto-execution** (#379); Settings is outside packaged-sample authority |
+| 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
 | 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
 
 ## The one code-side launch task
@@ -114,7 +121,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#323](https://github.com/jayzalowitz/skytwin/issues/323) | 🟡 partial | — | — | AC3: wire `registryId` into MCP-action spend recording |
 | [#324](https://github.com/jayzalowitz/skytwin/issues/324) | 🟡 partial | — | yes | Rollback wiring + decision→execution-plan join follow-ups |
 | [#351](https://github.com/jayzalowitz/skytwin/issues/351) | ⛔ external | — | — | CASA assessor contract + Google review (post-launch) |
-| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | — | Code-writable launch criteria have shipped; rest is external |
+| [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | partly | Source capabilities passed the dated audit; packaged-sample interactivity, fresh artifact validation, and the external launch gates remain |
 | [#359](https://github.com/jayzalowitz/skytwin/issues/359) | ⛔ external | **YES** | — | Apple Developer + Windows EV cert purchase/enroll |
 | [#360](https://github.com/jayzalowitz/skytwin/issues/360) | 🟡 partial | **YES** | yes | Mobile: #369 store-readiness gate is the bulk |
 | [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — needs #401 key-mgmt decision) + #375 follow-ups (assistant block, number/name). |
