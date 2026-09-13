@@ -6,11 +6,21 @@ import {
 } from '../migrations/001-initial.js';
 
 describe('migration rollback ordering', () => {
-  it('drops execution admission barriers before every authority parent', () => {
+  it('drops every stack-owned receipt/admission table before every authority parent', () => {
     const barrierIndex = INITIAL_MIGRATION_DROP_ORDER.indexOf('execution_admission_barriers');
     expect(barrierIndex).toBeGreaterThanOrEqual(0);
     for (const parent of ['execution_plans', 'candidate_actions', 'decisions', 'users'] as const) {
       expect(barrierIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf(parent));
+    }
+    for (const child of [
+      'decision_ingest_guards',
+      'inference_receipt_completions',
+      'inference_receipts',
+    ] as const) {
+      const childIndex = INITIAL_MIGRATION_DROP_ORDER.indexOf(child);
+      expect(childIndex).toBeGreaterThanOrEqual(0);
+      expect(childIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf('explanation_records'));
+      expect(childIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf('decisions'));
     }
   });
 });

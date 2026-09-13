@@ -66,11 +66,6 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
              WHERE d.user_id = $1)`,
   },
   {
-    table: 'execution_plans',
-    sql: `DELETE FROM execution_plans WHERE decision_id IN
-            (SELECT id FROM decisions WHERE user_id = $1)`,
-  },
-  {
     table: 'explanation_records',
     sql: `DELETE FROM explanation_records WHERE decision_id IN
             (SELECT id FROM decisions WHERE user_id = $1)`,
@@ -78,6 +73,11 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
   {
     table: 'decision_outcomes',
     sql: `DELETE FROM decision_outcomes WHERE decision_id IN
+            (SELECT id FROM decisions WHERE user_id = $1)`,
+  },
+  {
+    table: 'execution_plans',
+    sql: `DELETE FROM execution_plans WHERE decision_id IN
             (SELECT id FROM decisions WHERE user_id = $1)`,
   },
   {
@@ -134,6 +134,19 @@ async function execAndCount(
   return result.rowCount ?? 0;
 }
 
+async function purgeUserWithClient(client: PoolClient, userId: string): Promise<PurgeUserResult> {
+  const counts: Record<string, number> = {};
+  let total = 0;
+  let userExisted = false;
+  for (const { table, sql } of DELETE_PLAN) {
+    const n = await execAndCount(client, sql, userId);
+    counts[table] = n;
+    total += n;
+    if (table === 'users') userExisted = n > 0;
+  }
+  return { counts, total, userExisted };
+}
+
 export const userPurgeRepository = {
   /**
    * Delete every row belonging to the given user. Wraps the chain in
@@ -147,19 +160,19 @@ export const userPurgeRepository = {
    * `userExisted: false`.
    */
   async purgeUser(userId: string): Promise<PurgeUserResult> {
+    return withTransaction((client) => purgeUserWithClient(client, userId));
+  },
+
+  /** Atomically purge only users that remain marked as demo rows. */
+  async purgeDemoUsers(): Promise<number> {
     return withTransaction(async (client) => {
-      const counts: Record<string, number> = {};
-      let total = 0;
-      let userExisted = false;
-      for (const { table, sql } of DELETE_PLAN) {
-        const n = await execAndCount(client, sql, userId);
-        counts[table] = n;
-        total += n;
-        if (table === 'users') {
-          userExisted = n > 0;
-        }
+      const selected = await client.query<{ id: string }>(
+        'SELECT id FROM users WHERE is_demo = true FOR UPDATE',
+      );
+      for (const user of selected.rows) {
+        await purgeUserWithClient(client, user.id);
       }
-      return { counts, total, userExisted };
+      return selected.rows.length;
     });
   },
 };

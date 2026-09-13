@@ -127,6 +127,9 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(indexOf('DELETE FROM execution_admission_barriers')).toBeLessThan(
       indexOf('DELETE FROM candidate_actions'),
     );
+    expect(indexOf('DELETE FROM decision_outcomes')).toBeLessThan(
+      indexOf('DELETE FROM execution_plans'),
+    );
     expect(indexOf('DELETE FROM twin_profile_versions')).toBeLessThan(
       indexOf('DELETE FROM users'),
     );
@@ -181,5 +184,27 @@ describe('userPurgeRepository.purgeUser', () => {
     for (const call of paramCalls) {
       expect(call[1]).toEqual([USER_ID]);
     }
+  });
+
+  it('locks the demo predicate and purges selected demo graphs in one transaction', async () => {
+    setupDeleteCounts({ users: 1 });
+    mockClient.query.mockImplementation((sql: string) => {
+      if (sql.includes('SELECT id FROM users WHERE is_demo = true FOR UPDATE')) {
+        return { rows: [{ id: USER_ID }], rowCount: 1 };
+      }
+      const match = sql.match(/DELETE FROM\s+([a-z_]+)/i);
+      return { rows: [], rowCount: match?.[1] === 'users' ? 1 : 0 };
+    });
+
+    await expect(userPurgeRepository.purgeDemoUsers()).resolves.toBe(1);
+    expect(mockClient.query.mock.calls[0]![0]).toBe('BEGIN');
+    expect(mockClient.query).toHaveBeenCalledWith(
+      'SELECT id FROM users WHERE is_demo = true FOR UPDATE',
+    );
+    const commitIndex = mockClient.query.mock.calls.findIndex((call) => call[0] === 'COMMIT');
+    const userDeleteIndex = mockClient.query.mock.calls.findIndex((call) =>
+      typeof call[0] === 'string' && call[0].includes('DELETE FROM users'));
+    expect(userDeleteIndex).toBeGreaterThan(0);
+    expect(userDeleteIndex).toBeLessThan(commitIndex);
   });
 });

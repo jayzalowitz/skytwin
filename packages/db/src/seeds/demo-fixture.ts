@@ -14,6 +14,7 @@
 
 import { pathToFileURL } from 'node:url';
 import { getPool, withTransaction, closePool } from '../connection.js';
+import { userPurgeRepository } from '../repositories/user-purge-repository.js';
 import { seedUpsert } from './upsert.js';
 import {
   assertDemoSafe,
@@ -23,6 +24,11 @@ import {
 } from './demo-guard.js';
 import { DEMO_SIGNALS } from './demo-fixtures/signals.js';
 import { triggerDemoBriefing } from './demo-briefing.js';
+
+/** Delete complete graphs for every explicitly marked demo user. */
+export async function resetDemoUsers(): Promise<number> {
+  return userPurgeRepository.purgeDemoUsers();
+}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -48,14 +54,9 @@ async function main(): Promise<void> {
   getPool();
 
   if (reset) {
-    // Gate 3 by predicate: only is_demo rows are touched. Owned rows cascade.
-    await withTransaction(async (client) => {
-      await client.query(
-        `DELETE FROM execution_admission_barriers
-         WHERE user_id IN (SELECT id FROM users WHERE is_demo = true)`,
-      );
-      await client.query(`DELETE FROM users WHERE is_demo = true`);
-    });
+    // Gate 3 by predicate: resolve only is_demo users, then use the production
+    // dependency-ordered purge for each complete candidate/execution graph.
+    await resetDemoUsers();
     console.log('[demo:fixture] reset complete — removed is_demo users only.');
     await closePool();
     return;

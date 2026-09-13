@@ -236,12 +236,12 @@ export const userRepository = {
         [id],
       );
       await client.query(
-        `DELETE FROM execution_plans WHERE decision_id IN
+        `DELETE FROM decision_outcomes WHERE decision_id IN
          (SELECT id FROM decisions WHERE user_id = $1)`,
         [id],
       );
       await client.query(
-        `DELETE FROM decision_outcomes WHERE decision_id IN
+        `DELETE FROM execution_plans WHERE decision_id IN
          (SELECT id FROM decisions WHERE user_id = $1)`,
         [id],
       );

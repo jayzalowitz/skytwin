@@ -202,10 +202,14 @@ export async function up(): Promise<void> {
  * Roll back the initial migration: drop all tables in reverse dependency order.
  */
 export const INITIAL_MIGRATION_DROP_ORDER = [
-    // Added by migration 078. Drop explicitly before its non-cascading
-    // decision/action/plan parents so rollback/reapply cannot retain a table
-    // whose foreign keys were removed by a parent CASCADE.
+    // Added by migrations 074-078. Drop these stack-owned tables explicitly
+    // before their decision/explanation/action/plan parents. Otherwise a
+    // parent CASCADE removes their foreign keys while leaving the tables in
+    // place, and the next CREATE TABLE IF NOT EXISTS cannot restore them.
     'execution_admission_barriers',
+    'decision_ingest_guards',
+    'inference_receipt_completions',
+    'inference_receipts',
     // Added by migration 012 (mempalace)
     'entity_codes',
     'episodic_memories',
