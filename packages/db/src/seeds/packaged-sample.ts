@@ -115,7 +115,7 @@ export function assertPackagedSampleSafe(env: PackagedSampleEnvironment): Packag
  */
 export async function provisionPackagedSampleWithClient(
   client: Db,
-  authorize: () => boolean = () => true,
+  authorize: () => boolean,
 ): Promise<PackagedSampleProvisionResult> {
   requireOwnedSampleAuthority(authorize);
   const inserted = await client.query(

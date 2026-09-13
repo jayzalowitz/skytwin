@@ -64,7 +64,7 @@ describe('packaged sample safety', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ id: DEMO_USER_ID }] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [] });
 
-    await expect(provisionPackagedSampleWithClient({ query } as never)).resolves.toEqual({
+    await expect(provisionPackagedSampleWithClient({ query } as never, () => true)).resolves.toEqual({
       created: true,
       userId: DEMO_USER_ID,
     });
@@ -79,7 +79,7 @@ describe('packaged sample safety', () => {
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ is_demo: true }] })
       .mockResolvedValueOnce({ rowCount: 0, rows: [] });
 
-    await expect(provisionPackagedSampleWithClient({ query } as never)).resolves.toEqual({
+    await expect(provisionPackagedSampleWithClient({ query } as never, () => true)).resolves.toEqual({
       created: false,
       userId: DEMO_USER_ID,
     });
@@ -93,7 +93,9 @@ describe('packaged sample safety', () => {
       .mockResolvedValueOnce({ rowCount: 0, rows: [] })
       .mockResolvedValueOnce({ rowCount: 1, rows: [{ is_demo: false }] });
 
-    await expect(provisionPackagedSampleWithClient({ query } as never)).rejects.toThrow(/non-sample account/);
+    await expect(provisionPackagedSampleWithClient({ query } as never, () => true)).rejects.toThrow(
+      /non-sample account/,
+    );
   });
 
   it('performs no transaction write when authority is lost after the fixed connection opens', async () => {
