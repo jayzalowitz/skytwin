@@ -2,7 +2,8 @@ import type { ChatMessage, GenerateOptions } from '../types.js';
 import { toMessages } from '../messages.js';
 import { fetchCustomProviderUrl, type SafeProviderFetch } from '../url-validation.js';
 
-const DEFAULT_URL = 'http://localhost:11434';
+// A literal loopback default cannot be redirected by a modified hosts file.
+const DEFAULT_URL = 'http://127.0.0.1:11434';
 
 /**
  * Ollama provider. Issue #149: switched from `/api/generate` (which takes

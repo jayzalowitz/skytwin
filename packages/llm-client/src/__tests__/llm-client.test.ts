@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { ProviderEntry } from '../types.js';
+import type { GenerateOptions, ProviderEntry } from '../types.js';
 
 // Mock the provider modules. vi.mock is hoisted so these are set up before any imports.
 const mockAnthropicGenerate = vi.fn();
@@ -413,6 +413,51 @@ describe('LlmClient', () => {
       expect(mockAnthropicGenerate).not.toHaveBeenCalled();
     });
 
+    it('dispatches only the provider snapshot admitted at construction', async () => {
+      const { LlmClient } = await freshImport();
+      const mutable: ProviderEntry = {
+        name: 'ollama', apiKey: '', model: 'qwen', baseUrl: 'http://127.0.0.1:11434',
+      };
+      const client = LlmClient.forReasoningMode('on_device', [mutable], 'user-snapshot');
+      mutable.name = 'openai';
+      mutable.apiKey = 'must-not-leak';
+      mutable.model = 'remote-model';
+      mutable.baseUrl = 'https://remote.example';
+      mockOllamaGenerate.mockResolvedValue('local');
+
+      await client.generate('hello');
+
+      expect(mockOllamaGenerate).toHaveBeenCalledWith(
+        '',
+        'qwen',
+        'hello',
+        expect.objectContaining({ baseUrl: 'http://127.0.0.1:11434' }),
+      );
+      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
+    });
+
+    it('snapshots invocation scalars once before provider fallback awaits', async () => {
+      const { LlmClient } = await freshImport();
+      mockAnthropicGenerate.mockRejectedValue(new Error('first unavailable'));
+      mockOpenaiGenerate.mockResolvedValue('second provider');
+      let invocationReads = 0;
+      const options = Object.defineProperty({}, 'invocationKind', {
+        get: () => (++invocationReads === 1 ? 'interactive' : 'unattended'),
+      }) as GenerateOptions;
+      const client = LlmClient.forReasoningMode(
+        'bring_your_own_provider', [anthropicProvider, openaiProvider], 'user-options-snapshot',
+      );
+
+      await expect(client.generate('hello', options)).resolves.toMatchObject({
+        provider: 'openai',
+      });
+
+      expect(invocationReads).toBe(1);
+      expect(mockAnthropicGenerate).toHaveBeenCalledOnce();
+      expect(mockOpenaiGenerate).toHaveBeenCalledOnce();
+      expect(Object.isFrozen(mockOpenaiGenerate.mock.calls[0]![3])).toBe(true);
+    });
+
     it('does not invoke an unknown-price provider for unattended reasoning', async () => {
       const { LlmClient, AllProvidersFailedError } = await freshImport();
       mockOpenaiGenerate.mockResolvedValue('must not run');
@@ -507,6 +552,32 @@ describe('LlmClient', () => {
           provider: 'openai',
         }),
       ]);
+    });
+
+    it('snapshots streaming invocation scalars once before fallback awaits', async () => {
+      mockAnthropicStream.mockImplementationOnce(async function* () {
+        throw new Error('first unavailable');
+      });
+      mockOpenaiGenerate.mockResolvedValueOnce('second provider');
+      let invocationReads = 0;
+      const options = Object.defineProperty({}, 'invocationKind', {
+        get: () => (++invocationReads === 1 ? 'interactive' : 'unattended'),
+      }) as GenerateOptions;
+      const { LlmClient } = await freshImport();
+      const client = LlmClient.forReasoningMode(
+        'bring_your_own_provider', [anthropicProvider, openaiProvider], 'user-stream-options',
+      );
+
+      const events: unknown[] = [];
+      for await (const event of client.generateStream('hello', options)) events.push(event);
+
+      expect(invocationReads).toBe(1);
+      expect(mockAnthropicStream).toHaveBeenCalledOnce();
+      expect(mockOpenaiGenerate).toHaveBeenCalledOnce();
+      expect(Object.isFrozen(mockOpenaiGenerate.mock.calls[0]![3])).toBe(true);
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'done', provider: 'openai', content: 'second provider',
+      }));
     });
 
     it('does NOT fall through after the first chunk has been yielded', async () => {

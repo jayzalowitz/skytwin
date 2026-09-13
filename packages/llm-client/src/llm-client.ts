@@ -133,6 +133,7 @@ function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOpt
     maxTokens: options.maxTokens,
     systemPrompt: options.systemPrompt,
     timeoutMs: options.timeoutMs,
+    invocationKind: options.invocationKind,
   });
 }
 
@@ -312,7 +313,7 @@ export class LlmClient {
     for (const entry of this.chain) {
       const { provider, generateFn, circuitBreaker } = entry;
 
-      if (options.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+      if (invocation.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
         attempted.push(`${provider.name}(price-unavailable)`);
         executionPath.push({ provider: provider.name, outcome: 'price_unavailable' });
         continue;
@@ -331,7 +332,11 @@ export class LlmClient {
           provider.apiKey,
           provider.model,
           invocationPrompt,
-          Object.freeze({ ...invocationOptions, baseUrl: provider.baseUrl }),
+          Object.freeze({
+            ...invocationOptions,
+            baseUrl: provider.baseUrl,
+            reasoningMode: this.reasoningMode,
+          }),
         );
         const recorded = await this.recordSuccessfulInference(
           provider, logicalRequest, content, confidentialFallbackReason,
@@ -398,7 +403,7 @@ export class LlmClient {
     for (const entry of this.chain) {
       const { provider, streamFn, circuitBreaker } = entry;
 
-      if (options.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+      if (invocation.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
         attempted.push(`${provider.name}(price-unavailable)`);
         executionPath.push({ provider: provider.name, outcome: 'price_unavailable' });
         continue;
@@ -420,7 +425,11 @@ export class LlmClient {
           provider.apiKey,
           provider.model,
           invocationPrompt,
-          Object.freeze({ ...invocationOptions, baseUrl: provider.baseUrl }),
+          Object.freeze({
+            ...invocationOptions,
+            baseUrl: provider.baseUrl,
+            reasoningMode: this.reasoningMode,
+          }),
         )) {
           if (chunk.length === 0) continue;
           collected.push(chunk);
