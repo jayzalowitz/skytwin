@@ -27,7 +27,7 @@
  */
 
 import { query, withTransaction } from '../connection.js';
-import type { InferenceReceiptV1 } from '@skytwin/shared-types';
+import { snapshotInferenceReceipt, verifyInferenceReceiptSeal } from '@skytwin/shared-types';
 import { twinRepository } from '../repositories/twin-repository.js';
 import { userRepository } from '../repositories/user-repository.js';
 import type {
@@ -42,8 +42,9 @@ import type {
   UserRow,
 } from '../types.js';
 
-/** Bumped when the JSON shape changes in a non-back-compatible way. */
-export const BACKUP_SCHEMA_VERSION = 1;
+/** Bumped so older readers reject receipt-bearing archives instead of silently dropping them. */
+export const BACKUP_SCHEMA_VERSION = 2;
+const LEGACY_BACKUP_SCHEMA_VERSION = 1;
 
 /** A single decision with everything that hangs off it. */
 export interface DecisionBundle {
@@ -51,7 +52,7 @@ export interface DecisionBundle {
   candidateActions: CandidateActionRow[];
   outcome: DecisionOutcomeRow | null;
   explanations: ExplanationRecordRow[];
-  /** Optional so schema-v1 backups produced before receipts remain restorable. */
+  /** Absent only in receipt-free schema-v1 backups. */
   inferenceReceipts?: InferenceReceiptRow[];
 }
 
@@ -252,8 +253,13 @@ export function validateBackupData(value: unknown): string[] {
       if (!Array.isArray(bundle.explanations)) {
         problems.push(`decisions[${index}].explanations is not an array`);
       }
-      if (bundle.inferenceReceipts !== undefined && !Array.isArray(bundle.inferenceReceipts)) {
+      if (data.schemaVersion === BACKUP_SCHEMA_VERSION && bundle.inferenceReceipts === undefined) {
+        problems.push(`decisions[${index}].inferenceReceipts is required by schema version ${BACKUP_SCHEMA_VERSION}`);
+      } else if (bundle.inferenceReceipts !== undefined && !Array.isArray(bundle.inferenceReceipts)) {
         problems.push(`decisions[${index}].inferenceReceipts is not an array`);
+      }
+      if (data.schemaVersion === LEGACY_BACKUP_SCHEMA_VERSION && bundle.inferenceReceipts !== undefined) {
+        problems.push(`decisions[${index}].inferenceReceipts requires schema version ${BACKUP_SCHEMA_VERSION}`);
       }
       const explanations = Array.isArray(bundle.explanations) ? bundle.explanations : [];
       const receipts = Array.isArray(bundle.inferenceReceipts) ? bundle.inferenceReceipts : [];
@@ -264,12 +270,12 @@ export function validateBackupData(value: unknown): string[] {
         }
       }
       for (const [receiptIndex, receipt] of receipts.entries()) {
-        const signed = receipt?.receipt as Partial<InferenceReceiptV1> | undefined;
+        const signed = snapshotInferenceReceipt(receipt?.receipt);
         if (!receipt || receipt.decision_id !== bundle.decision.id ||
-            !explanationIds.has(receipt.explanation_id) || !signed ||
+            !explanationIds.has(receipt.explanation_id) || !signed || !verifyInferenceReceiptSeal(signed) ||
             signed.id !== receipt.id || signed.decisionId !== receipt.decision_id ||
             signed.explanationId !== receipt.explanation_id || signed.userId !== data.user?.id ||
-            signed.status !== receipt.status) {
+            signed.version !== receipt.version || signed.status !== receipt.status) {
           problems.push(`decisions[${index}].inferenceReceipts[${receiptIndex}] has inconsistent linkage`);
         }
       }
@@ -303,11 +309,11 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
   }
   const data = value as BackupData;
 
-  if (data.schemaVersion !== BACKUP_SCHEMA_VERSION) {
+  if (data.schemaVersion !== BACKUP_SCHEMA_VERSION && data.schemaVersion !== LEGACY_BACKUP_SCHEMA_VERSION) {
     return {
       success: false,
       reason: 'unsupported_schema',
-      message: `backup schema version ${data.schemaVersion} is not supported by this build (expected ${BACKUP_SCHEMA_VERSION})`,
+      message: `backup schema version ${data.schemaVersion} is not supported by this build (expected ${LEGACY_BACKUP_SCHEMA_VERSION} or ${BACKUP_SCHEMA_VERSION})`,
     };
   }
 
@@ -487,6 +493,13 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
       }
 
       for (const r of bundle.inferenceReceipts ?? []) {
+        const signed = snapshotInferenceReceipt(r.receipt);
+        if (!signed || !verifyInferenceReceiptSeal(signed) || signed.id !== r.id ||
+            signed.userId !== data.user.id || signed.decisionId !== bundle.decision.id ||
+            signed.decisionId !== r.decision_id || signed.explanationId !== r.explanation_id ||
+            signed.version !== r.version || signed.status !== r.status) {
+          throw new Error(`receipt ${r.id} changed or failed validation during restore`);
+        }
         const insertedReceipt = await client.query(
           `INSERT INTO inference_receipts (
              id, version, decision_id, explanation_id, status, receipt, trusted, created_at
@@ -494,7 +507,7 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
              FROM decisions d JOIN explanation_records e ON e.decision_id = d.id
             WHERE d.id=$3 AND e.id=$4`,
           [r.id, r.version, r.decision_id, r.explanation_id, r.status,
-            JSON.stringify(r.receipt), r.created_at],
+            JSON.stringify(signed), r.created_at],
         );
         if (insertedReceipt.rowCount !== 1) {
           throw new Error(`receipt ${r.id} could not be linked during restore`);
