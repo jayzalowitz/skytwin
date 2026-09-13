@@ -171,11 +171,17 @@ async function classifyHttpError(res) {
  * branch on `err.kind` rather than parsing `err.message`. Use
  * `renderApiError(err, retry)` for a consistent visual treatment.
  */
-export async function fetchJSON(url, options = {}, demoRenewed = false) {
+export async function fetchJSON(
+  url,
+  options = {},
+  demoRenewed = false,
+  allowDemoRenewal = true,
+) {
   const sampleExpiry = Date.parse(
     localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ?? '',
   );
   if (
+    allowDemoRenewal &&
     !demoRenewed &&
     url !== `${API}/v1/demo/session` &&
     localStorage.getItem(KEY_TOUR_MODE) === '1' &&
@@ -184,7 +190,7 @@ export async function fetchJSON(url, options = {}, demoRenewed = false) {
     sampleExpiry <= Date.now()
   ) {
     await startDemoSession();
-    return fetchJSON(url, options, true);
+    return fetchJSON(url, options, true, allowDemoRenewal);
   }
 
   let res;
@@ -207,13 +213,14 @@ export async function fetchJSON(url, options = {}, demoRenewed = false) {
   if (!res.ok) {
     if (
       res.status === 401 &&
+      allowDemoRenewal &&
       !demoRenewed &&
       url !== `${API}/v1/demo/session` &&
       localStorage.getItem(KEY_TOUR_MODE) === '1' &&
       localStorage.getItem(KEY_USER_ID) === DEMO_USER_ID
     ) {
       await startDemoSession();
-      return fetchJSON(url, options, true);
+      return fetchJSON(url, options, true, allowDemoRenewal);
     }
     const apiErr = await classifyHttpError(res);
     if (apiErr.kind === 'offline') markApiOffline();
@@ -519,18 +526,25 @@ export function sendSampleSimulationCommand(command) {
   return fetchJSON(`${API}/v1/demo/simulation/commands`, {
     method: 'POST',
     body: JSON.stringify(command),
-  });
+  }, false, false);
 }
 
 export async function endSampleSimulation() {
   const token = localStorage.getItem(KEY_SESSION_TOKEN);
   if (!token) return null;
-  const res = await fetch(`${API}/v1/demo/simulation`, {
-    method: 'DELETE',
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) throw await classifyHttpError(res);
-  return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 3_000);
+  try {
+    const res = await fetch(`${API}/v1/demo/simulation`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${token}` },
+      signal: controller.signal,
+    });
+    if (!res.ok) throw await classifyHttpError(res);
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export function askTwin(userId, situation, opts = {}) {

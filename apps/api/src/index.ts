@@ -378,7 +378,7 @@ app.use(
     undefined,
     async () => (await userRepository.findDemoById(DEMO_USER_ID)) !== null,
   ),
-); // signed, ready-fixture-bound, session-local fictional commands
+); // signed, sample-identity-bound, session-local fictional commands
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
 app.use('/api/system', createSystemRouter()); // public — hardware detection + local-model pick for onboarding (pre-auth)
 app.use('/api/capabilities', sessionAuth, requireOwnership, requestContext, createCapabilitiesRouter());

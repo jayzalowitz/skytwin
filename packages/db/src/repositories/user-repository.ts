@@ -41,7 +41,7 @@ export const userRepository = {
    */
   async findDemoById(id: string): Promise<UserRow | null> {
     const result = await query<UserRow>(
-      'SELECT * FROM users WHERE id = $1 AND is_demo = true AND demo_ready = true',
+      'SELECT * FROM users WHERE id = $1 AND is_demo = true',
       [id],
     );
     return result.rows[0] ?? null;

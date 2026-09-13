@@ -141,19 +141,6 @@ export async function sessionAuth(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  // Dev-only localhost bypass (must be explicitly enabled or NODE_ENV=development)
-  if (DEV_AUTH_BYPASS && isLocalhost(req)) {
-    if (!bypassWarned) {
-      log.warn(
-        'Localhost auth bypass is ACTIVE. Set SKYTWIN_DEV_AUTH_BYPASS=false or NODE_ENV=production to require real auth.',
-      );
-      bypassWarned = true;
-    }
-    // No authenticatedUserId set — ownership middleware will skip checks in bypass mode
-    next();
-    return;
-  }
-
   const authHeader = req.headers['authorization'];
   const query = req.query ?? {};
   const queryToken = typeof query['token'] === 'string' ? query['token'] : undefined;
@@ -187,6 +174,22 @@ export async function sessionAuth(
     }
     req.authenticatedUserId = DEMO_USER_ID;
     req.demoAuthenticated = true;
+    next();
+    return;
+  }
+
+  // Dev-only localhost bypass (must be explicitly enabled or NODE_ENV=development).
+  // Check a valid sample credential first: presenting that narrow principal must
+  // never inherit the broader development bypass merely because the request is
+  // loopback. An invalid token still falls through to the documented dev mode.
+  if (DEV_AUTH_BYPASS && isLocalhost(req)) {
+    if (!bypassWarned) {
+      log.warn(
+        'Localhost auth bypass is ACTIVE. Set SKYTWIN_DEV_AUTH_BYPASS=false or NODE_ENV=production to require real auth.',
+      );
+      bypassWarned = true;
+    }
+    // No authenticatedUserId set — ownership middleware will skip checks in bypass mode
     next();
     return;
   }

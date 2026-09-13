@@ -258,6 +258,34 @@ describe('sessionAuth middleware', () => {
       expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
     });
 
+    it('keeps the sample principal read-only when the localhost development bypass is enabled', async () => {
+      process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'true';
+      process.env['SESSION_SECRET'] =
+        'test-demo-session-secret-that-is-long-enough';
+      const auth = await import('../middleware/session-auth.js');
+      const demo = await import('../auth/demo-session.js');
+      const db = await import('@skytwin/db');
+      (
+        db.userRepository.findDemoById as ReturnType<typeof vi.fn>
+      ).mockResolvedValue({ id: demo.DEMO_USER_ID, is_demo: true });
+      const req = mockReq({
+        ip: '127.0.0.1',
+        method: 'POST',
+        originalUrl: '/api/feedback',
+        headers: {
+          authorization: `Bearer ${demo.issueDemoSession().token}`,
+        },
+      });
+      const res = mockRes();
+      const next = vi.fn();
+
+      await auth.sessionAuth(req, res, next);
+
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+    });
+
     it('revokes an issued sample credential when the database marker disappears', async () => {
       const mod = await loadDemoAuth();
       const issued = mod.issueDemoSession();

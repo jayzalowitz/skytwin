@@ -19,7 +19,7 @@ interface AuthenticatedSampleRequest extends Request {
   };
 }
 
-type SampleReadinessCheck = () => Promise<boolean>;
+type SampleAvailabilityCheck = () => Promise<boolean>;
 
 function requireSampleSimulationSession(
   req: AuthenticatedSampleRequest,
@@ -56,9 +56,20 @@ function requireSampleSimulationSession(
  */
 export function createDemoSimulationRouter(
   service = new SampleSimulationService(),
-  isSampleReady: SampleReadinessCheck = async () => true,
+  isSampleAvailable: SampleAvailabilityCheck = async () => true,
 ): Router {
   const router = Router();
+
+  async function requireAvailableFixture(
+    req: AuthenticatedSampleRequest,
+    res: Response,
+  ): Promise<boolean> {
+    if (await isSampleAvailable()) return true;
+    const sessionKey = req.sampleSimulationSession?.sessionKey;
+    if (sessionKey) service.discard(sessionKey);
+    res.status(401).json({ error: 'Sample session is no longer available.' });
+    return false;
+  }
 
   // Deletion is the one operation that accepts an authentically signed but
   // expired sample token: it can only remove the state keyed by that token.
@@ -86,14 +97,9 @@ export function createDemoSimulationRouter(
   });
 
   router.use(requireSampleSimulationSession);
-  router.use(async (_req, res, next) => {
+  router.use(async (req: AuthenticatedSampleRequest, res, next) => {
     try {
-      if (!(await isSampleReady())) {
-        res
-          .status(401)
-          .json({ error: 'Sample session is no longer available.' });
-        return;
-      }
+      if (!(await requireAvailableFixture(req, res))) return;
       next();
     } catch (error) {
       next(error);
@@ -106,6 +112,7 @@ export function createDemoSimulationRouter(
         session.sessionKey,
         session.expiresAtMs,
       );
+      if (!(await requireAvailableFixture(req, res))) return;
       res.json(state);
     } catch (error) {
       if (error instanceof SampleSimulationCommandError) {
@@ -127,6 +134,7 @@ export function createDemoSimulationRouter(
           session.expiresAtMs,
           command,
         );
+        if (!(await requireAvailableFixture(req, res))) return;
         res.json(state);
       } catch (error) {
         if (error instanceof SampleSimulationCommandError) {

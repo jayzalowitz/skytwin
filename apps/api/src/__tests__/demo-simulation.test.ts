@@ -110,7 +110,7 @@ describe('isolated sample simulation', () => {
     expect(valid.cacheControl).toBe('no-store');
   });
 
-  it('revokes simulation access when the fixture readiness marker is removed', async () => {
+  it('revokes simulation access when the sample identity marker is removed', async () => {
     const app = express();
     app.use(express.json());
     app.use(
@@ -130,6 +130,33 @@ describe('isolated sample simulation', () => {
     expect(denied.body).toMatchObject({
       error: expect.stringMatching(/no longer available/i),
     });
+  });
+
+  it('discards state when sample authority disappears during response preparation', async () => {
+    const service = new SampleSimulationService();
+    let checks = 0;
+    const app = express();
+    app.use(express.json());
+    app.use(
+      '/api/v1/demo/simulation',
+      createDemoSimulationRouter(service, async () => {
+        checks += 1;
+        return checks === 1;
+      }),
+    );
+    const issued = issueDemoSession();
+    const identity = inspectDemoSessionForDiscard(issued.token)!;
+
+    const denied = await request(
+      app,
+      'GET',
+      '/api/v1/demo/simulation',
+      issued.token,
+    );
+
+    expect(denied.status).toBe(401);
+    expect(checks).toBe(2);
+    expect(service.hasSessionForTests(identity.sessionKey)).toBe(false);
   });
 
   it('completes approve, reject, correct, and learn without network access', async () => {
@@ -416,6 +443,41 @@ describe('isolated sample simulation', () => {
 
     await expect(approval).rejects.toMatchObject({ statusCode: 409 });
     expect(service.hasSessionForTests('discard-race')).toBe(false);
+  });
+
+  it('does not return a stale read or reset after discard wins asynchronous presentation', async () => {
+    let resolvePolicy!: (value: {
+      allowed: boolean;
+      requiresApproval: boolean;
+      reason: string;
+    }) => void;
+    const policyResult = new Promise<{
+      allowed: boolean;
+      requiresApproval: boolean;
+      reason: string;
+    }>((resolve) => {
+      resolvePolicy = resolve;
+    });
+    const service = new SampleSimulationService({
+      evaluate: vi.fn(() => policyResult),
+    });
+    const expiresAtMs = Date.now() + 60_000;
+    const read = service.getState('discarded-read', expiresAtMs);
+    const reset = service.command('discarded-reset', expiresAtMs, {
+      type: 'reset',
+    });
+    service.discard('discarded-read');
+    service.discard('discarded-reset');
+    resolvePolicy({
+      allowed: true,
+      requiresApproval: true,
+      reason: 'Deferred test policy.',
+    });
+
+    await expect(read).rejects.toMatchObject({ statusCode: 409 });
+    await expect(reset).rejects.toMatchObject({ statusCode: 409 });
+    expect(service.hasSessionForTests('discarded-read')).toBe(false);
+    expect(service.hasSessionForTests('discarded-reset')).toBe(false);
   });
 
   it('rejects expiry before creation and after an in-flight policy check', async () => {

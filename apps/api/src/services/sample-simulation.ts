@@ -505,6 +505,12 @@ export class SampleSimulationService {
     }
     const presented = await this.present(record);
     this.assertActive(sessionKey, expiresAtMs, this.clock());
+    if (this.records.get(sessionKey) !== record) {
+      throw new SampleSimulationCommandError(
+        'The sample changed while this state was being prepared.',
+        409,
+      );
+    }
     return presented;
   }
 
@@ -534,6 +540,12 @@ export class SampleSimulationService {
         throw error;
       }
       this.assertActive(sessionKey, expiresAtMs, this.clock());
+      if (this.records.get(sessionKey) !== reset) {
+        throw new SampleSimulationCommandError(
+          'The sample changed while reset was being prepared.',
+          409,
+        );
+      }
       return presented;
     }
 

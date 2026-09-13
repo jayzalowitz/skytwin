@@ -7,7 +7,12 @@ import {
   KEY_TOUR_MODE,
   KEY_USER_ID,
 } from './storage-keys.js';
-import { endSampleSimulation, fetchJSON, startDemoSession } from './api-client.js';
+import {
+  endSampleSimulation,
+  fetchJSON,
+  sendSampleSimulationCommand,
+  startDemoSession,
+} from './api-client.js';
 
 const source = readFileSync(new URL('./api-client.js', import.meta.url), 'utf8');
 
@@ -107,7 +112,34 @@ describe('api client', () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({
       method: 'DELETE',
       headers: { Authorization: 'Bearer expired-sample-token' },
+      signal: expect.any(AbortSignal),
     });
+  });
+
+  it('does not replay a command into a replacement session after expiry', async () => {
+    values.set(KEY_TOUR_MODE, '1');
+    values.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    values.set(KEY_SESSION_TOKEN, 'expired-sample-token');
+    values.set(KEY_DEMO_SESSION_EXPIRES_AT, '2020-01-01T00:00:00.000Z');
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'Sample session expired' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(
+      sendSampleSimulationCommand({
+        type: 'approve',
+        proposalId: 'calendar-focus',
+      }),
+    ).rejects.toMatchObject({ status: 401 });
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+      'Bearer expired-sample-token',
+    );
+    expect(values.get(KEY_SESSION_TOKEN)).toBe('expired-sample-token');
   });
 
   it('rejects a sample credential for any other identity before storing it', async () => {
