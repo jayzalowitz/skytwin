@@ -8,13 +8,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import test from "node:test";
 
 import {
   applySchemaSql,
   auditDynamicSqlFile,
   auditSeedUpsertHelper,
+  classifyCurrentBoundary,
   discoverSqlCallsiteAudit,
   extractSchemaColumns,
   isRepositoryRegularFile,
@@ -284,6 +285,52 @@ test("SQL callsites exclude prose matches and include annotated dynamic writers"
     audit.callsites
       .get("episodic_memories")
       .includes("packages/db/src/seeds/seed.ts"),
+  );
+});
+
+test("discovered SQL callsites use repository paths on Windows", () => {
+  const windowsRelative = (root, candidate) =>
+    relative(root, candidate).replaceAll("/", "\\");
+  const audit = discoverSqlCallsiteAudit(
+    extractSchemaColumns(),
+    windowsRelative,
+  );
+
+  assert.deepEqual(audit.errors, []);
+  assert.ok(
+    audit.callsites
+      .get("access_log")
+      .includes("packages/db/src/repositories/access-log-repository.ts"),
+  );
+  assert.ok(
+    audit.callsites
+      .get("twin_profiles")
+      .includes("packages/db/src/seeds/upsert.ts"),
+  );
+  assert.ok(
+    audit.callsites
+      .get("episodic_memories")
+      .includes("packages/db/src/seeds/seed.ts"),
+  );
+  assert.equal(
+    [...audit.callsites.values()].flat().some((path) => path.includes("\\")),
+    false,
+  );
+});
+
+test("repository boundary classification is platform-independent", () => {
+  assert.equal(
+    classifyCurrentBoundary([
+      "packages\\db\\src\\repositories\\access-log-repository.ts",
+    ]),
+    "repository_sql",
+  );
+  assert.equal(
+    classifyCurrentBoundary([
+      "packages\\db\\src\\repositories\\access-log-repository.ts",
+      "packages\\db\\src\\connection.ts",
+    ]),
+    "mixed_repository_and_direct_sql",
   );
 });
 

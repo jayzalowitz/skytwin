@@ -783,6 +783,23 @@ function sameStringSet(left, right) {
   return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
 }
 
+export function normalizeRepositoryPath(repositoryPath) {
+  return repositoryPath.replaceAll("\\", "/");
+}
+
+function repositoryRelativePath(root, candidate, pathRelative) {
+  return normalizeRepositoryPath(pathRelative(root, candidate));
+}
+
+export function classifyCurrentBoundary(callsites) {
+  if (callsites.length === 0) return "no_runtime_sql_found";
+  return callsites.every((path) =>
+    normalizeRepositoryPath(path).startsWith("packages/db/src/repositories/"),
+  )
+    ? "repository_sql"
+    : "mixed_repository_and_direct_sql";
+}
+
 function seedUpsertRuntimeAllowlist(content) {
   const parsed = ts.createSourceFile(
     "seed-upsert.ts",
@@ -915,9 +932,14 @@ export function auditDynamicSqlFile(repoPath, content, schema) {
 let cachedCallsiteSignature;
 let cachedCallsiteAudit;
 
-export function discoverSqlCallsiteAudit(schema) {
+export function discoverSqlCallsiteAudit(schema, pathRelative = relative) {
   const signature = [...schema.keys()].sort().join("\0");
-  if (signature === cachedCallsiteSignature && cachedCallsiteAudit) {
+  const useCache = pathRelative === relative;
+  if (
+    useCache &&
+    signature === cachedCallsiteSignature &&
+    cachedCallsiteAudit
+  ) {
     return cachedCallsiteAudit;
   }
   const files = [
@@ -943,7 +965,9 @@ export function discoverSqlCallsiteAudit(schema) {
     );
     for (const path of files) {
       if (pattern.test(sqlCandidates.get(path))) {
-        result.get(table).add(relative(REPO_ROOT, path));
+        result
+          .get(table)
+          .add(repositoryRelativePath(REPO_ROOT, path, pathRelative));
       }
     }
   }
@@ -956,7 +980,11 @@ export function discoverSqlCallsiteAudit(schema) {
     "seeds",
     "upsert.ts",
   );
-  const helperRepoPath = relative(REPO_ROOT, helperPath);
+  const helperRepoPath = repositoryRelativePath(
+    REPO_ROOT,
+    helperPath,
+    pathRelative,
+  );
   const helperAudit = auditSeedUpsertHelper(
     helperRepoPath,
     contents.get(helperPath) ?? "",
@@ -967,7 +995,7 @@ export function discoverSqlCallsiteAudit(schema) {
   const callerTables = new Set();
   for (const path of files) {
     const content = contents.get(path);
-    const repoPath = relative(REPO_ROOT, path);
+    const repoPath = repositoryRelativePath(REPO_ROOT, path, pathRelative);
     const dynamicAudit =
       path === helperPath
         ? { annotated: new Set(), callsSeedUpsert: false, errors: [] }
@@ -1000,8 +1028,10 @@ export function discoverSqlCallsiteAudit(schema) {
     ),
     errors,
   };
-  cachedCallsiteSignature = signature;
-  cachedCallsiteAudit = audit;
+  if (useCache) {
+    cachedCallsiteSignature = signature;
+    cachedCallsiteAudit = audit;
+  }
   return audit;
 }
 
@@ -1190,14 +1220,7 @@ export function validateInventory(inventory, schema) {
           `${table}: auditedCallsites must match the conservative static SQL scan`,
         );
       }
-      const expectedCurrent =
-        expectedCallsites.length === 0
-          ? "no_runtime_sql_found"
-          : expectedCallsites.every((path) =>
-                path.startsWith("packages/db/src/repositories/"),
-              )
-            ? "repository_sql"
-            : "mixed_repository_and_direct_sql";
+      const expectedCurrent = classifyCurrentBoundary(expectedCallsites);
       if (entry.boundary.current !== expectedCurrent) {
         errors.push(`${table}: current boundary must be ${expectedCurrent}`);
       }
