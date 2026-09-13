@@ -396,6 +396,21 @@ describe('InMemoryBrainStore — settings + embedding queue', () => {
     store.markJobDone(job!.id);
   });
 
+  it('reclaims an in-progress job after its lease expires', () => {
+    const store = new InMemoryBrainStore();
+    store.insertPage({ userId: 'u1', content: 'x', source: 'note' });
+    const firstLease = store.leaseEmbeddingJob();
+    expect(firstLease).not.toBeNull();
+
+    const retained = store.jobs.find((job) => job.id === firstLease!.id);
+    expect(retained?.status).toBe('in_progress');
+    retained!.leasedUntil = new Date(Date.now() - 1);
+
+    const reclaimed = store.leaseEmbeddingJob();
+    expect(reclaimed?.id).toBe(firstLease?.id);
+    expect(retained?.attempts).toBe(2);
+  });
+
   it('markJobFailed re-queues until 3 attempts then fails', () => {
     const store = new InMemoryBrainStore();
     store.insertPage({ userId: 'u1', content: 'x', source: 'note' });

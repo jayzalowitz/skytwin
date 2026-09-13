@@ -278,6 +278,7 @@ describe('runChangelogPollJob', () => {
     await expect(pending).rejects.toThrow('generation revoked');
     expect(mockHost.fetchChangelog).not.toHaveBeenCalled();
     expect(mockChangelogRepo.upsert).not.toHaveBeenCalled();
+    expect(mockHost.uninstallServer).toHaveBeenCalledWith('server-1');
   });
 });
 

@@ -592,8 +592,8 @@ export class InMemoryBrainStore {
     const now = Date.now();
     const candidate = this.jobs.find(
       (j) =>
-        j.status === 'pending' &&
-        (!j.leasedUntil || j.leasedUntil.getTime() < now),
+        (j.status === 'pending' && (!j.leasedUntil || j.leasedUntil.getTime() < now)) ||
+        (j.status === 'in_progress' && !!j.leasedUntil && j.leasedUntil.getTime() < now),
     );
     if (!candidate) return null;
     candidate.status = 'in_progress';

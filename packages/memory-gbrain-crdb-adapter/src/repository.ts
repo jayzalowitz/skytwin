@@ -826,9 +826,10 @@ export async function enqueueEmbeddingJob(userId: string, pageId: string): Promi
 }
 
 /**
- * Lease the next pending embedding job using `SELECT FOR UPDATE SKIP LOCKED`.
- * Returns null if no pending job exists. The caller must call `markJobDone`
- * or `markJobFailed` once finished — leases auto-expire after 5 minutes.
+ * Lease the next available embedding job using `SELECT FOR UPDATE SKIP LOCKED`.
+ * Returns null if no job is available. The caller must call `markJobDone`
+ * or `markJobFailed` once finished. An in-progress job becomes available again
+ * when its five-minute lease expires.
  *
  * CRDB serialisable transactions give us at-most-once claim semantics:
  * concurrent workers will not pick the same row.
@@ -838,8 +839,8 @@ export async function leaseEmbeddingJob(): Promise<{ id: string; userId: string;
     const claim = await client.query<{ id: string; user_id: string; page_id: string }>(
       `SELECT id, user_id, page_id
          FROM brain_embedding_jobs
-        WHERE status = 'pending'
-          AND (leased_until IS NULL OR leased_until < now())
+        WHERE (status = 'pending' AND (leased_until IS NULL OR leased_until < now()))
+           OR (status = 'in_progress' AND leased_until < now())
         ORDER BY enqueued_at ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED`,

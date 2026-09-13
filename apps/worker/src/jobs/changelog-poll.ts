@@ -108,15 +108,14 @@ async function pollServerChangelog(
 
   // In the poll job we can't actually connect to every server (they may not
   // be running). We use a best-effort approach: try to install, fetch, clean up.
-  let installed = false;
+  let installAttempted = false;
   try {
+    installAttempted = true;
     const installResult = await runAdmitted(signal, () => host.installServer(config));
     if (!installResult.success) {
       log.info(`Changelog poll: could not connect to ${server.display_name}: ${installResult.error}`);
       return;
     }
-    installed = true;
-
     // Fetch changelog
     const changelog = await runAdmitted(signal, () => host.fetchChangelog(server.id));
 
@@ -154,7 +153,7 @@ async function pollServerChangelog(
       newDestructive: newDestructiveSkills.length,
     });
   } finally {
-    if (installed) {
+    if (installAttempted) {
       await host.uninstallServer(server.id).catch(() => {
         // best-effort cleanup
       });

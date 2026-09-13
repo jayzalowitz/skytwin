@@ -152,10 +152,7 @@ interface SampleManagerInternals {
   pause(): Promise<void>;
   resume(): Promise<void>;
   getEnv(): Record<string, string>;
-  apiEnv(
-    instanceCapability: string,
-    ingestCredential: string,
-  ): Record<string, string>;
+  apiEnv(instanceCapability: string): Record<string, string>;
   workerEnv(generation: TestApiGeneration | null): Record<string, string>;
   webEnv(): Record<string, string>;
 }
@@ -273,15 +270,12 @@ describe("packaged sample startup sequencing", () => {
   it("shares generation-scoped ingest credentials only with the API and its worker", () => {
     const manager = internals();
     const { generation } = authorize(manager);
+    const environment = manager.apiEnv(generation.instanceCapability);
+    generation.ingestCredential = environment["SKYTWIN_SERVICE_TOKEN"];
     manager.registeredWorkerGeneration = generation;
 
     expect(manager.getEnv()["SKYTWIN_SERVICE_TOKEN"]).toBeUndefined();
-    expect(
-      manager.apiEnv(
-        generation.instanceCapability,
-        generation.ingestCredential,
-      ),
-    ).toMatchObject({
+    expect(environment).toMatchObject({
       SKYTWIN_API_INSTANCE_CAPABILITY: generation.instanceCapability,
       SKYTWIN_SERVICE_TOKEN: generation.ingestCredential,
       API_BASE_URL: "http://127.0.0.1:3100",
@@ -289,6 +283,9 @@ describe("packaged sample startup sequencing", () => {
     expect(manager.workerEnv(generation)["SKYTWIN_SERVICE_TOKEN"]).toBe(
       generation.ingestCredential,
     );
+    expect(
+      manager.apiEnv("next-instance-capability")["SKYTWIN_SERVICE_TOKEN"],
+    ).not.toBe(generation.ingestCredential);
     expect(manager.workerEnv(generation)).toMatchObject({
       SKYTWIN_WORKER_GENERATION_ID: generation.workerAuthorityId,
       SKYTWIN_WORKER_GENERATION_SECRET: generation.workerAuthoritySecret,

@@ -621,11 +621,17 @@ export class ServiceManager {
     };
   }
 
-  private apiEnv(instanceCapability: string, ingestCredential: string): Record<string, string> {
+  private apiEnv(instanceCapability: string): Record<string, string> {
+    const baseEnv = this.getEnv();
     const env: Record<string, string> = {
-      ...this.getEnv(),
+      ...baseEnv,
       SKYTWIN_API_INSTANCE_CAPABILITY: instanceCapability,
-      SKYTWIN_SERVICE_TOKEN: ingestCredential,
+      // Packaged worker authority is generation-scoped. Source-development
+      // workers can outlive an API-only restart, so they retain the stable
+      // operator/per-install credential from getEnv().
+      SKYTWIN_SERVICE_TOKEN: app.isPackaged
+        ? randomBytes(32).toString('hex')
+        : baseEnv['SKYTWIN_SERVICE_TOKEN'],
     };
     delete env['SKYTWIN_WORKER_GENERATION_ID'];
     delete env['SKYTWIN_WORKER_GENERATION_SECRET'];
@@ -1398,9 +1404,10 @@ export class ServiceManager {
     let generation: ApiGeneration | null = null;
     try {
       const instanceCapability = randomBytes(32).toString('hex');
-      const ingestCredential = randomBytes(32).toString('hex');
+      const environment = this.apiEnv(instanceCapability);
+      const ingestCredential = environment['SKYTWIN_SERVICE_TOKEN'];
       const apiProcess = fork(apiEntry, [], {
-        env: this.apiEnv(instanceCapability, ingestCredential),
+        env: environment,
         stdio: 'pipe',
       });
       this.api.process = apiProcess;
@@ -1463,7 +1470,17 @@ export class ServiceManager {
     if (this.paused || !this.guardServiceDatabase(startup, 'before API restart')) return;
     this.api.restartCount++;
     this.recordFailure(this.api, 'api');
-    if ((this.api.status as ProcessState) === 'error') return;
+    if ((this.api.status as ProcessState) === 'error') {
+      if (app.isPackaged) {
+        void this.runServiceLifecycle(async () => {
+          await this.stopDataServicesOwned();
+          if (startup) this.guardServiceDatabase(startup, 'after API restart budget exhaustion');
+        }).catch((error) => {
+          console.error('[api] Failed to contain services after restart budget exhaustion:', error);
+        });
+      }
+      return;
+    }
     const delay = this.getRestartDelay(this.api.restartCount);
     console.log(`[api] ${reason}; restarting in ${delay}ms (attempt ${this.api.restartCount})...`);
     void this.restartDataServicesAfterApiExit(startup, delay).catch((error) => {

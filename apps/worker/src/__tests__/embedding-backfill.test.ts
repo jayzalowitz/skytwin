@@ -51,7 +51,7 @@ import {
   getWorkerEmbeddingProvider,
   _resetEmbeddingProviderCacheForTests,
 } from '../jobs/embedding-backfill.js';
-import { HashEmbeddingProvider } from '@skytwin/memory-gbrain-crdb-adapter';
+import { HashEmbeddingProvider, InMemoryBrainStore } from '@skytwin/memory-gbrain-crdb-adapter';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -103,6 +103,52 @@ describe('runEmbeddingBackfillJob — happy path', () => {
 });
 
 describe('runEmbeddingBackfillJob — failure handling', () => {
+  it('reclaims an expired lease after its worker generation is revoked', async () => {
+    const store = new InMemoryBrainStore();
+    store.insertPage({ userId: 'u1', content: 'recoverable', source: 'note' });
+    mockLease.mockImplementation(async () => store.leaseEmbeddingJob());
+    mockMarkDone.mockImplementation(async (jobId: string) => store.markJobDone(jobId));
+    mockMarkFailed.mockImplementation(async (jobId: string, message: string) =>
+      store.markJobFailed(jobId, message));
+    mockUpdate.mockImplementation(
+      async (pageId: string, embedding: number[], model: string) =>
+        store.updatePageEmbedding(pageId, embedding, model),
+    );
+    mockPending.mockImplementation(async () => store.pendingEmbeddingJobs());
+
+    let releaseEmbedding: ((embedding: number[]) => void) | undefined;
+    const firstEmbedding = new Promise<number[]>((resolve) => {
+      releaseEmbedding = resolve;
+    });
+    const provider = {
+      model: 'test',
+      dim: 2,
+      embed: vi.fn()
+        .mockImplementationOnce(() => firstEmbedding)
+        .mockResolvedValue([0.25, 0.75]),
+      embedBatch: vi.fn(async () => []),
+    };
+    const controller = new AbortController();
+    const firstRun = runEmbeddingBackfillJob({
+      embedding: provider,
+      batchSize: 1,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(provider.embed).toHaveBeenCalledOnce());
+
+    controller.abort(new Error('generation revoked'));
+    releaseEmbedding?.([0.1, 0.9]);
+    await expect(firstRun).rejects.toThrow('generation revoked');
+    expect(mockMarkFailed).not.toHaveBeenCalled();
+    expect(store.jobs[0]?.status).toBe('in_progress');
+
+    store.jobs[0]!.leasedUntil = new Date(Date.now() - 1);
+    await expect(runEmbeddingBackfillJob({ embedding: provider, batchSize: 1 }))
+      .resolves.toMatchObject({ attempted: 1, succeeded: 1, failed: 0 });
+    expect(store.jobs[0]?.status).toBe('completed');
+    expect(store.jobs[0]?.attempts).toBe(2);
+  });
+
   it('marks job failed when embedding throws and continues with the next', async () => {
     const failingEmbed = {
       model: 'fail',

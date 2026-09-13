@@ -43,6 +43,7 @@ const { ServiceManager } = await import("../service-manager.js");
 interface ApiGenerationForTest {
   process: ChildProcess;
   controller: AbortController;
+  ingestCredential: string;
 }
 
 interface ManagerInternals {
@@ -54,6 +55,8 @@ interface ManagerInternals {
   api: {
     process: ChildProcess | null;
     status: string;
+    restartCount: number;
+    failureTimestamps: number[];
     external: boolean;
   };
   worker: {
@@ -63,9 +66,28 @@ interface ManagerInternals {
     failureTimestamps: number[];
     external: boolean;
   };
+  web: {
+    process: ChildProcess | null;
+    status: string;
+    restartCount: number;
+    failureTimestamps: number[];
+    external: boolean;
+  };
   apiGeneration: ApiGenerationForTest | null;
+  registeredWorkerGeneration: ApiGenerationForTest | null;
+  serviceLifecycleTail: Promise<void>;
   getResourcePath(): string;
   ensureEmbeddedRoot(): Promise<string>;
+  revokeWorkerGenerationAuthority(
+    generation: ApiGenerationForTest,
+    startup: {
+      ownership: "managed-child";
+      dataDir: string;
+      generation: number;
+    },
+  ): Promise<void>;
+  workerEnv(generation: ApiGenerationForTest): Record<string, string>;
+  webEnv(): Record<string, string>;
   startApi(startup: {
     ownership: "managed-child";
     dataDir: string;
@@ -170,6 +192,66 @@ describe("ServiceManager API error lifecycle", () => {
     expect(processState.child?.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
     expect(manager.api.process).toBe(processState.child);
     expect(manager.api.status).toBe("error");
+    expect(processState.fork).toHaveBeenCalledOnce();
+  });
+
+  it("contains sibling services and durable worker authority when the API restart budget is exhausted", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const manager = new ServiceManager() as InstanceType<
+      typeof ServiceManager
+    > &
+      ManagerInternals;
+    const worker = generationWorker();
+    const web = generationWorker();
+    manager.worker = {
+      process: worker,
+      status: "running",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.web = {
+      process: web,
+      status: "running",
+      restartCount: 0,
+      failureTimestamps: [],
+      external: false,
+    };
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+
+    const generation = await manager.startApi(startup);
+    expect(generation).not.toBeNull();
+    const forkEnvironment = processState.fork.mock.calls[0]?.[2]?.env as
+      | Record<string, string>
+      | undefined;
+    expect(generation?.ingestCredential).toBe(forkEnvironment?.["SKYTWIN_SERVICE_TOKEN"]);
+    manager.registeredWorkerGeneration = generation;
+    expect(manager.workerEnv(generation!)["SKYTWIN_SERVICE_TOKEN"]).toBe(
+      generation?.ingestCredential,
+    );
+    expect(manager.webEnv()["SKYTWIN_SERVICE_TOKEN"]).toBeUndefined();
+
+    const revokeAuthority = vi
+      .fn()
+      .mockResolvedValue(undefined);
+    manager.revokeWorkerGenerationAuthority = revokeAuthority;
+    manager.api.failureTimestamps = Array.from({ length: 4 }, () => Date.now());
+    if (processState.child) processState.child.exitCode = 1;
+    processState.child?.emit("exit", 1);
+    await manager.serviceLifecycleTail;
+
+    expect(manager.api.status).toBe("error");
+    expect(manager.worker.process).toBeNull();
+    expect(manager.web.process).toBeNull();
+    expect(manager.registeredWorkerGeneration).toBeNull();
+    expect(revokeAuthority).toHaveBeenCalledWith(generation, startup);
     expect(processState.fork).toHaveBeenCalledOnce();
   });
 });
