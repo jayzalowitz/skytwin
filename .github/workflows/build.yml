@@ -111,8 +111,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Start disposable CockroachDB
         run: |
+          # The image's shell entrypoint rejects wildcard listen addresses even
+          # though the Cockroach binary supports them. Bypass only that wrapper
+          # so Docker's port forwarding can reach SQL, while binding the host
+          # side to loopback keeps this insecure test node runner-local.
           docker run --detach --name skytwin-migration-crdb \
-            --publish 26257:26257 \
+            --publish 127.0.0.1:26257:26257 \
+            --entrypoint /cockroach/cockroach \
             cockroachdb/cockroach:latest-v23.2 \
             start-single-node --insecure --listen-addr=0.0.0.0:26257
           for _ in $(seq 1 60); do
