@@ -37,6 +37,25 @@ interface AdmitExecutionInput {
   steps: unknown[];
 }
 
+function assertExactAdmission(
+  barrier: ExecutionAdmissionRow,
+  plan: ExecutionPlanRow,
+  input: AdmitExecutionInput,
+): void {
+  const persistedSteps = JSON.parse(JSON.stringify(input.steps)) as unknown[];
+  if (
+    barrier.user_id !== input.userId ||
+    barrier.execution_plan_id !== plan.id ||
+    barrier.decision_id !== input.decisionId ||
+    barrier.action_id !== input.actionId ||
+    plan.decision_id !== input.decisionId ||
+    plan.action_id !== input.actionId ||
+    canonicalJson(plan.steps) !== canonicalJson(persistedSteps)
+  ) {
+    throw new Error('Existing execution admission conflicts with requested authority.');
+  }
+}
+
 export interface AdmitMemoryExecutionInput extends AdmitExecutionInput {
   opportunityId: string;
   report: MemoryActionLoopReport;
@@ -70,6 +89,7 @@ export const executionAdmissionRepository = {
     userId: string,
     scope: ExecutionAdmissionScope,
     idempotencyKey: string,
+    authority: AdmitExecutionInput,
   ): Promise<ExecutionAdmission | null> {
     const barrierResult = await query<ExecutionAdmissionRow>(
       `SELECT * FROM execution_admission_barriers
@@ -84,6 +104,7 @@ export const executionAdmissionRepository = {
     );
     const plan = planResult.rows[0];
     if (!plan) throw new Error('Execution admission plan is missing.');
+    assertExactAdmission(barrier, plan, authority);
     return { barrier, plan, created: false };
   },
 
@@ -101,6 +122,7 @@ export const executionAdmissionRepository = {
           [existing.rows[0].execution_plan_id],
         );
         if (!plan.rows[0]) throw new Error('Execution admission plan is missing.');
+        assertExactAdmission(existing.rows[0], plan.rows[0], input);
         return { barrier: existing.rows[0], plan: plan.rows[0], created: false };
       }
 
@@ -167,6 +189,7 @@ export const executionAdmissionRepository = {
           [existing.rows[0].execution_plan_id],
         );
         if (!plan.rows[0]) throw new Error('Execution admission plan is missing.');
+        assertExactAdmission(existing.rows[0], plan.rows[0], input);
         return { barrier: existing.rows[0], plan: plan.rows[0], created: false };
       }
 

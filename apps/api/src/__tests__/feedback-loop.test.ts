@@ -621,6 +621,17 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
     expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
     expect(fakeExecutionRepo.finalizeAdmittedPlan).not.toHaveBeenCalled();
+    expect(fakeExecutionAdmissionRepo.findByScope).toHaveBeenCalledWith(
+      USER_ID,
+      'approval',
+      'app-1',
+      expect.objectContaining({
+        userId: USER_ID,
+        decisionId: 'dec-1',
+        actionId: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+        steps: [{ type: 'archive_email', status: 'pending' }],
+      }),
+    );
   });
 
   it('reject marks the memory action opportunity skipped', async () => {

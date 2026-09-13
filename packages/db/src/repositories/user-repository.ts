@@ -236,6 +236,7 @@ export const userRepository = {
       // Delete in dependency order
       await client.query('DELETE FROM feedback_events WHERE user_id = $1', [id]);
       await client.query('DELETE FROM approval_requests WHERE user_id = $1', [id]);
+      await client.query('DELETE FROM execution_admission_barriers WHERE user_id = $1', [id]);
       await client.query(
         `DELETE FROM explanation_records WHERE decision_id IN
          (SELECT id FROM decisions WHERE user_id = $1)`,

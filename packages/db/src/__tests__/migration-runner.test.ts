@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  INITIAL_MIGRATION_DROP_ORDER,
   splitSqlStatements,
   isIdempotentError,
   upOwned,
@@ -84,6 +85,16 @@ describe('owned desktop migration connection', () => {
     expect(target.query).toHaveBeenCalledOnce();
     expect(String(target.query.mock.calls[0]?.[0])).toContain('CREATE TABLE IF NOT EXISTS users');
     expect(target.end).toHaveBeenCalledOnce();
+  });
+});
+
+describe('migration rollback ordering', () => {
+  it('drops execution admission barriers before every authority parent', () => {
+    const barrierIndex = INITIAL_MIGRATION_DROP_ORDER.indexOf('execution_admission_barriers');
+    expect(barrierIndex).toBeGreaterThanOrEqual(0);
+    for (const parent of ['execution_plans', 'candidate_actions', 'decisions', 'users'] as const) {
+      expect(barrierIndex).toBeLessThan(INITIAL_MIGRATION_DROP_ORDER.indexOf(parent));
+    }
   });
 });
 

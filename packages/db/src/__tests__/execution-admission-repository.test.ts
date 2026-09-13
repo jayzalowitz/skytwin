@@ -15,7 +15,13 @@ const { executionAdmissionRepository } = await import(
   '../repositories/execution-admission-repository.js'
 );
 
-const PLAN = { id: '44444444-4444-4444-8444-444444444444', status: 'running' };
+const PLAN = {
+  id: '44444444-4444-4444-8444-444444444444',
+  decision_id: '33333333-3333-4333-8333-333333333333',
+  action_id: '66666666-6666-4666-8666-666666666666',
+  status: 'running',
+  steps: [{ status: 'pending', type: 'create_task' }],
+};
 const BARRIER = {
   id: '55555555-5555-4555-8555-555555555555',
   user_id: '11111111-1111-4111-8111-111111111111',
@@ -57,7 +63,7 @@ describe('executionAdmissionRepository', () => {
       opportunityId: BARRIER.idempotency_key,
       decisionId: BARRIER.decision_id,
       actionId: BARRIER.action_id,
-      steps: [],
+      steps: [{ type: 'create_task', status: 'pending' }],
       report,
     })).resolves.toMatchObject({ created: true, barrier: BARRIER, plan: PLAN });
 
@@ -75,7 +81,7 @@ describe('executionAdmissionRepository', () => {
       opportunityId: BARRIER.idempotency_key,
       decisionId: BARRIER.decision_id,
       actionId: BARRIER.action_id,
-      steps: [],
+      steps: [{ type: 'create_task', status: 'pending' }],
       report: {
         opportunityId: BARRIER.idempotency_key,
         status: 'execution_ambiguous',
@@ -88,6 +94,31 @@ describe('executionAdmissionRepository', () => {
     expect(mockTransactionQuery).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    ['decision', { decisionId: '77777777-7777-4777-8777-777777777777' }],
+    ['action', { actionId: '88888888-8888-4888-8888-888888888888' }],
+    ['steps', { steps: [{ type: 'different', status: 'pending' }] }],
+  ])('rejects an existing admission with conflicting %s authority', async (_label, override) => {
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [BARRIER] })
+      .mockResolvedValueOnce({ rows: [PLAN] });
+
+    await expect(executionAdmissionRepository.admitMemoryExecution({
+      userId: BARRIER.user_id,
+      opportunityId: BARRIER.idempotency_key,
+      decisionId: BARRIER.decision_id,
+      actionId: BARRIER.action_id,
+      steps: [{ type: 'create_task', status: 'pending' }],
+      report: {
+        opportunityId: BARRIER.idempotency_key,
+        status: 'execution_ambiguous',
+        title: 'Test', actionType: 'create_task', actionLabel: 'Create task',
+        summary: 'admitted', nextStep: 'reconcile', attemptedAt: new Date().toISOString(),
+      },
+      ...override,
+    })).rejects.toThrow('conflicts with requested authority');
+  });
+
   it('recovers the exact admitted plan by owner and scope after commit-response loss', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [BARRIER] })
@@ -97,6 +128,12 @@ describe('executionAdmissionRepository', () => {
       BARRIER.user_id,
       'memory',
       BARRIER.idempotency_key,
+      {
+        userId: BARRIER.user_id,
+        decisionId: BARRIER.decision_id,
+        actionId: BARRIER.action_id,
+        steps: [{ type: 'create_task', status: 'pending' }],
+      },
     )).resolves.toMatchObject({ created: false, barrier: BARRIER, plan: PLAN });
     expect(mockQuery.mock.calls[0]![1]).toEqual([
       BARRIER.user_id, 'memory', BARRIER.idempotency_key,

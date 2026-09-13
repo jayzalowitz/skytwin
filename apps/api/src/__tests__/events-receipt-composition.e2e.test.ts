@@ -145,6 +145,7 @@ describe.skipIf(!E2E)('E2E: event receipt authority composition', () => {
 
   afterEach(async () => {
     for (const decisionId of createdDecisions) {
+      await query('DELETE FROM execution_admission_barriers WHERE decision_id = $1', [decisionId]);
       await query('DELETE FROM decision_ingest_guards WHERE decision_id = $1', [decisionId]);
       await query('DELETE FROM inference_receipts WHERE decision_id = $1', [decisionId]);
       await query('DELETE FROM inference_receipt_completions WHERE decision_id = $1', [decisionId]);
