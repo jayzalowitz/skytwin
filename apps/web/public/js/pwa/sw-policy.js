@@ -52,6 +52,7 @@ export const PRECACHE_URLS = Object.freeze([
 
 /** HTTP methods that mutate server state — the ones we queue when offline. */
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const SAMPLE_TOKEN_PREFIX = 'skytwin-demo-v1';
 
 /**
  * Methods/paths the queue must NEVER replay, because replaying them is
@@ -107,6 +108,11 @@ export function classifyRequest(req, origin) {
   // casing cannot cross a server-enforced credential boundary.
   const normalizedPathname = parsed.pathname.toLowerCase();
 
+  // The sample credential also reads a narrow set of normal product routes.
+  // Bind the cache boundary to the credential itself, including EventSource's
+  // query-token transport, rather than relying only on the dedicated path.
+  if (hasSampleCredential(req, parsed)) return 'passthrough';
+
   // Sample responses are scoped by an Authorization header, which is not part
   // of the Cache API lookup key. Never cache or queue them across generations.
   if (normalizedPathname.startsWith('/api/v1/demo')) return 'passthrough';
@@ -128,8 +134,32 @@ export function classifyRequest(req, origin) {
 }
 
 function isHtmlAccept(req) {
-  const accept = req?.headers?.accept || req?.accept || '';
+  const accept = readHeader(req?.headers, 'accept') || req?.accept || '';
   return typeof accept === 'string' && accept.includes('text/html');
+}
+
+function readHeader(headers, name) {
+  if (!headers) return '';
+  if (typeof headers.get === 'function') return headers.get(name) || '';
+  const wanted = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === wanted && typeof value === 'string') return value;
+  }
+  return '';
+}
+
+function isSampleTokenCandidate(token) {
+  return (
+    typeof token === 'string' &&
+    (token === SAMPLE_TOKEN_PREFIX || token.startsWith(`${SAMPLE_TOKEN_PREFIX}.`))
+  );
+}
+
+function hasSampleCredential(req, parsed) {
+  const authorization = readHeader(req?.headers, 'authorization');
+  const match = /^Bearer\s+(.+)$/i.exec(authorization);
+  if (match && isSampleTokenCandidate(match[1])) return true;
+  return isSampleTokenCandidate(parsed.searchParams.get('token'));
 }
 
 /** True when `pathname` is in the precache list (query/hash already stripped). */
@@ -146,7 +176,7 @@ export function isReplayable(pathname) {
 /** Revalidate a persisted write under the current routing policy before send. */
 export function isQueuedWriteEligible(write, origin) {
   return classifyRequest(
-    { method: write?.method, url: write?.url },
+    { method: write?.method, url: write?.url, headers: write?.headers },
     origin,
   ) === 'queueable-write';
 }

@@ -50,6 +50,25 @@ describe('classifyRequest', () => {
     expect(
       classifyRequest({ method: 'GET', url: `${ORIGIN}/API/V1/DEMO/SIMULATION` }, ORIGIN),
     ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        {
+          method: 'GET',
+          url: `${ORIGIN}/api/approvals/sample/pending`,
+          headers: { Authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+        },
+        ORIGIN,
+      ),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        {
+          method: 'GET',
+          url: `${ORIGIN}/api/v1/briefings/sample?token=skytwin-demo-v1.expiry.nonce.signature`,
+        },
+        ORIGIN,
+      ),
+    ).toBe('passthrough');
   });
 
   it('queues same-origin mutating API writes', () => {
@@ -78,6 +97,16 @@ describe('classifyRequest', () => {
     ).toBe('passthrough');
     expect(
       classifyRequest({ method: 'POST', url: `${ORIGIN}/api/V1/Demo/simulation/commands` }, ORIGIN),
+    ).toBe('passthrough');
+    expect(
+      classifyRequest(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/feedback`,
+          headers: { authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+        },
+        ORIGIN,
+      ),
     ).toBe('passthrough');
   });
 
@@ -144,6 +173,26 @@ describe('isQueuedWriteEligible', () => {
     expect(
       isQueuedWriteEligible(
         { method: 'POST', url: `${ORIGIN}/API/V1/DEMO/SIMULATION/COMMANDS` },
+        ORIGIN,
+      ),
+    ).toBe(false);
+    expect(
+      isQueuedWriteEligible(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/feedback`,
+          headers: { authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+        },
+        ORIGIN,
+      ),
+    ).toBe(false);
+    expect(
+      isQueuedWriteEligible(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/feedback?token=skytwin-demo-v1.expiry.nonce.signature`,
+          headers: {},
+        },
         ORIGIN,
       ),
     ).toBe(false);

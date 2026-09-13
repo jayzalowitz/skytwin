@@ -79,7 +79,15 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   const { request } = event;
   const route = classifyRequest(
-    { method: request.method, url: request.url, mode: request.mode, headers: { accept: request.headers.get('accept') || '' } },
+    {
+      method: request.method,
+      url: request.url,
+      mode: request.mode,
+      headers: {
+        accept: request.headers.get('accept') || '',
+        authorization: request.headers.get('authorization') || '',
+      },
+    },
     self.location.origin,
   );
 
