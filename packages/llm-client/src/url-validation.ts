@@ -2,6 +2,8 @@ import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import { Agent } from 'undici';
 
+type DnsLookup = typeof dnsLookup;
+
 /**
  * Validate that a base URL is safe for use with external API providers.
  * Blocks private/internal IP ranges to prevent SSRF attacks.
@@ -62,6 +64,7 @@ export function validateBaseUrl(baseUrl: string, provider: string): void {
 export async function validateBaseUrlWithDns(
   baseUrl: string,
   provider: string,
+  lookup: DnsLookup = dnsLookup,
 ): Promise<void> {
   // Run all synchronous checks first
   validateBaseUrl(baseUrl, provider);
@@ -77,7 +80,7 @@ export async function validateBaseUrlWithDns(
 
   let results;
   try {
-    results = await dnsLookup(hostname, { all: true, verbatim: true });
+    results = await lookup(hostname, { all: true, verbatim: true });
   } catch (error) {
     throw new Error(
       `DNS lookup failed for ${provider} endpoint ${hostname}: ${error instanceof Error ? error.message : String(error)}`,
@@ -95,8 +98,6 @@ export interface SafeProviderFetch {
   response: Response;
   close: () => Promise<void>;
 }
-
-type DnsLookup = typeof dnsLookup;
 
 /**
  * Fetch a user-configured provider URL through a dispatcher whose DNS lookup is

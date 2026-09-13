@@ -105,7 +105,7 @@ export function providerCredentialEndpointAuthority(
 ): string {
   if (baseUrl === null || baseUrl === undefined || baseUrl.length === 0) {
     return provider === 'ollama'
-      ? 'http://localhost:11434'
+      ? 'http://127.0.0.1:11434'
       : `provider-default:${provider}`;
   }
   const parsed = new URL(baseUrl);

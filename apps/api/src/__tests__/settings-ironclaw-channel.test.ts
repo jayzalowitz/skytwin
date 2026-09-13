@@ -447,6 +447,19 @@ describe('reasoning-mode provider mutations', () => {
     expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
   });
 
+  it('does not persist verified-private-cloud mode without a verified adapter', async () => {
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'verified_private_cloud',
+      providers: [],
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toEqual({
+      error: 'Verified private cloud requires a verifier-owned provider adapter',
+    });
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
+  });
+
   it('reports an endpoint credential conflict without accepting the replacement', async () => {
     mockAiProviderRepository.replaceAllWithReasoningMode.mockRejectedValueOnce(
       Object.assign(new Error('must not expose repository details'), {
@@ -530,6 +543,53 @@ describe('reasoning-mode provider mutations', () => {
       'bring_your_own_provider',
       expect.objectContaining({ apiKey: 'stored-secret', baseUrl: 'https://gateway.example/v2' }),
     );
+  });
+
+  it('reuses an omitted Ollama credential only for the literal runtime default', async () => {
+    mockAiProviderRepository.getForUser
+      .mockResolvedValueOnce([{
+        provider: 'ollama', api_key: 'stored-secret', model: 'qwen',
+        base_url: null, priority: 0, enabled: true,
+      }])
+      .mockResolvedValueOnce([{
+        provider: 'ollama', api_key: 'stored-secret', model: 'qwen',
+        base_url: 'http://127.0.0.1:11434', priority: 0, enabled: true,
+      }]);
+    mockTestProviderForReasoningMode.mockResolvedValue({ latencyMs: 2, model: 'qwen' });
+
+    const explicitDefault = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'ollama', model: 'qwen', baseUrl: 'http://127.0.0.1:11434',
+    });
+    const omittedDefault = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'ollama', model: 'qwen',
+    });
+
+    expect(explicitDefault.status).toBe(200);
+    expect(omittedDefault.status).toBe(200);
+    expect(mockTestProviderForReasoningMode).toHaveBeenNthCalledWith(
+      1,
+      'on_device',
+      expect.objectContaining({ apiKey: 'stored-secret' }),
+    );
+    expect(mockTestProviderForReasoningMode).toHaveBeenNthCalledWith(
+      2,
+      'on_device',
+      expect.objectContaining({ apiKey: 'stored-secret', baseUrl: undefined }),
+    );
+  });
+
+  it('does not reuse an omitted Ollama credential for explicit localhost', async () => {
+    mockAiProviderRepository.getForUser.mockResolvedValue([{
+      provider: 'ollama', api_key: 'stored-secret', model: 'qwen',
+      base_url: null, priority: 0, enabled: true,
+    }]);
+
+    const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'ollama', model: 'qwen', baseUrl: 'http://localhost:11434',
+    });
+
+    expect(response.status).toBe(409);
+    expect(mockTestProviderForReasoningMode).not.toHaveBeenCalled();
   });
 
   it('does not test providers while a migrated chain awaits confirmation', async () => {
