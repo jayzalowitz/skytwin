@@ -152,8 +152,8 @@ vi.mock('@skytwin/db', () => {
     aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
     inferenceReceiptRepository: {
       isCompleteForDecision: vi.fn().mockResolvedValue(false),
-      createManyForUser: vi.fn().mockResolvedValue([]),
-      getIngestStateForDecision: vi.fn().mockResolvedValue(null),
+      createManyForUser: vi.fn().mockImplementation(async (_u, inputs, completion) => ({ receipts: inputs, continuation: completion.continuation })),
+      getContinuationForDecision: vi.fn().mockResolvedValue(null),
       claimExecutionForDecision: vi.fn().mockResolvedValue(true),
       markExecutionTerminalForDecision: vi.fn().mockResolvedValue(true),
       markNonEffectForDecision: vi.fn().mockResolvedValue(true),

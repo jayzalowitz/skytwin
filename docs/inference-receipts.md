@@ -114,6 +114,14 @@ supplied request and response bytes. The product does not export those bundles
 yet; integrators who create them should protect or delete the files according
 to their own retention needs.
 
+Receipt completion and continuation authority are finalized in one transaction.
+The continuation guard binds the owner-scoped persisted outcome flags, selected
+action, risk and policy snapshot, and exact explanation. Re-ingestion consumes
+that single snapshot; it never joins guard authority to later-mutated outcome or
+explanation rows. An execution stream error without typed pre-dispatch proof
+remains `running`/ambiguous for reconciliation and is never recorded as a
+terminal failure merely because the response stream broke.
+
 ## Security boundary
 
 Only a configured provider-specific attestation verifier can establish that supplied evidence matched a supported policy

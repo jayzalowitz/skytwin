@@ -43,6 +43,7 @@ import type { AIProviderName } from '@skytwin/shared-types';
 import { emitInferenceReceipt, LlmClient } from '@skytwin/llm-client';
 import type { InferenceTrace, ProviderEntry, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
+import { InvariantViolationError } from '@skytwin/execution-router';
 import { generateKeyPairSync } from 'node:crypto';
 
 const log = createLogger('api:events');
@@ -352,30 +353,33 @@ export function createEventsRouter(): Router {
       // execution cannot have started. Afterwards, only idempotent approval /
       // informational work or a one-time ready→running execution claim resumes.
       if (!decisionCreated) {
-        const [previousOutcome, ingestState] = await Promise.all([
-          decisionRepositoryAdapter.getOutcome(decision.id),
-          inferenceReceiptRepository.getIngestStateForDecision(userId, decision.id),
-        ]);
-        const previousExplanation = previousOutcome
-          ? await explanationRepositoryAdapter.getByDecisionId(decision.id)
-          : null;
+        const ingestState = await inferenceReceiptRepository.getContinuationForDecision(
+          userId,
+          decision.id,
+        );
+        // Outcome and explanation come only from the atomically persisted,
+        // self-consistent continuation snapshot. Never combine guard authority
+        // with mutable rows fetched independently after finalization.
+        const previousOutcome = ingestState?.continuation?.outcome ?? null;
+        const previousExplanation = ingestState?.continuation?.explanation ?? null;
         // An approval created by a fail-closed auto-execution escalation also
         // blocks a later ready-state resume, even though the stored outcome
         // itself still says autoExecute.
         const previousApproval = previousOutcome
           ? await approvalRepository.findByDecisionId(decision.id, userId)
           : null;
-        const previousExec = previousOutcome?.autoExecute
-          ? await executionRepository.getByDecisionId(decision.id)
-          : null;
-        const executionTerminal = previousExec?.result
-          ? { status: previousExec.result.success ? 'completed' as const : 'failed' as const,
-              planId: previousExec.plan.id }
-          : ingestState?.sourceExecutionStatus
-            ? { status: ingestState.sourceExecutionStatus, planId: ingestState.sourceExecutionPlanId }
-            : ingestState?.effectState === 'running' || ingestState?.effectState === 'restored_non_replay'
-              ? { status: 'ambiguous' as const, planId: ingestState.sourceExecutionPlanId }
-              : null;
+        // Terminal truth comes only from the guard transition bound to the
+        // exact owner/decision/action plan. A standalone execution_result may
+        // have committed while terminalization's response was false or lost.
+        const executionTerminal = ingestState?.sourceExecutionStatus && (
+          ingestState.effectState === 'completed' ||
+          ingestState.effectState === 'failed' ||
+          ingestState.effectState === 'restored_non_replay'
+        )
+          ? { status: ingestState.sourceExecutionStatus, planId: ingestState.sourceExecutionPlanId }
+          : ingestState?.effectState === 'running' || ingestState?.effectState === 'restored_non_replay'
+            ? { status: 'ambiguous' as const, planId: ingestState.sourceExecutionPlanId }
+            : null;
         const captured = ingestState?.receiptCaptureComplete === true;
         const resumeApproval = captured && previousOutcome?.requiresApproval &&
           previousApproval === null && previousExplanation !== null &&
@@ -636,10 +640,13 @@ export function createEventsRouter(): Router {
           confirmationLevel: outcome.requiresApproval && outcome.selectedAction
             ? outcome.confirmationLevel === 'dual' ? 'dual' : 'single'
             : null,
+          continuation: { outcome, explanation },
         });
-        if (!persisted || persisted.length !== inputs.length) {
+        if (!persisted || persisted.receipts.length !== inputs.length) {
           throw new Error('Inference receipts could not be persisted; decision execution stopped');
         }
+        outcome = persisted.continuation.outcome;
+        explanation = persisted.continuation.explanation;
       }
       }
 
@@ -773,12 +780,29 @@ export function createEventsRouter(): Router {
 
           // This compare-and-set is the only autonomous dispatch authority.
           // A lost commit response leaves `running`, which retries never replay.
-          const executionClaimed = await inferenceReceiptRepository.claimExecutionForDecision(
-            userId,
-            decision.id,
-          );
+          let executionClaimed = false;
+          try {
+            executionClaimed = await inferenceReceiptRepository.claimExecutionForDecision(
+              userId,
+              decision.id,
+              {
+                outcomeId: outcome.id,
+                explanationId: explanation.id,
+                selectedActionId: outcome.selectedAction.id,
+              },
+            );
+          } catch (error) {
+            // A commit may have succeeded even when its response was lost.
+            // Treat the claim as consumed until the persisted guard proves
+            // otherwise; never dispatch on an exception.
+            log.warn('Execution claim response was ambiguous', {
+              userId,
+              decisionId: decision.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
           if (!executionClaimed) {
-            const state = await inferenceReceiptRepository.getIngestStateForDecision(userId, decision.id);
+            const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
             executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
           } else {
 
@@ -798,7 +822,7 @@ export function createEventsRouter(): Router {
           // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
           const executionRouter = await getRouter();
           let terminalEvent: ExecutionEvent | null = null;
-          let terminalStatus: 'completed' | 'failed' = 'failed';
+          let terminalStatus: 'completed' | 'failed' | null = null;
           const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
           let terminalPayload: Record<string, unknown> = {};
 
@@ -831,77 +855,111 @@ export function createEventsRouter(): Router {
               }
             }
           } catch (error) {
-            terminalStatus = 'failed';
             terminalPayload = {
               error: error instanceof Error ? error.message : String(error),
             };
-            terminalEvent = {
-              planId: savedPlan.id,
-              eventType: 'plan_failed',
-              timestamp: new Date(),
-              payload: terminalPayload,
+            if (error instanceof InvariantViolationError) {
+              // Input invariants are checked before adapter selection or
+              // dispatch, so this typed failure proves that no effect began.
+              terminalStatus = 'failed';
+              terminalEvent = {
+                planId: savedPlan.id,
+                eventType: 'plan_failed',
+                timestamp: new Date(),
+                payload: terminalPayload,
+              };
+              stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
+              await executionRepository.createEvent({
+                planId: savedPlan.id,
+                eventType: 'plan_failed',
+                payload: terminalPayload,
+              });
+              sseManager.emit(userId, 'decision:step', {
+                decisionId: decision.id,
+                actionType: outcome.selectedAction.actionType,
+                description: outcome.selectedAction.description,
+                ...terminalEvent,
+              });
+            } else {
+              // A generic stream failure may arrive after an adapter performed
+              // the effect but before its terminal event reached us. Leave the
+              // plan and guard running for reconciliation; never manufacture a
+              // failed result that could authorize a retry.
+              log.warn('Execution stream became ambiguous; reconciliation required', {
+                userId,
+                decisionId: decision.id,
+                planId: savedPlan.id,
+                error: terminalPayload['error'],
+              });
+            }
+          }
+
+          if (!terminalStatus) {
+            executionResult = { status: 'ambiguous', planId: savedPlan.id };
+          } else {
+            await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
+            const fullOutputs: Record<string, unknown> = {
+              ...terminalPayload,
+              steps: stepOutputs,
             };
-            stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
-            await executionRepository.createEvent({
+            await executionRepository.createResult({
               planId: savedPlan.id,
-              eventType: 'plan_failed',
-              payload: terminalPayload,
+              success: terminalStatus === 'completed',
+              outputs: fullOutputs,
+              error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
+              rollbackAvailable: outcome.selectedAction.reversible,
             });
-            sseManager.emit(userId, 'decision:step', {
-              decisionId: decision.id,
-              actionType: outcome.selectedAction.actionType,
-              description: outcome.selectedAction.description,
-              ...terminalEvent,
-            });
+
+            let terminalGuardCommitted = false;
+            try {
+              terminalGuardCommitted = await inferenceReceiptRepository.markExecutionTerminalForDecision(
+                userId,
+                decision.id,
+                terminalStatus,
+                savedPlan.id,
+              );
+            } catch (error) {
+              log.warn('Execution terminal guard response was ambiguous', {
+                userId,
+                decisionId: decision.id,
+                planId: savedPlan.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+
+            if (!terminalGuardCommitted) {
+              executionResult = { status: 'ambiguous', planId: savedPlan.id };
+            } else {
+              executionResult = {
+                status: terminalStatus,
+                planId: savedPlan.id,
+                adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
+              };
+
+              // Record post-execution spend tagged with the action's registry
+              // source (#323 AC#3). Only on success — a failed execution
+              // shouldn't charge the user's per-app budget. Best-effort: the
+              // helper swallows its own errors so a ledger write can't break
+              // the auto-execute response. The spend cap was already enforced
+              // upstream by the policy engine before this action ran.
+              if (terminalStatus === 'completed') {
+                await recordMcpActionSpend({
+                  userId,
+                  decisionId: decision.id,
+                  action: outcome.selectedAction,
+                });
+              }
+
+              // Notify via SSE only after terminal guard authority is known.
+              sseManager.emit(userId, 'decision:executed', {
+                decisionId: decision.id,
+                actionType: outcome.selectedAction.actionType,
+                description: outcome.selectedAction.description,
+                status: terminalStatus,
+                eventType: terminalEvent?.eventType,
+              });
+            }
           }
-
-          await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
-          const fullOutputs: Record<string, unknown> = {
-            ...terminalPayload,
-            steps: stepOutputs,
-          };
-          await executionRepository.createResult({
-            planId: savedPlan.id,
-            success: terminalStatus === 'completed',
-            outputs: fullOutputs,
-            error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
-            rollbackAvailable: outcome.selectedAction.reversible,
-          });
-          await inferenceReceiptRepository.markExecutionTerminalForDecision(
-            userId,
-            decision.id,
-            terminalStatus,
-            savedPlan.id,
-          );
-
-          executionResult = {
-            status: terminalStatus,
-            planId: savedPlan.id,
-            adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
-          };
-
-          // Record post-execution spend tagged with the action's registry
-          // source (#323 AC#3). Only on success — a failed execution
-          // shouldn't charge the user's per-app budget. Best-effort: the
-          // helper swallows its own errors so a ledger write can't break
-          // the auto-execute response. The spend cap was already enforced
-          // upstream by the policy engine before this action ran.
-          if (terminalStatus === 'completed') {
-            await recordMcpActionSpend({
-              userId,
-              decisionId: decision.id,
-              action: outcome.selectedAction,
-            });
-          }
-
-          // Notify via SSE
-          sseManager.emit(userId, 'decision:executed', {
-            decisionId: decision.id,
-            actionType: outcome.selectedAction.actionType,
-            description: outcome.selectedAction.description,
-            status: terminalStatus,
-            eventType: terminalEvent?.eventType,
-          });
           }
         } // end if (riskAssessment) — escalation branch above handles null
       }
