@@ -642,6 +642,27 @@ describe("download runner cleanup and resumability", () => {
 });
 
 describe("boot recovery", () => {
+  it("makes a durable pending row resumable after its launch worker is lost", async () => {
+    const dir = tempDir();
+    const pending = testRow(dir, "pending");
+    mockRepo.listWorkerOwnedNonterminal
+      .mockResolvedValueOnce([pending])
+      .mockResolvedValueOnce([]);
+    mockRepo.transitionStatus.mockResolvedValue(true);
+
+    await recoverOnBoot({
+      modelDir: () => dir,
+      inspectActive: () => ({ state: "missing" }),
+    });
+
+    expect(mockRepo.transitionStatus).toHaveBeenCalledWith(
+      pending.id,
+      ["pending"],
+      "paused",
+      { bytesDownloaded: 0 },
+    );
+  });
+
   it("pauses orphaned transfer/hash rows and reconciles installation only from a verified manifest", async () => {
     const dir = tempDir();
     const downloading = testRow(dir, "downloading");

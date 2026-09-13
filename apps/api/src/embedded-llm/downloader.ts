@@ -1094,7 +1094,11 @@ export async function recoverOnBoot(
       let recovered = 0;
       for (const row of orphaned) {
         try {
-          if (row.status === "downloading" || row.status === "verifying") {
+          if (
+            row.status === "pending" ||
+            row.status === "downloading" ||
+            row.status === "verifying"
+          ) {
             if (
               await modelDownloadRepository.transitionStatus(
                 row.id,

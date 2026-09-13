@@ -116,11 +116,11 @@ export const modelDownloadRepository = {
     return result.rows.map(normalizeModelDownloadRow);
   },
 
-  /** Rows owned by a worker that cannot still be running after process restart. */
+  /** Durable rows whose worker launch or execution cannot survive process restart. */
   async listWorkerOwnedNonterminal(): Promise<ModelDownloadRow[]> {
     const result = await query<ModelDownloadDatabaseRow>(
       `SELECT * FROM model_downloads
-       WHERE status IN ('downloading', 'verifying', 'installing')
+       WHERE status IN ('pending', 'downloading', 'verifying', 'installing')
        ORDER BY started_at ASC`,
     );
     return result.rows.map(normalizeModelDownloadRow);

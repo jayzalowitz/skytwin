@@ -107,7 +107,7 @@ describe("model download compare-and-set updates", () => {
       modelDownloadRepository.listWorkerOwnedNonterminal(),
     ).resolves.toEqual([]);
     expect(queryMock.mock.calls[0]![0]).toContain(
-      "status IN ('downloading', 'verifying', 'installing')",
+      "status IN ('pending', 'downloading', 'verifying', 'installing')",
     );
   });
 
