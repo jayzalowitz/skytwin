@@ -590,6 +590,89 @@ describe("ServiceManager API error lifecycle", () => {
     expect(manager.api.failureTimestamps).toHaveLength(1);
   });
 
+  it("honors a newer pause while explicit resume is awaiting API readiness", async () => {
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.paused = true;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    processState.child = generationWorker();
+    manager.registerWorkerGenerationAuthority = vi.fn().mockImplementation(async (generation) => {
+      manager.registeredWorkerGeneration = generation;
+    });
+    manager.revokeWorkerGenerationAuthority = vi.fn().mockResolvedValue(undefined);
+    let releaseReadiness: ((ready: boolean) => void) | undefined;
+    manager.waitForApi = vi.fn(
+      () => new Promise<boolean>((resolve) => {
+        releaseReadiness = resolve;
+      }),
+    );
+
+    const resuming = manager.resume();
+    await vi.waitFor(() => expect(manager.waitForApi).toHaveBeenCalledOnce());
+    const attemptedGeneration = manager.apiGeneration;
+    expect(attemptedGeneration).not.toBeNull();
+
+    await manager.pause();
+    releaseReadiness?.(true);
+    await expect(resuming).rejects.toThrow("Resume cancelled by a newer pause request");
+
+    expect(attemptedGeneration?.controller.signal.aborted).toBe(true);
+    expect(manager.paused).toBe(true);
+    expect(manager.api.process).toBeNull();
+    expect(manager.web.process).toBeNull();
+    expect(manager.worker.process).toBeNull();
+    expect(manager.registeredWorkerGeneration).toBeNull();
+    expect(processState.fork).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["web", 2, 1],
+    ["worker", 3, 2],
+  ])("contains the resume generation when %s bundle resolution fails", async (_service, failingRead, expectedForks) => {
+    const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+    manager.paused = true;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    let bundleReads = 0;
+    manager.ensureEmbeddedRoot = vi.fn().mockImplementation(async () => {
+      bundleReads++;
+      if (bundleReads === failingRead) throw new Error(`${_service} bundle unavailable`);
+      return "/tmp/embedded";
+    });
+    const replacementApi = generationWorker();
+    const replacementWeb = generationWorker();
+    processState.fork
+      .mockReturnValueOnce(replacementApi)
+      .mockReturnValueOnce(replacementWeb);
+    manager.waitForApi = vi.fn().mockResolvedValue(true);
+    manager.registerWorkerGenerationAuthority = vi.fn().mockImplementation(async (generation) => {
+      manager.registeredWorkerGeneration = generation;
+    });
+    const revokeAuthority = vi.fn().mockResolvedValue(undefined);
+    manager.revokeWorkerGenerationAuthority = revokeAuthority;
+
+    await expect(manager.resume()).rejects.toThrow(`${_service} bundle unavailable`);
+
+    expect(manager.paused).toBe(true);
+    expect(manager.api.process).toBeNull();
+    expect(manager.web.process).toBeNull();
+    expect(manager.worker.process).toBeNull();
+    expect(manager.registeredWorkerGeneration).toBeNull();
+    expect(revokeAuthority).toHaveBeenCalledOnce();
+    expect(processState.fork).toHaveBeenCalledTimes(expectedForks);
+  });
+
   it("contains sibling services without restarting when the API exits while paused", async () => {
     const manager = new ServiceManager() as InstanceType<typeof ServiceManager> & ManagerInternals;
     const startup = {

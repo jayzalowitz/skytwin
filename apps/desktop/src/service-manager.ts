@@ -59,6 +59,13 @@ export class ChildTerminationError extends Error {
   }
 }
 
+class ResumeCancelledError extends Error {
+  constructor(phase: string) {
+    super(`Resume cancelled by a newer pause request ${phase}`);
+    this.name = 'ResumeCancelledError';
+  }
+}
+
 const MAX_RESTARTS = 5;
 const FAILURE_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 const HEALTH_CHECK_INTERVAL_MS = 5000;
@@ -237,6 +244,7 @@ export class ServiceManager {
   private onExtractProgress: ((progress: ExtractionProgress) => void) | null = null;
   private healthCheckTimer: ReturnType<typeof setInterval> | null = null;
   private paused = false;
+  private pauseIntentEpoch = 0;
   private sampleBootstrapAllowedThisLaunch = false;
   private sampleLaunchEpoch = 0;
   private sampleAbortController: AbortController | null = null;
@@ -945,6 +953,10 @@ export class ServiceManager {
 
   private isApiGenerationReady(generation: ApiGeneration): boolean {
     return this.readyApiGeneration === generation && this.isApiGenerationCurrent(generation);
+  }
+
+  private requireResumeIntentCurrent(epoch: number, phase: string): void {
+    if (this.pauseIntentEpoch !== epoch) throw new ResumeCancelledError(phase);
   }
 
   private markApiGenerationReady(generation: ApiGeneration): boolean {
@@ -1957,6 +1969,7 @@ export class ServiceManager {
    * Pause the twin — stops the worker (no new signals) but keeps API running.
    */
   async pause(): Promise<void> {
+    ++this.pauseIntentEpoch;
     this.paused = true;
     try {
       await this.stopProcess(this.worker, 'worker');
@@ -1984,13 +1997,17 @@ export class ServiceManager {
    * Resume the twin — restarts the worker.
    */
   resume(): Promise<void> {
-    return this.runServiceLifecycle(() => this.resumeOwned());
+    const resumeEpoch = this.pauseIntentEpoch;
+    return this.runServiceLifecycle(() => this.resumeOwned(resumeEpoch));
   }
 
   private async preparePackagedResume(
     startup: CockroachStartResult,
+    resumeEpoch: number,
+    attempt: { generation: ApiGeneration | null },
   ): Promise<ApiGeneration> {
     let generation = this.apiGeneration;
+    attempt.generation = generation;
     const reusableGeneration =
       generation !== null &&
       this.isApiGenerationReady(generation) &&
@@ -2002,41 +2019,40 @@ export class ServiceManager {
 
     if (!reusableGeneration) {
       await this.stopDataServicesOwned();
+      this.requireResumeIntentCurrent(resumeEpoch, 'after prior generation containment');
       generation = null;
-      try {
-        await this.requireServiceDatabaseCurrent(startup, 'before explicit resume recovery');
-        generation = await this.startApi(startup);
-        if (!generation || !this.isApiGenerationCurrent(generation)) {
-          throw new Error('Packaged resume could not establish an owned API generation');
-        }
-        await this.registerWorkerGenerationAuthority(generation, startup);
-        if (!(await this.waitForApi(10_000, startup, generation))) {
-          throw new Error('Packaged resume API generation could not prove listener ownership');
-        }
-        await this.requireServiceDatabaseCurrent(startup, 'during explicit resume readiness');
-        if (!this.markApiGenerationReady(generation)) {
-          throw new Error('Packaged resume API generation changed after proving listener ownership');
-        }
-      } catch (error) {
-        if (generation) {
-          try {
-            await this.stopDataServicesForApiGeneration(generation, startup);
-          } catch (cleanupError) {
-            throw new AggregateError(
-              [error, cleanupError],
-              'Packaged resume recovery and containment both failed',
-            );
-          }
-        }
-        throw error;
+      attempt.generation = null;
+      await this.requireServiceDatabaseCurrent(startup, 'before explicit resume recovery');
+      this.requireResumeIntentCurrent(resumeEpoch, 'before API recovery');
+      generation = await this.startApi(startup);
+      attempt.generation = generation;
+      this.requireResumeIntentCurrent(resumeEpoch, 'after API recovery');
+      if (!generation || !this.isApiGenerationCurrent(generation)) {
+        throw new Error('Packaged resume could not establish an owned API generation');
+      }
+      await this.registerWorkerGenerationAuthority(generation, startup);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after worker authority registration');
+      const apiReady = await this.waitForApi(10_000, startup, generation);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after API readiness');
+      if (!apiReady) {
+        throw new Error('Packaged resume API generation could not prove listener ownership');
+      }
+      await this.requireServiceDatabaseCurrent(startup, 'during explicit resume readiness');
+      this.requireResumeIntentCurrent(resumeEpoch, 'after database readiness validation');
+      if (!this.markApiGenerationReady(generation)) {
+        throw new Error('Packaged resume API generation changed after proving listener ownership');
       }
     }
 
     if (!generation || !this.isApiGenerationReady(generation)) {
       throw new Error('Packaged resume requires a ready API generation');
     }
-    if (!this.web.process) await this.startWeb(startup, generation);
+    if (!this.web.process) {
+      await this.startWeb(startup, generation);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after web startup');
+    }
     await this.requireServiceDatabaseCurrent(startup, 'during explicit resume web startup');
+    this.requireResumeIntentCurrent(resumeEpoch, 'after web database validation');
     if (
       !this.isApiGenerationReady(generation) ||
       !this.web.process ||
@@ -2050,27 +2066,32 @@ export class ServiceManager {
     return generation;
   }
 
-  private async resumeOwned(): Promise<void> {
+  private async resumeOwned(resumeEpoch: number): Promise<void> {
     if (this.worker.process) throw new ChildTerminationError('worker');
     let generation = this.apiGeneration;
-    if (app.isPackaged) {
-      this.paused = true;
-      const startup = this.activeDatabaseStartup;
-      if (!startup || !this.isServiceDatabaseCurrent(startup)) {
-        throw new Error('Packaged resume requires the current owned database generation');
-      }
-      // Explicit resume is the sole authority to rebuild services while
-      // paused. Keep worker execution paused until API readiness, durable
-      // authority, and the web proxy are all bound to one exact generation.
-      generation = await this.preparePackagedResume(startup);
-      this.api.restartCount = 0;
-      this.api.failureTimestamps = [];
-    }
-    this.worker.restartCount = 0;
-    this.worker.failureTimestamps = [];
-    this.paused = false;
+    const startup = this.activeDatabaseStartup;
+    const attempt = { generation };
     try {
-      await this.startWorker(this.activeDatabaseStartup, generation);
+      this.requireResumeIntentCurrent(resumeEpoch, 'before recovery');
+      if (app.isPackaged) {
+        this.paused = true;
+        if (!startup || !this.isServiceDatabaseCurrent(startup)) {
+          throw new Error('Packaged resume requires the current owned database generation');
+        }
+        // Explicit resume is the sole authority to rebuild services while
+        // paused. Keep worker execution paused until API readiness, durable
+        // authority, and the web proxy are all bound to one exact generation.
+        generation = await this.preparePackagedResume(startup, resumeEpoch, attempt);
+        this.requireResumeIntentCurrent(resumeEpoch, 'after service preparation');
+        this.api.restartCount = 0;
+        this.api.failureTimestamps = [];
+      }
+      this.worker.restartCount = 0;
+      this.worker.failureTimestamps = [];
+      this.requireResumeIntentCurrent(resumeEpoch, 'before worker enablement');
+      this.paused = false;
+      await this.startWorker(startup, generation);
+      this.requireResumeIntentCurrent(resumeEpoch, 'after worker startup');
       if (
         app.isPackaged &&
         (!generation ||
@@ -2083,17 +2104,24 @@ export class ServiceManager {
       }
     } catch (error) {
       this.paused = true;
-      this.worker.status = 'error';
-      this.emitStatus();
-      if (app.isPackaged && generation && !this.isApiGenerationReady(generation)) {
+      let containmentError: unknown;
+      const attemptedGeneration = attempt.generation ?? generation;
+      if (app.isPackaged && attemptedGeneration) {
         try {
-          await this.stopDataServicesForApiGeneration(generation, this.activeDatabaseStartup);
-        } catch (containmentError) {
-          throw new AggregateError(
-            [error, containmentError],
-            'Worker resume and generation containment both failed',
-          );
+          await this.stopDataServicesForApiGeneration(attemptedGeneration, startup);
+        } catch (cleanupError) {
+          containmentError = cleanupError;
         }
+      }
+      const cancelled =
+        error instanceof ResumeCancelledError || this.pauseIntentEpoch !== resumeEpoch;
+      this.worker.status = cancelled ? 'paused' : 'error';
+      this.emitStatus();
+      if (containmentError !== undefined) {
+        throw new AggregateError(
+          [error, containmentError],
+          'Service resume and generation containment both failed',
+        );
       }
       throw error;
     }
