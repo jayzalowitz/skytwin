@@ -224,13 +224,18 @@ function renderSampleFailure(container, error) {
 export function setSampleOperationPending(
   container,
   pending,
-  message = 'Updating the disposable simulation…',
+  message = '',
 ) {
   const shell = container?.querySelector?.('.sample-shell');
   if (!shell) return;
   if (!pending) {
     shell.removeAttribute('aria-busy');
-    shell.querySelector('[data-sample-operation-status]')?.remove();
+    const status = shell.querySelector('[data-sample-operation-status]');
+    if (message) {
+      if (status) status.textContent = message;
+    } else {
+      status?.remove();
+    }
     shell
       .querySelectorAll(
         '[data-action="sample-command"], [data-action="sample-reset"], [data-action="sample-restart"], [data-action="api-retry"], [data-action="exit-tour"]',
@@ -257,7 +262,7 @@ export function setSampleOperationPending(
     status.setAttribute('aria-live', 'polite');
     shell.prepend(status);
   }
-  status.textContent = message;
+  status.textContent = message || 'Updating the disposable simulation…';
 }
 
 /** Restore keyboard context after the sample replaces its page markup. */
@@ -459,12 +464,17 @@ export function initSampleGlobals() {
             'Discarding the sample and opening your setup…',
           );
         }
+        let exitMessage = '';
         try {
-          await skyTwinExitTour();
+          if (!(await skyTwinExitTour())) {
+            exitMessage = 'Could not discard the sample. Check your connection and try again.';
+          }
         } finally {
           // Production reloads on success. This restores an actionable state
           // for tests and for any environment that suppresses navigation.
-          if (container) setSampleOperationPending(container, false);
+          if (container) {
+            setSampleOperationPending(container, false, exitMessage);
+          }
           _sampleExitPending = false;
           _sampleBusy = false;
         }

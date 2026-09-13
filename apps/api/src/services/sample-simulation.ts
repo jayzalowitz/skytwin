@@ -181,7 +181,7 @@ function catalog(record: SessionRecord): CatalogEntry[] {
       id: 'calendar-focus',
       title: 'Protect a focus block',
       situation:
-        'A fictional teammate asks to move a low-priority sync into Alex’s focus block.',
+        'A fictional teammate asks to move a low-priority sync into the sample user’s focus block.',
       situationType: SituationType.CALENDAR_CONFLICT,
       domain: 'calendar',
       actionType: 'decline_event',
@@ -198,7 +198,7 @@ function catalog(record: SessionRecord): CatalogEntry[] {
       id: 'newsletter-triage',
       title: 'Triage a newsletter',
       situation:
-        'A fictional weekly newsletter is waiting in Alex’s sample inbox.',
+        'A fictional weekly newsletter is waiting in the sample user’s inbox.',
       situationType: SituationType.EMAIL_TRIAGE,
       domain: 'email',
       actionType: 'archive_email',
@@ -213,7 +213,7 @@ function catalog(record: SessionRecord): CatalogEntry[] {
     {
       id: 'focus-time-preference',
       title: 'Choose the next focus window',
-      situation: 'Alex needs a fictional 90-minute focus block tomorrow.',
+      situation: 'The sample user needs a fictional 90-minute focus block tomorrow.',
       situationType: SituationType.CALENDAR_UPDATE,
       domain: 'calendar',
       actionType: 'schedule_focus_block',

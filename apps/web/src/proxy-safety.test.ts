@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  hasSampleCredential,
   isLocalOnlySamplePath,
   isLoopbackApiBase,
   isLoopbackPeer,
+  requiresLocalSampleBoundary,
 } from './proxy-safety.js';
 
 describe('sample proxy boundary', () => {
@@ -36,5 +38,43 @@ describe('sample proxy boundary', () => {
     ]) {
       expect(isLoopbackApiBase(hostile)).toBe(false);
     }
+  });
+
+  it('detects sample credentials on every proxied path and transport', () => {
+    const token = 'skytwin-demo-v1.1234567890123.abcdefghijklmnopqrstuvwx.signature';
+    expect(
+      hasSampleCredential(
+        ['Bearer ordinary-session', `Bearer ${token}`],
+        new URL('/api/decisions/sample', 'http://localhost'),
+      ),
+    ).toBe(true);
+    expect(
+      hasSampleCredential(
+        undefined,
+        new URL(`/api/twin/sample?token=${encodeURIComponent(token)}`, 'http://localhost'),
+      ),
+    ).toBe(true);
+    expect(
+      hasSampleCredential(
+        'Bearer ordinary-session',
+        new URL('/api/decisions/ordinary', 'http://localhost'),
+      ),
+    ).toBe(false);
+
+    const ordinaryRead = new URL('/api/decisions/sample', 'http://localhost');
+    expect(
+      requiresLocalSampleBoundary(
+        ordinaryRead.pathname,
+        `Bearer ${token}`,
+        ordinaryRead,
+      ),
+    ).toBe(true);
+    expect(
+      requiresLocalSampleBoundary(
+        ordinaryRead.pathname,
+        'Bearer ordinary-session',
+        ordinaryRead,
+      ),
+    ).toBe(false);
   });
 });

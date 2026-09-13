@@ -16,7 +16,13 @@
  * post-render side effects); this file owns presentation.
  */
 
-import { askTwin, endSampleSimulation, escapeHtml, fetchDemoRecipes } from '../api-client.js';
+import {
+  askTwin,
+  DEMO_USER_ID,
+  endSampleSimulation,
+  escapeHtml,
+  fetchDemoRecipes,
+} from '../api-client.js';
 import { dismissTierLadderIntro } from '../components/tier-ladder-intro.js';
 import {
   KEY_USER_ID,
@@ -493,28 +499,33 @@ export function renderTourBanner() {
         <span class="card-title">You're exploring with a sample profile</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Everything you see — the decisions, the learnings, the approvals — belongs to a fictional user named Alex.
+        Everything you see — the decisions, the learnings, the approvals — belongs to a fictional sample profile.
         Click around freely, then start your own when you're ready. Nothing you do here touches your real accounts.
       </div>
       <div style="display: flex; gap: 0.5rem; flex-wrap: wrap;">
         <button class="btn btn-primary btn-sm" data-action="exit-tour">Start my own setup</button>
         <a class="btn btn-outline btn-sm" href="#/sample">Try the interactive sample</a>
-        <a class="btn btn-outline btn-sm" href="#/decisions">See what Alex's twin has been doing</a>
-        <a class="btn btn-outline btn-sm" href="#/twin">See what it learned about Alex</a>
+        <a class="btn btn-outline btn-sm" href="#/decisions">See what the sample twin has been doing</a>
+        <a class="btn btn-outline btn-sm" href="#/twin">See what the sample twin learned</a>
       </div>
     </div>
   `;
 }
 
 /** Make the dashboard tour-exit wait visible and announced to assistive tech. */
-export function setTourExitPending(trigger, pending) {
+export function setTourExitPending(trigger, pending, settledMessage = '') {
   const region = trigger?.closest?.('[data-tour-banner]');
   if (!region) return;
   const button = region.querySelector('[data-action="exit-tour"]');
   if (button) button.disabled = pending;
   if (!pending) {
     region.removeAttribute('aria-busy');
-    region.querySelector('[data-tour-exit-status]')?.remove();
+    const status = region.querySelector('[data-tour-exit-status]');
+    if (settledMessage) {
+      if (status) status.textContent = settledMessage;
+    } else {
+      status?.remove();
+    }
     return;
   }
   region.setAttribute('aria-busy', 'true');
@@ -531,26 +542,63 @@ export function setTourExitPending(trigger, pending) {
 }
 
 export async function skyTwinExitTour() {
+  let sampleSnapshot;
   try {
-    await endSampleSimulation();
+    sampleSnapshot = {
+      userId: localStorage.getItem(KEY_USER_ID),
+      token: localStorage.getItem(KEY_SESSION_TOKEN),
+      tourMode: localStorage.getItem(KEY_TOUR_MODE),
+      expiresAt: localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT),
+    };
   } catch {
-    // An expired/offline credential already makes server-side state unusable.
+    return false;
   }
-  // Hard-cleanup everything the tour wrote so a future tour starts
-  // fresh (no stale "first decision" toast, no stale tier celebration,
-  // no stale notification dismissal). Sweeps both the fixed-name flags
-  // and any per-user key whose suffix matches the demo uid.
-  const demoUid = (() => { try { return localStorage.getItem(KEY_USER_ID) || ''; } catch { return ''; } })();
-  clearKeysForSuffix(demoUid, [
-    KEY_TOUR_MODE,
-    KEY_USER_ID,
-    KEY_ONBOARDED,
-    KEY_NOTIF_DISMISSED,
-    KEY_NOTIF_ASKED,
-    KEY_SESSION_TOKEN,
-    KEY_DEMO_SESSION_EXPIRES_AT,
-  ]);
+  if (
+    sampleSnapshot.userId !== DEMO_USER_ID ||
+    sampleSnapshot.tourMode !== '1' ||
+    !sampleSnapshot.token
+  ) {
+    // A stale sample view must not mutate authentication that has already
+    // moved on to a real user or another sample generation.
+    window.location.reload();
+    return true;
+  }
+  try {
+    await endSampleSimulation(sampleSnapshot.token);
+  } catch {
+    // Keep the only credential and local state when the server cannot confirm
+    // disposal. The user can retry instead of leaving live state behind until
+    // the signed authority expires.
+    return false;
+  }
+  // Per-user sample flags are safe to sweep after confirmed disposal. Fixed
+  // authentication keys are removed only if the exact sample snapshot is
+  // still current; an overlapping login or renewal wins and is preserved.
+  clearKeysForSuffix(DEMO_USER_ID);
+  try {
+    if (
+      localStorage.getItem(KEY_USER_ID) === sampleSnapshot.userId &&
+      localStorage.getItem(KEY_SESSION_TOKEN) === sampleSnapshot.token &&
+      localStorage.getItem(KEY_TOUR_MODE) === sampleSnapshot.tourMode &&
+      localStorage.getItem(KEY_DEMO_SESSION_EXPIRES_AT) ===
+        sampleSnapshot.expiresAt
+    ) {
+      clearKeysForSuffix('', [
+        KEY_TOUR_MODE,
+        KEY_USER_ID,
+        KEY_ONBOARDED,
+        KEY_NOTIF_DISMISSED,
+        KEY_NOTIF_ASKED,
+        KEY_SESSION_TOKEN,
+        KEY_DEMO_SESSION_EXPIRES_AT,
+      ]);
+    }
+  } catch {
+    // Disposal succeeded. A storage failure must not guess at newer browser
+    // authentication state.
+  }
   window.location.reload();
+  return true;
 }
 
 export function renderJustConnectedCelebration({ justConnectedProvider, justConnectedAccount, recentDecisionsCount, learnedCount }) {
@@ -782,12 +830,15 @@ export function initDashboardGlobals() {
       if (uid && situation) handleTryRecipe(uid, situation);
     } else if (action === 'exit-tour') {
       setTourExitPending(el, true);
+      let exitMessage = '';
       try {
-        await skyTwinExitTour();
+        if (!(await skyTwinExitTour())) {
+          exitMessage = 'Could not discard the sample. Check your connection and try again.';
+        }
       } finally {
         // Production reloads on success; restore the control if navigation is
         // suppressed or fails in an embedded/test environment.
-        setTourExitPending(el, false);
+        setTourExitPending(el, false, exitMessage);
       }
     } else if (action === 'connect-google') {
       const uid = el.getAttribute('data-user-id');

@@ -9,6 +9,7 @@ import {
   isDemoSessionActive,
   isDemoSessionTokenCandidate,
   isDemoReadRequest,
+  isLocalDemoRequest,
   matchesDemoFixtureIncarnation,
   revokeDemoSessionByKey,
 } from '../auth/demo-session.js';
@@ -471,6 +472,12 @@ export async function sessionAuth(
   // fixture or select another user.
   const demoSession = token ? inspectDemoSession(token) : null;
   if (demoSession) {
+    if (!isLocalDemoRequest(req.ip, req.socket.remoteAddress)) {
+      res.status(403).json({
+        error: 'The packaged sample is available from this device only.',
+      });
+      return;
+    }
     if (!isDemoReadRequest(req.method, req.originalUrl ?? req.url)) {
       res.status(403).json({
         error: 'Sample mode is read-only',

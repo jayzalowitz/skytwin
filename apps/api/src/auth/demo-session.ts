@@ -130,10 +130,24 @@ export function issueDemoSession(
   }
   dropElapsedSessionLifecycles(nowMs);
   // Replacement must retain the previous credential as a tombstone, so it
-  // needs a new slot too. Refuse admission before revoking the old authority;
-  // a full registry must not strand a still-valid caller or evict a safety
-  // tombstone to make room.
-  if (demoSessionLifecycle.size >= DEMO_SESSION_LIFECYCLE_LIMIT) {
+  // may need two new slots: one for an authentic credential from an earlier
+  // process generation that is absent from this registry, and one for the
+  // successor. Refuse admission before revoking the old authority; a full
+  // registry must not strand a still-valid caller or evict a safety tombstone
+  // to make room.
+  const replacement = replacesToken
+    ? inspectSignedDemoSession(replacesToken)
+    : null;
+  const replacementNeedsTombstone = Boolean(
+    replacement &&
+      replacement.expiresAtMs > nowMs &&
+      !demoSessionLifecycle.has(replacement.sessionKey),
+  );
+  const requiredSlots = replacementNeedsTombstone ? 2 : 1;
+  if (
+    demoSessionLifecycle.size + requiredSlots >
+    DEMO_SESSION_LIFECYCLE_LIMIT
+  ) {
     throw new DemoSessionCapacityError();
   }
   if (replacesToken) revokeDemoSession(replacesToken, nowMs);

@@ -221,6 +221,14 @@ describe('sessionAuth middleware', () => {
       revision: 'demo-fixture-v1',
     } as const;
 
+    function mockDemoReq(overrides: Partial<Request> = {}): Request {
+      return mockReq({
+        ip: '127.0.0.1',
+        socket: { remoteAddress: '127.0.0.1' } as Request['socket'],
+        ...overrides,
+      });
+    }
+
     async function loadDemoAuth() {
       process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
       process.env['SESSION_SECRET'] = 'test-demo-session-secret-that-is-long-enough';
@@ -243,7 +251,7 @@ describe('sessionAuth middleware', () => {
     it('binds an allowlisted read to the reserved sample identity', async () => {
       const mod = await loadDemoAuth();
       const issued = mod.issueDemoSession();
-      const req = mockReq({
+      const req = mockDemoReq({
         method: 'GET',
         originalUrl: '/api/decisions/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
         headers: { authorization: `Bearer ${issued.token}` },
@@ -259,6 +267,51 @@ describe('sessionAuth middleware', () => {
     });
 
     it.each([
+      {
+        transport: 'header' as const,
+        clientAddress: '203.0.113.9',
+        socketAddress: '127.0.0.1',
+      },
+      {
+        transport: 'query' as const,
+        clientAddress: '127.0.0.1',
+        socketAddress: '203.0.113.9',
+      },
+    ])(
+      'rejects a remote sample $transport credential before database or session lookup',
+      async ({ transport, clientAddress, socketAddress }) => {
+        const mod = await loadDemoAuth();
+        const issued = mod.issueDemoSession();
+        const db = await import('@skytwin/db');
+        const requestPath =
+          '/api/decisions/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+        const req = mockReq({
+          ip: clientAddress,
+          socket: { remoteAddress: socketAddress } as Request['socket'],
+          method: 'GET',
+          originalUrl:
+            transport === 'query'
+              ? `${requestPath}?token=${encodeURIComponent(issued.token)}`
+              : requestPath,
+          headers:
+            transport === 'header'
+              ? { authorization: `Bearer ${issued.token}` }
+              : {},
+          query: transport === 'query' ? { token: issued.token } : {},
+        });
+        const res = mockRes();
+        const next = vi.fn();
+
+        await mod.sessionAuth(req, res, next);
+
+        expect(next).not.toHaveBeenCalled();
+        expect(res.status).toHaveBeenCalledWith(403);
+        expect(db.userRepository.findDemoById).not.toHaveBeenCalled();
+        expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
       ['the reserved row is deleted and recreated', 'demo-fixture-v2'],
       ['the marker is cleared and re-enabled', 'demo-fixture-v3'],
     ])('rejects an issued credential before its first read when %s', async (_scenario, revision) => {
@@ -271,7 +324,7 @@ describe('sessionAuth middleware', () => {
         is_demo: true,
         demo_authority_revision: revision,
       });
-      const req = mockReq({
+      const req = mockDemoReq({
         method: 'GET',
         originalUrl: `/api/decisions/${demo.DEMO_USER_ID}`,
         headers: { authorization: `Bearer ${issued.token}` },
@@ -304,7 +357,7 @@ describe('sessionAuth middleware', () => {
         }),
       );
       const issued = mod.issueDemoSession();
-      const req = mockReq({
+      const req = mockDemoReq({
         method: 'GET',
         originalUrl: `/api/decisions/${demo.DEMO_USER_ID}`,
         headers: { authorization: `Bearer ${issued.token}` },
@@ -773,7 +826,7 @@ describe('sessionAuth middleware', () => {
         ['GET', '/api/users'],
         ['GET', '/api/settings/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d'],
       ]) {
-        const req = mockReq({
+        const req = mockDemoReq({
           method,
           originalUrl,
           headers: { authorization: `Bearer ${issued.token}` },
@@ -801,8 +854,7 @@ describe('sessionAuth middleware', () => {
         is_demo: true,
         demo_authority_revision: fixtureIncarnation.revision,
       });
-      const req = mockReq({
-        ip: '127.0.0.1',
+      const req = mockDemoReq({
         method: 'POST',
         originalUrl: '/api/feedback',
         headers: {
@@ -858,7 +910,7 @@ describe('sessionAuth middleware', () => {
       const issued = mod.issueDemoSession();
       const db = await import('@skytwin/db');
       (db.userRepository.findDemoById as ReturnType<typeof vi.fn>).mockResolvedValue(null);
-      const req = mockReq({
+      const req = mockDemoReq({
         method: 'GET',
         originalUrl: '/api/decisions/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
         headers: { authorization: `Bearer ${issued.token}` },

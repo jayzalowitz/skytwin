@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   KEY_DEMO_SESSION_EXPIRES_AT,
+  KEY_ONBOARDED,
   KEY_SESSION_TOKEN,
   KEY_TOUR_MODE,
   KEY_USER_ID,
@@ -331,7 +332,7 @@ describe('interactive sample page states', () => {
     vi.stubGlobal('fetch', fetchMock);
     window.location.reload = vi.fn();
 
-    await skyTwinExitTour();
+    await expect(skyTwinExitTour()).resolves.toBe(true);
 
     expect(fetchMock).toHaveBeenCalledWith(
       '/api/v1/demo/simulation',
@@ -347,6 +348,96 @@ describe('interactive sample page states', () => {
     expect(localStorage.getItem(KEY_TOUR_MODE)).toBeNull();
     expect(localStorage.getItem(KEY_USER_ID)).toBeNull();
     expect(window.location.reload).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('preserves a newer real login that wins while sample discard is pending', async () => {
+    const demoUserId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+    const realUserId = '11111111-2222-4333-8444-555555555555';
+    const values = new Map();
+    vi.stubGlobal('localStorage', {
+      get length() {
+        return values.size;
+      },
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, String(value)),
+      removeItem: (key) => values.delete(key),
+      key: (index) => [...values.keys()][index] ?? null,
+    });
+    localStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
+    localStorage.setItem(
+      KEY_DEMO_SESSION_EXPIRES_AT,
+      '2030-01-01T00:00:00.000Z',
+    );
+    localStorage.setItem(KEY_TOUR_MODE, '1');
+    localStorage.setItem(KEY_USER_ID, demoUserId);
+    localStorage.setItem(`skytwin_last_visit_${demoUserId}`, 'sample-only');
+
+    let resolveDiscard;
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(
+        () =>
+          new Promise((resolve) => {
+            resolveDiscard = resolve;
+          }),
+      ),
+    );
+    window.location.reload = vi.fn();
+    const exiting = skyTwinExitTour();
+
+    localStorage.setItem(KEY_SESSION_TOKEN, 'real-session-token');
+    localStorage.setItem(KEY_USER_ID, realUserId);
+    localStorage.setItem(KEY_ONBOARDED, 'true');
+    localStorage.removeItem(KEY_TOUR_MODE);
+    localStorage.removeItem(KEY_DEMO_SESSION_EXPIRES_AT);
+    localStorage.setItem(`skytwin_last_visit_${realUserId}`, 'real-state');
+    resolveDiscard(new Response(null, { status: 204 }));
+
+    await expect(exiting).resolves.toBe(true);
+    expect(localStorage.getItem(KEY_SESSION_TOKEN)).toBe('real-session-token');
+    expect(localStorage.getItem(KEY_USER_ID)).toBe(realUserId);
+    expect(localStorage.getItem(KEY_ONBOARDED)).toBe('true');
+    expect(localStorage.getItem(`skytwin_last_visit_${realUserId}`)).toBe(
+      'real-state',
+    );
+    expect(localStorage.getItem(`skytwin_last_visit_${demoUserId}`)).toBeNull();
+    expect(window.location.reload).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
+  it('keeps the sample credential and browser state when disposal is unconfirmed', async () => {
+    const demoUserId = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+    const values = new Map();
+    vi.stubGlobal('localStorage', {
+      get length() {
+        return values.size;
+      },
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, String(value)),
+      removeItem: (key) => values.delete(key),
+      key: (index) => [...values.keys()][index] ?? null,
+    });
+    localStorage.setItem(KEY_SESSION_TOKEN, 'sample-token');
+    localStorage.setItem(
+      KEY_DEMO_SESSION_EXPIRES_AT,
+      '2030-01-01T00:00:00.000Z',
+    );
+    localStorage.setItem(KEY_TOUR_MODE, '1');
+    localStorage.setItem(KEY_USER_ID, demoUserId);
+    localStorage.setItem(`skytwin_last_visit_${demoUserId}`, 'sample-state');
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+    window.location.reload = vi.fn();
+
+    await expect(skyTwinExitTour()).resolves.toBe(false);
+
+    expect(localStorage.getItem(KEY_SESSION_TOKEN)).toBe('sample-token');
+    expect(localStorage.getItem(KEY_USER_ID)).toBe(demoUserId);
+    expect(localStorage.getItem(KEY_TOUR_MODE)).toBe('1');
+    expect(localStorage.getItem(`skytwin_last_visit_${demoUserId}`)).toBe(
+      'sample-state',
+    );
+    expect(window.location.reload).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
 });

@@ -2,9 +2,9 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import {
-  isLocalOnlySamplePath,
   isLoopbackApiBase,
   isLoopbackPeer,
+  requiresLocalSampleBoundary,
 } from './proxy-safety.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -44,10 +44,13 @@ app.use(
 // API proxy to avoid CORS issues — forwards /api/* to the API server
 app.all('/api/*splat', async (req, res) => {
   try {
-    const samplePath = isLocalOnlySamplePath(
-      new URL(req.originalUrl, 'http://localhost').pathname,
+    const requestUrl = new URL(req.originalUrl, 'http://localhost');
+    const sampleRequest = requiresLocalSampleBoundary(
+      requestUrl.pathname,
+      req.headers['authorization'],
+      requestUrl,
     );
-    if (samplePath) {
+    if (sampleRequest) {
       if (!isLoopbackPeer(req.socket.remoteAddress)) {
         res.status(403).json({
           error: 'The packaged sample is available from this device only.',

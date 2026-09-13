@@ -6,7 +6,7 @@ import {
 } from './storage-keys.js';
 
 const API = '/api';
-const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
+export const DEMO_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
 let demoSessionPromise = null;
 
 /**
@@ -529,8 +529,9 @@ export function sendSampleSimulationCommand(command) {
   }, false, false);
 }
 
-export async function endSampleSimulation() {
-  const token = localStorage.getItem(KEY_SESSION_TOKEN);
+export async function endSampleSimulation(
+  token = localStorage.getItem(KEY_SESSION_TOKEN),
+) {
   if (!token) return null;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 3_000);

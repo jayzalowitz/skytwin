@@ -4,6 +4,14 @@ const LOCAL_ONLY_SAMPLE_PATHS = [
   '/api/v1/demo/simulation',
 ] as const;
 
+const DEMO_TOKEN_PREFIX = 'skytwin-demo-v1';
+
+function isSampleTokenCandidate(token: string | null | undefined): boolean {
+  return Boolean(
+    token === DEMO_TOKEN_PREFIX || token?.startsWith(`${DEMO_TOKEN_PREFIX}.`),
+  );
+}
+
 export function isLoopbackPeer(address: string | undefined): boolean {
   const normalized = address?.split('%')[0]?.toLowerCase();
   return normalized === '127.0.0.1'
@@ -40,5 +48,40 @@ export function isLoopbackApiBase(value: string): boolean {
 export function isLocalOnlySamplePath(pathname: string): boolean {
   return LOCAL_ONLY_SAMPLE_PATHS.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`),
+  );
+}
+
+/**
+ * Detect the reserved sample principal before proxying any API route. Sample
+ * credentials are accepted by the API from either Authorization or `?token=`,
+ * so both transports must carry the same local-only boundary here.
+ */
+export function hasSampleCredential(
+  authorization: string | string[] | undefined,
+  requestUrl: URL,
+): boolean {
+  const headers = Array.isArray(authorization)
+    ? authorization
+    : authorization === undefined
+      ? []
+      : [authorization];
+  return (
+    headers.some((header) =>
+      isSampleTokenCandidate(
+        header.startsWith('Bearer ') ? header.slice(7) : undefined,
+      ),
+    ) ||
+    isSampleTokenCandidate(requestUrl.searchParams.get('token'))
+  );
+}
+
+export function requiresLocalSampleBoundary(
+  pathname: string,
+  authorization: string | string[] | undefined,
+  requestUrl: URL,
+): boolean {
+  return (
+    isLocalOnlySamplePath(pathname) ||
+    hasSampleCredential(authorization, requestUrl)
   );
 }

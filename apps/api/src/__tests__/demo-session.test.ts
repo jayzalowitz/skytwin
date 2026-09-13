@@ -146,6 +146,25 @@ describe('demo session credential', () => {
     expect(inspectDemoSession(priorProcessToken)).toBeNull();
   });
 
+  it('reserves both tombstone and successor slots for an earlier-process replacement', () => {
+    const now = 1_800_000_000_000;
+    const priorProcessToken = issueDemoSession(TEST_FIXTURE, now).token;
+    _resetDemoSessionLifecycleForTests();
+    const active = Array.from(
+      { length: DEMO_SESSION_LIFECYCLE_LIMIT - 1 },
+      () => issueDemoSession(TEST_FIXTURE, now + 1),
+    );
+
+    expect(() =>
+      issueDemoSession(TEST_FIXTURE, now + 2, priorProcessToken),
+    ).toThrow(DemoSessionCapacityError);
+    expect(_demoSessionLifecycleSizeForTests()).toBe(
+      DEMO_SESSION_LIFECYCLE_LIMIT - 1,
+    );
+    expect(inspectDemoSession(active[0]!.token, now + 2)).not.toBeNull();
+    expect(inspectDemoSession(priorProcessToken, now + 2)).toBeNull();
+  });
+
   it('recognizes only loopback addresses for the packaged sample', () => {
     expect(isLocalDemoAddress('127.0.0.1')).toBe(true);
     expect(isLocalDemoAddress('::1')).toBe(true);
