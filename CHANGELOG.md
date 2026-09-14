@@ -79,6 +79,18 @@ All notable changes to SkyTwin will be documented in this file.
   job installs `platform-tools` explicitly instead of inheriting the setup
   action's obsolete `tools platform-tools` default.
 
+## [Unreleased] — Adversarial source-checkout evidence
+
+### Added
+
+- **Development evals now emit integrity-checked source evidence.** A versioned
+  adversarial catalog exercises provenance escalation, pre-dispatch blocking,
+  replay suppression, transport ambiguity, credential-response validation, and
+  generic rollback refusal. Exact mapped tests and current API/worker dispatch
+  callsites are source-bound, with append-only comparison against the trusted
+  baseline. The artifact remains explicitly incomplete development evidence:
+  it has no packaged-release subject, attestation, or release-readiness claim.
+
 ## [Unreleased] — Verifiable desktop release artifacts
 
 ### Added

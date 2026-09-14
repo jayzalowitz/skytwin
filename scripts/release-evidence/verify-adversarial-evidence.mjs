@@ -95,6 +95,87 @@ function canonicalJson(value) {
     `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
 }
 
+/**
+ * JSON.parse keeps only the final value for a duplicate object key. Evidence
+ * inputs must reject that ambiguity before schema or digest checks interpret
+ * them, including pretty-printed checked-in fixtures and baselines that are not
+ * required to use the report's canonical one-line encoding.
+ */
+function parseJsonWithoutDuplicateKeys(bytes, label) {
+  const source = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes);
+  const parsed = JSON.parse(source);
+  let offset = 0;
+
+  const skipWhitespace = () => {
+    while (/\s/u.test(source[offset] ?? '')) offset += 1;
+  };
+  const scanString = () => {
+    const start = offset;
+    offset += 1;
+    while (offset < source.length) {
+      if (source[offset] === '\\') {
+        offset += 2;
+      } else if (source[offset] === '"') {
+        offset += 1;
+        return JSON.parse(source.slice(start, offset));
+      } else {
+        offset += 1;
+      }
+    }
+    throw new Error(`${label} contains an unterminated JSON string`);
+  };
+  const scanValue = () => {
+    skipWhitespace();
+    if (source[offset] === '{') {
+      offset += 1;
+      skipWhitespace();
+      const keys = new Set();
+      if (source[offset] === '}') {
+        offset += 1;
+        return;
+      }
+      while (offset < source.length) {
+        const key = scanString();
+        if (keys.has(key)) throw new Error(`${label} contains duplicate JSON key ${JSON.stringify(key)}`);
+        keys.add(key);
+        skipWhitespace();
+        offset += 1; // ':'; JSON.parse above already established valid syntax.
+        scanValue();
+        skipWhitespace();
+        if (source[offset] === '}') {
+          offset += 1;
+          return;
+        }
+        offset += 1; // ','
+        skipWhitespace();
+      }
+    } else if (source[offset] === '[') {
+      offset += 1;
+      skipWhitespace();
+      if (source[offset] === ']') {
+        offset += 1;
+        return;
+      }
+      while (offset < source.length) {
+        scanValue();
+        skipWhitespace();
+        if (source[offset] === ']') {
+          offset += 1;
+          return;
+        }
+        offset += 1; // ','
+      }
+    } else if (source[offset] === '"') {
+      scanString();
+    } else {
+      while (offset < source.length && !/[\s,\]}]/u.test(source[offset])) offset += 1;
+    }
+  };
+
+  scanValue();
+  return parsed;
+}
+
 function expectedProvenance(origin) {
   if (origin.authoringTier === 'user_sent_originated' || origin.authoringTier === 'user_sent_reply') {
     return 'user_originated';
@@ -237,9 +318,15 @@ function liveGitIdentity(repoRoot) {
   return { commit: head.stdout.trim(), cleanTree: status.stdout === '' };
 }
 
-function loadFixture(fixturePath, baseline, sourceRoot, verifyLiveSources = true) {
+function loadFixture(
+  fixturePath,
+  baseline,
+  sourceRoot,
+  verifyLiveSources = true,
+  label = 'fixture',
+) {
   const bytes = readFileSync(fixturePath);
-  const fixture = JSON.parse(bytes.toString('utf8'));
+  const fixture = parseJsonWithoutDuplicateKeys(bytes, label);
   exactKeys(fixture, [
     'schemaVersion', 'fixturesVersion', 'coverageTargets', 'sourceInventory', 'scenarios',
   ], 'fixture');
@@ -360,11 +447,11 @@ function expectedDimension(scenarios, targets, field) {
 
 export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BASELINE, options = {}) {
   const reportBytes = readFileSync(reportPath);
-  const report = JSON.parse(reportBytes.toString('utf8'));
+  const report = parseJsonWithoutDuplicateKeys(reportBytes, 'report');
   if (reportBytes.toString('utf8') !== `${canonicalJson(report)}\n`) {
     throw new Error('report bytes are not canonical JSON (duplicate keys are forbidden)');
   }
-  const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+  const baseline = parseJsonWithoutDuplicateKeys(readFileSync(baselinePath), 'baseline');
   exactKeys(baseline, [
     'schemaVersion', 'evidenceClass', 'fixturesVersion', 'fixtureSha256', 'exactIds',
     'coverageTargets', 'sourceInventory', 'scenarioFingerprints', 'mitigations', 'limitations',
@@ -374,7 +461,10 @@ export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BAS
   fixtureVersion(baseline.fixturesVersion, 'baseline.fixturesVersion');
   const baselineIds = exactStringArray(baseline.exactIds, 'baseline.exactIds');
   if (options.trustedBaselinePath !== undefined) {
-    const trusted = JSON.parse(readFileSync(options.trustedBaselinePath, 'utf8'));
+    const trusted = parseJsonWithoutDuplicateKeys(
+      readFileSync(options.trustedBaselinePath),
+      'trusted baseline',
+    );
     exactKeys(trusted, [
       'schemaVersion', 'evidenceClass', 'fixturesVersion', 'fixtureSha256', 'exactIds',
       'coverageTargets', 'sourceInventory', 'scenarioFingerprints', 'mitigations', 'limitations',
@@ -406,7 +496,13 @@ export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BAS
     if (sha256(trustedFixtureBytes) !== trusted.fixtureSha256) {
       throw new Error('trusted fixture SHA-256 does not match the trusted baseline');
     }
-    loadFixture(options.trustedFixturePath, trusted, options.sourceRoot ?? REPO_ROOT, false);
+    loadFixture(
+      options.trustedFixturePath,
+      trusted,
+      options.sourceRoot ?? REPO_ROOT,
+      false,
+      'trusted fixture',
+    );
     exactKeys(trusted.scenarioFingerprints, trustedIds, 'trusted baseline.scenarioFingerprints');
     for (const id of trustedIds) {
       if (baseline.scenarioFingerprints[id] !== trusted.scenarioFingerprints[id]) {

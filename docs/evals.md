@@ -331,10 +331,12 @@ This artifact deliberately identifies itself as `source_checkout`. It has no
 release subject or attestation, does not establish release readiness, and does
 not claim there are zero bypasses. The CLI runs every exact mapped Vitest ID and
 verifies the SHA-256 of its dedicated one-scenario test file before recording
-whether that sole exact assertion passed. The digest covers imports, setup,
-helpers, and assertions; a same-named no-op or a weakened helper invalidates the
-evidence. Sharing a mapped file, adding a second assertion, or making the exact
-test ID disagree with the bound file fails closed. Vitest's JSON reporter does not
+whether that sole exact assertion passed. The digest covers that file's bytes,
+including its import declarations, locally defined setup and helpers, and
+assertions. It does not separately hash imported production or helper modules;
+their behavior is exercised when the mapped test runs. Changing the dedicated
+file invalidates its binding. Sharing a mapped file, adding a second assertion,
+or making the exact test ID disagree with the bound file fails closed. Vitest's JSON reporter does not
 provide typed observations from an assertion body, so mapped-regression
 `actualDisposition`, `actualConfirmation`, and `actualSeverity` fields remain
 `null`; test-title text is never promoted into observed evidence. The cataloged
@@ -375,8 +377,9 @@ requires the pull request's base commit (or the prior `main` commit) to resolve
 locally, then extracts and supplies its baseline plus fixture whenever the
 baseline exists. An unavailable or malformed prior commit fails the job; only a
 resolved prior commit that genuinely lacks the baseline uses initial-bootstrap
-verification. The verifier also rejects noncanonical or duplicate-key JSON,
-contradictory result semantics, and mutable limitation or claim text. It
+verification. The verifier requires canonical report JSON and rejects duplicate
+object keys in reports and in current or trusted fixtures and baselines. It also
+rejects contradictory result semantics and mutable limitation or claim text. It
 independently compares the report identity with live Git HEAD and status; the
 CLI captures that identity only after all mapped tests finish. CI additionally
 binds pull-request evidence to `github.event.pull_request.head.sha` (and push

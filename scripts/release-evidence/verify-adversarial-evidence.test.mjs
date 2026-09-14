@@ -409,7 +409,7 @@ test('rejects removal or rewriting of trusted mitigation and limitation rails', 
 test('rejects a live dispatch call omitted from the coordinated source inventory', () => withRepository((context) => {
   const changedFixture = structuredClone(fixture);
   changedFixture.sourceInventory = changedFixture.sourceInventory.filter(({ sourceFile }) =>
-    sourceFile !== 'apps/api/src/routes/capabilities.ts');
+    sourceFile !== 'apps/api/src/routes/events.ts');
   const fixtureBytes = `${JSON.stringify(changedFixture)}\n`;
   const changedFixturePath = join(context.directory, 'fixture.json');
   writeFileSync(changedFixturePath, fixtureBytes);
@@ -425,7 +425,7 @@ test('rejects a live dispatch call omitted from the coordinated source inventory
       writeEvidence(context.directory, report), changedBaselinePath,
       { ...context.options, fixturePath: changedFixturePath },
     ),
-    /runtime dispatch source is missing from sourceInventory.*capabilities\.ts/,
+    /runtime dispatch source is missing from sourceInventory.*events\.ts/,
   );
 }));
 
@@ -633,9 +633,63 @@ test('rejects noncanonical bytes and duplicate JSON keys', () => withRepository(
     () => verifyAdversarialEvidence(
       writeEvidence(context.directory, report, `${duplicate}\n`), baselinePath, context.options,
     ),
-    /not canonical JSON/,
+    /duplicate JSON key/,
   );
 }));
+
+test('rejects duplicate keys in current and trusted fixture/baseline inputs', () => {
+  const duplicateSchemaVersion = (bytes) => bytes.replace(
+    '"schemaVersion": "1.0.0",',
+    '"schemaVersion": "0.0.0",\n  "schemaVersion": "1.0.0",',
+  );
+
+  for (const input of ['baseline', 'fixture', 'trusted baseline', 'trusted fixture']) {
+    withRepository((context) => {
+      const reportPath = writeEvidence(context.directory, validReport(context.commit));
+      const options = { ...context.options };
+      let currentBaselinePath = baselinePath;
+
+      if (input === 'baseline') {
+        currentBaselinePath = join(context.directory, 'baseline.json');
+        writeFileSync(
+          currentBaselinePath,
+          duplicateSchemaVersion(readFileSync(baselinePath, 'utf8')),
+        );
+      } else if (input === 'fixture') {
+        const currentFixturePath = join(context.directory, 'fixture.json');
+        writeFileSync(
+          currentFixturePath,
+          duplicateSchemaVersion(readFileSync(fixturePath, 'utf8')),
+        );
+        options.fixturePath = currentFixturePath;
+      } else if (input === 'trusted baseline') {
+        const trustedBaselinePath = join(context.directory, 'baseline.json');
+        writeFileSync(
+          trustedBaselinePath,
+          duplicateSchemaVersion(readFileSync(baselinePath, 'utf8')),
+        );
+        options.trustedBaselinePath = trustedBaselinePath;
+      } else {
+        const trustedFixturePath = join(context.directory, 'fixture.json');
+        const trustedFixtureBytes = duplicateSchemaVersion(readFileSync(fixturePath, 'utf8'));
+        writeFileSync(trustedFixturePath, trustedFixtureBytes);
+        const trustedBaseline = structuredClone(baseline);
+        trustedBaseline.fixtureSha256 = createHash('sha256')
+          .update(trustedFixtureBytes)
+          .digest('hex');
+        const trustedBaselinePath = join(context.directory, 'baseline.json');
+        writeFileSync(trustedBaselinePath, JSON.stringify(trustedBaseline));
+        options.trustedBaselinePath = trustedBaselinePath;
+        options.trustedFixturePath = trustedFixturePath;
+      }
+
+      assert.throws(
+        () => verifyAdversarialEvidence(reportPath, currentBaselinePath, options),
+        new RegExp(`${input} contains duplicate JSON key`),
+      );
+    });
+  }
+});
 
 test('rejects invalid actual enums and contradictory mapped semantics', () => withRepository((context) => {
   const invalid = validReport(context.commit);

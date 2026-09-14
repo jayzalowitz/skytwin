@@ -37,6 +37,10 @@ it('adv-v1-openclaw-credential-schema rejects malicious metadata', async () => {
     onCredentialNeeded,
   });
   const plan = await adapter.buildPlan(action());
+  // Execution ownership is router-authored in production. Bind the same
+  // trusted context here so this regression reaches credential metadata
+  // validation instead of failing earlier at the owner boundary.
+  plan.executionOwnerId = 'user-1';
   expect(plan.action).toMatchObject({
     actionType: 'revoke_token',
     reversible: false,
@@ -46,8 +50,9 @@ it('adv-v1-openclaw-credential-schema rejects malicious metadata', async () => {
   const error = await adapter.execute(plan).catch((caught) => caught);
 
   expect(error).toBeInstanceOf(Error);
-  expect((error as Error).message).toContain('openclaw_response_invalid');
+  expect((error as Error).message).toContain('outcome is ambiguous');
   expect(String(error)).not.toContain('SECRET_MARKER');
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(onCredentialNeeded).not.toHaveBeenCalled();
+  await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
 });

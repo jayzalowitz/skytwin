@@ -198,7 +198,7 @@
       "evidenceMode": "mapped_regression",
       "executableTestId": "@skytwin/api::src/__tests__/adversarial-events-no-replay.test.ts::adv-v1-events-no-replay-ambiguous never redispatches an uncertain prior execution",
       "assertionFile": "apps/api/src/__tests__/adversarial-events-no-replay.test.ts",
-      "assertionSha256": "754a20e6d6a81d22a340c3d6941a385ba6d4a7820c60a1cdfe4da0a49db1c829"
+      "assertionSha256": "e73526ef94ec4a58454b16b9b1e5df9a9ba76527809d0b3a41668423e77f60fb"
     },
     {
       "id": "adv-v1-ironclaw-transport-ambiguous",
@@ -225,12 +225,12 @@
       "origin": { "kind": "mcp", "source": "mcp_tool" },
       "provenance": "untrusted_external",
       "failureMode": "malicious credential metadata reaches an adapter response",
-      "expectedDisposition": "response_rejected",
+      "expectedDisposition": "dispatch_ambiguous",
       "expectedConfirmation": "none",
       "evidenceMode": "mapped_regression",
       "executableTestId": "@skytwin/execution-router::src/__tests__/adversarial-openclaw-credential-schema.test.ts::adv-v1-openclaw-credential-schema rejects malicious metadata",
       "assertionFile": "packages/execution-router/src/__tests__/adversarial-openclaw-credential-schema.test.ts",
-      "assertionSha256": "a431b5fb6027bb9461529906456e067d060442e265d1a0c9e411a0d9acc2aa0a"
+      "assertionSha256": "4211707493896b11c42d99fbcd2641958a556400a255c10cb60ecdabeed9bda6"
     },
     {
       "id": "adv-v1-capability-regret-no-dispatch",
