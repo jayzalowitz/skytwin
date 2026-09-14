@@ -1780,19 +1780,6 @@ function renderReasoningLocation(settingsAvailable = true) {
   `;
 }
 
-function chainRequiresExternalNetwork(chain) {
-  return chain.some((provider) => {
-    if (provider.enabled === false || provider.provider === 'embedded') return false;
-    if (provider.provider !== 'ollama') return true;
-    try {
-      const url = new URL(provider.baseUrl || 'http://localhost:11434');
-      return !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname.toLowerCase());
-    } catch {
-      return true;
-    }
-  });
-}
-
 /**
  * #187 AC#6: render the Smart / Smarter mode pill above the provider
  * chain. Active mode is highlighted; clicking the inactive pill reorders
@@ -2019,6 +2006,11 @@ window.aiTestProvider = async function(idx, userId) {
  */
 window.switchAIBrainMode = async function(userId, target) {
   if (!_aiSettingsLoaded) return;
+  if (_reasoningModeRequiresConfirmation) {
+    document.getElementById('ai-reasoning-mode')?.focus();
+    showErrorToast('Choose where reasoning runs before changing provider priority.');
+    return;
+  }
   const next = target === 'smart'
     ? applySmartMode(_aiChain)
     : applySmarterMode(_aiChain);
@@ -2036,12 +2028,7 @@ window.switchAIBrainMode = async function(userId, target) {
   // (e.g. when the API didn't accept `embedded` yet — see paired fix
   // in apps/api/src/routes/settings.ts).
   const prev = _aiChain.map((p) => ({ ...p }));
-  const prevReasoningMode = _reasoningMode;
   _aiChain = next;
-  _reasoningMode = chainRequiresExternalNetwork(_aiChain)
-    ? 'bring_your_own_provider'
-    : 'on_device';
-  _reasoningModeRequiresConfirmation = false;
   // Re-render the pill + provider chain optimistically so the click
   // produces an immediate visual change while the save round-trips.
   document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
@@ -2067,7 +2054,6 @@ window.switchAIBrainMode = async function(userId, target) {
     // Roll back the optimistic state so the user doesn't think the
     // switch succeeded.
     _aiChain = prev;
-    _reasoningMode = prevReasoningMode;
     document.getElementById('ai-mode-toggle').innerHTML = renderModeToggle(_aiChain);
     document.getElementById('ai-reasoning-location').innerHTML = renderReasoningLocation();
     document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);

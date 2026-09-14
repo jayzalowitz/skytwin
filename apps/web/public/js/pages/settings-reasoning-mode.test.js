@@ -22,7 +22,7 @@ describe('reasoning-location settings boundary', () => {
 
   it('uses delegated actions rather than inline event handlers', () => {
     const start = source.indexOf('function renderReasoningLocation');
-    const end = source.indexOf('function chainRequiresExternalNetwork');
+    const end = source.indexOf('function renderModeToggle');
     const locationRenderer = source.slice(start, end);
     expect(locationRenderer).toContain('data-action="ai-reasoning-mode"');
     expect(locationRenderer).not.toMatch(/on(?:click|change|input|keydown)\s*=/i);
