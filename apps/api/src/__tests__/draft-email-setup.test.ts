@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { LlmClient } from '@skytwin/llm-client';
+import type { LlmClient, ProviderPricingSnapshot } from '@skytwin/llm-client';
 import type { CostGatePort } from '@skytwin/decision-engine';
 
 const mockIsDraftsEnabled = vi.fn();
@@ -8,7 +8,6 @@ const mockGetDraftsDailyCallCap = vi.fn();
 const mockCheckAndReserveCall = vi.fn();
 const mockUpdateOutcome = vi.fn();
 const mockRecordCall = vi.fn();
-const mockGetEnabledForUser = vi.fn();
 const mockUserFindById = vi.fn();
 const mockCheckAndRecordSpend = vi.fn();
 const mockSpendReconcile = vi.fn();
@@ -23,9 +22,6 @@ vi.mock('@skytwin/db', () => ({
     checkAndReserveCall: (...args: unknown[]) => mockCheckAndReserveCall(...args),
     updateOutcome: (...args: unknown[]) => mockUpdateOutcome(...args),
     record: (...args: unknown[]) => mockRecordCall(...args),
-  },
-  aiProviderRepository: {
-    getEnabledForUser: (...args: unknown[]) => mockGetEnabledForUser(...args),
   },
   userRepository: {
     findById: (...args: unknown[]) => mockUserFindById(...args),
@@ -79,10 +75,18 @@ vi.mock('../memory-setup.js', () => ({
 
 const { buildDraftEmailGenerator, draftsEnabled } = await import('../draft-email-setup.js');
 
-const fakeLlm = (): LlmClient =>
+const zeroPricing = { kind: 'zero', unit: 'nano_usd', source: 'local_runtime' } as const;
+const unknownPricing = {
+  kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported',
+} as const;
+
+const fakeLlm = (
+  pricing: readonly ProviderPricingSnapshot[] = [{ provider: 'embedded', pricing: zeroPricing }],
+): LlmClient =>
   ({
     hasProviders: true,
     generate: vi.fn(async () => ({ content: 'draft body' })),
+    getProviderPricingSnapshot: vi.fn(() => pricing),
   }) as unknown as LlmClient;
 
 describe('draft-email-setup', () => {
@@ -95,7 +99,6 @@ describe('draft-email-setup', () => {
     mockCheckAndReserveCall.mockReset();
     mockUpdateOutcome.mockReset();
     mockRecordCall.mockReset();
-    mockGetEnabledForUser.mockReset();
     mockUserFindById.mockReset();
     mockCheckAndRecordSpend.mockReset();
     mockSpendReconcile.mockReset();
@@ -105,11 +108,6 @@ describe('draft-email-setup', () => {
     // Default eval gate: passed. Tests that exercise the eval gate
     // override per-test.
     mockIsDraftsEvalPassed.mockResolvedValue(true);
-    // Default AI providers: a single embedded provider — cheapest path,
-    // so the conservative cost estimate stays at 0 cents.
-    mockGetEnabledForUser.mockResolvedValue([
-      { provider: 'embedded', api_key: '', model: 'phi-3', base_url: null, priority: 0 },
-    ]);
     // Defaults so the gate's READ side never blocks unless overridden.
     mockGetDraftsDailyCallCap.mockResolvedValue(100);
     mockCheckAndReserveCall.mockResolvedValue({
@@ -237,29 +235,28 @@ describe('draft-email-setup', () => {
 
     it('fails closed when any possible fallback has unknown pricing', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      mockGetEnabledForUser.mockResolvedValue([
-        { provider: 'anthropic', api_key: 'sk-...', model: 'claude-3-5-sonnet', base_url: null, priority: 0 },
-        { provider: 'embedded', api_key: '', model: 'phi-3', base_url: null, priority: 1 },
-      ]);
-      const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
+      const gen = await buildDraftEmailGenerator('u-1', fakeLlm([
+        { provider: 'anthropic', pricing: unknownPricing },
+        { provider: 'embedded', pricing: zeroPricing },
+      ]));
       expect(gen).toBeNull();
-      expect(mockGetEnabledForUser).toHaveBeenCalledWith('u-1');
     });
 
-    it('fails closed when the AI-provider price cannot be read', async () => {
+    it('fails closed when the admitted-chain price cannot be read', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      mockGetEnabledForUser.mockRejectedValue(new Error('CRDB pool exhausted'));
-      const gen = await buildDraftEmailGenerator('u-1', fakeLlm());
+      const llm = fakeLlm();
+      vi.mocked(llm.getProviderPricingSnapshot).mockImplementation(() => {
+        throw new Error('pricing snapshot unavailable');
+      });
+      const gen = await buildDraftEmailGenerator('u-1', llm);
       expect(gen).toBeNull();
     });
 
     it('does not classify a remote Ollama endpoint as zero-cost local inference', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
-      mockGetEnabledForUser.mockResolvedValue([{
-        provider: 'ollama', api_key: '', model: 'qwen',
-        base_url: 'https://ollama.example', priority: 0,
-      }]);
-      expect(await buildDraftEmailGenerator('u-1', fakeLlm())).toBeNull();
+      expect(await buildDraftEmailGenerator('u-1', fakeLlm([
+        { provider: 'ollama', pricing: unknownPricing },
+      ]))).toBeNull();
     });
 
     it('accepts an explicit CostGatePort override (test seam) and uses it for the generator', async () => {

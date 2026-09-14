@@ -1,6 +1,7 @@
 import type {
   AIProviderName,
   ProviderExecutionMetadata,
+  ProviderPricingCapability,
 } from '@skytwin/shared-types';
 
 /**
@@ -11,6 +12,12 @@ export interface ProviderEntry {
   apiKey: string;
   model: string;
   baseUrl?: string;
+}
+
+/** Credential-free pricing view of the exact frozen provider chain. */
+export interface ProviderPricingSnapshot {
+  provider: AIProviderName;
+  pricing: ProviderPricingCapability;
 }
 
 /**
