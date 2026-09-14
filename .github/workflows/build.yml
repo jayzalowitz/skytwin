@@ -305,7 +305,11 @@ jobs:
             ${{ runner.os }}-electron-
 
       - run: pnpm install --frozen-lockfile
-      - run: pnpm build
+      # Windows runners intermittently terminate parallel TypeScript child
+      # processes with STATUS_DLL_INIT_FAILED (0xC0000142). Serializing Turbo
+      # also avoids the documented shared dist writer race and costs little
+      # compared with Electron packaging.
+      - run: pnpm build --concurrency=1
 
       # Exclude the electron-builder workspace from Windows Defender
       # real-time scanning. NSIS's makensis is a 32-bit process that
