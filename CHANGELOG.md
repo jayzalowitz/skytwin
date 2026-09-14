@@ -55,8 +55,8 @@ All notable changes to SkyTwin will be documented in this file.
   remaining repository/client/migration/bake gates are described separately; no
   production source field is represented as encrypted. The README, privacy page,
   and deck also stop describing a local model or `llama.cpp` runtime as bundled:
-  current source can recommend a model, but local inference still requires both
-  components to be supplied separately.
+  current source can recommend and download the pinned model only after user
+  action, while a compatible runtime remains a separate prerequisite.
 
 ## [Unreleased] — Account-free interactive sample
 
