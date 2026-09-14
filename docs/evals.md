@@ -310,12 +310,103 @@ If a scenario represents a real-world failure that was discovered and fixed, add
 
 ### 5. Run the Scenario
 
-The `EvalRunner` is used programmatically -- there are no CLI subcommands for running individual scenarios or filtering by category. To run evals:
+`EvalRunner` remains available for decision-quality suites. The default eval
+command now also produces versioned adversarial evidence instead of
+exiting without output:
 
 ```bash
-# Run the eval runner via tsx
+# Generate source-checkout adversarial evidence and its SHA-256 companion
 pnpm --filter @skytwin/evals run eval
 ```
+
+The report is written to `artifacts/adversarial-evidence.json`. Verify its
+schema, checksum, and exact v1 scenario IDs with:
+
+```bash
+node scripts/release-evidence/verify-adversarial-evidence.mjs \
+  artifacts/adversarial-evidence.json
+```
+
+This artifact deliberately identifies itself as `source_checkout`. It has no
+release subject or attestation, does not establish release readiness, and does
+not claim there are zero bypasses. The catalog has nine deterministic-policy
+cases and five mapped-regression cases. Its adapter dimension names the three
+execution adapters (`direct`, `ironclaw`, and `openclaw`) plus `none`, which is a
+policy-only category rather than a fourth adapter. The CLI runs every exact
+mapped Vitest ID and verifies the SHA-256 of its dedicated one-scenario test file before recording
+whether that sole exact assertion passed. The digest covers that file's bytes,
+including its import declarations, locally defined setup and helpers, and
+assertions. It does not separately hash imported production or helper modules;
+their behavior is exercised when the mapped test runs. Changing the dedicated
+file invalidates its binding. Sharing a mapped file, adding a second assertion,
+or making the exact test ID disagree with the bound file fails closed. Vitest's JSON reporter does not
+provide typed observations from an assertion body, so mapped-regression
+`actualDisposition`, `actualConfirmation`, and `actualSeverity` fields remain
+`null`; test-title text is never promoted into observed evidence. The cataloged
+expectation remains separate metadata. For example, the Direct shell regression
+uses the execution router's production pre-dispatch guard, checks the two-step confirmation message,
+and checks that the adapter was never called. Test outcomes live in
+`testSummary`; the separately named
+`structuralCoverage` only says which catalog dimensions have a scenario and
+never turns a failed assertion into a passing result. Those dimension counts
+are catalog-declared scenario presence, not typed runtime observations. In the
+pre-dispatch guard case, `direct` records the intended downstream adapter even
+though the guard correctly stops execution before adapter selection. The
+catalog's broader target denominator remains explicit: this development foundation currently
+catalogs only six of ten identified runtime entry paths, including the
+capability-regret route's explicit refusal to dispatch generic rollback, so
+`developmentStatus` remains `incomplete` even when all mapped checks pass. A
+future `complete` state would additionally require every mapped assertion,
+every structural target, artifact-subject binding, attestation, and the other
+release gates; source-checkout evidence cannot claim it. This foundation does
+not yet enumerate every API, worker, assistant, memory, or routine entry path
+needed for that gate. Test-process network and clock
+control are not enforced and are stated as such in the report. API and worker
+TypeScript source is parsed for call expressions whose terminal method name is
+in the verifier's fixed dispatch-name set, excluding comments, strings, tests,
+and generated output: every recognized call must have an
+exact current source-inventory entry. Trusted history freezes the semantic
+runtime-path denominator, while concrete files, call names, and occurrence
+counts may move or consolidate when the live inventory stays exact and the
+same semantic paths remain represented. The stable catalog is
+`packages/evals/fixtures/v1/adversarial-scenarios.json`; changing its exact IDs
+or bytes requires an intentional baseline update under
+`scripts/release-evidence/`. A standalone verification checks fixture/baseline
+internal consistency. With `--trusted-baseline <path> --trusted-fixture
+<path>` in programmatic tests, the verifier first checks that the prior fixture
+matches its trusted SHA-256. CI instead passes `--trusted-commit <sha>`; the
+verifier reads the two fixed evidence paths directly from that immutable Git
+commit and rejects a commit containing only one of them. Target values,
+semantic source-inventory paths, exact scenario IDs,
+per-ID semantic fingerprints, and mitigation/limitation rails are additions-only. A
+fingerprint covers the action, origin/provenance, expected disposition and
+confirmation, evidence mode, exact test ID, and mapped assertion source digest.
+Schema and fixture versions may advance but cannot move backward. CI requires
+the pull request's base commit (or the prior `main` commit) to resolve locally.
+An unavailable or malformed prior commit fails the job; only a resolved prior
+commit that contains neither evidence input uses initial-bootstrap verification.
+This v1 landing therefore proves internal fixture/baseline consistency, not
+pre-introduction history. Append-only comparison begins after `main` contains
+both evidence inputs. The terminal-name inventory does not discover aliases,
+computed or dynamic dispatch, newly named methods, or direct provider effects;
+those remain an explicit limitation rather than inferred coverage.
+Filesystem evidence and mapped assertion sources are read with bounded,
+no-follow descriptor checks so parsing and hashing use the same stable bytes.
+The verifier requires canonical report JSON and rejects malformed UTF-8 and
+duplicate object keys in reports and in current or trusted fixtures and
+baselines. It also
+rejects contradictory result semantics and mutable limitation or claim text. It
+independently compares the report identity with live Git HEAD and status; the
+CLI captures that identity only after all mapped tests finish. CI additionally
+binds pull-request evidence to `github.event.pull_request.head.sha` (and push
+evidence to `github.sha`) and requires the checkout to be clean (the generated
+artifact path is ignored, so writing it does not dirty the checkout).
+The companion checksum detects accidental corruption, but is not an external
+trust root. The workflow verifies the report and checksum before upload, but
+they remain mutable filesystem paths: a same-user process could replace either
+path between verification and the artifact uploader opening it. This
+verify-to-upload race remains an explicit development-evidence limitation;
+copying the same bytes to another mutable temporary path would not close it.
 
 In code, use the `EvalRunner` class directly:
 
@@ -350,7 +441,7 @@ These scenarios are non-negotiable. If any of them fail after a code change, the
 ### Full Eval Suite
 
 ```bash
-# Run all scenarios via the eval script
+# Generate and summarize source-checkout adversarial evidence
 pnpm --filter @skytwin/evals run eval
 ```
 

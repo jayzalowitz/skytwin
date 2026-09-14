@@ -1,13 +1,13 @@
 name: Evals
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
-
-permissions:
-  contents: read
 
 jobs:
   eval-suite:
@@ -15,11 +15,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # PR checks must describe the reviewed head, not GitHub's synthetic
+          # merge ref. Push checks remain bound to the pushed main commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          # The evidence verifier compares append-only targets and exact IDs,
+          # plus version monotonicity, with the PR base (or prior main commit),
+          # so that commit must be locally available.
+          fetch-depth: 0
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 20
           cache: pnpm
@@ -27,7 +35,7 @@ jobs:
       # continue-on-error mirrors build.yml: this cache is an optimisation,
       # and its sidecar returns 400/500 whenever the GitHub cache service is
       # unavailable. Without this flag a cache hiccup fails the whole job.
-      - uses: dtinth/setup-github-actions-caching-for-turbo@v1
+      - uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e # v1
         continue-on-error: true
 
       - name: Install dependencies
@@ -51,8 +59,43 @@ jobs:
       - name: Run eval tests + check for safety regressions
         run: |
           set -o pipefail
-          pnpm --filter @skytwin/evals test -- --reporter=verbose 2>&1 | tee eval-output.txt
+          pnpm --filter @skytwin/evals test 2>&1 | tee eval-output.txt
           if grep -q "FAIL" eval-output.txt; then
             echo "::error::Safety regression detected in eval suite"
             exit 1
           fi
+
+      # Development evidence only. The verifier binds each mapped scenario to
+      # one full test file and inventories execution dispatch across API/worker
+      # source. This is neither release-subject provenance nor an attestation.
+      - name: Generate and verify adversarial source-checkout evidence
+        env:
+          EXPECTED_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          TRUSTED_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          pnpm --filter @skytwin/evals eval:adversarial
+          fixture_path="packages/evals/fixtures/v1/adversarial-scenarios.json"
+          if [[ ! "$TRUSTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Trusted baseline commit is missing or malformed"
+            exit 1
+          fi
+          if ! git cat-file -e "${TRUSTED_COMMIT}^{commit}" 2>/dev/null; then
+            echo "::error::Trusted baseline commit is unavailable in the checkout"
+            exit 1
+          fi
+          node scripts/release-evidence/verify-adversarial-evidence.mjs \
+            artifacts/adversarial-evidence.json \
+            --fixture "$fixture_path" \
+            --expected-commit "$EXPECTED_COMMIT" \
+            --trusted-commit "$TRUSTED_COMMIT" \
+            --require-clean
+
+      - name: Upload adversarial source-checkout evidence
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: adversarial-source-checkout-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            artifacts/adversarial-evidence.json
+            artifacts/adversarial-evidence.json.sha256
+          if-no-files-found: error
+          retention-days: 14

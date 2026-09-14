@@ -31,6 +31,8 @@
     "db:migrate": "pnpm --filter @skytwin/db migrate",
     "db:seed": "pnpm --filter @skytwin/db seed",
     "demo:fixture": "pnpm --filter @skytwin/db demo:fixture",
+    "eval:adversarial": "pnpm --filter @skytwin/evals eval:adversarial",
+    "verify:adversarial-evidence": "node scripts/release-evidence/verify-adversarial-evidence.mjs artifacts/adversarial-evidence.json",
     "desktop": "pnpm --filter skytwin-desktop start",
     "desktop:dev": "pnpm --filter skytwin-desktop dev",
     "desktop:build:mac": "pnpm build && pnpm --filter skytwin-desktop package:mac",

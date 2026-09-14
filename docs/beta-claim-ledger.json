@@ -782,7 +782,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "89bd146a9fc13cb07d069b0aad02a463c404f0f36c849f38bf1786547e077e80",
+          "sha256": "90d854418d5218873c3dae9ad62093b6ecbc496103c8e21faf7254322bb24b65",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
@@ -1202,7 +1202,7 @@
         },
         {
           "path": "scripts/release-artifacts/file-integrity.mjs",
-          "sha256": "7600a043c25638e468f704d741ea447dc860a38233e4883abc3592e68e7ecef7",
+          "sha256": "663946a7c450a702a56e5aa625f690555cb833ae53bf1ebdab5c049f5ddd1b09",
           "why": "Hashes and stages regular files through stable descriptors with path, symlink, growth, and replacement guards"
         },
         {
