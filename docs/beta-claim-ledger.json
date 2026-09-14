@@ -782,7 +782,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "b9451bd03536314121309f7204d2a84846da2268b35e49820a64a98d1d880405",
+          "sha256": "89bd146a9fc13cb07d069b0aad02a463c404f0f36c849f38bf1786547e077e80",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
@@ -1160,7 +1160,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "2512748cb0696bb756464e947078022a1f6a81d2da089999eedc7e1cb7c88e18",
+          "sha256": "3d7a0f4058dc4d26127d90f72ea8de0faff8a8aa19c4b0c61d0189dbc3776d4c",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
@@ -1182,8 +1182,8 @@
       "statement": "Every public beta artifact ships with a SHA-256 checksum, SBOM, build provenance/attestation, and independent verification instructions.",
       "scope": "Installers, archives, update manifests, bundled native dependencies, and source-to-artifact binding for the release tag.",
       "owner": "release-engineering",
-      "state": "deferred",
-      "limitation": "CockroachDB dependency archives are hash-verified during packaging, but the release job does not generate installer checksums, SBOMs, or GitHub build attestations.",
+      "state": "limited",
+      "limitation": "The tag-only source pipeline generates and independently verifies exact checksums, a subject-complete SPDX 2.3 document, canonical instructions, and source-bound GitHub attestations for all nine desktop subjects. No tagged clean run has yet produced the immutable machine report and materials, and signing/notarization remain separate release gates.",
       "evidence": [
         {
           "path": "apps/desktop/scripts/build-single-binary.sh",
@@ -1192,14 +1192,62 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "2512748cb0696bb756464e947078022a1f6a81d2da089999eedc7e1cb7c88e18",
-          "why": "Current packaging jobs do not generate the verification sidecars and attestations that the guarded publisher now requires"
+          "sha256": "3d7a0f4058dc4d26127d90f72ea8de0faff8a8aa19c4b0c61d0189dbc3776d4c",
+          "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
+        },
+        {
+          "path": "scripts/release-claims/release-constants.mjs",
+          "sha256": "2ea73081a3e47af9aac360a3e00e06bb3d0599c4533c672df6bdc9184ec8eb35",
+          "why": "Defines the exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
+        },
+        {
+          "path": "scripts/release-artifacts/file-integrity.mjs",
+          "sha256": "7600a043c25638e468f704d741ea447dc860a38233e4883abc3592e68e7ecef7",
+          "why": "Hashes and stages regular files through stable descriptors with path, symlink, growth, and replacement guards"
+        },
+        {
+          "path": "scripts/release-artifacts/generate-release-manifest.mjs",
+          "sha256": "35345e2c1b6e6ea215cb74988e739d5b8093f8a3f6e5ffe3b45db8bd27b6ac77",
+          "why": "Admits exactly one version-bound subject for each canonical artifact and validates each platform's exact updater set and primary target"
+        },
+        {
+          "path": "scripts/release-artifacts/generate-release-spdx.mjs",
+          "sha256": "ffd82359095f14be342dcc2c7a650f909876188af26567aa6b2ea70337985f1c",
+          "why": "Generates deterministic SPDX 2.3 subject coverage and source-commit metadata from rehashed staged bytes"
+        },
+        {
+          "path": "scripts/release-artifacts/verify-release-manifest.mjs",
+          "sha256": "8c3c86c34b803f859f5a10c23058b9ed3dc54f555e72b1c3dffe65fc4be17512",
+          "why": "Independently validates the staged inventory, release identity, digests, checksum file, and deterministic SPDX document before attestation"
+        },
+        {
+          "path": "scripts/release-artifacts/materialize-attestation-bundles.mjs",
+          "sha256": "c3ea4b6bb7bc24b48713d0eeb248823156435b922e2170378e623b279eafa2e7",
+          "why": "Produces canonical verification instructions and one exclusive digest-named bundle path per distinct subject digest"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/release.artifact-verification.mjs",
+          "sha256": "4980940dd536eae5264b5bdde13fc392656eeb6bbd37d4e9b8688b01af9ed2cc",
+          "why": "Re-hashes all downloaded subjects, binds current-run artifact metadata, verifies SPDX and updater semantics, and cryptographically verifies every provenance bundle"
+        },
+        {
+          "path": "scripts/release-claims/check-release-claims.mjs",
+          "sha256": "d9e96a53c308f7ec770bfbd08e89a6a28b8137e434099846aa56f94729dc5e0a",
+          "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],
       "verification": [
         {
-          "command": "rg -n -- \"attest-build-provenance|sbom|sha256sum|shasum\" .github/workflows/build.yml",
-          "expected": "No complete release-artifact evidence chain exists until this claim is re-audited"
+          "command": "pnpm test:release-artifacts",
+          "expected": "Artifact generation, stable-file handling, exact updater mapping, SPDX output, materialization, and tamper-rejection tests pass"
+        },
+        {
+          "command": "pnpm exec vitest run scripts/release-claims/release.artifact-verification.test.mjs",
+          "expected": "The independent current-run artifact and provenance verifier passes its adversarial contract tests"
+        },
+        {
+          "command": "pnpm claims:test",
+          "expected": "The release workflow remains structurally limited to the canonical producer, verifier, aggregator, and publisher graph"
         }
       ]
     }

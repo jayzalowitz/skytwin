@@ -19,12 +19,14 @@
 > are deliberately not committed to this ledger: doing so would change the SHA
 > they attest and create an impossible hash cycle. The release job now generates
 > the external manifest from current-run GitHub API metadata. Downstream
-> evidence-matrix jobs now include the canonical three-platform
-> packaged-sample verifier with GitHub API discovery separated from package
-> execution and a strict allowlisted child environment, but
-> the other seven machine-verifier implementations and the CI result producer
-> are still absent. The final gate therefore fails closed and the ledger remains
-> blocked until the complete proof pipeline ships.
+> evidence-matrix jobs include the canonical three-platform packaged-sample
+> verifier with GitHub API discovery separated from package execution and a
+> strict allowlisted child environment. The artifact-verification lane also has
+> a tag-only material producer and independent verifier in source, but it has not
+> yet produced evidence from a tagged release run. The other six
+> machine-verifier implementations and the CI result producer are still absent.
+> The final gate therefore fails closed and the ledger remains blocked until the
+> complete proof pipeline ships.
 
 The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The former
@@ -134,26 +136,25 @@ credentials outside this protected workflow could still race the bounded interva
 between the absence check, draft creation, and confirmation. Repository access
 controls and exclusive release-publisher permissions remain part of the boundary.
 
-The current workflow intentionally has no provenance producer and grants no
-non-publisher job attestation-write or OIDC permission. The artifact-integrity
-producer must add one exact, pinned provenance job with only the required
-`attestations: write` and `id-token: write` capabilities, update the workflow
-allowlist, and generate the sidecars above before the ledger can move to ready.
-Until that lands, the absence is a deliberate stop-ship rather than evidence
-that can be waived.
+The tag-only artifact-integrity job is the sole provenance producer. It uses a
+pinned attestation action and grants only `contents: read`, `actions: read`,
+`attestations: write`, `artifact-metadata: write`, and `id-token: write`; the
+publisher retains read-only attestation access. It generates the exact sidecars
+above, but source availability alone cannot move the ledger to ready. A tagged
+clean run must still produce the immutable report and materials, and platform
+signing/notarization remains a separate stop-ship.
 
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
-The packaged-sample verifier now implements three of the twelve matrix reports;
-see [`sample-release-evidence.md`](./sample-release-evidence.md). The other
-seven verifier sources (nine matrix reports) and the separate
-`release-claims-ci` artifact producer are absent today. Machine reports must come from the exact
-successful claim/platform job and canonical verifier step, carry the reviewed
-verifier path, command, and source digest, and provide structured observations;
-the release job independently checks those bindings against the current GitHub
-run. The SPDX producer must emit a 2.3 document namespace, explicit package
-analysis state, a component inventory, and package-to-file relationships that
-cover every release subject. Until those producers land, the gate remains
-blocked by design.
+The packaged-sample verifier implements three of the twelve matrix reports; see
+[`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
+implements one more. The other six verifier sources (eight matrix reports) and
+the separate `release-claims-ci` artifact producer are absent today. Machine
+reports must come from the exact successful claim/platform job and canonical
+verifier step, carry the reviewed verifier path, command, and source digest, and
+provide structured observations; the release job independently checks those
+bindings against the current GitHub run. The artifact lane's SPDX producer emits
+the required 2.3 document and exact package-to-file coverage. Until the remaining
+producers and external gates land, publication stays blocked by design.
 
 ---
 
@@ -259,6 +260,29 @@ Confirm all three `latest*.yml` assets point at the signed N+1 artifacts.
 
 ---
 
-## Rollback
+## Upgrade, backup, and recovery
 
-A bad release is rolled back by deleting/unpublishing the GitHub Release and the tag; no users are affected until a release is **published** (drafts are private). If a published release regressed, cut the next signed patch tag with the fix — the shipped update manifests let electron-updater pull users forward.
+Database migrations are forward-only. Before upgrading an existing profile,
+export an encrypted `.stbk` archive with the same build that currently owns the
+data. The backup command reads its passphrase only from the environment:
+
+```bash
+SKYTWIN_BACKUP_PASSPHRASE='<long unique passphrase>' \
+  pnpm --filter @skytwin/db backup export \
+  --user '<user UUID>' --out 'skytwin-before-upgrade.stbk'
+```
+
+Store the archive and passphrase separately. The archive intentionally excludes
+OAuth and credential-vault secrets, so restored connectors require
+reauthorization. A restore targets a fresh install and accepts only backup
+schema versions supported by that build. Source of truth:
+[`backup-cli.ts`](../packages/db/src/bin/backup-cli.ts) and
+[`backup.ts`](../packages/db/src/backup/backup.ts).
+
+If a published release regresses, preserve its tag, assets, evidence manifest,
+and attestations for audit. Do not delete the tag, mutate the release, or install
+an older binary over a database that newer migrations may have changed. Stop
+the affected build, fix the regression, and publish a higher signed patch
+version through this same evidence gate. Verify the backup before the upgrade
+and use restore only into a clean supported installation; SkyTwin does not claim
+an in-place database downgrade path.

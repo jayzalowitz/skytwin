@@ -449,6 +449,97 @@ jobs:
           path: apps/desktop/dist-electron/latest-linux.yml
           if-no-files-found: warn
 
+  release-artifact-materials:
+    name: Produce release artifact verification materials
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - desktop-mac
+      - desktop-windows
+      - desktop-linux
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Derive release artifact identity
+        shell: bash
+        run: |
+          bash .github/scripts/derive-app-version.sh
+          CREATED_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          printf 'CREATED_UTC=%s\n' "$CREATED_UTC" >> "$GITHUB_ENV"
+      - name: Download SkyTwin-macOS-dmg
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-macOS-dmg
+          path: artifacts/SkyTwin-macOS-dmg
+      - name: Download SkyTwin-macOS-zip
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-macOS-zip
+          path: artifacts/SkyTwin-macOS-zip
+      - name: Download SkyTwin-macOS-update-manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-macOS-update-manifest
+          path: artifacts/SkyTwin-macOS-update-manifest
+      - name: Download SkyTwin-Windows-installer
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Windows-installer
+          path: artifacts/SkyTwin-Windows-installer
+      - name: Download SkyTwin-Windows-update-manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Windows-update-manifest
+          path: artifacts/SkyTwin-Windows-update-manifest
+      - name: Download SkyTwin-Linux-AppImage
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-AppImage
+          path: artifacts/SkyTwin-Linux-AppImage
+      - name: Download SkyTwin-Linux-deb
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-deb
+          path: artifacts/SkyTwin-Linux-deb
+      - name: Download SkyTwin-Linux-rpm
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-rpm
+          path: artifacts/SkyTwin-Linux-rpm
+      - name: Download SkyTwin-Linux-update-manifest
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: SkyTwin-Linux-update-manifest
+          path: artifacts/SkyTwin-Linux-update-manifest
+      - name: Generate exact release artifact materials
+        shell: bash
+        run: node scripts/release-artifacts/generate-release-manifest.mjs --root artifacts --output .release-artifacts --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"
+      - name: Validate staged release artifact materials
+        shell: bash
+        run: node scripts/release-artifacts/verify-release-manifest.mjs --root .release-artifacts --manifest .release-artifacts/release-artifact-manifest.json --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"
+      - name: Attest exact release artifact subjects
+        id: attest-release-artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: .release-artifacts/artifact-verification/SHA256SUMS
+      - name: Materialize digest-named provenance bundles
+        shell: bash
+        run: node scripts/release-artifacts/materialize-attestation-bundles.mjs --manifest .release-artifacts/release-artifact-manifest.json --bundle "${{ steps.attest-release-artifacts.outputs.bundle-path }}" --output .release-artifacts/artifact-verification
+      - name: Upload release artifact verification materials
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-artifact-materials
+          path: .release-artifacts/artifact-verification
+          if-no-files-found: error
+          compression-level: 0
+
   # ──────────────────────────────────────────────
   # Mobile — Android APK (no signing certs needed for internal distribution)
   # ──────────────────────────────────────────────
@@ -606,6 +697,7 @@ jobs:
       - desktop-mac
       - desktop-windows
       - desktop-linux
+      - release-artifact-materials
     permissions:
       contents: read
       actions: read
@@ -669,6 +761,12 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
+      - name: Download release artifact verification materials
+        if: matrix.claimId == 'release.artifact-verification'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-artifact-materials
+          path: .release-evidence/artifact-verification
       - name: Resolve packaged sample provenance
         id: sample-provenance
         if: matrix.claimId == 'sample.packaged-account-free'
@@ -696,7 +794,9 @@ jobs:
   aggregate-release-evidence:
     name: Aggregate release machine evidence
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: release-machine-evidence
+    needs:
+      - release-machine-evidence
+      - release-artifact-materials
     runs-on: ubuntu-24.04
     steps:
       - name: Download machine evidence reports
@@ -705,6 +805,11 @@ jobs:
           pattern: release-machine-evidence-*
           path: .release-evidence/reports
           merge-multiple: true
+      - name: Download release artifact verification materials
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: release-artifact-materials
+          path: .release-evidence/artifact-verification
       - name: Upload aggregated release evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:

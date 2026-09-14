@@ -62,10 +62,21 @@ describe('build.yml — #370 auto-update release wiring', () => {
     expect(workflow).toContain('SkyTwin-Linux-update-manifest');
   });
 
-  it('attaches all three update manifests to the GitHub Release', () => {
-    expect(workflow).toContain('artifacts/SkyTwin-macOS-update-manifest/*');
-    expect(workflow).toContain('artifacts/SkyTwin-Windows-update-manifest/*');
-    expect(workflow).toContain('artifacts/SkyTwin-Linux-update-manifest/*');
+  it('publishes all three manifests only after the release-evidence gate', () => {
+    const releaseJob = workflow.slice(workflow.indexOf('\n  release:\n'));
+    const evidenceGate = releaseJob.indexOf('Verify post-build release evidence');
+    const publisher = releaseJob.indexOf('softprops/action-gh-release@');
+    expect(evidenceGate).toBeGreaterThan(-1);
+    expect(publisher).toBeGreaterThan(evidenceGate);
+    expect(releaseJob).toContain(
+      'artifacts/SkyTwin-macOS-update-manifest/*',
+    );
+    expect(releaseJob).toContain(
+      'artifacts/SkyTwin-Windows-update-manifest/*',
+    );
+    expect(releaseJob).toContain(
+      'artifacts/SkyTwin-Linux-update-manifest/*',
+    );
   });
 
   it('does not weaken the existing --publish never semantics on the package steps (#370 CAUTION)', () => {

@@ -67,6 +67,27 @@ export const CANONICAL_RELEASE_ASSETS = Object.freeze([
 export const ARTIFACT_VERIFICATION_DIRECTORY =
   ".release-evidence/artifact-verification";
 
+export const RELEASE_ARTIFACT_MATERIALS_JOB = "release-artifact-materials";
+export const RELEASE_ARTIFACT_MATERIALS_ARTIFACT = "release-artifact-materials";
+export const RELEASE_ARTIFACT_STAGING_DIRECTORY = ".release-artifacts";
+export const RELEASE_ARTIFACT_MATERIALS_DIRECTORY = `${RELEASE_ARTIFACT_STAGING_DIRECTORY}/artifact-verification`;
+export const RELEASE_ARTIFACT_MANIFEST_PATH = `${RELEASE_ARTIFACT_STAGING_DIRECTORY}/release-artifact-manifest.json`;
+export const RELEASE_ARTIFACT_GENERATOR_PATH =
+  "scripts/release-artifacts/generate-release-manifest.mjs";
+export const RELEASE_ARTIFACT_VALIDATOR_PATH =
+  "scripts/release-artifacts/verify-release-manifest.mjs";
+export const RELEASE_ATTESTATION_MATERIALIZER_PATH =
+  "scripts/release-artifacts/materialize-attestation-bundles.mjs";
+
+export const PINNED_RELEASE_WORKFLOW_ACTIONS = Object.freeze({
+  checkout: "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  downloadArtifact:
+    "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  attest: "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+  uploadArtifact:
+    "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+});
+
 export const CANONICAL_ARTIFACT_VERIFICATION_ASSETS = Object.freeze([
   ["SHA256SUMS", "checksums"],
   ["release.spdx.json", "sbom"],

@@ -22,6 +22,15 @@ import {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  PINNED_RELEASE_WORKFLOW_ACTIONS,
+  RELEASE_ARTIFACT_GENERATOR_PATH,
+  RELEASE_ARTIFACT_MANIFEST_PATH,
+  RELEASE_ARTIFACT_MATERIALS_ARTIFACT,
+  RELEASE_ARTIFACT_MATERIALS_DIRECTORY,
+  RELEASE_ARTIFACT_MATERIALS_JOB,
+  RELEASE_ARTIFACT_STAGING_DIRECTORY,
+  RELEASE_ARTIFACT_VALIDATOR_PATH,
+  RELEASE_ATTESTATION_MATERIALIZER_PATH,
   SAMPLE_EVIDENCE_PLATFORMS,
   machineEvidencePlatformFamily,
   machineProducerJobName,
@@ -40,6 +49,15 @@ export {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  PINNED_RELEASE_WORKFLOW_ACTIONS,
+  RELEASE_ARTIFACT_GENERATOR_PATH,
+  RELEASE_ARTIFACT_MANIFEST_PATH,
+  RELEASE_ARTIFACT_MATERIALS_ARTIFACT,
+  RELEASE_ARTIFACT_MATERIALS_DIRECTORY,
+  RELEASE_ARTIFACT_MATERIALS_JOB,
+  RELEASE_ARTIFACT_STAGING_DIRECTORY,
+  RELEASE_ARTIFACT_VALIDATOR_PATH,
+  RELEASE_ATTESTATION_MATERIALIZER_PATH,
   machineEvidencePlatformFamily,
   machineProducerJobName,
   machineReportNamesForClaim,
@@ -1039,7 +1057,20 @@ export function isAllowlistedVerificationCommand(command) {
   if (
     tokens.length === 2 &&
     tokens[0] === "pnpm" &&
-    tokens[1] === "claims:check"
+    ["claims:check", "claims:test", "test:release-artifacts"].includes(
+      tokens[1],
+    )
+  )
+    return true;
+
+  if (
+    tokens.length === 5 &&
+    tokens[0] === "pnpm" &&
+    tokens[1] === "exec" &&
+    tokens[2] === "vitest" &&
+    tokens[3] === "run" &&
+    tokens[4] ===
+      "scripts/release-claims/release.artifact-verification.test.mjs"
   )
     return true;
 
@@ -1761,10 +1792,21 @@ export function verifyCanonicalReleasePublisher(root) {
         Object.keys(job.permissions).length === 2 &&
         job.permissions.contents === "read" &&
         job.permissions.actions === "read";
+      const isCanonicalArtifactMaterialsPermissions =
+        path === workflowPath &&
+        jobName === RELEASE_ARTIFACT_MATERIALS_JOB &&
+        isRecord(job.permissions) &&
+        Object.keys(job.permissions).length === 5 &&
+        job.permissions.contents === "read" &&
+        job.permissions.actions === "read" &&
+        job.permissions["id-token"] === "write" &&
+        job.permissions.attestations === "write" &&
+        job.permissions["artifact-metadata"] === "write";
       if (
         job.permissions !== undefined &&
         (path !== workflowPath || jobName !== "release") &&
-        !isCanonicalMachineProducerPermissions
+        !isCanonicalMachineProducerPermissions &&
+        !isCanonicalArtifactMaterialsPermissions
       )
         addError(
           errors,
@@ -1774,7 +1816,8 @@ export function verifyCanonicalReleasePublisher(root) {
         contentsWriteJobs.push({ path, jobName });
       if (
         containsWritePermission(job.permissions) &&
-        (path !== workflowPath || jobName !== "release")
+        (path !== workflowPath ||
+          !["release", RELEASE_ARTIFACT_MATERIALS_JOB].includes(jobName))
       )
         addError(
           errors,
@@ -1802,7 +1845,8 @@ export function verifyCanonicalReleasePublisher(root) {
             `${location} references a non-allowlisted secrets context`,
           );
       }
-      const tokenKey = /(?:^|[-_])(?:pat|token)(?:$|[-_])/i.test(key);
+      const tokenKey =
+        key !== "id-token" && /(?:^|[-_])(?:pat|token)(?:$|[-_])/i.test(key);
       if (tokenKey && value !== "${{ github.token }}")
         credentialViolations.add(`${location} supplies ${key}`);
       if (key === "secrets" && value === "inherit")
@@ -1913,6 +1957,143 @@ export function verifyCanonicalReleasePublisher(root) {
     canonicalWorkflow.jobs?.["release-machine-evidence"];
   const evidenceAggregatorJob =
     canonicalWorkflow.jobs?.["aggregate-release-evidence"];
+  const artifactMaterialsJob =
+    canonicalWorkflow.jobs?.[RELEASE_ARTIFACT_MATERIALS_JOB];
+  const artifactMaterialSources = [
+    RELEASE_ARTIFACT_GENERATOR_PATH,
+    RELEASE_ARTIFACT_VALIDATOR_PATH,
+    RELEASE_ATTESTATION_MATERIALIZER_PATH,
+    "scripts/release-claims/verifiers/release.artifact-verification.mjs",
+  ];
+  for (const sourcePath of artifactMaterialSources) {
+    if (!resolveContainedRegularFile(root, sourcePath))
+      addError(
+        errors,
+        `release artifact material source is missing or unsafe: ${sourcePath}`,
+      );
+  }
+  const artifactMaterialSteps = isRecord(artifactMaterialsJob)
+    ? artifactMaterialsJob.steps
+    : null;
+  const canonicalArtifactDownloads = CANONICAL_RELEASE_ASSETS.map(
+    ([artifactName]) => ({
+      name: `Download ${artifactName}`,
+      uses: PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact,
+      with: {
+        name: artifactName,
+        path: `artifacts/${artifactName}`,
+      },
+    }),
+  );
+  const expectedIdentityRun =
+    'bash .github/scripts/derive-app-version.sh\nCREATED_UTC="$(date -u \'+%Y-%m-%dT%H:%M:%SZ\')"\nprintf \'CREATED_UTC=%s\\n\' "$CREATED_UTC" >> "$GITHUB_ENV"\n';
+  const expectedGeneratorRun = `node ${RELEASE_ARTIFACT_GENERATOR_PATH} --root artifacts --output ${RELEASE_ARTIFACT_STAGING_DIRECTORY} --repository \"$GITHUB_REPOSITORY\" --commit \"$GITHUB_SHA\" --ref \"$GITHUB_REF\" --releaseTag \"$GITHUB_REF_NAME\" --appVersion \"$APP_VERSION\" --runId \"$GITHUB_RUN_ID\" --created \"$CREATED_UTC\"`;
+  const expectedValidatorRun = `node ${RELEASE_ARTIFACT_VALIDATOR_PATH} --root ${RELEASE_ARTIFACT_STAGING_DIRECTORY} --manifest ${RELEASE_ARTIFACT_MANIFEST_PATH} --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"`;
+  const expectedMaterializerRun = `node ${RELEASE_ATTESTATION_MATERIALIZER_PATH} --manifest ${RELEASE_ARTIFACT_MANIFEST_PATH} --bundle \"\${{ steps.attest-release-artifacts.outputs.bundle-path }}\" --output ${RELEASE_ARTIFACT_MATERIALS_DIRECTORY}`;
+  const canonicalJobNames = Object.keys(canonicalWorkflow.jobs ?? {});
+  const artifactMaterialsJobIndex = canonicalJobNames.indexOf(
+    RELEASE_ARTIFACT_MATERIALS_JOB,
+  );
+  const desktopJobIndexes = [
+    "desktop-mac",
+    "desktop-windows",
+    "desktop-linux",
+  ].map((jobName) => canonicalJobNames.indexOf(jobName));
+  if (
+    !isRecord(artifactMaterialsJob) ||
+    !hasExactKeys(artifactMaterialsJob, [
+      "name",
+      "if",
+      "needs",
+      "runs-on",
+      "permissions",
+      "steps",
+    ]) ||
+    artifactMaterialsJob.name !==
+      "Produce release artifact verification materials" ||
+    artifactMaterialsJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
+    JSON.stringify(artifactMaterialsJob.needs) !==
+      JSON.stringify(["desktop-mac", "desktop-windows", "desktop-linux"]) ||
+    artifactMaterialsJob["runs-on"] !== "ubuntu-24.04" ||
+    !hasExactKeys(artifactMaterialsJob.permissions, [
+      "contents",
+      "actions",
+      "id-token",
+      "attestations",
+      "artifact-metadata",
+    ]) ||
+    artifactMaterialsJob.permissions.contents !== "read" ||
+    artifactMaterialsJob.permissions.actions !== "read" ||
+    artifactMaterialsJob.permissions["id-token"] !== "write" ||
+    artifactMaterialsJob.permissions.attestations !== "write" ||
+    artifactMaterialsJob.permissions["artifact-metadata"] !== "write" ||
+    desktopJobIndexes.some((index) => index < 0) ||
+    artifactMaterialsJobIndex <= Math.max(...desktopJobIndexes) ||
+    !Array.isArray(artifactMaterialSteps) ||
+    artifactMaterialSteps.length !== 16 ||
+    !isRecord(artifactMaterialSteps[0]) ||
+    !hasExactKeys(artifactMaterialSteps[0], ["uses", "with"]) ||
+    artifactMaterialSteps[0].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.checkout ||
+    !hasExactKeys(artifactMaterialSteps[0].with, ["persist-credentials"]) ||
+    artifactMaterialSteps[0].with["persist-credentials"] !== false ||
+    !isRecord(artifactMaterialSteps[1]) ||
+    !hasExactKeys(artifactMaterialSteps[1], ["name", "shell", "run"]) ||
+    artifactMaterialSteps[1].name !== "Derive release artifact identity" ||
+    artifactMaterialSteps[1].shell !== "bash" ||
+    artifactMaterialSteps[1].run !== expectedIdentityRun ||
+    JSON.stringify(artifactMaterialSteps.slice(2, 11)) !==
+      JSON.stringify(canonicalArtifactDownloads) ||
+    !isRecord(artifactMaterialSteps[11]) ||
+    !hasExactKeys(artifactMaterialSteps[11], ["name", "shell", "run"]) ||
+    artifactMaterialSteps[11].name !==
+      "Generate exact release artifact materials" ||
+    artifactMaterialSteps[11].shell !== "bash" ||
+    artifactMaterialSteps[11].run !== expectedGeneratorRun ||
+    !isRecord(artifactMaterialSteps[12]) ||
+    !hasExactKeys(artifactMaterialSteps[12], ["name", "shell", "run"]) ||
+    artifactMaterialSteps[12].name !==
+      "Validate staged release artifact materials" ||
+    artifactMaterialSteps[12].shell !== "bash" ||
+    artifactMaterialSteps[12].run !== expectedValidatorRun ||
+    !isRecord(artifactMaterialSteps[13]) ||
+    !hasExactKeys(artifactMaterialSteps[13], ["name", "id", "uses", "with"]) ||
+    artifactMaterialSteps[13].name !==
+      "Attest exact release artifact subjects" ||
+    artifactMaterialSteps[13].id !== "attest-release-artifacts" ||
+    artifactMaterialSteps[13].uses !== PINNED_RELEASE_WORKFLOW_ACTIONS.attest ||
+    !hasExactKeys(artifactMaterialSteps[13].with, ["subject-checksums"]) ||
+    artifactMaterialSteps[13].with["subject-checksums"] !==
+      `${RELEASE_ARTIFACT_MATERIALS_DIRECTORY}/SHA256SUMS` ||
+    !isRecord(artifactMaterialSteps[14]) ||
+    !hasExactKeys(artifactMaterialSteps[14], ["name", "shell", "run"]) ||
+    artifactMaterialSteps[14].name !==
+      "Materialize digest-named provenance bundles" ||
+    artifactMaterialSteps[14].shell !== "bash" ||
+    artifactMaterialSteps[14].run !== expectedMaterializerRun ||
+    !isRecord(artifactMaterialSteps[15]) ||
+    !hasExactKeys(artifactMaterialSteps[15], ["name", "uses", "with"]) ||
+    artifactMaterialSteps[15].name !==
+      "Upload release artifact verification materials" ||
+    artifactMaterialSteps[15].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.uploadArtifact ||
+    !hasExactKeys(artifactMaterialSteps[15].with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    artifactMaterialSteps[15].with.name !==
+      RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
+    artifactMaterialSteps[15].with.path !==
+      RELEASE_ARTIFACT_MATERIALS_DIRECTORY ||
+    artifactMaterialSteps[15].with["if-no-files-found"] !== "error" ||
+    artifactMaterialSteps[15].with["compression-level"] !== 0
+  )
+    addError(
+      errors,
+      "release artifact materials must use the exact tag-only permission, download, generation, attestation, materialization, and upload graph",
+    );
   const expectedMachineMatrix = CANONICAL_MACHINE_EVIDENCE_MATRIX.map(
     (entry) => ({ ...entry }),
   );
@@ -1934,11 +2115,13 @@ export function verifyCanonicalReleasePublisher(root) {
       "release-machine-evidence / ${{ matrix.claimId }} / ${{ matrix.platform }}" ||
     machineProducerJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
     machineProducerJob["runs-on"] !== "${{ matrix.runner }}" ||
-    !sameStringSet(machineProducerJob.needs, [
-      "desktop-mac",
-      "desktop-windows",
-      "desktop-linux",
-    ]) ||
+    JSON.stringify(machineProducerJob.needs) !==
+      JSON.stringify([
+        "desktop-mac",
+        "desktop-windows",
+        "desktop-linux",
+        RELEASE_ARTIFACT_MATERIALS_JOB,
+      ]) ||
     !hasExactKeys(machineProducerJob.permissions, ["contents", "actions"]) ||
     machineProducerJob.permissions.contents !== "read" ||
     machineProducerJob.permissions.actions !== "read" ||
@@ -1950,7 +2133,7 @@ export function verifyCanonicalReleasePublisher(root) {
     JSON.stringify(machineProducerJob.strategy.matrix.include) !==
       JSON.stringify(expectedMachineMatrix) ||
     !Array.isArray(producerSteps) ||
-    producerSteps.length !== 6 ||
+    producerSteps.length !== 7 ||
     !isRecord(producerSteps[0]) ||
     !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
     producerSteps[0].uses !==
@@ -1964,48 +2147,65 @@ export function verifyCanonicalReleasePublisher(root) {
     !hasExactKeys(producerSteps[1].with, ["path"]) ||
     producerSteps[1].with.path !== "artifacts" ||
     !isRecord(producerSteps[2]) ||
-    !hasExactKeys(producerSteps[2], ["name", "id", "if", "env", "run"]) ||
-    producerSteps[2].name !== "Resolve packaged sample provenance" ||
-    producerSteps[2].id !== "sample-provenance" ||
-    producerSteps[2].if !== "matrix.claimId == 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[2].env, ["GITHUB_TOKEN"]) ||
-    producerSteps[2].env.GITHUB_TOKEN !== "${{ github.token }}" ||
-    producerSteps[2].run !==
-      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }}" ||
+    !hasExactKeys(producerSteps[2], ["name", "if", "uses", "with"]) ||
+    producerSteps[2].name !==
+      "Download release artifact verification materials" ||
+    producerSteps[2].if !==
+      "matrix.claimId == 'release.artifact-verification'" ||
+    producerSteps[2].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(producerSteps[2].with, ["name", "path"]) ||
+    producerSteps[2].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
+    producerSteps[2].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
     !isRecord(producerSteps[3]) ||
-    !hasExactKeys(producerSteps[3], ["name", "if", "env", "run"]) ||
-    producerSteps[3].name !== "Run canonical packaged sample verifier without GitHub API token" ||
-    producerSteps[3].if !== "matrix.claimId == 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[3].env, ["SKYTWIN_RELEASE_PROVENANCE_SHA256"]) ||
-    producerSteps[3].env.SKYTWIN_RELEASE_PROVENANCE_SHA256 !==
-      "${{ steps.sample-provenance.outputs.descriptor_sha256 }}" ||
+    !hasExactKeys(producerSteps[3], ["name", "id", "if", "env", "run"]) ||
+    producerSteps[3].name !== "Resolve packaged sample provenance" ||
+    producerSteps[3].id !== "sample-provenance" ||
+    producerSteps[3].if !==
+      "matrix.claimId == 'sample.packaged-account-free'" ||
+    !hasExactKeys(producerSteps[3].env, ["GITHUB_TOKEN"]) ||
+    producerSteps[3].env.GITHUB_TOKEN !== "${{ github.token }}" ||
     producerSteps[3].run !==
-      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[4]) ||
     !hasExactKeys(producerSteps[4], ["name", "if", "env", "run"]) ||
-    producerSteps[4].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
-    producerSteps[4].if !== "matrix.claimId != 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[4].env, ["GITHUB_TOKEN"]) ||
-    producerSteps[4].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[4].name !==
+      "Run canonical packaged sample verifier without GitHub API token" ||
+    producerSteps[4].if !==
+      "matrix.claimId == 'sample.packaged-account-free'" ||
+    !hasExactKeys(producerSteps[4].env, [
+      "SKYTWIN_RELEASE_PROVENANCE_SHA256",
+    ]) ||
+    producerSteps[4].env.SKYTWIN_RELEASE_PROVENANCE_SHA256 !==
+      "${{ steps.sample-provenance.outputs.descriptor_sha256 }}" ||
     producerSteps[4].run !==
-      "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[5]) ||
-    !hasExactKeys(producerSteps[5], ["name", "uses", "with"]) ||
-    producerSteps[5].name !== "Upload machine evidence report" ||
-    producerSteps[5].uses !==
+    !hasExactKeys(producerSteps[5], ["name", "if", "env", "run"]) ||
+    producerSteps[5].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    producerSteps[5].if !==
+      "matrix.claimId != 'sample.packaged-account-free'" ||
+    !hasExactKeys(producerSteps[5].env, ["GITHUB_TOKEN"]) ||
+    producerSteps[5].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[5].run !==
+      "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+    !isRecord(producerSteps[6]) ||
+    !hasExactKeys(producerSteps[6], ["name", "uses", "with"]) ||
+    producerSteps[6].name !== "Upload machine evidence report" ||
+    producerSteps[6].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
-    !hasExactKeys(producerSteps[5].with, [
+    !hasExactKeys(producerSteps[6].with, [
       "name",
       "path",
       "if-no-files-found",
       "compression-level",
     ]) ||
-    producerSteps[5].with.name !==
+    producerSteps[6].with.name !==
       "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}" ||
-    producerSteps[5].with.path !==
+    producerSteps[6].with.path !==
       ".release-evidence/reports/${{ matrix.reportName }}" ||
-    producerSteps[5].with["if-no-files-found"] !== "error" ||
-    producerSteps[5].with["compression-level"] !== 0
+    producerSteps[6].with["if-no-files-found"] !== "error" ||
+    producerSteps[6].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -2026,10 +2226,14 @@ export function verifyCanonicalReleasePublisher(root) {
     ]) ||
     evidenceAggregatorJob.name !== "Aggregate release machine evidence" ||
     evidenceAggregatorJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
-    evidenceAggregatorJob.needs !== "release-machine-evidence" ||
+    JSON.stringify(evidenceAggregatorJob.needs) !==
+      JSON.stringify([
+        "release-machine-evidence",
+        RELEASE_ARTIFACT_MATERIALS_JOB,
+      ]) ||
     evidenceAggregatorJob["runs-on"] !== "ubuntu-24.04" ||
     !Array.isArray(aggregatorSteps) ||
-    aggregatorSteps.length !== 2 ||
+    aggregatorSteps.length !== 3 ||
     !isRecord(aggregatorSteps[0]) ||
     !hasExactKeys(aggregatorSteps[0], ["name", "uses", "with"]) ||
     aggregatorSteps[0].name !== "Download machine evidence reports" ||
@@ -2045,19 +2249,28 @@ export function verifyCanonicalReleasePublisher(root) {
     aggregatorSteps[0].with["merge-multiple"] !== true ||
     !isRecord(aggregatorSteps[1]) ||
     !hasExactKeys(aggregatorSteps[1], ["name", "uses", "with"]) ||
-    aggregatorSteps[1].name !== "Upload aggregated release evidence" ||
+    aggregatorSteps[1].name !==
+      "Download release artifact verification materials" ||
     aggregatorSteps[1].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(aggregatorSteps[1].with, ["name", "path"]) ||
+    aggregatorSteps[1].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
+    aggregatorSteps[1].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
+    !isRecord(aggregatorSteps[2]) ||
+    !hasExactKeys(aggregatorSteps[2], ["name", "uses", "with"]) ||
+    aggregatorSteps[2].name !== "Upload aggregated release evidence" ||
+    aggregatorSteps[2].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
-    !hasExactKeys(aggregatorSteps[1].with, [
+    !hasExactKeys(aggregatorSteps[2].with, [
       "name",
       "path",
       "if-no-files-found",
       "compression-level",
     ]) ||
-    aggregatorSteps[1].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
-    aggregatorSteps[1].with.path !== ".release-evidence" ||
-    aggregatorSteps[1].with["if-no-files-found"] !== "error" ||
-    aggregatorSteps[1].with["compression-level"] !== 0
+    aggregatorSteps[2].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
+    aggregatorSteps[2].with.path !== ".release-evidence" ||
+    aggregatorSteps[2].with["if-no-files-found"] !== "error" ||
+    aggregatorSteps[2].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -2082,6 +2295,61 @@ export function verifyCanonicalReleasePublisher(root) {
     addError(
       errors,
       "only the verified aggregator may upload the release-evidence artifact",
+    );
+  const artifactMaterialUploaders = [];
+  const attesters = [];
+  const legacySbomProducers = [];
+  for (const [path, workflow] of parsedWorkflows) {
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      if (!isRecord(job)) continue;
+      for (const [stepIndex, step] of asArray(job.steps).entries()) {
+        if (!isRecord(step) || typeof step.uses !== "string") continue;
+        if (
+          step.uses.startsWith("actions/upload-artifact@") &&
+          step.with?.name === RELEASE_ARTIFACT_MATERIALS_ARTIFACT
+        )
+          artifactMaterialUploaders.push({ path, jobName, stepIndex });
+        if (step.uses.startsWith("actions/attest@"))
+          attesters.push({ path, jobName, stepIndex, uses: step.uses });
+        if (
+          step.uses.startsWith("anchore/sbom-action@") ||
+          (step.uses.startsWith("actions/upload-artifact@") &&
+            String(step.with?.name ?? "").startsWith("release-sbom-"))
+        )
+          legacySbomProducers.push({ path, jobName, stepIndex });
+      }
+    }
+  }
+  if (
+    artifactMaterialUploaders.length !== 1 ||
+    artifactMaterialUploaders[0]?.path !== workflowPath ||
+    artifactMaterialUploaders[0]?.jobName !== RELEASE_ARTIFACT_MATERIALS_JOB ||
+    artifactMaterialUploaders[0]?.stepIndex !== 15
+  )
+    addError(
+      errors,
+      "only the canonical release artifact materials job may upload the fixed materials artifact",
+    );
+  if (
+    attesters.length !== 1 ||
+    attesters[0]?.path !== workflowPath ||
+    attesters[0]?.jobName !== RELEASE_ARTIFACT_MATERIALS_JOB ||
+    attesters[0]?.stepIndex !== 13 ||
+    attesters[0]?.uses !== PINNED_RELEASE_WORKFLOW_ACTIONS.attest
+  )
+    addError(
+      errors,
+      "only the canonical release artifact materials job may attest release subjects",
+    );
+  if (legacySbomProducers.length > 0)
+    addError(
+      errors,
+      `legacy or duplicate release SBOM producers are prohibited: ${legacySbomProducers
+        .map(
+          ({ path, jobName, stepIndex }) =>
+            `${relativePath(root, path)} jobs.${jobName}.steps[${stepIndex}]`,
+        )
+        .join(", ")}`,
     );
   const machineInputUploaders = [];
   const dynamicArtifactUploaders = [];
@@ -3762,7 +4030,8 @@ export function verifyMachineEvidenceApplicability(
       !Number.isSafeInteger(binary?.inode) ||
       binary?.identityResult !== "pass" ||
       expectedDerivations.get(report?.platform) !== binary?.derivationMethod ||
-      expectedDerivationPaths.get(report?.platform) !== binary?.derivationPath ||
+      expectedDerivationPaths.get(report?.platform) !==
+        binary?.derivationPath ||
       expectedRunnerPlatforms.get(report?.platform) !== report?.runnerPlatform
     )
       errors.push(
@@ -4034,6 +4303,9 @@ export function buildCanonicalVerificationInstructions({
     (subject) =>
       `gh attestation verify ${shellQuote(subject.name)} --repo ${shellQuote(repository)} --bundle ${shellQuote(`${subject.sha256}.attestation.jsonl`)} --source-digest ${shellQuote(sourceCommit)} --source-ref ${shellQuote(sourceRef)} --signer-workflow ${shellQuote(`github.com/${repository}/.github/workflows/build.yml`)} --predicate-type ${shellQuote("https://slsa.dev/provenance/v1")}`,
   );
+  const windowsInstaller =
+    orderedSubjects.find((subject) => subject.name.endsWith(".exe"))?.name ??
+    "<missing Windows installer>";
   return `# Verify SkyTwin release artifacts
 
 Download every release asset into one directory with these verification files.
@@ -4059,6 +4331,44 @@ Run every command below from that directory:
 \`\`\`sh
 ${provenanceCommands.join("\n")}
 \`\`\`
+
+## Platform signature status
+
+Artifact signing and macOS notarization are currently unavailable because the
+release credentials are not configured. The checksum and provenance checks
+above do not satisfy this separate public-beta stop-ship gate.
+
+### macOS
+
+After mounting the DMG and installing the app in Applications, run:
+
+\`\`\`sh
+codesign --verify --deep --strict --verbose=2 '/Applications/SkyTwin.app'
+spctl --assess --type execute --verbose=2 '/Applications/SkyTwin.app'
+xcrun stapler validate '/Applications/SkyTwin.app'
+\`\`\`
+
+These commands are expected to fail until Developer ID signing and notarization
+are configured and the macOS signing evidence report passes.
+
+### Windows
+
+In PowerShell, run:
+
+\`\`\`powershell
+$signature = Get-AuthenticodeSignature -LiteralPath '.\\${windowsInstaller}'
+if ($signature.Status -ne 'Valid') { $signature | Format-List; exit 1 }
+\`\`\`
+
+This check is expected to fail until Authenticode credentials are configured
+and the Windows signing evidence report passes.
+
+### Linux
+
+No platform-native package-signature policy is configured yet. Use the SHA-256
+and GitHub provenance checks above for integrity only; Linux remains unsupported
+for the public beta until its signing evidence report proves the selected
+distribution policy.
 `;
 }
 
