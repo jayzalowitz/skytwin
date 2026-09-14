@@ -1,4 +1,4 @@
-import { createHash, sign, verify } from 'node:crypto';
+import { createHash, createPrivateKey, createPublicKey, sign, verify, type KeyObject } from 'node:crypto';
 import { types as utilTypes } from 'node:util';
 
 export type InferenceReasoningMode =
@@ -165,11 +165,31 @@ export function receiptSealPayload(receipt: Omit<InferenceReceiptV1, 'seal'>): B
   return Buffer.from(canonicalize(receipt), 'utf8');
 }
 
+function parseEd25519PublicKey(value: string): KeyObject | null {
+  try {
+    const key = createPublicKey(value);
+    return key.asymmetricKeyType === 'ed25519' ? key : null;
+  } catch {
+    return null;
+  }
+}
+
 export function signInferenceReceipt(
   receipt: Omit<InferenceReceiptV1, 'seal'>,
   key: { keyId: string; privateKeyPem: string; publicKeyPem: string },
 ): InferenceReceiptV1 {
-  const signatureBase64 = sign(null, receiptSealPayload(receipt), key.privateKeyPem).toString('base64');
+  if (!nonEmptyString(key.keyId)) throw new TypeError('receipt signer key ID is required');
+  const privateKey = createPrivateKey(key.privateKeyPem);
+  const publicKey = parseEd25519PublicKey(key.publicKeyPem);
+  if (privateKey.asymmetricKeyType !== 'ed25519' || !publicKey) {
+    throw new TypeError('receipt signer keys must be Ed25519');
+  }
+  const payload = receiptSealPayload(receipt);
+  const signature = sign(null, payload, privateKey);
+  if (!verify(null, payload, publicKey, signature)) {
+    throw new TypeError('receipt signer keys do not match');
+  }
+  const signatureBase64 = signature.toString('base64');
   return {
     ...receipt,
     seal: { algorithm: 'Ed25519', keyId: key.keyId, publicKeyPem: key.publicKeyPem, signatureBase64 },
@@ -211,10 +231,16 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
+function isUuid(value: unknown): value is string {
+  return typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
 function snapshotSignature(value: unknown): ReceiptSignatureV1 | null {
   const record = exactOwnRecord(value, ['algorithm', 'keyId', 'publicKeyPem', 'signatureBase64']);
   if (!record || record['algorithm'] !== 'Ed25519' || !nonEmptyString(record['keyId']) ||
-      !nonEmptyString(record['publicKeyPem']) || !nonEmptyString(record['signatureBase64']) ||
+      !nonEmptyString(record['publicKeyPem']) || !parseEd25519PublicKey(record['publicKeyPem']) ||
+      !nonEmptyString(record['signatureBase64']) ||
       decodeBase64(record['signatureBase64']) === null) return null;
   return Object.freeze({ algorithm: 'Ed25519', keyId: record['keyId'], publicKeyPem: record['publicKeyPem'],
     signatureBase64: record['signatureBase64'] });
@@ -249,7 +275,9 @@ export function snapshotInferenceReceipt(value: unknown): InferenceReceiptV1 | n
     if (!record) return null;
     const requiredStrings = ['id', 'userId', 'decisionId', 'explanationId', 'provider', 'model',
       'endpointIdentity', 'requestSha256', 'responseSha256', 'verifierVersion', 'createdAt'] as const;
+    const identifiers = ['id', 'userId', 'decisionId', 'explanationId'] as const;
     if (record['version'] !== 1 || requiredStrings.some((field) => !nonEmptyString(record[field])) ||
+        identifiers.some((field) => !isUuid(record[field])) ||
         !MODES.has(record['reasoningMode'] as InferenceReasoningMode) ||
         !STATUSES.has(record['status'] as InferenceReceiptStatus) ||
         !Number.isFinite(new Date(record['createdAt'] as string).getTime())) return null;
@@ -371,6 +399,15 @@ function verifyExport(
   const bundle = snapshotInferenceReceiptExport(input);
   if (!bundle) return fail(hasUnsupportedReceiptVersion(input) ? 'UNSUPPORTED_VERSION' : 'INVALID_RECEIPT');
   const receipt = bundle.receipt;
+  const now = options.now === undefined
+    ? Date.now()
+    : options.now instanceof Date ? Date.prototype.getTime.call(options.now) : Number.NaN;
+  const futureClockSkewMs = options.futureClockSkewMs ?? 60_000;
+  const maxVerificationAgeMs = options.maxVerificationAgeMs ?? 7 * 24 * 60 * 60 * 1000;
+  if (!Number.isFinite(now) || !Number.isFinite(futureClockSkewMs) || futureClockSkewMs < 0 ||
+      !Number.isFinite(maxVerificationAgeMs) || maxVerificationAgeMs < 0) {
+    return fail('INVALID_RECEIPT', receipt.id);
+  }
   if (!isSha256(receipt.requestSha256) ||
       !isSha256(receipt.responseSha256)) return fail('INVALID_RECEIPT', receipt.id);
   const request = decodeBase64(bundle.requestBase64);
@@ -380,7 +417,8 @@ function verifyExport(
   if (sha256(response) !== receipt.responseSha256) return fail('RESPONSE_HASH_MISMATCH', receipt.id);
 
   const { seal, ...unsigned } = receipt;
-  if (!verify(null, receiptSealPayload(unsigned), seal.publicKeyPem,
+  const sealPublicKey = parseEd25519PublicKey(seal.publicKeyPem);
+  if (!sealPublicKey || !verify(null, receiptSealPayload(unsigned), sealPublicKey,
     Buffer.from(seal.signatureBase64, 'base64'))) {
     return fail('SEAL_SIGNATURE_INVALID', receipt.id);
   }
@@ -395,7 +433,8 @@ function verifyExport(
     if (!evidence || !isSha256(receipt.evidenceSha256)) return fail('EVIDENCE_REQUIRED', receipt.id);
     if (sha256(evidence) !== receipt.evidenceSha256) return fail('EVIDENCE_HASH_MISMATCH', receipt.id);
     if (receipt.responseSignature.algorithm !== 'Ed25519') return fail('RESPONSE_SIGNATURE_INVALID', receipt.id);
-    if (!verify(null, response, receipt.responseSignature.publicKeyPem,
+    const responsePublicKey = parseEd25519PublicKey(receipt.responseSignature.publicKeyPem);
+    if (!responsePublicKey || !verify(null, response, responsePublicKey,
       Buffer.from(receipt.responseSignature.signatureBase64, 'base64'))) {
       return fail('RESPONSE_SIGNATURE_INVALID', receipt.id);
     }
@@ -404,9 +443,8 @@ function verifyExport(
     if (!Number.isFinite(verifiedAt) || !Number.isFinite(freshUntil) || verifiedAt > freshUntil) {
       return fail('INVALID_RECEIPT', receipt.id);
     }
-    const now = (options.now ?? new Date()).getTime();
-    if (verifiedAt > now + (options.futureClockSkewMs ?? 60_000)) return fail('INVALID_RECEIPT', receipt.id);
-    if (freshUntil - verifiedAt > (options.maxVerificationAgeMs ?? 7 * 24 * 60 * 60 * 1000)) return fail('INVALID_RECEIPT', receipt.id);
+    if (verifiedAt > now + futureClockSkewMs) return fail('INVALID_RECEIPT', receipt.id);
+    if (freshUntil - verifiedAt > maxVerificationAgeMs) return fail('INVALID_RECEIPT', receipt.id);
     if (freshUntil <= now) {
       return fail('STALE_VERIFICATION', receipt.id);
     }

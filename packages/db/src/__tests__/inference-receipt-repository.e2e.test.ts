@@ -156,6 +156,18 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     await expect(insert(1, 'unknown')).rejects.toMatchObject({ code: '23514' });
     await expect(insert(1, 'on_device', other.explanationId))
       .rejects.toMatchObject({ code: '23503' });
+
+    await insert(1, 'on_device');
+    const secondExplanation = await pool.query<{ id: string }>(
+      `INSERT INTO explanation_records
+         (decision_id, what_happened, evidence_used, preferences_invoked,
+          confidence_reasoning, action_rationale, correction_guidance)
+       VALUES ($1, 'second receipt test', '[]', '{}', 'fixture', 'fixture', 'fixture')
+       RETURNING id`,
+      [owner.decisionId],
+    );
+    await expect(insert(1, 'on_device', secondExplanation.rows[0]!.id))
+      .rejects.toMatchObject({ code: '23505' });
   });
 
   it('round-trips a schema-v2 receipt backup as canonical untrusted metadata', async () => {

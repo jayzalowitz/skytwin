@@ -42,16 +42,20 @@ import { restoreBackup, validateBackupData, BACKUP_SCHEMA_VERSION } from '../bac
 const receiptKeys = generateKeyPairSync('ed25519');
 const receiptPublicKeyPem = receiptKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
 const receiptPrivateKeyPem = receiptKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const RECEIPT_ID = '11111111-1111-4111-8111-111111111111';
+const USER_ID = '22222222-2222-4222-8222-222222222222';
+const DECISION_ID = '33333333-3333-4333-8333-333333333333';
+const EXPLANATION_ID = '44444444-4444-4444-8444-444444444444';
 
 function signedReceipt(
   overrides: Partial<Omit<InferenceReceiptV1, 'seal'>> = {},
 ): InferenceReceiptV1 {
   return signInferenceReceipt({
     version: 1,
-    id: 'receipt-a',
-    userId: 'u1',
-    decisionId: 'decision-a',
-    explanationId: 'explanation-a',
+    id: RECEIPT_ID,
+    userId: USER_ID,
+    decisionId: DECISION_ID,
+    explanationId: EXPLANATION_ID,
     reasoningMode: 'on_device',
     provider: 'embedded',
     model: 'local',
@@ -72,10 +76,10 @@ function signedReceipt(
 
 function decisionBundle(receipt = signedReceipt()): Record<string, unknown> {
   return {
-    decision: { id: 'decision-a', user_id: 'u1' },
+    decision: { id: DECISION_ID, user_id: USER_ID },
     candidateActions: [],
     outcome: null,
-    explanations: [{ id: 'explanation-a', decision_id: 'decision-a' }],
+    explanations: [{ id: EXPLANATION_ID, decision_id: DECISION_ID }],
     inferenceReceipts: [{
       id: receipt.id,
       version: receipt.version,
@@ -100,7 +104,7 @@ function validPayload(): Record<string, unknown> {
     schemaVersion: BACKUP_SCHEMA_VERSION,
     exportedAt: '2026-06-15T00:00:00.000Z',
     user: {
-      id: 'u1',
+      id: USER_ID,
       email: 'a@b.c',
       name: 'A',
       trust_tier: 'observer',
@@ -125,8 +129,8 @@ describe('validateBackupData', () => {
     const payload = validPayload();
     payload['schemaVersion'] = 1;
     payload['decisions'] = [{
-      decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
-      explanations: [{ id: 'explanation-a', decision_id: 'decision-a' }],
+      decision: { id: DECISION_ID, user_id: USER_ID }, candidateActions: [], outcome: null,
+      explanations: [{ id: EXPLANATION_ID, decision_id: DECISION_ID }],
     }];
     expect(validateBackupData(payload)).toEqual([]);
   });
@@ -193,6 +197,18 @@ describe('validateBackupData', () => {
     payload['decisions'] = [bundle];
 
     expect(validateBackupData(payload)).toEqual([]);
+  });
+
+  it('rejects more than one receipt for a decision before restore', () => {
+    const bundle = decisionBundle();
+    const receipt = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    bundle['inferenceReceipts'] = [receipt, { ...receipt }];
+    const payload = validPayload();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts must contain at most one receipt',
+    );
   });
 
   it('rejects a non-object', () => {

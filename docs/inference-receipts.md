@@ -24,8 +24,8 @@ reasoning selector.
 
 An export bundle contains the canonical signed receipt plus the exact request,
 response, and (for confidential verification) minimum evidence bytes. The
-product does not create or export this bundle in this slice: the receipt
-receipt GET route cannot be used as verifier input. Integrators and developers
+product does not create or export this bundle in this slice: the receipt GET
+route cannot be used as verifier input. Integrators and developers
 can construct a bundle against the versioned library contract and run the
 verifier from a built source checkout without starting the API or web UI:
 

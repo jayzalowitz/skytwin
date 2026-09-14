@@ -270,6 +270,9 @@ export function validateBackupData(value: unknown): string[] {
       }
       const explanations = Array.isArray(bundle.explanations) ? bundle.explanations : [];
       const receipts = Array.isArray(bundle.inferenceReceipts) ? bundle.inferenceReceipts : [];
+      if (receipts.length > 1) {
+        problems.push(`decisions[${index}].inferenceReceipts must contain at most one receipt`);
+      }
       for (const [explanationIndex, explanation] of explanations.entries()) {
         if (!sameUuid(explanation.decision_id, bundle.decision.id)) {
           problems.push(`decisions[${index}].explanations[${explanationIndex}] has inconsistent linkage`);

@@ -152,7 +152,7 @@ export function createDecisionsRouter(): Router {
     }
   });
 
-  /** Metadata-only receipt. Exact inference bytes are never returned here. */
+  /** Structured signed receipt; excludes bundle byte fields, while free-form strings may be source-bearing. */
   router.get('/:decisionId/receipt', async (req, res, next) => {
     try {
       const userId = req.authenticatedUserId;

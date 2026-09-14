@@ -1,4 +1,4 @@
--- Versioned, metadata-only reasoning-path receipts. Ownership is derived from
+-- Versioned, structured reasoning-path receipts. Ownership is derived from
 -- the linked decision; there is intentionally no caller-writable user_id.
 CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx
   ON explanation_records (id, decision_id);
@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS inference_receipts (
     'on_device', 'verified', 'conventional', 'verification_failed',
     'verification_unavailable', 'verification_stale', 'local_fallback'
   )),
-  UNIQUE (decision_id, explanation_id),
+  UNIQUE (decision_id),
   CONSTRAINT inference_receipts_explanation_decision_fk
     FOREIGN KEY (explanation_id, decision_id)
     REFERENCES explanation_records (id, decision_id) ON DELETE CASCADE

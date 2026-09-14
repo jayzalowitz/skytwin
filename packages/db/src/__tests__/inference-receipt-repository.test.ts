@@ -41,6 +41,19 @@ describe('inferenceReceiptRepository', () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 
+  it('rejects signed non-UUID identifiers before querying the database', async () => {
+    const value = fixture();
+    const { seal: _seal, ...unsigned } = value.receipt;
+    value.receipt = signInferenceReceipt({ ...unsigned, id: 'not-a-uuid' }, {
+      keyId: 'recorder', privateKeyPem, publicKeyPem,
+    });
+    const result = await inferenceReceiptRepository.createForUser(value.receipt.userId, {
+      bundle: value, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
+    });
+    expect(result).toBeNull();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   it('cannot persist verified status without provider trust and an attestation verifier', async () => {
     const value = fixture();
     const response = Buffer.from('response');

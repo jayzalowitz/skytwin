@@ -118,6 +118,61 @@ describe('verifyInferenceReceiptExport', () => {
     });
   });
 
+  it('rejects non-Ed25519 and mismatched recorder signing keys', () => {
+    const { seal: _seal, ...unsigned } = conventionalBundle().receipt;
+    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    expect(() => signInferenceReceipt(unsigned, {
+      keyId: 'rsa', privateKeyPem: privatePem(rsa.privateKey), publicKeyPem: pem(rsa.publicKey),
+    })).toThrow('receipt signer keys must be Ed25519');
+
+    const other = generateKeyPairSync('ed25519');
+    expect(() => signInferenceReceipt(unsigned, {
+      keyId: 'mismatch', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(other.publicKey),
+    })).toThrow('receipt signer keys do not match');
+  });
+
+  it('rejects a provider signature whose declared Ed25519 key is RSA', () => {
+    const value = bundle();
+    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    const response = Buffer.from(value.responseBase64, 'base64');
+    const { seal: _seal, ...unsigned } = value.receipt;
+    value.receipt = signInferenceReceipt({
+      ...unsigned,
+      responseSignature: {
+        algorithm: 'Ed25519', keyId: 'provider-rsa', publicKeyPem: pem(rsa.publicKey),
+        signatureBase64: sign('sha256', response, rsa.privateKey).toString('base64'),
+      },
+    }, { keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey) });
+
+    expect(verifyInferenceReceiptExport(value, {
+      ...trustedOptions(), trustedProviderKeys: new Map([['provider-rsa', pem(rsa.publicKey)]]),
+    }).code).toBe('INVALID_RECEIPT');
+  });
+
+  it('rejects invalid verification clock and freshness policy values', () => {
+    expect(verifyInferenceReceiptExport(bundle(), trustedOptions(new Date(Number.NaN))).code)
+      .toBe('INVALID_RECEIPT');
+    for (const invalid of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
+      expect(verifyInferenceReceiptExport(bundle(), {
+        ...trustedOptions(), maxVerificationAgeMs: invalid,
+      }).code).toBe('INVALID_RECEIPT');
+      expect(verifyInferenceReceiptExport(bundle(), {
+        ...trustedOptions(), futureClockSkewMs: invalid,
+      }).code).toBe('INVALID_RECEIPT');
+    }
+  });
+
+  it.each(['id', 'userId', 'decisionId', 'explanationId'] as const)(
+    'rejects a signed non-UUID %s before trust evaluation', (field) => {
+      const value = conventionalBundle();
+      const { seal: _seal, ...unsigned } = value.receipt;
+      value.receipt = signInferenceReceipt({ ...unsigned, [field]: 'not-a-uuid' }, {
+        keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey),
+      });
+      expect(verifyInferenceReceiptExport(value, trustedOptions()).code).toBe('INVALID_RECEIPT');
+    },
+  );
+
   it.each([
     ['requestBase64', 'REQUEST_HASH_MISMATCH'],
     ['responseBase64', 'RESPONSE_HASH_MISMATCH'],
@@ -131,7 +186,12 @@ describe('verifyInferenceReceiptExport', () => {
   it.each(['model', 'endpointIdentity', 'decisionId', 'userId', 'fallback', 'cost'] as const)(
     'rejects signed metadata tampering: %s', (field) => {
       const value = bundle();
-      Object.assign(value.receipt, { [field]: field === 'cost' ? { basis: 'unknown' } : 'tampered' });
+      const replacement = field === 'cost'
+        ? { basis: 'unknown' }
+        : field === 'decisionId' || field === 'userId'
+          ? '55555555-5555-4555-8555-555555555555'
+          : 'tampered';
+      Object.assign(value.receipt, { [field]: replacement });
       expect(verifyInferenceReceiptExport(value).code).toBe(field === 'fallback' ? 'INVALID_RECEIPT' : 'SEAL_SIGNATURE_INVALID');
     },
   );

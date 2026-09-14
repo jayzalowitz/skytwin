@@ -25,6 +25,15 @@ All notable changes to SkyTwin will be documented in this file.
   JSON column as deferred source data. The privacy policy discloses that risk
   and the decision/user cascade-deletion boundary.
 
+### Fixed (post-/review)
+
+- **Receipt verification now enforces its declared cryptographic and storage
+  contract.** Recorder and provider keys must parse as Ed25519, recorder key
+  pairs must match, invalid clocks or freshness-policy values fail closed, and
+  all database-bound identities must be UUIDs before trust evaluation. The
+  schema now permits at most one receipt per decision, matching the singular
+  owner-scoped API.
+
 ## [Unreleased] — Local encryption boundary
 
 ### Added
