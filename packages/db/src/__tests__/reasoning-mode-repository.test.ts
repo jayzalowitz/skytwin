@@ -49,6 +49,7 @@ describe('reasoningModeRepository', () => {
     const [sql, params] = queryMock.mock.calls[0]!;
     expect(sql).toContain('NOT EXISTS');
     expect(sql).toContain('ai_provider_settings');
+    expect(sql).toContain('localhost\\.?');
     expect(sql).toContain('6553[0-5]');
     expect(sql).not.toContain('AND EXISTS');
     expect(sql).toContain('RETURNING *');
