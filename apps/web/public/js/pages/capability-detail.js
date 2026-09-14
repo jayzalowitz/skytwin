@@ -589,14 +589,23 @@ async function handleDetailRegret(serverId, userId, withinHours) {
   if (!confirm(`Roll back reversible actions from this capability in the last ${withinHours}h?`)) return;
   const resultEl = document.getElementById('capability-action-result');
   try {
-    const { undone, irreversible } = await regretCapability(serverId, userId, withinHours);
+    const { undone, unavailable, irreversible, status } = await regretCapability(
+      serverId,
+      userId,
+      withinHours,
+    );
     if (resultEl) {
       resultEl.innerHTML = `<div class="card" style="border-left: 3px solid var(--warning);">
-        <div class="card-header"><span class="card-title">Regret results</span></div>
-        <div class="card-subtitle">Rolled back: ${undone?.length ?? 0} · Could not undo: ${irreversible?.length ?? 0} (irreversible)</div>
+        <div class="card-header"><span class="card-title">Rollback report</span></div>
+        <div class="card-subtitle">Rolled back: ${undone?.length ?? 0} · Automatic rollback unavailable: ${unavailable?.length ?? 0} · Irreversible: ${irreversible?.length ?? 0}</div>
       </div>`;
     }
-    showToast('Regret complete.', { kind: 'success' });
+    showToast(
+      status === 'report_only'
+        ? 'No actions were changed. Automatic rollback is not yet available.'
+        : 'Rollback report complete.',
+      { kind: status === 'report_only' ? 'warning' : 'success' },
+    );
   } catch (err) {
     if (resultEl) resultEl.innerHTML = `<div class="error-banner">${escapeHtml(err.friendlyMessage || err.message)}</div>`;
   }
