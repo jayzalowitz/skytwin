@@ -36,6 +36,7 @@ const mocks = vi.hoisted(() => ({
   appendAssistant: vi.fn(),
   routeIntent: vi.fn(),
   reply: vi.fn(),
+  replyStream: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -68,7 +69,7 @@ vi.mock('@skytwin/db', () => ({
 }));
 vi.mock('@skytwin/assistant', () => ({
   AssistantService: vi.fn(function AssistantService() {
-    return { routeIntent: mocks.routeIntent, reply: mocks.reply };
+    return { routeIntent: mocks.routeIntent, reply: mocks.reply, replyStream: mocks.replyStream };
   }),
   ContextBuilder: vi.fn(),
   detectIntent: vi.fn(() => ({ domain: 'email' })),
@@ -205,6 +206,14 @@ describe('POST /api/assistant/messages idempotency', () => {
       content: 'Hello.',
       metadata: { provider: 'test' },
     });
+    mocks.replyStream.mockImplementation(async function* replyStream() {
+      yield { type: 'chunk', content: 'Hello.' };
+      yield {
+        type: 'done',
+        fullContent: 'Hello.',
+        metadata: { provider: 'test', model: 'test', latencyMs: 1 },
+      };
+    });
   });
 
   it('reuses one user message, action idempotency key, and approval bubble across two requests', async () => {
@@ -239,7 +248,7 @@ describe('POST /api/assistant/messages idempotency', () => {
     expect(mocks.routeIntent).toHaveBeenCalledTimes(1);
   });
 
-  it('returns typed 202 for a concurrent duplicate while the owner request is in progress', async () => {
+  it('returns typed 202 when a concurrent duplicate cannot yet be reconciled', async () => {
     let releaseOwner!: () => void;
     let ownerEntered!: () => void;
     const entered = new Promise<void>((resolve) => {
@@ -268,8 +277,8 @@ describe('POST /api/assistant/messages idempotency', () => {
     expect(owner.status).toBe(200);
     expect(duplicate.status).toBe(202);
     expect(duplicate.body).toMatchObject({
-      status: 'in_progress',
-      code: 'assistant_request_in_progress',
+      status: 'unresolved',
+      code: 'assistant_request_recovery_required',
     });
     expect(mocks.routeIntent).toHaveBeenCalledTimes(1);
   });
@@ -282,8 +291,8 @@ describe('POST /api/assistant/messages idempotency', () => {
 
     expect(response.status).toBe(202);
     expect(response.body).toMatchObject({
-      status: 'in_progress',
-      code: 'assistant_request_in_progress',
+      status: 'unresolved',
+      code: 'assistant_request_recovery_required',
     });
     expect(mocks.routeIntent).not.toHaveBeenCalled();
     expect(mocks.reply).not.toHaveBeenCalled();
@@ -308,6 +317,33 @@ describe('POST /api/assistant/messages idempotency', () => {
     expect(response.body).toContain('event: done');
     expect(mocks.routeIntent).not.toHaveBeenCalled();
     expect(mocks.reply).not.toHaveBeenCalled();
+  });
+
+  it('emits recovery-required instead of done when a streamed reply is not durably reconciled', async () => {
+    mocks.routeIntent.mockResolvedValueOnce(null);
+    mocks.appendAssistant.mockRejectedValueOnce(new Error('write response unavailable'));
+    mocks.findAssistant.mockRejectedValueOnce(new Error('reconciliation read unavailable'));
+
+    const response = await postSse(buildApp());
+
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('event: chunk');
+    expect(response.body).toContain('event: error');
+    expect(response.body).toContain('assistant_response_reconciliation_required');
+    expect(response.body).not.toContain('event: done');
+  });
+
+  it('reconciles a committed streamed reply after its write response is lost', async () => {
+    mocks.routeIntent.mockResolvedValueOnce(null);
+    mocks.appendAssistant.mockRejectedValueOnce(new Error('write response unavailable'));
+    mocks.findAssistant.mockResolvedValueOnce(ASSISTANT_MESSAGE);
+
+    const response = await postSse(buildApp());
+
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('event: done');
+    expect(response.body).toContain(ASSISTANT_MESSAGE.id);
+    expect(response.body).not.toContain('event: error');
   });
 
   it('deduplicates concurrent new-thread ordinary chat after a recoverable commit response', async () => {

@@ -1,6 +1,10 @@
 -- User-scoped client request identity for retry-safe assistant action routing.
 ALTER TABLE assistant_messages
-  ADD COLUMN IF NOT EXISTS user_id UUID REFERENCES users(id) ON DELETE CASCADE;
+  ADD COLUMN IF NOT EXISTS user_id UUID;
+
+ALTER TABLE assistant_messages
+  ADD CONSTRAINT IF NOT EXISTS assistant_messages_user_id_fkey
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
 
 ALTER TABLE assistant_messages
   ADD COLUMN IF NOT EXISTS client_request_id UUID;
@@ -20,6 +24,7 @@ UPDATE assistant_messages
 UPDATE assistant_messages AS message
    SET user_id = thread.user_id
   FROM assistant_threads AS thread
+  JOIN users AS owner ON owner.id = thread.user_id
  WHERE message.thread_id = thread.id
    AND message.user_id IS NULL;
 

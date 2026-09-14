@@ -45,7 +45,18 @@ All notable changes to SkyTwin will be documented in this file.
   server/transport failures and approval-response reconciliation failures no
   longer mint a fresh logical turn on retry. The API does not report a
   synthetic successful approval bubble unless the assistant row is durable,
-  and safe partial stream content is retained behind user-facing error text.
+  and a streamed reply with unresolved persistence ends in a recovery-required
+  state rather than synthetic success. Safe partial stream content is retained
+  behind user-facing error text. Assistant action evaluation now also receives
+  the user's complete autonomy settings before it can create an approval.
+
+- **Legacy assistant orphans no longer block migration 080.** The ownership
+  backfill only assigns message owners that still exist, leaving legacy orphan
+  messages nullable instead of violating the new foreign key during startup.
+
+- **Unavailable routine mutation is represented consistently in the web UI.**
+  Policy 403 responses no longer masquerade as expired sessions, and existing
+  routine rows are inspection-only while remote removal is quarantined.
 
 - **OpenClaw credential prompts are owner-scoped and bounded.** Credential
   metadata is parsed through a strict size-and-shape boundary, peer-supplied

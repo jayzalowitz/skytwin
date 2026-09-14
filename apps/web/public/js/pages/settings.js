@@ -428,7 +428,7 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Scheduled actions</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Recurring things your twin runs on a schedule (e.g. weekly inbox cleanup).
+        Existing scheduled actions are shown for inspection. Removal is unavailable in this release.
       </div>
       ${routines.map(routine => `
         <div style="display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.5rem 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem;">
@@ -436,7 +436,7 @@ export async function renderSettings(container, userId) {
             <div style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(routine.planSummary || routine.id)}</div>
             <div style="font-size: 0.8rem; color: var(--text-muted);">${escapeHtml(routine.schedule)}${routine.nextRunAt ? ` · next ${escapeHtml(formatRelativeTime(routine.nextRunAt))}` : ''}</div>
           </div>
-          <button class="btn btn-outline btn-sm" data-action="delete-routine" data-routine-id="${escapeHtml(routine.id)}">Delete</button>
+          <button class="btn btn-outline btn-sm" type="button" disabled title="Routine removal is unavailable in this release">Removal unavailable</button>
         </div>
       `).join('')}
     </div>

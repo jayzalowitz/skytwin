@@ -951,7 +951,7 @@
         },
         {
           "path": "packages/execution-router/src/openclaw-adapter.ts",
-          "sha256": "6817cc800806c6739729b50550161455307d953494ade7b071164e8735026171",
+          "sha256": "a4659b68deb9ae2ee5446cafb57565753a2f1f8802b462625248bed661e48b5b",
           "why": "Configured HTTP execution sends action descriptions, parameters, and steps to the adapter endpoint"
         },
         {

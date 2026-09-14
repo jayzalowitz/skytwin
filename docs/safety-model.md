@@ -139,7 +139,7 @@ Domain controls are additive to trust tier -- a domain must be both allowed AND 
 
 ### Layer 6: Approval Routing
 
-When the system determines it cannot auto-execute (due to risk, confidence, policy, or trust tier), it creates an approval request. Approval requests include:
+When a supported approval-routed action cannot auto-execute (due to risk, confidence, policy, or trust tier), it creates an approval request. Approval requests include:
 - What the system wants to do
 - Why it thinks this is the right action
 - What evidence supports this choice
@@ -155,7 +155,9 @@ UUID request identity for each logical turn. [Migration
 080](../packages/db/src/migrations/080-assistant-message-idempotency.sql)
 enforces owner-scoped uniqueness for new user and assistant message rows. A
 completed retry replays the durable result; a request with only its user
-message recorded returns `202` and is not taken over based on elapsed time. A
+message recorded returns `202 assistant_request_recovery_required` and is not
+taken over based on elapsed time. The client explains that a fresh or edited
+request is required if no reply appears elsewhere. A
 recognized action intent never executes directly from chat: a selected action
 is stored as requiring approval, and its explanation must persist before an
 approval request can be created. If that safety path fails before approval,
@@ -165,9 +167,9 @@ explanation coverage.
 
 **Legacy action-taking routine admission.** The
 [`/api/routines` write routes](../apps/api/src/routes/routines.ts) do not
-register or delete remote routines in this release. Each valid request is
+register or delete remote routines in this release. The first admitted request is
 normalized into a typed candidate and risk assessment, evaluated by policy,
-and recorded by
+and recorded before a terminal policy or unavailable response by
 [`routineNonActionRepository`](../packages/db/src/repositories/routine-non-action-repository.ts)
 in one transaction with its decision, non-action outcome, and explanation.
 The outcome keeps the evaluated candidate and risk for audit but has

@@ -1141,9 +1141,13 @@ async function handleSend() {
         checkWatchDraftFlow(content, container).catch(() => {});
       },
       onError: ({ message, partialContent }) => {
-        // The server emitted a terminal generation error, so a later attempt
-        // is a new logical request rather than a replay of an in-flight one.
-        if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+        // A terminal generation failure permits a new logical request. An
+        // ambiguous persistence result retains the request identity so a retry
+        // can only reconcile, never invoke the provider a second time.
+        if (
+          message !== 'assistant_response_reconciliation_required' &&
+          _state.pendingRequest?.requestId === requestIdentity.requestId
+        ) {
           _state.pendingRequest = null;
         }
         // Mid-stream error — keep the partial content if any, append an
@@ -1163,6 +1167,7 @@ async function handleSend() {
         const friendlyStreamError = {
           assistant_stream_failed: 'The reply stopped unexpectedly.',
           assistant_providers_failed: 'Every configured AI provider failed. Try again shortly.',
+          assistant_response_reconciliation_required: 'The reply was shown but could not be saved safely. If it does not appear in history, start a new chat or edit the message before sending again.',
         }[message] ?? 'The reply stopped unexpectedly.';
         _state.messages = _state.messages.concat([
           {
@@ -1206,7 +1211,7 @@ async function handleSend() {
       if (input) input.value = content;
       return;
     }
-    if (err?.code === 'assistant_request_in_progress' && err?.threadId) {
+    if (err?.code === 'assistant_request_recovery_required' && err?.threadId) {
       _state.activeThreadId = err.threadId;
       if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
         _state.pendingRequest.threadId = err.threadId;

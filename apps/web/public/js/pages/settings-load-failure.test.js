@@ -54,6 +54,26 @@ describe('settings provider mutation gate', () => {
     expect(api.saveAIProviders).not.toHaveBeenCalled();
   });
 
+  it('renders existing routines as inspection-only while removal is unavailable', async () => {
+    api.fetchSettings.mockResolvedValue({
+      aiProviders: [],
+      reasoningMode: { mode: null, requiresConfirmation: true },
+    });
+    api.fetchRoutines.mockResolvedValueOnce({
+      routines: [{ id: 'routine-1', planSummary: 'Inbox review', schedule: '0 9 * * *' }],
+    });
+    const container = document.getElementById('page-content');
+
+    await renderSettings(container, 'aaaaaaaa-bbbb-cccc-dddd-000000000001');
+
+    const unavailable = Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent?.trim() === 'Removal unavailable',
+    );
+    expect(unavailable).toBeInstanceOf(HTMLButtonElement);
+    expect(unavailable.disabled).toBe(true);
+    expect(container.querySelector('[data-action="delete-routine"]')).toBeNull();
+  });
+
   it('removes persisted privacy claims immediately when an endpoint draft changes', async () => {
     api.fetchSettings.mockResolvedValue({
       aiProviders: [{

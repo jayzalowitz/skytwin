@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   emit: vi.fn(),
   logWarn: vi.fn(),
   logError: vi.fn(),
+  findUser: vi.fn(),
   twinService: {
     getRelevantPreferences: vi.fn(),
     getPatterns: vi.fn(),
@@ -53,7 +54,7 @@ vi.mock('@skytwin/db', () => ({
   mcpServerRepository: {},
   mempalaceRepository: {},
   userRepository: {
-    findById: vi.fn().mockResolvedValue({ trust_tier: 'suggest' }),
+    findById: mocks.findUser,
   },
   TwinRepositoryAdapter: vi.fn(),
   PatternRepositoryAdapter: vi.fn(),
@@ -137,6 +138,7 @@ describe('assistant action explanation boundary', () => {
       metadata: null,
     });
     mocks.findAssistantMessage.mockResolvedValue(null);
+    mocks.findUser.mockResolvedValue({ trust_tier: 'suggest', autonomy_settings: null });
   });
 
   it('normalizes an auto-execute engine result to the approval-only chat contract', () => {
@@ -210,6 +212,48 @@ describe('assistant action explanation boundary', () => {
     expect(mocks.generateExplanation.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.createApproval.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('passes per-user autonomy settings into policy evaluation and queues no denied action', async () => {
+    mocks.findUser.mockResolvedValueOnce({
+      trust_tier: 'suggest',
+      autonomy_settings: { paused: true, pausedReason: 'user_requested' },
+    });
+    mocks.evaluate.mockResolvedValueOnce({
+      id: '33333333-3333-3333-3333-333333333333',
+      decisionId: candidate.decisionId,
+      selectedAction: null,
+      allCandidates: [candidate],
+      riskAssessment: null,
+      autoExecute: false,
+      requiresApproval: false,
+      reasoning: 'Auto-execution is paused by the user.',
+      decidedAt: new Date(),
+      policyVerdicts: { [candidate.id]: 'denied' },
+    });
+    const router = buildActionRouter();
+
+    const result = await router.route(
+      'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      {
+        situationType: 'email_triage',
+        domain: 'email',
+        summary: 'Archive an email',
+        rawData: { intent: 'archive_email' },
+        triggerMessage: 'archive that email',
+      },
+      { idempotencyKey: 'message-paused-user' },
+    );
+
+    expect(mocks.evaluate).toHaveBeenCalledWith(expect.objectContaining({
+      autonomySettings: expect.objectContaining({
+        paused: true,
+        pausedReason: 'user_requested',
+      }),
+    }));
+    expect(result).toMatchObject({ kind: 'blocked' });
+    expect(mocks.createApproval).not.toHaveBeenCalled();
+    expect(mocks.emit).not.toHaveBeenCalled();
   });
 
   it('returns a deliberate failure when approval persistence cannot be reconciled', async () => {

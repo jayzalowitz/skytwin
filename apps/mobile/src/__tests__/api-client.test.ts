@@ -122,11 +122,11 @@ class TestApiClient {
       typeof result.data === 'object' &&
       result.data !== null &&
       'status' in result.data &&
-      result.data.status === 'in_progress'
+      result.data.status === 'unresolved'
     ) {
       return {
         success: false as const,
-        error: 'That request is still processing. Try again shortly.',
+        error: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
         statusCode: 202,
       };
     }
@@ -298,13 +298,13 @@ describe('API client request construction', () => {
     expect(moved.requestId).not.toBe(first.requestId);
   });
 
-  it('maps an in-progress duplicate to a typed retryable result', async () => {
+  it('maps an unresolved duplicate to a typed recovery-required result', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       status: 202,
       json: async () => ({
-        status: 'in_progress',
-        code: 'assistant_request_in_progress',
+        status: 'unresolved',
+        code: 'assistant_request_recovery_required',
       }),
     });
 
@@ -315,9 +315,9 @@ describe('API client request construction', () => {
 
     expect(result).toEqual({
       success: false,
-      error: 'That request is still processing. Try again shortly.',
+      error: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
       statusCode: 202,
-      code: 'assistant_request_in_progress',
+      code: 'assistant_request_recovery_required',
     });
   });
 

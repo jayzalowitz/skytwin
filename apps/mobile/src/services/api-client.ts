@@ -533,21 +533,21 @@ export class SkyTwinApiClient {
     const body: Record<string, unknown> = { userId, content, requestId };
     if (threadId) body['threadId'] = threadId;
     const result = await this.request<AssistantSendResponse | {
-      status: 'in_progress';
-      code: 'assistant_request_in_progress';
+      status: 'unresolved';
+      code: 'assistant_request_recovery_required';
     }>('POST', '/api/assistant/messages', body, 60_000);
     if (
       result.success &&
       typeof result.data === 'object' &&
       result.data !== null &&
       'status' in result.data &&
-      result.data.status === 'in_progress'
+      result.data.status === 'unresolved'
     ) {
       return {
         success: false,
-        error: 'That request is still processing. Try again shortly.',
+        error: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
         statusCode: 202,
-        code: 'assistant_request_in_progress',
+        code: 'assistant_request_recovery_required',
       };
     }
     return result as ApiResult<AssistantSendResponse>;

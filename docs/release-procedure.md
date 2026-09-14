@@ -118,9 +118,14 @@ a separate onboarding constraint.
 Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
 
 The repository's `release-publication` GitHub Environment is part of this
-boundary. **As of 2026-09-14 it is not configured.** Before any release, create
-it with at least one required reviewer, prevent self-review, disable
-administrator bypass, and add a custom tag policy matching the release tag.
+boundary. **As of 2026-09-14 it is protected** (environment ID `21922257437`):
+`ilblackdragon` is the required reviewer, self-review is prevented, and
+administrator bypass is disabled. The `Protect version tags` repository ruleset
+(ID `23359316`) covers `refs/tags/v*` creation, update, deletion, and
+non-fast-forward changes, with the repository administrator role as its explicit
+bypass actor. The environment's sole deployment policy is the exact
+`v0.7.0-beta` tag (policy ID `59983025`), which the release verifier also
+requires for this claim ledger.
 The workflow verifies those live settings and fails before release
 mutation if GitHub auto-creates an unprotected environment or its configuration
 drifts. The release job has only `contents: write`, `actions: read`, and

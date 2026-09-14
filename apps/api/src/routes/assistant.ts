@@ -41,6 +41,7 @@ import { sseManager } from '../sse.js';
 import { validateAssistantMessage } from '../validators/assistant-message.js';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
+import { readAutonomy } from '../cost-gate.js';
 
 const log = createLogger('api:assistant');
 
@@ -397,6 +398,7 @@ export function buildActionRouter(): ActionRouter {
         patterns,
         traits,
         temporalProfile,
+        autonomySettings: readAutonomy(user),
       };
 
       // Run the full decision pipeline. This is the load-bearing call —
@@ -622,11 +624,10 @@ function renderActionBubbleContent(intent: ActionIntent, outcome: ActionRouteOut
  * with a single `error` event with `partialContent: ''` — same wire
  * shape so the client doesn't need a separate code path.
  *
- * The assistant message is persisted AFTER the stream closes, using the
- * accumulated full content. If the persist fails the stream's `done`
- * event still fires (the user got a useful reply on screen) but a `warn`
- * is logged — the audit-trail loss is recoverable, the user-facing
- * regression isn't.
+ * The assistant message is persisted after generation completes, using the
+ * accumulated full content. A lost write response is reconciled by request
+ * identity before `done`; if durability remains unknown, the stream terminates
+ * with a recovery-required error and the client retains that identity.
  */
 async function streamAssistantReply(args: {
   service: AssistantService;
@@ -722,24 +723,29 @@ async function streamAssistantReply(args: {
           );
           send('done', assistantMessage);
         } catch {
-          // Stream completed and the user saw the reply, but we couldn't
-          // persist. Log a warning and emit done with a synthetic shape
-          // so the client still terminates cleanly. The next thread
-          // fetch won't include this message — that's the recoverable
-          // failure mode (vs. corrupting the user's UI).
-          logger.warn('Assistant message persist failed after stream complete', {
+          let reconciled: AssistantMessage | null = null;
+          try {
+            reconciled = await assistantRepository.findAssistantMessageByRequestId(
+              enrichment.userId,
+              requestId,
+            );
+          } catch {
+            // The read is best-effort; an unavailable read leaves durability
+            // ambiguous and must not be represented as terminal success.
+          }
+          if (reconciled?.threadId === threadId) {
+            send('done', reconciled);
+            res.end();
+            return;
+          }
+          logger.warn('Assistant message durability unresolved after stream complete', {
             threadId,
             userId: enrichment.userId,
-            errorCode: 'assistant_message_persistence_failed',
+            errorCode: 'assistant_response_reconciliation_required',
           });
-          send('done', {
-            id: null,
-            threadId,
-            role: 'assistant',
-            content: collectedFullContent,
-            createdAt: new Date().toISOString(),
-            metadata,
-            persistFailed: true,
+          send('error', {
+            message: 'assistant_response_reconciliation_required',
+            partialContent: collectedFullContent,
           });
         }
         res.end();
@@ -877,8 +883,8 @@ export function createAssistantRouter(): Router {
         // infer from elapsed time that a prior owner died and launch a second
         // provider call; a fresh attempt must use a fresh request id.
         res.status(202).json({
-          status: 'in_progress',
-          code: 'assistant_request_in_progress',
+          status: 'unresolved',
+          code: 'assistant_request_recovery_required',
           thread: { id: retriedUserMessage.threadId, isNew: false },
           userMessage: retriedUserMessage,
         });
@@ -970,8 +976,8 @@ export function createAssistantRouter(): Router {
           return;
         }
         res.status(202).json({
-          status: 'in_progress',
-          code: 'assistant_request_in_progress',
+          status: 'unresolved',
+          code: 'assistant_request_recovery_required',
           thread: { id: userMessage.threadId, isNew: false },
           userMessage,
         });

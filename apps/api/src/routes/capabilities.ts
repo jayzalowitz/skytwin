@@ -342,7 +342,7 @@ async function writeProvenanceNode(opts: {
  * Endpoints (all under /api/capabilities/…):
  *
  *   POST /:id/uninstall     — soft-delete; optionally revoke OAuth + drop signals
- *   POST /:id/regret        — attempt rollback of actions executed via this server
+ *   POST /:id/regret        — report rollback candidates without changing external state
  *   POST /:id/time-machine  — replay a decision without this server (read-only)
  *   POST /:id/rehearse      — show what would have auto-executed if trust tier were higher
  *

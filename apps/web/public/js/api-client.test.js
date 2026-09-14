@@ -148,11 +148,11 @@ describe('api client', () => {
     });
   });
 
-  it('surfaces an in-progress duplicate without parsing JSON as SSE', async () => {
+  it('surfaces an unresolved duplicate without parsing JSON as SSE', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
-        status: 'in_progress',
-        code: 'assistant_request_in_progress',
+        status: 'unresolved',
+        code: 'assistant_request_recovery_required',
         thread: { id: 'thread-1', isNew: false },
       }), {
         status: 202,
@@ -168,8 +168,26 @@ describe('api client', () => {
       { requestId: ASSISTANT_REQUEST_ID },
     )).rejects.toMatchObject({
       status: 202,
-      code: 'assistant_request_in_progress',
+      code: 'assistant_request_recovery_required',
       threadId: 'thread-1',
+    });
+  });
+
+  it('does not misclassify a routine policy response as an expired session', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        error: 'Routine deletion was blocked by policy.',
+        code: 'routine_blocked_by_policy',
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ));
+
+    await expect(fetchJSON('/api/routines/routine-1')).rejects.toMatchObject({
+      kind: 'bad-request',
+      friendlyMessage: 'Routine deletion was blocked by policy.',
+      code: 'routine_blocked_by_policy',
     });
   });
 

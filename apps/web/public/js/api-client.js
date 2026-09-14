@@ -153,6 +153,19 @@ async function classifyHttpError(res) {
     });
   }
 
+  if (
+    res.status === 403 &&
+    (code === 'routine_blocked_by_policy' || code === 'routine_requires_approval')
+  ) {
+    return new ApiError({
+      kind: 'bad-request',
+      friendlyMessage: serverMessage,
+      serverMessage,
+      status: res.status,
+      code, help, docs,
+    });
+  }
+
   if (res.status === 401 || res.status === 403) {
     return new ApiError({
       kind: 'auth',
@@ -932,10 +945,10 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
     const pending = await res.json().catch(() => null);
     const error = new ApiError({
       kind: 'pending',
-      friendlyMessage: 'That request is still processing. Try again shortly.',
-      serverMessage: pending?.error || pending?.message || 'Assistant request is still processing',
+      friendlyMessage: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
+      serverMessage: pending?.error || pending?.message || 'Assistant request requires recovery',
       status: res.status,
-      code: pending?.code || 'assistant_request_in_progress',
+      code: pending?.code || 'assistant_request_recovery_required',
     });
     error.threadId = typeof pending?.thread?.id === 'string' ? pending.thread.id : null;
     throw error;

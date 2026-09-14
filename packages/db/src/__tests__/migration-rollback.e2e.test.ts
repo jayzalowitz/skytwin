@@ -3,6 +3,7 @@
  * E2E=true MIGRATION_ROLLBACK_E2E=true pnpm --filter @skytwin/db exec vitest run \
  *   src/__tests__/migration-rollback.e2e.test.ts
  */
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { closePool } from '../connection.js';
@@ -21,6 +22,10 @@ interface SemanticConstraint {
 }
 
 const OWNED = [...SKYTWIN_OWNED_TABLES];
+const ASSISTANT_IDEMPOTENCY_MIGRATION = readFileSync(
+  new URL('../migrations/080-assistant-message-idempotency.sql', import.meta.url),
+  'utf8',
+);
 
 async function semanticConstraints(): Promise<SemanticConstraint[]> {
   const result = await pool.query<SemanticConstraint>(`
@@ -288,6 +293,24 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     try {
     await up();
     expect(await ownedTables()).toEqual(OWNED);
+    const orphanUserId = '00000000-0000-4000-8000-000000000080';
+    const orphanThreadId = '00000000-0000-4000-8000-000000000081';
+    const orphanMessageId = '00000000-0000-4000-8000-000000000082';
+    await pool.query(
+      `INSERT INTO assistant_threads (id, user_id, title) VALUES ($1, $2, 'legacy orphan')`,
+      [orphanThreadId, orphanUserId],
+    );
+    await pool.query(
+      `INSERT INTO assistant_messages (id, thread_id, role, content)
+       VALUES ($1, $2, 'user', 'legacy orphan message')`,
+      [orphanMessageId, orphanThreadId],
+    );
+    await expect(pool.query(ASSISTANT_IDEMPOTENCY_MIGRATION)).resolves.toBeDefined();
+    await expect(pool.query(
+      `SELECT user_id FROM assistant_messages WHERE id = $1`,
+      [orphanMessageId],
+    )).resolves.toMatchObject({ rows: [{ user_id: null }] });
+    await pool.query('DELETE FROM assistant_threads WHERE id = $1', [orphanThreadId]);
     const expectedColumns = await columnDefinitions();
     const expectedConstraints = await semanticConstraints();
     const expectedIndexes = await indexDefinitions();
