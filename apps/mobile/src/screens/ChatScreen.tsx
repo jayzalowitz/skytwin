@@ -12,6 +12,8 @@ import {
 } from 'react-native';
 import {
   SkyTwinApiClient,
+  resolveAssistantRequestIdentity,
+  type AssistantRequestIdentity,
   type AssistantMessage,
 } from '../services/api-client';
 import { getSession } from '../services/session-store';
@@ -52,6 +54,7 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
   const threadIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView | null>(null);
   const consumedTextRef = useRef<string | null>(null);
+  const pendingRequestRef = useRef<AssistantRequestIdentity | null>(null);
 
   // Pre-fill the composer when a transcript is handed over from the Voice
   // screen. Consume each distinct value exactly once — keyed on the value
@@ -60,6 +63,9 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
   useEffect(() => {
     if (initialText && initialText.trim() && consumedTextRef.current !== initialText) {
       consumedTextRef.current = initialText;
+      if (pendingRequestRef.current?.content !== initialText.trim()) {
+        pendingRequestRef.current = null;
+      }
       setInput(initialText.trim());
       onInitialTextConsumed?.();
     }
@@ -68,6 +74,13 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
   const send = useCallback(async () => {
     const content = input.trim();
     if (!content || sending) return;
+
+    const requestIdentity = resolveAssistantRequestIdentity(
+      pendingRequestRef.current,
+      content,
+      threadIdRef.current,
+    );
+    pendingRequestRef.current = requestIdentity;
 
     setError(null);
     setInput('');
@@ -93,11 +106,20 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
         return;
       }
       const client = new SkyTwinApiClient(session.baseUrl, session.token);
-      const result = await client.sendAssistantMessage(session.userId, content, threadIdRef.current);
+      const result = await client.sendAssistantMessage(
+        session.userId,
+        content,
+        threadIdRef.current,
+        requestIdentity.requestId,
+      );
       if (!result.success) {
+        if (result.statusCode !== undefined && result.statusCode !== 202) {
+          pendingRequestRef.current = null;
+        }
         fail(result.error);
         return;
       }
+      pendingRequestRef.current = null;
       threadIdRef.current = result.data.thread.id;
       const reply: AssistantMessage = result.data.assistantMessage;
       setMessages((prev) => [
@@ -110,6 +132,13 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
       setSending(false);
     }
   }, [input, sending]);
+
+  const handleInputChange = useCallback((value: string) => {
+    if (pendingRequestRef.current?.content !== value.trim()) {
+      pendingRequestRef.current = null;
+    }
+    setInput(value);
+  }, []);
 
   return (
     <KeyboardAvoidingView
@@ -159,7 +188,7 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
         <TextInput
           style={styles.input}
           value={input}
-          onChangeText={setInput}
+          onChangeText={handleInputChange}
           placeholder="Message your twin…"
           placeholderTextColor="#6c6c84"
           multiline

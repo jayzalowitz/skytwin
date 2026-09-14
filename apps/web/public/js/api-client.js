@@ -14,6 +14,36 @@ let demoSessionPromise = null;
 let demoSessionGeneration = 0;
 let demoSessionClosing = false;
 
+export function createClientRequestId() {
+  const platformUuid = globalThis.crypto?.randomUUID?.();
+  if (platformUuid) return platformUuid;
+  // This is a deduplication identity, not an authentication secret.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const value = Math.floor(Math.random() * 16);
+    return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+  });
+}
+
+/**
+ * Reuse a request identity only while the user is retrying the same logical
+ * message in the same thread. Callers keep the returned object until a
+ * terminal response arrives or the composer is edited.
+ */
+export function resolveAssistantRequestIdentity(pending, content, threadId = null) {
+  const normalizedThreadId = threadId ?? null;
+  if (
+    pending?.content === content &&
+    pending?.threadId === normalizedThreadId
+  ) {
+    return pending;
+  }
+  return {
+    requestId: createClientRequestId(),
+    content,
+    threadId: normalizedThreadId,
+  };
+}
+
 /** Invalidate every in-flight sample start before disposal begins. */
 export function beginDemoSessionExit() {
   demoSessionGeneration += 1;
@@ -826,10 +856,15 @@ export function deleteAssistantThread(threadId, userId) {
   });
 }
 
-export function sendAssistantMessage(userId, content, threadId = null) {
+export function sendAssistantMessage(
+  userId,
+  content,
+  threadId = null,
+  requestId = createClientRequestId(),
+) {
   return fetchJSON(`${API}/assistant/messages`, {
     method: 'POST',
-    body: JSON.stringify({ userId, content, threadId }),
+    body: JSON.stringify({ userId, content, threadId, requestId }),
   });
 }
 
@@ -860,7 +895,7 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
   // aborted; the read loop exits cleanly because reader.read() also
   // rejects. We rethrow AbortError so the caller's catch can distinguish
   // "user-initiated stop" from real network failures.
-  const { signal } = options;
+  const { signal, requestId = createClientRequestId() } = options;
 
   let res;
   try {
@@ -871,7 +906,7 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
         'Accept': 'text/event-stream',
         ...authHeaders(),
       },
-      body: JSON.stringify({ userId, content, threadId }),
+      body: JSON.stringify({ userId, content, threadId, requestId }),
       signal,
     });
   } catch (err) {
@@ -882,13 +917,23 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
     throw new Error('Unable to reach the server. Please check your connection.');
   }
 
+  if (res.status === 202) {
+    const pending = await res.json().catch(() => null);
+    const error = new ApiError({
+      kind: 'pending',
+      friendlyMessage: 'That request is still processing. Try again shortly.',
+      serverMessage: pending?.error || pending?.message || 'Assistant request is still processing',
+      status: res.status,
+      code: pending?.code || 'assistant_request_in_progress',
+    });
+    error.threadId = typeof pending?.thread?.id === 'string' ? pending.thread.id : null;
+    throw error;
+  }
+
   if (!res.ok) {
     // Server rejected before opening the stream (e.g. 400 validation,
     // 409 no provider, 502 all providers down on pre-stream check).
-    // Echo the error shape callers already handle from fetchJSON.
-    const err = await res.json().catch(() => null);
-    const message = err?.error || err?.message || `Request failed (HTTP ${res.status})`;
-    throw new Error(message);
+    throw await classifyHttpError(res);
   }
 
   if (!res.body) {

@@ -3,6 +3,7 @@ import {
   fetchAssistantThread,
   deleteAssistantThread,
   sendAssistantMessageStream,
+  resolveAssistantRequestIdentity,
   searchCapabilityRegistry,
   installCapability,
   requestInstallSuggestion,
@@ -41,6 +42,10 @@ let _state = {
   // in the finally block. handleStop calls .abort() to interrupt a long
   // generation. The Send button swaps to a Stop button while non-null.
   streamController: null,
+  // Retained only across an ambiguous transport failure. A retry of the same
+  // content in the same thread must carry the same requestId so the server can
+  // replay the durable result instead of admitting a duplicate action.
+  pendingRequest: null,
 };
 
 let _assistantListenerWired = false;
@@ -880,6 +885,10 @@ function ensureAssistantListener() {
     const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
     if (target.getAttribute('data-region') !== 'composer-input') return;
+    const nextContent = /** @type {HTMLTextAreaElement} */ (target).value.trim();
+    if (_state.pendingRequest && nextContent !== _state.pendingRequest.content) {
+      _state.pendingRequest = null;
+    }
     writeDraft(_state.activeThreadId, /** @type {HTMLTextAreaElement} */ (target).value);
   });
 }
@@ -1016,6 +1025,13 @@ async function handleSend() {
   const content = (input?.value ?? '').trim();
   if (!content) return;
 
+  const requestIdentity = resolveAssistantRequestIdentity(
+    _state.pendingRequest,
+    content,
+    _state.activeThreadId,
+  );
+  _state.pendingRequest = requestIdentity;
+
   _state.sending = true;
   // Optimistic user bubble — render locally so the chat feels responsive
   // even if the LLM takes 5 seconds. Real id arrives on response and
@@ -1059,6 +1075,9 @@ async function handleSend() {
       onThread: (thread) => {
         if (thread?.isNew && thread?.id) {
           _state.activeThreadId = thread.id;
+        }
+        if (_state.pendingRequest?.requestId === requestIdentity.requestId && thread?.id) {
+          _state.pendingRequest.threadId = thread.id;
         }
       },
       onUserMessage: (userMessage) => {
@@ -1104,6 +1123,9 @@ async function handleSend() {
         }
       },
       onDone: (assistantMessage) => {
+        if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+          _state.pendingRequest = null;
+        }
         // Replace the streaming bubble with the persisted one.
         _state.messages = _state.messages
           .filter((m) => m.id !== streamingAssistantId)
@@ -1118,6 +1140,11 @@ async function handleSend() {
         checkWatchDraftFlow(content, container).catch(() => {});
       },
       onError: ({ message, partialContent }) => {
+        // The server emitted a terminal generation error, so a later attempt
+        // is a new logical request rather than a replay of an in-flight one.
+        if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+          _state.pendingRequest = null;
+        }
         // Mid-stream error — keep the partial content if any, append an
         // error caveat in a separate bubble so the user sees both what
         // landed and what went wrong.
@@ -1143,7 +1170,7 @@ async function handleSend() {
         if (input && !partialContent) input.value = content;
         if (container) paint(container);
       },
-    }, { signal: controller.signal });
+    }, { signal: controller.signal, requestId: requestIdentity.requestId });
 
     // After a successful stream, refresh the threads list so a new thread
     // shows up in the left rail or an existing one bumps to the top. We
@@ -1163,6 +1190,9 @@ async function handleSend() {
     // reconcile if so. No error toast / no error bubble — this was
     // intentional, not a failure.
     if (err?.name === 'AbortError') {
+      if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+        _state.pendingRequest = null;
+      }
       const idx = _state.messages.findIndex((m) => m.id === streamingAssistantId);
       if (idx >= 0) {
         _state.messages[idx] = {
@@ -1172,6 +1202,18 @@ async function handleSend() {
         };
       }
       return;
+    }
+    if (err?.code === 'assistant_request_in_progress' && err?.threadId) {
+      _state.activeThreadId = err.threadId;
+      if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+        _state.pendingRequest.threadId = err.threadId;
+      }
+    } else if (typeof err?.status === 'number' && err.status > 0) {
+      // An HTTP response is terminal. Only transport ambiguity retains the
+      // identity; a subsequent attempt after a definite rejection is new.
+      if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+        _state.pendingRequest = null;
+      }
     }
     // Transport-level failure (network down, 4xx/5xx pre-stream). Drop
     // the optimistic bubble, restore input, surface error in an

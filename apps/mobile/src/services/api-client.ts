@@ -19,6 +19,38 @@ interface ApiError {
 
 type ApiResult<T> = ApiSuccess<T> | ApiError;
 
+export function createClientRequestId(): string {
+  const platformUuid = globalThis.crypto?.randomUUID;
+  if (platformUuid) return platformUuid.call(globalThis.crypto);
+  // This is a deduplication identity, not an authentication secret.
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+    const value = Math.floor(Math.random() * 16);
+    return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+  });
+}
+
+export interface AssistantRequestIdentity {
+  requestId: string;
+  content: string;
+  threadId: string | null;
+}
+
+export function resolveAssistantRequestIdentity(
+  pending: AssistantRequestIdentity | null,
+  content: string,
+  threadId?: string,
+): AssistantRequestIdentity {
+  const normalizedThreadId = threadId ?? null;
+  if (pending?.content === content && pending.threadId === normalizedThreadId) {
+    return pending;
+  }
+  return {
+    requestId: createClientRequestId(),
+    content,
+    threadId: normalizedThreadId,
+  };
+}
+
 // -- Response types matching the API routes --
 
 export interface ApprovalRequest {
@@ -487,10 +519,28 @@ export class SkyTwinApiClient {
     userId: string,
     content: string,
     threadId?: string,
+    requestId = createClientRequestId(),
   ): Promise<ApiResult<AssistantSendResponse>> {
-    const body: Record<string, unknown> = { userId, content };
+    const body: Record<string, unknown> = { userId, content, requestId };
     if (threadId) body['threadId'] = threadId;
-    return this.request<AssistantSendResponse>('POST', '/api/assistant/messages', body, 60_000);
+    const result = await this.request<AssistantSendResponse | {
+      status: 'in_progress';
+      code: 'assistant_request_in_progress';
+    }>('POST', '/api/assistant/messages', body, 60_000);
+    if (
+      result.success &&
+      typeof result.data === 'object' &&
+      result.data !== null &&
+      'status' in result.data &&
+      result.data.status === 'in_progress'
+    ) {
+      return {
+        success: false,
+        error: 'That request is still processing. Try again shortly.',
+        statusCode: 202,
+      };
+    }
+    return result as ApiResult<AssistantSendResponse>;
   }
 
   private headers(): Record<string, string> {

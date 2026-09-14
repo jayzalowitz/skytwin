@@ -10,11 +10,15 @@ import {
 import {
   endSampleSimulation,
   fetchJSON,
+  resolveAssistantRequestIdentity,
+  sendAssistantMessage,
+  sendAssistantMessageStream,
   sendSampleSimulationCommand,
   startDemoSession,
 } from './api-client.js';
 
 const source = readFileSync(new URL('./api-client.js', import.meta.url), 'utf8');
+const ASSISTANT_REQUEST_ID = '11111111-2222-4333-8444-555555555555';
 
 describe('api client', () => {
   const values = new Map();
@@ -38,6 +42,122 @@ describe('api client', () => {
 
   it('treats 204 No Content as a successful empty response', () => {
     expect(source).toContain('if (res.status === 204) return null;');
+  });
+
+  it('reuses the request identity only for the same logical assistant message', () => {
+    const first = resolveAssistantRequestIdentity(null, 'archive that', 'thread-1');
+    const retry = resolveAssistantRequestIdentity(first, 'archive that', 'thread-1');
+    const edited = resolveAssistantRequestIdentity(first, 'archive this instead', 'thread-1');
+    const otherThread = resolveAssistantRequestIdentity(first, 'archive that', 'thread-2');
+
+    expect(retry).toBe(first);
+    expect(edited.requestId).not.toBe(first.requestId);
+    expect(otherThread.requestId).not.toBe(first.requestId);
+    expect(first.requestId).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+  });
+
+  it('sends the caller-supplied requestId on JSON assistant requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendAssistantMessage('user-1', 'hello', 'thread-1', ASSISTANT_REQUEST_ID);
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      userId: 'user-1',
+      content: 'hello',
+      threadId: 'thread-1',
+      requestId: ASSISTANT_REQUEST_ID,
+    });
+  });
+
+  it('keeps one generated requestId through automatic session renewal', async () => {
+    sampleValues.set(KEY_TOUR_MODE, '1');
+    sampleValues.set(KEY_USER_ID, 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
+    sampleValues.set(KEY_SESSION_TOKEN, 'expired-token');
+    sampleValues.set(KEY_DEMO_SESSION_EXPIRES_AT, '2030-01-01T00:00:00.000Z');
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response('{}', { status: 401 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        token: 'renewed-token',
+        userId: 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d',
+        expiresAt: '2030-01-01T00:00:00.000Z',
+      }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendAssistantMessage('user-1', 'hello');
+
+    const assistantCalls = fetchMock.mock.calls.filter(([url]) => url === '/api/assistant/messages');
+    expect(assistantCalls).toHaveLength(2);
+    const requestIds = assistantCalls.map(([, options]) => JSON.parse(options.body).requestId);
+    expect(requestIds[0]).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+    );
+    expect(requestIds[1]).toBe(requestIds[0]);
+  });
+
+  it('sends the caller-supplied requestId on streaming assistant requests', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response('event: done\ndata: {"id":"assistant-1"}\n\n', {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await sendAssistantMessageStream(
+      'user-1',
+      'hello',
+      'thread-1',
+      {},
+      { requestId: ASSISTANT_REQUEST_ID },
+    );
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      userId: 'user-1',
+      content: 'hello',
+      threadId: 'thread-1',
+      requestId: ASSISTANT_REQUEST_ID,
+    });
+  });
+
+  it('surfaces an in-progress duplicate without parsing JSON as SSE', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({
+        status: 'in_progress',
+        code: 'assistant_request_in_progress',
+        thread: { id: 'thread-1', isNew: false },
+      }), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ));
+
+    await expect(sendAssistantMessageStream(
+      'user-1',
+      'hello',
+      null,
+      {},
+      { requestId: ASSISTANT_REQUEST_ID },
+    )).rejects.toMatchObject({
+      status: 202,
+      code: 'assistant_request_in_progress',
+      threadId: 'thread-1',
+    });
   });
 
   it('stores the credential and expiry when a sample session starts', async () => {
