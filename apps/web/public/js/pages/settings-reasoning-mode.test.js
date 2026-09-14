@@ -12,6 +12,12 @@ describe('reasoning-location settings boundary', () => {
     expect(source).toContain('Verified private cloud — unavailable');
     expect(source).toContain('Your earlier provider chain was ambiguous');
     expect(source).toContain('Could not load the reasoning-location boundary');
+    expect(source).toContain('Draft only — this selection is not active until you press Save');
+  });
+
+  it('invalidates server-derived privacy metadata when its mode or model changes', () => {
+    expect(source).toContain('_aiChain.forEach((provider) => { provider.privacy = null; })');
+    expect(source).toContain("field !== 'baseUrl' && field !== 'model'");
   });
 
   it('sends the explicit mode with provider saves and connection tests', () => {

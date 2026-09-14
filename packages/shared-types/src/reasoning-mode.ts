@@ -108,7 +108,11 @@ export function canonicalizeProviderBaseUrl(
   if (parsed.hostname.endsWith('.')) {
     parsed.hostname = parsed.hostname.slice(0, -1);
   }
-  if (parsed.pathname === '/' && parsed.search.length === 0 && parsed.hash.length === 0) {
+  if (parsed.search.length > 0 || parsed.hash.length > 0) {
+    throw new Error('Provider endpoint must not include a query string or fragment');
+  }
+  parsed.pathname = parsed.pathname.replace(/\/+$/, '') || '/';
+  if (parsed.pathname === '/') {
     return parsed.origin;
   }
   return parsed.toString();

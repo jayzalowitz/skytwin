@@ -140,7 +140,8 @@ export async function renderSettings(container, userId) {
   const emailAttributionEnabled = emailAttribution.enabled !== false;
   const aiProviders = settings?.aiProviders ?? [];
   _aiSettingsLoaded = settings !== null;
-  _reasoningMode = settings?.reasoningMode?.mode ?? 'on_device';
+  _persistedReasoningMode = settings?.reasoningMode?.mode ?? null;
+  _reasoningMode = _persistedReasoningMode ?? 'on_device';
   _reasoningModeRequiresConfirmation = settings?.reasoningMode?.requiresConfirmation === true;
   const ironclawChannel = settings?.ironclawChannel ?? 'skytwin';
   const ironclawChannels = settings?.ironclawChannels ?? ['skytwin', 'telegram', 'discord', 'slack', 'signal'];
@@ -466,8 +467,8 @@ export async function renderSettings(container, userId) {
         Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
-        <strong>I keep:</strong> the preferences I learn, patterns I notice, and a log of every decision I made (with the reasoning).<br>
-        <strong>I don't keep:</strong> the actual contents of your emails, your calendar event details, or any of your passwords.<br>
+        <strong>I keep on this device:</strong> the authorized email and calendar fields needed for your twin, learned preferences and patterns, and a log of decisions with their reasoning. Signal data is retained locally under the app’s retention policy.<br>
+        <strong>I don't keep:</strong> your account passwords. Access tokens and stored signal data remain on this device; a configured remote reasoning endpoint may receive prompt content under the boundary selected above.<br>
         <strong>Account access:</strong> ${googleConnected
           ? 'I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'
           : 'No accounts linked yet — I can\'t see anything until you connect one.'}<br>
@@ -897,8 +898,11 @@ function ensureSettingsListener() {
       if (target.value !== 'on_device' && target.value !== 'bring_your_own_provider') return;
       _reasoningMode = target.value;
       _reasoningModeRequiresConfirmation = false;
+      _aiChain.forEach((provider) => { provider.privacy = null; });
       const location = document.getElementById('ai-reasoning-location');
       if (location) location.innerHTML = renderReasoningLocation();
+      const chain = document.getElementById('ai-provider-chain');
+      if (chain) chain.innerHTML = renderProviderChain(_aiChain);
       return;
     }
     if (action === 'toggle-email-attribution' && target instanceof HTMLInputElement) {
@@ -1750,6 +1754,7 @@ export function applySmarterMode(chain) {
 let _aiChain = [];
 let _aiSettingsLoaded = false;
 let _reasoningMode = 'on_device';
+let _persistedReasoningMode = null;
 let _reasoningModeRequiresConfirmation = false;
 
 function renderReasoningLocation(settingsAvailable = true) {
@@ -1761,13 +1766,22 @@ function renderReasoningLocation(settingsAvailable = true) {
       </div>
     `;
   }
-  const disclosure = _reasoningMode === 'on_device'
+  const boundaryDescription = _reasoningMode === 'on_device'
     ? 'Prompts stay on this device. The embedded runtime is local; loopback Ollama requests are source-qualified as local so its daemon cannot relay them to a cloud model.'
     : _reasoningMode === 'bring_your_own_provider'
       ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Embedded inference stays local; Ollama may relay through its operator, so this mode treats it as potentially remote. This mode makes no confidential-computing claim.'
       : 'This mode requires a successfully verified confidential-computing adapter for every request. No eligible adapter is available in this build.';
+  const hasUnsavedMode = _reasoningMode !== _persistedReasoningMode;
+  const persistedLabel = _persistedReasoningMode === 'on_device'
+    ? 'On this device'
+    : _persistedReasoningMode === 'bring_your_own_provider'
+      ? 'My configured provider'
+      : 'No confirmed location';
+  const disclosure = hasUnsavedMode
+    ? `Draft only — this selection is not active until you press Save. The active boundary remains “${persistedLabel}”. If saved: ${boundaryDescription}`
+    : boundaryDescription;
   return `
-    <div style="padding: 0.75rem; margin-bottom: 0.75rem; background: var(--bg); border: 1px solid ${_reasoningModeRequiresConfirmation ? 'var(--warning)' : 'var(--border)'}; border-radius: 8px;">
+    <div style="padding: 0.75rem; margin-bottom: 0.75rem; background: var(--bg); border: 1px solid ${_reasoningModeRequiresConfirmation || hasUnsavedMode ? 'var(--warning)' : 'var(--border)'}; border-radius: 8px;">
       <label for="ai-reasoning-mode" style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.35rem;">Where reasoning runs</label>
       <select id="ai-reasoning-mode" class="form-input" data-action="ai-reasoning-mode" aria-describedby="ai-reasoning-disclosure">
         <option value="on_device" ${_reasoningMode === 'on_device' ? 'selected' : ''}>On this device</option>
@@ -1954,7 +1968,7 @@ window.aiUpdateField = function(idx, field, value) {
   const provider = _aiChain[idx];
   if (!provider) return;
   provider[field] = value;
-  if (field !== 'baseUrl') return;
+  if (field !== 'baseUrl' && field !== 'model') return;
 
   // Privacy metadata belongs to the persisted endpoint snapshot. Never keep
   // showing it after the user edits the authority locally.

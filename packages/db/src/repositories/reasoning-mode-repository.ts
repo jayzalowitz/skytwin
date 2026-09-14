@@ -61,8 +61,11 @@ export const reasoningModeRepository = {
                    provider NOT IN ('ollama', 'embedded')
                    OR (
                      provider = 'ollama'
-                     AND base_url IS NOT NULL
-                     AND base_url !~* '^https?://(localhost\\.?|127\\.0\\.0\\.1\\.?|\\[::1\\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$'
+                     AND (
+                       (base_url IS NOT NULL
+                         AND base_url !~* '^https?://(localhost\\.?|127\\.0\\.0\\.1\\.?|\\[::1\\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$')
+                       OR model ~* '(^|/)[^/]*:(cloud|[^/:]*-cloud)[[:space:]]*$'
+                     )
                    )
                  )
                )

@@ -137,6 +137,19 @@ describe.skipIf(!E2E)('AI provider reasoning mutations on CockroachDB', () => {
     expect(stored.rows).toEqual([{ base_url: 'http://localhost:11434' }]);
   });
 
+  it('refuses to mark an explicit Ollama Cloud model as on-device', async () => {
+    const userId = await createUser();
+    await aiProviderRepository.replaceAllWithReasoningMode(
+      userId,
+      'bring_your_own_provider',
+      [{ provider: 'ollama', apiKey: '', model: 'qwen:cloud', priority: 0 }],
+    );
+
+    await expect(
+      reasoningModeRepository.setForUserIfCompatible(userId, 'on_device'),
+    ).resolves.toBeNull();
+  });
+
   it('binds an omitted Ollama credential to the literal runtime default', async () => {
     const userId = await createUser();
     await aiProviderRepository.replaceAllWithReasoningMode(
