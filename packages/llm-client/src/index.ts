@@ -21,6 +21,7 @@ export type {
   ChatMessage,
 } from './types.js';
 export type { ProviderModePolicyErrorCode } from './provider-privacy.js';
+export type { SafeProviderFetch } from './url-validation.js';
 export { toMessages, splitSystemAndConversation } from './messages.js';
 export { estimateLlmCostCents, isZeroCostProvider } from './cost.js';
 export { redactPromptPii } from './redact.js';

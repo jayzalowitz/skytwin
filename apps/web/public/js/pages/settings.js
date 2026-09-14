@@ -468,7 +468,7 @@ export async function renderSettings(container, userId) {
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
         <strong>I keep on this device:</strong> the authorized email and calendar fields needed for your twin, learned preferences and patterns, and a log of decisions with their reasoning. Signal data is retained locally under the app’s retention policy.<br>
-        <strong>I don't keep:</strong> your account passwords. Access tokens and stored signal data remain on this device. A configured remote reasoning endpoint may receive prompt content under the boundary selected above; separately, an administrator-configured OpenAI-compatible embedding key may send memory text to that endpoint for indexing.<br>
+        <strong>I don't keep:</strong> your account passwords. Access tokens and stored signal data remain on this device. A configured remote reasoning endpoint may receive prompt content under the boundary selected above; separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
         <strong>Account access:</strong> ${googleConnected
           ? 'I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'
           : 'No accounts linked yet — I can\'t see anything until you connect one.'}<br>
@@ -1990,7 +1990,9 @@ window.aiTestProvider = async function(idx, userId) {
   if (!_aiSettingsLoaded) return;
   if (_reasoningModeRequiresConfirmation || _reasoningMode !== _persistedReasoningMode) {
     document.getElementById('ai-reasoning-mode')?.focus();
-    showErrorToast('Save where reasoning runs before testing a provider.');
+    showErrorToast(_reasoningModeRequiresConfirmation
+      ? 'Choose where reasoning runs before testing a provider.'
+      : 'Save where reasoning runs before testing a provider.');
     return;
   }
   const p = _aiChain[idx];
@@ -2027,7 +2029,9 @@ window.switchAIBrainMode = async function(userId, target) {
   if (!_aiSettingsLoaded) return;
   if (_reasoningModeRequiresConfirmation || _reasoningMode !== _persistedReasoningMode) {
     document.getElementById('ai-reasoning-mode')?.focus();
-    showErrorToast('Save where reasoning runs before changing provider priority.');
+    showErrorToast(_reasoningModeRequiresConfirmation
+      ? 'Choose where reasoning runs before changing provider priority.'
+      : 'Save where reasoning runs before changing provider priority.');
     return;
   }
   const next = target === 'smart'

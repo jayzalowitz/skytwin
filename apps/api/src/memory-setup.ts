@@ -22,7 +22,6 @@
  */
 
 import { createLogger } from '@skytwin/core';
-import { fetchCustomProviderUrl } from '@skytwin/llm-client';
 import {
   EmbeddedGbrainMemoryPort,
   HashEmbeddingProvider,
@@ -53,32 +52,6 @@ import type {
 
 const log = createLogger('memory-setup');
 
-const safeEmbeddingFetch: typeof fetch = async (input, init) => {
-  const url = typeof input === 'string'
-    ? input
-    : input instanceof URL
-      ? input.toString()
-      : input.url;
-  // The Ollama validation policy is intentionally used for this generic
-  // OpenAI-compatible surface: it permits plaintext HTTP only on loopback
-  // (for local embedding daemons) and requires HTTPS everywhere else.
-  const safe = await fetchCustomProviderUrl(url, 'ollama', init ?? {});
-  try {
-    // Consume the response before closing the one-request pinned dispatcher.
-    // OpenAI-compatible embedding responses are already buffered as JSON by
-    // the caller; this preserves that behavior while preventing a socket from
-    // outliving its validated DNS answers.
-    const body = await safe.response.arrayBuffer();
-    return new Response(body, {
-      status: safe.response.status,
-      statusText: safe.response.statusText,
-      headers: safe.response.headers,
-    });
-  } finally {
-    await safe.close();
-  }
-};
-
 export type BackendChoice = 'hybrid' | 'gbrain' | 'mempalace';
 
 export interface ResolvedBackend {
@@ -104,7 +77,6 @@ export function getEmbeddingProvider(): EmbeddingProvider {
     cachedEmbedding = new OpenAiEmbeddingProvider({
       apiKey,
       model,
-      fetchImpl: safeEmbeddingFetch,
       ...(baseUrl ? { baseUrl } : {}),
     });
     return cachedEmbedding;

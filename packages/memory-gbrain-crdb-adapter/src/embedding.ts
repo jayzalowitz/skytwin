@@ -19,6 +19,7 @@
  */
 
 import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
+import { fetchCustomProviderUrl, type SafeProviderFetch } from '@skytwin/llm-client';
 
 export interface EmbeddingProvider {
   readonly model: string;
@@ -109,7 +110,7 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
   readonly dim: number;
   private readonly apiKey: string;
   private readonly baseUrl: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: typeof fetch | undefined;
   private readonly timeoutMs: number;
 
   constructor(opts: OpenAiEmbeddingOptions) {
@@ -117,7 +118,7 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     this.model = opts.model ?? 'text-embedding-3-small';
     this.dim = opts.dim ?? 1536;
     this.baseUrl = canonicalizeProviderBaseUrl(opts.baseUrl) ?? 'https://api.openai.com/v1';
-    this.fetchImpl = opts.fetchImpl ?? fetch;
+    this.fetchImpl = opts.fetchImpl;
     this.timeoutMs = opts.timeoutMs ?? 15000;
   }
 
@@ -131,8 +132,10 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     if (texts.length === 0) return [];
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), this.timeoutMs);
+    let safeFetch: SafeProviderFetch | undefined;
     try {
-      const res = await this.fetchImpl(`${this.baseUrl}/embeddings`, {
+      const requestUrl = `${this.baseUrl}/embeddings`;
+      const requestInit = {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -140,7 +143,19 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
         },
         body: JSON.stringify({ model: this.model, input: texts }),
         signal: ctrl.signal,
-      });
+      } satisfies RequestInit;
+      // Production calls always use the shared pinned, redirect-denying
+      // transport. The Ollama policy name deliberately permits plaintext HTTP
+      // only on loopback for local OpenAI-compatible embedding daemons and
+      // requires HTTPS everywhere else. `fetchImpl` remains an explicit
+      // hermetic-test seam; production composition roots do not set it.
+      const res = this.fetchImpl
+        ? await this.fetchImpl(requestUrl, requestInit)
+        : (safeFetch = await fetchCustomProviderUrl(
+          requestUrl,
+          'ollama',
+          requestInit,
+        )).response;
       if (!res.ok) {
         throw new Error(`embedding HTTP ${res.status}`);
       }
@@ -152,6 +167,7 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
       return data.map((d) => d.embedding);
     } finally {
       clearTimeout(timer);
+      await safeFetch?.close();
     }
   }
 }

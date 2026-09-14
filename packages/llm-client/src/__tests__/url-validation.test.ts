@@ -235,7 +235,7 @@ describe('validateBaseUrl', () => {
     it('blocks IPv4 benchmarking, documentation, multicast, and reserved ranges', () => {
       for (const address of [
         '198.18.0.1', '198.19.255.254', '192.0.2.1', '198.51.100.1',
-        '203.0.113.1', '224.0.0.1', '240.0.0.1',
+        '203.0.113.1', '192.88.99.1', '224.0.0.1', '240.0.0.1',
       ]) {
         expect(() => validateBaseUrl(`https://${address}`, 'openai'))
           .toThrow('Private/internal URL not allowed');
@@ -243,7 +243,11 @@ describe('validateBaseUrl', () => {
     });
 
     it('blocks IPv6 site-local, documentation, benchmarking, and multicast ranges', () => {
-      for (const address of ['fec0::1', '2001:db8::1', '2001:2::1', 'ff02::1']) {
+      for (const address of [
+        'fec0::1', '64:ff9b:1::a00:1', '2001:10::1', '2001:20::1',
+        '2001:db8::1', '2001:2::1', '2002:c000:0204::1', '3fff::1',
+        'ff02::1',
+      ]) {
         expect(() => validateBaseUrl(`https://[${address}]`, 'openai'))
           .toThrow('Private/internal URL not allowed');
       }
