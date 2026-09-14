@@ -240,7 +240,7 @@ export async function fetchCustomProviderUrl(
  * - `localhost.` (trailing dot): caught by dot strip
  * - `[fe80::1%eth0]` (IPv6 link-local with zone): caught by zone strip + bracket strip
  */
-function normalizeHostname(raw: string): string {
+export function normalizeHostname(raw: string): string {
   let h = raw.toLowerCase().replace(/^\[|\]$/g, '');
   if (h.endsWith('.')) h = h.slice(0, -1);
   const zoneIdx = h.indexOf('%');
