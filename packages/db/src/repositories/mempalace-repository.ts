@@ -1,4 +1,10 @@
 import { query } from '../connection.js';
+import {
+  VaultKeyProvider,
+  encryptColumn,
+  readColumn,
+  resolveKey,
+} from '../lib/vault-helper.js';
 import type {
   MemoryWingRow,
   MemoryRoomRow,
@@ -159,14 +165,24 @@ export const mempalaceRepository = {
 
   // ── Drawers ────────────────────────────────────────────────────
 
-  async createDrawer(input: CreateDrawerInput): Promise<MemoryDrawerRow> {
+  async createDrawer(
+    input: CreateDrawerInput,
+    keyProvider: VaultKeyProvider,
+  ): Promise<MemoryDrawerRow> {
+    const keyState = resolveKey(keyProvider, input.userId);
+    let content = input.content;
+    let contentEncrypted = null;
+
+    if (keyState.mode === 'unlocked') {
+      contentEncrypted = encryptColumn(content, keyState.key);
+      content = null;
+    }
+
     const result = await query<MemoryDrawerRow>(
-      `INSERT INTO memory_drawers (room_id, wing_id, user_id, hall, content, metadata, source_type, source_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-       RETURNING *`,
+      `INSERT INTO memory_drawers (room_id, wing_id, user_id, hall, content, content_encrypted, metadata, source_type, source_id)\n       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)\n       RETURNING *`,
       [
         input.roomId, input.wingId, input.userId, input.hall,
-        input.content, JSON.stringify(input.metadata ?? {}),
+        content, contentEncrypted, JSON.stringify(input.metadata ?? {}),
         input.sourceType, input.sourceId ?? null,
       ],
     );
@@ -184,12 +200,13 @@ export const mempalaceRepository = {
     return result.rows[0]!;
   },
 
-  async getDrawers(userId: string, options?: {
+  async getDrawers(userId: string, keyProvider: VaultKeyProvider, options?: {
     hall?: string;
     wingId?: string;
     roomId?: string;
     limit?: number;
   }): Promise<MemoryDrawerRow[]> {
+    const keyState = resolveKey(keyProvider, userId);
     const conditions = ['user_id = $1'];
     const params: unknown[] = [userId];
     let paramIdx = 2;
@@ -218,10 +235,25 @@ export const mempalaceRepository = {
        LIMIT ${limit}`,
       params,
     );
-    return result.rows;
+    return result.rows.map(row => {
+      const readResult = readColumn(row.content_encrypted, row.content, keyState.key);
+      if (!readResult.success) {
+        throw new Error(`Vault Error: ${readResult.error} for user ${userId}`);
+      }
+      return {
+        ...row,
+        content: readResult.value,
+      };
+    });
   },
 
-  async searchDrawers(userId: string, searchTerms: string[], limit: number = 20): Promise<MemoryDrawerRow[]> {
+  async searchDrawers(
+    userId: string,
+    keyProvider: VaultKeyProvider,
+    searchTerms: string[],
+    limit: number = 20,
+  ): Promise<MemoryDrawerRow[]> {
+    const keyState = resolveKey(keyProvider, userId);
     // Text-based search across drawer content and metadata
     const likeConditions = searchTerms.map((_, i) => `(content ILIKE $${i + 2} OR metadata::STRING ILIKE $${i + 2})`);
     const params: unknown[] = [userId, ...searchTerms.map((t) => `%${t}%`)];
@@ -233,7 +265,17 @@ export const mempalaceRepository = {
        LIMIT ${limit}`,
       params,
     );
-    return result.rows;
+
+    return result.rows.map(row => {
+      const readResult = readColumn(row.content_encrypted, row.content, keyState.key);
+      if (!readResult.success) {
+        throw new Error(`Vault Error: ${readResult.error} for user ${userId}`);
+      }
+      return {
+        ...row,
+        content: readResult.value,
+      };
+    });
   },
 
   async findDrawerBySourceId(userId: string, sourceType: string, sourceId: string): Promise<MemoryDrawerRow | null> {
@@ -270,33 +312,56 @@ export const mempalaceRepository = {
 
   // ── Closets ────────────────────────────────────────────────────
 
-  async createCloset(input: CreateClosetInput): Promise<MemoryClosetRow> {
+  async createCloset(
+    input: CreateClosetInput,
+    keyProvider: VaultKeyProvider,
+  ): Promise<MemoryClosetRow> {
+    const keyState = resolveKey(keyProvider, input.userId);
+    let compressedContent = input.compressedContent;
+    let compressedContentEncrypted = null;
+
+    if (keyState.mode === 'unlocked') {
+      compressedContentEncrypted = encryptColumn(compressedContent, keyState.key);
+      compressedContent = null;
+    }
+
     const result = await query<MemoryClosetRow>(
-      `INSERT INTO memory_closets (room_id, wing_id, user_id, compressed_content, source_drawer_ids, drawer_count, token_count)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
+      `INSERT INTO memory_closets (room_id, wing_id, user_id, compressed_content, compressed_content_encrypted, source_drawer_ids, drawer_count, token_count)\n       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)\n       RETURNING *`,
       [
         input.roomId, input.wingId, input.userId,
-        input.compressedContent, input.sourceDrawerIds,
+        compressedContent, compressedContentEncrypted, input.sourceDrawerIds,
         input.sourceDrawerIds.length, input.tokenCount,
       ],
     );
     return result.rows[0]!;
   },
 
-  async getClosets(userId: string, roomId?: string): Promise<MemoryClosetRow[]> {
+  async getClosets(userId: string, keyProvider: VaultKeyProvider, roomId?: string): Promise<MemoryClosetRow[]> {
+    const keyState = resolveKey(keyProvider, userId);
     if (roomId) {
       const result = await query<MemoryClosetRow>(
         'SELECT * FROM memory_closets WHERE user_id = $1 AND room_id = $2 ORDER BY created_at DESC',
         [userId, roomId],
       );
-      return result.rows;
+      return result.rows.map(row => {
+        const readResult = readColumn(row.compressed_content_encrypted, row.compressed_content, keyState.key);
+        if (!readResult.success) {
+          throw new Error(`Vault Error: ${readResult.error} for user ${userId}`);
+        }
+        return { ...row, compressed_content: readResult.value };
+      });
     }
     const result = await query<MemoryClosetRow>(
       'SELECT * FROM memory_closets WHERE user_id = $1 ORDER BY created_at DESC',
       [userId],
     );
-    return result.rows;
+    return result.rows.map(row => {
+      const readResult = readColumn(row.compressed_content_encrypted, row.compressed_content, keyState.key);
+      if (!readResult.success) {
+        throw new Error(`Vault Error: ${readResult.error} for user ${userId}`);
+      }
+      return { ...row, compressed_content: readResult.value };
+    });
   },
 
   // ── Tunnels ────────────────────────────────────────────────────
@@ -332,57 +397,113 @@ export const mempalaceRepository = {
 
   // ── Knowledge Graph: Entities ──────────────────────────────────
 
-  async upsertEntity(input: CreateEntityInput): Promise<KnowledgeEntityRow> {
+  async upsertEntity(
+    input: CreateEntityInput,
+    keyProvider: VaultKeyProvider,
+  ): Promise<KnowledgeEntityRow> {
+    const keyState = resolveKey(keyProvider, input.userId);
+    let name = input.name;
+    let nameEncrypted = null;
+    let properties = JSON.stringify(input.properties ?? {});
+    let propertiesEncrypted = null;
+
+    if (keyState.mode === 'unlocked') {
+      nameEncrypted = encryptColumn(name, keyState.key);
+      name = null;
+      propertiesEncrypted = encryptColumn(properties, keyState.key);
+      properties = null;
+    }
+
     const result = await query<KnowledgeEntityRow>(
-      `INSERT INTO knowledge_entities (user_id, name, entity_type, properties, aliases)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO knowledge_entities (user_id, name, name_encrypted, entity_type, properties, properties_encrypted, aliases)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (user_id, name, entity_type) DO UPDATE SET
          properties = EXCLUDED.properties,
+         properties_encrypted = EXCLUDED.properties_encrypted,
          aliases = EXCLUDED.aliases,
          updated_at = now()
        RETURNING *`,
       [
-        input.userId, input.name, input.entityType,
-        JSON.stringify(input.properties ?? {}), input.aliases ?? [],
+        input.userId, name, nameEncrypted, input.entityType,
+        properties, propertiesEncrypted, input.aliases ?? [],
       ],
     );
     return result.rows[0]!;
   },
 
-  async getEntities(userId: string, entityType?: string): Promise<KnowledgeEntityRow[]> {
+  async getEntities(userId: string, keyProvider: VaultKeyProvider, entityType?: string): Promise<KnowledgeEntityRow[]> {
+    const keyState = resolveKey(keyProvider, userId);
+    let result;
     if (entityType) {
-      const result = await query<KnowledgeEntityRow>(
+      result = await query<KnowledgeEntityRow>(
         'SELECT * FROM knowledge_entities WHERE user_id = $1 AND entity_type = $2 ORDER BY name',
         [userId, entityType],
       );
-      return result.rows;
+    } else {
+      result = await query<KnowledgeEntityRow>(
+        'SELECT * FROM knowledge_entities WHERE user_id = $1 ORDER BY name',
+        [userId],
+      );
     }
-    const result = await query<KnowledgeEntityRow>(
-      'SELECT * FROM knowledge_entities WHERE user_id = $1 ORDER BY name',
-      [userId],
-    );
-    return result.rows;
+    return result.rows.map(row => {
+      const nameRead = readColumn(row.name_encrypted, row.name, keyState.key);
+      const propRead = readColumn(row.properties_encrypted, row.properties, keyState.key);
+      if (!nameRead.success || !propRead.success) {
+        const err = !nameRead.success ? nameRead.error : propRead.error;
+        throw new Error(`Vault Error: ${err} for user ${userId}`);
+      }
+      return { ...row, name: nameRead.value, properties: propRead.value };
+    });
   },
 
-  async findEntity(userId: string, name: string): Promise<KnowledgeEntityRow | null> {
+  async findEntity(userId: string, keyProvider: VaultKeyProvider, name: string): Promise<KnowledgeEntityRow | null> {
+    const keyState = resolveKey(keyProvider, userId);
     const result = await query<KnowledgeEntityRow>(
       `SELECT * FROM knowledge_entities
        WHERE user_id = $1 AND (name = $2 OR $2 = ANY(aliases))
        LIMIT 1`,
       [userId, name],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    if (!row) return null;
+    const nameRead = readColumn(row.name_encrypted, row.name, keyState.key);
+    const propRead = readColumn(row.properties_encrypted, row.properties, keyState.key);
+    if (!nameRead.success || !propRead.success) {
+      const err = !nameRead.success ? nameRead.error : propRead.error;
+      throw new Error(`Vault Error: ${err} for user ${userId}`);
+    }
+    return { ...row, name: nameRead.value, properties: propRead.value };
   },
 
   // ── Knowledge Graph: Triples ───────────────────────────────────
 
-  async addTriple(input: CreateTripleInput): Promise<KnowledgeTripleRow> {
+  async addTriple(
+    input: CreateTripleInput,
+    keyProvider: VaultKeyProvider,
+  ): Promise<KnowledgeTripleRow> {
+    const keyState = resolveKey(keyProvider, input.userId);
+    let subject = input.subject;
+    let subjectEncrypted = null;
+    let predicate = input.predicate;
+    let predicateEncrypted = null;
+    let object = input.object;
+    let objectEncrypted = null;
+
+    if (keyState.mode === 'unlocked') {
+      subjectEncrypted = encryptColumn(subject, keyState.key);
+      subject = null;
+      predicateEncrypted = encryptColumn(predicate, keyState.key);
+      predicate = null;
+      objectEncrypted = encryptColumn(object, keyState.key);
+      object = null;
+    }
+
     const result = await query<KnowledgeTripleRow>(
-      `INSERT INTO knowledge_triples (user_id, subject, predicate, object, valid_from, confidence, source_closet_id, source_drawer_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO knowledge_triples (user_id, subject, subject_encrypted, predicate, predicate_encrypted, object, object_encrypted, valid_from, confidence, source_closet_id, source_drawer_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING *`,
       [
-        input.userId, input.subject, input.predicate, input.object,
+        input.userId, subject, subjectEncrypted, predicate, predicateEncrypted, object, objectEncrypted,
         input.validFrom ?? new Date(), input.confidence ?? 'moderate',
         input.sourceClosetId ?? null, input.sourceDrawerId ?? null,
       ],
@@ -390,13 +511,14 @@ export const mempalaceRepository = {
     return result.rows[0]!;
   },
 
-  async queryTriples(userId: string, options?: {
+  async queryTriples(userId: string, keyProvider: VaultKeyProvider, options?: {
     subject?: string;
     predicate?: string;
     object?: string;
     asOf?: Date;
     limit?: number;
   }): Promise<KnowledgeTripleRow[]> {
+    const keyState = resolveKey(keyProvider, userId);
     const conditions = ['user_id = $1'];
     const params: unknown[] = [userId];
     let paramIdx = 2;
@@ -430,7 +552,16 @@ export const mempalaceRepository = {
        LIMIT ${limit}`,
       params,
     );
-    return result.rows;
+    return result.rows.map(row => {
+      const sRead = readColumn(row.subject_encrypted, row.subject, keyState.key);
+      const pRead = readColumn(row.predicate_encrypted, row.predicate, keyState.key);
+      const oRead = readColumn(row.object_encrypted, row.object, keyState.key);
+      if (!sRead.success || !pRead.success || !oRead.success) {
+        const err = !sRead.success ? sRead.error : (!pRead.success ? pRead.error : oRead.error);
+        throw new Error(`Vault Error: ${err} for user ${userId}`);
+      }
+      return { ...row, subject: sRead.value, predicate: pRead.value, object: oRead.value };
+    });
   },
 
   async invalidateTriple(tripleId: string, validTo?: Date): Promise<void> {
@@ -442,20 +573,37 @@ export const mempalaceRepository = {
 
   // ── Episodic Memories ──────────────────────────────────────────
 
-  async createEpisode(input: CreateEpisodeInput): Promise<EpisodicMemoryRow> {
+  async createEpisode(
+    input: CreateEpisodeInput,
+    keyProvider: VaultKeyProvider,
+  ): Promise<EpisodicMemoryRow> {
+    const keyState = resolveKey(keyProvider, input.userId);
+    let situationSummary = input.situationSummary;
+    let situationSummaryEncrypted = null;
+    let feedbackDetail = input.feedbackDetail;
+    let feedbackDetailEncrypted = null;
+
+    if (keyState.mode === 'unlocked') {
+      situationSummaryEncrypted = encryptColumn(situationSummary, keyState.key);
+      situationSummary = null;
+      if (feedbackDetail) {
+        feedbackDetailEncrypted = encryptColumn(feedbackDetail, keyState.key);
+        feedbackDetail = null;
+      }
+    }
+
     const result = await query<EpisodicMemoryRow>(
       `INSERT INTO episodic_memories
-       (user_id, situation_summary, domain, situation_type, context_snapshot,
-        action_taken, outcome, feedback_type, feedback_detail,
-        decision_id, signal_ids, drawer_ids, utility_score)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       (user_id, situation_summary, situation_summary_encrypted, domain, situation_type, context_snapshot,
+        action_taken, outcome, feedback_type, feedback_detail, feedback_detail_encrypted,
+        decision_id, signal_ids, drawer_ids, utility_score)\n       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING *`,
       [
-        input.userId, input.situationSummary, input.domain, input.situationType,
+        input.userId, situationSummary, situationSummaryEncrypted, input.domain, input.situationType,
         JSON.stringify(input.contextSnapshot ?? {}),
         input.actionTaken ?? null,
         input.outcome ? JSON.stringify(input.outcome) : null,
-        input.feedbackType ?? null, input.feedbackDetail ?? null,
+        input.feedbackType ?? null, feedbackDetail, feedbackDetailEncrypted,
         input.decisionId ?? null, input.signalIds ?? [], input.drawerIds ?? [],
         input.utilityScore ?? 0.5,
       ],
@@ -463,12 +611,13 @@ export const mempalaceRepository = {
     return result.rows[0]!;
   },
 
-  async getEpisodes(userId: string, options?: {
+  async getEpisodes(userId: string, keyProvider: VaultKeyProvider, options?: {
     domain?: string;
     situationType?: string;
     limit?: number;
     minUtility?: number;
   }): Promise<EpisodicMemoryRow[]> {
+    const keyState = resolveKey(keyProvider, userId);
     const conditions = ['user_id = $1'];
     const params: unknown[] = [userId];
     let paramIdx = 2;
@@ -497,7 +646,20 @@ export const mempalaceRepository = {
        LIMIT ${limit}`,
       params,
     );
-    return result.rows;
+    return result.rows.map(row => {
+      const summaryRead = readColumn(row.situation_summary_encrypted, row.situation_summary, keyState.key);
+      const feedbackRead = readColumn(row.feedback_detail_encrypted, row.feedback_detail, keyState.key);
+      
+      if (!summaryRead.success || !feedbackRead.success) {
+        const err = !summaryRead.success ? summaryRead.error : feedbackRead.error;
+        throw new Error(`Vault Error: ${err} for user ${userId}`);
+      }
+      return {
+        ...row,
+        situation_summary: summaryRead.value,
+        feedback_detail: feedbackRead.value,
+      };
+    });
   },
 
   async getEpisodeByDecision(decisionId: string): Promise<EpisodicMemoryRow | null> {

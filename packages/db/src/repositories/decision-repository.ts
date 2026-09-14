@@ -1,4 +1,10 @@
 import { query, withTransaction } from '../connection.js';
+import {
+  VaultKeyProvider,
+  encryptColumn,
+  readColumn,
+  resolveKey,
+} from '../lib/vault-helper.js';
 import type {
   DecisionRow,
   CandidateActionRow,
@@ -70,7 +76,10 @@ export const decisionRepository = {
    * a re-ingestion doesn't re-fire SSE emits, re-execute the action, etc.
    * (Pattern mirrors `approvalRepository.create`.)
    */
-  async create(input: CreateDecisionInput): Promise<{ row: DecisionRow; created: boolean }> {
+  async create(
+    input: CreateDecisionInput,
+    keyProvider: VaultKeyProvider,
+  ): Promise<{ row: DecisionRow; created: boolean }> {
     const rawEvent = input.rawEvent as Record<string, unknown> | undefined;
     const signalId =
       rawEvent && typeof rawEvent['signalId'] === 'string'
@@ -83,24 +92,43 @@ export const decisionRepository = {
         [input.userId, signalId],
       );
       if (existing.rows[0]) {
-        return { row: existing.rows[0], created: false };
+        const row = existing.rows[0];
+        const keyState = resolveKey(keyProvider, input.userId);
+        const rawRead = readColumn(row.raw_event_encrypted, row.raw_event, keyState.key);
+        const intRead = readColumn(row.interpreted_situation_encrypted, row.interpreted_situation, keyState.key);
+        if (!rawRead.success || !intRead.success) {
+          const err = !rawRead.success ? rawRead.error : intRead.error;
+          throw new Error(`Vault Error: ${err} for user ${input.userId}`);
+        }
+        return { row: { ...row, raw_event: rawRead.value, interpreted_situation: intRead.value }, created: false };
       }
     }
 
     try {
+      const keyState = resolveKey(keyProvider, input.userId);
+      let rawEventStr = JSON.stringify(input.rawEvent);
+      let rawEventEncrypted = null;
+      let interpretedStr = JSON.stringify(input.interpretedSituation);
+      let interpretedEncrypted = null;
+
+      if (keyState.mode === 'unlocked') {
+        rawEventEncrypted = encryptColumn(rawEventStr, keyState.key);
+        rawEventStr = null;
+        interpretedEncrypted = encryptColumn(interpretedStr, keyState.key);
+        interpretedStr = null;
+      }
+
       if (input.id) {
-        // Explicit ID path: lets in-memory decisions keep their UUID through
-        // to persistence so candidate_actions FK references resolve.
         const result = await query<DecisionRow>(
-          `INSERT INTO decisions (id, user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `INSERT INTO decisions (id, user_id, situation_type, raw_event, raw_event_encrypted, interpreted_situation, interpreted_situation_encrypted, domain, urgency, metadata, signal_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
            RETURNING *`,
           [
             input.id,
             input.userId,
             input.situationType,
-            JSON.stringify(input.rawEvent),
-            JSON.stringify(input.interpretedSituation),
+            rawEventStr, rawEventEncrypted,
+            interpretedStr, interpretedEncrypted,
             input.domain,
             input.urgency ?? 'normal',
             JSON.stringify(input.metadata ?? {}),
@@ -110,14 +138,14 @@ export const decisionRepository = {
         return { row: result.rows[0]!, created: true };
       }
       const result = await query<DecisionRow>(
-        `INSERT INTO decisions (user_id, situation_type, raw_event, interpreted_situation, domain, urgency, metadata, signal_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        `INSERT INTO decisions (user_id, situation_type, raw_event, raw_event_encrypted, interpreted_situation, interpreted_situation_encrypted, domain, urgency, metadata, signal_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          RETURNING *`,
         [
           input.userId,
           input.situationType,
-          JSON.stringify(input.rawEvent),
-          JSON.stringify(input.interpretedSituation),
+          rawEventStr, rawEventEncrypted,
+          interpretedStr, interpretedEncrypted,
           input.domain,
           input.urgency ?? 'normal',
           JSON.stringify(input.metadata ?? {}),
@@ -126,17 +154,6 @@ export const decisionRepository = {
       );
       return { row: result.rows[0]!, created: true };
     } catch (err) {
-      // Race-loser path: the SELECT pre-check above and the INSERT below
-      // are not in a single transaction, so two concurrent ingestions of
-      // the same (user_id, signal_id) can both pass the pre-check and
-      // both attempt INSERT. The partial unique index from migration 023
-      // is the backstop — the loser surfaces SQLSTATE 23505. Catch it,
-      // re-fetch the row the winner just wrote, and return `created:
-      // false` so the caller treats the loser as a re-ingestion (no SSE
-      // emit, no duplicate side-effects). Only safe to swallow when
-      // signalId is set — that's the only case where a 23505 here can
-      // mean "the other request beat us." Without a signalId there is no
-      // unique constraint that could legitimately reject the insert.
       const code = (err as { code?: unknown } | null)?.code;
       if (signalId && code === '23505') {
         const recovered = await query<DecisionRow>(
@@ -144,7 +161,15 @@ export const decisionRepository = {
           [input.userId, signalId],
         );
         if (recovered.rows[0]) {
-          return { row: recovered.rows[0], created: false };
+          const row = recovered.rows[0];
+          const keyState = resolveKey(keyProvider, input.userId);
+          const rawRead = readColumn(row.raw_event_encrypted, row.raw_event, keyState.key);
+          const intRead = readColumn(row.interpreted_situation_encrypted, row.interpreted_situation, keyState.key);
+          if (!rawRead.success || !intRead.success) {
+            const err = !rawRead.success ? rawRead.error : intRead.error;
+            throw new Error(`Vault Error: ${err} for user ${input.userId}`);
+          }
+          return { row: { ...row, raw_event: rawRead.value, interpreted_situation: intRead.value }, created: false };
         }
       }
       throw err;
@@ -154,12 +179,22 @@ export const decisionRepository = {
   /**
    * Find a decision by its UUID.
    */
-  async findById(id: string): Promise<DecisionRow | null> {
+  async findById(id: string, keyProvider: VaultKeyProvider): Promise<DecisionRow | null> {
     const result = await query<DecisionRow>(
       'SELECT * FROM decisions WHERE id = $1',
       [id],
     );
-    return result.rows[0] ?? null;
+    const row = result.rows[0];
+    if (!row) return null;
+
+    const keyState = resolveKey(keyProvider, row.user_id);
+    const rawRead = readColumn(row.raw_event_encrypted, row.raw_event, keyState.key);
+    const intRead = readColumn(row.interpreted_situation_encrypted, row.interpreted_situation, keyState.key);
+    if (!rawRead.success || !intRead.success) {
+      const err = !rawRead.success ? rawRead.error : intRead.error;
+      throw new Error(`Vault Error: ${err} for user ${row.user_id}`);
+    }
+    return { ...row, raw_event: rawRead.value, interpreted_situation: intRead.value };
   },
 
   /**
@@ -167,8 +202,10 @@ export const decisionRepository = {
    */
   async findByUser(
     userId: string,
+    keyProvider: VaultKeyProvider,
     opts: UserQueryOptions = {},
   ): Promise<DecisionRow[]> {
+    const keyState = resolveKey(keyProvider, userId);
     const conditions: string[] = ['user_id = $1'];
     const values: unknown[] = [userId];
     let paramIndex = 2;
@@ -214,7 +251,15 @@ export const decisionRepository = {
        LIMIT $${limitParam} OFFSET $${offsetParam}`,
       values,
     );
-    return result.rows;
+    return result.rows.map(row => {
+      const rawRead = readColumn(row.raw_event_encrypted, row.raw_event, keyState.key);
+      const intRead = readColumn(row.interpreted_situation_encrypted, row.interpreted_situation, keyState.key);
+      if (!rawRead.success || !intRead.success) {
+        const err = !rawRead.success ? rawRead.error : intRead.error;
+        throw new Error(`Vault Error: ${err} for user ${userId}`);
+      }
+      return { ...row, raw_event: rawRead.value, interpreted_situation: intRead.value };
+    });
   },
 
   /**
