@@ -7,7 +7,11 @@ export {
 } from './provider-privacy.js';
 export { PromptBuilder } from './prompt-builder.js';
 export { parseSituationResponse, parseCandidateResponse } from './response-parser.js';
-export { validateBaseUrl, validateBaseUrlWithDns } from './url-validation.js';
+export {
+  fetchCustomProviderUrl,
+  validateBaseUrl,
+  validateBaseUrlWithDns,
+} from './url-validation.js';
 export type {
   ProviderEntry,
   ProviderPricingSnapshot,

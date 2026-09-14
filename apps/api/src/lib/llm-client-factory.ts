@@ -44,7 +44,11 @@ import { execSync } from 'node:child_process';
 import { clearEmbeddedPortCache, LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
 import { ACTIVE_MODEL_MANIFEST } from '@skytwin/embedded-llm';
-import { parseReasoningMode, type ReasoningMode } from '@skytwin/shared-types';
+import {
+  canonicalizeProviderBaseUrl,
+  parseReasoningMode,
+  type ReasoningMode,
+} from '@skytwin/shared-types';
 
 /** Module-level singleton so we construct the client once per process */
 let _cached: LlmClient | null | undefined;
@@ -78,7 +82,7 @@ export function buildProviderChain(
       name: "ollama",
       apiKey: "",
       model: env["OLLAMA_MODEL"] ?? "llama3.2",
-      baseUrl: ollamaUrl,
+      baseUrl: canonicalizeProviderBaseUrl(ollamaUrl),
     });
   }
 
@@ -141,11 +145,11 @@ export function resolveEnvironmentReasoningMode(
 function buildModeScopedClient(
   env: Record<string, string | undefined>,
 ): LlmClient | null {
-  const providers = buildProviderChain(env);
-  if (providers.length === 0) return null;
-  const mode = resolveEnvironmentReasoningMode(env, providers);
-  if (!mode) return null;
   try {
+    const providers = buildProviderChain(env);
+    if (providers.length === 0) return null;
+    const mode = resolveEnvironmentReasoningMode(env, providers);
+    if (!mode) return null;
     return LlmClient.forReasoningMode(mode, providers, 'system');
   } catch {
     return null;

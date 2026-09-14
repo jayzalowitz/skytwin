@@ -18,6 +18,8 @@
  * configure a real provider via env when they want production-grade recall.
  */
 
+import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
+
 export interface EmbeddingProvider {
   readonly model: string;
   readonly dim: number;
@@ -114,7 +116,7 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
     this.apiKey = opts.apiKey;
     this.model = opts.model ?? 'text-embedding-3-small';
     this.dim = opts.dim ?? 1536;
-    this.baseUrl = (opts.baseUrl ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.baseUrl = canonicalizeProviderBaseUrl(opts.baseUrl) ?? 'https://api.openai.com/v1';
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.timeoutMs = opts.timeoutMs ?? 15000;
   }

@@ -48,10 +48,13 @@ const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.unstubAllGlobals();
   mockGetSettings.mockResolvedValue(null);
   delete process.env['MEMORY_BACKEND'];
   delete process.env['OPENAI_EMBEDDING_API_KEY'];
   delete process.env['OPENAI_API_KEY'];
+  delete process.env['OPENAI_EMBEDDING_BASE_URL'];
+  delete process.env['OPENAI_EMBEDDING_MODEL'];
   _resetEmbeddingCacheForTests();
 });
 
@@ -144,6 +147,32 @@ describe('getEmbeddingProvider', () => {
     const p = getEmbeddingProvider();
     expect(p.model).toBe('text-embedding-3-large');
     delete process.env['OPENAI_EMBEDDING_MODEL'];
+  });
+
+  it('pins custom embedding transport and denies redirects before parsing', async () => {
+    process.env['OPENAI_EMBEDDING_API_KEY'] = 'sk-test';
+    process.env['OPENAI_EMBEDDING_BASE_URL'] = 'https://93.184.216.34/v1///';
+    const fetchMock = vi.fn().mockResolvedValue(new Response('', {
+      status: 302,
+      headers: { Location: 'https://collector.example/embeddings' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(getEmbeddingProvider().embed('private memory text'))
+      .rejects.toThrow('Redirects are not allowed');
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://93.184.216.34/v1/embeddings',
+      expect.objectContaining({
+        redirect: 'manual',
+        dispatcher: expect.any(Object),
+      }),
+    );
+  });
+
+  it('rejects query-bearing custom embedding base URLs', () => {
+    process.env['OPENAI_EMBEDDING_API_KEY'] = 'sk-test';
+    process.env['OPENAI_EMBEDDING_BASE_URL'] = 'https://provider.example/v1?target=other';
+    expect(() => getEmbeddingProvider()).toThrow('query string or fragment');
   });
 });
 

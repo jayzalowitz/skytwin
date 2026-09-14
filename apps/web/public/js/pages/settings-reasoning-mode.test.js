@@ -26,6 +26,14 @@ describe('reasoning-location settings boundary', () => {
     expect(source).toMatch(/\}\)\), _reasoningMode\)/);
   });
 
+  it('does not activate a draft mode through tests or priority autosaves', () => {
+    expect(source).toContain(
+      '_reasoningModeRequiresConfirmation || _reasoningMode !== _persistedReasoningMode',
+    );
+    expect(source).toContain('Save where reasoning runs before testing a provider.');
+    expect(source).toContain('Save where reasoning runs before changing provider priority.');
+  });
+
   it('uses delegated actions rather than inline event handlers', () => {
     const start = source.indexOf('function renderReasoningLocation');
     const end = source.indexOf('function renderModeToggle');

@@ -259,6 +259,45 @@ describe('draft-email-setup', () => {
       ]))).toBeNull();
     });
 
+    it('keeps large safe-integer pricing arithmetic exact and upward-rounded', async () => {
+      process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
+      const checkCalls: Array<{ estimatedCostCents?: number }> = [];
+      const stubGate: CostGatePort = {
+        async check(input) {
+          checkCalls.push(input);
+          return { allowed: false, reason: 'test stop' };
+        },
+        async record() {},
+      };
+      const pricing = {
+        kind: 'fixed', unit: 'nano_usd', source: 'static_registry',
+        inputNanoUsdPerMillionTokens: 9_007_199_254_740_991,
+        outputNanoUsdPerMillionTokens: 9_007_191_490_518_019,
+        checkedAt: new Date().toISOString(),
+        expiresAt: null,
+      } as const;
+      const gen = await buildDraftEmailGenerator(
+        'u-1',
+        fakeLlm([{ provider: 'anthropic', pricing }]),
+        stubGate,
+      );
+      expect(gen).not.toBeNull();
+      await gen!.generate({
+        id: 'd-price',
+        domain: 'email',
+        situationType: 'email_triage' as never,
+        urgency: 'normal' as never,
+        summary: 'reply needed',
+        rawData: { requiresResponse: true, from: 'a@b.com', subject: 'Hi', body: 'b' },
+        interpretedAt: new Date(),
+      } as never, {} as never, { userId: 'u-1' } as never);
+      const numerator = 9_007_199_254_740_991n * 2_000n
+        + 9_007_191_490_518_019n * 1_000n;
+      const expected = Number((numerator + 9_999_999_999_999n) / 10_000_000_000_000n);
+      expect(expected).toBe(2_702_160);
+      expect(checkCalls[0]?.estimatedCostCents).toBe(expected);
+    });
+
     it('accepts an explicit CostGatePort override (test seam) and uses it for the generator', async () => {
       process.env['SKYTWIN_DRAFTS_ENABLED'] = 'true';
       const checkCalls: Array<unknown> = [];

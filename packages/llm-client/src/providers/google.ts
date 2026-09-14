@@ -1,3 +1,4 @@
+import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
 import type { ChatMessage, GenerateOptions } from '../types.js';
 import { splitSystemAndConversation, toMessages } from '../messages.js';
 import { fetchCustomProviderUrl, type SafeProviderFetch } from '../url-validation.js';
@@ -23,7 +24,7 @@ export async function generate(
   prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
-  const baseUrl = options.baseUrl || DEFAULT_URL;
+  const baseUrl = canonicalizeProviderBaseUrl(options.baseUrl) ?? DEFAULT_URL;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
   let customFetch: SafeProviderFetch | undefined;

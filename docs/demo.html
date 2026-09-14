@@ -299,6 +299,17 @@
       height: auto;
     }
 
+    .frame-note {
+      padding: 1.5rem;
+      color: var(--text-muted);
+    }
+
+    .frame-note strong {
+      display: block;
+      margin-bottom: .75rem;
+      color: var(--text);
+    }
+
     .script {
       display: grid;
       grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr);
@@ -473,7 +484,10 @@
               <p>In a connected or seeded development run, Settings makes reasoning location explicit: “On this device” admits embedded inference or local-source-constrained Ollama, while “My configured provider” may send prompts to that endpoint. The same page shows autonomy level, spend caps, credential status, connected accounts, and erasure controls. Settings is intentionally outside the packaged sample session's narrow read authority.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/settings.png" alt="SkyTwin settings page with autonomy, spend, credential, and privacy controls" loading="lazy">
+              <div class="frame-note">
+                <strong>Current Settings contract — fresh capture pending</strong>
+                “Where reasoning runs” is a saved boundary: On this device or My configured provider. Authorized signal fields, learned preferences, and decision history remain in the local database. A configured remote reasoning endpoint may receive prompt content; a separately administrator-configured embedding endpoint may receive memory text for indexing.
+              </div>
             </figure>
           </article>
         </div>

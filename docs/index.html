@@ -170,7 +170,7 @@
         <div class="card">
           <span class="tag">Local-first</span>
           <h3>Local by default</h3>
-          <p>CockroachDB is embedded in the desktop app. Builds from current source can recommend and download a pinned local model only after you start the download; a compatible <code>llama.cpp</code> runtime is still supplied separately. Your data stays in a database on your own machine, and we don't run a server it flows through. Cloud AI is opt-in — and when you choose it, the decision pipeline redacts email addresses from its prompts first. Turn on full-disk encryption (FileVault / BitLocker / LUKS); see the <a href="privacy.html#storage">privacy policy</a> for exactly what is and isn't encrypted at rest today.</p>
+          <p>CockroachDB is embedded in the desktop app. Builds from current source can recommend and download a pinned local model only after you start the download; a compatible <code>llama.cpp</code> runtime is still supplied separately. Your data stays in a database on your own machine, and we don't run a server it flows through. Cloud AI is opt-in. In the decision pipeline, email addresses are masked in the raw-event and episodic-memory fragments before those fragments reach a provider; other prompt fragments are not covered by that masking. Turn on full-disk encryption (FileVault / BitLocker / LUKS); see the <a href="privacy.html#storage">privacy policy</a> for exactly what is and isn't encrypted at rest today.</p>
         </div>
       </div>
     </section>
@@ -181,7 +181,7 @@
       <div class="shot-grid">
         <figure><img class="shot" loading="lazy" src="screenshots/onboarding.png" alt="Cold-start onboarding with a 'try a sample profile' path."><figcaption>Cold start — current source can open a read-only sample session in seconds.</figcaption></figure>
         <figure><img class="shot" loading="lazy" src="screenshots/approvals.png" alt="Sample approvals queue with fixed fictional proposals."><figcaption>Approvals — inspect the proposal and why, then simulate a response without creating an external effect.</figcaption></figure>
-        <figure><img class="shot" loading="lazy" src="screenshots/settings.png" alt="Connected-product settings for autonomy level, spend limits, accounts, pause, and deletion."><figcaption>Settings — a connected-product surface, outside the packaged sample's read-only authority.</figcaption></figure>
+        <figure><img class="shot" loading="lazy" src="screenshots/decisions.png" alt="Decision history with outcomes and explanation details."><figcaption>Decision history — inspect what happened and the evidence behind it.</figcaption></figure>
         <figure><img class="shot" loading="lazy" src="screenshots/briefing.png" alt="The briefing digest with to-dos and topics."><figcaption>Briefing — what needs you, and what's just FYI.</figcaption></figure>
       </div>
     </section>
