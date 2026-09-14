@@ -260,6 +260,42 @@ describe('validateBaseUrlWithDns', () => {
 });
 
 describe('fetchCustomProviderUrl', () => {
+  it('rejects before lookup when the request signal is already aborted', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const lookup = vi.fn().mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(fetchCustomProviderUrl(
+      'https://provider.example/v1/messages',
+      'anthropic',
+      { method: 'POST', signal: controller.signal },
+      lookup,
+    )).rejects.toMatchObject({ name: 'AbortError' });
+    expect(lookup).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects when the request signal aborts a pending DNS lookup', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const lookup = vi.fn(() => new Promise<never>(() => undefined));
+    const controller = new AbortController();
+
+    const request = fetchCustomProviderUrl(
+      'https://provider.example/v1/messages',
+      'anthropic',
+      { method: 'POST', signal: controller.signal },
+      lookup,
+    );
+    controller.abort();
+
+    await expect(request).rejects.toMatchObject({ name: 'AbortError' });
+    expect(lookup).toHaveBeenCalledOnce();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('fails closed when DNS cannot resolve the configured hostname', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

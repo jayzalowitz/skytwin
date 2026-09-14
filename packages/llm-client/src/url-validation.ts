@@ -4,6 +4,46 @@ import { Agent } from 'undici';
 
 type DnsLookup = typeof dnsLookup;
 
+function signalAbortReason(signal: AbortSignal): Error {
+  if (signal.reason instanceof Error) return signal.reason;
+  const error = new Error('The operation was aborted');
+  error.name = 'AbortError';
+  return error;
+}
+
+function lookupWithAbort(
+  hostname: string,
+  lookup: DnsLookup,
+  signal: AbortSignal | null | undefined,
+): Promise<Array<{ address: string; family: number }>> {
+  if (!signal) return lookup(hostname, { all: true, verbatim: true });
+  if (signal.aborted) return Promise.reject(signalAbortReason(signal));
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const onAbort = (): void => {
+      if (settled) return;
+      settled = true;
+      reject(signalAbortReason(signal));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    lookup(hostname, { all: true, verbatim: true }).then(
+      (addresses) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        resolve(addresses);
+      },
+      (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
 /**
  * Validate that a base URL is safe for use with external API providers.
  * Blocks private/internal IP ranges to prevent SSRF attacks.
@@ -124,8 +164,9 @@ export async function fetchCustomProviderUrl(
     addresses = [{ address: hostname, family }];
   } else {
     try {
-      addresses = await lookup(hostname, { all: true, verbatim: true });
+      addresses = await lookupWithAbort(hostname, lookup, init.signal);
     } catch (error) {
+      if (init.signal?.aborted) throw signalAbortReason(init.signal);
       throw new Error(
         `DNS lookup failed for ${provider} endpoint ${hostname}: ${error instanceof Error ? error.message : String(error)}`,
       );
