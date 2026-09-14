@@ -131,6 +131,7 @@ export type {
 
 export {
   REASONING_MODES,
+  canonicalizeProviderBaseUrl,
   hasSameProviderCredentialEndpoint,
   parseReasoningMode,
   providerCredentialEndpointAuthority,

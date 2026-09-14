@@ -50,6 +50,7 @@ describe('reasoningModeRepository', () => {
     expect(sql).toContain('NOT EXISTS');
     expect(sql).toContain('ai_provider_settings');
     expect(sql).toContain('localhost\\.?');
+    expect(sql).toContain('127\\.0\\.0\\.1\\.?');
     expect(sql).toContain('6553[0-5]');
     expect(sql).not.toContain('AND EXISTS');
     expect(sql).toContain('RETURNING *');

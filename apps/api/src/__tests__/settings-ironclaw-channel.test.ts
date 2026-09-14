@@ -439,6 +439,23 @@ describe('reasoning-mode provider mutations', () => {
     );
   });
 
+  it('does not require DNS availability to disable a syntactically safe endpoint', async () => {
+    mockValidateBaseUrlWithDns.mockRejectedValue(new Error('DNS lookup failed'));
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'on_device',
+      providers: [
+        { provider: 'embedded', model: 'managed', priority: 0, enabled: true },
+        {
+          provider: 'openai', apiKey: '', model: 'gpt',
+          baseUrl: 'https://offline.example/v1', priority: 1, enabled: false,
+        },
+      ],
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockValidateBaseUrlWithDns).not.toHaveBeenCalled();
+  });
+
   it('accepts the null default endpoint returned by settings GET on save', async () => {
     mockUserRepository.findById.mockResolvedValue({
       id: userId, trust_tier: 'suggest', ironclaw_channel: 'skytwin', autonomy_settings: {},

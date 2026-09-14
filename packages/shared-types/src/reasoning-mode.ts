@@ -91,6 +91,27 @@ export function parseReasoningMode(value: unknown): ReasoningMode | null {
 }
 
 /**
+ * Canonical persisted representation for a caller-supplied provider base URL.
+ * WHATWG URL parsing collapses alternate IPv4 and IPv6 spellings; removing a
+ * DNS root dot keeps database compatibility checks aligned with transport.
+ */
+export function canonicalizeProviderBaseUrl(
+  baseUrl: string | null | undefined,
+): string | undefined {
+  if (baseUrl === null || baseUrl === undefined || baseUrl.length === 0) return undefined;
+  const parsed = new URL(baseUrl);
+  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
+      || parsed.username.length > 0
+      || parsed.password.length > 0) {
+    throw new Error('Provider endpoint must be an HTTP(S) URL without embedded credentials');
+  }
+  if (parsed.hostname.endsWith('.')) {
+    parsed.hostname = parsed.hostname.slice(0, -1);
+  }
+  return parsed.toString();
+}
+
+/**
  * Canonical network authority used to decide whether a persisted credential
  * may be reused. Paths may change without changing who receives the secret;
  * scheme, host, or effective port changes require a fresh credential.
@@ -108,13 +129,7 @@ export function providerCredentialEndpointAuthority(
       ? 'http://127.0.0.1:11434'
       : `provider-default:${provider}`;
   }
-  const parsed = new URL(baseUrl);
-  if ((parsed.protocol !== 'http:' && parsed.protocol !== 'https:')
-      || parsed.username.length > 0
-      || parsed.password.length > 0) {
-    throw new Error('Provider endpoint must be an HTTP(S) URL without embedded credentials');
-  }
-  return parsed.origin;
+  return new URL(canonicalizeProviderBaseUrl(baseUrl)!).origin;
 }
 
 export function hasSameProviderCredentialEndpoint(
