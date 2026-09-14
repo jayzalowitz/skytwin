@@ -221,9 +221,9 @@ async function renderCardInto(container, userId) {
       body += `
         <div style="margin-top: 0.75rem; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
           <div style="font-size: 0.8rem; color: var(--text-muted);">
-            A saved download for ${escapeHtml(retired.modelId)} no longer matches the maintained catalog.
+            A saved download for ${escapeHtml(retired.modelId)} no longer matches the maintained catalog. Dismissing marks it cancelled; legacy model files may remain on disk and can be reviewed in your configured local-model storage.
           </div>
-          <button class="btn btn-outline btn-sm" style="margin-top: 0.5rem;" data-action="embedded-cancel-download" data-download-id="${escapeHtml(retired.id)}">Dismiss</button>
+          <button class="btn btn-outline btn-sm" style="margin-top: 0.5rem;" data-action="embedded-dismiss-retired-download" data-download-id="${escapeHtml(retired.id)}">Dismiss</button>
         </div>
       `;
     }
@@ -387,6 +387,24 @@ function ensureListener() {
         await renderCardInto(container, userId);
       } catch (err) {
         showErrorToast(`Couldn't cancel: ${err?.message ?? 'unknown error'}`);
+      }
+      return;
+    }
+    if (action === 'embedded-dismiss-retired-download') {
+      const id = el.getAttribute('data-download-id');
+      if (!id) return;
+      if (!confirm('Dismiss this saved download? It will be marked cancelled, but legacy model files may remain on disk.')) return;
+      try {
+        const result = await cancelModelDownload(id);
+        if (result?.ok !== true) {
+          showErrorToast("Couldn't dismiss: the saved download changed");
+          await renderCardInto(container, userId);
+          return;
+        }
+        showSavedToast('Download dismissed. Review configured local-model storage if you need to reclaim legacy disk space.');
+        await renderCardInto(container, userId);
+      } catch (err) {
+        showErrorToast(`Couldn't dismiss: ${err?.message ?? 'unknown error'}`);
       }
       return;
     }

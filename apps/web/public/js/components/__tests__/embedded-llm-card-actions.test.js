@@ -136,12 +136,18 @@ describe('local model download controls', () => {
 
       expect(container.querySelector('[data-action="embedded-start-download"]')).not.toBeNull();
       expect(container.querySelector('[data-action="embedded-resume-download"]')).toBeNull();
-      const dismiss = container.querySelector('[data-action="embedded-cancel-download"]');
+      const dismiss = container.querySelector('[data-action="embedded-dismiss-retired-download"]');
       expect(dismiss?.textContent).toBe('Dismiss');
+      expect(container.textContent).toContain('legacy model files may remain on disk');
       dismiss.click();
       await Promise.resolve();
       await Promise.resolve();
       expect(mocks.cancel).toHaveBeenCalledWith(downloading.id);
+      expect(confirm).toHaveBeenCalledWith(expect.stringContaining('may remain on disk'));
+      expect(confirm).not.toHaveBeenCalledWith(expect.stringContaining('will be deleted'));
+      expect(mocks.savedToast).toHaveBeenCalledWith(
+        expect.stringContaining('Review configured local-model storage'),
+      );
     },
   );
 
