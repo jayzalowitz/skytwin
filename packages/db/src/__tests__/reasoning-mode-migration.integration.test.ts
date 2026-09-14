@@ -34,7 +34,8 @@ describe.runIf(cockroachAvailable)('reasoning mode migration on CockroachDB', ()
         ('00000000-0000-0000-0000-000000000009', 'alternate-port'),
         ('00000000-0000-0000-0000-000000000010', 'trailing-dot'),
         ('00000000-0000-0000-0000-000000000011', 'ipv4-root-dot'),
-        ('00000000-0000-0000-0000-000000000012', 'short-ipv4');
+        ('00000000-0000-0000-0000-000000000012', 'short-ipv4'),
+        ('00000000-0000-0000-0000-000000000013', 'cloud-model');
       INSERT INTO ai_provider_settings (user_id, provider, model, base_url, enabled) VALUES
         ('00000000-0000-0000-0000-000000000001', 'openai', 'gpt', NULL, true),
         ('00000000-0000-0000-0000-000000000002', 'embedded', 'managed', NULL, true),
@@ -47,7 +48,8 @@ describe.runIf(cockroachAvailable)('reasoning mode migration on CockroachDB', ()
         ('00000000-0000-0000-0000-000000000009', 'ollama', 'qwen', 'http://localhost:12345', true),
         ('00000000-0000-0000-0000-000000000010', 'ollama', 'qwen', 'http://localhost.:11434', true),
         ('00000000-0000-0000-0000-000000000011', 'ollama', 'qwen', 'http://127.0.0.1.:11434', true),
-        ('00000000-0000-0000-0000-000000000012', 'ollama', 'qwen', 'http://127.1:11434', true);
+        ('00000000-0000-0000-0000-000000000012', 'ollama', 'qwen', 'http://127.1:11434', true),
+        ('00000000-0000-0000-0000-000000000013', 'ollama', 'qwen:cloud', 'http://localhost:11434', true);
     `;
     const verify = `
       SELECT u.display_name, r.mode, r.requires_confirmation
@@ -64,6 +66,7 @@ describe.runIf(cockroachAvailable)('reasoning mode migration on CockroachDB', ()
     expect(result.status, result.stderr).toBe(0);
     expect(result.stdout).toContain('alternate-port,on_device,f');
     expect(result.stdout).toContain('custom,NULL,t');
+    expect(result.stdout).toContain('cloud-model,NULL,t');
     expect(result.stdout).toContain('disabled,on_device,f');
     expect(result.stdout).toContain('embedded,on_device,f');
     expect(result.stdout).toContain('hosted,bring_your_own_provider,f');

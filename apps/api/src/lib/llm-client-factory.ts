@@ -109,20 +109,17 @@ export function buildProviderChain(
     });
   }
 
-  // Order (#375). Default is local-first so the "your data stays
-  // local" promise holds for users who configured a cloud key for
-  // fallback-quality but didn't intend cloud as the primary path.
-  // Set SKYTWIN_LLM_PRIORITY=cloud-first to restore the legacy
-  // hosted-providers-first ordering — required for users on
-  // hardware that can't run a local model and depend on cloud
-  // for everything.
+  // Order providers only after the separate reasoning-mode gate authorizes
+  // the chain. A mixed local/remote chain requires SKYTWIN_REASONING_MODE;
+  // priority alone never grants permission to cross an execution boundary.
+  // Within an explicitly admitted chain, cloud-first restores the legacy
+  // hosted-provider preference for users who deliberately chose it.
   const priority = (env["SKYTWIN_LLM_PRIORITY"] ?? "local-first").toLowerCase();
   if (priority === "cloud-first") {
     return [...cloud, ...local];
   }
-  // Default: local-first. Unknown values fall back to local-first
-  // (privacy-preserving default — a typo must not turn into a
-  // silent escalation to cloud).
+  // Default: local-first. Unknown values preserve that ordering, while the
+  // mode resolver below independently rejects an ambiguous mixed chain.
   return [...local, ...cloud];
 }
 

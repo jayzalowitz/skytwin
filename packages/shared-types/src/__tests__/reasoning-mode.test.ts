@@ -29,6 +29,10 @@ describe('provider credential endpoint authority', () => {
       .toBe('http://127.0.0.1:11434');
     expect(canonicalizeProviderBaseUrl('http://[0:0:0:0:0:0:0:1]:11434'))
       .toBe('http://[::1]:11434');
+    expect(canonicalizeProviderBaseUrl('https://example.com/custom/v1///'))
+      .toBe('https://example.com/custom/v1');
+    expect(() => canonicalizeProviderBaseUrl('https://example.com/v1?route=chat'))
+      .toThrow('must not include a query string or fragment');
   });
 
   it('compares the scheme, host, and effective port rather than URL paths', () => {

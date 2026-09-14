@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SkyTwin — the deck: every claim, and the mechanism that constrains it</title>
-  <meta name="description" content="Twenty-two slides on SkyTwin, an open-source local-first digital twin. Every capability claim is followed by the mechanism that limits it: provenance-gated actions, autonomy earned in published increments with no automatic path to full autopilot, spend structurally off in the shipped build, a correction control on every row, and no server anywhere in the path.">
+  <meta name="description" content="Twenty-two slides on SkyTwin, an open-source local-first digital twin. Every capability claim is followed by the mechanism that limits it: provenance-gated actions, autonomy earned in published increments with no automatic path to full autopilot, spend structurally off in the shipped build, a correction control on every row, and no SkyTwin-operated server in the user-data path.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/deck.html">
   <meta property="og:title" content="SkyTwin — the deck">
   <meta property="og:description" content="An agent you let into your inbox is only adoptable if its refusals are as legible as its actions. Twenty-two slides, each claim paired with the code that constrains it.">
@@ -22,9 +22,9 @@
        them first and falls through to the system stack, so every reader sees
        the platform sans, a serif (Georgia) for the twin's voice, and the
        platform mono for data. That is the trade we chose — a serif signature is
-       not worth a third-party request on a doc set whose whole claim is that
-       nothing leaves your machine, and it keeps slide "There is no SkyTwin
-       server" literally true. What survives the fallback is the register
+       not worth a third-party request from this static documentation page, and
+       it keeps slide "There is no SkyTwin server" scoped to SkyTwin-operated
+       infrastructure. What survives the fallback is the register
        change: serif against sans. Same token block as index.html / demo.html so
        the Pages site reads as one product. No CDN, no analytics, no
        third-party anything on this page. -->
@@ -1250,12 +1250,14 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
             <p class="row-b">The public recommendation endpoint evaluates RAM and free disk on the server but returns only the selected catalog model and a plain-language fit reason — not the raw host profile or filesystem paths. The current catalog is deliberately narrow: one Qwen2.5 1.5B Instruct Q4_K_M artifact pinned to an immutable upstream revision, exact byte count and SHA-256. The app can recommend it before sign-in; the user still starts the download, and a compatible llama.cpp runtime is required.</p>
           </div>
           <div class="row">
-            <p class="row-t"><span class="row-n">03</span>Cloud is consent, not a default.</p>
+            <p class="row-t"><span class="row-n">03</span>Reasoning location is a boundary, not a fallback accident.</p>
             <div class="chain mt-md">
-              <span>embedded</span><span class="arrow">→</span><span>ollama</span><span class="arrow">→</span>
-              <span class="dimmer">anthropic</span><span class="arrow">→</span><span class="dimmer">openai</span><span class="arrow">→</span><span class="dimmer">google</span>
+              <span>on device</span><span class="arrow">→</span><span>embedded</span><span class="arrow">/</span><span>ollama:local</span>
             </div>
-            <p class="row-b mt-md">Cloud-first is one environment variable, and an unrecognized value falls back to local — a typo must not silently escalate to a vendor.</p>
+            <div class="chain mt-md">
+              <span>my provider</span><span class="arrow">→</span><span class="dimmer">configured chain</span>
+            </div>
+            <p class="row-b mt-md">Settings persists the choice. Environment-only mixed chains require a valid <span class="mono">SKYTWIN_REASONING_MODE</span>; a missing or mistyped mode runs no model instead of crossing locations. Verified private cloud remains unavailable until a verifier-owned adapter exists.</p>
           </div>
           <div class="row">
             <p class="row-t"><span class="row-n">04</span>If you do turn cloud on, email addresses are masked out of the decision engine's prompts before they leave.</p>
@@ -1266,8 +1268,8 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <p class="mt-lg col">Managed downloads are resumable, but automatic loading is fail-closed: an artifact must still match the pinned registry entry and active manifest when the runtime selects it. An explicit <span class="mono">SKYTWIN_LLAMA_MODEL</span> path is a user-managed override and does not receive those managed-artifact guarantees.</p>
 
         <details class="srcs">
-          <summary>Sources · 6 file references</summary>
-          <p class="src">Provider chain at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/lib/llm-client-factory.ts#L62-L129">apps/api/src/lib/llm-client-factory.ts:62-129</a>. Redaction at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/redact.ts#L31-L40">packages/llm-client/src/redact.ts:31-40</a>. Runtime probes at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/runtime-detector.ts#L72-L74">packages/embedded-llm/src/runtime-detector.ts:72-74</a> with NullPort fallbacks. Hardware sizing is in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/system/hardware.ts">apps/api/src/system/hardware.ts</a>; the immutable artifact metadata and validation rules are in <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/model-registry.ts">packages/embedded-llm/src/model-registry.ts</a>; descriptor-based activation and runtime verification are in <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/managed-model-store.ts">packages/embedded-llm/src/managed-model-store.ts</a>. The model is downloaded after user action and is not part of the desktop bundle. The explicit <span class="mono">SKYTWIN_LLAMA_MODEL</span> override remains a separate user-managed trust path.</p>
+          <summary>Sources · 8 file references</summary>
+          <p class="src">Environment mode resolution at <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/lib/llm-client-factory.ts#L126-L153">apps/api/src/lib/llm-client-factory.ts:126-153</a>; provider admission and Ollama source constraints at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/provider-privacy.ts">packages/llm-client/src/provider-privacy.ts</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/providers/ollama.ts">packages/llm-client/src/providers/ollama.ts</a>. Redaction at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/llm-client/src/redact.ts#L31-L40">packages/llm-client/src/redact.ts:31-40</a>. Runtime probes at <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/runtime-detector.ts#L72-L74">packages/embedded-llm/src/runtime-detector.ts:72-74</a> with NullPort fallbacks. Hardware sizing is in <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/system/hardware.ts">apps/api/src/system/hardware.ts</a>; the immutable artifact metadata and validation rules are in <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/model-registry.ts">packages/embedded-llm/src/model-registry.ts</a>; descriptor-based activation and runtime verification are in <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/embedded-llm/src/managed-model-store.ts">packages/embedded-llm/src/managed-model-store.ts</a>. The model is downloaded after user action and is not part of the desktop bundle. The explicit <span class="mono">SKYTWIN_LLAMA_MODEL</span> override remains a separate user-managed trust path.</p>
         </details>
       </div>
     </section>
@@ -1298,7 +1300,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <div class="split wide-left mt-lg">
         <figure>
           <div class="crop" style="--sx:284; --sy:2030; --sw:823; --sh:210;">
-            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the settings page 'Your data, your machine' panel: 'Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.' Then three lines — 'I keep: the preferences I learn, patterns I notice, and a log of every decision I made (with the reasoning).' 'I don't keep: the actual contents of your emails, your calendar event details, or any of your passwords.' 'Account access: I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'">
+            <img loading="lazy" src="screenshots/settings.png" alt="Crop of the Settings privacy panel explaining that authorized signal fields, learned preferences, and decision reasoning are stored locally; passwords are not stored; configured remote reasoning may receive prompt content under the selected boundary.">
           </div>
           <figcaption>Settings · “Nothing is sent to a SkyTwin cloud, because there isn't one.”</figcaption>
         </figure>
@@ -1492,9 +1494,9 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
             </div>
           </div>
           <div class="cmd">
-            <p class="cmd-note"># the local-first default</p>
+            <p class="cmd-note"># the explicit environment location gate</p>
             <div class="cmd-line">
-              <code id="cmd-5">sed -n '114,128p' apps/api/src/lib/llm-client-factory.ts</code>
+              <code id="cmd-5">sed -n '126,153p' apps/api/src/lib/llm-client-factory.ts</code>
               <button class="copy" type="button" data-action="copy-command" data-target="cmd-5">copy</button>
             </div>
           </div>

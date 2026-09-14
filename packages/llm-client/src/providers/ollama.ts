@@ -6,6 +6,50 @@ import { ollamaLocalModelReference, ProviderModePolicyError } from '../provider-
 
 // A literal loopback default cannot be redirected by a modified hosts file.
 const DEFAULT_URL = 'http://127.0.0.1:11434';
+const MIN_LOCAL_SOURCE_VERSION = Object.freeze([0, 18, 0] as const);
+
+function supportsLocalSourceSelector(version: unknown): boolean {
+  if (typeof version !== 'string') return false;
+  const match = version.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/);
+  if (!match) return false;
+  const actual = match.slice(1, 4).map(Number);
+  for (let index = 0; index < MIN_LOCAL_SOURCE_VERSION.length; index += 1) {
+    if (actual[index]! > MIN_LOCAL_SOURCE_VERSION[index]!) return true;
+    if (actual[index]! < MIN_LOCAL_SOURCE_VERSION[index]!) return false;
+  }
+  return true;
+}
+
+async function assertLocalSourceSelectorSupported(
+  baseUrl: string,
+  signal: AbortSignal,
+): Promise<void> {
+  let versionFetch: SafeProviderFetch | undefined;
+  try {
+    versionFetch = await fetchCustomProviderUrl(
+      `${baseUrl}/api/version`,
+      'ollama',
+      { method: 'GET', signal },
+    );
+    if (!versionFetch.response.ok) {
+      await versionFetch.response.body?.cancel().catch(() => undefined);
+      throw new Error(`version endpoint returned ${versionFetch.response.status}`);
+    }
+    const body = await versionFetch.response.json() as { version?: unknown };
+    if (!supportsLocalSourceSelector(body.version)) {
+      throw new Error('version is older than 0.18.0 or malformed');
+    }
+  } catch (error) {
+    if (error instanceof ProviderModePolicyError) throw error;
+    throw new ProviderModePolicyError(
+      'ollama_local_source_unverified',
+      `On-device Ollama requires version 0.18.0 or newer before prompts are sent (${error instanceof Error ? error.message : String(error)})`,
+      'ollama',
+    );
+  } finally {
+    await versionFetch?.close();
+  }
+}
 
 /**
  * Ollama provider. Issue #149: switched from `/api/generate` (which takes
@@ -33,6 +77,12 @@ export async function generate(
   let customFetch: SafeProviderFetch | undefined;
 
   try {
+    const requestModel = options.reasoningMode === 'on_device'
+      ? ollamaLocalModelReference(model)
+      : model;
+    if (options.reasoningMode === 'on_device') {
+      await assertLocalSourceSelectorSupported(baseUrl, controller.signal);
+    }
     // System prompt is supplied either via options.systemPrompt (legacy
     // path) or as a system-role message in the array (assistant package
     // injects context as a system turn). When both are present, the
@@ -50,9 +100,7 @@ export async function generate(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: options.reasoningMode === 'on_device'
-          ? ollamaLocalModelReference(model)
-          : model,
+        model: requestModel,
         messages,
         stream: false,
         options: {

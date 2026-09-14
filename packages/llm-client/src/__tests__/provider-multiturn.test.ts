@@ -32,6 +32,22 @@ function captureFetch(responseBody: unknown): { spy: typeof fetch; captured: Cap
   return { spy, captured };
 }
 
+function captureVerifiedLocalOllamaFetch(
+  chatResponseBody: unknown,
+  version: unknown = '0.18.0',
+): { spy: typeof fetch; captured: CapturedRequest[] } {
+  const captured: CapturedRequest[] = [];
+  const spy = (async (input: string | URL | { url: string }, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const body = init?.body ? JSON.parse(init.body as string) : {};
+    captured.push({ url, body });
+    return new Response(JSON.stringify(
+      url.endsWith('/api/version') ? { version } : chatResponseBody,
+    ), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }) as typeof fetch;
+  return { spy, captured };
+}
+
 describe('Anthropic provider — multi-turn translation', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -145,6 +161,15 @@ describe('OpenAI provider — multi-turn translation', () => {
       baseUrl: canonicalizeProviderBaseUrl('https://93.184.216.34/'),
     });
     expect(captured[0]!.url).toBe('https://93.184.216.34/v1/chat/completions');
+  });
+
+  it('appends one API path separator after a canonical custom base path', async () => {
+    const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
+    vi.stubGlobal('fetch', spy);
+    await openaiGenerate('key', 'gpt-test', 'hello', {
+      baseUrl: canonicalizeProviderBaseUrl('https://93.184.216.34/gateway///'),
+    });
+    expect(captured[0]!.url).toBe('https://93.184.216.34/gateway/v1/chat/completions');
   });
 
   it('passes a ChatMessage[] through unchanged', async () => {
@@ -261,30 +286,34 @@ describe('Ollama provider — switched to /api/chat', () => {
   });
 
   it('hits /api/chat (not /api/generate) and sends a messages array', async () => {
-    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
     await ollamaGenerate('', 'llama-test', 'hello', { reasoningMode: 'on_device' });
-    expect(captured[0]!.url).toContain('/api/chat');
-    expect(captured[0]!.url).not.toContain('/api/generate');
-    expect(captured[0]!.body.model).toBe('llama-test:local');
-    expect(captured[0]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+    expect(captured[0]!.url).toContain('/api/version');
+    expect(captured[1]!.url).toContain('/api/chat');
+    expect(captured[1]!.url).not.toContain('/api/generate');
+    expect(captured[1]!.body.model).toBe('llama-test:local');
+    expect(captured[1]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
   });
 
   it('appends one API path separator to a canonicalized loopback base URL', async () => {
-    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
     await ollamaGenerate('', 'llama-test', 'hello', {
       baseUrl: canonicalizeProviderBaseUrl('http://127.1:11434/'),
       reasoningMode: 'on_device',
     });
-    expect(captured[0]!.url).toBe('http://127.0.0.1:11434/api/chat');
+    expect(captured[1]!.url).toBe('http://127.0.0.1:11434/api/chat');
   });
 
   it('rejects redirects from the default loopback endpoint', async () => {
-    const spy = vi.fn().mockResolvedValue(new Response('', {
-      status: 307,
-      headers: { Location: 'https://external.example/collect' },
-    }));
+    const spy = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: '0.18.0' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response('', {
+        status: 307, headers: { Location: 'https://external.example/collect' },
+      }));
     vi.stubGlobal('fetch', spy);
 
     await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
@@ -299,21 +328,21 @@ describe('Ollama provider — switched to /api/chat', () => {
   });
 
   it('source-qualifies arbitrary aliases for on-device execution', async () => {
-    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
     await ollamaGenerate('', 'private-alias', 'private prompt', {
       reasoningMode: 'on_device',
     });
-    expect(captured[0]!.body.model).toBe('private-alias:local');
+    expect(captured[1]!.body.model).toBe('private-alias:local');
   });
 
   it('does not add a second local source selector', async () => {
-    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
     await ollamaGenerate('', 'llama-test:LOCAL', 'private prompt', {
       reasoningMode: 'on_device',
     });
-    expect(captured[0]!.body.model).toBe('llama-test:local');
+    expect(captured[1]!.body.model).toBe('llama-test:local');
   });
 
   it('rejects explicit cloud selectors before making an on-device request', async () => {
@@ -334,8 +363,24 @@ describe('Ollama provider — switched to /api/chat', () => {
     expect(captured[0]!.body.model).toBe('qwen3:cloud');
   });
 
+  it('refuses an old or malformed Ollama version before sending a prompt', async () => {
+    for (const version of ['0.17.6', 'unknown', null]) {
+      const { spy, captured } = captureVerifiedLocalOllamaFetch(
+        { message: { content: 'must not run' } },
+        version,
+      );
+      vi.stubGlobal('fetch', spy);
+      await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+        reasoningMode: 'on_device',
+      })).rejects.toThrow('requires version 0.18.0 or newer');
+      expect(captured.map(({ url }) => url)).toEqual([
+        'http://127.0.0.1:11434/api/version',
+      ]);
+    }
+  });
+
   it('rejects unexpected remote-execution metadata on an on-device response', async () => {
-    const { spy } = captureFetch({
+    const { spy } = captureVerifiedLocalOllamaFetch({
       message: { content: 'must not return' },
       remote_host: 'https://ollama.com',
       remote_model: 'remote-model',

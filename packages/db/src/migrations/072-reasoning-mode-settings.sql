@@ -36,6 +36,7 @@ SELECT
         a.provider = 'embedded'
         OR (
           a.provider = 'ollama'
+          AND a.model !~* '(^|/)[^/]*:(cloud|[^/:]*-cloud)[[:space:]]*$'
           AND (
             a.base_url IS NULL
             OR a.base_url ~* '^https?://(localhost\.?|127\.0\.0\.1\.?|\[::1\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$'
@@ -55,6 +56,7 @@ SELECT
         a.provider = 'embedded'
         OR (
           a.provider = 'ollama'
+          AND a.model !~* '(^|/)[^/]*:(cloud|[^/:]*-cloud)[[:space:]]*$'
           AND (
             a.base_url IS NULL
             OR a.base_url ~* '^https?://(localhost\.?|127\.0\.0\.1\.?|\[::1\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$'
