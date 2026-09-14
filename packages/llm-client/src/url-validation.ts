@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import { Agent } from 'undici';
+import ipaddr from 'ipaddr.js';
 import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
 
 type DnsLookup = typeof dnsLookup;
@@ -275,92 +276,18 @@ export function isLoopbackHostname(hostname: string): boolean {
 }
 
 function isPrivateHost(hostname: string): boolean {
-  // Loopback
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+  if (hostname === 'localhost') return true;
+  if (isIP(hostname) === 0) return false;
+  try {
+    // ipaddr.js tracks IPv4/IPv6 special-purpose registries, including
+    // benchmark, documentation, NAT64 local-use, ORCHID, site-local,
+    // multicast, mapped, and reserved space. A custom provider may receive
+    // credentials and prompt content, so only ordinary global unicast is
+    // eligible; the explicit Ollama loopback exception is handled by callers.
+    return ipaddr.parse(hostname).range() !== 'unicast';
+  } catch {
+    // A value Node classified as an IP but the stricter parser cannot consume
+    // is not a safe network destination.
     return true;
   }
-
-  // IPv6 unspecified — equivalent to 0.0.0.0
-  if (hostname === '::' || hostname === '0:0:0:0:0:0:0:0') {
-    return true;
-  }
-
-  // 0.0.0.0 binds to all interfaces on many systems
-  if (hostname === '0.0.0.0') {
-    return true;
-  }
-
-  // Try to parse as IPv4. Only accept strict decimal dotted-quad to reject
-  // octal (0177.0.0.1) and hex (0x7f000001) encodings that bypass checks.
-  const parts = hostname.split('.');
-  if (parts.length === 4) {
-    const nums = parts.map((p) => {
-      // Reject octal (leading zero) and hex (0x) notation
-      if (/^0[0-9]/.test(p) || /^0x/i.test(p)) return NaN;
-      return Number(p);
-    });
-    if (nums.every((n) => !isNaN(n) && n >= 0 && n <= 255)) {
-      // 10.0.0.0/8
-      if (nums[0] === 10) return true;
-      // 172.16.0.0/12
-      if (nums[0] === 172 && nums[1]! >= 16 && nums[1]! <= 31) return true;
-      // 192.168.0.0/16
-      if (nums[0] === 192 && nums[1] === 168) return true;
-      // 169.254.0.0/16 (link-local)
-      if (nums[0] === 169 && nums[1] === 254) return true;
-      // 127.0.0.0/8 (loopback)
-      if (nums[0] === 127) return true;
-      // 0.0.0.0/8
-      if (nums[0] === 0) return true;
-      // 100.64.0.0/10 (Carrier-Grade NAT, RFC 6598) — provider-internal,
-      // shouldn't be a target for outbound LLM calls.
-      if (nums[0] === 100 && nums[1]! >= 64 && nums[1]! <= 127) return true;
-      // Non-global protocol, documentation, benchmarking, multicast, and
-      // reserved ranges are never legitimate custom model endpoints. Treat
-      // them like private space so an authenticated URL cannot become an SSRF
-      // route into an operator's lab or network appliance.
-      if (nums[0] === 192 && nums[1] === 0 && nums[2] === 0) return true;
-      if (nums[0] === 192 && nums[1] === 0 && nums[2] === 2) return true;
-      if (nums[0] === 198 && (nums[1] === 18 || nums[1] === 19)) return true;
-      if (nums[0] === 198 && nums[1] === 51 && nums[2] === 100) return true;
-      if (nums[0] === 203 && nums[1] === 0 && nums[2] === 113) return true;
-      if (nums[0]! >= 224) return true;
-    }
-  }
-
-  // IPv6 private ranges (stripped brackets by URL parser)
-  // ::1 handled above; also catch IPv6-mapped IPv4
-  if (hostname.startsWith('::ffff:')) {
-    const mapped = hostname.slice(7); // strip ::ffff:
-    // Check dotted-quad form (::ffff:10.0.0.1)
-    if (mapped.includes('.')) {
-      return isPrivateHost(mapped);
-    }
-    // Check hex-pair form (::ffff:a00:1 → 10.0.0.1)
-    const hexMatch = mapped.match(/^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (hexMatch) {
-      const hi = parseInt(hexMatch[1]!, 16);
-      const lo = parseInt(hexMatch[2]!, 16);
-      const ipv4 = `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-      return isPrivateHost(ipv4);
-    }
-  }
-
-  // IPv6 unique local addresses (fc00::/7 → fc.. and fd..)
-  if (hostname.startsWith('fc') || hostname.startsWith('fd')) {
-    if (/^f[cd][0-9a-f]{0,2}:/.test(hostname)) return true;
-  }
-
-  // IPv6 link-local (fe80::/10)
-  if (/^fe[89ab][0-9a-f]?:/.test(hostname)) return true;
-
-  // Deprecated site-local (fec0::/10), multicast, documentation, discard,
-  // and benchmarking addresses are also non-global destinations.
-  if (/^fe[c-f][0-9a-f]?:/.test(hostname)) return true;
-  if (/^ff[0-9a-f]{0,2}:/.test(hostname)) return true;
-  if (/^2001:db8(?::|$)/.test(hostname)) return true;
-  if (/^2001:2(?::|$)/.test(hostname)) return true;
-  if (/^100:(?:0+:)*0*(?::|$)/.test(hostname)) return true;
-
-  return false;
 }

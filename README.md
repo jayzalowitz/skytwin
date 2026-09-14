@@ -93,8 +93,8 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 <img src="docs/screenshots/setup.png" alt="Setup — execution engines, Google OAuth walkthrough, credential management">
 </td>
 <td width="50%">
-<p align="center"><strong>Settings</strong></p>
-<img src="docs/screenshots/settings.png" alt="Settings — autonomy level, spend limits, connected accounts, privacy controls">
+<p align="center"><strong>Settings — fresh capture pending</strong></p>
+<p>The current source adds an explicit saved reasoning-location boundary and accurate local-storage and remote-processing disclosures. The older full-page image was removed because it predates those controls.</p>
 </td>
 </tr>
 <tr>

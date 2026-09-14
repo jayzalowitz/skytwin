@@ -21,6 +21,7 @@
   "dependencies": {
     "@skytwin/core": "workspace:*",
     "@skytwin/db": "workspace:*",
+    "@skytwin/llm-client": "workspace:*",
     "@skytwin/memory-port": "workspace:*",
     "@skytwin/shared-types": "workspace:*"
   },
