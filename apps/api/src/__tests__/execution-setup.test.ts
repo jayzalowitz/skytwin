@@ -13,6 +13,9 @@ const {
   mockRealIronClawAdapter,
   mockAdapterRegistry,
   mockExecutionRouter,
+  mockOpenClawAdapter,
+  mockCredentialRequirementRepository,
+  mockSseManager,
 } = vi.hoisted(() => {
   const registryMap = new Map<string, { adapter: unknown }>();
   const mockRegistry = {
@@ -40,13 +43,16 @@ const {
     mockRealIronClawAdapter: vi.fn(),
     mockAdapterRegistry: mockRegistry,
     mockExecutionRouter: mockRouter,
+    mockOpenClawAdapter: vi.fn(),
+    mockCredentialRequirementRepository: { register: vi.fn() },
+    mockSseManager: { emit: vi.fn(), emitAll: vi.fn() },
   };
 });
 
 vi.mock('@skytwin/db', () => ({
   serviceCredentialRepository: mockServiceCredentialRepository,
   ironClawToolRepository: mockIronClawToolRepository,
-  credentialRequirementRepository: { register: vi.fn() },
+  credentialRequirementRepository: mockCredentialRequirementRepository,
   executionDispatchLeaseRepository: { start: vi.fn(), terminalize: vi.fn() },
 }));
 
@@ -79,7 +85,7 @@ vi.mock('@skytwin/execution-router', () => ({
   AdapterRegistry: vi.fn(function AdapterRegistry() {
     return mockAdapterRegistry;
   }),
-  OpenClawAdapter: vi.fn(),
+  OpenClawAdapter: mockOpenClawAdapter,
   IRONCLAW_TRUST_PROFILE: {},
   OPENCLAW_TRUST_PROFILE: {},
   DIRECT_TRUST_PROFILE: {},
@@ -95,7 +101,7 @@ vi.mock('@skytwin/mcp-host', () => ({
 }));
 
 vi.mock('../sse.js', () => ({
-  sseManager: { emit: vi.fn(), emitAll: vi.fn() },
+  sseManager: mockSseManager,
 }));
 
 // ---------------------------------------------------------------------------
@@ -462,6 +468,43 @@ describe('execution-setup', () => {
         expect.anything(),
         new Set(['send_email']),
       );
+    });
+
+    it('delivers OpenClaw credential requirements only to the bound owner', async () => {
+      mockLoadConfig.mockReturnValue({
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: 'http://localhost:9000',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+      mockCredentialRequirementRepository.register.mockResolvedValue(undefined);
+
+      await createExecutionRouter();
+
+      const options = mockOpenClawAdapter.mock.calls[0]?.[0] as {
+        onCredentialNeeded: (requirement: {
+          userId: string;
+          integration: string;
+          integrationLabel: string;
+          fields: Array<{ key: string; label: string; secret?: boolean }>;
+          skills: string[];
+        }) => Promise<void>;
+      };
+      await options.onCredentialNeeded({
+        userId: 'owner-1',
+        integration: 'github',
+        integrationLabel: 'GitHub',
+        fields: [{ key: 'token', label: 'Token', secret: true }],
+        skills: ['create_issue'],
+      });
+
+      expect(mockSseManager.emit).toHaveBeenCalledWith(
+        'owner-1',
+        'credential:needed',
+        expect.objectContaining({ integration: 'github' }),
+      );
+      expect(mockSseManager.emitAll).not.toHaveBeenCalled();
     });
   });
 
