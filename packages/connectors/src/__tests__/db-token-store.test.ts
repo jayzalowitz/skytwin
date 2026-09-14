@@ -130,6 +130,8 @@ describe('DbTokenStore', () => {
 
   it('aborts an in-flight refresh without persisting a replacement token', async () => {
     repo.getToken.mockResolvedValue({
+      id: 'token-row',
+      credential_revision: 'revision-before-refresh',
       access_token: 'expired-token',
       refresh_token: 'refresh-456',
       expires_at: new Date(Date.now() - 60_000),
@@ -151,6 +153,7 @@ describe('DbTokenStore', () => {
 
     await rejection;
     expect(repo.updateAccessToken).not.toHaveBeenCalled();
+    expect(repo.updateAccessTokenIfCurrent).not.toHaveBeenCalled();
   });
 
   it('refreshIfExpired throws when no token exists', async () => {
