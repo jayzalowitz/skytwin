@@ -1,6 +1,8 @@
+import type { ReasoningMode } from '@skytwin/shared-types';
 import type { ChatMessage, GenerateOptions } from '../types.js';
 import { toMessages } from '../messages.js';
 import { fetchCustomProviderUrl, type SafeProviderFetch } from '../url-validation.js';
+import { ollamaLocalModelReference, ProviderModePolicyError } from '../provider-privacy.js';
 
 // A literal loopback default cannot be redirected by a modified hosts file.
 const DEFAULT_URL = 'http://127.0.0.1:11434';
@@ -20,7 +22,10 @@ export async function generate(
   _apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string } = {},
+  options: GenerateOptions & {
+    baseUrl?: string;
+    reasoningMode?: ReasoningMode;
+  } = {},
 ): Promise<string> {
   const baseUrl = options.baseUrl || DEFAULT_URL;
   const controller = new AbortController();
@@ -45,7 +50,9 @@ export async function generate(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model,
+        model: options.reasoningMode === 'on_device'
+          ? ollamaLocalModelReference(model)
+          : model,
         messages,
         stream: false,
         options: {
@@ -70,7 +77,21 @@ export async function generate(
     // /api/generate's `{ response }`). Both fields can be empty for an
     // empty model output — return '' rather than undefined for symmetry
     // with the other providers.
-    const data = await res.json() as { message?: { content?: string } };
+    const data = await res.json() as {
+      message?: { content?: string };
+      remote_host?: unknown;
+      remote_model?: unknown;
+    };
+    const reportedRemoteExecution = (typeof data.remote_host === 'string'
+        && data.remote_host.trim().length > 0)
+      || (typeof data.remote_model === 'string' && data.remote_model.trim().length > 0);
+    if (options.reasoningMode === 'on_device' && reportedRemoteExecution) {
+      throw new ProviderModePolicyError(
+        'ollama_cloud_model',
+        'Ollama reported remote inference for an on-device request',
+        'ollama',
+      );
+    }
     return data.message?.content ?? '';
   } finally {
     clearTimeout(timeout);

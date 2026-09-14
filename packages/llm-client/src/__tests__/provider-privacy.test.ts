@@ -21,7 +21,7 @@ describe('provider privacy capabilities', () => {
       retention: { classification: 'local_runtime' },
       pricing: { kind: 'zero' },
     });
-    expect(providerPrivacyCapabilities(ollama)).toMatchObject({
+    expect(providerPrivacyCapabilities(ollama, 'on_device')).toMatchObject({
       executionLocation: 'on_device',
       networkScope: 'loopback',
       confidentiality: 'device_local',
@@ -32,7 +32,7 @@ describe('provider privacy capabilities', () => {
 
   it('uses transport hostname normalization for loopback disclosure', () => {
     const trailingDotLocalhost = { ...ollama, baseUrl: 'http://localhost.:11434' };
-    expect(providerPrivacyCapabilities(trailingDotLocalhost)).toMatchObject({
+    expect(providerPrivacyCapabilities(trailingDotLocalhost, 'on_device')).toMatchObject({
       executionLocation: 'on_device',
       networkScope: 'loopback',
       confidentiality: 'device_local',
@@ -62,6 +62,20 @@ describe('provider privacy capabilities', () => {
       confidentiality: 'operator_declared',
       pricing: { kind: 'unknown' },
     });
+  });
+
+  it('does not claim loopback Ollama is local outside the verified on-device path', () => {
+    expect(providerPrivacyCapabilities(ollama, 'bring_your_own_provider')).toMatchObject({
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      pricing: { kind: 'unknown' },
+    });
+    expect(providerPrivacyCapabilities({ ...ollama, model: 'qwen3:cloud' }, 'on_device'))
+      .toMatchObject({
+        executionLocation: 'remote_service',
+        networkScope: 'external',
+        pricing: { kind: 'unknown' },
+      });
   });
 });
 
@@ -144,6 +158,24 @@ describe('reasoning-mode provider policy', () => {
     expect(() => providersForReasoningMode('on_device', [{
       ...ollama, baseUrl: 'https://ollama.example',
     }])).toThrow(expect.objectContaining({ code: 'non_loopback_local_endpoint' }));
+  });
+
+  it('rejects explicit Ollama Cloud model tags in on-device mode', () => {
+    for (const model of [
+      'qwen3:cloud',
+      'gpt-oss:120b-cloud',
+      'model:latest-cloud',
+      'QWEN3:CLOUD',
+    ]) {
+      expect(() => providersForReasoningMode('on_device', [{ ...ollama, model }]))
+        .toThrow(expect.objectContaining({ code: 'ollama_cloud_model' }));
+    }
+  });
+
+  it('does not mistake cloud text outside an Ollama source tag for cloud routing', () => {
+    expect(providersForReasoningMode('on_device', [{
+      ...ollama, model: 'my-cloud-model',
+    }]).providers[0]?.model).toBe('my-cloud-model');
   });
 
   it('fails closed for unknown modes, empty chains and unverified private-cloud adapters', () => {

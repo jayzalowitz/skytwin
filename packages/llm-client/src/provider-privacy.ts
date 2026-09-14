@@ -14,6 +14,7 @@ export type ProviderModePolicyErrorCode =
   | 'invalid_provider'
   | 'cross_mode_provider'
   | 'non_loopback_local_endpoint'
+  | 'ollama_cloud_model'
   | 'verification_adapter_required';
 
 export class ProviderModePolicyError extends Error {
@@ -45,7 +46,7 @@ function localCapabilities(provider: 'embedded' | 'ollama'): ProviderPrivacyCapa
       classification: provider === 'embedded' ? 'local_runtime' : 'operator_unknown',
       summary: provider === 'embedded'
         ? 'Prompt processing uses a model subprocess on this device; no remote-provider retention policy applies.'
-        : 'Prompt processing is sent over loopback to the configured Ollama service; its logging and retention depend on the local operator configuration.',
+        : 'Prompt processing is sent over loopback with Ollama local-model resolution enforced; logging and retention depend on the local operator configuration.',
       policyUrl: null,
     },
     modalities: ['text'],
@@ -106,16 +107,58 @@ function isLoopbackOllama(provider: ProviderEntry): boolean {
   }
 }
 
+export function isExplicitOllamaCloudModel(model: string): boolean {
+  const normalized = model.trim();
+  const lastSlash = normalized.lastIndexOf('/');
+  const lastColon = normalized.lastIndexOf(':');
+  if (lastColon <= lastSlash) return false;
+  const tag = normalized.slice(lastColon + 1).trim().toLowerCase();
+  return tag === 'cloud' || tag.endsWith('-cloud');
+}
+
+/**
+ * Add Ollama's request-scoped local source selector without changing the
+ * configured model identity retained in SkyTwin metadata. Modern Ollama
+ * rejects remote-backed aliases under this selector. Older runtimes may treat
+ * it as a missing tag; callers must never retry with the unqualified name.
+ */
+export function ollamaLocalModelReference(model: string): string {
+  const normalized = model.trim();
+  if (isExplicitOllamaCloudModel(normalized)) {
+    throw new ProviderModePolicyError(
+      'ollama_cloud_model',
+      'Ollama Cloud models are not eligible for on-device reasoning',
+      'ollama',
+    );
+  }
+  const lastSlash = normalized.lastIndexOf('/');
+  const lastColon = normalized.lastIndexOf(':');
+  if (lastColon > lastSlash
+      && normalized.slice(lastColon + 1).trim().toLowerCase() === 'local') {
+    return `${normalized.slice(0, lastColon)}:local`;
+  }
+  return `${normalized}:local`;
+}
+
 /**
  * Derive disclosure from the concrete adapter. Callers cannot provide their
  * own confidentiality label, and a custom OpenAI-compatible URL therefore
  * remains a conventional remote service.
  */
-export function providerPrivacyCapabilities(provider: ProviderEntry): ProviderPrivacyCapabilities {
+export function providerPrivacyCapabilities(
+  provider: ProviderEntry,
+  reasoningMode: ReasoningMode | null = null,
+): ProviderPrivacyCapabilities {
   if (provider.name === 'embedded') {
     return localCapabilities('embedded');
   }
-  if (isLoopbackOllama(provider)) {
+  // A local socket alone is not a local-inference guarantee: Ollama can relay
+  // cloud models through its loopback API. The on-device client source-
+  // qualifies each request as local. Other modes remain conservatively
+  // remote/unknown even when they point at loopback.
+  if (reasoningMode === 'on_device'
+      && isLoopbackOllama(provider)
+      && !isExplicitOllamaCloudModel(provider.model)) {
     return localCapabilities('ollama');
   }
   const isUserDirectedEndpoint = provider.name === 'ollama' || Boolean(provider.baseUrl);
@@ -177,6 +220,13 @@ function assertLocalProvider(provider: ProviderEntry): void {
     throw new ProviderModePolicyError(
       'non_loopback_local_endpoint',
       'On-device reasoning permits only a valid loopback Ollama endpoint',
+      provider.name,
+    );
+  }
+  if (provider.name === 'ollama' && isExplicitOllamaCloudModel(provider.model)) {
+    throw new ProviderModePolicyError(
+      'ollama_cloud_model',
+      'Ollama Cloud models are not eligible for on-device reasoning',
       provider.name,
     );
   }
