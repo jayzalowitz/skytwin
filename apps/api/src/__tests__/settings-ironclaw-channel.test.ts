@@ -440,12 +440,28 @@ describe('reasoning-mode provider mutations', () => {
   });
 
   it('accepts the null default endpoint returned by settings GET on save', async () => {
-    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
-      reasoningMode: 'bring_your_own_provider',
+    mockUserRepository.findById.mockResolvedValue({
+      id: userId, trust_tier: 'suggest', ironclaw_channel: 'skytwin', autonomy_settings: {},
+    });
+    mockDomainAutonomyRepository.getForUser.mockResolvedValue([]);
+    mockEscalationTriggerRepository.getForUser.mockResolvedValue([]);
+    mockAiProviderRepository.getReasoningSnapshotForUser.mockResolvedValue({
       providers: [{
-        provider: 'openai', apiKey: '', model: 'gpt', baseUrl: null,
+        provider: 'openai', api_key: 'stored-secret', model: 'gpt', base_url: null,
         priority: 0, enabled: true,
       }],
+      reasoningMode: { mode: 'bring_your_own_provider', requires_confirmation: false },
+    });
+
+    const loaded = await request(app, 'GET', `/api/settings/${userId}`);
+    expect(loaded.status).toBe(200);
+    const loadedBody = loaded.body as {
+      aiProviders: unknown[];
+      reasoningMode: { mode: string };
+    };
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: loadedBody.reasoningMode.mode,
+      providers: loadedBody.aiProviders,
     });
 
     expect(response.status).toBe(200);
