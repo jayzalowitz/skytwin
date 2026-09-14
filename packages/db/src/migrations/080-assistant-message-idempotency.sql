@@ -26,4 +26,3 @@ UPDATE assistant_messages AS message
 CREATE UNIQUE INDEX IF NOT EXISTS assistant_messages_user_request_unique_idx
   ON assistant_messages (user_id, client_request_id, role)
   WHERE client_request_id IS NOT NULL;
-
