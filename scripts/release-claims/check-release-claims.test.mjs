@@ -21,6 +21,13 @@ import {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  RELEASE_ARTIFACT_GENERATOR_PATH,
+  RELEASE_ARTIFACT_MANIFEST_PATH,
+  RELEASE_ARTIFACT_MATERIALS_ARTIFACT,
+  RELEASE_ARTIFACT_MATERIALS_DIRECTORY,
+  RELEASE_ARTIFACT_STAGING_DIRECTORY,
+  RELEASE_ARTIFACT_VALIDATOR_PATH,
+  RELEASE_ATTESTATION_MATERIALIZER_PATH,
   machineProducerJobName,
   machineVerifierCommand,
   machineVerifierPath,
@@ -436,6 +443,20 @@ function writeValidFixture(
     ({ claimId, platform, runner, reportName }) =>
       `          - claimId: ${claimId}\n            platform: ${platform}\n            runner: ${runner}\n            reportName: ${reportName}`,
   ).join("\n");
+  const artifactDownloads = CANONICAL_RELEASE_ASSETS.map(
+    ([artifactName]) => `      - name: Download ${artifactName}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${artifactName}
+          path: artifacts/${artifactName}`,
+  ).join("\n");
+  for (const path of [
+    RELEASE_ARTIFACT_GENERATOR_PATH,
+    RELEASE_ARTIFACT_VALIDATOR_PATH,
+    RELEASE_ATTESTATION_MATERIALIZER_PATH,
+    "scripts/release-claims/verifiers/release.artifact-verification.mjs",
+  ])
+    write(root, path, "export {};\n");
   const workflow = `env:
   ${identityLine}
 permissions:
@@ -444,10 +465,62 @@ concurrency:
   group: build-\${{ github.ref }}
   cancel-in-progress: \${{ !startsWith(github.ref, 'refs/tags/v') }}
 jobs:
+  desktop-mac:
+    runs-on: macos-15
+    steps: []
+  desktop-windows:
+    runs-on: windows-2025
+    steps: []
+  desktop-linux:
+    runs-on: ubuntu-24.04
+    steps: []
+  release-artifact-materials:
+    name: Produce release artifact verification materials
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop-mac, desktop-windows, desktop-linux]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Derive release artifact identity
+        shell: bash
+        run: |
+          bash .github/scripts/derive-app-version.sh
+          CREATED_UTC="$(date -u -d "@$(git show -s --format=%ct "$GITHUB_SHA")" '+%Y-%m-%dT%H:%M:%SZ')"
+          printf 'CREATED_UTC=%s\\n' "$CREATED_UTC" >> "$GITHUB_ENV"
+${artifactDownloads}
+      - name: Generate exact release artifact materials
+        shell: bash
+        run: node ${RELEASE_ARTIFACT_GENERATOR_PATH} --root artifacts --output ${RELEASE_ARTIFACT_STAGING_DIRECTORY} --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"
+      - name: Validate staged release artifact materials
+        shell: bash
+        run: node ${RELEASE_ARTIFACT_VALIDATOR_PATH} --root ${RELEASE_ARTIFACT_STAGING_DIRECTORY} --manifest ${RELEASE_ARTIFACT_MANIFEST_PATH} --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"
+      - name: Attest exact release artifact subjects
+        id: attest-release-artifacts
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: ${RELEASE_ARTIFACT_MATERIALS_DIRECTORY}/SHA256SUMS
+      - name: Materialize digest-named provenance bundles
+        shell: bash
+        run: node ${RELEASE_ATTESTATION_MATERIALIZER_PATH} --manifest ${RELEASE_ARTIFACT_MANIFEST_PATH} --bundle "\${{ steps.attest-release-artifacts.outputs.bundle-path }}" --output ${RELEASE_ARTIFACT_MATERIALS_DIRECTORY}
+      - name: Upload release artifact verification materials
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${RELEASE_ARTIFACT_MATERIALS_ARTIFACT}
+          path: ${RELEASE_ARTIFACT_MATERIALS_DIRECTORY}
+          if-no-files-found: error
+          compression-level: 0
   release-machine-evidence:
     name: release-machine-evidence / \${{ matrix.claimId }} / \${{ matrix.platform }}
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [desktop-mac, desktop-windows, desktop-linux]
+    needs: [desktop-mac, desktop-windows, desktop-linux, release-artifact-materials]
     permissions:
       contents: read
       actions: read
@@ -464,6 +537,12 @@ ${machineMatrix}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
+      - name: Download release artifact verification materials
+        if: matrix.claimId == 'release.artifact-verification'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${RELEASE_ARTIFACT_MATERIALS_ARTIFACT}
+          path: ${ARTIFACT_VERIFICATION_DIRECTORY}
       - name: Resolve packaged sample provenance
         id: sample-provenance
         if: matrix.claimId == 'sample.packaged-account-free'
@@ -490,7 +569,7 @@ ${machineMatrix}
   aggregate-release-evidence:
     name: Aggregate release machine evidence
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: release-machine-evidence
+    needs: [release-machine-evidence, release-artifact-materials]
     runs-on: ubuntu-24.04
     steps:
       - name: Download machine evidence reports
@@ -499,6 +578,11 @@ ${machineMatrix}
           pattern: release-machine-evidence-*
           path: .release-evidence/reports
           merge-multiple: true
+      - name: Download release artifact verification materials
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: ${RELEASE_ARTIFACT_MATERIALS_ARTIFACT}
+          path: ${ARTIFACT_VERIFICATION_DIRECTORY}
       - name: Upload aggregated release evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
@@ -883,6 +967,171 @@ describe("release claim ledger validation", () => {
         ),
       ),
     ).toBe(true);
+  });
+
+  it.each([
+    [
+      "artifact-metadata permission",
+      "      artifact-metadata: write",
+      "      artifact-metadata: read",
+    ],
+    [
+      "desktop dependency",
+      "    needs: [desktop-mac, desktop-windows, desktop-linux]\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      actions: read\n      id-token: write",
+      "    needs: [desktop-mac, desktop-windows]\n    runs-on: ubuntu-24.04\n    permissions:\n      contents: read\n      actions: read\n      id-token: write",
+    ],
+    [
+      "attestation action pin",
+      "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6",
+      "actions/attest@v4",
+    ],
+    [
+      "materials upload destination",
+      `          path: ${RELEASE_ARTIFACT_MATERIALS_DIRECTORY}`,
+      "          path: .release-artifacts/unreviewed",
+    ],
+  ])("rejects a changed release-materials %s", (_case, needle, replacement) => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(needle, replacement),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release artifact materials must use the exact tag-only permission, download, generation, attestation, materialization, and upload graph",
+    );
+  });
+
+  it.each([
+    RELEASE_ARTIFACT_GENERATOR_PATH,
+    RELEASE_ARTIFACT_VALIDATOR_PATH,
+    RELEASE_ATTESTATION_MATERIALIZER_PATH,
+    "scripts/release-claims/verifiers/release.artifact-verification.mjs",
+  ])("requires release artifact material source %s", (sourcePath) => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    rmSync(join(root, sourcePath));
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      `release artifact material source is missing or unsafe: ${sourcePath}`,
+    );
+  });
+
+  it("rejects an alternate release-materials uploader and attester", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "\n  release:\n",
+        `
+  rogue-materials:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6
+        with:
+          subject-checksums: forged
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ${RELEASE_ARTIFACT_MATERIALS_ARTIFACT}
+          path: forged
+
+  release:
+`,
+      ),
+    );
+    const errors = verifyCanonicalReleasePublisher(root);
+    expect(errors).toContain(
+      "only the canonical release artifact materials job may upload the fixed materials artifact",
+    );
+    expect(errors).toContain(
+      "only the canonical release artifact materials job may attest release subjects",
+    );
+  });
+
+  it.each([
+    [
+      "legacy generator",
+      "      - uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26\n",
+    ],
+    [
+      "duplicate SBOM artifact",
+      `      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-sbom-forged
+          path: forged.json
+`,
+    ],
+  ])("rejects a %s", (_case, step) => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    write(
+      root,
+      ".github/workflows/legacy-sbom.yml",
+      `permissions:
+  contents: read
+jobs:
+  legacy:
+    runs-on: ubuntu-24.04
+    steps:
+${step}`,
+    );
+    expect(
+      verifyCanonicalReleasePublisher(root).some((error) =>
+        error.startsWith(
+          "legacy or duplicate release SBOM producers are prohibited:",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("requires the artifact-verification matrix row to download exact materials before verification", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        `          name: ${RELEASE_ARTIFACT_MATERIALS_ARTIFACT}\n          path: ${ARTIFACT_VERIFICATION_DIRECTORY}`,
+        `          name: unreviewed-materials\n          path: ${ARTIFACT_VERIFICATION_DIRECTORY}`,
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+  });
+
+  it("requires machine verification to depend on the materials producer", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "    needs: [desktop-mac, desktop-windows, desktop-linux, release-artifact-materials]",
+        "    needs: [desktop-mac, desktop-windows, desktop-linux]",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+  });
+
+  it("requires the sole evidence aggregator to depend on reports and materials", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "    needs: [release-machine-evidence, release-artifact-materials]",
+        "    needs: release-machine-evidence",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence aggregation must be the exact producer-dependent immutable artifact graph",
+    );
   });
 
   it("rejects a second artifact whose name matches the machine-input prefix", () => {
@@ -2068,7 +2317,11 @@ describe("release claim ledger validation", () => {
         },
       };
       expect(
-        verifyMachineEvidenceApplicability("sample.packaged-account-free", report, []),
+        verifyMachineEvidenceApplicability(
+          "sample.packaged-account-free",
+          report,
+          [],
+        ),
       ).toHaveLength(1);
     }
   });
@@ -2277,6 +2530,20 @@ describe("release claim ledger validation", () => {
       errors.some((error) => error.includes("command is not an allowlisted")),
     ).toBe(true);
     expect(isAllowlistedVerificationCommand("pnpm claims:check")).toBe(true);
+    expect(isAllowlistedVerificationCommand("pnpm claims:test")).toBe(true);
+    expect(
+      isAllowlistedVerificationCommand("pnpm test:release-artifacts"),
+    ).toBe(true);
+    expect(
+      isAllowlistedVerificationCommand(
+        "pnpm exec vitest run scripts/release-claims/release.artifact-verification.test.mjs",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowlistedVerificationCommand(
+        "pnpm exec vitest run scripts/release-claims/other.test.mjs",
+      ),
+    ).toBe(false);
     expect(
       isAllowlistedVerificationCommand('rg -n -- "needle" README.md'),
     ).toBe(true);

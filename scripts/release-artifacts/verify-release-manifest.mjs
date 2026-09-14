@@ -1,28 +1,46 @@
 #!/usr/bin/env node
 
-import { readFileSync, readdirSync, realpathSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { lstatSync, readFileSync, readdirSync } from "node:fs";
+import { basename, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { hashStableRegularFile } from "./generate-release-manifest.mjs";
+import { CANONICAL_RELEASE_ASSETS } from "../release-claims/release-constants.mjs";
+import {
+  hashStableRegularFile,
+  readStableRegularFile,
+} from "./file-integrity.mjs";
+import {
+  artifactPlatform,
+  assertUpdateManifest,
+  assertReleaseIdentity,
+  expectedFilename,
+} from "./generate-release-manifest.mjs";
+import {
+  assertArtifactManifest,
+  buildReleaseSpdx,
+} from "./generate-release-spdx.mjs";
 
-const EXACT_MANIFEST_KEYS = [
+const MANIFEST_KEYS = [
   "schemaVersion",
   "generatedBy",
   "releaseSurface",
   "repository",
   "sourceCommit",
-  "ref",
+  "sourceRef",
   "releaseTag",
   "appVersion",
   "runId",
+  "created",
   "assets",
 ].sort();
-const EXACT_ASSET_KEYS = [
+const ASSET_KEYS = [
   "artifactName",
   "filename",
+  "subjectPath",
+  "stagedPath",
   "platform",
   "kind",
   "size",
+  "sha1",
   "sha256",
   "sha512",
 ].sort();
@@ -52,124 +70,187 @@ function parseArgs(argv) {
   return result;
 }
 
-export function verifyReleaseManifest(options) {
-  const root = realpathSync(resolve(options.root));
-  const manifestPath = resolve(options.manifest);
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  const tagMatch =
-    typeof manifest.releaseTag === "string"
-      ? manifest.releaseTag.match(
-          /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/,
-        )
-      : null;
-  const expectedAppVersion = tagMatch
-    ? `${tagMatch[1]}.${tagMatch[2]}.${Number(tagMatch[3]) * 100 + Number(tagMatch[4])}`
-    : null;
+export function readArtifactManifest(root, path) {
+  const bytes = readStableRegularFile(root, resolve(path), {
+    maxBytes: 16 * 1024 * 1024,
+  }).bytes;
+  const manifest = JSON.parse(bytes.toString("utf8"));
+  assertArtifactManifest(manifest);
   if (
-    !exactKeys(manifest, EXACT_MANIFEST_KEYS) ||
-    manifest.schemaVersion !== 1 ||
-    manifest.generatedBy !== "release-artifact-verifier" ||
-    manifest.releaseSurface !== "desktop" ||
-    !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(manifest.repository) ||
-    !/^[0-9a-f]{40}$/.test(manifest.sourceCommit) ||
-    !tagMatch ||
-    Number(tagMatch[4]) >= 100 ||
-    Number(tagMatch[3]) > 999999 ||
-    manifest.ref !== `refs/tags/${manifest.releaseTag}` ||
-    !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(
-      manifest.appVersion,
-    ) ||
-    manifest.appVersion !== expectedAppVersion ||
-    !/^[1-9][0-9]*$/.test(manifest.runId) ||
-    !Array.isArray(manifest.assets) ||
-    manifest.assets.length === 0
-  ) {
-    throw new Error("invalid release manifest");
-  }
-  for (const field of [
-    "repository",
-    "sourceCommit",
-    "ref",
-    "releaseTag",
-    "appVersion",
-    "runId",
-  ]) {
-    if (options[field] !== undefined && options[field] !== manifest[field])
+    !exactKeys(manifest, MANIFEST_KEYS) ||
+    manifest.releaseSurface !== "desktop"
+  )
+    throw new Error("invalid release artifact manifest shape");
+  return manifest;
+}
+
+export function verifyReleaseManifest(options) {
+  const root = resolve(options.root);
+  const rootStat = lstatSync(root, { bigint: true });
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+    throw new Error("release material root must be a real directory");
+  const rootEntries = readdirSync(root, { withFileTypes: true });
+  const rootInventory = rootEntries.map((entry) => entry.name).sort();
+  if (
+    JSON.stringify(rootInventory) !==
+      JSON.stringify(
+        [
+          "artifact-verification",
+          "assets",
+          "release-artifact-manifest.json",
+        ].sort(),
+      ) ||
+    rootEntries.some(
+      (entry) =>
+        entry.isSymbolicLink() ||
+        (["artifact-verification", "assets"].includes(entry.name)
+          ? !entry.isDirectory()
+          : !entry.isFile()),
+    )
+  )
+    throw new Error("release material root has an unexpected inventory");
+  const manifest = readArtifactManifest(root, options.manifest);
+  assertReleaseIdentity({
+    repository: manifest.repository,
+    commit: manifest.sourceCommit,
+    ref: manifest.sourceRef,
+    releaseTag: manifest.releaseTag,
+    appVersion: manifest.appVersion,
+    runId: manifest.runId,
+    created: manifest.created,
+  });
+  const optionFields = new Map([
+    ["repository", "repository"],
+    ["commit", "sourceCommit"],
+    ["ref", "sourceRef"],
+    ["releaseTag", "releaseTag"],
+    ["appVersion", "appVersion"],
+    ["runId", "runId"],
+    ["created", "created"],
+  ]);
+  for (const [option, field] of optionFields) {
+    if (
+      options[option] !== undefined &&
+      String(options[option]) !== manifest[field]
+    )
       throw new Error(`${field} does not match manifest`);
   }
-  const assetDirectory = join(root, "assets");
-  const actualNames = readdirSync(assetDirectory, { withFileTypes: true })
+
+  const canonical = new Map(CANONICAL_RELEASE_ASSETS);
+  const seenFilenames = new Set();
+  const seenSubjectPaths = new Set();
+  const artifactCounts = new Map();
+  if (manifest.assets.length !== canonical.size)
+    throw new Error("manifest must contain exactly nine release subjects");
+  if (
+    JSON.stringify(manifest.assets.map(({ filename }) => filename)) !==
+    JSON.stringify(
+      manifest.assets
+        .map(({ filename }) => filename)
+        .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0)),
+    )
+  )
+    throw new Error("manifest subjects are not in canonical filename order");
+  for (const asset of manifest.assets) {
+    if (
+      !exactKeys(asset, ASSET_KEYS) ||
+      !canonical.has(asset.artifactName) ||
+      asset.kind !== canonical.get(asset.artifactName) ||
+      basename(asset.filename) !== asset.filename ||
+      asset.subjectPath !==
+        posix.join("artifacts", asset.artifactName, asset.filename) ||
+      asset.stagedPath !== posix.join("assets", asset.filename) ||
+      asset.platform !== artifactPlatform(asset.artifactName) ||
+      !expectedFilename(asset.artifactName, manifest.appVersion)?.test(
+        asset.filename,
+      ) ||
+      !Number.isSafeInteger(asset.size) ||
+      asset.size <= 0 ||
+      !/^[0-9a-f]{40}$/u.test(asset.sha1 ?? "") ||
+      !/^[0-9a-f]{64}$/u.test(asset.sha256 ?? "") ||
+      !/^[A-Za-z0-9+/]{86}==$/u.test(asset.sha512 ?? "")
+    )
+      throw new Error("invalid release subject record");
+    if (
+      seenFilenames.has(asset.filename) ||
+      seenSubjectPaths.has(asset.subjectPath)
+    )
+      throw new Error("duplicate release subject identity");
+    seenFilenames.add(asset.filename);
+    seenSubjectPaths.add(asset.subjectPath);
+    artifactCounts.set(
+      asset.artifactName,
+      (artifactCounts.get(asset.artifactName) ?? 0) + 1,
+    );
+    const observed = hashStableRegularFile(root, join(root, asset.stagedPath));
+    if (
+      observed.size !== asset.size ||
+      observed.sha1 !== asset.sha1 ||
+      observed.sha256 !== asset.sha256 ||
+      observed.sha512 !== asset.sha512
+    )
+      throw new Error(`${asset.filename} does not match manifest`);
+  }
+  if (
+    [...canonical.keys()].some(
+      (artifactName) => artifactCounts.get(artifactName) !== 1,
+    )
+  )
+    throw new Error("manifest does not cover the exact canonical artifact set");
+  for (const asset of manifest.assets.filter(
+    ({ kind }) => kind === "update-manifest",
+  ))
+    assertUpdateManifest(asset, manifest.assets, manifest.appVersion, root);
+
+  const actualNames = readdirSync(join(root, "assets"), { withFileTypes: true })
     .map((entry) => {
       if (
         !entry.isFile() ||
         entry.isSymbolicLink() ||
         basename(entry.name) !== entry.name
-      ) {
-        throw new Error(`invalid release asset ${entry.name}`);
-      }
+      )
+        throw new Error(`invalid staged release subject ${entry.name}`);
       return entry.name;
     })
     .sort();
-  const expectedNames = [];
-  const seenArtifacts = new Set();
-  for (const asset of manifest.assets) {
+  if (JSON.stringify(actualNames) !== JSON.stringify([...seenFilenames].sort()))
+    throw new Error("staged release subject set does not match manifest");
+
+  const verificationDirectory = join(root, "artifact-verification");
+  for (const entry of readdirSync(verificationDirectory, {
+    withFileTypes: true,
+  })) {
     if (
-      !exactKeys(asset, EXACT_ASSET_KEYS) ||
-      typeof asset.artifactName !== "string" ||
-      typeof asset.filename !== "string" ||
-      basename(asset.filename) !== asset.filename ||
-      !["macos", "windows", "linux"].includes(asset.platform) ||
-      !["installer", "archive", "package", "update-manifest"].includes(
-        asset.kind,
-      ) ||
-      !Number.isSafeInteger(asset.size) ||
-      asset.size < 0 ||
-      !/^[0-9a-f]{64}$/.test(asset.sha256) ||
-      !/^[A-Za-z0-9+/]{86}==$/.test(asset.sha512)
-    ) {
-      throw new Error("invalid release asset record");
-    }
-    if (
-      seenArtifacts.has(asset.artifactName) ||
-      expectedNames.includes(asset.filename)
-    ) {
-      throw new Error("duplicate release asset identity");
-    }
-    seenArtifacts.add(asset.artifactName);
-    expectedNames.push(asset.filename);
-    const observed = hashStableRegularFile(
-      root,
-      join(assetDirectory, asset.filename),
-    );
-    if (
-      observed.size !== asset.size ||
-      observed.sha256 !== asset.sha256 ||
-      observed.sha512 !== asset.sha512
-    ) {
-      throw new Error(`${asset.filename} does not match manifest`);
-    }
+      !entry.isFile() ||
+      entry.isSymbolicLink() ||
+      (!["SHA256SUMS", "release.spdx.json", "VERIFY.md"].includes(entry.name) &&
+        !/^[0-9a-f]{64}\.attestation\.jsonl$/u.test(entry.name))
+    )
+      throw new Error(
+        `artifact verification directory has unexpected material ${entry.name}`,
+      );
   }
-  expectedNames.sort();
-  if (JSON.stringify(actualNames) !== JSON.stringify(expectedNames))
-    throw new Error("release asset set does not match manifest");
-  const expectedSums =
-    manifest.assets
-      .map((asset) => `${asset.sha256}  ${asset.filename}`)
-      .sort()
-      .join("\n") + "\n";
-  const sums =
-    readFileSync(join(root, "SHA256SUMS"), "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .sort()
-      .join("\n") + "\n";
-  if (sums !== expectedSums)
+  const expectedSums = `${manifest.assets.map((asset) => `${asset.sha256}  ${asset.filename}`).join("\n")}\n`;
+  const actualSums = readStableRegularFile(
+    verificationDirectory,
+    join(verificationDirectory, "SHA256SUMS"),
+    { maxBytes: 4 * 1024 * 1024 },
+  ).bytes.toString("utf8");
+  if (actualSums !== expectedSums)
     throw new Error("SHA256SUMS does not match manifest");
+  const expectedSpdx = `${JSON.stringify(buildReleaseSpdx(manifest), null, 2)}\n`;
+  const actualSpdx = readStableRegularFile(
+    verificationDirectory,
+    join(verificationDirectory, "release.spdx.json"),
+    { maxBytes: 32 * 1024 * 1024 },
+  ).bytes.toString("utf8");
+  if (actualSpdx !== expectedSpdx)
+    throw new Error("release.spdx.json does not match manifest");
   return {
     valid: true,
     repository: manifest.repository,
     sourceCommit: manifest.sourceCommit,
-    assets: manifest.assets.length,
+    subjects: manifest.assets.length,
   };
 }
 
@@ -179,11 +260,12 @@ function main() {
     root: args.root,
     manifest: args.manifest,
     repository: args.repository,
-    sourceCommit: args.commit,
+    commit: args.commit,
     ref: args.ref,
-    releaseTag: args["release-tag"],
-    appVersion: args["app-version"],
-    runId: args["run-id"],
+    releaseTag: args.releaseTag,
+    appVersion: args.appVersion,
+    runId: args.runId,
+    created: args.created,
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }

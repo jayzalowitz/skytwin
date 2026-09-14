@@ -19,12 +19,14 @@
 > are deliberately not committed to this ledger: doing so would change the SHA
 > they attest and create an impossible hash cycle. The release job now generates
 > the external manifest from current-run GitHub API metadata. Downstream
-> evidence-matrix jobs now include the canonical three-platform
-> packaged-sample verifier with GitHub API discovery separated from package
-> execution and a strict allowlisted child environment, but
-> the other seven machine-verifier implementations and the CI result producer
-> are still absent. The final gate therefore fails closed and the ledger remains
-> blocked until the complete proof pipeline ships.
+> evidence-matrix jobs include the canonical three-platform packaged-sample
+> verifier with GitHub API discovery separated from package execution and a
+> strict allowlisted child environment. The artifact-verification lane also has
+> a tag-only material producer and independent verifier in source, but it has not
+> yet produced evidence from a tagged release run. The other six
+> machine-verifier implementations and the CI result producer are still absent.
+> The final gate therefore fails closed and the ledger remains blocked until the
+> complete proof pipeline ships.
 
 The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The former
@@ -80,7 +82,7 @@ of these subjects fails the final gate.
 
 How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
 
-Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the _first_ public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
+Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
 
 ---
 
@@ -157,7 +159,7 @@ blocked by design.
 
 ---
 
-## Pre-flight before the first public release
+## Pre-flight before the FIRST public release
 
 The ledger's stop-ship conditions keep the tag job from reaching draft creation until signing, update manifests, and the other required evidence are complete.
 
@@ -172,7 +174,7 @@ Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the REA
 
 ### 2. Auto-update manifests now ship — but the path is live only after signing (#370)
 
-`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the `release` job **now attaches the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests** electron-updater polls (the remaining code half of #370 — electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). So an installed app _can_ discover the next version. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so _discovery_ could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
+`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the `release` job **now attaches the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests** electron-updater polls (the remaining code half of #370 — electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). So an installed app *can* discover the next version. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so *discovery* could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
 
 The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. The manifests shipping early is harmless — verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
 
@@ -195,7 +197,7 @@ Bundled Gmail restricted-scope verification is tracked separately in #351.
 
 ### How the desktop app version is derived
 
-electron-builder **rejects** a four-segment version, so `apps/desktop/package.json` cannot simply mirror `VERSION`. It carries a fixed placeholder (`0.3.0`) that exists only so local `pnpm --filter skytwin-desktop package:mac` works with no setup — **do not** hand-bump it. From #31 until this was fixed, that placeholder was also what shipped: electron-builder stamps artifact filenames _and_ the `latest*.yml` update manifests from it, so every release published `0.3.0`, and electron-updater's semver compare against an installed `0.3.0` answered "no update available" forever. Auto-update could never fire.
+electron-builder **rejects** a four-segment version, so `apps/desktop/package.json` cannot simply mirror `VERSION`. It carries a fixed placeholder (`0.3.0`) that exists only so local `pnpm --filter skytwin-desktop package:mac` works with no setup — **do not** hand-bump it. From #31 until this was fixed, that placeholder was also what shipped: electron-builder stamps artifact filenames *and* the `latest*.yml` update manifests from it, so every release published `0.3.0`, and electron-updater's semver compare against an installed `0.3.0` answered "no update available" forever. Auto-update could never fire.
 
 CI now derives a real three-segment version from `VERSION` and injects it at package time:
 
@@ -259,6 +261,29 @@ Confirm all three `latest*.yml` assets point at the signed N+1 artifacts.
 
 ---
 
-## Upgrade and rollback
+## Upgrade, backup, and recovery
 
-A bad release is rolled back by deleting/unpublishing the GitHub Release and the tag; no users are affected until a release is **published** (drafts are private). If a published release regressed, cut the next signed patch tag with the fix — the shipped update manifests let electron-updater pull users forward.
+Database migrations are forward-only. Before upgrading an existing profile,
+export an encrypted `.stbk` archive with the same build that currently owns the
+data. The backup command reads its passphrase only from the environment:
+
+```bash
+SKYTWIN_BACKUP_PASSPHRASE='<long unique passphrase>' \
+  pnpm --filter @skytwin/db backup -- export \
+  --user '<user UUID>' --out 'skytwin-before-upgrade.stbk'
+```
+
+Store the archive and passphrase separately. The archive intentionally excludes
+OAuth and credential-vault secrets, so restored connectors require
+reauthorization. A restore targets a fresh install and accepts only backup
+schema versions supported by that build. Source of truth:
+[`backup-cli.ts`](../packages/db/src/bin/backup-cli.ts) and
+[`backup.ts`](../packages/db/src/backup/backup.ts).
+
+If a published release regresses, preserve its tag, assets, evidence manifest,
+and attestations for audit. Do not delete the tag, mutate the release, or install
+an older binary over a database that newer migrations may have changed. Stop
+the affected build, fix the regression, and publish a higher signed patch
+version through this same evidence gate. Verify the backup before the upgrade
+and use restore only into a clean supported installation; SkyTwin does not claim
+an in-place database downgrade path.

@@ -1,5 +1,35 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Verifiable desktop release artifacts
+
+### Added
+
+- **The desktop release pipeline now has a source-complete artifact-integrity
+  lane.** A least-privilege tag-only job downloads the exact nine canonical
+  desktop outputs, validates their names, versions, updater targets, sizes, and
+  digests from stable file descriptors, and stages immutable copies. It emits
+  exact SHA-256 coverage, a subject-complete SPDX 2.3 document, canonical
+  independent verification commands, and digest-named GitHub provenance
+  bundles bound to the repository, workflow, run, tag ref, and source commit.
+  A separate Linux verifier re-hashes the downloaded subjects, binds every
+  current-run GitHub artifact ID/name/archive digest, validates the updater and
+  SPDX relationships, and invokes `gh attestation verify` before it can emit
+  the five-check schema-v1 machine report consumed by the existing exclusive
+  evidence aggregator and publisher. Adversarial tests cover path traversal,
+  symlinks, replacement during hashing, missing or extra output, stale updater
+  metadata, malformed SPDX, and provenance failure. This source does not
+  certify unreleased bytes: `release.artifact-verification` remains limited and
+  the release remains blocked until a tagged clean run supplies immutable
+  evidence; signing and notarization remain separate external gates.
+
+### Changed
+
+- **Release recovery is explicitly forward-only.** Operators are instructed to
+  export an encrypted `.stbk` archive before upgrading, retain a bad release's
+  immutable tag and evidence for audit, and recover through a higher signed
+  patch. An older binary must not be installed over a database touched by newer
+  migrations; restore is supported only into a fresh compatible installation.
+
 ## [Unreleased] — Inference receipts
 
 ### Added

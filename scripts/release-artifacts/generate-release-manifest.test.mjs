@@ -1,364 +1,451 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
-  mkdtempSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { isValidSpdx23Document } from "../release-claims/check-release-claims.mjs";
 import { generateReleaseManifest } from "./generate-release-manifest.mjs";
-import { generateReleaseSbomIndex } from "./generate-release-sbom-index.mjs";
 import { verifyReleaseManifest } from "./verify-release-manifest.mjs";
 
 const temporary = [];
+const VERSION = "0.7.0";
+const IDENTITY = Object.freeze({
+  repository: "owner/repo",
+  commit: "a".repeat(40),
+  ref: "refs/tags/v0.7.0-beta",
+  releaseTag: "v0.7.0-beta",
+  appVersion: VERSION,
+  runId: "42",
+  created: "2026-09-14T18:00:00Z",
+});
 
 afterEach(() => {
   for (const path of temporary.splice(0))
     rmSync(path, { recursive: true, force: true });
 });
 
+function sha512(value) {
+  return createHash("sha512").update(value).digest("base64");
+}
+
+function updateManifest(entries) {
+  const primary = entries[0];
+  return `version: ${VERSION}\nfiles:\n${entries
+    .map(
+      ({ name, bytes }) =>
+        `  - url: ${name}\n    sha512: ${sha512(bytes)}\n    size: ${Buffer.byteLength(bytes)}\n`,
+    )
+    .join("")}path: ${primary.name}\nsha512: ${sha512(primary.bytes)}\n`;
+}
+
 function fixture() {
-  const directory = mkdtempSync(join(tmpdir(), "skytwin-release-manifest-"));
+  const directory = mkdtempSync(join(tmpdir(), "skytwin-release-materials-"));
   temporary.push(directory);
   const root = join(directory, "artifacts");
-  const output = join(directory, "verified");
-  const contract = join(directory, "contract.json");
-  mkdirSync(join(root, "mac-installer"), { recursive: true });
-  mkdirSync(join(root, "win-installer"), { recursive: true });
-  mkdirSync(join(root, "win-update"), { recursive: true });
-  writeFileSync(join(root, "mac-installer", "SkyTwin-1.2.3.dmg"), "mac bytes");
-  writeFileSync(
-    join(root, "win-installer", "SkyTwin-Setup-1.2.3.exe"),
-    "win bytes",
-  );
-  const winIdentity = createHash("sha512").update("win bytes").digest("base64");
-  writeFileSync(
-    join(root, "win-update", "latest.yml"),
-    `version: 1.2.3\nfiles:\n  - url: SkyTwin-Setup-1.2.3.exe\n    sha512: ${winIdentity}\n    size: 9\npath: SkyTwin-Setup-1.2.3.exe\nsha512: ${winIdentity}\n`,
-  );
-  writeFileSync(
-    contract,
-    JSON.stringify({
-      schemaVersion: 1,
-      releaseSurface: "desktop",
-      artifacts: [
-        {
-          artifactName: "mac-installer",
-          platform: "macos",
-          kind: "installer",
-          filenamePattern: "^SkyTwin-[0-9.]+\\.dmg$",
-        },
-        {
-          artifactName: "win-installer",
-          platform: "windows",
-          kind: "installer",
-          filenamePattern: "^SkyTwin-Setup-[0-9.]+\\.exe$",
-        },
-        {
-          artifactName: "win-update",
-          platform: "windows",
-          kind: "update-manifest",
-          filenamePattern: "^latest\\.yml$",
-        },
-      ],
-    }),
-  );
-  return { directory, root, output, contract };
+  const output = join(directory, "output");
+  const subjects = new Map([
+    ["SkyTwin-macOS-dmg", [[`SkyTwin-${VERSION}-arm64.dmg`, "mac dmg"]]],
+    ["SkyTwin-macOS-zip", [[`SkyTwin-${VERSION}-arm64.zip`, "mac zip"]]],
+    [
+      "SkyTwin-Windows-installer",
+      [[`SkyTwin Setup ${VERSION}.exe`, "windows exe"]],
+    ],
+    ["SkyTwin-Linux-AppImage", [[`SkyTwin-${VERSION}.AppImage`, "appimage"]]],
+    ["SkyTwin-Linux-deb", [[`skytwin-desktop_${VERSION}_amd64.deb`, "deb"]]],
+    ["SkyTwin-Linux-rpm", [[`skytwin-desktop-${VERSION}.x86_64.rpm`, "rpm"]]],
+  ]);
+  subjects.set("SkyTwin-macOS-update-manifest", [
+    [
+      "latest-mac.yml",
+      updateManifest([
+        { name: `SkyTwin-${VERSION}-arm64.zip`, bytes: "mac zip" },
+      ]),
+    ],
+  ]);
+  subjects.set("SkyTwin-Windows-update-manifest", [
+    [
+      "latest.yml",
+      updateManifest([
+        { name: `SkyTwin Setup ${VERSION}.exe`, bytes: "windows exe" },
+      ]),
+    ],
+  ]);
+  subjects.set("SkyTwin-Linux-update-manifest", [
+    [
+      "latest-linux.yml",
+      updateManifest([
+        { name: `SkyTwin-${VERSION}.AppImage`, bytes: "appimage" },
+      ]),
+    ],
+  ]);
+  mkdirSync(root);
+  for (const [artifactName, files] of subjects) {
+    const artifactDirectory = join(root, artifactName);
+    mkdirSync(artifactDirectory);
+    for (const [name, bytes] of files)
+      writeFileSync(join(artifactDirectory, name), bytes);
+  }
+  return { directory, root, output };
 }
 
 function generate(value, overrides = {}) {
-  return generateReleaseManifest({
-    ...value,
-    repository: "owner/repo",
-    commit: "a".repeat(40),
-    ref: "refs/tags/v1.2.0.3",
-    releaseTag: "v1.2.0.3",
-    appVersion: "1.2.3",
-    runId: "42",
-    ...overrides,
-  });
+  return generateReleaseManifest({ ...value, ...IDENTITY, ...overrides });
 }
 
-describe("generateReleaseManifest", () => {
-  it("stages only the exact contract set and writes deterministic checksums", () => {
+describe("release artifact material generator", () => {
+  it("offers a cohesive CLI with explicit beta identity and timestamp inputs", () => {
     const value = fixture();
-    const manifest = generate(value);
-    expect(manifest.assets.map((asset) => asset.filename)).toEqual(
-      ["SkyTwin-1.2.3.dmg", "SkyTwin-Setup-1.2.3.exe", "latest.yml"].sort(
-        (left, right) => left.localeCompare(right),
+    execFileSync(process.execPath, [
+      fileURLToPath(
+        new URL("./generate-release-manifest.mjs", import.meta.url),
       ),
-    );
-    expect(
-      manifest.assets.find((asset) => asset.filename.endsWith(".dmg")).sha256,
-    ).toBe(createHash("sha256").update("mac bytes").digest("hex"));
-    expect(
-      readFileSync(join(value.output, "assets", "SkyTwin-1.2.3.dmg"), "utf8"),
-    ).toBe("mac bytes");
-    expect(readFileSync(join(value.output, "SHA256SUMS"), "utf8")).toBe(
-      manifest.assets
-        .map((asset) => `${asset.sha256}  ${asset.filename}`)
-        .join("\n") + "\n",
-    );
+      "--root",
+      value.root,
+      "--output",
+      value.output,
+      "--repository",
+      IDENTITY.repository,
+      "--commit",
+      IDENTITY.commit,
+      "--ref",
+      IDENTITY.ref,
+      "--releaseTag",
+      IDENTITY.releaseTag,
+      "--appVersion",
+      IDENTITY.appVersion,
+      "--runId",
+      IDENTITY.runId,
+      "--created",
+      IDENTITY.created,
+    ]);
     expect(
       verifyReleaseManifest({
         root: value.output,
-        manifest: join(value.output, "release-manifest.json"),
+        manifest: join(value.output, "release-artifact-manifest.json"),
+      }).subjects,
+    ).toBe(9);
+  });
+
+  it("accepts the beta tag, stages the exact set, and emits checker-valid deterministic SPDX", () => {
+    const value = fixture();
+    const manifest = generate(value);
+    expect(manifest.assets).toHaveLength(9);
+    expect(manifest.releaseTag).toBe("v0.7.0-beta");
+    expect(
+      verifyReleaseManifest({
+        root: value.output,
+        manifest: join(value.output, "release-artifact-manifest.json"),
+        ...IDENTITY,
       }),
     ).toEqual({
       valid: true,
       repository: "owner/repo",
       sourceCommit: "a".repeat(40),
-      assets: 3,
+      subjects: 9,
     });
-  });
-
-  it("rejects stale packaged and update-manifest identities", () => {
-    expect(() =>
-      generate(fixture(), {
-        ref: "refs/tags/v1.2.0.4",
-        releaseTag: "v1.2.0.4",
-      }),
-    ).toThrow("appVersion does not match releaseTag");
-
-    const packaged = fixture();
-    rmSync(join(packaged.root, "mac-installer", "SkyTwin-1.2.3.dmg"));
-    writeFileSync(
-      join(packaged.root, "mac-installer", "SkyTwin-0.3.0.dmg"),
-      "stale mac bytes",
-    );
-    expect(() => generate(packaged)).toThrow(
-      "does not identify app version 1.2.3",
-    );
-
-    const updateManifest = fixture();
-    writeFileSync(
-      join(updateManifest.root, "win-update", "latest.yml"),
-      "version: 0.3.0\nfiles:\n  - url: SkyTwin-0.3.0.exe\n    sha512: stale\npath: SkyTwin-0.3.0.exe\nsha512: stale\n",
-    );
-    expect(() => generate(updateManifest)).toThrow(
-      "does not identify app version 1.2.3",
-    );
-
-    const staleDigest = fixture();
-    const stale = readFileSync(
-      join(staleDigest.root, "win-update", "latest.yml"),
-      "utf8",
-    ).replace(/sha512: [A-Za-z0-9+/=]+/g, `sha512: ${"A".repeat(86)}==`);
-    writeFileSync(join(staleDigest.root, "win-update", "latest.yml"), stale);
-    expect(() => generate(staleDigest)).toThrow("has stale identity");
-  });
-
-  it("rejects duplicate and malformed updater mappings", () => {
-    const duplicateUrl = fixture();
-    const duplicateUrlPath = join(
-      duplicateUrl.root,
-      "win-update",
-      "latest.yml",
-    );
-    writeFileSync(
-      duplicateUrlPath,
-      readFileSync(duplicateUrlPath, "utf8").replace(
-        "    sha512:",
-        "    url: attacker.exe\n    sha512:",
+    const sbom = JSON.parse(
+      readFileSync(
+        join(value.output, "artifact-verification", "release.spdx.json"),
+        "utf8",
       ),
     );
-    expect(() => generate(duplicateUrl)).toThrow(
-      "unsupported file metadata url",
+    expect(isValidSpdx23Document(sbom)).toBe(true);
+    expect(sbom.files).toHaveLength(9);
+    expect(sbom.packages[0].sourceInfo).toContain(IDENTITY.commit);
+    expect(sbom.packages[0].externalRefs[0].referenceLocator).toContain(
+      IDENTITY.commit,
     );
 
-    const duplicateFiles = fixture();
-    const duplicateFilesPath = join(
-      duplicateFiles.root,
-      "win-update",
-      "latest.yml",
-    );
-    writeFileSync(
-      duplicateFilesPath,
-      `${readFileSync(duplicateFilesPath, "utf8")}files:\n`,
-    );
-    expect(() => generate(duplicateFiles)).toThrow(
-      "must have exactly one files list",
-    );
-
-    const trailing = fixture();
-    const trailingPath = join(trailing.root, "win-update", "latest.yml");
-    writeFileSync(
-      trailingPath,
-      `${readFileSync(trailingPath, "utf8")}  - malformed: ignored.exe\n`,
-    );
-    expect(() => generate(trailing)).toThrow("trailing files metadata");
+    const second = fixture();
+    generate(second);
+    for (const name of [
+      "release-artifact-manifest.json",
+      "artifact-verification/SHA256SUMS",
+      "artifact-verification/release.spdx.json",
+    ])
+      expect(readFileSync(join(second.output, name))).toEqual(
+        readFileSync(join(value.output, name)),
+      );
   });
 
-  it("rejects missing, duplicate, and renamed contract assets", () => {
+  it("rejects more than one direct subject in any canonical artifact directory", () => {
+    const value = fixture();
+    writeFileSync(
+      join(value.root, "SkyTwin-macOS-dmg", `SkyTwin-${VERSION}-x64.dmg`),
+      "mac x64 dmg",
+    );
+    expect(() => generate(value)).toThrow("exactly one release subject");
+  });
+
+  it("rejects missing, unexpected, empty, and non-directory artifact entries", () => {
     const missing = fixture();
-    rmSync(join(missing.root, "win-installer"), { recursive: true });
-    expect(() => generate(missing)).toThrow();
+    rmSync(join(missing.root, "SkyTwin-Linux-rpm"), { recursive: true });
+    expect(() => generate(missing)).toThrow("exactly the nine canonical");
+
+    const extra = fixture();
+    mkdirSync(join(extra.root, "unexpected"));
+    expect(() => generate(extra)).toThrow("exactly the nine canonical");
+
+    const empty = fixture();
+    rmSync(
+      join(
+        empty.root,
+        "SkyTwin-Linux-rpm",
+        `skytwin-desktop-${VERSION}.x86_64.rpm`,
+      ),
+    );
+    expect(() => generate(empty)).toThrow("contains no release subjects");
+
+    const file = fixture();
+    rmSync(join(file.root, "SkyTwin-Linux-rpm"), { recursive: true });
+    writeFileSync(join(file.root, "SkyTwin-Linux-rpm"), "not a directory");
+    expect(() => generate(file)).toThrow("not a real artifact directory");
+
+    const zeroByte = fixture();
+    writeFileSync(
+      join(
+        zeroByte.root,
+        "SkyTwin-Linux-rpm",
+        `skytwin-desktop-${VERSION}.x86_64.rpm`,
+      ),
+      "",
+    );
+    expect(() => generate(zeroByte)).toThrow("empty release subject");
+  });
+
+  it("rejects renamed or stale-version subjects and duplicate published filenames", () => {
+    const renamed = fixture();
+    const old = join(
+      renamed.root,
+      "SkyTwin-Linux-AppImage",
+      `SkyTwin-${VERSION}.AppImage`,
+    );
+    renameSync(old, `${old}.exe`);
+    expect(() => generate(renamed)).toThrow("unexpected filename");
+
+    const stale = fixture();
+    const stalePath = join(
+      stale.root,
+      "SkyTwin-Windows-installer",
+      `SkyTwin Setup ${VERSION}.exe`,
+    );
+    renameSync(
+      stalePath,
+      join(stale.root, "SkyTwin-Windows-installer", "SkyTwin Setup 0.6.0.exe"),
+    );
+    expect(() => generate(stale)).toThrow("unexpected filename");
 
     const duplicate = fixture();
-    writeFileSync(
-      join(duplicate.root, "mac-installer", "SkyTwin-1.2.4.dmg"),
-      "other",
+    rmSync(
+      join(duplicate.root, "SkyTwin-macOS-update-manifest", "latest-mac.yml"),
     );
-    expect(() => generate(duplicate)).toThrow("must contain exactly one file");
-
-    const renamed = fixture();
-    rmSync(join(renamed.root, "mac-installer", "SkyTwin-1.2.3.dmg"));
-    writeFileSync(join(renamed.root, "mac-installer", "evil.sh"), "other");
-    expect(() => generate(renamed)).toThrow("unexpected filename");
+    writeFileSync(
+      join(duplicate.root, "SkyTwin-macOS-update-manifest", "latest-mac.yml"),
+      "bad",
+    );
+    writeFileSync(
+      join(duplicate.root, "SkyTwin-macOS-update-manifest", "other.yml"),
+      "bad",
+    );
+    expect(() => generate(duplicate)).toThrow("exactly one release subject");
   });
 
-  it("rejects symlinks and artifact directories escaping the download root", () => {
+  it("rejects file and artifact-directory symlinks", () => {
     const fileLink = fixture();
-    rmSync(join(fileLink.root, "mac-installer", "SkyTwin-1.2.3.dmg"));
-    symlinkSync(
-      join(fileLink.root, "win-installer", "SkyTwin-Setup-1.2.3.exe"),
-      join(fileLink.root, "mac-installer", "SkyTwin-1.2.3.dmg"),
+    const linked = join(
+      fileLink.root,
+      "SkyTwin-Linux-rpm",
+      `skytwin-desktop-${VERSION}.x86_64.rpm`,
     );
-    expect(() => generate(fileLink)).toThrow("not a regular file");
+    rmSync(linked);
+    symlinkSync(
+      join(
+        fileLink.root,
+        "SkyTwin-Linux-deb",
+        `skytwin-desktop_${VERSION}_amd64.deb`,
+      ),
+      linked,
+    );
+    expect(() => generate(fileLink)).toThrow("not a direct regular file");
 
     const directoryLink = fixture();
-    const outside = join(directoryLink.directory, "outside");
-    mkdirSync(outside);
-    writeFileSync(join(outside, "SkyTwin-1.2.3.dmg"), "outside");
-    rmSync(join(directoryLink.root, "mac-installer"), { recursive: true });
-    symlinkSync(outside, join(directoryLink.root, "mac-installer"));
-    expect(() => generate(directoryLink)).toThrow("escapes artifact root");
+    const target = join(directoryLink.directory, "outside");
+    mkdirSync(target);
+    writeFileSync(join(target, `SkyTwin-${VERSION}.AppImage`), "outside");
+    rmSync(join(directoryLink.root, "SkyTwin-Linux-AppImage"), {
+      recursive: true,
+    });
+    symlinkSync(target, join(directoryLink.root, "SkyTwin-Linux-AppImage"));
+    expect(() => generate(directoryLink)).toThrow(
+      "not a real artifact directory",
+    );
   });
 
-  it("refuses to overwrite a prior verified output", () => {
+  it("rejects malformed, duplicated, non-local, unexpected, and stale updater mappings", () => {
+    const duplicate = fixture();
+    const path = join(
+      duplicate.root,
+      "SkyTwin-Linux-update-manifest",
+      "latest-linux.yml",
+    );
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "path:",
+        `  - url: SkyTwin-${VERSION}.AppImage\n    sha512: ${sha512("appimage")}\npath:`,
+      ),
+    );
+    expect(() => generate(duplicate)).toThrow("exactly one updater subject");
+
+    const wrongKind = fixture();
+    const wrongKindPath = join(
+      wrongKind.root,
+      "SkyTwin-Linux-update-manifest",
+      "latest-linux.yml",
+    );
+    writeFileSync(
+      wrongKindPath,
+      updateManifest([
+        {
+          name: `skytwin-desktop_${VERSION}_amd64.deb`,
+          bytes: "deb",
+        },
+      ]),
+    );
+    expect(() => generate(wrongKind)).toThrow("unexpected subject");
+
+    const traversal = fixture();
+    const traversalPath = join(
+      traversal.root,
+      "SkyTwin-Linux-update-manifest",
+      "latest-linux.yml",
+    );
+    writeFileSync(
+      traversalPath,
+      readFileSync(traversalPath, "utf8").replaceAll(
+        `SkyTwin-${VERSION}.AppImage`,
+        `../SkyTwin-${VERSION}.AppImage`,
+      ),
+    );
+    expect(() => generate(traversal)).toThrow("non-local subject");
+
+    const stale = fixture();
+    const stalePath = join(
+      stale.root,
+      "SkyTwin-Linux-update-manifest",
+      "latest-linux.yml",
+    );
+    writeFileSync(
+      stalePath,
+      readFileSync(stalePath, "utf8").replace(
+        sha512("appimage"),
+        `${"A".repeat(86)}==`,
+      ),
+    );
+    expect(() => generate(stale)).toThrow("stale identity");
+
+    const malformed = fixture();
+    const malformedPath = join(
+      malformed.root,
+      "SkyTwin-Linux-update-manifest",
+      "latest-linux.yml",
+    );
+    writeFileSync(
+      malformedPath,
+      `${readFileSync(malformedPath, "utf8")}files:\n`,
+    );
+    expect(() => generate(malformed)).toThrow("exactly one files list");
+  });
+
+  it("detects a pathname swap after opening instead of staging mismatched bytes", () => {
+    const value = fixture();
+    const source = join(
+      value.root,
+      "SkyTwin-Linux-AppImage",
+      `SkyTwin-${VERSION}.AppImage`,
+    );
+    expect(() =>
+      generate(value, {
+        testHooks: {
+          "SkyTwin-Linux-AppImage": {
+            afterOpen(path) {
+              renameSync(path, `${path}.original`);
+              writeFileSync(source, "replacement");
+            },
+          },
+        },
+      }),
+    ).toThrow("changed while reading");
+  });
+
+  it("refuses output overwrite or overlap with source artifacts", () => {
     const value = fixture();
     generate(value);
     expect(() => generate(value)).toThrow();
+    const overlap = fixture();
+    expect(() =>
+      generate(overlap, { output: join(overlap.root, "nested") }),
+    ).toThrow("must not overlap");
   });
 
-  it("rejects tampering, extra files, checksum drift, and identity mismatch", () => {
-    const tampered = fixture();
-    generate(tampered);
+  it("detects staged-byte, checksum, SPDX, and identity tampering", () => {
+    const bytes = fixture();
+    generate(bytes);
     writeFileSync(
-      join(tampered.output, "assets", "SkyTwin-1.2.3.dmg"),
+      join(bytes.output, "assets", `SkyTwin-${VERSION}.AppImage`),
       "tampered",
     );
     expect(() =>
       verifyReleaseManifest({
-        root: tampered.output,
-        manifest: join(tampered.output, "release-manifest.json"),
+        root: bytes.output,
+        manifest: join(bytes.output, "release-artifact-manifest.json"),
       }),
     ).toThrow("does not match manifest");
 
-    const extra = fixture();
-    generate(extra);
-    writeFileSync(join(extra.output, "assets", "extra.txt"), "extra");
-    expect(() =>
-      verifyReleaseManifest({
-        root: extra.output,
-        manifest: join(extra.output, "release-manifest.json"),
-      }),
-    ).toThrow("asset set does not match");
-
     const sums = fixture();
     generate(sums);
-    writeFileSync(join(sums.output, "SHA256SUMS"), "bad\n");
+    writeFileSync(
+      join(sums.output, "artifact-verification", "SHA256SUMS"),
+      "bad\n",
+    );
     expect(() =>
       verifyReleaseManifest({
         root: sums.output,
-        manifest: join(sums.output, "release-manifest.json"),
+        manifest: join(sums.output, "release-artifact-manifest.json"),
       }),
     ).toThrow("SHA256SUMS");
+
+    const spdx = fixture();
+    generate(spdx);
+    writeFileSync(
+      join(spdx.output, "artifact-verification", "release.spdx.json"),
+      "{}\n",
+    );
+    expect(() =>
+      verifyReleaseManifest({
+        root: spdx.output,
+        manifest: join(spdx.output, "release-artifact-manifest.json"),
+      }),
+    ).toThrow("release.spdx.json");
 
     const identity = fixture();
     generate(identity);
     expect(() =>
       verifyReleaseManifest({
         root: identity.output,
-        manifest: join(identity.output, "release-manifest.json"),
+        manifest: join(identity.output, "release-artifact-manifest.json"),
         repository: "other/repo",
       }),
     ).toThrow("repository does not match");
-  });
-
-  it("binds every artifact digest to a validated platform dependency SBOM", () => {
-    const value = fixture();
-    const manifest = generate(value);
-    const sbomRoot = join(value.directory, "sboms");
-    mkdirSync(sbomRoot);
-    for (const platform of ["macos", "windows", "linux"]) {
-      writeFileSync(
-        join(sbomRoot, `${platform}.cdx.json`),
-        JSON.stringify({
-          bomFormat: "CycloneDX",
-          specVersion: "1.6",
-          serialNumber: `urn:uuid:00000000-0000-4000-8000-00000000000${platform === "macos" ? "1" : platform === "windows" ? "2" : "3"}`,
-          version: 1,
-          metadata: {
-            component: { type: "application", name: `SkyTwin ${platform}` },
-          },
-          components: [{ type: "library", name: "dependency", version: "1" }],
-        }),
-      );
-    }
-    const output = join(value.output, "release-sbom.cdx.json");
-    const index = generateReleaseSbomIndex({
-      manifest: join(value.output, "release-manifest.json"),
-      sbomRoot,
-      output,
-    });
-    expect(index.components).toHaveLength(manifest.assets.length);
-    expect(index.components[0].hashes).toEqual([
-      { alg: "SHA-256", content: manifest.assets[0].sha256 },
-    ]);
-    expect(index.components[0].externalReferences[0].type).toBe("bom");
-    expect(JSON.parse(readFileSync(output, "utf8"))).toEqual(index);
-    expect(
-      readFileSync(join(value.output, "sboms", "macos.cdx.json"), "utf8"),
-    ).toBe(readFileSync(join(sbomRoot, "macos.cdx.json"), "utf8"));
-  });
-
-  it("rejects a missing, malformed, or empty platform SBOM", () => {
-    const value = fixture();
-    generate(value);
-    const sbomRoot = join(value.directory, "sboms");
-    mkdirSync(sbomRoot);
-    for (const platform of ["macos", "windows"]) {
-      writeFileSync(
-        join(sbomRoot, `${platform}.cdx.json`),
-        JSON.stringify({
-          bomFormat: "CycloneDX",
-          specVersion: "1.6",
-          serialNumber: `urn:uuid:00000000-0000-4000-8000-00000000000${platform === "macos" ? "1" : "2"}`,
-          version: 1,
-          metadata: {},
-          components: [{ type: "library", name: "dependency" }],
-        }),
-      );
-    }
-    expect(() =>
-      generateReleaseSbomIndex({
-        manifest: join(value.output, "release-manifest.json"),
-        sbomRoot,
-        output: join(value.output, "release-sbom.cdx.json"),
-      }),
-    ).toThrow();
-    writeFileSync(
-      join(sbomRoot, "linux.cdx.json"),
-      JSON.stringify({
-        bomFormat: "CycloneDX",
-        specVersion: "1.6",
-        serialNumber: "urn:uuid:00000000-0000-4000-8000-000000000003",
-        version: 1,
-        metadata: {},
-        components: [],
-      }),
-    );
-    expect(() =>
-      generateReleaseSbomIndex({
-        manifest: join(value.output, "release-manifest.json"),
-        sbomRoot,
-        output: join(value.output, "release-sbom.cdx.json"),
-      }),
-    ).toThrow("not a supported");
   });
 });

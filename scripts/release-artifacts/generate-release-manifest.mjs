@@ -1,31 +1,84 @@
 #!/usr/bin/env node
 
-import {
-  constants,
-  copyFileSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readdirSync,
-  realpathSync,
-  statSync,
-  writeFileSync,
-  closeSync,
-  fstatSync,
-  readSync,
-} from "node:fs";
-import { createHash } from "node:crypto";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { lstatSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
+import { basename, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CANONICAL_RELEASE_ASSETS } from "../release-claims/release-constants.mjs";
+import {
+  pathsOverlap,
+  readStableRegularFile,
+  stageStableRegularFile,
+} from "./file-integrity.mjs";
+import { writeReleaseSpdx } from "./generate-release-spdx.mjs";
 
-const REQUIRED_IDENTITY = [
+const PLATFORMS = new Map([
+  ["SkyTwin-macOS-dmg", "macos"],
+  ["SkyTwin-macOS-zip", "macos"],
+  ["SkyTwin-macOS-update-manifest", "macos"],
+  ["SkyTwin-Windows-installer", "windows"],
+  ["SkyTwin-Windows-update-manifest", "windows"],
+  ["SkyTwin-Linux-AppImage", "linux"],
+  ["SkyTwin-Linux-deb", "linux"],
+  ["SkyTwin-Linux-rpm", "linux"],
+  ["SkyTwin-Linux-update-manifest", "linux"],
+]);
+
+const UPDATE_TARGETS = new Map([
+  ["SkyTwin-macOS-update-manifest", "SkyTwin-macOS-zip"],
+  ["SkyTwin-Windows-update-manifest", "SkyTwin-Windows-installer"],
+  ["SkyTwin-Linux-update-manifest", "SkyTwin-Linux-AppImage"],
+]);
+
+export function expectedFilename(artifactName, appVersion) {
+  const version = appVersion.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new Map([
+    [
+      "SkyTwin-macOS-dmg",
+      new RegExp(`^SkyTwin-${version}-(?:arm64|x64)\\.dmg$`, "u"),
+    ],
+    [
+      "SkyTwin-macOS-zip",
+      new RegExp(`^SkyTwin-${version}-(?:arm64|x64)\\.zip$`, "u"),
+    ],
+    ["SkyTwin-macOS-update-manifest", /^latest-mac\.yml$/u],
+    [
+      "SkyTwin-Windows-installer",
+      new RegExp(`^SkyTwin Setup ${version}\\.exe$`, "u"),
+    ],
+    ["SkyTwin-Windows-update-manifest", /^latest\.yml$/u],
+    [
+      "SkyTwin-Linux-AppImage",
+      new RegExp(`^SkyTwin-${version}\\.AppImage$`, "u"),
+    ],
+    [
+      "SkyTwin-Linux-deb",
+      new RegExp(`^skytwin-desktop_${version}_(?:amd64|arm64)\\.deb$`, "u"),
+    ],
+    [
+      "SkyTwin-Linux-rpm",
+      new RegExp(
+        `^skytwin-desktop-${version}\\.(?:x86_64|aarch64)\\.rpm$`,
+        "u",
+      ),
+    ],
+    ["SkyTwin-Linux-update-manifest", /^latest-linux\.yml$/u],
+  ]).get(artifactName);
+}
+
+export function artifactPlatform(artifactName) {
+  return PLATFORMS.get(artifactName);
+}
+
+const REQUIRED_OPTIONS = [
+  "root",
+  "output",
   "repository",
   "commit",
   "ref",
   "releaseTag",
   "appVersion",
   "runId",
+  "created",
 ];
 
 function parseArgs(argv) {
@@ -39,304 +92,149 @@ function parseArgs(argv) {
     if (Object.hasOwn(result, name)) throw new Error(`duplicate --${name}`);
     result[name] = value;
   }
-  for (const name of ["root", "output", "contract", ...REQUIRED_IDENTITY]) {
+  for (const name of REQUIRED_OPTIONS)
     if (!result[name]) throw new Error(`missing --${name}`);
-  }
-  assertReleaseIdentity(result);
   return result;
 }
 
-function assertReleaseIdentity(identity) {
-  if (!/^[0-9a-f]{40}$/.test(identity.commit))
-    throw new Error("commit must be a full lowercase Git SHA");
-  const tagMatch = identity.releaseTag.match(
-    /^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/,
+function canonicalTimestamp(value) {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value)) return false;
+  const parsed = Date.parse(value);
+  return (
+    !Number.isNaN(parsed) &&
+    new Date(parsed).toISOString().replace(".000Z", "Z") === value
   );
-  if (!tagMatch)
-    throw new Error("releaseTag must match the four-segment VERSION");
+}
+
+export function assertReleaseIdentity(identity) {
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(identity.repository ?? ""))
+    throw new Error("repository must be owner/name");
+  if (!/^[0-9a-f]{40}$/u.test(identity.commit ?? ""))
+    throw new Error("commit must be a full lowercase Git SHA");
+  if (
+    typeof identity.releaseTag !== "string" ||
+    !/^v[A-Za-z0-9][A-Za-z0-9._+-]*$/u.test(identity.releaseTag)
+  )
+    throw new Error("releaseTag must be an explicit safe v-prefixed tag");
   if (identity.ref !== `refs/tags/${identity.releaseTag}`)
     throw new Error("ref must identify releaseTag exactly");
-  if (!/^[1-9][0-9]*$/.test(identity.runId))
+  if (!/^[1-9][0-9]*$/u.test(String(identity.runId ?? "")))
     throw new Error("runId must be a positive integer");
   if (
-    !/^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(
-      identity.appVersion,
+    !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/u.test(
+      identity.appVersion ?? "",
     )
   )
-    throw new Error("appVersion must be a three-segment numeric version");
-  const [, major, minor, patch, build] = tagMatch;
-  if (Number(build) >= 100 || Number(patch) > 999999)
-    throw new Error("releaseTag cannot be represented as an app version");
-  const expectedAppVersion = `${major}.${minor}.${Number(patch) * 100 + Number(build)}`;
-  if (identity.appVersion !== expectedAppVersion)
-    throw new Error("appVersion does not match releaseTag");
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(identity.repository))
-    throw new Error("repository must be owner/name");
-}
-
-function within(root, candidate) {
-  const rel = relative(root, candidate);
-  return (
-    rel !== "" &&
-    rel !== ".." &&
-    !rel.startsWith(`..${sep}`) &&
-    !isAbsolute(rel)
-  );
-}
-
-export function hashStableRegularFile(root, path) {
-  const resolvedRoot = realpathSync(root);
-  const resolvedPath = realpathSync(path);
-  if (!within(resolvedRoot, resolvedPath))
-    throw new Error(`${path} escapes artifact root`);
-  const beforePath = statSync(path, { bigint: true });
-  if (!beforePath.isFile()) throw new Error(`${path} is not a regular file`);
-  const noFollow = constants.O_NOFOLLOW ?? 0;
-  const fd = openSync(path, constants.O_RDONLY | noFollow);
-  try {
-    const before = fstatSync(fd, { bigint: true });
-    if (!before.isFile()) throw new Error(`${path} is not a regular file`);
-    const sha256 = createHash("sha256");
-    const sha512 = createHash("sha512");
-    const buffer = Buffer.allocUnsafe(1024 * 1024);
-    let position = 0;
-    for (;;) {
-      const count = readSync(fd, buffer, 0, buffer.length, position);
-      if (count === 0) break;
-      sha256.update(buffer.subarray(0, count));
-      sha512.update(buffer.subarray(0, count));
-      position += count;
-    }
-    const after = fstatSync(fd, { bigint: true });
-    const afterPath = statSync(path, { bigint: true });
-    for (const field of ["dev", "ino", "size", "mtimeNs"]) {
-      if (
-        before[field] !== after[field] ||
-        before[field] !== beforePath[field] ||
-        after[field] !== afterPath[field]
-      ) {
-        throw new Error(`${path} changed while hashing`);
-      }
-    }
-    return {
-      sha256: sha256.digest("hex"),
-      sha512: sha512.digest("base64"),
-      size: Number(after.size),
-    };
-  } finally {
-    closeSync(fd);
-  }
-}
-
-export function generateReleaseManifest(options) {
-  assertReleaseIdentity(options);
-  const root = resolve(options.root);
-  const output = resolve(options.output);
-  const contractPath = resolve(options.contract);
-  if (!existsSync(root)) throw new Error("artifact root does not exist");
-  const contract = JSON.parse(readFileSync(contractPath, "utf8"));
-  if (
-    contract.schemaVersion !== 1 ||
-    contract.releaseSurface !== "desktop" ||
-    !Array.isArray(contract.artifacts)
-  ) {
-    throw new Error("unsupported release artifact contract");
-  }
-  const seenArtifactNames = new Set();
-  const seenBasenames = new Set();
-  const assets = [];
-  const updateManifests = [];
-  for (const expected of contract.artifacts) {
-    if (
-      !expected ||
-      typeof expected !== "object" ||
-      typeof expected.artifactName !== "string" ||
-      !["macos", "windows", "linux"].includes(expected.platform) ||
-      !["installer", "archive", "package", "update-manifest"].includes(
-        expected.kind,
-      ) ||
-      typeof expected.filenamePattern !== "string"
-    )
-      throw new Error("invalid artifact contract entry");
-    if (seenArtifactNames.has(expected.artifactName))
-      throw new Error(`duplicate contract artifact ${expected.artifactName}`);
-    seenArtifactNames.add(expected.artifactName);
-    const directory = join(root, expected.artifactName);
-    const entries = statDirectoryFiles(directory);
-    if (entries.length !== 1)
-      throw new Error(`${expected.artifactName} must contain exactly one file`);
-    const filename = entries[0];
-    const pattern = new RegExp(expected.filenamePattern, "u");
-    if (!pattern.test(filename))
-      throw new Error(
-        `${expected.artifactName} has unexpected filename ${filename}`,
-      );
-    if (seenBasenames.has(filename))
-      throw new Error(`duplicate release filename ${filename}`);
-    seenBasenames.add(filename);
-    const sourcePath = join(directory, filename);
-    if (expected.kind === "update-manifest") {
-      updateManifests.push({ path: sourcePath, platform: expected.platform });
-    } else {
-      assertArtifactVersion(filename, options.appVersion);
-    }
-    const identity = hashStableRegularFile(root, sourcePath);
-    assets.push({
-      artifactName: expected.artifactName,
-      filename,
-      platform: expected.platform,
-      kind: expected.kind,
-      size: identity.size,
-      sha256: identity.sha256,
-      sha512: identity.sha512,
-    });
-  }
-  for (const update of updateManifests) {
-    assertUpdateManifest(
-      update.path,
-      options.appVersion,
-      assets.filter(
-        (asset) =>
-          asset.platform === update.platform &&
-          asset.kind !== "update-manifest",
-      ),
+    throw new Error(
+      "appVersion must be an explicit three-segment numeric version",
     );
-  }
-  assets.sort((left, right) => left.filename.localeCompare(right.filename));
-  mkdirSync(output, { recursive: false });
-  const staged = join(output, "assets");
-  mkdirSync(staged);
-  for (const asset of assets) {
-    const source = join(root, asset.artifactName, asset.filename);
-    const destination = join(staged, asset.filename);
-    copyFileSync(source, destination, constants.COPYFILE_EXCL);
-    const copied = hashStableRegularFile(output, destination);
-    if (
-      copied.sha256 !== asset.sha256 ||
-      copied.sha512 !== asset.sha512 ||
-      copied.size !== asset.size
-    )
-      throw new Error(`${asset.filename} changed while staging`);
-  }
-  const manifest = {
-    schemaVersion: 1,
-    generatedBy: "release-artifact-verifier",
-    releaseSurface: contract.releaseSurface,
-    repository: options.repository,
-    sourceCommit: options.commit,
-    ref: options.ref,
-    releaseTag: options.releaseTag,
-    appVersion: options.appVersion,
-    runId: options.runId,
-    assets,
-  };
-  writeFileSync(
-    join(output, "release-manifest.json"),
-    `${JSON.stringify(manifest, null, 2)}\n`,
-    { flag: "wx" },
-  );
-  writeFileSync(
-    join(output, "SHA256SUMS"),
-    assets.map((asset) => `${asset.sha256}  ${asset.filename}`).join("\n") +
-      "\n",
-    { flag: "wx" },
-  );
-  return manifest;
+  if (!canonicalTimestamp(identity.created ?? ""))
+    throw new Error(
+      "created must be an exact UTC timestamp without fractional seconds",
+    );
+}
+
+function exactDirectoryNames(root) {
+  const expected = CANONICAL_RELEASE_ASSETS.map(([name]) => name).sort();
+  const actual = readdirSync(root, { withFileTypes: true })
+    .map((entry) => {
+      if (!entry.isDirectory() || entry.isSymbolicLink())
+        throw new Error(
+          `${join(root, entry.name)} is not a real artifact directory`,
+        );
+      return entry.name;
+    })
+    .sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected))
+    throw new Error(
+      "artifact root must contain exactly the nine canonical artifact directories",
+    );
+}
+
+function directRegularFiles(directory) {
+  const directoryStat = lstatSync(directory, { bigint: true });
+  if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink())
+    throw new Error(`${directory} is not a real artifact directory`);
+  const files = readdirSync(directory, { withFileTypes: true })
+    .map((entry) => {
+      if (
+        basename(entry.name) !== entry.name ||
+        !entry.isFile() ||
+        entry.isSymbolicLink()
+      )
+        throw new Error(
+          `${join(directory, entry.name)} is not a direct regular file`,
+        );
+      return entry.name;
+    })
+    .sort();
+  if (files.length === 0)
+    throw new Error(`${directory} contains no release subjects`);
+  return files;
 }
 
 function assertArtifactVersion(filename, appVersion) {
-  const escaped = appVersion.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const token = new RegExp(`(?:^|[^0-9])${escaped}(?:[^0-9]|$)`, "u");
-  if (!token.test(filename)) {
+  const escaped = appVersion.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  if (!new RegExp(`(?:^|[^0-9])${escaped}(?:[^0-9]|$)`, "u").test(filename))
     throw new Error(`${filename} does not identify app version ${appVersion}`);
-  }
 }
 
-function assertUpdateManifest(path, appVersion, expectedAssets) {
-  const contents = readFileSync(path, "utf8");
+function topLevelValue(contents, key) {
   const matches = [
-    ...contents.matchAll(/^version:\s*["']?([^\s"']+)["']?\s*$/gmu),
+    ...contents.matchAll(
+      new RegExp(`^${key}:\\s*(?:"([^"]+)"|'([^']+)'|(.+?))\\s*$`, "gmu"),
+    ),
   ];
-  if (matches.length !== 1 || matches[0][1] !== appVersion) {
-    throw new Error(`${path} does not identify app version ${appVersion}`);
-  }
-  const entries = parseUpdateFiles(contents, path);
-  const expectedByName = new Map(
-    expectedAssets.map((asset) => [asset.filename, asset]),
-  );
+  if (matches.length !== 1)
+    throw new Error(`update manifest has invalid ${key}`);
+  return matches[0][1] ?? matches[0][2] ?? matches[0][3];
+}
+
+function plainYamlScalar(value, path) {
+  const trimmed = value.trim();
   if (
-    entries.length !== expectedByName.size ||
-    new Set(entries.map((entry) => entry.url)).size !== entries.length ||
-    entries.some((entry) => !expectedByName.has(entry.url))
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
   ) {
-    throw new Error(
-      `${path} does not reference the exact platform release set`,
-    );
+    const unquoted = trimmed.slice(1, -1);
+    if (unquoted.includes(trimmed[0]))
+      throw new Error(`${path} has unsupported quoted metadata`);
+    return unquoted;
   }
-  for (const entry of entries) {
-    const expected = expectedByName.get(entry.url);
-    if (
-      entry.sha512 !== expected.sha512 ||
-      (entry.size !== undefined && entry.size !== expected.size)
-    ) {
-      throw new Error(`${path} has stale identity for ${entry.url}`);
-    }
-  }
-  const primaryPath = topLevelValue(contents, "path");
-  const primarySha512 = topLevelValue(contents, "sha512");
-  const primary = entries.find((entry) => entry.url === primaryPath);
-  if (!primary || primary.sha512 !== primarySha512) {
-    throw new Error(`${path} has an invalid primary update identity`);
-  }
+  if (trimmed.includes('"') || trimmed.includes("'"))
+    throw new Error(`${path} has malformed scalar metadata`);
+  return trimmed;
 }
 
 function parseUpdateFiles(contents, path) {
-  const lines = contents.replace(/\r\n/g, "\n").split("\n");
-  const fileBlocks = lines
-    .map((line, lineIndex) => (line === "files:" ? lineIndex : -1))
-    .filter((lineIndex) => lineIndex >= 0);
-  if (fileBlocks.length !== 1)
+  const lines = contents.replace(/\r\n/gu, "\n").split("\n");
+  const starts = lines
+    .map((line, index) => (line === "files:" ? index : -1))
+    .filter((index) => index >= 0);
+  if (starts.length !== 1)
     throw new Error(`${path} must have exactly one files list`);
-  const filesIndex = fileBlocks[0];
   const entries = [];
-  let index = filesIndex + 1;
+  let index = starts[0] + 1;
   while (index < lines.length && lines[index].startsWith(" ")) {
     const match = lines[index].match(/^  - url: ([^\s].*)$/u);
     if (!match) throw new Error(`${path} has malformed files metadata`);
-    const entry = { url: match[1] };
+    const entry = { url: plainYamlScalar(match[1], path) };
     index += 1;
     while (index < lines.length && lines[index].startsWith("    ")) {
       const field = lines[index].match(/^    ([A-Za-z][A-Za-z0-9]*): (.+)$/u);
-      if (!field) throw new Error(`${path} has malformed file metadata`);
-      if (!["sha512", "size", "blockMapSize"].includes(field[1]))
-        throw new Error(`${path} has unsupported file metadata ${field[1]}`);
-      if (field[1] === "sha512") {
-        if (entry.sha512 !== undefined)
-          throw new Error(`${path} has duplicate file sha512`);
-        entry.sha512 = field[2];
-      }
-      if (field[1] === "size") {
-        if (entry.size !== undefined)
-          throw new Error(`${path} has duplicate file size`);
-        if (!/^[1-9][0-9]*$/.test(field[2]))
-          throw new Error(`${path} has invalid file size`);
-        entry.size = Number(field[2]);
-      }
-      if (field[1] === "blockMapSize") {
-        if (entry.blockMapSize !== undefined)
-          throw new Error(`${path} has duplicate block map size`);
-        if (!/^[1-9][0-9]*$/.test(field[2]))
-          throw new Error(`${path} has invalid block map size`);
-        entry.blockMapSize = Number(field[2]);
-      }
+      if (!field || !["sha512", "size", "blockMapSize"].includes(field[1]))
+        throw new Error(`${path} has unsupported file metadata`);
+      if (entry[field[1]] !== undefined)
+        throw new Error(`${path} has duplicate file ${field[1]}`);
+      if (["size", "blockMapSize"].includes(field[1])) {
+        if (!/^[1-9][0-9]*$/u.test(field[2]))
+          throw new Error(`${path} has invalid file ${field[1]}`);
+        entry[field[1]] = Number(field[2]);
+      } else entry[field[1]] = plainYamlScalar(field[2], path);
       index += 1;
     }
-    if (
-      typeof entry.sha512 !== "string" ||
-      !/^[A-Za-z0-9+/]{86}==$/.test(entry.sha512)
-    ) {
+    if (!/^[A-Za-z0-9+/]{86}==$/u.test(entry.sha512 ?? ""))
       throw new Error(`${path} has invalid file sha512`);
-    }
     entries.push(entry);
   }
   if (entries.length === 0) throw new Error(`${path} has an empty files list`);
@@ -345,36 +243,145 @@ function parseUpdateFiles(contents, path) {
   return entries;
 }
 
-function topLevelValue(contents, key) {
-  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const matches = [
-    ...contents.matchAll(
-      new RegExp(`^${escaped}: ["']?([^\\s"']+)["']?\\s*$`, "gmu"),
-    ),
-  ];
-  if (matches.length !== 1)
-    throw new Error(`update manifest has invalid ${key}`);
-  return matches[0][1];
-}
-
-function statDirectoryFiles(directory) {
-  const resolved = realpathSync(directory);
-  const entries = readFileNames(resolved);
+export function assertUpdateManifest(asset, assets, appVersion, output) {
+  const contents = readStableRegularFile(
+    output,
+    join(output, asset.stagedPath),
+    { maxBytes: 4 * 1024 * 1024 },
+  ).bytes.toString("utf8");
+  if (topLevelValue(contents, "version") !== appVersion)
+    throw new Error(
+      `${asset.filename} does not identify app version ${appVersion}`,
+    );
+  const available = new Map(
+    assets
+      .filter(
+        (candidate) =>
+          candidate.artifactName === UPDATE_TARGETS.get(asset.artifactName),
+      )
+      .map((candidate) => [candidate.filename, candidate]),
+  );
+  const entries = parseUpdateFiles(contents, asset.filename);
+  if (entries.length !== 1)
+    throw new Error(
+      `${asset.filename} must contain exactly one updater subject`,
+    );
+  if (new Set(entries.map((entry) => entry.url)).size !== entries.length)
+    throw new Error(`${asset.filename} has duplicate updater subjects`);
   for (const entry of entries) {
-    if (entry === "." || entry === ".." || basename(entry) !== entry)
-      throw new Error(`invalid artifact filename ${entry}`);
+    if (basename(entry.url) !== entry.url)
+      throw new Error(`${asset.filename} references a non-local subject`);
+    const expected = available.get(entry.url);
+    if (!expected)
+      throw new Error(
+        `${asset.filename} references an unexpected subject ${entry.url}`,
+      );
+    if (
+      entry.sha512 !== expected.sha512 ||
+      (entry.size !== undefined && entry.size !== expected.size)
+    )
+      throw new Error(`${asset.filename} has stale identity for ${entry.url}`);
   }
-  return entries;
+  const primary = entries.find(
+    (entry) => entry.url === topLevelValue(contents, "path"),
+  );
+  if (!primary || primary.sha512 !== topLevelValue(contents, "sha512"))
+    throw new Error(`${asset.filename} has an invalid primary update identity`);
 }
 
-function readFileNames(directory) {
-  return readdirSync(directory, { withFileTypes: true })
-    .map((entry) => {
-      if (!entry.isFile() || entry.isSymbolicLink())
-        throw new Error(`${join(directory, entry.name)} is not a regular file`);
-      return entry.name;
-    })
-    .sort();
+export function generateReleaseManifest(options) {
+  assertReleaseIdentity(options);
+  const root = resolve(options.root);
+  const output = resolve(options.output);
+  if (pathsOverlap(root, output))
+    throw new Error("artifact root and output must not overlap");
+  const rootStat = lstatSync(root, { bigint: true });
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+    throw new Error("artifact root must be a real directory");
+  exactDirectoryNames(root);
+  mkdirSync(output, { recursive: false });
+  mkdirSync(join(output, "assets"));
+
+  const assets = [];
+  const seenFilenames = new Set();
+  for (const [artifactName, kind] of CANONICAL_RELEASE_ASSETS) {
+    const directory = join(root, artifactName);
+    const filenames = directRegularFiles(directory);
+    if (filenames.length !== 1)
+      throw new Error(
+        `${artifactName} must contain exactly one release subject`,
+      );
+    for (const filename of filenames) {
+      if (!expectedFilename(artifactName, options.appVersion)?.test(filename))
+        throw new Error(`${artifactName} has unexpected filename ${filename}`);
+      if (seenFilenames.has(filename))
+        throw new Error(`duplicate release filename ${filename}`);
+      seenFilenames.add(filename);
+      if (kind !== "update-manifest")
+        assertArtifactVersion(filename, options.appVersion);
+      const stagedPath = posix.join("assets", filename);
+      const identity = stageStableRegularFile(
+        root,
+        join(directory, filename),
+        join(output, stagedPath),
+        options.testHooks?.[artifactName],
+      );
+      if (identity.size === 0)
+        throw new Error(`${artifactName} contains an empty release subject`);
+      assets.push({
+        artifactName,
+        filename,
+        subjectPath: posix.join("artifacts", artifactName, filename),
+        stagedPath,
+        platform: PLATFORMS.get(artifactName),
+        kind,
+        size: identity.size,
+        sha1: identity.sha1,
+        sha256: identity.sha256,
+        sha512: identity.sha512,
+      });
+    }
+  }
+  assets.sort((left, right) =>
+    left.filename < right.filename
+      ? -1
+      : left.filename > right.filename
+        ? 1
+        : 0,
+  );
+  for (const asset of assets.filter(({ kind }) => kind === "update-manifest"))
+    assertUpdateManifest(asset, assets, options.appVersion, output);
+
+  const manifest = {
+    schemaVersion: 2,
+    generatedBy: "release-artifact-material-generator",
+    releaseSurface: "desktop",
+    repository: options.repository,
+    sourceCommit: options.commit,
+    sourceRef: options.ref,
+    releaseTag: options.releaseTag,
+    appVersion: options.appVersion,
+    runId: String(options.runId),
+    created: options.created,
+    assets,
+  };
+  const manifestPath = join(output, "release-artifact-manifest.json");
+  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+    flag: "wx",
+  });
+  const verificationDirectory = join(output, "artifact-verification");
+  mkdirSync(verificationDirectory);
+  writeFileSync(
+    join(verificationDirectory, "SHA256SUMS"),
+    `${assets.map((asset) => `${asset.sha256}  ${asset.filename}`).join("\n")}\n`,
+    { flag: "wx" },
+  );
+  writeReleaseSpdx({
+    root: output,
+    manifest,
+    output: join(verificationDirectory, "release.spdx.json"),
+  });
+  return manifest;
 }
 
 function main() {
@@ -382,13 +389,13 @@ function main() {
   generateReleaseManifest({
     root: args.root,
     output: args.output,
-    contract: args.contract,
     repository: args.repository,
     commit: args.commit,
     ref: args.ref,
     releaseTag: args.releaseTag,
     appVersion: args.appVersion,
     runId: args.runId,
+    created: args.created,
   });
 }
 

@@ -43,7 +43,8 @@
     "demo:narrate": "cd scripts/demo && pnpm narrate",
     "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium",
     "claims:check": "node scripts/release-claims/check-release-claims.mjs",
-    "claims:test": "vitest run scripts/release-claims/*.test.mjs"
+    "claims:test": "vitest run scripts/release-claims/*.test.mjs",
+    "test:release-artifacts": "vitest run scripts/release-artifacts/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
