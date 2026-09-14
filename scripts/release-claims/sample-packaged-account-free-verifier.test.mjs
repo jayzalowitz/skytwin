@@ -13,6 +13,7 @@ import {
   parseCanonicalArgs,
   parseDiscoveryDescriptor,
   probeDashboard,
+  probeRendererProof,
   probeSampleLoop,
   selectDownloadedSubject,
   stopProcessTree,
@@ -200,6 +201,22 @@ describe("packaged sample HTTP probe", () => {
     });
   });
 
+  it("requires a nonce-bound populated renderer proof before the shared deadline", async () => {
+    const root = mkdtempSync(join(tmpdir(), "sample-renderer-proof-"));
+    roots.push(root);
+    const proof = join(root, "renderer-proof.json");
+    writeFileSync(proof, JSON.stringify({
+      schemaVersion: 1,
+      generatedBy: "packaged-sample-renderer",
+      nonce: "test-nonce",
+      route: "#/sample",
+      state: "populated",
+      proposalCount: 4,
+    }));
+    await expect(probeRendererProof(proof, "test-nonce", Date.now() + 5_000)).resolves.toBeUndefined();
+    await expect(probeRendererProof(proof, "other-nonce", Date.now() + 5_000)).rejects.toThrow(/another process/);
+  });
+
   it("passes only after populated reads, commands, isolation, denials, reset, and disposal", async () => {
     await withServer(successfulHandler(), async (url) => {
       const checks = await probeSampleLoop(url, "test-nonce");
@@ -258,6 +275,8 @@ describe("canonical verifier inputs", () => {
     expect(launch.options.cwd).toBe("/isolated/profile");
     expect(launch.options.env.NODE_ENV).toBe("production");
     expect(launch.options.env.SKYTWIN_DEV_AUTH_BYPASS).toBe("false");
+    expect(launch.options.env.SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE).toMatch(/^[0-9a-f]{64}$/);
+    expect(launch.options.env.SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF).toBe("/isolated/profile/electron/renderer-proof.json");
     expect(launch.options.env.GITHUB_TOKEN).toBeUndefined();
     expect(launch.options.env.DATABASE_URL).toBeUndefined();
   });

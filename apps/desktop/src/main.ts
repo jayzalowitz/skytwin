@@ -35,6 +35,7 @@ import {
   type WrappedUserKey,
 } from './key-broker.js';
 import { installVaultNavigationGuards } from './vault-renderer-security.js';
+import { collectPackagedSampleRendererProof } from './release-evidence-renderer.js';
 
 // This store contains passphrase-wrapped random root keys, never passphrases or
 // plaintext root keys. Source-field migration remains disabled until the
@@ -274,7 +275,14 @@ async function startApp(): Promise<void> {
   // Wait for web server to be ready
   const webReady = await waitForWeb(15000);
   if (webReady) {
-    mainWindow.loadURL('http://localhost:3200');
+    const load = mainWindow.loadURL('http://localhost:3200');
+    if (
+      process.env.SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE !== undefined ||
+      process.env.SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF !== undefined
+    ) {
+      await load;
+      await collectPackagedSampleRendererProof(mainWindow, app.getPath('userData'));
+    }
   }
 
   // Show main window, close splash

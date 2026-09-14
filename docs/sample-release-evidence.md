@@ -64,10 +64,14 @@ the process group to disappear after `SIGTERM`; Windows uses the tree-aware
 `taskkill /T /F` primitive because it has no process-group `SIGTERM`. A retry or
 fallback fails the evidence run.
 
-The live HTTP probe verifies:
+The live packaged probe verifies:
 
 - the dashboard shell, sample API, session, populated decision, and explanation
   are all available within one 60-second launch deadline;
+- the packaged Electron renderer activates the real first-run sample control,
+  reaches `#/sample`, and renders the four fictional proposal cards; its proof
+  file is confined to the fresh profile and bound to a renderer-only verifier
+  nonce that API, web, and worker children do not inherit;
 - nonce-bound sample readiness and non-cacheable responses;
 - unauthenticated denial with the development bypass disabled;
 - two distinct credentials with the advertised four-hour lifetime;

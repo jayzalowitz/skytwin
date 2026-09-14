@@ -52,11 +52,17 @@ describe('ServiceManager.getEnv()', () => {
   const saved = {
     SKYTWIN_DEV_AUTH_BYPASS: process.env['SKYTWIN_DEV_AUTH_BYPASS'],
     SKYTWIN_SERVICE_TOKEN: process.env['SKYTWIN_SERVICE_TOKEN'],
+    SKYTWIN_RELEASE_EVIDENCE_NONCE: process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'],
+    SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE: process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'],
+    SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF: process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'],
   };
 
   beforeEach(() => {
     delete process.env['SKYTWIN_DEV_AUTH_BYPASS'];
     delete process.env['SKYTWIN_SERVICE_TOKEN'];
+    delete process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'];
+    delete process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'];
+    delete process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'];
     rmSync(join(userDataDir, 'secrets'), { recursive: true, force: true });
   });
 
@@ -111,6 +117,16 @@ describe('ServiceManager.getEnv()', () => {
     // Pinned AFTER the ...process.env spread — the shell value loses.
     expect(env['SKYTWIN_DEV_AUTH_BYPASS']).toBe('false');
     expect(env['NODE_ENV']).toBe('production');
+  });
+
+  it('keeps renderer-proof authority out of every service child environment', () => {
+    process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'] = 'api-attribution';
+    process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'] = 'renderer-authority';
+    process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'] = '/private/proof.json';
+    const env = envOf(new ServiceManager());
+    expect(env['SKYTWIN_RELEASE_EVIDENCE_NONCE']).toBe('api-attribution');
+    expect(env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE']).toBeUndefined();
+    expect(env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF']).toBeUndefined();
   });
 });
 

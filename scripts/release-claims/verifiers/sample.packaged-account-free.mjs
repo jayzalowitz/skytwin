@@ -232,6 +232,26 @@ export async function probeDashboard(rawBaseUrl, deadline = Date.now() + 60_000)
   assert(Date.now() < deadline, "packaged sample exceeded the 60-second dashboard deadline");
 }
 
+export async function probeRendererProof(path, expectedNonce, deadline = Date.now() + 60_000) {
+  while (Date.now() < deadline) {
+    try {
+      const proof = inspectRegularFile(path, "packaged sample renderer proof");
+      assert(proof.sizeBytes <= 64 * 1024, "packaged sample renderer proof exceeds its size bound");
+      const value = JSON.parse(readFileSync(proof.path, "utf8"));
+      exactKeys(value, ["schemaVersion", "generatedBy", "nonce", "route", "state", "proposalCount"], "packaged sample renderer proof");
+      assert(value.schemaVersion === 1 && value.generatedBy === "packaged-sample-renderer", "packaged sample renderer proof identity is invalid");
+      assert(value.nonce === expectedNonce, "packaged sample renderer proof belongs to another process");
+      assert(value.route === "#/sample" && value.state === "populated" && value.proposalCount === 4, "packaged sample renderer did not prove the populated sample route");
+      assert(Date.now() < deadline, "packaged sample exceeded the 60-second renderer deadline");
+      return;
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+    }
+  }
+  throw new Error("packaged sample renderer proof was not produced before the 60-second deadline");
+}
+
 export async function probeSampleLoop(rawBaseUrl, expectedNonce, deadline = Date.now() + 60_000) {
   const baseUrl = validateBaseUrl(rawBaseUrl);
   assert(Date.now() < deadline, "packaged sample exceeded the 60-second sample deadline");
@@ -317,8 +337,8 @@ export async function probeSampleLoop(rawBaseUrl, expectedNonce, deadline = Date
 
   return CHECK_IDS.map((checkId) => ({
     checkId,
-    assertion: "The exact packaged subject completed the isolated account-free sample HTTP contract.",
-    measurement: `dashboard, API, populated decision and explanation reached within 60 seconds; ${pendingCount} approval-gated proposals; approve/reject/correct; two isolated sessions; bounded credential plus tamper, foreign-user, privileged-route, SSE, reset, disposal and replay denials; API-reported simulationOnly=true and externalEffects=false markers`,
+    assertion: "The exact packaged subject completed the isolated account-free sample contract.",
+    measurement: `rendered populated sample route, dashboard, API, decision and explanation reached within 60 seconds; ${pendingCount} approval-gated proposals; approve/reject/correct; two isolated sessions; bounded credential plus tamper, foreign-user, privileged-route, SSE, reset, disposal and replay denials; API-reported simulationOnly=true and externalEffects=false markers`,
   }));
 }
 
@@ -395,6 +415,8 @@ export async function stopProcessTree(child, dependencies = {}) {
 }
 
 export function makePackagedLaunch(executablePath, profileRoot, nonce) {
+  const rendererProofPath = join(profileRoot, "electron", "renderer-proof.json");
+  const rendererNonce = randomBytes(32).toString("hex");
   const env = {
     PATH: process.env.PATH ?? "",
     SystemRoot: process.env.SystemRoot ?? "",
@@ -411,9 +433,13 @@ export function makePackagedLaunch(executablePath, profileRoot, nonce) {
     NODE_ENV: "production",
     SKYTWIN_DEV_AUTH_BYPASS: "false",
     SKYTWIN_RELEASE_EVIDENCE_NONCE: nonce,
+    SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE: rendererNonce,
+    SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF: rendererProofPath,
   };
   const executableArgs = [`--user-data-dir=${join(profileRoot, "electron")}`];
   return {
+    rendererProofPath,
+    rendererNonce,
     command: process.platform === "linux" ? "/usr/bin/xvfb-run" : executablePath,
     args: process.platform === "linux" ? ["-a", executablePath, ...executableArgs] : executableArgs,
     options: {
@@ -455,6 +481,7 @@ async function bootAndProbeSampleLoop(executablePath) {
         const info = await requestJson(baseUrl, "/api/v1/demo/info");
         if (info.status === 200 && info.body?.available === true && info.body?.instanceNonce === nonce) {
           await probeDashboard(dashboardUrl.href, deadline);
+          await probeRendererProof(launch.rendererProofPath, launch.rendererNonce, deadline);
           return await probeSampleLoop(baseUrl.href, nonce, deadline);
         }
         if (info.body?.instanceNonce && info.body.instanceNonce !== nonce) {

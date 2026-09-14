@@ -229,8 +229,9 @@ The desktop app unpacks `<resources>/embedded/apps.tar.gz` into `<userData>/embe
 
 Before the gated workflow can publish, its evidence producers must exercise the
 candidate artifacts on clean machines and record digest-bound evidence for every
-item below. The packaged-sample verifier covers the HTTP portions of items 1 and
-2 as documented in [`sample-release-evidence.md`](./sample-release-evidence.md);
+item below. The packaged-sample verifier covers the rendered sample surface and
+HTTP portions of items 1 and 2 as documented in
+[`sample-release-evidence.md`](./sample-release-evidence.md);
 items 3–5 still require separate lifecycle evidence. A populated dashboard
 alone is not sufficient:
 
