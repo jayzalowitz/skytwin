@@ -58,11 +58,16 @@ packaged child receives a strict allowlisted environment with no GitHub, cloud,
 proxy, or database credentials. It starts on an unused loopback port with a
 fresh temporary OS and Electron profile, production authentication settings,
 and a random process attribution nonce. A report is written with exclusive
-creation only after the live process tree accepts the verifier-requested
-termination without forced cleanup and port 3100 is released.
+creation only after the live process tree accepts the first platform-native
+termination request and ports 3100 and 3200 are released. POSIX runners require
+the process group to disappear after `SIGTERM`; Windows uses the tree-aware
+`taskkill /T /F` primitive because it has no process-group `SIGTERM`. A retry or
+fallback fails the evidence run.
 
 The live HTTP probe verifies:
 
+- the dashboard shell, sample API, session, populated decision, and explanation
+  are all available within one 60-second launch deadline;
 - nonce-bound sample readiness and non-cacheable responses;
 - unauthenticated denial with the development bypass disabled;
 - two distinct credentials with the advertised four-hour lifetime;

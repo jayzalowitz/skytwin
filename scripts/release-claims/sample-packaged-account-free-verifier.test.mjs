@@ -12,6 +12,7 @@ import {
   oneExecutable,
   parseCanonicalArgs,
   parseDiscoveryDescriptor,
+  probeDashboard,
   probeSampleLoop,
   selectDownloadedSubject,
   stopProcessTree,
@@ -189,6 +190,16 @@ async function withServer(handler, callback) {
 }
 
 describe("packaged sample HTTP probe", () => {
+  it("requires the packaged dashboard shell before the shared deadline", async () => {
+    await withServer((_req, res) => {
+      res.setHeader("content-type", "text/html; charset=utf-8");
+      res.end('<div id="page-content"></div><script type="module" src="/js/app.js"></script>');
+    }, async (url) => {
+      await expect(probeDashboard(url, Date.now() + 5_000)).resolves.toBeUndefined();
+      await expect(probeDashboard(url, Date.now() - 1)).rejects.toThrow(/60-second/);
+    });
+  });
+
   it("passes only after populated reads, commands, isolation, denials, reset, and disposal", async () => {
     await withServer(successfulHandler(), async (url) => {
       const checks = await probeSampleLoop(url, "test-nonce");
@@ -272,7 +283,7 @@ describe("canonical verifier inputs", () => {
     expect(() => parseDiscoveryDescriptor(extra, digest(extra))).toThrow(/keys were/);
   });
 
-  it("requests tree-aware Windows shutdown before accepting a clean stop", async () => {
+  it("requests deterministic whole-tree Windows shutdown before accepting cleanup", async () => {
     const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null, kill: () => false });
     const requests = [];
     const result = await stopProcessTree(child, {
@@ -283,7 +294,7 @@ describe("canonical verifier inputs", () => {
       },
       timeoutMs: 10,
     });
-    expect(requests).toEqual([false]);
+    expect(requests).toEqual([true]);
     expect(result).toEqual({ requested: true, forced: false });
   });
 

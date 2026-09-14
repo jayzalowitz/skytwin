@@ -993,7 +993,7 @@
         },
         {
           "path": "scripts/release-claims/verifiers/sample.packaged-account-free.mjs",
-          "sha256": "ead84e925d3e06e2601aa4d320209734c7edb0353687874dc22294a2467638de",
+          "sha256": "acac7268eab32426ceb2b280b226497b3b1ef5378cbb95525ae170e447f0a499",
           "why": "Canonical native verifier binds the downloaded container, derived executable, isolated runtime probe, and structured report to the current tagged run"
         }
       ],

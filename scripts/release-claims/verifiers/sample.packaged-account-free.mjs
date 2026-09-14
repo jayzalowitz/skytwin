@@ -173,8 +173,7 @@ async function issueSampleSession(baseUrl, expectedUserId) {
   return issued.body.token;
 }
 
-async function populatedDecisionAndExplanation(baseUrl, userId, token) {
-  const deadline = Date.now() + 60_000;
+async function populatedDecisionAndExplanation(baseUrl, userId, token, deadline) {
   let lastReason = "no decision was returned";
   while (Date.now() < deadline) {
     const decisions = await requestJson(baseUrl, `/api/decisions/${encodeURIComponent(userId)}?limit=50`, { token });
@@ -216,8 +215,26 @@ function assertInitialSimulation(value) {
   return value.proposals.filter((proposal) => proposal.status === "pending").length;
 }
 
-export async function probeSampleLoop(rawBaseUrl, expectedNonce) {
+export async function probeDashboard(rawBaseUrl, deadline = Date.now() + 60_000) {
   const baseUrl = validateBaseUrl(rawBaseUrl);
+  assert(Date.now() < deadline, "packaged sample exceeded the 60-second dashboard deadline");
+  const response = await fetch(baseUrl, {
+    headers: { Accept: "text/html" },
+    redirect: "error",
+    signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
+  });
+  assert(response.status === 200, `sample dashboard returned HTTP ${response.status}`);
+  assert((response.headers.get("content-type") ?? "").toLowerCase().includes("text/html"), "sample dashboard returned a non-HTML content type");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert(bytes.length > 0 && bytes.length <= 4 * 1024 * 1024, "sample dashboard response size is outside the release bound");
+  const html = new TextDecoder().decode(bytes);
+  assert(html.includes('id="page-content"') && html.includes('src="/js/app.js"'), "sample dashboard shell is incomplete");
+  assert(Date.now() < deadline, "packaged sample exceeded the 60-second dashboard deadline");
+}
+
+export async function probeSampleLoop(rawBaseUrl, expectedNonce, deadline = Date.now() + 60_000) {
+  const baseUrl = validateBaseUrl(rawBaseUrl);
+  assert(Date.now() < deadline, "packaged sample exceeded the 60-second sample deadline");
   const info = await requestJson(baseUrl, "/api/v1/demo/info");
   assert(info.status === 200 && info.cacheControl === "no-store", "sample info was unavailable or cacheable");
   assert(info.body.available === true && info.body.userId === "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "packaged sample reserved identity is unavailable");
@@ -232,7 +249,7 @@ export async function probeSampleLoop(rawBaseUrl, expectedNonce) {
   const tokenA = await issueSampleSession(baseUrl, info.body.userId);
   const tokenB = await issueSampleSession(baseUrl, info.body.userId);
   assert(tokenA !== tokenB, "two sample sessions reused a credential");
-  await populatedDecisionAndExplanation(baseUrl, info.body.userId, tokenA);
+  await populatedDecisionAndExplanation(baseUrl, info.body.userId, tokenA, deadline);
 
   const initialA = await requestJson(baseUrl, "/api/v1/demo/simulation", { token: tokenA });
   assert(initialA.status === 200 && initialA.cacheControl === "no-store", "sample simulation did not return a private response");
@@ -296,11 +313,12 @@ export async function probeSampleLoop(rawBaseUrl, expectedNonce) {
   assert(isolatedAfterDiscard.status === 200 && isolatedAfterDiscard.body?.revision === 0, "discarding one sample changed another session");
   const cleanupB = await requestJson(baseUrl, "/api/v1/demo/simulation", { method: "DELETE", token: tokenB });
   assert(cleanupB.status === 204, "second sample session was not disposed");
+  assert(Date.now() < deadline, "packaged sample exceeded the 60-second sample deadline");
 
   return CHECK_IDS.map((checkId) => ({
     checkId,
     assertion: "The exact packaged subject completed the isolated account-free sample HTTP contract.",
-    measurement: `one populated decision and explanation; ${pendingCount} approval-gated proposals; approve/reject/correct; two isolated sessions; bounded credential plus tamper, foreign-user, privileged-route, SSE, reset, disposal and replay denials; API-reported simulationOnly=true and externalEffects=false markers`,
+    measurement: `dashboard, API, populated decision and explanation reached within 60 seconds; ${pendingCount} approval-gated proposals; approve/reject/correct; two isolated sessions; bounded credential plus tamper, foreign-user, privileged-route, SSE, reset, disposal and replay denials; API-reported simulationOnly=true and externalEffects=false markers`,
   }));
 }
 
@@ -336,10 +354,13 @@ export async function stopProcessTree(child, dependencies = {}) {
   let requested = false;
   if (platform === "win32") {
     try {
-      requestWindowsTreeStop(false);
+      // Windows has no SIGTERM process-group primitive. taskkill /T /F is the
+      // deterministic platform tree request; later retries are cleanup failures.
+      requestWindowsTreeStop(true);
       requested = true;
     } catch {
-      requested = false;
+      child.kill("SIGKILL");
+      return { requested: false, forced: true };
     }
   } else {
     try {
@@ -407,8 +428,10 @@ export function makePackagedLaunch(executablePath, profileRoot, nonce) {
 
 async function bootAndProbeSampleLoop(executablePath) {
   const baseUrl = validateBaseUrl("http://127.0.0.1:3100/");
+  const dashboardUrl = validateBaseUrl("http://127.0.0.1:3200/");
   assert(baseUrl.port === "3100", "packaged sample evidence must use port 3100");
   assert(await targetIsUnused(baseUrl), "sample API port was already occupied before launch");
+  assert(await targetIsUnused(dashboardUrl), "sample dashboard port was already occupied before launch");
   const profileRoot = mkdtempSync(join(tmpdir(), "skytwin-sample-evidence-"));
   for (const directory of [
     join(profileRoot, "AppData", "Roaming"), join(profileRoot, "AppData", "Local"),
@@ -417,11 +440,11 @@ async function bootAndProbeSampleLoop(executablePath) {
   ]) mkdirSync(directory, { recursive: true, mode: 0o700 });
   const nonce = randomBytes(32).toString("hex");
   const launch = makePackagedLaunch(executablePath, profileRoot, nonce);
+  const deadline = Date.now() + 60_000;
   const child = spawn(launch.command, launch.args, launch.options);
   let spawnError = null;
   child.once("error", (error) => { spawnError = error; });
   try {
-    const deadline = Date.now() + 120_000;
     let lastError = new Error("packaged sample did not become ready");
     while (Date.now() < deadline) {
       if (spawnError) throw spawnError;
@@ -431,7 +454,8 @@ async function bootAndProbeSampleLoop(executablePath) {
       try {
         const info = await requestJson(baseUrl, "/api/v1/demo/info");
         if (info.status === 200 && info.body?.available === true && info.body?.instanceNonce === nonce) {
-          return await probeSampleLoop(baseUrl.href, nonce);
+          await probeDashboard(dashboardUrl.href, deadline);
+          return await probeSampleLoop(baseUrl.href, nonce, deadline);
         }
         if (info.body?.instanceNonce && info.body.instanceNonce !== nonce) {
           throw new Error("sample API is not owned by the launched release subject");
@@ -446,10 +470,13 @@ async function bootAndProbeSampleLoop(executablePath) {
   } finally {
     const termination = await stopProcessTree(child);
     const shutdownDeadline = Date.now() + 10_000;
-    while (!(await targetIsUnused(baseUrl)) && Date.now() < shutdownDeadline) {
+    while (
+      (!(await targetIsUnused(baseUrl)) || !(await targetIsUnused(dashboardUrl))) &&
+      Date.now() < shutdownDeadline
+    ) {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
     }
-    const stoppedCleanly = await targetIsUnused(baseUrl);
+    const stoppedCleanly = await targetIsUnused(baseUrl) && await targetIsUnused(dashboardUrl);
     rmSync(profileRoot, { recursive: true, force: true });
     assert(termination.requested && !termination.forced, "packaged sample exited unexpectedly or required forced termination");
     assert(stoppedCleanly, "packaged sample left a listener running after shutdown");
