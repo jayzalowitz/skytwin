@@ -4,6 +4,10 @@ import { snapshotInferenceReceipt, verifyInferenceReceiptSeal } from '@skytwin/s
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator, bindUuidParamValidator } from '../middleware/validate-uuid.js';
 
+function sameUuid(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
 /**
  * Create the decisions query router.
  */
@@ -167,10 +171,11 @@ export function createDecisionsRouter(): Router {
         return;
       }
       const receipt = snapshotInferenceReceipt(row.receipt);
-      if (!receipt || !verifyInferenceReceiptSeal(receipt) || receipt.id !== row.id ||
-          receipt.version !== row.version || receipt.userId !== userId ||
-          receipt.decisionId !== row.decision_id || receipt.decisionId !== decisionId ||
-          receipt.explanationId !== row.explanation_id || receipt.status !== row.status) {
+      if (!receipt || !verifyInferenceReceiptSeal(receipt) || !sameUuid(receipt.id, row.id) ||
+          receipt.version !== row.version || !sameUuid(receipt.userId, userId) ||
+          !sameUuid(receipt.decisionId, row.decision_id) ||
+          !sameUuid(receipt.decisionId, decisionId) ||
+          !sameUuid(receipt.explanationId, row.explanation_id) || receipt.status !== row.status) {
         res.status(409).json({ error: 'Stored inference receipt failed integrity validation' });
         return;
       }

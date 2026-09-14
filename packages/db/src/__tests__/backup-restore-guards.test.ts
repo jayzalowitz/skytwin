@@ -165,6 +165,36 @@ describe('validateBackupData', () => {
     );
   });
 
+  it('accepts UUID linkage when signed and stored values differ only by case', () => {
+    const userId = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+    const decisionId = 'BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB';
+    const explanationId = 'CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC';
+    const receiptId = 'DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD';
+    const receipt = signedReceipt({
+      id: receiptId,
+      userId,
+      decisionId,
+      explanationId,
+    });
+    const bundle = decisionBundle(receipt);
+    const decision = bundle['decision'] as Record<string, unknown>;
+    decision['id'] = decisionId.toLowerCase();
+    decision['user_id'] = userId.toLowerCase();
+    const explanation = (bundle['explanations'] as Array<Record<string, unknown>>)[0]!;
+    explanation['id'] = explanationId.toLowerCase();
+    explanation['decision_id'] = decisionId.toLowerCase();
+    const storedReceipt = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    storedReceipt['id'] = receiptId.toLowerCase();
+    storedReceipt['decision_id'] = decisionId.toLowerCase();
+    storedReceipt['explanation_id'] = explanationId.toLowerCase();
+
+    const payload = validPayload();
+    (payload['user'] as Record<string, unknown>)['id'] = userId.toLowerCase();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toEqual([]);
+  });
+
   it('rejects a non-object', () => {
     expect(validateBackupData('nope')).toContain('payload is not an object');
     expect(validateBackupData(null)).toContain('payload is not an object');

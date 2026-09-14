@@ -46,6 +46,11 @@ import type {
 export const BACKUP_SCHEMA_VERSION = 2;
 const LEGACY_BACKUP_SCHEMA_VERSION = 1;
 
+function sameUuid(left: unknown, right: unknown): boolean {
+  return typeof left === 'string' && typeof right === 'string'
+    && left.toLowerCase() === right.toLowerCase();
+}
+
 /** A single decision with everything that hangs off it. */
 export interface DecisionBundle {
   decision: DecisionRow;
@@ -246,7 +251,7 @@ export function validateBackupData(value: unknown): string[] {
         problems.push(`decisions[${index}] is malformed`);
         continue;
       }
-      if (bundle.decision.user_id !== data.user?.id) {
+      if (!sameUuid(bundle.decision.user_id, data.user?.id)) {
         problems.push(`decisions[${index}] has inconsistent owner`);
       }
       if (!Array.isArray(bundle.candidateActions)) {
@@ -265,18 +270,20 @@ export function validateBackupData(value: unknown): string[] {
       }
       const explanations = Array.isArray(bundle.explanations) ? bundle.explanations : [];
       const receipts = Array.isArray(bundle.inferenceReceipts) ? bundle.inferenceReceipts : [];
-      const explanationIds = new Set(explanations.map((e) => e.id));
       for (const [explanationIndex, explanation] of explanations.entries()) {
-        if (explanation.decision_id !== bundle.decision.id) {
+        if (!sameUuid(explanation.decision_id, bundle.decision.id)) {
           problems.push(`decisions[${index}].explanations[${explanationIndex}] has inconsistent linkage`);
         }
       }
       for (const [receiptIndex, receipt] of receipts.entries()) {
         const signed = snapshotInferenceReceipt(receipt?.receipt);
-        if (!receipt || receipt.decision_id !== bundle.decision.id ||
-            !explanationIds.has(receipt.explanation_id) || !signed || !verifyInferenceReceiptSeal(signed) ||
-            signed.id !== receipt.id || signed.decisionId !== receipt.decision_id ||
-            signed.explanationId !== receipt.explanation_id || signed.userId !== data.user?.id ||
+        const linkedExplanation = explanations.some((explanation) =>
+          sameUuid(explanation.id, receipt?.explanation_id));
+        if (!receipt || !sameUuid(receipt.decision_id, bundle.decision.id) ||
+            !linkedExplanation || !signed || !verifyInferenceReceiptSeal(signed) ||
+            !sameUuid(signed.id, receipt.id) || !sameUuid(signed.decisionId, receipt.decision_id) ||
+            !sameUuid(signed.explanationId, receipt.explanation_id) ||
+            !sameUuid(signed.userId, data.user?.id) ||
             signed.version !== receipt.version || signed.status !== receipt.status) {
           problems.push(`decisions[${index}].inferenceReceipts[${receiptIndex}] has inconsistent linkage`);
         }
@@ -496,9 +503,11 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
 
       for (const r of bundle.inferenceReceipts ?? []) {
         const signed = snapshotInferenceReceipt(r.receipt);
-        if (!signed || !verifyInferenceReceiptSeal(signed) || signed.id !== r.id ||
-            signed.userId !== data.user.id || signed.decisionId !== bundle.decision.id ||
-            signed.decisionId !== r.decision_id || signed.explanationId !== r.explanation_id ||
+        if (!signed || !verifyInferenceReceiptSeal(signed) || !sameUuid(signed.id, r.id) ||
+            !sameUuid(signed.userId, data.user.id) ||
+            !sameUuid(signed.decisionId, bundle.decision.id) ||
+            !sameUuid(signed.decisionId, r.decision_id) ||
+            !sameUuid(signed.explanationId, r.explanation_id) ||
             signed.version !== r.version || signed.status !== r.status) {
           throw new Error(`receipt ${r.id} changed or failed validation during restore`);
         }

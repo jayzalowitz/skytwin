@@ -25,6 +25,7 @@ provide a general at-rest source-field guarantee:
 | [migration 032](../../packages/db/src/migrations/032-encrypted-oauth-tokens.sql)        | OAuth ciphertext columns and passphrase-verifier metadata exist beside nullable plaintext columns.                                                                                                                                                                        |
 | [migration 066](../../packages/db/src/migrations/066-encrypt-high-value-tables.sql)     | Ciphertext siblings exist for selected preference, profile, and `brain_pages` fields. Plaintext siblings remain.                                                                                                                                                          |
 | [migration 073](../../packages/db/src/migrations/073-source-key-registry.sql)           | The recovery-wrapper registry and content-free device-wrapper deletion intent exist. They establish custody metadata only; no production source field is encrypted.                                                                                                      |
+| [migration 074](../../packages/db/src/migrations/074-inference-receipts.sql)             | The user-child receipt table stores signed provider/model/endpoint/hash/cost/verification metadata without prompt or response bytes. It is locally readable and not application-level encrypted; no production workflow creates or exports receipts yet.                    |
 | [`DbTokenStore`](../../packages/connectors/src/oauth/db-token-store.ts)                 | It can decrypt or lazily migrate OAuth rows when its process has a key. The worker's cache is never populated by API unlock, and API OAuth callbacks still write plaintext through [`oauthRepository`](../../packages/db/src/repositories/oauth-repository.ts).           |
 | [`TwinRepositoryAdapter`](../../packages/db/src/adapters/twin-repository-adapter.ts)    | Preference encryption is opt-in through a process-global provider. No production composition root calls it, profile fields are still plaintext, and direct backup SQL bypasses it.                                                                                        |
 | [`brain_pages` repository](../../packages/memory-gbrain-crdb-adapter/src/repository.ts) | Source text, generated tsvector, vectors, and metadata are readable from the database. The migration's ciphertext columns are not used.                                                                                                                                   |
@@ -41,8 +42,8 @@ environment maps, federation private keys, decision and explanation payloads,
 assistant messages, signals, histories, both memory backends, exports, and
 dead-letter context. Execution results and spend records are included as action
 receipts, not treated as harmless operational data. The machine-readable
-inventory classifies all 877 columns across the 94-table live schema as of
-`073-source-key-registry.sql`; validation fails when a table or column is
+inventory classifies all 885 columns across the 95-table live schema as of
+`074-inference-receipts.sql`; validation fails when a table or column is
 missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
 sequence used by the production
 [`001-initial` migration runner](../../packages/db/src/migrations/001-initial.ts).
@@ -55,6 +56,14 @@ Migration 073's recovery wrapper and KDF record are explicitly exposed
 cryptographic metadata: a copied wrapper permits offline passphrase guessing.
 Its deletion-intent table contains no key material and exists so future
 cross-store cleanup can retry after the user row and registry have been removed.
+Migration 074's canonical receipt JSON is also explicitly exposed metadata. It
+can reveal which provider, model, endpoint, cost or billing identity, and
+verification/fallback path were used even though it stores only request and
+response hashes. Keeping the signed record readable enables ownership checks,
+integrity verification, audit, backup, and deletion; it does not establish an
+encryption claim. The [receipt guide](../inference-receipts.md) discloses that no
+production recorder configuration, create caller, export path, or UI ships in
+this foundation.
 
 Filesystem and process-local surfaces are separate from the SQL inventory:
 

@@ -94,6 +94,24 @@ describe('inference receipt routes', () => {
     expect(mocks.findByDecisionForUser).toHaveBeenCalledWith(USER, DECISION);
   });
 
+  it('compares signed and stored UUID identities without hexadecimal case sensitivity', async () => {
+    const signed = signInferenceReceipt({
+      version: 1, id: RECEIPT.toUpperCase(), userId: USER.toUpperCase(),
+      decisionId: DECISION.toUpperCase(), explanationId: EXPLANATION.toUpperCase(),
+      reasoningMode: 'on_device', provider: 'embedded', model: 'local-model',
+      endpointIdentity: 'local://embedded', requestSha256: sha256Hex(Buffer.from('request')),
+      responseSha256: sha256Hex(Buffer.from('response')), verifierVersion: 'boundary-v1',
+      cost: { basis: 'exact', currency: 'USD', amountMinor: 0 }, status: 'on_device',
+      createdAt: '2026-09-10T00:00:00.000Z',
+    }, { keyId: 'recorder', privateKeyPem, publicKeyPem });
+    mocks.findByDecisionForUser.mockResolvedValue(storedRow({ receipt: signed }));
+
+    const response = await request(app(USER.toUpperCase()), 'GET', DECISION.toUpperCase());
+
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual({ receipt: signed, persistenceTrust: 'trusted' });
+  });
+
   it('labels missing or non-true persistence trust as imported and unverified', async () => {
     mocks.findByDecisionForUser.mockResolvedValue(storedRow({ trusted: undefined }));
     expect((await request(app(USER), 'GET')).body).toMatchObject({ persistenceTrust: 'imported_unverified' });

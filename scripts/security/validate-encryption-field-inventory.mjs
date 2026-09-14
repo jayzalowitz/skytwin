@@ -38,11 +38,11 @@ const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
   "38c0b78baaa27b6115a00491e22307ac5ea65989a343842911fcea3f44915f6c";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "c8ab65b82d4302366adafa4c7d05fa4ac5daa2335c1b6d5eeb96808cf1b80beb";
+  "24a2f3c864477fc9a227165edce69e54c031edc41346e3348948d9b1efe20baa";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "eac694748a39a4cb2ccd83b7dd56230a9a1d0bc921871341c09afc9b64e335ad";
+  "38aa2a1535f84f1b25da6931703f3d01046cfb09df2d91d4c8c9855034d559aa";
 
 const OWNER_KINDS = new Set([
   "user",

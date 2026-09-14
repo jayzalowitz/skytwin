@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "073-source-key-registry.sql",
+  "asOfMigration": "074-inference-receipts.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -1071,6 +1071,7 @@
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
@@ -1596,6 +1597,7 @@
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
@@ -1909,6 +1911,38 @@
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "inference_receipts",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "decision_id",
+            "explanation_id",
+            "id",
+            "receipt",
+            "status",
+            "trusted",
+            "version"
+          ],
+          "currentProtection": "Locally readable identifiers and signed inference metadata in CockroachDB; the receipt JSON includes provider, model, endpoint identity, request/response hashes, cost and optional billing identity, verification metadata, fallback outcome, and public signatures, but not prompt or response bytes.",
+          "targetProtection": "Remain locally readable for ownership checks, independent integrity verification, audit, backup, and deletion; disclose that provider/model/endpoint/cost metadata can reveal inference activity even without prompt or response content.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Receipt integrity and display require the canonical signed metadata to remain available without treating it as encrypted source content; user ownership continues to resolve through the linked decision."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through the linked decision; repository and API access must preserve that join and scope."
     },
     {
       "table": "ironclaw_tools",
