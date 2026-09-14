@@ -21,7 +21,8 @@
   "dependencies": {
     "@skytwin/core": "workspace:*",
     "@skytwin/db": "workspace:*",
-    "@skytwin/memory-port": "workspace:*"
+    "@skytwin/memory-port": "workspace:*",
+    "@skytwin/shared-types": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",

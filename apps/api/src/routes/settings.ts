@@ -499,9 +499,8 @@ export function createSettingsRouter(): Router {
         seenProviders.add(p.provider);
         if (p.baseUrl) {
           try {
-            if (p.enabled === false) {
-              validateBaseUrl(p.baseUrl, p.provider);
-            } else {
+            validateBaseUrl(p.baseUrl, p.provider);
+            if (p.enabled !== false) {
               await validateBaseUrlWithDns(p.baseUrl, p.provider);
             }
           } catch (err) {
@@ -600,6 +599,20 @@ export function createSettingsRouter(): Router {
         return;
       }
 
+      if (baseUrl) {
+        try {
+          validateBaseUrl(baseUrl, provider);
+          await validateBaseUrlWithDns(baseUrl, provider);
+        } catch (error) {
+          res.status(400).json({
+            success: false,
+            error: error instanceof Error ? error.message : 'Invalid base URL',
+            provider,
+          });
+          return;
+        }
+      }
+
       // A masked/omitted key can be reused only for the same network authority.
       // Otherwise this endpoint would disclose a stored secret to a new host.
       let resolvedKey = apiKey ?? '';
@@ -627,19 +640,6 @@ export function createSettingsRouter(): Router {
         model,
         baseUrl: baseUrl ?? undefined,
       };
-
-      if (baseUrl) {
-        try {
-          await validateBaseUrlWithDns(baseUrl, provider);
-        } catch (error) {
-          res.status(400).json({
-            success: false,
-            error: error instanceof Error ? error.message : 'Invalid base URL',
-            provider,
-          });
-          return;
-        }
-      }
 
       const setting = await reasoningModeRepository.getOrCreateForUser(userId!);
       const requestedMode = requestedModeValue === undefined

@@ -98,6 +98,24 @@ describe('getLlmClientFromConfigFresh', () => {
     expect(client).not.toBeNull();
   });
 
+  it('canonicalizes OLLAMA_BASE_URL before admitting the provider', () => {
+    const providers = buildProviderChain({
+      OLLAMA_BASE_URL: 'http://127.1:11434///',
+    });
+    expect(providers).toEqual([
+      expect.objectContaining({ baseUrl: 'http://127.0.0.1:11434' }),
+    ]);
+  });
+
+  it('fails closed when OLLAMA_BASE_URL contains a query or fragment', () => {
+    expect(getLlmClientFromConfigFresh({
+      OLLAMA_BASE_URL: 'http://localhost:11434?remote=true',
+    })).toBeNull();
+    expect(getLlmClientFromConfigFresh({
+      OLLAMA_BASE_URL: 'http://localhost:11434#remote',
+    })).toBeNull();
+  });
+
   it('includes multiple providers when multiple keys are set', () => {
     const env: Record<string, string | undefined> = {
       ANTHROPIC_API_KEY: 'key-1',

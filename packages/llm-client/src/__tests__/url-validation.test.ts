@@ -35,6 +35,12 @@ describe('validateBaseUrl', () => {
     it('rejects file protocol', () => {
       expect(() => validateBaseUrl('file:///etc/passwd', 'openai')).toThrow('Unsupported protocol');
     });
+
+    it('rejects query strings, fragments, and embedded credentials', () => {
+      expect(() => validateBaseUrl('https://api.example.com?target=other', 'openai')).toThrow('Invalid base URL');
+      expect(() => validateBaseUrl('https://api.example.com#other', 'openai')).toThrow('Invalid base URL');
+      expect(() => validateBaseUrl('https://user:secret@api.example.com', 'openai')).toThrow('Invalid base URL');
+    });
   });
 
   describe('metadata endpoint blocking', () => {
@@ -224,6 +230,25 @@ describe('validateBaseUrl', () => {
       expect(() => validateBaseUrl('https://100.128.0.1', 'openai')).not.toThrow();
     });
   });
+
+  describe('other non-global address blocking', () => {
+    it('blocks IPv4 benchmarking, documentation, multicast, and reserved ranges', () => {
+      for (const address of [
+        '198.18.0.1', '198.19.255.254', '192.0.2.1', '198.51.100.1',
+        '203.0.113.1', '224.0.0.1', '240.0.0.1',
+      ]) {
+        expect(() => validateBaseUrl(`https://${address}`, 'openai'))
+          .toThrow('Private/internal URL not allowed');
+      }
+    });
+
+    it('blocks IPv6 site-local, documentation, benchmarking, and multicast ranges', () => {
+      for (const address of ['fec0::1', '2001:db8::1', '2001:2::1', 'ff02::1']) {
+        expect(() => validateBaseUrl(`https://[${address}]`, 'openai'))
+          .toThrow('Private/internal URL not allowed');
+      }
+    });
+  });
 });
 
 describe('validateBaseUrlWithDns', () => {
@@ -320,6 +345,22 @@ describe('fetchCustomProviderUrl', () => {
       'anthropic',
       { method: 'POST' },
       privateLookup,
+    )).rejects.toThrow('resolves to private address');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a hostname whose validated DNS answer is non-global', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const nonGlobalLookup = vi.fn().mockResolvedValue([
+      { address: '198.18.0.1', family: 4 },
+    ]);
+
+    await expect(fetchCustomProviderUrl(
+      'https://benchmark.example/v1/messages',
+      'anthropic',
+      { method: 'POST' },
+      nonGlobalLookup,
     )).rejects.toThrow('resolves to private address');
     expect(fetchMock).not.toHaveBeenCalled();
   });

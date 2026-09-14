@@ -614,6 +614,26 @@ describe('reasoning-mode provider mutations', () => {
     expect(mockTestProviderForReasoningMode).not.toHaveBeenCalled();
   });
 
+  it('rejects query-bearing save and test endpoints before persistence or inference', async () => {
+    const saveResponse = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'bring_your_own_provider',
+      providers: [{
+        provider: 'openai', apiKey: 'secret', model: 'gpt',
+        baseUrl: 'https://gateway.example/v1?target=other', priority: 0,
+      }],
+    });
+    const testResponse = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'openai', model: 'gpt',
+      baseUrl: 'https://gateway.example/v1?target=other',
+    });
+
+    expect(saveResponse.status).toBe(400);
+    expect(testResponse.status).toBe(400);
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
+    expect(mockAiProviderRepository.getForUser).not.toHaveBeenCalled();
+    expect(mockTestProviderForReasoningMode).not.toHaveBeenCalled();
+  });
+
   it('does not send a stored credential to a changed test endpoint authority', async () => {
     mockReasoningModeRepository.getOrCreateForUser.mockResolvedValue({
       mode: 'bring_your_own_provider', requires_confirmation: false,

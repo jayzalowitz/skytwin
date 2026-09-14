@@ -172,6 +172,15 @@ describe('OpenAI provider — multi-turn translation', () => {
     expect(captured[0]!.url).toBe('https://93.184.216.34/gateway/v1/chat/completions');
   });
 
+  it('canonicalizes a raw custom base URL at the provider boundary', async () => {
+    const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
+    vi.stubGlobal('fetch', spy);
+    await openaiGenerate('key', 'gpt-test', 'hello', {
+      baseUrl: 'https://93.184.216.34/gateway///',
+    });
+    expect(captured[0]!.url).toBe('https://93.184.216.34/gateway/v1/chat/completions');
+  });
+
   it('passes a ChatMessage[] through unchanged', async () => {
     const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
     vi.stubGlobal('fetch', spy);
@@ -296,13 +305,14 @@ describe('Ollama provider — switched to /api/chat', () => {
     expect(captured[1]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
   });
 
-  it('appends one API path separator to a canonicalized loopback base URL', async () => {
+  it('canonicalizes a raw loopback base URL before appending API paths', async () => {
     const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
     await ollamaGenerate('', 'llama-test', 'hello', {
-      baseUrl: canonicalizeProviderBaseUrl('http://127.1:11434/'),
+      baseUrl: 'http://127.1:11434///',
       reasoningMode: 'on_device',
     });
+    expect(captured[0]!.url).toBe('http://127.0.0.1:11434/api/version');
     expect(captured[1]!.url).toBe('http://127.0.0.1:11434/api/chat');
   });
 

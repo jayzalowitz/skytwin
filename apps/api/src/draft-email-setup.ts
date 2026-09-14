@@ -98,7 +98,7 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
 
 const DRAFT_INPUT_TOKEN_BUDGET = 2_000;
 const DRAFT_OUTPUT_TOKEN_BUDGET = 1_000;
-const NANO_USD_PER_CENT = 10_000_000;
+const PRICING_DENOMINATOR = 1_000_000n * 10_000_000n;
 
 function upperBoundCostCents(pricing: ProviderPricingCapability, nowMs: number): number | null {
   if (pricing.kind === 'zero') return 0;
@@ -109,9 +109,15 @@ function upperBoundCostCents(pricing: ProviderPricingCapability, nowMs: number):
   if (!Number.isSafeInteger(input) || input < 0 || !Number.isSafeInteger(output) || output < 0) {
     return null;
   }
-  const nanoUsd = (input * DRAFT_INPUT_TOKEN_BUDGET + output * DRAFT_OUTPUT_TOKEN_BUDGET)
-    / 1_000_000;
-  return Math.ceil(nanoUsd / NANO_USD_PER_CENT);
+  // Rates are safe integers individually, but multiplying a large dynamic
+  // rate by the token budget can exceed Number.MAX_SAFE_INTEGER. Spend gates
+  // require an exact, upward-rounded bound, so keep the intermediate integer
+  // arithmetic in BigInt and convert only the small final cent value.
+  const numerator = BigInt(input) * BigInt(DRAFT_INPUT_TOKEN_BUDGET)
+    + BigInt(output) * BigInt(DRAFT_OUTPUT_TOKEN_BUDGET);
+  const cents = (numerator + PRICING_DENOMINATOR - 1n) / PRICING_DENOMINATOR;
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+  return Number(cents);
 }
 
 /**

@@ -1,6 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
 import { Agent } from 'undici';
+import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
 
 type DnsLookup = typeof dnsLookup;
 
@@ -65,6 +66,15 @@ export function validateBaseUrl(baseUrl: string, provider: string): void {
   // Only allow http and https
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
     throw new Error(`Unsupported protocol for ${provider}: ${parsed.protocol}`);
+  }
+
+  try {
+    // Keep every admission path aligned with the canonical form used for
+    // persistence. In particular, query strings, fragments, and embedded
+    // credentials must be rejected before an adapter appends its API path.
+    parsed = new URL(canonicalizeProviderBaseUrl(baseUrl)!);
+  } catch {
+    throw new Error(`Invalid base URL for ${provider}: ${baseUrl}`);
   }
 
   const hostname = normalizeHostname(parsed.hostname);
@@ -305,6 +315,16 @@ function isPrivateHost(hostname: string): boolean {
       // 100.64.0.0/10 (Carrier-Grade NAT, RFC 6598) — provider-internal,
       // shouldn't be a target for outbound LLM calls.
       if (nums[0] === 100 && nums[1]! >= 64 && nums[1]! <= 127) return true;
+      // Non-global protocol, documentation, benchmarking, multicast, and
+      // reserved ranges are never legitimate custom model endpoints. Treat
+      // them like private space so an authenticated URL cannot become an SSRF
+      // route into an operator's lab or network appliance.
+      if (nums[0] === 192 && nums[1] === 0 && nums[2] === 0) return true;
+      if (nums[0] === 192 && nums[1] === 0 && nums[2] === 2) return true;
+      if (nums[0] === 198 && (nums[1] === 18 || nums[1] === 19)) return true;
+      if (nums[0] === 198 && nums[1] === 51 && nums[2] === 100) return true;
+      if (nums[0] === 203 && nums[1] === 0 && nums[2] === 113) return true;
+      if (nums[0]! >= 224) return true;
     }
   }
 
@@ -333,6 +353,14 @@ function isPrivateHost(hostname: string): boolean {
 
   // IPv6 link-local (fe80::/10)
   if (/^fe[89ab][0-9a-f]?:/.test(hostname)) return true;
+
+  // Deprecated site-local (fec0::/10), multicast, documentation, discard,
+  // and benchmarking addresses are also non-global destinations.
+  if (/^fe[c-f][0-9a-f]?:/.test(hostname)) return true;
+  if (/^ff[0-9a-f]{0,2}:/.test(hostname)) return true;
+  if (/^2001:db8(?::|$)/.test(hostname)) return true;
+  if (/^2001:2(?::|$)/.test(hostname)) return true;
+  if (/^100:(?:0+:)*0*(?::|$)/.test(hostname)) return true;
 
   return false;
 }
