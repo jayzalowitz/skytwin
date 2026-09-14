@@ -39,7 +39,14 @@ The issue inventory below remains the 2026-06-16 launch-readiness classification
 
 ## Bottom line
 
-**The audited development/source revision passed its recorded engineering checks.** The decision pipeline, twin model, policy engine, memory layer, dashboard, and Inbox-Intelligence digest were tested and passed the live QA described below. That result does not establish that the currently published installers contain later source work, that a fresh release artifact has passed install validation, or that every code-side public-launch criterion is complete.
+**This report is historical and does not establish current release readiness.**
+The later `v0.7.0-beta` release contract adds code and evidence gates that this
+June 2026 snapshot did not evaluate. Consult
+[`beta-claim-ledger.json`](./beta-claim-ledger.json) for the current support,
+privacy, security, and artifact status. The audited development/source revision
+passed its recorded engineering checks, but that result does not establish that
+published installers contain later source work or that a fresh release artifact
+has passed validation.
 
 Recorded launch blockers include:
 

@@ -79,7 +79,7 @@ Tracked in [Issue #TBD](https://github.com/jayzalowitz/skytwin/issues) (to be cr
 
 ### `openid` + `email` + `profile`
 
-> Required to identify which Google account is connecting so SkyTwin can key the local twin profile on the verified email address. The profile name is shown on the user's local dashboard ("Signed in as Jane Smith") so they know which account the twin is operating on behalf of. No data leaves the user's machine.
+> Required to identify which Google account is connecting so SkyTwin can key the local twin profile on the verified email address. The profile name is shown on the user's local dashboard ("Signed in as Jane Smith") so they know which account the twin is operating on behalf of. Google processes the OAuth request, and SkyTwin stores the resulting profile and grant in the user's local application database; configured hosted-model features have separate disclosures.
 
 ### `https://www.googleapis.com/auth/calendar.readonly`
 
@@ -87,7 +87,7 @@ Tracked in [Issue #TBD](https://github.com/jayzalowitz/skytwin/issues) (to be cr
 
 ### `https://www.googleapis.com/auth/calendar.events`
 
-> Required for SkyTwin's calendar-management feature: with the user's approval — or automatically for events matching patterns the user has explicitly taught the twin — SkyTwin creates, modifies, or responds to calendar invites. Each action produces an explanation record visible in the dashboard's "Recent actions" feed. The narrower `calendar.events.owned` would not work because the invites SkyTwin must respond to are typically events the user does not own (incoming invitations from others).
+> Required for SkyTwin's calendar-management feature: with the user's approval — or automatically for events matching patterns the user has explicitly taught the twin — SkyTwin creates, modifies, or responds to calendar invites. Supported calendar paths can produce explanation records visible in the dashboard's "Recent actions" feed; release-wide coverage remains under audit. The narrower `calendar.events.owned` would not work because the invites SkyTwin must respond to are typically events the user does not own (incoming invitations from others).
 
 ### `https://www.googleapis.com/auth/gmail.readonly` (Tier 2 only)
 
@@ -108,7 +108,7 @@ When submitting for sensitive- or restricted-scope review, record a 2–3 minute
 5. (For Calendar review) Show a conflict-detection card. Decline an event from the dashboard; show the resulting RSVP in Google Calendar's web UI.
 6. (For Gmail review, Tier 2 BYO) Open the Connect Gmail walkthrough at `/connect-gmail.html`; show a credential paste; show a real Gmail signal coming through the Approvals queue.
 7. Approve a Gmail action from the dashboard. If the action is a draft reply, point out the SkyTwin footer preview and Settings toggle before send, then show the resulting Gmail message.
-8. End on the dashboard's "Recent actions" feed showing each action with its explanation record.
+8. End on the dashboard's "Recent actions" feed showing explanation details for the recorded actions exercised by the verification flow.
 
 Upload as unlisted YouTube. Paste the link into the verification submission.
 

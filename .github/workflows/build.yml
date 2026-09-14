@@ -12,10 +12,13 @@ on:
   # against the cumulative branch state).
   workflow_dispatch: {}
 
-# Cancel in-progress runs for the same branch/PR
+permissions:
+  contents: read
+
+# Cancel stale branch/PR runs, but never interrupt a tag publication run.
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
 
 env:
   NODE_VERSION: '20'
@@ -64,7 +67,7 @@ jobs:
   # Tests — gate all builds behind passing tests
   # ──────────────────────────────────────────────
   test:
-    name: Test
+    name: release-claim-ci
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -91,6 +94,19 @@ jobs:
           echo "096e2d40a2b30ce296c13652b839e04612003aef2820cfc5b8d712d06c9d0d86  cockroach.tgz" | sha256sum --check
           tar --extract --gzip --file cockroach.tgz
           sudo install --mode 0755 cockroach-v26.1.0.linux-amd64/cockroach /usr/local/bin/cockroach
+      - name: Validate beta release claims
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          pnpm claims:check
+          # Every v* tag can reach the draft-release job, so every such tag is
+          # gated. The checker validates the exact tag against the ledger and
+          # safely normalizes beta tags onto the repo's four-segment VERSION.
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            pnpm claims:check -- --require-ready --preflight --tag "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" --ref "${GITHUB_REF}"
+          fi
+      - name: Test beta release-claim guard
+        run: pnpm claims:test
       - run: pnpm build
       - run: pnpm test
 
@@ -595,14 +611,19 @@ jobs:
     name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
     needs:
+      - test
       - desktop-mac
       - desktop-windows
       - desktop-linux
-      - mobile-android
-      - mobile-ios
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release-publication
+    concurrency:
+      group: release-publication-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
+      actions: read
     steps:
       # #370 AC#2: confirm the GitHub Releases endpoint this repo's
       # electron-updater feed lives behind is reachable before we publish a
@@ -619,19 +640,75 @@ jobs:
             "https://github.com/${{ github.repository }}/releases/latest" \
             -o /dev/null
 
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Install release claim checker
+        run: corepack pnpm@9.1.0 install --frozen-lockfile --ignore-scripts --filter skytwin
+
+      # Checkout must precede download: checkout's default clean would remove
+      # the untracked artifacts directory if these steps were reversed.
       - name: Download all artifacts
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
+
+      - name: Verify post-build release evidence
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          # Fail closed until an upstream job supplies digest-bound reports.
+          # The manifest is generated outside the evidence artifact so it can
+          # bind that artifact and the release artifacts without a hash cycle.
+          cp -R artifacts/release-evidence .release-evidence
+          node scripts/release-claims/generate-evidence-manifest.mjs \
+            docs/beta-claim-ledger.json \
+            .release-evidence/reports \
+            .release-evidence/manifest.json
+          node scripts/release-claims/check-release-claims.mjs \
+            --require-ready \
+            --tag "${GITHUB_REF_NAME}" \
+            --commit "${GITHUB_SHA}" \
+            --repository "${GITHUB_REPOSITORY}" \
+            --run-id "${GITHUB_RUN_ID}" \
+            --ref "${GITHUB_REF}" \
+            --evidence-manifest .release-evidence/manifest.json
 
       - name: List artifacts
         run: find artifacts -type f | sort
 
+      # A missing environment is auto-created by GitHub without protection.
+      # Verify the live settings after the environment gate so absence or drift
+      # still fails closed before any release mutation.
+      - name: Verify protected release environment
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/verify-release-environment.mjs
+
+      - name: Refuse an existing release tag
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/publish-verified-draft.mjs --assert-absent
+
+      # target_commitish is ignored for an existing tag. Dereference the tag
+      # itself immediately before draft creation, including annotated tags.
+      - name: Verify release tag target
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/publish-verified-draft.mjs --assert-tag-target
+
       - name: Create release
-        uses: softprops/action-gh-release@v3
+        id: create-release-draft
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64
         with:
           draft: true
+          prerelease: true
+          target_commitish: ${{ github.sha }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             artifacts/SkyTwin-macOS-dmg/*
             artifacts/SkyTwin-macOS-zip/*
@@ -642,5 +719,21 @@ jobs:
             artifacts/SkyTwin-Linux-deb/*
             artifacts/SkyTwin-Linux-rpm/*
             artifacts/SkyTwin-Linux-update-manifest/*
-            artifacts/SkyTwin-Android-apk/*
-            artifacts/SkyTwin-iOS-simulator/*
+            artifacts/release-claims-ci/result.json
+            .release-evidence/reports/storage.desktop-crdb.json
+            .release-evidence/reports/inference.on-device-availability.json
+            .release-evidence/reports/inference.confidential-verification.json
+            .release-evidence/reports/network.explicit-boundaries.json
+            .release-evidence/reports/sample.packaged-account-free.macos.json
+            .release-evidence/reports/sample.packaged-account-free.windows.json
+            .release-evidence/reports/sample.packaged-account-free.linux.json
+            .release-evidence/reports/models.verified-delivery.json
+            .release-evidence/reports/release.signing.json
+            .release-evidence/reports/release.artifact-verification.json
+            .release-evidence/manifest.json
+
+      - name: Verify exact draft assets and publish
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.create-release-draft.outputs.id }}
+        run: node scripts/release-claims/publish-verified-draft.mjs .release-evidence/manifest.json

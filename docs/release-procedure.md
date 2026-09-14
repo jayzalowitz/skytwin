@@ -1,6 +1,60 @@
 # Release Procedure
 
-How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-13 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
+> **Beta truth gate:** [`beta-claim-ledger.json`](./beta-claim-ledger.json) is
+> the release-claim source of truth for `v0.7.0-beta`. Run `pnpm claims:check`
+> before cutting any candidate. Every release-producing `v*` tag additionally
+> runs a two-stage gate in CI. The preflight requires an exact ledger/tag/SHA
+> match, ready status, and synchronized versions before packaging. After
+> packaging, the release job requires a generated evidence manifest bound to
+> that same repository, tag, and SHA. It verifies required CI runs, jobs, and
+> artifact digests through the GitHub API, plus digest-bound machine reports
+> downloaded with the evidence artifact. The raw CI and machine reports are also
+> published as exact, digest-verified release assets so the proof remains
+> auditable after Actions artifact retention expires. The job then rejects any
+> existing draft or public release for the tag, creates an unpublished draft,
+> verifies that draft by its numeric release ID, exact asset names, and GitHub
+> SHA-256 digests, and publishes it immediately from the same gated job. Evidence IDs
+> are deliberately not committed to this ledger: doing so would change the SHA
+> they attest and create an impossible hash cycle. The release job now generates
+> the external manifest from current-run GitHub API metadata. Upstream packaging
+> jobs do not yet produce the required machine reports, so the final gate still
+> fails closed and the ledger remains blocked until that proof pipeline ships.
+
+The satisfiable post-build contract is explicit: the tagged `build.yml` run
+must produce `release-claims-ci` and `release-evidence` artifacts. The latter
+contains one `reports/<claim-id>.json` result for every required machine claim.
+The CI artifact contains `result.json`, bound to the current run, source commit,
+and tag ref; the final checker hashes and validates that downloaded file as well
+as its GitHub artifact metadata.
+Each report is created only after its subject release artifact is uploaded, so
+it can record the upload action's immutable artifact ID, name, digest, platform,
+artifact kind, subject filename, and subject SHA-256. Reports use schema version
+1, identify `release-machine-verifier` as their generator, and contain a
+non-empty list of uniquely named passing checks with observed results. A later aggregation step
+uploads those reports as the separate `release-evidence` artifact. After
+downloading artifacts, the final job runs
+`scripts/release-claims/generate-evidence-manifest.mjs`, which queries the
+current run's jobs and artifacts through GitHub's API and writes
+`.release-evidence/manifest.json`. The manifest is not placed inside the
+artifact whose digest it records, so there is no self-referential hash. The
+checker then binds the current run to the tag-push ref and release commit,
+verifies both the evidence artifact and each subject release artifact through
+GitHub's API, hashes each local report and downloaded subject path, and rejects
+unexpected claim/kind entries. This lets proof be generated after packaging
+without changing the source SHA it attests.
+The ten canonical report files and the generated manifest are attached to the
+GitHub Release with explicit paths. Wildcard report uploads are prohibited, and
+the controlled publisher rejects missing, extra, or digest-changed assets.
+
+Quantified claims carry additional applicability evidence. The signing report
+must enumerate every installer and desktop archive subject in the release asset
+inventory, including its digest, platform, passing OS signature result, and a
+passing notarization result for macOS. The verified-model report must enumerate
+the recommended model artifact with its source, disclosed license, published
+SHA-256, passing digest verification, and passing deletion check. Omitting one
+of these subjects fails the final gate.
+
+How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
 
 Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
 
@@ -14,11 +68,14 @@ git checkout main && git pull
 # VERSION already holds the version you're releasing (bump it in a PR first if not)
 git tag -a "v$(cat VERSION)" -m "Release v$(cat VERSION)"
 git push origin "v$(cat VERSION)"
-# build.yml builds all platforms, then its `release` job creates a DRAFT GitHub Release.
-# Review the draft, then publish it manually.
+# build.yml builds, verifies an unpublished draft, and publishes it automatically.
 ```
 
-That's the mechanical flow. Read the rest before the **first** public release: update manifests ship, but signing and clean-artifact verification remain release gates. OAuth verification is a separate onboarding constraint.
+That's the mechanical flow. Read the rest before the **first** public release.
+Every open stop-ship condition in the claim ledger must be closed with its
+required evidence; none may be accepted as an informal exception. Signing and
+clean-artifact verification remain release gates, while OAuth verification is
+a separate onboarding constraint.
 
 ---
 
@@ -29,15 +86,32 @@ That's the mechanical flow. Read the rest before the **first** public release: u
 1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
-4. **`release`** (`needs:` all five build jobs) — first verifies the GitHub Releases endpoint is reachable (`curl -f https://github.com/<repo>/releases/latest`, fails the job on non-2xx — #370 AC#2), then downloads every artifact and runs `softprops/action-gh-release@v3` with **`draft: true`** + `generate_release_notes: true`, attaching: `.dmg`, `.zip` (mac), `.exe` (Windows NSIS), `.AppImage` / `.deb` / `.rpm` (Linux), `.apk` (Android), the iOS simulator zip, **and the electron-updater manifests `latest-mac.yml` / `latest.yml` / `latest-linux.yml`** (#370).
+4. **`release`** (`needs:` the three desktop jobs) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, ten raw evidence reports, and evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, and independently dereferences the release tag to the triggering commit before it changes the draft to public.
 
-The release is created as a **draft**. Nothing is public until a human opens the draft in GitHub Releases and clicks **Publish**.
+Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
+
+The repository's `release-publication` GitHub Environment is part of this
+boundary. **As of 2026-09-12 it is not configured.** Before any release, create
+it with at least one required reviewer, prevent self-review, and add a custom
+tag policy matching the release tag. The workflow verifies those live settings and fails before release
+mutation if GitHub auto-creates an unprotected environment or its configuration
+drifts. The release job has only `contents: write` and `actions: read`, serializes
+publication per tag without cancellation, and scans the authenticated release
+inventory immediately before draft creation so the upload action cannot reuse a
+draft or mutate an existing public release. It re-fetches by release ID and
+revalidates the published metadata, tag target, and complete digest set. If
+publication or confirmation is ambiguous, it never repeats the publish request:
+it reconciles by ID and uses only the idempotent transition back to draft.
+This is fail-safe detection and recovery, not an atomic GitHub transaction:
+credentials outside this protected workflow could still race the bounded interval
+between the absence check, draft creation, and confirmation. Repository access
+controls and exclusive release-publisher permissions remain part of the boundary.
 
 ---
 
 ## Pre-flight before the FIRST public release
 
-The tag workflow produces a complete but unsigned draft with update manifests. Signing is the remaining install/update gate; clean-artifact verification decides whether that draft is publishable.
+The ledger's stop-ship conditions keep the tag job from reaching draft creation until signing, update manifests, and the other required evidence are complete.
 
 ### 1. Code signing is NOT wired (#368 / #359)
 
@@ -98,7 +172,9 @@ The desktop app unpacks `<resources>/embedded/apps.tar.gz` into `<userData>/embe
 
 ## Verifying the draft before publication
 
-Before clicking **Publish**, download the draft/CI `.dmg` and `.exe` artifacts on clean machines that have never seen SkyTwin and record evidence for every item below. A populated dashboard alone is not sufficient:
+Before the gated workflow can publish, its evidence producers must exercise the
+candidate artifacts on clean machines and record digest-bound evidence for every
+item below. A populated dashboard alone is not sufficient:
 
 1. The app reaches the fictional sample dashboard within 60 seconds with `SKYTWIN_DEV_AUTH_BYPASS` unset. `GET /api/v1/demo/info` reports availability before `POST /api/v1/demo/session` returns a credential fixed to the reserved sample user and a four-hour expiry.
 2. That credential can read a sample decision and its explanation, but receives an authorization denial for mutations, settings, credential/configuration changes, search, connector invocation, MCP/tool execution, paid or inference-bearing endpoints, SSE, and a request for any other user. Connector status and capability provenance/metrics reads may remain available. Minting a second session returns a distinct credential; the automated demo-session tests must also prove expired and tampered credentials are rejected.
@@ -106,13 +182,21 @@ Before clicking **Publish**, download the draft/CI `.dmg` and `.exe` artifacts o
 4. The API proves authenticated readiness for its exact spawn before web or worker become ready, and the worker's durable generation authority is active only for that generation.
 5. Verify normal tray pause stops the worker and suppresses delayed replacement while an exact ready API/web generation may remain available. Then pause once during startup and once during restart backoff; confirm the newer pause cancels recovery and contains any partial or failed generation. Resume must reuse the exact ready API/web generation when safe or otherwise rebuild API → durable authority → authenticated readiness → web, then start the worker. API or database authority loss must revoke and contain the generation, while an isolated web or worker crash may recover inside the still-ready API generation.
 
-Only after that gate passes should a human publish the draft. Then verify the public download target resolves:
+Only after those reports and every other ledger gate pass may the controlled
+workflow create and publish its verified draft. After it publishes, verify the
+public download target resolves:
 
 ```bash
 curl -fsSLI https://github.com/jayzalowitz/skytwin/releases/latest >/dev/null && echo "latest release reachable"
 ```
 
-For a signed release, verify the unsigned-warning is gone and that installing signed release N then publishing signed N+1 self-updates within the ~6-hour poll window (the `auto-update.ts` `DEFAULT_CHECK_INTERVAL_MS` default). Confirm all three `latest*.yml` assets point at the signed N+1 artifacts.
+Once `sample.packaged-account-free` has its required machine evidence, confirm
+the installed candidate reaches its populated sample within the release
+contract's latency target. After signing and update evidence land, verify the
+unsigned warning is
+gone and that installing release N then tagging N+1 self-updates within the
+configured poll window (`DEFAULT_CHECK_INTERVAL_MS` in `auto-update.ts`).
+Confirm all three `latest*.yml` assets point at the signed N+1 artifacts.
 
 ---
 

@@ -221,8 +221,9 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Local brain</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Your twin's memory runs locally by default — nothing leaves this computer.
-        Advanced users can switch the memory backend or see what's indexed.
+        Your twin's persistent memory is stored in the local database. It is not
+        encrypted by SkyTwin today; connected providers may receive selected data.
+        Advanced users can switch the memory backend or inspect what's indexed.
       </div>
       <a class="btn btn-outline btn-sm" href="#/memory-settings">Manage local brain</a>
     </div>
@@ -404,7 +405,7 @@ export async function renderSettings(container, userId) {
           ${renderProviderChain(aiProviders)}
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
-          <select class="form-input" id="add-provider-select" style="flex: 1;">
+          <select class="form-input" id="add-provider-select" data-action="ai-add-provider" style="flex: 1;">
             <option value="">+ Add a provider…</option>
             <option value="anthropic">Anthropic (Claude)</option>
             <option value="openai">OpenAI (GPT)</option>
@@ -461,17 +462,17 @@ export async function renderSettings(container, userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Your data, your machine</span>
+        <span class="card-title">Data storage and network use</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.
+        SkyTwin's persistent application database is stored on this computer and is not encrypted by SkyTwin today. Connectors contact their providers, and configured hosted-model features send selected content to that provider.
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
-        <strong>I keep on this device:</strong> the authorized email and calendar fields needed for your twin, learned preferences and patterns, and a log of decisions with their reasoning. Signal data is retained locally under the app’s retention policy.<br>
-        <strong>I don't keep:</strong> your account passwords. Access tokens and stored signal data remain on this device. A configured remote reasoning endpoint may receive prompt content under the boundary selected above; separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
+        <strong>Stored locally:</strong> authorized email and calendar fields, selected source content, learned preferences and patterns, memory, and decision, explanation, and receipt records. Signal data is retained locally under the app’s retention policy.<br>
+        <strong>Sent when enabled:</strong> OAuth and connector requests go to the connected service. In “My configured provider” mode, prompts and responses may travel to enabled providers in the chain. Separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
         <strong>Account access:</strong> ${googleConnected
-          ? 'I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'
-          : 'No accounts linked yet — I can\'t see anything until you connect one.'}<br>
+          ? 'A Google grant is stored locally so SkyTwin can read authorized inbox and calendar data. Before vault initialization it is stored in plaintext. With the API vault initialized and unlocked, new or reconnected grants are encrypted and existing complete plaintext grants can migrate on authorized use; while that vault is locked, new or reconnected writes are refused. The background worker has a separate key cache and may report encrypted grants as unavailable.'
+          : 'No accounts linked yet — no inbox or calendar data is available until you connect one.'}<br>
       </div>
     </div>
 
@@ -901,6 +902,28 @@ function ensureSettingsListener() {
       _aiChain.forEach((provider) => { provider.privacy = null; });
       const location = document.getElementById('ai-reasoning-location');
       if (location) location.innerHTML = renderReasoningLocation();
+      const chain = document.getElementById('ai-provider-chain');
+      if (chain) chain.innerHTML = renderProviderChain(_aiChain);
+      return;
+    }
+    if (action === 'ai-add-provider' && target instanceof HTMLSelectElement) {
+      const provider = target.value;
+      if (!provider) return;
+      target.value = '';
+
+      const models = PROVIDER_MODELS[provider] || [];
+      const defaultModel = models[0]?.id || '';
+      _aiChain.push({
+        provider,
+        model: defaultModel,
+        apiKey: '',
+        baseUrl: provider === 'ollama' ? 'http://localhost:11434' : undefined,
+        priority: _aiChain.length,
+        enabled: true,
+        hasApiKey: false,
+        apiKeyPreview: '',
+      });
+
       const chain = document.getElementById('ai-provider-chain');
       if (chain) chain.innerHTML = renderProviderChain(_aiChain);
       return;
@@ -1827,12 +1850,12 @@ function renderModeToggle(providers) {
   return `
     <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
       ${pill(
-        'Smart (local first)',
+        'Smart (prefer on-device)',
         mode === 'smart',
         'switch-to-smart',
         mode === 'smart'
-          ? 'Embedded model is your top choice.'
-          : 'Puts the embedded runtime first.',
+          ? 'Embedded provider is first; runtime and model availability are checked separately.'
+          : 'No hosted-provider fee; requires an installed local runtime and model.',
       )}
       ${pill(
         'Smarter (paid API or Ollama)',
@@ -1852,7 +1875,7 @@ function renderProviderChain(providers) {
   _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
 
   if (_aiChain.length === 0) {
-    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No model provider is configured. Deterministic rules remain available.</div>';
+    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No model provider configured. Built-in rules remain available; on-device model reasoning requires a compatible local runtime and model.</div>';
   }
 
   return _aiChain.map((p, idx) => `
@@ -2120,30 +2143,6 @@ window.saveAIProvidersHandler = async function(userId) {
     );
   }
 };
-
-// Handle the "Add provider" dropdown
-document.addEventListener('change', (e) => {
-  if (e.target?.id !== 'add-provider-select') return;
-  const provider = e.target.value;
-  if (!provider) return;
-  e.target.value = '';
-
-  const models = PROVIDER_MODELS[provider] || [];
-  const defaultModel = models[0]?.id || '';
-
-  _aiChain.push({
-    provider,
-    model: defaultModel,
-    apiKey: '',
-    baseUrl: provider === 'ollama' ? 'http://localhost:11434' : undefined,
-    priority: _aiChain.length,
-    enabled: true,
-    hasApiKey: false,
-    apiKeyPreview: '',
-  });
-
-  document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
-});
 
 window.signOut = function() {
   // Clear identity AND the bearer token. Without dropping the session

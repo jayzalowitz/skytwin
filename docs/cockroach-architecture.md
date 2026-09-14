@@ -172,7 +172,7 @@ CockroachDB is not just "the database." It is the **durable operational memory b
 
 3. **Feedback events are memory.** Every user correction teaches the system something. Losing feedback events means losing learning.
 
-4. **Explanation records are institutional memory.** They document why the system made every decision. Without them, the system can't be audited, debugged, or trusted.
+4. **Explanation records are institutional memory.** They document why supported decision paths reached recorded outcomes. Release-wide coverage remains under audit; without it, the system cannot claim a complete audit trail.
 
 This is why CockroachDB's durability guarantees matter. Data is replicated across nodes (in production). Transactions are serializable. Write-ahead logging ensures crash consistency. The system treats data loss as a catastrophic failure, not a recoverable inconvenience.
 

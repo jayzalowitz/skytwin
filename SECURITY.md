@@ -38,5 +38,5 @@ SkyTwin's safety model is documented in detail at [docs/safety-model.md](./docs/
 - Every action passes through the policy engine before execution
 - Trust is earned incrementally through user feedback, never granted by default
 - Spend limits are enforced as hard limits with no approximation
-- Every automated action produces an auditable explanation record
+- Supported automated-action paths are required to produce auditable explanation records; release-wide coverage remains under audit
 - The user can inspect, override, narrow, or shut off the system at any time

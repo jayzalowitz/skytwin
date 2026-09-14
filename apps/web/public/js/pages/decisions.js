@@ -23,8 +23,8 @@ export async function renderDecisions(container, userId) {
           <span class="card-title">What I've been doing for you</span>
         </div>
         <div class="card-subtitle">
-          A running log of every call your twin has made on your behalf — what it saw, what it
-          decided, and why. Click any row to read the full reasoning.
+          Recorded calls from supported paths — what the twin saw, what it decided, and available
+          explanation details. Release-wide coverage is still under audit.
         </div>
       </div>
 
@@ -114,7 +114,7 @@ export async function renderDecisions(container, userId) {
                 <span class="card-title">Nothing yet — but here's what I'll handle</span>
               </div>
               <div class="card-subtitle" style="margin-bottom: 1rem;">
-                Once your accounts are connected and a signal comes in, every call I make will land here. A few of the kinds of things I'll be deciding on:
+                Once your accounts are connected, recorded decisions from supported paths will land here. A few of the kinds of things I'll be deciding on:
               </div>
               <div class="insight-card">
                 <div class="insight-icon" style="background: var(--accent-soft); color: var(--accent);">E</div>

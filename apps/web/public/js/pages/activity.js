@@ -165,7 +165,7 @@ export async function renderActivity(container, userId) {
         <span class="card-title">What's been happening</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Every signal that came in, every decision your twin made, and every yes/no you gave it — newest first.
+        Recorded signals, decisions, and yes/no feedback from supported paths — newest first.
       </div>
       ${renderRangeChips(hours)}
     </div>

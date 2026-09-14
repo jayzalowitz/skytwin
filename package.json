@@ -41,7 +41,9 @@
     "check:encryption-inventory": "node --test scripts/security/validate-encryption-field-inventory.test.mjs && node scripts/security/validate-encryption-field-inventory.mjs",
     "demo:record": "cd scripts/demo && pnpm record",
     "demo:narrate": "cd scripts/demo && pnpm narrate",
-    "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium"
+    "demo:install": "cd scripts/demo && pnpm install --ignore-workspace && pnpm exec playwright install chromium",
+    "claims:check": "node scripts/release-claims/check-release-claims.mjs",
+    "claims:test": "vitest run scripts/release-claims/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
@@ -50,7 +52,8 @@
     "tsx": "^4.22.4",
     "turbo": "^2.10.4",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.10",
+    "yaml": "2.9.0"
   },
   "packageManager": "pnpm@9.1.0",
   "pnpm": {

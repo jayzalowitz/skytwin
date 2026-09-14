@@ -88,7 +88,7 @@ const STEPS = [
   {
     n: 5,
     title: 'Paste your credentials and connect',
-    blurb: 'Last step. The credentials are saved encrypted in SkyTwin\'s local database — they never leave your machine.',
+    blurb: 'Last step. Your Google client credentials are stored in SkyTwin\'s local database without app-level encryption and sent to Google only for OAuth authorization.',
     cta: null,
     detail: [],
   },
@@ -158,7 +158,8 @@ function renderStep(step, opts) {
           required
         >
         <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
-          Saved encrypted in your local SkyTwin database. The string never leaves your machine.
+          Stored in your local SkyTwin database without app-level encryption. The client secret is sent
+          to Google's OAuth service when completing authorization.
         </div>
       </div>
       <div id="cgm-cred-error" style="display:none;color:var(--danger,#d04646);font-size:0.85rem;margin-top:0.75rem;" role="alert"></div>
@@ -195,7 +196,7 @@ function renderDone() {
   return `
     <div class="cgm-step">
       <div class="cgm-step-header"><h2>Gmail connected ✓</h2></div>
-      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The setup is one-time — credentials live encrypted in your local database; you won't see this wizard again unless you revoke access.</p>
+      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The Google client credentials stay in your local database without app-level encryption; OAuth-token encryption depends on your Credential Vault state. You won't see this wizard again unless you revoke access.</p>
       <div style="display:flex;gap:0.5rem;margin-top:1rem;">
         <a class="btn btn-primary" href="#/">Open dashboard</a>
         <a class="btn btn-outline" href="#/approvals">See approvals queue</a>

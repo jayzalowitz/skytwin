@@ -8,7 +8,7 @@
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
 <img src="https://img.shields.io/github/package-json/v/jayzalowitz/skytwin?color=brightgreen&label=version" alt="Version">
 <a href="https://github.com/jayzalowitz/skytwin/releases/latest"><img src="https://img.shields.io/github/v/release/jayzalowitz/skytwin?label=download&color=blue" alt="Download latest release"></a>
-<img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux%20%7C%20iOS%20%7C%20Android-lightgrey.svg" alt="Platform">
+<img src="https://img.shields.io/badge/release-desktop%20technical%20preview-lightgrey.svg" alt="Release status: desktop technical preview">
 
 </div>
 
@@ -62,7 +62,7 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
   └──────────────┘
 ```
 
-Every path produces an explanation. Every outcome feeds back into the twin. The system gets better at predicting what you want over time.
+Supported decision paths can persist explanation and feedback records. Release-wide coverage is still being audited before the public beta.
 
 ## Screenshots
 
@@ -70,27 +70,27 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 <tr>
 <td width="50%">
 <p align="center"><strong>Onboarding</strong></p>
-<img src="docs/screenshots/onboarding.png" alt="Onboarding — connect Gmail, tell your twin about yourself, or explore a sample profile">
+<p>Historical capture withheld pending replacement after the public-copy audit.</p>
 </td>
 <td width="50%">
 <p align="center"><strong>Dashboard</strong></p>
-<img src="docs/screenshots/dashboard.png" alt="Dashboard — your daily briefing: what needs you, what the twin handled, and recent activity">
+<p>Historical capture withheld pending replacement after the public-copy audit.</p>
 </td>
 </tr>
 <tr>
 <td width="50%">
 <p align="center"><strong>Approvals</strong></p>
-<img src="docs/screenshots/approvals.png" alt="Approvals — pending actions that need your OK">
+<p>Historical capture withheld pending replacement after the public-copy audit.</p>
 </td>
 <td width="50%">
 <p align="center"><strong>Decision History</strong></p>
-<img src="docs/screenshots/decisions.png" alt="Decision history — filterable log of every decision with reasoning">
+<p>Historical capture withheld pending replacement after the public-copy audit.</p>
 </td>
 </tr>
 <tr>
 <td width="50%">
 <p align="center"><strong>Setup &amp; Credentials</strong></p>
-<img src="docs/screenshots/setup.png" alt="Setup — execution engines, Google OAuth walkthrough, credential management">
+<p>Historical capture withheld pending replacement after the public-copy audit.</p>
 </td>
 <td width="50%">
 <p align="center"><strong>Settings — fresh capture pending</strong></p>
@@ -100,16 +100,20 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 <tr>
 <td width="50%">
 <p align="center"><strong>My Learnings</strong></p>
-<img src="docs/screenshots/twin.png" alt="My Learnings — preferences, inferences, and corrections your twin has learned">
+<p>Historical capture withheld pending replacement after the public-copy audit.</p>
 </td>
 <td width="50%">
 <p align="center"><strong>Daily Briefing</strong></p>
-<img src="docs/screenshots/briefing.png" alt="Daily briefing — a source-cited digest that splits to-dos (act) from topics (FYI), with a Power view for the reasoning behind each call">
+<p>Historical capture withheld pending replacement after the public-copy audit.</p>
 </td>
 </tr>
 </table>
 
-## Concrete Examples
+## Illustrative Decision Scenarios
+
+These examples explain the intended judgment model; they are not a list of
+workflows included in the current desktop artifacts. The beta release contract
+below limits launch support to workflows backed by tagged-artifact evidence.
 
 | Scenario | What SkyTwin Does |
 |----------|-------------------|
@@ -126,9 +130,9 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 **It earns trust incrementally.** New users start at `observer` — the system only suggests. As you approve and correct, it earns autonomy domain by domain. Trust in email triage doesn't mean trust with your calendar.
 
-**Safety constraints are the product.** Every action passes through a policy engine with hard spend limits, trust tier gating, reversibility checks, and sensitivity classification. The system can be inspected, overridden, narrowed, and shut off at any time. [Read the full safety model →](./docs/safety-model.md)
+**Safety constraints are the product.** Typed candidate-action paths through the policy engine apply spend limits, trust-tier gating, reversibility checks, and sensitivity classification; the release-wide entry-path inventory remains a beta gate. The system can be inspected, overridden, narrowed, and shut off at any time. [Read the full safety model →](./docs/safety-model.md)
 
-**Every action is explainable.** No black boxes. Every automated decision produces an explanation record: what happened, what evidence was used, what preferences were invoked, why this action over alternatives, and how to correct it.
+**Recorded decisions are inspectable.** Supported paths can produce an explanation record covering what happened, the evidence and preferences used, the selected action, and correction guidance. Release-wide explanation coverage is still under audit, and a hosted model's internal reasoning remains subject to that provider's own transparency limits.
 
 **Your twin is inspectable.** It's not a vector embedding or a bag of keywords. It's a typed, versioned data structure where every preference has a confidence level, supporting evidence, and provenance. Contradictions are tracked, not hidden.
 
@@ -140,13 +144,13 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 
 **[⬇ Download the latest release →](https://github.com/jayzalowitz/skytwin/releases/latest)**
 
-Grab the installer for your OS, double-click, and you're in. No terminal, Docker,
-Ollama, or `.env` is required to open the app. CockroachDB ships inside the bundle
-as a hash-verified native binary. Check the release notes for the exact features in
-that artifact. In builds from current source, a local model and the `llama.cpp`
-runtime are not bundled: SkyTwin recommends a maintained artifact for the machine
-and downloads it only after the user starts the install. A compatible runtime
-remains a separate prerequisite, while a cloud provider remains an explicit opt-in.
+Current desktop artifacts bundle CockroachDB as a hash-verified native binary,
+but they are unsigned technical previews rather than supported public-beta
+installers. Check the release notes for the exact features in an artifact. In
+builds from current source, a local model and the `llama.cpp` runtime are not
+bundled: SkyTwin can recommend a maintained artifact for the machine and download
+it only after the user starts the install. A compatible runtime remains a separate
+prerequisite, while a hosted provider remains an explicit opt-in.
 
 > **Release boundary:** published installers currently predate the guarded,
 > account-free sample session and verified managed-model delivery in this source
@@ -167,7 +171,7 @@ remains a separate prerequisite, while a cloud provider remains an explicit opt-
 > - **macOS:** right-click the app → **Open** → **Open** (clears Gatekeeper once).
 > - **Windows:** SmartScreen → **More info** → **Run anyway**.
 >
-> Signing is required before a public launch; until then this is the expected first-run experience.
+> Signing and notarization are stop-ship requirements for a supported public beta.
 
 ### Build from source (one-command, macOS / Linux / WSL)
 
@@ -182,7 +186,7 @@ The installer detects your OS, installs anything missing (Homebrew on mac, Node 
 To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
 **The first 60 seconds in a development/source run:**
-1. The dashboard opens. Type any situation into "Ask your twin" — the agent reasons out loud and explains what it would do, with confidence and alternatives. No accounts connected yet, no signals required.
+1. The dashboard opens. "Ask your twin" can show a predicted action, confidence, alternatives, and an explanation; the exact model-backed path depends on an available local runtime or provider, while deterministic fallbacks cover supported paths when no model responds.
 2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the packaged build's read-only data authority and isolated, non-persistent simulation.
 3. The welcome screen recommends a local model from the machine's RAM, architecture, and free disk. The current maintained catalog contains one pinned Qwen2.5 1.5B Instruct Q4_K_M artifact (about 1.0 GiB). The artifact is downloaded on request and must pass exact-size, SHA-256, registry, and runtime-compatibility checks before automatic discovery will load it. A compatible llama.cpp binary remains a separate prerequisite. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
@@ -190,7 +194,9 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 
 ### Advanced env vars
 
-The defaults start SkyTwin without any LLM API keys or Docker. Local inference still requires both a verified model artifact and a compatible llama.cpp runtime. Power users can opt into:
+The default source install starts SkyTwin's core services without Docker or a
+hosted-model API key. Model-backed reasoning still requires an available local
+runtime plus verified model artifact, or a provider you configure. Power users can opt into:
 
 | Env var | Effect |
 |---------|--------|
@@ -305,7 +311,7 @@ packages/
   connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors with OAuth, stamps AuthoringTier
   assistant/                      Stateless chat service wrapping LlmClient with context enrichment
   capability-engine/              Infers user app capabilities from signals (keyword v1 + LLM verification)
-  credential-vault/               Envelope encryption for OAuth tokens (AES-256-GCM + scrypt KDF)
+  credential-vault/               AES-256-GCM + scrypt primitives for the experimental token vault (not production-default encryption)
   idle-miner/                     Filesystem scanner that extracts project metadata during idle time
   mcp-host/                       Manages MCP servers (stdio/HTTP/SSE) with circuit breakers + telemetry
   dxt/                            Serializes/deserializes DXT artifacts (packed MCP server configs)
@@ -429,11 +435,21 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 | [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
 | [Launch-Readiness Report](./docs/launch-readiness-report.md) | Current launch-blocker status: what's code-done vs. external |
-| [Release Procedure](./docs/release-procedure.md) | How to cut a release (tag → build.yml → draft → publish) + signing and clean-artifact verification gates |
+| [Release Procedure](./docs/release-procedure.md) | How the evidence-gated tag workflow verifies and publishes a release |
+| [Beta Claim Ledger](./docs/beta-claim-ledger.json) | Machine-checked release contract, evidence, limitations, owners, and stop-ship status |
 
 ## Project Status
 
-SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launch-plan.md)) — signed binaries, a verified packaged experience, the mobile cut, and safety/privacy debt remain pre-launch work tracked under epic [#357](https://github.com/jayzalowitz/skytwin/issues/357). The 2026-06-14 source audit ([`docs/launch-readiness-report.md`](./docs/launch-readiness-report.md)) verified the development tree at that revision; it was not certification of the currently published installers or of every public-launch gate. Published releases lag the current source. In this release candidate, the packaged account-free sample keeps its database-backed surface read-only while dedicated interactions run only inside an isolated, session-local simulation. The report retains the code-signing, OAuth review, mobile, artifact-validation, and encryption/key-management blockers. Core decision pipeline, twin model, policy engine, and swappable memory layer are functional in source; Gmail and Google Calendar connectors run with real OAuth; desktop packaging targets all three platforms; and the mobile source supports QR pairing and voice capture. Consult the release badge, [`CHANGELOG.md`](./CHANGELOG.md), and each release's notes for what a downloadable artifact actually contains.
+SkyTwin is preparing a desktop-first `v0.7.0-beta`. It is **not release-ready**:
+fresh packaged-sample and managed-model validation, production key management,
+signed/notarized artifacts, SBOMs, provenance, and clean-machine evidence remain
+stop-ship items. The machine-checked
+[`docs/beta-claim-ledger.json`](./docs/beta-claim-ledger.json) is the source of
+truth for release claims and support status. Current builds remain technical
+previews and published installers predate the guarded sample and verified managed
+model source paths. The core decision pipeline, twin model, policy engine,
+swappable memory layer, and Google connectors are implemented, while mobile
+remains a source/development surface rather than part of the beta support matrix.
 
 **Free and open-source forever for personal use.** Team and hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure — see [`docs/launch-plan.md`](./docs/launch-plan.md) for the split.
 
@@ -448,12 +464,12 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - Policy engine with spend limits, trust tiers, and domain-specific rules
 - Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
 - Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
-- Desktop app (macOS, Windows, Linux) with system-browser OAuth for Google accounts
-- Mobile app (iOS, Android) with QR pairing, push notifications, and voice capture that ships audio to the paired desktop for transcription
-- Embedded local LLM stack: llama.cpp text, whisper.cpp STT, Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`) — runs entirely on-device when binaries + models are present
+- Desktop build targets for macOS, Windows, and Linux; current artifacts are unsigned and not yet in the beta support matrix
+- Mobile source/development app (iOS, Android) with QR pairing, push notifications, and voice capture that sends audio to the paired desktop for transcription
+- Local model backends for llama.cpp text, whisper.cpp STT, and Piper TTS (`/api/voice/transcribe` and `/api/voice/synthesize`); each backend is on-device only when its compatible binary and model are present
 - SSRF-safe URL validation for all LLM provider endpoints, with DNS rebinding protection
 - Dynamic adapter discovery for third-party execution plugins
-- 4,800+ tests with CI/CD on GitHub Actions
+- Repository-wide tests and packaging workflows on GitHub Actions
 
 **What's next:**
 - More connectors (Slack, Notion, bank feeds)
