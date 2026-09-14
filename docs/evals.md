@@ -379,7 +379,8 @@ verification. The verifier also rejects noncanonical or duplicate-key JSON,
 contradictory result semantics, and mutable limitation or claim text. It
 independently compares the report identity with live Git HEAD and status; the
 CLI captures that identity only after all mapped tests finish. CI additionally
-binds it to `github.sha` and requires the checkout to be clean (the generated
+binds pull-request evidence to `github.event.pull_request.head.sha` (and push
+evidence to `github.sha`) and requires the checkout to be clean (the generated
 artifact path is ignored, so writing it does not dirty the checkout).
 The companion checksum detects accidental corruption, but is not an external
 trust root.
