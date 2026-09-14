@@ -42,8 +42,8 @@ environment maps, federation private keys, decision and explanation payloads,
 assistant messages, signals, histories, both memory backends, exports, and
 dead-letter context. Execution results and spend records are included as action
 receipts, not treated as harmless operational data. The machine-readable
- inventory classifies all 994 columns across the 104-table live schema as of
- `079-inference-receipt-capture-order.sql`; validation fails when a table or column is
+ inventory classifies all 998 columns across the 104-table live schema as of
+ `080-assistant-message-idempotency.sql`; validation fails when a table or column is
 missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
 sequence used by the production
 [`001-initial` migration runner](../../packages/db/src/migrations/001-initial.ts).

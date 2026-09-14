@@ -801,10 +801,10 @@ export function createAssistantRouter(): Router {
    * the first user message. The response includes the thread (so the
    * client can update its URL) and the assistant's reply message.
    *
-   * Returns 409 when the user has no LLM provider configured — the
-   * dashboard surfaces this as "set up an AI provider in Settings."
-   * Returns 502 when every provider in the chain fails — phase 1 doesn't
-   * fall back to canned replies, the user is told to retry.
+   * Completed retries replay normally; unresolved request identities return
+   * 202. Request-identity conflicts and unavailable provider configuration
+   * return 409, provider generation failures return 502, and an approval whose
+   * chat response cannot be reconciled returns 503.
    */
   router.post('/messages', async (req, res, next) => {
     try {
@@ -1005,10 +1005,10 @@ export function createAssistantRouter(): Router {
 
       // Issue #148 v1: try intent classification + routing FIRST. If the
       // user's message is an action intent, the decision pipeline
-      // produces a structured outcome (requires-approval / blocked) and
-      // we persist that as the assistant message — no LLM call. Falls
-      // through to the LLM chat path when the message is conversational
-      // (most messages) OR when the router throws (graceful degradation).
+      // produces a structured requires-approval, blocked, or visible failed
+      // outcome, which is persisted without an LLM call. Only an unmatched or
+      // explicit no-action result falls through to ordinary chat; safety-path
+      // failures do not.
       const intentRoute = await service.routeIntent(userId, content, {
         idempotencyKey: userMessage.id,
       });

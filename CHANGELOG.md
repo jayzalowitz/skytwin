@@ -1,5 +1,57 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Fail-closed action entry paths
+
+### Changed
+
+- **Assistant turns now carry durable, user-scoped retry identity.**
+  `POST /api/assistant/messages` requires a client-generated UUID `requestId`.
+  New user and assistant rows are unique per owner, request identity, and role;
+  completed retries replay persisted results, while unresolved turns return
+  `202` rather than re-entering provider or action routing. Chat-selected
+  actions are normalized to explicit approval, and an approval cannot be
+  created until its explanation is durable. This contains duplicate work but
+  does not claim provider-level exactly-once execution or automatic recovery
+  of an interrupted turn.
+
+- **Legacy action-taking routine writes now stop before remote dispatch.**
+  `POST` and `DELETE /api/routines` server-normalize the candidate, assess
+  risk, evaluate policy, and atomically persist the decision, candidate, full
+  risk assessment, deliberate non-action outcome, and explanation.
+  Registration and deletion remain unavailable; no create/delete adapter call
+  occurs. Read-only listing remains available. This supersedes the earlier
+  routine-registration behavior described below.
+
+- **Generic capability rollback is report-only.** The regret endpoint reports
+  reversible, irreversible, and exactly linked execution targets but makes no
+  router or adapter call. Generic rollback remains unavailable until #695
+  supplies durable, owner-bound one-winner admission and ambiguity handling.
+  The UI explicitly reports that no actions changed.
+
+- **Unmounted workflow helpers no longer dispatch external actions.** The
+  legacy email-triage and generic workflow helpers still evaluate and explain
+  decisions, but return `autoHandled: false` and do not call execution adapters
+  or learn from a presumed automatic action.
+
+- **The encryption inventory follows assistant retry metadata.** The reviewed
+  corpus now covers 104 tables and 998 columns through migration 080. The four
+  new assistant lifecycle fields are classified as locally exposed metadata;
+  source-field encryption remains a design contract rather than a shipped
+  protection claim.
+
+### Fixed (post-review)
+
+- **Ambiguous assistant failures retain their request identity.** Generic
+  server/transport failures and approval-response reconciliation failures no
+  longer mint a fresh logical turn on retry. The API does not report a
+  synthetic successful approval bubble unless the assistant row is durable,
+  and safe partial stream content is retained behind user-facing error text.
+
+- **OpenClaw credential prompts are owner-scoped and bounded.** Credential
+  metadata is parsed through a strict size-and-shape boundary, peer-supplied
+  identity is rejected, ownership comes from the prepared execution plan, and
+  the API emits the setup prompt only to that owner rather than broadcasting.
+
 ## [Unreleased] — Verifiable desktop release artifacts
 
 ### Added
