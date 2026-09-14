@@ -21,6 +21,38 @@ import { open as openFile, type FileHandle } from "node:fs/promises";
 import { MODEL_REGISTRY, type ModelEntry } from "./model-registry.js";
 
 export const ACTIVE_MODEL_MANIFEST = "managed-active-model.json";
+export const DURABLE_FILE_OPEN_FLAGS =
+  constants.O_RDWR | (constants.O_NOFOLLOW ?? 0);
+
+export interface FileSyncOperations {
+  open(path: string, flags: number): number;
+  stat(fd: number): ReturnType<typeof fstatSync>;
+  sync(fd: number): void;
+  close(fd: number): void;
+}
+
+const DEFAULT_FILE_SYNC_OPERATIONS: FileSyncOperations = {
+  open: openSync,
+  stat: fstatSync,
+  sync: fsyncSync,
+  close: closeSync,
+};
+
+/** Flush an existing private regular file through a writable descriptor. */
+export function syncPrivateFileForDurability(
+  path: string,
+  operations: FileSyncOperations = DEFAULT_FILE_SYNC_OPERATIONS,
+): void {
+  const fd = operations.open(path, DURABLE_FILE_OPEN_FLAGS);
+  try {
+    const stats = operations.stat(fd);
+    if (!stats.isFile() || stats.nlink !== 1)
+      throw new Error("durable_file_not_private_regular_file");
+    operations.sync(fd);
+  } finally {
+    operations.close(fd);
+  }
+}
 
 export interface ManagedModelManifest {
   schemaVersion: 1;
@@ -309,12 +341,23 @@ async function withModelDirMutationLock<T>(
   }
 }
 
-async function quarantineOrphanedPublicationLinks(
+export interface OrphanQuarantineOperations {
+  rename(from: string, to: string): void;
+  afterTargetMove?(): void;
+}
+
+const DEFAULT_ORPHAN_QUARANTINE_OPERATIONS: OrphanQuarantineOperations = {
+  rename: renameSync,
+};
+
+export async function quarantineOrphanedPublicationLinks(
   modelDir: string,
   target: string,
   model: ModelEntry,
+  operations: OrphanQuarantineOperations = DEFAULT_ORPHAN_QUARANTINE_OPERATIONS,
 ): Promise<boolean> {
   let targetHandle: FileHandle | null = null;
+  let targetVacated = false;
   try {
     targetHandle = await openFile(
       target,
@@ -365,33 +408,26 @@ async function quarantineOrphanedPublicationLinks(
         }
 
         // Node does not expose unlinkat(), so an inode check followed by
-        // unlink(path) has an unavoidable same-user path-swap window. Move
-        // both names into a fresh quarantine directory instead. rename never
-        // deletes either inode, and the current verified copy can then claim
-        // the vacated managed path with link()'s no-overwrite semantics.
+        // unlink(path) has an unavoidable same-user path-swap window. Retain
+        // both names instead; rename never deletes either inode, and the
+        // current verified copy can claim the vacated managed path with
+        // link()'s no-overwrite semantics.
         const quarantineDir = mkdtempSync(join(modelDir, ".skytwin-orphan-"));
-        const quarantinedLink = join(quarantineDir, "publication-link");
         const quarantinedTarget = join(quarantineDir, "managed-target");
-        renameSync(candidate, quarantinedLink);
-        renameSync(target, quarantinedTarget);
-        let linkHandle: FileHandle | null = null;
+        const quarantinedLink = join(quarantineDir, "publication-link");
+        // Vacate the managed name first. If the process stops before moving
+        // the sibling, the next activation can publish at the now-absent
+        // target instead of requiring the old two-link shape to be intact.
+        operations.rename(target, quarantinedTarget);
+        targetVacated = true;
         let movedTargetHandle: FileHandle | null = null;
         try {
-          linkHandle = await openFile(
-            quarantinedLink,
-            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-          );
           movedTargetHandle = await openFile(
             quarantinedTarget,
             constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
           );
-          const quarantined = await linkHandle.stat({ bigint: true });
           const movedTarget = await movedTargetHandle.stat({ bigint: true });
           if (
-            !quarantined.isFile() ||
-            quarantined.dev !== targetStats.dev ||
-            quarantined.ino !== targetStats.ino ||
-            quarantined.nlink !== 2n ||
             !movedTarget.isFile() ||
             movedTarget.dev !== targetStats.dev ||
             movedTarget.ino !== targetStats.ino ||
@@ -400,8 +436,14 @@ async function quarantineOrphanedPublicationLinks(
             throw new Error("orphaned_publication_link_changed");
           }
         } finally {
-          await linkHandle?.close();
           await movedTargetHandle?.close();
+        }
+        operations.afterTargetMove?.();
+        try {
+          operations.rename(candidate, quarantinedLink);
+        } catch {
+          // The managed name is safely vacant. Retaining the sibling under
+          // its old unique name is preferable to a pathname-based deletion.
         }
         return true;
       } finally {
@@ -409,6 +451,7 @@ async function quarantineOrphanedPublicationLinks(
       }
     }
   } catch (error) {
+    if (targetVacated) throw error;
     if (
       error instanceof Error &&
       error.message === "orphaned_publication_link_changed"
@@ -573,10 +616,7 @@ async function activateManagedModelUnlocked(
   const manifestPath = join(modelDir, ACTIVE_MODEL_MANIFEST);
   const temporary = `${manifestPath}.${randomUUID()}.tmp`;
   try {
-    const targetHandle = await openFile(
-      target,
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
+    const targetHandle = await openFile(target, DURABLE_FILE_OPEN_FLAGS);
     try {
       const targetStats = await targetHandle.stat({ bigint: true });
       if (
@@ -604,12 +644,7 @@ async function activateManagedModelUnlocked(
       flag: "wx",
       mode: 0o600,
     });
-    const fd = openSync(temporary, "r");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+    syncPrivateFileForDurability(temporary);
     renameSync(temporary, manifestPath);
     // Some Windows filesystems do not permit opening directories. The file
     // and manifest are already fsynced; directory fsync is extra crash safety.

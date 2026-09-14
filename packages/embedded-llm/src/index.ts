@@ -82,9 +82,12 @@ export {
   activateManagedModel,
   computeFileSha256Async,
   deleteInactiveManagedModel,
+  DURABLE_FILE_OPEN_FLAGS,
   inspectManagedActiveModelAsync,
   managedArtifactFilename,
   managedArtifactPath,
+  syncPrivateFileForDurability,
+  type FileSyncOperations,
   type ManagedModelInspection,
   type ManagedModelManifest,
 } from "./managed-model-store.js";

@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import {
+  constants,
   existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -22,6 +24,8 @@ import {
   inspectManagedActiveModel,
   inspectManagedActiveModelAsync,
   managedArtifactPath,
+  quarantineOrphanedPublicationLinks,
+  syncPrivateFileForDurability,
   writeFileHandleFully,
 } from "../managed-model-store.js";
 import { MODEL_REGISTRY, type ModelEntry } from "../model-registry.js";
@@ -53,6 +57,32 @@ function tinyModel(id: string, bytes: Buffer): ModelEntry {
 }
 
 describe("managed model activation", () => {
+  it("fsyncs files through a writable descriptor and always closes it", () => {
+    const dir = directory();
+    const path = join(dir, "durable-file");
+    writeFileSync(path, "durable");
+    const stats = statSync(path);
+    const open = vi.fn().mockReturnValue(41);
+    const stat = vi.fn().mockReturnValue(stats);
+    const sync = vi.fn();
+    const close = vi.fn();
+
+    syncPrivateFileForDurability(path, { open, stat, sync, close });
+
+    const flags = open.mock.calls[0]?.[1] as number;
+    expect(flags & constants.O_RDWR).toBe(constants.O_RDWR);
+    expect(sync).toHaveBeenCalledWith(41);
+    expect(close).toHaveBeenCalledWith(41);
+
+    sync.mockImplementationOnce(() => {
+      throw new Error("flush failed");
+    });
+    expect(() =>
+      syncPrivateFileForDurability(path, { open, stat, sync, close }),
+    ).toThrow("flush failed");
+    expect(close).toHaveBeenCalledTimes(2);
+  });
+
   it("completes repeated short writes at the correct buffer and file offsets", async () => {
     const write = vi.fn().mockImplementation(
       async (buffer: Buffer, _offset: number, length: number) => ({
@@ -240,6 +270,33 @@ describe("managed model activation", () => {
       state: "verified",
       model: { id: model.id },
     });
+  });
+
+  it("leaves the managed name reusable if quarantine stops after moving it", async () => {
+    const dir = directory();
+    const bytes = Buffer.from("interrupted quarantine move");
+    const model = tinyModel("tiny-quarantine-interrupted", bytes);
+    const target = managedArtifactPath(dir, model);
+    const orphan = `${target}.12345678-1234-4123-8123-123456789abc.installing`;
+    writeFileSync(target, bytes);
+    linkSync(target, orphan);
+
+    await expect(
+      quarantineOrphanedPublicationLinks(dir, target, model, {
+        rename: renameSync,
+        afterTargetMove: () => {
+          throw new Error("injected interruption");
+        },
+      }),
+    ).rejects.toThrow("injected interruption");
+    expect(existsSync(target)).toBe(false);
+    expect(existsSync(orphan)).toBe(true);
+
+    const staged = join(dir, "retry-after-interruption.partial");
+    writeFileSync(staged, bytes);
+    await activateManagedModel(dir, staged, model);
+    expect(inspectManagedActiveModel(dir, [model]).state).toBe("verified");
+    expect(statSync(target).nlink).toBe(1);
   });
 
   it("does not delete lookalike installation files or unrelated hard links", async () => {

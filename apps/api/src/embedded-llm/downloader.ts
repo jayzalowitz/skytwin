@@ -24,6 +24,7 @@ import {
   findById as findModelById,
   inspectManagedActiveModelAsync,
   managedArtifactPath,
+  syncPrivateFileForDurability,
   type ManagedModelInspection,
   type ModelEntry,
 } from "@skytwin/embedded-llm";
@@ -102,12 +103,7 @@ function writePartialState(path: string, state: PartialState): void {
       mode: 0o600,
       flag: "wx",
     });
-    const fd = openSync(temporary, "r");
-    try {
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
+    syncPrivateFileForDurability(temporary);
     renameSync(temporary, path);
     try {
       const directoryFd = openSync(dirname(path), "r");
