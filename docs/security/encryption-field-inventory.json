@@ -291,7 +291,7 @@
           "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
         }
       ],
-      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+      "ownershipNotes": "Ownership is authoritative through assistant_threads; user_id is a denormalized request-key component constrained to match the parent when non-null. Repository access preserves the parent join and scope."
     },
     {
       "table": "assistant_threads",
@@ -741,7 +741,7 @@
           "searchableDerivatives": []
         }
       ],
-      "ownershipNotes": "Ownership is authoritative through assistant_threads; user_id is a denormalized request-key component constrained to match the parent when non-null. Repository access preserves the parent join and scope."
+      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
     },
     {
       "table": "capability_provenance_edges",

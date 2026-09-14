@@ -42,7 +42,7 @@ const EXPECTED_SCHEMA_CORPUS_SHA256 =
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "5f764246f844252870cc9b5e0636323acb98a31271e087b40b5d4c67b5546d27";
+  "e790f19a5ef98fc4c9ac81fb1ebe934922340a297beb510c6d4dc8b68c442426";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -1301,6 +1301,7 @@ export function semanticManifestHash(inventory) {
           table: table.table,
           column,
           owner: table.owner,
+          ownershipNotes: table.ownershipNotes,
           currentBoundary: table.boundary?.current,
           targetBoundary: table.boundary?.target,
           classification: group.classification,
