@@ -47,7 +47,7 @@ import {
   SituationType,
   TrustTier,
 } from '@skytwin/shared-types';
-import { emitInferenceReceipt } from '@skytwin/llm-client';
+import { emitInferenceReceipt, snapshotInferenceTrace } from '@skytwin/llm-client';
 import type { InferenceTrace, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
 import { NoRequestExecutionError } from '@skytwin/execution-router';
@@ -235,22 +235,26 @@ export function createEventsRouter(): Router {
       const rawEvent = validation.event;
       const userId = validation.userId;
 
-      // A finalized duplicate must not construct a provider client or make a
-      // fresh inference call. The later create/save path remains the
-      // concurrency backstop for two genuinely simultaneous first ingests.
+      // Resolve every known duplicate before interpretation. An incomplete
+      // prior ingest still needs a provider client for evaluation, but its
+      // canonical persisted decision — never the retry payload — is the only
+      // input allowed into that evaluation and its receipts.
       const signalId = typeof rawEvent['signalId'] === 'string' &&
         rawEvent['signalId'].trim().length > 0
         ? rawEvent['signalId']
         : null;
-      let preCapturedDecision: _DecisionObject | null = null;
+      let preExistingDecision: _DecisionObject | null = null;
+      let preExistingIngestState: Awaited<ReturnType<
+        typeof inferenceReceiptRepository.getContinuationForDecision
+      >> = null;
       if (signalId && decisionRepositoryAdapter.findBySignalId) {
         const existing = await decisionRepositoryAdapter.findBySignalId(userId, signalId);
         if (existing) {
-          const state = await inferenceReceiptRepository.getContinuationForDecision(
+          preExistingDecision = existing;
+          preExistingIngestState = await inferenceReceiptRepository.getContinuationForDecision(
             userId,
             existing.id,
           );
-          if (state?.receiptCaptureComplete) preCapturedDecision = existing;
         }
       }
 
@@ -258,10 +262,12 @@ export function createEventsRouter(): Router {
       // the sole per-user composition root. Its trace callback observes every
       // completed call made by interpretation, candidate generation, or drafts.
       const traces: InferenceTrace[] = [];
-      const llmResolution = preCapturedDecision
+      const llmResolution = preExistingDecision && preExistingIngestState?.receiptCaptureComplete
         ? null
         : await resolveUserLlmClient(userId, {
-            onInferenceTrace: (trace) => traces.push(trace),
+            // Take ownership immediately. Returned response provenance and a
+            // callback-visible trace must never share mutable receipt input.
+            onInferenceTrace: (trace) => traces.push(snapshotInferenceTrace(trace)),
           });
       const receiptAwareLlm = llmResolution?.state === 'ready'
         ? { client: llmResolution.client, traces, mode: llmResolution.mode }
@@ -331,8 +337,8 @@ export function createEventsRouter(): Router {
 
       let decision: _DecisionObject;
       let decisionCreated: boolean;
-      if (preCapturedDecision) {
-        decision = preCapturedDecision;
+      if (preExistingDecision) {
+        decision = preExistingDecision;
         decisionCreated = false;
       } else {
         // 1. Interpret the raw event
@@ -342,8 +348,31 @@ export function createEventsRouter(): Router {
         // `decisionCreated` is false when the row was already persisted for this
         // (user_id, signal_id) — a re-ingestion. Callers gate side-effects on it
         // so duplicate ingests don't re-fire UI notifications etc.
-        ({ created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision));
+        const saved = await decisionRepositoryAdapter.saveDecision(decision);
+        decision = saved.decision;
+        decisionCreated = saved.created;
+
+        // A concurrent request can win between the preflight and INSERT. The
+        // interpretation just completed against an unpersisted request-local
+        // object, so it must not be attached to the winner's canonical row.
+        // A finalized winner can follow the normal resume/suppress path; an
+        // incomplete winner requires a fresh retry that starts at preflight.
+        if (!decisionCreated) {
+          const racedState = await inferenceReceiptRepository.getContinuationForDecision(
+            userId,
+            decision.id,
+          );
+          if (!racedState?.receiptCaptureComplete) {
+            res.status(409).json({
+              error: 'Decision ingestion is already in progress; retry the signal',
+            });
+            return;
+          }
+          preExistingIngestState = racedState;
+        }
       }
+
+      const canonicalRawEvent = decision.rawData ?? rawEvent;
 
       let resumedAfterReceiptCapture: {
         outcome: DecisionOutcome;
@@ -369,10 +398,9 @@ export function createEventsRouter(): Router {
       // execution cannot have started. Afterwards, only idempotent approval /
       // informational work or a one-time ready→running execution claim resumes.
       if (!decisionCreated) {
-        const ingestState = await inferenceReceiptRepository.getContinuationForDecision(
-          userId,
-          decision.id,
-        );
+        const ingestState = preExistingDecision || preExistingIngestState
+          ? preExistingIngestState
+          : await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
         // Outcome and explanation come only from the atomically persisted,
         // self-consistent continuation snapshot. Never combine guard authority
         // with mutable rows fetched independently after finalization.
@@ -593,14 +621,14 @@ export function createEventsRouter(): Router {
       // This is the production path for the "twin remembers what happened"
       // promise. Failures are swallowed so a memory-layer hiccup never
       // blocks the decision pipeline.
-      void recordSignalToMemory(userId, decision, rawEvent)
+      void recordSignalToMemory(userId, decision, canonicalRawEvent)
         .then(() => {
           // Tell the dashboard a page was indexed so it refreshes the
           // counts + recent-episodes block without polling.
           sseManager.emit(userId, 'memory:page-indexed', {
             decisionId: decision.id,
-            source: rawEvent['source'] ?? 'unknown',
-            type: rawEvent['type'] ?? decision.situationType,
+            source: canonicalRawEvent['source'] ?? 'unknown',
+            type: canonicalRawEvent['type'] ?? decision.situationType,
           });
         })
         .catch((err) => {

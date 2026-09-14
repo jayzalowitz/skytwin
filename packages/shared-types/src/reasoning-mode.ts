@@ -31,45 +31,45 @@ export type ProviderPriceKind = 'zero' | 'fixed' | 'dynamic' | 'unknown';
 
 interface ProviderPricingBase {
   /** Exact integer accounting unit. */
-  unit: 'nano_usd';
+  readonly unit: 'nano_usd';
 }
 
 export type ProviderPricingCapability =
   | (ProviderPricingBase & {
-    kind: 'zero';
-    source: 'local_runtime';
+    readonly kind: 'zero';
+    readonly source: 'local_runtime';
   })
   | (ProviderPricingBase & {
-    kind: 'fixed' | 'dynamic';
-    source: 'static_registry' | 'provider_catalog';
-    inputNanoUsdPerMillionTokens: number;
-    outputNanoUsdPerMillionTokens: number;
+    readonly kind: 'fixed' | 'dynamic';
+    readonly source: 'static_registry' | 'provider_catalog';
+    readonly inputNanoUsdPerMillionTokens: number;
+    readonly outputNanoUsdPerMillionTokens: number;
     /** ISO-8601 timestamp at which the price was checked. */
-    checkedAt: string;
+    readonly checkedAt: string;
     /** A dynamic price is unusable for unattended spend after this instant. */
-    expiresAt: string | null;
+    readonly expiresAt: string | null;
   })
   | (ProviderPricingBase & {
-    kind: 'unknown';
-    source: 'unknown';
-    reason: 'not_reported' | 'stale' | 'unbounded';
+    readonly kind: 'unknown';
+    readonly source: 'unknown';
+    readonly reason: 'not_reported' | 'stale' | 'unbounded';
   });
 
 export interface ProviderRetentionDisclosure {
-  classification: ProviderRetentionClass;
+  readonly classification: ProviderRetentionClass;
   /** Plain disclosure suitable for presenting before a remote mode is chosen. */
-  summary: string;
-  policyUrl: string | null;
+  readonly summary: string;
+  readonly policyUrl: string | null;
 }
 
 export interface ProviderPrivacyCapabilities {
-  executionLocation: ProviderExecutionLocation;
-  networkScope: ProviderNetworkScope;
-  confidentiality: ProviderConfidentiality;
-  attestationPolicy: ProviderAttestationPolicy;
-  retention: ProviderRetentionDisclosure;
-  modalities: readonly ProviderModality[];
-  pricing: ProviderPricingCapability;
+  readonly executionLocation: ProviderExecutionLocation;
+  readonly networkScope: ProviderNetworkScope;
+  readonly confidentiality: ProviderConfidentiality;
+  readonly attestationPolicy: ProviderAttestationPolicy;
+  readonly retention: ProviderRetentionDisclosure;
+  readonly modalities: readonly ProviderModality[];
+  readonly pricing: ProviderPricingCapability;
 }
 
 /** User-facing routing policy. The mode is independent of provider identity. */
@@ -160,33 +160,33 @@ export type ProviderVerificationStatus =
 
 export interface ProviderRequestIdentity {
   /** SkyTwin-generated identity for this exact invocation. */
-  invocationId: string;
+  readonly invocationId: string;
   /** Provider-issued identity, when the provider exposes one. Never fabricated. */
-  providerRequestId: string | null;
+  readonly providerRequestId: string | null;
 }
 
 export interface ProviderCostBasis {
-  pricing: ProviderPricingCapability;
-  inputTokens: number | null;
-  outputTokens: number | null;
+  readonly pricing: ProviderPricingCapability;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
 }
 
 export interface ProviderExecutionAttempt {
-  provider: string;
-  outcome: 'succeeded' | 'failed' | 'circuit_open' | 'price_unavailable';
+  readonly provider: string;
+  readonly outcome: 'succeeded' | 'failed' | 'circuit_open' | 'price_unavailable';
 }
 
 /** Metadata that remains attached to a normalized provider result. */
 export interface ProviderExecutionMetadata {
-  reasoningMode: ReasoningMode;
-  provider: string;
-  model: string;
-  request: ProviderRequestIdentity;
-  capabilities: ProviderPrivacyCapabilities;
-  verificationStatus: ProviderVerificationStatus;
+  readonly reasoningMode: ReasoningMode;
+  readonly provider: string;
+  readonly model: string;
+  readonly request: ProviderRequestIdentity;
+  readonly capabilities: ProviderPrivacyCapabilities;
+  readonly verificationStatus: ProviderVerificationStatus;
   /** Sanitized ordered path; contains no prompt, credential, or provider error text. */
-  executionPath: readonly ProviderExecutionAttempt[];
-  costBasis: ProviderCostBasis;
+  readonly executionPath: readonly ProviderExecutionAttempt[];
+  readonly costBasis: ProviderCostBasis;
   /** Durable receipt linkage is populated by receipt persistence, never guessed. */
-  receiptId: string | null;
+  readonly receiptId: string | null;
 }

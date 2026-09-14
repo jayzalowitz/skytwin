@@ -9,15 +9,15 @@ import type {
 } from '@skytwin/shared-types';
 
 export interface TrustedConfidentialVerification {
-  outcome: 'verified';
-  inferenceId?: string;
-  attestationPolicyVersion: string;
-  verifierVersion: string;
-  evidence: Uint8Array;
-  measurementIdentity: string;
-  responseSignature: ReceiptSignatureV1;
-  verifiedAt: string;
-  freshUntil: string;
+  readonly outcome: 'verified';
+  readonly inferenceId?: string;
+  readonly attestationPolicyVersion: string;
+  readonly verifierVersion: string;
+  readonly evidence: Readonly<Uint8Array>;
+  readonly measurementIdentity: string;
+  readonly responseSignature: ReceiptSignatureV1;
+  readonly verifiedAt: string;
+  readonly freshUntil: string;
 }
 
 export interface RejectedConfidentialVerification {
@@ -42,19 +42,20 @@ export interface ConfidentialInferenceVerifier {
 
 /** Canonical logical input/output bytes and provider facts captured by one client instance. */
 export interface InferenceTrace {
-  id: string;
-  status: InferenceReceiptStatus;
+  readonly id: string;
+  readonly status: InferenceReceiptStatus;
   /** Selected mode plus adapter-derived runtime facts for this exact call. */
-  execution: ProviderExecutionMetadata;
-  endpointIdentity: string;
-  request: Uint8Array;
-  response: Uint8Array;
-  cost: { basis: 'exact'; currency: string; amountMinor: number } | { basis: 'unknown' };
-  createdAt: string;
-  verifierVersion: string;
-  fallback?: InferenceFallbackV1;
-  verification?: TrustedConfidentialVerification;
-  verificationFailureReason?: string;
+  readonly execution: ProviderExecutionMetadata;
+  readonly endpointIdentity: string;
+  readonly request: Readonly<Uint8Array>;
+  readonly response: Readonly<Uint8Array>;
+  readonly cost: { readonly basis: 'exact'; readonly currency: string; readonly amountMinor: number }
+    | { readonly basis: 'unknown' };
+  readonly createdAt: string;
+  readonly verifierVersion: string;
+  readonly fallback?: InferenceFallbackV1;
+  readonly verification?: TrustedConfidentialVerification;
+  readonly verificationFailureReason?: string;
 }
 
 /**

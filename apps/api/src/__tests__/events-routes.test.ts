@@ -32,11 +32,13 @@ const {
   mockEscalateExecutionToApproval,
   mockGetExplanation,
   mockEmitReceipt,
+  mockSnapshotTrace,
   mockLlmClient,
   mockGetOAuthToken,
   mockCurrentPolicyEvaluate,
   mockGetAllPolicies,
   mockFindUser,
+  mockRecordSignal,
 } = vi.hoisted(() => ({
   mockInterpret: vi.fn(),
   mockEvaluate: vi.fn(),
@@ -74,11 +76,13 @@ const {
   mockEscalateExecutionToApproval: vi.fn(),
   mockGetExplanation: vi.fn(),
   mockEmitReceipt: vi.fn(),
+  mockSnapshotTrace: vi.fn((trace: unknown) => structuredClone(trace)),
   mockLlmClient: vi.fn(),
   mockGetOAuthToken: vi.fn(),
   mockCurrentPolicyEvaluate: vi.fn(),
   mockGetAllPolicies: vi.fn(),
   mockFindUser: vi.fn(),
+  mockRecordSignal: vi.fn(),
 }));
 
 vi.mock('@skytwin/decision-engine', () => ({
@@ -188,6 +192,7 @@ vi.mock('@skytwin/db', () => ({
 vi.mock('@skytwin/llm-client', () => ({
   LlmClient: mockLlmClient,
   emitInferenceReceipt: mockEmitReceipt,
+  snapshotInferenceTrace: mockSnapshotTrace,
 }));
 
 vi.mock('../lib/user-llm-client.js', () => ({
@@ -248,6 +253,16 @@ vi.mock('../middleware/require-ownership.js', () => ({
 
 vi.mock('../sse.js', () => ({
   sseManager: mockSseManager,
+}));
+
+vi.mock('../memory-setup.js', () => ({
+  getMemoryPortForUser: vi.fn(async () => ({
+    port: {
+      recordSignal: mockRecordSignal,
+      searchSemantic: vi.fn().mockResolvedValue([]),
+    },
+    hybrid: null,
+  })),
 }));
 
 import { createEventsRouter } from '../routes/events.js';
@@ -384,6 +399,7 @@ describe('Events API routes', () => {
       id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer',
       ironclaw_channel: 'skytwin', execution_authority_revision: 'authority-revision-1',
     });
+    mockRecordSignal.mockResolvedValue(undefined);
     mockCurrentPolicyEvaluate.mockResolvedValue({
       allowed: true,
       requiresApproval: false,
@@ -476,6 +492,54 @@ describe('Events API routes', () => {
     expect(mockCreateReceipts.mock.invocationCallOrder[0]).toBeLessThan(
       mockApprovalCreate.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it('snapshots callback traces before later mutation can affect receipt emission', async () => {
+    mockGetProviders.mockResolvedValue([
+      { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
+    ]);
+    mockLlmClient.mockImplementation(function MockMutatingLlmClient(
+      _providers: unknown,
+      _userId: unknown,
+      options: { onInferenceTrace: (trace: Record<string, unknown>) => void },
+    ) {
+      const callbackVisible = {
+        id: 'receipt-original', status: 'conventional',
+        execution: {
+          reasoningMode: 'bring_your_own_provider', provider: 'openai', model: 'original-model',
+          executionPath: [{ provider: 'openai', outcome: 'succeeded' }],
+        },
+        endpointIdentity: 'https://api.openai.com',
+        request: Uint8Array.from([1, 2, 3]), response: Uint8Array.from([4, 5, 6]),
+        cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
+        verifierVersion: 'boundary-v1',
+      };
+      options.onInferenceTrace(callbackVisible);
+      callbackVisible.id = 'receipt-mutated';
+      callbackVisible.execution.provider = 'google';
+      callbackVisible.execution.model = 'mutated-model';
+      callbackVisible.request.fill(0);
+      callbackVisible.response.fill(0);
+      return { hasProviders: true };
+    });
+    mockEvaluate.mockResolvedValue({
+      id: 'outcome-1', decisionId: 'decision-1', selectedAction: null,
+      allCandidates: [], autoExecute: false, requiresApproval: false,
+      reasoning: 'No action needed',
+    });
+
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+    });
+
+    expect(res.status).toBe(200);
+    expect(mockSnapshotTrace).toHaveBeenCalledOnce();
+    expect(mockEmitReceipt).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'receipt-original',
+      execution: expect.objectContaining({ provider: 'openai', model: 'original-model' }),
+      request: Uint8Array.from([1, 2, 3]),
+      response: Uint8Array.from([4, 5, 6]),
+    }), expect.any(Object), expect.any(Object));
   });
 
   it.each([
@@ -846,77 +910,43 @@ describe('Events API routes', () => {
     expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
   });
 
-  it('allows only the finalized continuation to proceed when concurrent routes evaluate distinct outcomes', async () => {
+  it('fails a concurrent insert loser before it can evaluate against request-local interpretation', async () => {
     let saveCount = 0;
-    mockSaveDecision.mockImplementation(async (decision: unknown) => ({
-      decision,
-      created: saveCount++ === 0,
-    }));
-    const outcome = (suffix: string) => ({
-      id: `outcome-${suffix}`,
-      decisionId: 'decision-1',
-      autoExecute: false,
-      requiresApproval: true,
-      reasoning: `Needs approval ${suffix}`,
-      selectedAction: {
-        id: `action-${suffix}`, decisionId: 'decision-1', actionType: 'create_calendar_event',
-        description: `Create calendar event ${suffix}`, domain: 'calendar', parameters: {},
-        reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
-      },
-      allCandidates: [],
-      riskAssessment: null,
-    });
-    mockEvaluate
-      .mockResolvedValueOnce(outcome('first'))
-      .mockResolvedValueOnce(outcome('second'));
-    mockGenerate
-      .mockResolvedValueOnce({
-        id: 'explanation-first', decisionId: 'decision-1', summary: 'First explanation',
-        riskTier: 'low', overallConfidence: 'high',
-      })
-      .mockResolvedValueOnce({
-        id: 'explanation-second', decisionId: 'decision-1', summary: 'Second explanation',
-        riskTier: 'low', overallConfidence: 'high',
-      });
-    let releaseFirstCapture!: () => void;
-    let signalFirstCapture!: () => void;
-    const firstCaptureStarted = new Promise<void>((resolve) => { signalFirstCapture = resolve; });
-    const secondCaptureStarted = new Promise<void>((resolve) => { releaseFirstCapture = resolve; });
-    let captureCount = 0;
-    mockCreateReceipts.mockImplementation(async (
-      _userId: unknown,
-      inputs: unknown[],
-      completion: { continuation: unknown },
-    ) => {
-      if (captureCount++ === 0) {
-        signalFirstCapture();
-        await secondCaptureStarted;
-        return { receipts: inputs, continuation: completion.continuation };
+    let firstSaveStarted!: () => void;
+    let secondSaveStarted!: () => void;
+    const firstAtSave = new Promise<void>((resolve) => { firstSaveStarted = resolve; });
+    const secondAtSave = new Promise<void>((resolve) => { secondSaveStarted = resolve; });
+    mockSaveDecision.mockImplementation(async (decision: unknown) => {
+      const call = saveCount++;
+      if (call === 0) {
+        firstSaveStarted();
+        await secondAtSave;
+        return { decision, created: true };
       }
-      releaseFirstCapture();
-      return null;
+      secondSaveStarted();
+      return { decision, created: false };
     });
     mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-first' }, created: true });
     const app = buildApp();
     const body = {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', signalId: 'signal-race',
+      source: 'test', type: 'calendar_event',
     };
 
     const firstRequest = request(app, 'POST', '/api/events/ingest', body);
-    await firstCaptureStarted;
+    await firstAtSave;
     const secondRequest = request(app, 'POST', '/api/events/ingest', body);
     const [first, second] = await Promise.all([firstRequest, secondRequest]);
 
     expect(first.status).toBe(200);
-    expect(second.status).toBe(500);
-    expect(mockEvaluate).toHaveBeenCalledTimes(2);
-    expect(mockCreateReceipts.mock.calls.map((call) =>
-      (call[2] as { continuation: { outcome: { reasoning: string } } }).continuation.outcome.reasoning,
-    )).toEqual(['Needs approval first', 'Needs approval second']);
-    expect(mockApprovalCreate).toHaveBeenCalledTimes(1);
-    expect(mockApprovalCreate).toHaveBeenCalledWith(expect.objectContaining({
-      reason: 'Needs approval first',
-    }));
+    expect(second.status).toBe(409);
+    expect(second.body).toEqual({
+      error: 'Decision ingestion is already in progress; retry the signal',
+    });
+    expect(mockInterpret).toHaveBeenCalledTimes(2);
+    expect(mockEvaluate).toHaveBeenCalledTimes(1);
+    expect(mockCreateReceipts).toHaveBeenCalledTimes(1);
+    expect(mockApprovalCreate).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------
@@ -1211,19 +1241,65 @@ describe('Events API routes', () => {
       expect(mockCreateReceipts).not.toHaveBeenCalled();
     });
 
-    it('reruns an otherwise persisted decision when receipt finalization is incomplete', async () => {
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
-      mockGetOutcome.mockResolvedValue({
-        decisionId: 'decision-1', selectedAction: null, autoExecute: false,
-        requiresApproval: false, reasoning: 'Previous partial run',
+    it('evaluates an incomplete retry only from the canonical persisted decision', async () => {
+      const canonicalRawEvent = {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        signalId: 'signal-incomplete',
+        source: 'gmail',
+        type: 'email',
+        data: { subject: 'Persisted A', body: 'canonical content' },
+      };
+      mockFindBySignalId.mockResolvedValue({
+        id: 'decision-1',
+        situationType: 'calendar_conflict',
+        domain: 'calendar',
+        urgency: 'medium',
+        summary: 'Persisted interpretation A',
+        rawData: canonicalRawEvent,
+        interpretedAt: new Date('2026-09-10T00:00:00.000Z'),
       });
       mockGetIngestState.mockResolvedValue(null);
+      mockGetProviders.mockResolvedValue([
+        { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
+      ]);
+
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        signalId: 'signal-incomplete',
+        source: 'retry-source',
+        type: 'calendar_event',
+        data: { subject: 'Retry B', body: 'different content' },
       });
+
       expect(res.status).toBe(200);
-      expect(mockEvaluate).toHaveBeenCalled();
-      expect(mockCreateReceipts).toHaveBeenCalled();
+      expect(mockInterpret).not.toHaveBeenCalled();
+      expect(mockSaveDecision).not.toHaveBeenCalled();
+      expect(mockEvaluate).toHaveBeenCalledWith(expect.objectContaining({
+        decision: expect.objectContaining({
+          summary: 'Persisted interpretation A',
+          rawData: canonicalRawEvent,
+        }),
+      }));
+      expect(mockGenerate).toHaveBeenCalledWith(
+        expect.objectContaining({ rawData: canonicalRawEvent }),
+        expect.anything(),
+        expect.objectContaining({
+          decision: expect.objectContaining({ rawData: canonicalRawEvent }),
+        }),
+      );
+      expect(mockCreateReceipts).toHaveBeenCalledOnce();
+      await vi.waitFor(() => {
+        expect(mockRecordSignal).toHaveBeenCalledWith(expect.objectContaining({
+          source: 'gmail',
+          type: 'email',
+          data: canonicalRawEvent.data,
+        }));
+      });
+      expect(mockSseManager.emit).toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'memory:page-indexed',
+        expect.objectContaining({ source: 'gmail', type: 'email' }),
+      );
     });
 
     it('resumes approval creation after committed receipt capture without repeating inference', async () => {
@@ -1560,18 +1636,22 @@ describe('Events API routes', () => {
     });
 
     it('falls through to the normal pipeline when no previous outcome is recoverable (first attempt crashed before saving)', async () => {
-      // `created: false` means the decision row exists, but if the prior
-      // attempt died between saveDecision and saveOutcome the recovery
-      // can't reconstruct the result — running the pipeline to completion
-      // is the correct fallback so the work eventually finishes.
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({
-        decision: d,
-        created: false,
-      }));
+      // The decision row exists, but the prior attempt died before receipt
+      // finalization. Recovery evaluates the canonical persisted decision.
+      mockFindBySignalId.mockResolvedValue({
+        id: 'decision-1', situationType: 'calendar_conflict', domain: 'calendar',
+        urgency: 'medium', summary: 'Persisted email',
+        rawData: {
+          userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+          signalId: 'signal-incomplete-outcome', source: 'gmail', type: 'email',
+        },
+        interpretedAt: new Date('2026-09-10T00:00:00.000Z'),
+      });
       mockGetOutcome.mockResolvedValue(null);
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        signalId: 'signal-incomplete-outcome',
         source: 'gmail',
         type: 'email',
       });
@@ -1660,14 +1740,20 @@ describe('Events API routes', () => {
       selectedAction: null,
       allCandidates: [],
     });
-    mockSaveDecision.mockImplementation(async (d: unknown) => ({
-      decision: d,
-      created: false,
-    }));
+    mockFindBySignalId.mockResolvedValue({
+      id: 'decision-1', situationType: 'travel_decision', domain: 'travel',
+      urgency: 'medium', summary: 'Persisted travel decision',
+      rawData: {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        signalId: 'signal-incomplete-block', source: 'test', type: 'travel_decision',
+      },
+      interpretedAt: new Date('2026-09-10T00:00:00.000Z'),
+    });
     mockGetOutcome.mockResolvedValue(null);
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
       userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      signalId: 'signal-incomplete-block',
       source: 'test',
       type: 'travel_decision',
     });

@@ -2210,7 +2210,7 @@
           "currentProtection": "Locally readable receipt identifiers, capture order, status, trust marker, version, and timestamp in CockroachDB.",
           "targetProtection": "Remain locally readable for ownership checks, lookup, retention, audit, and deletion; disclose that status and linkage reveal receipt activity.",
           "migrationStage": "disclosed-local-metadata",
-          "rationale": "Receipt lookup and ownership require stable identifiers, provider-call order, and status; user ownership continues to resolve through the linked decision."
+          "rationale": "Receipt lookup and ownership require stable identifiers, durable capture-completion order, and status; user ownership continues to resolve through the linked decision."
         },
         {
           "classification": "deferred_source",

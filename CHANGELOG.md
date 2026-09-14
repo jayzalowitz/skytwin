@@ -32,7 +32,7 @@ All notable changes to SkyTwin will be documented in this file.
   contract.** Recorder and provider keys must parse as Ed25519, recorder key
   pairs must match, invalid clocks or freshness-policy values fail closed, and
   all database-bound identities must be UUIDs before trust evaluation. Receipt
-  batches persist an explicit provider-call ordinal; the singular compatibility
+  batches persist an explicit durable capture ordinal; the singular compatibility
   read returns the last captured call deterministically while backup retains all
   rows and rejects duplicate identities before restore.
 

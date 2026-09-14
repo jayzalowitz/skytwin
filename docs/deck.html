@@ -1192,15 +1192,16 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
     </section>
 
     <!-- ============================ 13-receipt ============================ -->
-    <section class="slide" tabindex="-1" id="13-receipt" aria-label="Slide 13 of 22: Every call is logged, explained, and correctable.">
+    <section class="slide" tabindex="-1" id="13-receipt" aria-label="Slide 13 of 22: Every decision is explained; completed decision-event inference is receipted.">
       <div class="wrap">
         <p class="slide-label">The receipt</p>
-        <h2>Every call is logged, explained, and correctable.</h2>
+        <h2>Every decision is explained. Completed decision-event inference is receipted.</h2>
         <p class="lede col">A gate you can't audit after the fact is a promise, not a control.</p>
 
         <div class="col">
           <p>An explanation record has four mandatory narrative fields — <span class="mono">summary</span>, <span class="mono">confidenceReasoning</span>, <span class="mono">actionRationale</span>, <span class="mono">correctionGuidance</span> — plus structured <span class="mono">evidenceUsed[]</span> and <span class="mono">preferencesInvoked[]</span>. What happened, what it read, why this and not the alternative, and how you correct it if it's wrong.</p>
           <p>Refusals get one too. A decision blocked by policy still writes a record carrying the block reason. That is the difference between an audit log and a highlight reel: a log that records only successes isn't a trail.</p>
+          <p>The decision-event path also captures a signed receipt for every completed model call and finalizes the whole batch before approval or external execution. That receipt scope does not extend to every LLM client in the application.</p>
         </div>
 
         <figure class="mt-lg col-fig">

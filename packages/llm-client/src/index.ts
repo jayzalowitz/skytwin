@@ -33,4 +33,8 @@ export { estimateLlmCostCents, isZeroCostProvider } from './cost.js';
 export { redactPromptPii } from './redact.js';
 export { clearEmbeddedPortCache } from './providers/embedded.js';
 export { emitInferenceReceipt } from './inference-receipt-emitter.js';
+export {
+  snapshotInferenceTrace,
+  snapshotProviderExecutionMetadata,
+} from './inference-trace.js';
 export type { ReceiptLinkage, ReceiptSigningKey } from './inference-receipt-emitter.js';

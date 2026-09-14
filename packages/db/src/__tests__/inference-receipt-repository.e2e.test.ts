@@ -1612,12 +1612,17 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
   it('enforces receipt version, status, and exact explanation-decision linkage constraints', async () => {
     const owner = await createGraph('constraints-owner');
     const other = await createGraph('constraints-other');
-    const insert = (version: number, status: string, explanationId = owner.explanationId) =>
+    const insert = (
+      version: number,
+      status: string,
+      explanationId = owner.explanationId,
+      captureOrdinal = 0,
+    ) =>
       pool.query(
         `INSERT INTO inference_receipts
-           (id, version, decision_id, explanation_id, status, receipt, trusted)
-         VALUES ($1, $2, $3, $4, $5, '{}', false)`,
-        [randomUUID(), version, owner.decisionId, explanationId, status],
+           (id, version, decision_id, explanation_id, capture_ordinal, status, receipt, trusted)
+         VALUES ($1, $2, $3, $4, $5, $6, '{}', false)`,
+        [randomUUID(), version, owner.decisionId, explanationId, captureOrdinal, status],
       );
 
     await expect(insert(2, 'on_device')).rejects.toMatchObject({ code: '23514' });
@@ -1634,7 +1639,9 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
        RETURNING id`,
       [owner.decisionId],
     );
-    await expect(insert(1, 'on_device', secondExplanation.rows[0]!.id))
+    await expect(insert(1, 'on_device', secondExplanation.rows[0]!.id, 1))
+      .resolves.toMatchObject({ rowCount: 1 });
+    await expect(insert(1, 'on_device', owner.explanationId, 1))
       .rejects.toMatchObject({ code: '23505' });
   });
 

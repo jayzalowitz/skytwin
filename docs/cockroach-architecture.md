@@ -32,12 +32,16 @@ The tradeoff: CockroachDB has some SQL incompatibilities with Postgres (no advis
 ```
 users
   |-- 1:1 --→ twin_profiles (current twin state)
+  |-- 0:1 --→ reasoning_mode_settings
   |-- 1:N --→ twin_profile_versions (historical snapshots)
   |-- 1:N --→ preferences
   |-- 1:N --→ connected_accounts
+  |-- 1:N --→ oauth_connection_authority
   |-- 1:N --→ decisions
   |-- 1:N --→ action_policies
   |-- 1:N --→ feedback_events
+  |-- 1:N --→ execution_admission_barriers
+  |-- 1:N --→ credential_dispatch_leases
 
 decisions
   |-- 1:N --→ candidate_actions
@@ -45,7 +49,15 @@ decisions
   |-- 1:N --→ execution_plans
   |-- 1:1 --→ explanation_records
   |-- 0:N --→ inference_receipts
+  |-- 0:1 --→ inference_receipt_completions
+  |-- 0:1 --→ decision_ingest_guards
+  |-- 0:N --→ execution_admission_barriers
   |-- 0:1 --→ approval_requests
+
+system authority
+  |-- 1:1 --→ execution_policy_authority
+  |-- 0:N --→ oauth_account_connection_authority (short-lived account tombstones)
+  |-- 0:N --→ oauth_new_user_authorizations (short-lived pre-identity grants)
 
 execution_plans
   |-- 1:1 --→ execution_results
@@ -73,7 +85,11 @@ memory_rooms
 | Table | Purpose | Write Pattern | Read Pattern |
 |-------|---------|---------------|-------------|
 | `users` | User identity and autonomy settings | Low frequency (settings changes) | Per-decision (load user context) |
+| `reasoning_mode_settings` | Per-user reasoning-mode selection | On settings change | Before constructing a decision-event LLM client |
 | `oauth_tokens` | OAuth tokens + connected accounts (the source of truth; keyed `(user, provider, account_email)` for multi-account) | On connect / token refresh | Per-poll (connectors), coverage panel |
+| `oauth_connection_authority` | Per-user, per-provider generation that fences known-owner OAuth redirects | On reconnect or invalidation | OAuth callback admission |
+| `oauth_account_connection_authority` | Short-lived account-key generation/tombstone for redirects whose owner is not known yet | On account resolution or invalidation | OAuth callback admission; TTL expiry |
+| `oauth_new_user_authorizations` | Short-lived one-shot authority for a new-user OAuth flow before identity binding | On authorization issue and claim | OAuth callback claim; TTL expiry |
 | `connected_accounts` | Legacy — superseded by `oauth_tokens`; retained in schema but unwritten | — | — |
 | `twin_profiles` | Current twin state | On every feedback event | Per-decision |
 | `twin_profile_versions` | Historical twin snapshots | On every twin mutation | Audit, replay, debugging |
@@ -88,7 +104,12 @@ memory_rooms
 | `watch_runs` | Canonical firing history for Watches, including matched signal refs and summary text | On each meaningful Watch firing | Briefing projection, Watches run history |
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
-| `inference_receipts` | Signed reasoning-path records for completed decision-event model calls, ordered within each atomic capture | Atomic batch finalization before approval or execution | Owner-scoped metadata read, backup, audit |
+| `inference_receipts` | Signed reasoning-path records for completed decision-event model calls, ordered by durable capture completion | Atomic batch finalization before approval or execution | Owner-scoped metadata read, backup, audit |
+| `inference_receipt_completions` | Content-free marker that the full zero-or-more receipt batch is durable | Same transaction as receipt finalization | Re-ingest admission and crash recovery |
+| `decision_ingest_guards` | Captured continuation snapshot and guarded effect state for one decision | Finalized with receipt authority, then advanced by guarded claims | Retry/reconciliation without replaying ambiguous effects |
+| `execution_policy_authority` | Installation-wide revision fencing policy changes from stale dispatch claims | On global execution-policy invalidation | Every external-dispatch lease admission |
+| `execution_admission_barriers` | One-shot, graph-bound admission snapshot for memory and approval execution | Immediately before an effect-bearing dispatch | Reconciliation and duplicate-dispatch prevention |
+| `credential_dispatch_leases` | Committed request-start authority bound to credential, vault, policy, user, and execution generations | Immediately before an external adapter request; terminal update afterward | Disconnect fencing and ambiguous-request reconciliation |
 | `feedback_events` | User responses (approve/reject/edit/undo) | On user interaction | Twin model updates, evals |
 | `memory_wings` | Top-level memory palace groupings by domain | On new domain encountered | Palace status, memory retrieval |
 | `memory_rooms` | Topics within a wing | On new topic encountered | Memory filing, tunnel detection |
@@ -404,6 +425,23 @@ COMMIT;
 ```
 
 If any step fails or a safety check doesn't pass, the entire transaction rolls back. No partial state.
+
+### Decision Receipt Finalization and External Dispatch
+
+Decision-event ingestion writes the decision graph and explanation before it
+atomically inserts zero or more `inference_receipts`, in durable capture-completion
+order, plus one `inference_receipt_completions` row and the corresponding
+`decision_ingest_guards` continuation snapshot. Approval creation and execution
+preparation happen only after that transaction commits.
+
+An effect-bearing continuation then creates or claims an
+`execution_admission_barriers` row tied by foreign keys to the exact decision,
+candidate, outcome, explanation, and execution plan. Immediately before an
+external adapter request, `credential_dispatch_leases` records the request-start
+linearization point and snapshots the current user, policy, credential, vault,
+and dispatch authority revisions. A disconnect or authority revision therefore
+fences a stale claimant; an interrupted request remains ambiguous rather than
+being replayed automatically.
 
 ## Event Storage Design
 

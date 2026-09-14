@@ -32,6 +32,10 @@ import {
   providersForReasoningMode,
   ProviderModePolicyError,
 } from './provider-privacy.js';
+import {
+  snapshotInferenceTrace,
+  snapshotProviderExecutionMetadata,
+} from './inference-trace.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   anthropic: anthropicGenerate,
@@ -223,7 +227,7 @@ export class LlmClient {
     executionPath: readonly ProviderExecutionAttempt[],
   ): ProviderExecutionMetadata {
     const capabilities = providerPrivacyCapabilities(provider, this.reasoningMode);
-    return {
+    return snapshotProviderExecutionMetadata({
       reasoningMode: this.reasoningMode,
       provider: provider.name,
       model: provider.model,
@@ -239,7 +243,7 @@ export class LlmClient {
         outputTokens: null,
       },
       receiptId: null,
-    };
+    });
   }
 
   private canRunUnattended(provider: ProviderEntry, nowMs = Date.now()): boolean {
@@ -458,7 +462,7 @@ export class LlmClient {
             );
           })();
 
-    const trace: InferenceTrace = {
+    const trace = snapshotInferenceTrace({
       id: randomUUID(),
       status,
       execution,
@@ -470,7 +474,7 @@ export class LlmClient {
         : { basis: 'unknown' },
       createdAt: (this.options.now?.() ?? new Date()).toISOString(),
       verifierVersion: 'skytwin-llm-boundary-v1',
-    };
+    });
     this.options.onInferenceTrace?.(trace);
   }
 

@@ -391,8 +391,8 @@ export async function renderSettings(container, userId) {
       <div class="collapsible-body">
         <div class="card-subtitle" style="margin-bottom: 1rem;">
           ${aiProviders.length > 0
-            ? `Out of the box your twin uses the local AI on your machine plus built-in rules — that's enough for most decisions. Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.`
-            : `<strong>The Chat surface needs at least one AI provider configured here</strong> to generate replies. Other features (decisions, approvals) work without one — they fall back to local AI + built-in rules. Multiple providers are tried in priority order with automatic fallback.`}
+            ? `Built-in rules handle decisions without a model. When a compatible llama.cpp runtime and local model are installed, your twin can also use local AI on this machine. Add a paid provider here if you want sharper reasoning on the tricky calls. Multiple are tried in order with automatic fallback.`
+            : `<strong>The Chat surface needs at least one AI provider configured here</strong> to generate replies. Other features (decisions, approvals) work without one through built-in rules. Local AI becomes available only when a compatible llama.cpp runtime and model are installed. Multiple providers are tried in priority order with automatic fallback.`}
         </div>
         <div id="ai-reasoning-location">
           ${renderReasoningLocation(settings !== null)}
@@ -1672,8 +1672,9 @@ const SMARTER_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'ollama']);
  *   'smart'    — top enabled provider is `embedded` (Smart mode default
  *                per #187 AC#6).
  *   'smarter'  — top enabled provider is hosted / Ollama (BYO API path).
- *   'none'     — no enabled providers; the LlmClient will return null and
- *                callers fall back to local AI + built-in rules.
+ *   'none'     — no enabled providers; model-backed callers return null and
+ *                decision paths use built-in rules. Local AI requires an
+ *                installed compatible runtime and model.
  *
  * Pure helper so the mode pill, the action handler, and any future audit
  * route all agree on one definition.

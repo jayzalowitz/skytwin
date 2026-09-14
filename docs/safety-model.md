@@ -396,7 +396,7 @@ Every decision in the pipeline produces an audit trail:
 9. **User response:** If escalated, what the user decided
 10. **Feedback effect:** How the outcome affected the twin model
 
-### Inference Receipt Foundation
+### Inference Receipt Coverage
 
 The versioned [inference receipt contract](inference-receipts.md) is a separate,
 structured record for reasoning-path integrity with no dedicated prompt or
@@ -410,12 +410,15 @@ key and provider-specific attestation policy. Verification never authorizes an
 action or replaces the policy, provenance, trust-tier, spend, reversibility, or
 explanation gates above.
 
-This is a foundation, not universal workflow coverage. Current production
-composition does not configure recorder keys, create receipts, export the exact
-request/response bundle needed by the verifier, or show a receipt detail UI.
-The authenticated decision route can read or delete metadata rows that an
-integrator has persisted. A missing receipt therefore means “unavailable,” not
-“local,” “private,” or “verified.”
+This is decision-event coverage, not universal workflow coverage. Decision-event
+ingestion captures every completed call made through its receipt-aware client and
+atomically finalizes the batch before approval creation or external execution. It
+uses either the configured three-part recorder identity or an ephemeral
+process-local identity. Other application clients are not covered, and the
+product does not export the canonical verification bundle or show a receipt
+detail UI. The authenticated decision route can read or delete receipt metadata.
+A missing receipt therefore means “unavailable,” not “local,” “private,” or
+“verified.”
 
 ### What the User Can See
 
@@ -434,9 +437,9 @@ The user can inspect:
 - Raw events: Retained for 90 days, then summarized (configurable)
 - Explanation records: Retained indefinitely
 - Feedback events: Retained indefinitely
-- Inference receipts: no automatic emission yet; any persisted metadata row is
-  retained with its decision, included in user backups, and deleted with that
-  decision or user
+- Inference receipts: completed decision-event calls are automatically captured
+  and finalized; metadata rows are retained with their decision, included in
+  user backups, and deleted with that decision or user
 
 ## Rollback Capabilities
 

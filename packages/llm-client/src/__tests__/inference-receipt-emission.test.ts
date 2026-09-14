@@ -2,6 +2,7 @@ import { generateKeyPairSync, sign } from 'node:crypto';
 import { describe, expect, it, vi } from 'vitest';
 import { verifyInferenceReceiptExport } from '@skytwin/shared-types';
 import { emitInferenceReceipt } from '../inference-receipt-emitter.js';
+import { snapshotInferenceTrace } from '../inference-trace.js';
 import type { InferenceTrace } from '../types.js';
 
 const recorder = generateKeyPairSync('ed25519');
@@ -73,6 +74,31 @@ describe('emitInferenceReceipt', () => {
       reasoningMode: 'conventional_cloud', status: 'conventional', cost: { basis: 'unknown' },
     });
     expect(bundle.receipt).not.toHaveProperty('evidenceSha256');
+    expect(verifyInferenceReceiptExport(bundle, {
+      trustedRecorderKeys: new Map([[recorderKey.keyId, recorderKey.publicKeyPem]]),
+    })).toMatchObject({ valid: true, trusted: true, code: 'PASS' });
+  });
+
+  it('signs the owned snapshot after callback-visible inputs are mutated', () => {
+    const callbackVisible = trace();
+    const captured = snapshotInferenceTrace(callbackVisible);
+    const expectedRequest = Buffer.from(captured.request);
+    const expectedResponse = Buffer.from(captured.response);
+
+    callbackVisible.request.fill(0);
+    callbackVisible.response.fill(0);
+    expect(Reflect.set(callbackVisible.execution, 'provider', 'google')).toBe(true);
+    expect(Reflect.set(callbackVisible.execution, 'model', 'mutated-model')).toBe(true);
+    expect(Reflect.set(callbackVisible.execution.executionPath[0]!, 'provider', 'google')).toBe(true);
+    expect(Reflect.set(callbackVisible.execution.capabilities, 'networkScope', 'loopback')).toBe(true);
+
+    const bundle = emitInferenceReceipt(captured, linkage, recorderKey);
+
+    expect(bundle.receipt).toMatchObject({
+      provider: 'openai', model: 'model', reasoningMode: 'conventional_cloud',
+    });
+    expect(Buffer.from(bundle.requestBase64, 'base64')).toEqual(expectedRequest);
+    expect(Buffer.from(bundle.responseBase64, 'base64')).toEqual(expectedResponse);
     expect(verifyInferenceReceiptExport(bundle, {
       trustedRecorderKeys: new Map([[recorderKey.keyId, recorderKey.publicKeyPem]]),
     })).toMatchObject({ valid: true, trusted: true, code: 'PASS' });

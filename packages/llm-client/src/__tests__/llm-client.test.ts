@@ -129,6 +129,41 @@ describe('LlmClient', () => {
       expect(traces[0]).not.toHaveProperty('verification');
     });
 
+    it('does not share mutable execution metadata between a response and its trace', async () => {
+      const { LlmClient } = await freshImport();
+      mockOpenaiGenerate.mockResolvedValue('cloud response');
+      const traces: import('../types.js').InferenceTrace[] = [];
+      const client = LlmClient.forReasoningMode(
+        'bring_your_own_provider',
+        [openaiProvider],
+        'receipt-snapshot-user',
+        { onInferenceTrace: (trace) => traces.push(trace) },
+      );
+
+      const response = await client.generate('private prompt', { invocationKind: 'interactive' });
+      const captured = traces[0]!;
+
+      expect(response.execution).not.toBe(captured.execution);
+      expect(response.execution.request).not.toBe(captured.execution.request);
+      expect(response.execution.capabilities).not.toBe(captured.execution.capabilities);
+      expect(response.execution.capabilities.retention)
+        .not.toBe(captured.execution.capabilities.retention);
+      expect(response.execution.capabilities.modalities)
+        .not.toBe(captured.execution.capabilities.modalities);
+      expect(response.execution.executionPath).not.toBe(captured.execution.executionPath);
+      expect(response.execution.executionPath[0]).not.toBe(captured.execution.executionPath[0]);
+      expect(response.execution.costBasis).not.toBe(captured.execution.costBasis);
+      expect(Object.isFrozen(response.execution)).toBe(true);
+      expect(Object.isFrozen(response.execution.capabilities)).toBe(true);
+      expect(Object.isFrozen(response.execution.capabilities.retention)).toBe(true);
+      expect(Object.isFrozen(response.execution.capabilities.modalities)).toBe(true);
+      expect(Object.isFrozen(response.execution.executionPath)).toBe(true);
+      expect(Object.isFrozen(response.execution.executionPath[0])).toBe(true);
+      expect(Object.isFrozen(response.execution.costBasis)).toBe(true);
+      expect(Reflect.set(response.execution, 'provider', 'google')).toBe(false);
+      expect(captured.execution.provider).toBe('openai');
+    });
+
     it('binds receipt input and provider identity before the provider await', async () => {
       const { LlmClient } = await freshImport();
       let resolveProvider: ((value: string) => void) | undefined;

@@ -2,7 +2,8 @@
 
 SkyTwin's version-1 inference receipt is a signed, structured record linked to
 one decision and its `ExplanationRecord`. It identifies the reasoning path,
-provider, model, endpoint, hashes of the exact request and response bytes,
+provider, model, endpoint, hashes of the canonical logical request and
+provider-neutral response bytes,
 cost basis, and verification or fallback outcome. It has no dedicated fields
 for prompts, responses, credentials, chain-of-thought, or complete attestation
 documents. Several identifier and reason fields are free-form strings, however,
@@ -103,9 +104,9 @@ Rows cascade-delete with their decision or user and can be
 explicitly deleted atomically through the authenticated
 `DELETE /api/decisions/:decisionId/receipt` route. User backups include the
 canonical receipt metadata; restore verifies its self-contained metadata seal
-and exact linkage before writing it. Provider-call order is persisted as a
-zero-based capture ordinal, so multiple calls with one transaction timestamp
-still have a deterministic latest row. Older schema-v3 archives without the
+and exact linkage before writing it. Durable capture-completion order is
+persisted as a zero-based ordinal, so multiple calls with one transaction
+timestamp still have a deterministic latest row. Older schema-v3 archives without the
 ordinal remain accepted and derive it from array order; duplicate receipt IDs
 are rejected before database writes. Because an embedded key is not an identity
 trust root, restored rows are marked `imported_unverified`. This slice has no

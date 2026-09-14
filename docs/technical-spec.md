@@ -316,10 +316,14 @@ GET    /api/approvals/:userId/history              # Recently-resolved approvals
 POST   /api/approvals/:requestId/respond           # Approve / reject / dual-confirm
 ```
 
-The receipt routes expose only the signed structured row, not the exact-byte
-verification bundle. This foundation does not yet emit receipts in production;
-its free-form strings must not contain source content or secrets, and the local
-row is not application-level encrypted.
+The receipt routes expose only signed structured metadata, not the canonical
+logical/provider-neutral verification bundle. Decision-event ingestion emits
+and atomically finalizes receipts for its completed model calls before approval
+or external execution, using either a configured recorder identity or an
+ephemeral process-local one. Other application clients, product bundle export,
+and a receipt detail UI remain uncovered. Receipt free-form strings must not
+contain source content or secrets, and local rows are not application-level
+encrypted.
 
 ### User API (`apps/api/src/routes/users.ts`)
 
