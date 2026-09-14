@@ -114,6 +114,16 @@ describe("durable partial checkpoints", () => {
     );
     expect(restored.resumeFrom).toBe(4);
     expect(statSync(partial).size).toBe(4);
+    expect(JSON.parse(readFileSync(`${partial}.json`, "utf8")))
+      .toMatchObject({ bytesDownloaded: 4 });
+    expect(restorePartialCheckpoint(
+      partial,
+      { model_id: model.id, bytes_downloaded: 4 },
+      model,
+    )).toMatchObject({
+      resumeFrom: 4,
+      validator: { etag: '"immutable"' },
+    });
   });
 
   it("reserves concurrent crash-tail resumes from their validated durable boundaries", () => {

@@ -206,7 +206,7 @@ export function restorePartialCheckpoint(
       state.sourceUrl === model.source.downloadUrl &&
       state.exactBytes === model.exactBytes &&
       state.bytesDownloaded >= committedBytes &&
-      localBytes >= state.bytesDownloaded &&
+      localBytes >= committedBytes &&
       state.bytesDownloaded <= model.exactBytes &&
       Boolean(state.validator.etag || state.validator.lastModified);
     if (!agrees || state === null) {
@@ -217,8 +217,16 @@ export function restorePartialCheckpoint(
     }
     // The state file is persisted before the DB CAS. If a crash lands in that
     // small window, the DB's older checkpoint remains the committed boundary.
-    if (localBytes > committedBytes)
+    if (localBytes > committedBytes) {
       ftruncateSync(fd, committedBytes);
+      fsyncSync(fd);
+    }
+    if (state.bytesDownloaded !== committedBytes) {
+      writePartialState(partialStatePath(partialPath), {
+        ...state,
+        bytesDownloaded: committedBytes,
+      });
+    }
     return {
       resumeFrom: committedBytes,
       validator: state.validator,
