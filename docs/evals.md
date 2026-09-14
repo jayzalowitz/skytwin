@@ -402,7 +402,11 @@ binds pull-request evidence to `github.event.pull_request.head.sha` (and push
 evidence to `github.sha`) and requires the checkout to be clean (the generated
 artifact path is ignored, so writing it does not dirty the checkout).
 The companion checksum detects accidental corruption, but is not an external
-trust root.
+trust root. The workflow verifies the report and checksum before upload, but
+they remain mutable filesystem paths: a same-user process could replace either
+path between verification and the artifact uploader opening it. This
+verify-to-upload race remains an explicit development-evidence limitation;
+copying the same bytes to another mutable temporary path would not close it.
 
 In code, use the `EvalRunner` class directly:
 

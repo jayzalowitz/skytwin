@@ -188,6 +188,7 @@ export const ADVERSARIAL_LIMITATIONS = [
   'Mapped assertion integrity binds a dedicated one-scenario test file, including its imports, setup, helpers, and assertions; changing that harness requires a new scenario ID instead of rewriting retained evidence.',
   'The companion checksum detects accidental report corruption but is not an external trust root.',
   'Structural coverage is independent of test outcomes; passing mapped checks does not establish release readiness or prove zero bypasses.',
+  'The verified report and checksum remain mutable filesystem paths; a same-user process could replace them after verification and before artifact upload.',
 ] as const;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join } from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { createTrustedGit } from '../../../scripts/release-evidence/trusted-git.mjs';
 import {
   buildAdversarialEvidence,
   canonicalJson,
@@ -10,16 +11,38 @@ import {
 } from './adversarial-evidence.js';
 import { executeMappedAdversarialTests } from './adversarial-test-executor.js';
 
-function git(args: string[]): string {
-  const result = spawnSync('git', args, { encoding: 'utf8' });
-  if (result.status !== 0) throw new Error(`git ${args[0]} failed`);
-  return result.stdout.trim();
-}
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 
-function gitRef(): string {
-  const result = spawnSync('git', ['symbolic-ref', '--quiet', '--short', 'HEAD'], { encoding: 'utf8' });
-  if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
-  return 'DETACHED';
+export function resolveGitSourceIdentity(repoRoot: string): {
+  commit: string;
+  ref: string;
+  cleanTree: boolean;
+} {
+  const trustedGit = createTrustedGit(repoRoot);
+  const read = (args: string[]): string => {
+    const result = trustedGit.spawn(args, { encoding: 'utf8', maxBuffer: 1024 * 1024 });
+    if (result.error || result.status !== 0 || typeof result.stdout !== 'string') {
+      throw new Error(`git ${args[0]} failed`);
+    }
+    return result.stdout.trim();
+  };
+  const commit = read(['rev-parse', 'HEAD']);
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('git HEAD is not a full commit SHA');
+  const refResult = trustedGit.spawn(
+    ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 },
+  );
+  if (refResult.error || (refResult.status !== 0 && refResult.status !== 1)) {
+    throw new Error('git symbolic-ref failed');
+  }
+  const ref = refResult.status === 0 && typeof refResult.stdout === 'string' && refResult.stdout.trim()
+    ? refResult.stdout.trim()
+    : 'DETACHED';
+  return {
+    commit,
+    ref,
+    cleanTree: read(['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none']) === '',
+  };
 }
 
 function outputArgument(args: string[]): string | null {
@@ -32,7 +55,7 @@ function outputArgument(args: string[]): string | null {
 }
 
 export function runAdversarialCli(args: string[] = process.argv.slice(2)): number {
-  const repoRoot = git(['rev-parse', '--show-toplevel']);
+  const repoRoot = REPO_ROOT;
   const requestedOutput = outputArgument(args);
   const outputPath = requestedOutput
     ? (isAbsolute(requestedOutput) ? requestedOutput : join(repoRoot, requestedOutput))
@@ -41,11 +64,7 @@ export function runAdversarialCli(args: string[] = process.argv.slice(2)): numbe
   const executableTests = executeMappedAdversarialTests(catalog, repoRoot);
   // Capture identity after tests so a mapped test that mutates the checkout
   // cannot inherit a stale pre-test clean-tree claim.
-  const source = {
-    commit: git(['rev-parse', 'HEAD']),
-    ref: gitRef(),
-    cleanTree: git(['status', '--porcelain', '--untracked-files=all']) === '',
-  };
+  const source = resolveGitSourceIdentity(repoRoot);
   const report = buildAdversarialEvidence(catalog, fixtureSha256, source, executableTests);
   const bytes = `${canonicalJson(report)}\n`;
   const digest = createHash('sha256').update(bytes).digest('hex');

@@ -13,6 +13,7 @@ import {
 
 const baselinePath = new URL('./adversarial-source-checkout-baseline.json', import.meta.url);
 const fixturePath = new URL('../../packages/evals/fixtures/v1/adversarial-scenarios.json', import.meta.url);
+const BASELINE_REPO_PATH = 'scripts/release-evidence/adversarial-source-checkout-baseline.json';
 const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
 const fixture = JSON.parse(readFileSync(fixturePath, 'utf8'));
 
@@ -166,6 +167,22 @@ function immutableTrustOptions(context, trustedCommit, expectedCommit = trustedC
   return { ...options, trustedCommit, expectedCommit };
 }
 
+function withGitOverrides(overrides, run) {
+  const prior = new Map();
+  try {
+    for (const [name, value] of Object.entries(overrides)) {
+      prior.set(name, process.env[name]);
+      process.env[name] = value;
+    }
+    return run();
+  } finally {
+    for (const [name, value] of prior) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+}
+
 test('accepts canonical fixture-bound evidence matching the live checkout', () => withRepository((context) => {
   const verified = verifyAdversarialEvidence(
     writeEvidence(context.directory, validReport(context.commit)), baselinePath, context.options,
@@ -176,6 +193,62 @@ test('accepts canonical fixture-bound evidence matching the live checkout', () =
 test('reads the trusted baseline and fixture directly from an immutable commit', () =>
   withRepository((context) => {
     const trustedCommit = commitTrustedEvidence(context.directory);
+    const verified = verifyAdversarialEvidence(
+      writeEvidence(context.directory, validReport(trustedCommit)),
+      baselinePath,
+      immutableTrustOptions(context, trustedCommit),
+    );
+    assert.equal(verified.scenarioCount, baseline.exactIds.length);
+  }));
+
+test('binds verifier identity and trusted blobs to repoRoot despite inherited Git overrides', () =>
+  withRepository((context) => {
+    const trustedCommit = commitTrustedEvidence(context.directory);
+    const alternate = mkdtempSync(join(tmpdir(), 'skytwin-adversarial-alternate-'));
+    try {
+      writeFileSync(join(alternate, 'tracked'), 'alternate repository\n');
+      execFileSync('git', ['init', '--quiet'], { cwd: alternate });
+      execFileSync('git', ['config', 'user.email', 'eval-test@skytwin.invalid'], { cwd: alternate });
+      execFileSync('git', ['config', 'user.name', 'Eval Test'], { cwd: alternate });
+      execFileSync('git', ['add', 'tracked'], { cwd: alternate });
+      execFileSync('git', ['commit', '--quiet', '-m', 'alternate'], { cwd: alternate });
+      const verified = withGitOverrides({
+        GIT_DIR: join(alternate, '.git'),
+        GIT_WORK_TREE: alternate,
+      }, () => verifyAdversarialEvidence(
+        writeEvidence(context.directory, validReport(trustedCommit)),
+        baselinePath,
+        immutableTrustOptions(context, trustedCommit),
+      ));
+      assert.equal(verified.scenarioCount, baseline.exactIds.length);
+    } finally {
+      rmSync(alternate, { recursive: true, force: true });
+    }
+  }));
+
+test('reads the named trusted tree and live checkout without honoring replacement refs', () =>
+  withRepository((context) => {
+    const trustedCommit = commitTrustedEvidence(context.directory);
+    const replacementBaseline = structuredClone(baseline);
+    replacementBaseline.fixtureSha256 = '0'.repeat(64);
+    const checkedInBaseline = join(
+      context.directory,
+      'scripts/release-evidence/adversarial-source-checkout-baseline.json',
+    );
+    writeFileSync(checkedInBaseline, `${JSON.stringify(replacementBaseline, null, 2)}\n`);
+    execFileSync('git', ['add', checkedInBaseline], { cwd: context.directory });
+    execFileSync('git', ['commit', '--quiet', '-m', 'replacement tree'], { cwd: context.directory });
+    const replacementCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: context.directory,
+      encoding: 'utf8',
+    }).trim();
+    execFileSync('git', ['checkout', '--quiet', '--detach', trustedCommit], { cwd: context.directory });
+    execFileSync('git', ['replace', trustedCommit, replacementCommit], { cwd: context.directory });
+    assert.match(execFileSync('git', ['show', `${trustedCommit}:${BASELINE_REPO_PATH}`], {
+      cwd: context.directory,
+      encoding: 'utf8',
+    }), /"fixtureSha256": "0000000000000000000000000000000000000000000000000000000000000000"/);
+
     const verified = verifyAdversarialEvidence(
       writeEvidence(context.directory, validReport(trustedCommit)),
       baselinePath,

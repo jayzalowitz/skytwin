@@ -95,9 +95,10 @@ All notable changes to SkyTwin will be documented in this file.
   incomplete development evidence: it has no packaged-release subject,
   attestation, or release-readiness claim.
   Review hardening now reads the trusted baseline and fixture directly from the
-  exact prior Git commit, rejects malformed UTF-8 and duplicate keys at every
-  nesting level, and uses bounded no-follow reads for filesystem evidence and
-  mapped assertion sources.
+  exact prior Git commit; binds Git identity and tree reads to the intended
+  worktree despite inherited overrides or replacement refs; rejects malformed
+  UTF-8 and duplicate keys at every nesting level; and uses bounded no-follow
+  reads for filesystem evidence and mapped assertion sources.
 
 ## [Unreleased] — Verifiable desktop release artifacts
 

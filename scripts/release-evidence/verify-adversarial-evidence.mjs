@@ -2,10 +2,10 @@
 import { createHash } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { readStableRegularFile } from '../release-artifacts/file-integrity.mjs';
+import { createTrustedGit } from './trusted-git.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../..');
@@ -346,9 +346,14 @@ function parseSourceInventory(value, label) {
 }
 
 function liveGitIdentity(repoRoot) {
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repoRoot, encoding: 'utf8' });
-  const status = spawnSync(
-    'git', ['status', '--porcelain', '--untracked-files=all'], { cwd: repoRoot, encoding: 'utf8' },
+  const trustedGit = createTrustedGit(repoRoot);
+  const head = trustedGit.spawn(['rev-parse', 'HEAD'], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024,
+  });
+  const status = trustedGit.spawn(
+    ['status', '--porcelain', '--untracked-files=all', '--ignore-submodules=none'],
+    { encoding: 'utf8', maxBuffer: 1024 * 1024 },
   );
   if (head.status !== 0 || status.status !== 0 || !/^[0-9a-f]{40}$/.test(head.stdout.trim())) {
     throw new Error('could not resolve the live checkout identity');
@@ -356,11 +361,9 @@ function liveGitIdentity(repoRoot) {
   return { commit: head.stdout.trim(), cleanTree: status.stdout === '' };
 }
 
-function gitBytes(repoRoot, args, label, maxBytes) {
-  const result = spawnSync('git', args, {
-    cwd: repoRoot,
+function gitBytes(trustedGit, args, label, maxBytes) {
+  const result = trustedGit.spawn(args, {
     encoding: null,
-    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' },
     maxBuffer: maxBytes + 64 * 1024,
   });
   if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stdout)) {
@@ -374,14 +377,15 @@ function trustedInputsFromCommit(repoRoot, commit) {
   if (!/^[0-9a-f]{40}$/.test(commit)) {
     throw new Error('trusted commit must be a full lowercase commit SHA');
   }
+  const trustedGit = createTrustedGit(repoRoot);
   const type = decodeUtf8(
-    gitBytes(repoRoot, ['cat-file', '-t', commit], 'trusted commit', 32),
+    gitBytes(trustedGit, ['cat-file', '-t', commit], 'trusted commit', 32),
     'trusted commit type',
   ).trim();
   if (type !== 'commit') throw new Error('trusted commit does not identify a commit');
 
   const inventoryBytes = gitBytes(
-    repoRoot,
+    trustedGit,
     ['ls-tree', '-z', commit, '--', BASELINE_REPO_PATH, FIXTURE_REPO_PATH],
     'trusted evidence inventory',
     4096,
@@ -406,13 +410,13 @@ function trustedInputsFromCommit(repoRoot, commit) {
   if (!hasBaseline) return null;
   return {
     baselineBytes: gitBytes(
-      repoRoot,
+      trustedGit,
       ['cat-file', 'blob', `${commit}:${BASELINE_REPO_PATH}`],
       'trusted baseline',
       MAX_JSON_BYTES,
     ),
     fixtureBytes: gitBytes(
-      repoRoot,
+      trustedGit,
       ['cat-file', 'blob', `${commit}:${FIXTURE_REPO_PATH}`],
       'trusted fixture',
       MAX_JSON_BYTES,
