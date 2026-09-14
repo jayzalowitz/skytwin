@@ -17,7 +17,6 @@ import {
 } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDocument } from "yaml";
 import {
   ARTIFACT_VERIFICATION_DIRECTORY,
   CANONICAL_RELEASE_ASSETS,
@@ -25,10 +24,6 @@ import {
   machineVerifierCommand,
   machineVerifierPath,
 } from "../release-constants.mjs";
-import {
-  buildCanonicalVerificationInstructions,
-  isValidSpdx23Document,
-} from "../check-release-claims.mjs";
 
 export const CLAIM_ID = "release.artifact-verification";
 export const CHECK_IDS = Object.freeze([
@@ -55,6 +50,75 @@ const FOUR_SEGMENT_TAG = new RegExp(
 const BETA_TAG = new RegExp(
   `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})-beta(?:\\.([1-9][0-9]{0,8}))?$`,
 );
+const SPDX_ELEMENT_ID = /^SPDXRef-[A-Za-z0-9.-]+$/u;
+const SPDX_UTC_TIMESTAMP =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/u;
+const SPDX_23_CHECKSUM_ALGORITHMS = new Set([
+  "ADLER32",
+  "BLAKE2b-256",
+  "BLAKE2b-384",
+  "BLAKE2b-512",
+  "BLAKE3",
+  "MD2",
+  "MD4",
+  "MD5",
+  "MD6",
+  "SHA1",
+  "SHA224",
+  "SHA256",
+  "SHA3-256",
+  "SHA3-384",
+  "SHA3-512",
+  "SHA384",
+  "SHA512",
+]);
+const SPDX_23_RELATIONSHIP_TYPES = new Set([
+  "AMENDS",
+  "ANCESTOR_OF",
+  "BUILD_DEPENDENCY_OF",
+  "BUILD_TOOL_OF",
+  "CONTAINED_BY",
+  "CONTAINS",
+  "COPY_OF",
+  "DATA_FILE_OF",
+  "DEPENDENCY_MANIFEST_OF",
+  "DEPENDENCY_OF",
+  "DEPENDS_ON",
+  "DESCENDANT_OF",
+  "DESCRIBED_BY",
+  "DESCRIBES",
+  "DEV_DEPENDENCY_OF",
+  "DEV_TOOL_OF",
+  "DISTRIBUTION_ARTIFACT",
+  "DOCUMENTATION_OF",
+  "DYNAMIC_LINK",
+  "EXAMPLE_OF",
+  "EXPANDED_FROM_ARCHIVE",
+  "FILE_ADDED",
+  "FILE_DELETED",
+  "FILE_MODIFIED",
+  "GENERATED_FROM",
+  "GENERATES",
+  "HAS_PREREQUISITE",
+  "METAFILE_OF",
+  "OPTIONAL_COMPONENT_OF",
+  "OPTIONAL_DEPENDENCY_OF",
+  "OTHER",
+  "PACKAGE_OF",
+  "PATCH_APPLIED",
+  "PATCH_FOR",
+  "PREREQUISITE_FOR",
+  "PROVIDED_DEPENDENCY_OF",
+  "REQUIREMENT_DESCRIPTION_FOR",
+  "RUNTIME_DEPENDENCY_OF",
+  "SPECIFICATION_FOR",
+  "STATIC_LINK",
+  "TEST_CASE_OF",
+  "TEST_DEPENDENCY_OF",
+  "TEST_OF",
+  "TEST_TOOL_OF",
+  "VARIANT_OF",
+]);
 
 const ARTIFACT_RULES = new Map([
   [
@@ -63,26 +127,31 @@ const ARTIFACT_RULES = new Map([
   ],
   [
     "SkyTwin-macOS-zip",
-    { platform: "macos", pattern: /^SkyTwin-APP_VERSION-(?:arm64|x64)\.zip$/u },
+    {
+      platform: "macos",
+      pattern: /^SkyTwin-APP_VERSION-(?:arm64|x64)-mac\.zip$/u,
+    },
   ],
   [
     "SkyTwin-macOS-update-manifest",
     {
       platform: "macos",
       pattern: /^latest-mac\.yml$/u,
-      updateArtifactName: "SkyTwin-macOS-zip",
+      updateArtifactNames: ["SkyTwin-macOS-zip", "SkyTwin-macOS-dmg"],
+      primaryUpdateArtifactName: "SkyTwin-macOS-zip",
     },
   ],
   [
     "SkyTwin-Windows-installer",
-    { platform: "windows", pattern: /^SkyTwin Setup APP_VERSION\.exe$/u },
+    { platform: "windows", pattern: /^SkyTwin-Setup-APP_VERSION\.exe$/u },
   ],
   [
     "SkyTwin-Windows-update-manifest",
     {
       platform: "windows",
       pattern: /^latest\.yml$/u,
-      updateArtifactName: "SkyTwin-Windows-installer",
+      updateArtifactNames: ["SkyTwin-Windows-installer"],
+      primaryUpdateArtifactName: "SkyTwin-Windows-installer",
     },
   ],
   [
@@ -108,7 +177,12 @@ const ARTIFACT_RULES = new Map([
     {
       platform: "linux",
       pattern: /^latest-linux\.yml$/u,
-      updateArtifactName: "SkyTwin-Linux-AppImage",
+      updateArtifactNames: [
+        "SkyTwin-Linux-AppImage",
+        "SkyTwin-Linux-deb",
+        "SkyTwin-Linux-rpm",
+      ],
+      primaryUpdateArtifactName: "SkyTwin-Linux-AppImage",
     },
   ],
 ]);
@@ -127,6 +201,223 @@ function sameSet(actual, expected) {
     new Set(actual).size === actual.length &&
     expected.every((value) => actual.includes(value))
   );
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isValidSpdx23Checksum(checksum) {
+  return (
+    isRecord(checksum) &&
+    SPDX_23_CHECKSUM_ALGORITHMS.has(checksum.algorithm) &&
+    typeof checksum.checksumValue === "string" &&
+    /^[a-f0-9]+$/u.test(checksum.checksumValue)
+  );
+}
+
+function isValidSpdxUtcTimestamp(value) {
+  if (!SPDX_UTC_TIMESTAMP.test(value ?? "")) return false;
+  const timestamp = Date.parse(value);
+  return (
+    !Number.isNaN(timestamp) &&
+    new Date(timestamp).toISOString() === value.replace(/Z$/u, ".000Z")
+  );
+}
+
+function isValidSpdxDocumentNamespace(value) {
+  if (!nonEmptyString(value) || value.includes("#")) return false;
+  try {
+    return new URL(value).href === value;
+  } catch {
+    return false;
+  }
+}
+
+function isValidSpdxPackageVerificationCode(value) {
+  return (
+    isRecord(value) &&
+    Object.keys(value).length === 1 &&
+    /^[a-f0-9]{40}$/u.test(value.packageVerificationCodeValue ?? "")
+  );
+}
+
+function isValidSpdx23Document(sbom) {
+  if (
+    !isRecord(sbom) ||
+    sbom.spdxVersion !== "SPDX-2.3" ||
+    sbom.dataLicense !== "CC0-1.0" ||
+    sbom.SPDXID !== "SPDXRef-DOCUMENT" ||
+    !nonEmptyString(sbom.name) ||
+    !isValidSpdxDocumentNamespace(sbom.documentNamespace) ||
+    !isRecord(sbom.creationInfo) ||
+    !isValidSpdxUtcTimestamp(sbom.creationInfo.created) ||
+    !Array.isArray(sbom.creationInfo.creators) ||
+    sbom.creationInfo.creators.length === 0 ||
+    sbom.creationInfo.creators.some(
+      (creator) =>
+        !/^(?:Person|Organization|Tool):\s+\S/u.test(String(creator ?? "")),
+    ) ||
+    !Array.isArray(sbom.packages) ||
+    sbom.packages.length === 0 ||
+    !Array.isArray(sbom.files) ||
+    sbom.files.length === 0
+  )
+    return false;
+
+  const packagesValid = sbom.packages.every(
+    (entry) =>
+      isRecord(entry) &&
+      SPDX_ELEMENT_ID.test(entry.SPDXID ?? "") &&
+      nonEmptyString(entry.downloadLocation) &&
+      nonEmptyString(entry.name) &&
+      nonEmptyString(entry.versionInfo) &&
+      entry.filesAnalyzed === true &&
+      isValidSpdxPackageVerificationCode(entry.packageVerificationCode),
+  );
+  const filesValid = sbom.files.every(
+    (entry) =>
+      isRecord(entry) &&
+      SPDX_ELEMENT_ID.test(entry.SPDXID ?? "") &&
+      nonEmptyString(entry.fileName) &&
+      Array.isArray(entry.checksums) &&
+      entry.checksums.length > 0 &&
+      entry.checksums.every(isValidSpdx23Checksum),
+  );
+  if (!packagesValid || !filesValid) return false;
+
+  const elementIds = [
+    sbom.SPDXID,
+    ...sbom.packages.map((entry) => entry.SPDXID),
+    ...sbom.files.map((entry) => entry.SPDXID),
+  ];
+  if (
+    new Set(elementIds).size !== elementIds.length ||
+    !Array.isArray(sbom.documentDescribes) ||
+    !Array.isArray(sbom.relationships)
+  )
+    return false;
+  const packageIds = new Set(sbom.packages.map((entry) => entry.SPDXID));
+  const fileIds = new Set(sbom.files.map((entry) => entry.SPDXID));
+  if (!sameSet(sbom.documentDescribes, [...packageIds])) return false;
+  const relationshipsValid = sbom.relationships.every(
+    (relationship) =>
+      isRecord(relationship) &&
+      elementIds.includes(relationship.spdxElementId) &&
+      elementIds.includes(relationship.relatedSpdxElement) &&
+      SPDX_23_RELATIONSHIP_TYPES.has(relationship.relationshipType),
+  );
+  if (!relationshipsValid) return false;
+  const describedPackages = new Set(
+    sbom.relationships
+      .filter(
+        (relationship) =>
+          relationship.spdxElementId === sbom.SPDXID &&
+          relationship.relationshipType === "DESCRIBES" &&
+          packageIds.has(relationship.relatedSpdxElement),
+      )
+      .map((relationship) => relationship.relatedSpdxElement),
+  );
+  const containedFiles = new Set(
+    sbom.relationships
+      .filter(
+        (relationship) =>
+          packageIds.has(relationship.spdxElementId) &&
+          relationship.relationshipType === "CONTAINS" &&
+          fileIds.has(relationship.relatedSpdxElement),
+      )
+      .map((relationship) => relationship.relatedSpdxElement),
+  );
+  return (
+    sameSet([...describedPackages], [...packageIds]) &&
+    sameSet([...containedFiles], [...fileIds])
+  );
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
+}
+
+function buildCanonicalVerificationInstructions({
+  subjects,
+  repository,
+  sourceCommit,
+  sourceRef,
+}) {
+  const orderedSubjects = [...subjects].sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+  const provenanceCommands = orderedSubjects.map(
+    (subject) =>
+      `gh attestation verify ${shellQuote(subject.name)} --repo ${shellQuote(repository)} --bundle ${shellQuote(`${subject.sha256}.attestation.jsonl`)} --source-digest ${shellQuote(sourceCommit)} --source-ref ${shellQuote(sourceRef)} --signer-workflow ${shellQuote(`github.com/${repository}/.github/workflows/build.yml`)} --predicate-type ${shellQuote("https://slsa.dev/provenance/v1")}`,
+  );
+  const windowsInstaller =
+    orderedSubjects.find((subject) => subject.name.endsWith(".exe"))?.name ??
+    "<missing Windows installer>";
+  return `# Verify SkyTwin release artifacts
+
+Download every release asset into one directory with these verification files.
+
+## SHA-256 checksums
+
+On Linux:
+
+\`\`\`sh
+sha256sum --check SHA256SUMS
+\`\`\`
+
+On macOS:
+
+\`\`\`sh
+shasum --algorithm 256 --check SHA256SUMS
+\`\`\`
+
+## GitHub build provenance
+
+Run every command below from that directory:
+
+\`\`\`sh
+${provenanceCommands.join("\n")}
+\`\`\`
+
+## Platform signature status
+
+Artifact signing and macOS notarization are currently unavailable because the
+release credentials are not configured. The checksum and provenance checks
+above do not satisfy this separate public-beta stop-ship gate.
+
+### macOS
+
+After mounting the DMG and installing the app in Applications, run:
+
+\`\`\`sh
+codesign --verify --deep --strict --verbose=2 '/Applications/SkyTwin.app'
+spctl --assess --type execute --verbose=2 '/Applications/SkyTwin.app'
+xcrun stapler validate '/Applications/SkyTwin.app'
+\`\`\`
+
+These commands are expected to fail until Developer ID signing and notarization
+are configured and the macOS signing evidence report passes.
+
+### Windows
+
+In PowerShell, run:
+
+\`\`\`powershell
+$signature = Get-AuthenticodeSignature -LiteralPath '.\\${windowsInstaller}'
+if ($signature.Status -ne 'Valid') { $signature | Format-List; exit 1 }
+\`\`\`
+
+This check is expected to fail until Authenticode credentials are configured
+and the Windows signing evidence report passes.
+
+### Linux
+
+No platform-native package-signature policy is configured yet. Use the SHA-256
+and GitHub provenance checks above for integrity only; Linux remains unsupported
+for the public beta until its signing evidence report proves the selected
+distribution policy.
+`;
 }
 
 function within(root, candidate) {
@@ -548,20 +839,109 @@ export function inspectCanonicalSubjects(rootPath, appVersion) {
   return subjects;
 }
 
-function parseUpdateManifest(path, description) {
-  const contents = readFileSync(path, "utf8");
-  const document = parseDocument(contents, {
-    maxAliasCount: 0,
-    uniqueKeys: true,
-  });
+function parsePlainYamlScalar(raw, description) {
+  const value = raw.trim();
+  assert(value.length > 0, `${description} has an empty scalar`);
+  if (value.startsWith('"') || value.endsWith('"')) {
+    assert(
+      value.startsWith('"') && value.endsWith('"'),
+      `${description} has malformed quoted metadata`,
+    );
+    try {
+      const parsed = JSON.parse(value);
+      assert(typeof parsed === "string", `${description} scalar must be text`);
+      return parsed;
+    } catch {
+      throw new Error(`${description} has malformed quoted metadata`);
+    }
+  }
+  if (value.startsWith("'") || value.endsWith("'")) {
+    assert(
+      value.startsWith("'") && value.endsWith("'"),
+      `${description} has malformed quoted metadata`,
+    );
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
   assert(
-    document.errors.length === 0 && document.warnings.length === 0,
-    `${description} is not strict YAML`,
+    !/[\[\]{}&*!|>@`#]/u.test(value) && !value.includes("'"),
+    `${description} has unsupported scalar metadata`,
   );
-  const value = document.toJS({ maxAliasCount: 0 });
-  assert(isRecord(value), `${description} must be a YAML mapping`);
+  return value;
+}
+
+function parseUpdateManifest(path, description) {
+  const lines = readFileSync(path, "utf8").replaceAll("\r\n", "\n").split("\n");
   assert(
-    typeof value.version === "string" && Array.isArray(value.files),
+    lines.every((line) => !line.includes("\t")),
+    `${description} contains unsupported YAML indentation`,
+  );
+  const value = { files: [] };
+  const seenTopLevel = new Set();
+  const allowedTopLevel = new Set(["version", "path", "sha512", "releaseDate"]);
+  let index = 0;
+  while (index < lines.length) {
+    const line = lines[index];
+    if (line === "") {
+      index += 1;
+      continue;
+    }
+    if (line === "files:") {
+      assert(!seenTopLevel.has("files"), `${description} has duplicate files`);
+      seenTopLevel.add("files");
+      index += 1;
+      while (index < lines.length && lines[index].startsWith("  - ")) {
+        const urlMatch = lines[index].match(/^  - url: (.+)$/u);
+        assert(urlMatch, `${description} has malformed files metadata`);
+        const entry = {
+          url: parsePlainYamlScalar(urlMatch[1], description),
+        };
+        index += 1;
+        while (index < lines.length && lines[index].startsWith("    ")) {
+          const field = lines[index].match(
+            /^    (sha512|size|blockMapSize): (.+)$/u,
+          );
+          assert(field, `${description} has unsupported files metadata`);
+          const [, key, raw] = field;
+          assert(
+            entry[key] === undefined,
+            `${description} has duplicate ${key}`,
+          );
+          if (key === "sha512")
+            entry[key] = parsePlainYamlScalar(raw, description);
+          else {
+            assert(
+              /^[1-9][0-9]*$/u.test(raw),
+              `${description} has invalid ${key}`,
+            );
+            entry[key] = Number(raw);
+            assert(
+              Number.isSafeInteger(entry[key]),
+              `${description} has unsafe ${key}`,
+            );
+          }
+          index += 1;
+        }
+        assert(
+          /^[A-Za-z0-9+/]{86}==$/u.test(entry.sha512 ?? ""),
+          `${description} has invalid file sha512`,
+        );
+        value.files.push(entry);
+      }
+      continue;
+    }
+    const field = line.match(/^([A-Za-z][A-Za-z0-9]*): (.+)$/u);
+    assert(field, `${description} is not canonical updater YAML`);
+    const [, key, raw] = field;
+    assert(allowedTopLevel.has(key), `${description} has unsupported ${key}`);
+    assert(!seenTopLevel.has(key), `${description} has duplicate ${key}`);
+    seenTopLevel.add(key);
+    value[key] = parsePlainYamlScalar(raw, description);
+    index += 1;
+  }
+  assert(
+    seenTopLevel.has("files") &&
+      typeof value.version === "string" &&
+      value.files.length > 0,
     `${description} is missing version or files`,
   );
   assert(
@@ -584,8 +964,8 @@ export function verifyUpdateManifests(subjects, appVersion) {
       `${subject.artifactName} version does not match ${appVersion}`,
     );
     assert(
-      value.files.length === 1,
-      `${subject.artifactName} must identify exactly one canonical update target`,
+      value.files.length === rule.updateArtifactNames.length,
+      `${subject.artifactName} must identify exactly ${rule.updateArtifactNames.length} canonical update targets`,
     );
     const seen = new Set();
     for (const entry of value.files) {
@@ -611,7 +991,8 @@ export function verifyUpdateManifests(subjects, appVersion) {
       assert(
         target &&
           target.platform === subject.platform &&
-          target.kind !== "update-manifest",
+          target.kind !== "update-manifest" &&
+          rule.updateArtifactNames.includes(target.artifactName),
         `${subject.artifactName} references a noncanonical target ${entry.url}`,
       );
       assert(
@@ -629,12 +1010,19 @@ export function verifyUpdateManifests(subjects, appVersion) {
           `${subject.artifactName} has invalid block map size`,
         );
     }
+    assert(
+      rule.updateArtifactNames.every((artifactName) => {
+        const expected = subjects.get(artifactName);
+        return expected && seen.has(expected.name);
+      }),
+      `${subject.artifactName} does not cover its exact updater targets`,
+    );
     const primary = byFilename.get(value.path);
-    const expectedPrimary = subjects.get(rule.updateArtifactName);
+    const expectedPrimary = subjects.get(rule.primaryUpdateArtifactName);
     assert(
       primary &&
         expectedPrimary &&
-        primary.artifactName === rule.updateArtifactName &&
+        primary.artifactName === rule.primaryUpdateArtifactName &&
         primary.path === expectedPrimary.path &&
         seen.has(primary.name),
       `${subject.artifactName} primary update target is not canonical`,
@@ -692,7 +1080,7 @@ function verifySpdx(material, subjects, identity) {
   );
   const encodedTag = encodeURIComponent(identity.releaseTag);
   const expectedReleaseUrl = `https://github.com/${identity.repository}/releases/tag/${encodedTag}`;
-  const expectedNamespace = `${expectedReleaseUrl}/spdx/${identity.sourceCommit}`;
+  const expectedNamespace = `${expectedReleaseUrl}/spdx/${identity.sourceCommit}/${identity.runId}/${encodeURIComponent(sbom.creationInfo.created)}`;
   const expectedVcs = `git+https://github.com/${identity.repository}.git@${identity.sourceCommit}`;
   assert(
     sbom.documentNamespace === expectedNamespace &&

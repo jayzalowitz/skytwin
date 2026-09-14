@@ -55,10 +55,10 @@ function fixture() {
   const output = join(directory, "output");
   const subjects = new Map([
     ["SkyTwin-macOS-dmg", [[`SkyTwin-${VERSION}-arm64.dmg`, "mac dmg"]]],
-    ["SkyTwin-macOS-zip", [[`SkyTwin-${VERSION}-arm64.zip`, "mac zip"]]],
+    ["SkyTwin-macOS-zip", [[`SkyTwin-${VERSION}-arm64-mac.zip`, "mac zip"]]],
     [
       "SkyTwin-Windows-installer",
-      [[`SkyTwin Setup ${VERSION}.exe`, "windows exe"]],
+      [[`SkyTwin-Setup-${VERSION}.exe`, "windows exe"]],
     ],
     ["SkyTwin-Linux-AppImage", [[`SkyTwin-${VERSION}.AppImage`, "appimage"]]],
     ["SkyTwin-Linux-deb", [[`skytwin-desktop_${VERSION}_amd64.deb`, "deb"]]],
@@ -68,7 +68,8 @@ function fixture() {
     [
       "latest-mac.yml",
       updateManifest([
-        { name: `SkyTwin-${VERSION}-arm64.zip`, bytes: "mac zip" },
+        { name: `SkyTwin-${VERSION}-arm64-mac.zip`, bytes: "mac zip" },
+        { name: `SkyTwin-${VERSION}-arm64.dmg`, bytes: "mac dmg" },
       ]),
     ],
   ]);
@@ -76,7 +77,7 @@ function fixture() {
     [
       "latest.yml",
       updateManifest([
-        { name: `SkyTwin Setup ${VERSION}.exe`, bytes: "windows exe" },
+        { name: `SkyTwin-Setup-${VERSION}.exe`, bytes: "windows exe" },
       ]),
     ],
   ]);
@@ -85,6 +86,8 @@ function fixture() {
       "latest-linux.yml",
       updateManifest([
         { name: `SkyTwin-${VERSION}.AppImage`, bytes: "appimage" },
+        { name: `skytwin-desktop_${VERSION}_amd64.deb`, bytes: "deb" },
+        { name: `skytwin-desktop-${VERSION}.x86_64.rpm`, bytes: "rpm" },
       ]),
     ],
   ]);
@@ -165,6 +168,10 @@ describe("release artifact material generator", () => {
     expect(sbom.packages[0].externalRefs[0].referenceLocator).toContain(
       IDENTITY.commit,
     );
+    expect(sbom.creationInfo.created).toBe(IDENTITY.created);
+    expect(sbom.documentNamespace).toBe(
+      `https://github.com/${IDENTITY.repository}/releases/tag/${encodeURIComponent(IDENTITY.releaseTag)}/spdx/${IDENTITY.commit}/${IDENTITY.runId}/${encodeURIComponent(IDENTITY.created)}`,
+    );
 
     const second = fixture();
     generate(second);
@@ -237,11 +244,11 @@ describe("release artifact material generator", () => {
     const stalePath = join(
       stale.root,
       "SkyTwin-Windows-installer",
-      `SkyTwin Setup ${VERSION}.exe`,
+      `SkyTwin-Setup-${VERSION}.exe`,
     );
     renameSync(
       stalePath,
-      join(stale.root, "SkyTwin-Windows-installer", "SkyTwin Setup 0.6.0.exe"),
+      join(stale.root, "SkyTwin-Windows-installer", "SkyTwin-Setup-0.6.0.exe"),
     );
     expect(() => generate(stale)).toThrow("unexpected filename");
 
@@ -305,7 +312,7 @@ describe("release artifact material generator", () => {
         `  - url: SkyTwin-${VERSION}.AppImage\n    sha512: ${sha512("appimage")}\npath:`,
       ),
     );
-    expect(() => generate(duplicate)).toThrow("exactly one updater subject");
+    expect(() => generate(duplicate)).toThrow("exactly 3 updater subjects");
 
     const wrongKind = fixture();
     const wrongKindPath = join(
@@ -317,8 +324,16 @@ describe("release artifact material generator", () => {
       wrongKindPath,
       updateManifest([
         {
+          name: `SkyTwin-${VERSION}.AppImage`,
+          bytes: "appimage",
+        },
+        {
           name: `skytwin-desktop_${VERSION}_amd64.deb`,
           bytes: "deb",
+        },
+        {
+          name: `SkyTwin-${VERSION}-arm64.dmg`,
+          bytes: "mac dmg",
         },
       ]),
     );

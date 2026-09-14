@@ -32,9 +32,14 @@ function sha512(value) {
   return createHash("sha512").update(value).digest("base64");
 }
 
-function updateManifest(name, bytes) {
-  const digest = sha512(bytes);
-  return `version: ${VERSION}\nfiles:\n  - url: ${name}\n    sha512: ${digest}\n    size: ${Buffer.byteLength(bytes)}\npath: ${name}\nsha512: ${digest}\n`;
+function updateManifest(entries) {
+  const primary = entries[0];
+  return `version: ${VERSION}\nfiles:\n${entries
+    .map(
+      ({ name, bytes }) =>
+        `  - url: ${name}\n    sha512: ${sha512(bytes)}\n    size: ${Buffer.byteLength(bytes)}\n`,
+    )
+    .join("")}path: ${primary.name}\nsha512: ${sha512(primary.bytes)}\n`;
 }
 
 function fixture() {
@@ -44,26 +49,31 @@ function fixture() {
   const output = join(directory, "output");
   const subjects = new Map([
     ["SkyTwin-macOS-dmg", [[`SkyTwin-${VERSION}-arm64.dmg`, "mac dmg"]]],
-    ["SkyTwin-macOS-zip", [[`SkyTwin-${VERSION}-arm64.zip`, "mac zip"]]],
+    ["SkyTwin-macOS-zip", [[`SkyTwin-${VERSION}-arm64-mac.zip`, "mac zip"]]],
     [
       "SkyTwin-macOS-update-manifest",
       [
         [
           "latest-mac.yml",
-          updateManifest(`SkyTwin-${VERSION}-arm64.zip`, "mac zip"),
+          updateManifest([
+            { name: `SkyTwin-${VERSION}-arm64-mac.zip`, bytes: "mac zip" },
+            { name: `SkyTwin-${VERSION}-arm64.dmg`, bytes: "mac dmg" },
+          ]),
         ],
       ],
     ],
     [
       "SkyTwin-Windows-installer",
-      [[`SkyTwin Setup ${VERSION}.exe`, "windows exe"]],
+      [[`SkyTwin-Setup-${VERSION}.exe`, "windows exe"]],
     ],
     [
       "SkyTwin-Windows-update-manifest",
       [
         [
           "latest.yml",
-          updateManifest(`SkyTwin Setup ${VERSION}.exe`, "windows exe"),
+          updateManifest([
+            { name: `SkyTwin-Setup-${VERSION}.exe`, bytes: "windows exe" },
+          ]),
         ],
       ],
     ],
@@ -75,7 +85,11 @@ function fixture() {
       [
         [
           "latest-linux.yml",
-          updateManifest(`SkyTwin-${VERSION}.AppImage`, "appimage"),
+          updateManifest([
+            { name: `SkyTwin-${VERSION}.AppImage`, bytes: "appimage" },
+            { name: `skytwin-desktop_${VERSION}_amd64.deb`, bytes: "deb" },
+            { name: `skytwin-desktop-${VERSION}.x86_64.rpm`, bytes: "rpm" },
+          ]),
         ],
       ],
     ],
@@ -179,6 +193,14 @@ describe("attestation bundle materializer", () => {
     );
     expect(instructions).toContain("--source-ref 'refs/tags/v0.7.0-beta'");
     expect(instructions.match(/gh attestation verify/gu)).toHaveLength(9);
+    expect(instructions).toContain("## Platform signature status");
+    expect(instructions).toContain("codesign --verify --deep --strict");
+    expect(instructions).toContain(
+      "Get-AuthenticodeSignature -LiteralPath '.\\SkyTwin-Setup-0.7.0.exe'",
+    );
+    expect(instructions).toContain(
+      "No platform-native package-signature policy is configured yet",
+    );
   });
 
   it("deduplicates bundle filenames when two subjects have identical bytes", () => {
@@ -193,8 +215,19 @@ describe("attestation bundle materializer", () => {
       shared,
     );
     writeFileSync(
+      join(base.root, "SkyTwin-macOS-update-manifest", "latest-mac.yml"),
+      updateManifest([
+        { name: `SkyTwin-${VERSION}-arm64-mac.zip`, bytes: "mac zip" },
+        { name: `SkyTwin-${VERSION}-arm64.dmg`, bytes: shared },
+      ]),
+    );
+    writeFileSync(
       join(base.root, "SkyTwin-Linux-update-manifest", "latest-linux.yml"),
-      updateManifest(`SkyTwin-${VERSION}.AppImage`, shared),
+      updateManifest([
+        { name: `SkyTwin-${VERSION}.AppImage`, bytes: shared },
+        { name: `skytwin-desktop_${VERSION}_amd64.deb`, bytes: "deb" },
+        { name: `skytwin-desktop-${VERSION}.x86_64.rpm`, bytes: "rpm" },
+      ]),
     );
     const manifest = generateReleaseManifest({
       ...base,

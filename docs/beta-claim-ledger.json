@@ -1160,7 +1160,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "c288773d38e857e1b7be157c275c6b25776909cd6929f30c1a115887fb6aa834",
+          "sha256": "3d7a0f4058dc4d26127d90f72ea8de0faff8a8aa19c4b0c61d0189dbc3776d4c",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
@@ -1192,7 +1192,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "c288773d38e857e1b7be157c275c6b25776909cd6929f30c1a115887fb6aa834",
+          "sha256": "3d7a0f4058dc4d26127d90f72ea8de0faff8a8aa19c4b0c61d0189dbc3776d4c",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
@@ -1207,12 +1207,12 @@
         },
         {
           "path": "scripts/release-artifacts/generate-release-manifest.mjs",
-          "sha256": "638b701e1bb8a711065e62dab874015fe1c981df08cfeaa5da20e30635c4a363",
-          "why": "Admits exactly one version-bound subject for each canonical artifact and validates the exact platform updater target"
+          "sha256": "35345e2c1b6e6ea215cb74988e739d5b8093f8a3f6e5ffe3b45db8bd27b6ac77",
+          "why": "Admits exactly one version-bound subject for each canonical artifact and validates each platform's exact updater set and primary target"
         },
         {
           "path": "scripts/release-artifacts/generate-release-spdx.mjs",
-          "sha256": "3dd2a1172821ac5c92642dc7154d4f3e9bba08f38d2fdbb5f0f7fc7670e98da1",
+          "sha256": "ffd82359095f14be342dcc2c7a650f909876188af26567aa6b2ea70337985f1c",
           "why": "Generates deterministic SPDX 2.3 subject coverage and source-commit metadata from rehashed staged bytes"
         },
         {
@@ -1222,17 +1222,17 @@
         },
         {
           "path": "scripts/release-artifacts/materialize-attestation-bundles.mjs",
-          "sha256": "05ecd553645e41a4c0e45178314f793d4c54b2247aed1a8e08341b4c3da241cb",
+          "sha256": "c3ea4b6bb7bc24b48713d0eeb248823156435b922e2170378e623b279eafa2e7",
           "why": "Produces canonical verification instructions and one exclusive digest-named bundle path per distinct subject digest"
         },
         {
           "path": "scripts/release-claims/verifiers/release.artifact-verification.mjs",
-          "sha256": "a1b37bade84c432047f9d1a249f83fb68fd0b89d1cfcec5b153a83df0a767ac6",
+          "sha256": "4980940dd536eae5264b5bdde13fc392656eeb6bbd37d4e9b8688b01af9ed2cc",
           "why": "Re-hashes all downloaded subjects, binds current-run artifact metadata, verifies SPDX and updater semantics, and cryptographically verifies every provenance bundle"
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "302235b5525f124c8183fed388582cdfe216925c25dd712116a8ce899a45f67c",
+          "sha256": "d9e96a53c308f7ec770bfbd08e89a6a28b8137e434099846aa56f94729dc5e0a",
           "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],

@@ -1986,7 +1986,7 @@ export function verifyCanonicalReleasePublisher(root) {
     }),
   );
   const expectedIdentityRun =
-    'bash .github/scripts/derive-app-version.sh\nCREATED_UTC="$(date -u -d "@$(git show -s --format=%ct "$GITHUB_SHA")" \'+%Y-%m-%dT%H:%M:%SZ\')"\nprintf \'CREATED_UTC=%s\\n\' "$CREATED_UTC" >> "$GITHUB_ENV"\n';
+    'bash .github/scripts/derive-app-version.sh\nCREATED_UTC="$(date -u \'+%Y-%m-%dT%H:%M:%SZ\')"\nprintf \'CREATED_UTC=%s\\n\' "$CREATED_UTC" >> "$GITHUB_ENV"\n';
   const expectedGeneratorRun = `node ${RELEASE_ARTIFACT_GENERATOR_PATH} --root artifacts --output ${RELEASE_ARTIFACT_STAGING_DIRECTORY} --repository \"$GITHUB_REPOSITORY\" --commit \"$GITHUB_SHA\" --ref \"$GITHUB_REF\" --releaseTag \"$GITHUB_REF_NAME\" --appVersion \"$APP_VERSION\" --runId \"$GITHUB_RUN_ID\" --created \"$CREATED_UTC\"`;
   const expectedValidatorRun = `node ${RELEASE_ARTIFACT_VALIDATOR_PATH} --root ${RELEASE_ARTIFACT_STAGING_DIRECTORY} --manifest ${RELEASE_ARTIFACT_MANIFEST_PATH} --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --ref "$GITHUB_REF" --releaseTag "$GITHUB_REF_NAME" --appVersion "$APP_VERSION" --runId "$GITHUB_RUN_ID" --created "$CREATED_UTC"`;
   const expectedMaterializerRun = `node ${RELEASE_ATTESTATION_MATERIALIZER_PATH} --manifest ${RELEASE_ARTIFACT_MANIFEST_PATH} --bundle \"\${{ steps.attest-release-artifacts.outputs.bundle-path }}\" --output ${RELEASE_ARTIFACT_MATERIALS_DIRECTORY}`;
@@ -4303,6 +4303,9 @@ export function buildCanonicalVerificationInstructions({
     (subject) =>
       `gh attestation verify ${shellQuote(subject.name)} --repo ${shellQuote(repository)} --bundle ${shellQuote(`${subject.sha256}.attestation.jsonl`)} --source-digest ${shellQuote(sourceCommit)} --source-ref ${shellQuote(sourceRef)} --signer-workflow ${shellQuote(`github.com/${repository}/.github/workflows/build.yml`)} --predicate-type ${shellQuote("https://slsa.dev/provenance/v1")}`,
   );
+  const windowsInstaller =
+    orderedSubjects.find((subject) => subject.name.endsWith(".exe"))?.name ??
+    "<missing Windows installer>";
   return `# Verify SkyTwin release artifacts
 
 Download every release asset into one directory with these verification files.
@@ -4328,6 +4331,44 @@ Run every command below from that directory:
 \`\`\`sh
 ${provenanceCommands.join("\n")}
 \`\`\`
+
+## Platform signature status
+
+Artifact signing and macOS notarization are currently unavailable because the
+release credentials are not configured. The checksum and provenance checks
+above do not satisfy this separate public-beta stop-ship gate.
+
+### macOS
+
+After mounting the DMG and installing the app in Applications, run:
+
+\`\`\`sh
+codesign --verify --deep --strict --verbose=2 '/Applications/SkyTwin.app'
+spctl --assess --type execute --verbose=2 '/Applications/SkyTwin.app'
+xcrun stapler validate '/Applications/SkyTwin.app'
+\`\`\`
+
+These commands are expected to fail until Developer ID signing and notarization
+are configured and the macOS signing evidence report passes.
+
+### Windows
+
+In PowerShell, run:
+
+\`\`\`powershell
+$signature = Get-AuthenticodeSignature -LiteralPath '.\\${windowsInstaller}'
+if ($signature.Status -ne 'Valid') { $signature | Format-List; exit 1 }
+\`\`\`
+
+This check is expected to fail until Authenticode credentials are configured
+and the Windows signing evidence report passes.
+
+### Linux
+
+No platform-native package-signature policy is configured yet. Use the SHA-256
+and GitHub provenance checks above for integrity only; Linux remains unsupported
+for the public beta until its signing evidence report proves the selected
+distribution policy.
 `;
 }
 

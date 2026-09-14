@@ -30,6 +30,18 @@ All notable changes to SkyTwin will be documented in this file.
   patch. An older binary must not be installed over a database touched by newer
   migrations; restore is supported only into a fresh compatible installation.
 
+### Fixed (post-review)
+
+- **Tag-run verification now matches clean hosted runners and real packaging
+  output.** The independent verifier uses only Node built-ins plus the local
+  release constants, accepts the versioned filenames emitted by the pinned
+  electron-builder toolchain, and requires the complete updater membership:
+  ZIP plus DMG on macOS, NSIS on Windows, and AppImage plus deb and rpm on
+  Linux. Tests use those production-shaped manifests. SPDX creation metadata
+  now records the document-generation time and a run-and-time-unique namespace,
+  while `VERIFY.md` includes explicit macOS, Windows, and Linux signature
+  status and commands without conflating platform signing with provenance.
+
 ## [Unreleased] — Inference receipts
 
 ### Added

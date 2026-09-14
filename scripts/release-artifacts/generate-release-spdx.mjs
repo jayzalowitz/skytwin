@@ -70,7 +70,7 @@ export function buildReleaseSpdx(manifest) {
     dataLicense: "CC0-1.0",
     SPDXID: "SPDXRef-DOCUMENT",
     name: `SkyTwin desktop ${manifest.releaseTag}`,
-    documentNamespace: `https://github.com/${manifest.repository}/releases/tag/${encodeURIComponent(manifest.releaseTag)}/spdx/${manifest.sourceCommit}`,
+    documentNamespace: `https://github.com/${manifest.repository}/releases/tag/${encodeURIComponent(manifest.releaseTag)}/spdx/${manifest.sourceCommit}/${manifest.runId}/${encodeURIComponent(manifest.created)}`,
     creationInfo: {
       created: manifest.created,
       creators: [

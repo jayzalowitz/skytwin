@@ -64,10 +64,10 @@ function hash(algorithm, bytes, encoding = "hex") {
 function subjectFiles() {
   return new Map([
     ["SkyTwin-macOS-dmg", ["SkyTwin-0.7.0-arm64.dmg", "mac dmg"]],
-    ["SkyTwin-macOS-zip", ["SkyTwin-0.7.0-arm64.zip", "mac zip"]],
+    ["SkyTwin-macOS-zip", ["SkyTwin-0.7.0-arm64-mac.zip", "mac zip"]],
     [
       "SkyTwin-Windows-installer",
-      ["SkyTwin Setup 0.7.0.exe", "windows installer"],
+      ["SkyTwin-Setup-0.7.0.exe", "windows installer"],
     ],
     ["SkyTwin-Linux-AppImage", ["SkyTwin-0.7.0.AppImage", "linux appimage"]],
     ["SkyTwin-Linux-deb", ["skytwin-desktop_0.7.0_amd64.deb", "linux deb"]],
@@ -91,7 +91,10 @@ function populateSubjects(root) {
       [
         "latest-mac.yml",
         updateYaml(
-          [binaries.get("SkyTwin-macOS-zip")],
+          [
+            binaries.get("SkyTwin-macOS-zip"),
+            binaries.get("SkyTwin-macOS-dmg"),
+          ],
           binaries.get("SkyTwin-macOS-zip"),
         ),
       ],
@@ -111,7 +114,11 @@ function populateSubjects(root) {
       [
         "latest-linux.yml",
         updateYaml(
-          [binaries.get("SkyTwin-Linux-AppImage")],
+          [
+            binaries.get("SkyTwin-Linux-AppImage"),
+            binaries.get("SkyTwin-Linux-deb"),
+            binaries.get("SkyTwin-Linux-rpm"),
+          ],
           binaries.get("SkyTwin-Linux-AppImage"),
         ),
       ],
@@ -152,7 +159,7 @@ function makeSpdx(subjects) {
     dataLicense: "CC0-1.0",
     SPDXID: "SPDXRef-DOCUMENT",
     name: `SkyTwin desktop ${identity.releaseTag}`,
-    documentNamespace: `https://github.com/${identity.repository}/releases/tag/${encodeURIComponent(identity.releaseTag)}/spdx/${identity.sourceCommit}`,
+    documentNamespace: `https://github.com/${identity.repository}/releases/tag/${encodeURIComponent(identity.releaseTag)}/spdx/${identity.sourceCommit}/${identity.runId}/${encodeURIComponent("2026-09-14T12:00:00Z")}`,
     creationInfo: {
       created: "2026-09-14T12:00:00Z",
       creators: [
@@ -265,6 +272,24 @@ function apiFetch(artifacts) {
 }
 
 describe("release.artifact-verification canonical verifier", () => {
+  it("keeps the hosted tag verifier self-contained", () => {
+    const source = readFileSync(
+      "scripts/release-claims/verifiers/release.artifact-verification.mjs",
+      "utf8",
+    );
+    const imports = [...source.matchAll(/from\s+["']([^"']+)["']/gu)].map(
+      (match) => match[1],
+    );
+    expect(imports.length).toBeGreaterThan(0);
+    expect(
+      imports.every(
+        (specifier) =>
+          specifier.startsWith("node:") ||
+          specifier === "../release-constants.mjs",
+      ),
+    ).toBe(true);
+  });
+
   it("normalizes the target beta tag and rejects ambiguous versions", () => {
     expect(normalizeReleaseVersion("v0.7.0-beta")).toEqual({
       repositoryVersion: "0.7.0.0",
@@ -315,6 +340,7 @@ describe("release.artifact-verification canonical verifier", () => {
         [
           subjectFiles().get("SkyTwin-macOS-zip"),
           subjectFiles().get("SkyTwin-macOS-dmg"),
+          subjectFiles().get("SkyTwin-Linux-AppImage"),
         ],
         subjectFiles().get("SkyTwin-macOS-zip"),
       ),
@@ -325,7 +351,23 @@ describe("release.artifact-verification canonical verifier", () => {
     );
     expect(() =>
       verifyUpdateManifests(extraTargetSubjects, identity.appVersion),
-    ).toThrow("exactly one canonical update target");
+    ).toThrow("exactly 2 canonical update targets");
+
+    populateSubjects(root);
+    const duplicateVersionSubjects = inspectCanonicalSubjects(
+      root,
+      identity.appVersion,
+    );
+    const windowsManifest = duplicateVersionSubjects.get(
+      "SkyTwin-Windows-update-manifest",
+    ).path;
+    writeFileSync(
+      windowsManifest,
+      `${readFileSync(windowsManifest, "utf8")}version: ${identity.appVersion}\n`,
+    );
+    expect(() =>
+      verifyUpdateManifests(duplicateVersionSubjects, identity.appVersion),
+    ).toThrow("duplicate version");
   });
 
   it("rejects symlinks, extra subjects, and files outside the size bound", () => {

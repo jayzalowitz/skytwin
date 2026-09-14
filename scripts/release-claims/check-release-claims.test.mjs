@@ -493,7 +493,7 @@ jobs:
         shell: bash
         run: |
           bash .github/scripts/derive-app-version.sh
-          CREATED_UTC="$(date -u -d "@$(git show -s --format=%ct "$GITHUB_SHA")" '+%Y-%m-%dT%H:%M:%SZ')"
+          CREATED_UTC="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           printf 'CREATED_UTC=%s\\n' "$CREATED_UTC" >> "$GITHUB_ENV"
 ${artifactDownloads}
       - name: Generate exact release artifact materials
@@ -693,6 +693,8 @@ describe("release claim ledger validation", () => {
       'require("./docs/beta-claim-ledger.json").release.targetVersion',
     );
     expect(procedure).not.toContain('git tag -a "v$(cat VERSION)"');
+    expect(procedure).toContain("pnpm --filter @skytwin/db backup export");
+    expect(procedure).not.toContain("backup -- export");
   });
 
   it("accepts a complete blocked release contract", () => {

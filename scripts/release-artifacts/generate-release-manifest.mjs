@@ -24,9 +24,31 @@ const PLATFORMS = new Map([
 ]);
 
 const UPDATE_TARGETS = new Map([
-  ["SkyTwin-macOS-update-manifest", "SkyTwin-macOS-zip"],
-  ["SkyTwin-Windows-update-manifest", "SkyTwin-Windows-installer"],
-  ["SkyTwin-Linux-update-manifest", "SkyTwin-Linux-AppImage"],
+  [
+    "SkyTwin-macOS-update-manifest",
+    {
+      primary: "SkyTwin-macOS-zip",
+      artifacts: ["SkyTwin-macOS-zip", "SkyTwin-macOS-dmg"],
+    },
+  ],
+  [
+    "SkyTwin-Windows-update-manifest",
+    {
+      primary: "SkyTwin-Windows-installer",
+      artifacts: ["SkyTwin-Windows-installer"],
+    },
+  ],
+  [
+    "SkyTwin-Linux-update-manifest",
+    {
+      primary: "SkyTwin-Linux-AppImage",
+      artifacts: [
+        "SkyTwin-Linux-AppImage",
+        "SkyTwin-Linux-deb",
+        "SkyTwin-Linux-rpm",
+      ],
+    },
+  ],
 ]);
 
 export function expectedFilename(artifactName, appVersion) {
@@ -38,12 +60,12 @@ export function expectedFilename(artifactName, appVersion) {
     ],
     [
       "SkyTwin-macOS-zip",
-      new RegExp(`^SkyTwin-${version}-(?:arm64|x64)\\.zip$`, "u"),
+      new RegExp(`^SkyTwin-${version}-(?:arm64|x64)-mac\\.zip$`, "u"),
     ],
     ["SkyTwin-macOS-update-manifest", /^latest-mac\.yml$/u],
     [
       "SkyTwin-Windows-installer",
-      new RegExp(`^SkyTwin Setup ${version}\\.exe$`, "u"),
+      new RegExp(`^SkyTwin-Setup-${version}\\.exe$`, "u"),
     ],
     ["SkyTwin-Windows-update-manifest", /^latest\.yml$/u],
     [
@@ -253,18 +275,20 @@ export function assertUpdateManifest(asset, assets, appVersion, output) {
     throw new Error(
       `${asset.filename} does not identify app version ${appVersion}`,
     );
+  const contract = UPDATE_TARGETS.get(asset.artifactName);
+  if (!contract)
+    throw new Error(`${asset.filename} has no canonical updater contract`);
   const available = new Map(
     assets
-      .filter(
-        (candidate) =>
-          candidate.artifactName === UPDATE_TARGETS.get(asset.artifactName),
+      .filter((candidate) =>
+        contract.artifacts.includes(candidate.artifactName),
       )
       .map((candidate) => [candidate.filename, candidate]),
   );
   const entries = parseUpdateFiles(contents, asset.filename);
-  if (entries.length !== 1)
+  if (entries.length !== contract.artifacts.length)
     throw new Error(
-      `${asset.filename} must contain exactly one updater subject`,
+      `${asset.filename} must contain exactly ${contract.artifacts.length} updater subjects`,
     );
   if (new Set(entries.map((entry) => entry.url)).size !== entries.length)
     throw new Error(`${asset.filename} has duplicate updater subjects`);
@@ -282,10 +306,28 @@ export function assertUpdateManifest(asset, assets, appVersion, output) {
     )
       throw new Error(`${asset.filename} has stale identity for ${entry.url}`);
   }
+  if (
+    available.size !== contract.artifacts.length ||
+    entries.some((entry) => !available.has(entry.url)) ||
+    [...available].some(
+      ([name]) => !entries.some((entry) => entry.url === name),
+    )
+  )
+    throw new Error(
+      `${asset.filename} does not cover its exact updater subjects`,
+    );
   const primary = entries.find(
     (entry) => entry.url === topLevelValue(contents, "path"),
   );
-  if (!primary || primary.sha512 !== topLevelValue(contents, "sha512"))
+  const expectedPrimary = assets.find(
+    (candidate) => candidate.artifactName === contract.primary,
+  );
+  if (
+    !primary ||
+    !expectedPrimary ||
+    primary.url !== expectedPrimary.filename ||
+    primary.sha512 !== topLevelValue(contents, "sha512")
+  )
     throw new Error(`${asset.filename} has an invalid primary update identity`);
 }
 

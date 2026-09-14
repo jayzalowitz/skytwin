@@ -136,26 +136,25 @@ credentials outside this protected workflow could still race the bounded interva
 between the absence check, draft creation, and confirmation. Repository access
 controls and exclusive release-publisher permissions remain part of the boundary.
 
-The current workflow intentionally has no provenance producer and grants no
-non-publisher job attestation-write or OIDC permission. The artifact-integrity
-producer must add one exact, pinned provenance job with only the required
-`attestations: write` and `id-token: write` capabilities, update the workflow
-allowlist, and generate the sidecars above before the ledger can move to ready.
-Until that lands, the absence is a deliberate stop-ship rather than evidence
-that can be waived.
+The tag-only artifact-integrity job is the sole provenance producer. It uses a
+pinned attestation action and grants only `contents: read`, `actions: read`,
+`attestations: write`, `artifact-metadata: write`, and `id-token: write`; the
+publisher retains read-only attestation access. It generates the exact sidecars
+above, but source availability alone cannot move the ledger to ready. A tagged
+clean run must still produce the immutable report and materials, and platform
+signing/notarization remains a separate stop-ship.
 
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
-The packaged-sample verifier now implements three of the twelve matrix reports;
-see [`sample-release-evidence.md`](./sample-release-evidence.md). The other
-seven verifier sources (nine matrix reports) and the separate
-`release-claims-ci` artifact producer are absent today. Machine reports must come from the exact
-successful claim/platform job and canonical verifier step, carry the reviewed
-verifier path, command, and source digest, and provide structured observations;
-the release job independently checks those bindings against the current GitHub
-run. The SPDX producer must emit a 2.3 document namespace, explicit package
-analysis state, a component inventory, and package-to-file relationships that
-cover every release subject. Until those producers land, the gate remains
-blocked by design.
+The packaged-sample verifier implements three of the twelve matrix reports; see
+[`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
+implements one more. The other six verifier sources (eight matrix reports) and
+the separate `release-claims-ci` artifact producer are absent today. Machine
+reports must come from the exact successful claim/platform job and canonical
+verifier step, carry the reviewed verifier path, command, and source digest, and
+provide structured observations; the release job independently checks those
+bindings against the current GitHub run. The artifact lane's SPDX producer emits
+the required 2.3 document and exact package-to-file coverage. Until the remaining
+producers and external gates land, publication stays blocked by design.
 
 ---
 
@@ -269,7 +268,7 @@ data. The backup command reads its passphrase only from the environment:
 
 ```bash
 SKYTWIN_BACKUP_PASSPHRASE='<long unique passphrase>' \
-  pnpm --filter @skytwin/db backup -- export \
+  pnpm --filter @skytwin/db backup export \
   --user '<user UUID>' --out 'skytwin-before-upgrade.stbk'
 ```
 
