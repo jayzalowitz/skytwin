@@ -1,8 +1,12 @@
 import { Router, type Request, type Response } from "express";
+import { resolve } from "node:path";
 import {
   MODEL_REGISTRY,
   checkForUpgrade,
+  inspectManagedActiveModelAsync,
+  managedArtifactPath,
   recommendDefault,
+  type ManagedModelInspection,
   type RamBracket,
 } from "@skytwin/embedded-llm";
 import { modelDownloadRepository, type ModelDownloadRow } from "@skytwin/db";
@@ -14,6 +18,7 @@ import { bindUserIdParamValidator } from "../middleware/validate-uuid.js";
 import {
   cancelDownload,
   pauseDownload,
+  resolveModelDir,
   startDownload,
 } from "../embedded-llm/downloader.js";
 
@@ -160,7 +165,8 @@ export function createEmbeddedLlmRouter(): Router {
         return;
       }
       const rows = await modelDownloadRepository.listForUser(userId);
-      res.json({ downloads: rows.map(rowToJson) });
+      const active = await inspectManagedActiveModelAsync(resolveModelDir());
+      res.json({ downloads: rows.map((row) => rowToJson(row, active)) });
     } catch (err) {
       next(err);
     }
@@ -249,6 +255,8 @@ interface DownloadJson {
   pausedAt: string | null;
   completedAt: string | null;
   percent: number;
+  catalogMatch: boolean;
+  installed: boolean;
 }
 
 const PUBLIC_DOWNLOAD_ERRORS: Readonly<Record<string, string>> = {
@@ -285,9 +293,32 @@ function publicDownloadError(error: string | null): string | null {
   return "Local model operation failed. Retry or cancel the download.";
 }
 
-function rowToJson(r: import("@skytwin/db").ModelDownloadRow): DownloadJson {
+function matchesCurrentCatalog(
+  row: import("@skytwin/db").ModelDownloadRow,
+): boolean {
+  const model = MODEL_REGISTRY.find((entry) => entry.id === row.model_id);
+  return (
+    model !== undefined &&
+    row.total_bytes === model.exactBytes &&
+    row.sha256_expected.toLowerCase() === model.sha256.toLowerCase() &&
+    resolve(row.target_path) === managedArtifactPath(resolveModelDir(), model)
+  );
+}
+
+function rowToJson(
+  r: import("@skytwin/db").ModelDownloadRow,
+  active: ManagedModelInspection = { state: "missing" },
+): DownloadJson {
   const totalBytes = Number(r.total_bytes);
   const bytesDownloaded = Number(r.bytes_downloaded);
+  const catalogMatch = matchesCurrentCatalog(r);
+  const installed =
+    r.status === "complete" &&
+    catalogMatch &&
+    active.state === "verified" &&
+    active.manifest.modelId === r.model_id &&
+    active.manifest.exactBytes === r.total_bytes &&
+    active.manifest.sha256.toLowerCase() === r.sha256_expected.toLowerCase();
   const percent =
     totalBytes > 0
       ? Math.min(100, Math.round((bytesDownloaded / totalBytes) * 100))
@@ -303,5 +334,7 @@ function rowToJson(r: import("@skytwin/db").ModelDownloadRow): DownloadJson {
     pausedAt: r.paused_at?.toISOString() ?? null,
     completedAt: r.completed_at?.toISOString() ?? null,
     percent,
+    catalogMatch,
+    installed,
   };
 }

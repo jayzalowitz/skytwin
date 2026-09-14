@@ -157,10 +157,13 @@ async function renderCardInto(container, userId) {
     ? listRes.value.downloads
     : [];
 
-  const active = downloads.find((d) => ACTIVE_STATUSES.has(d.status))
-    ?? downloads.find((d) => d.status === 'paused' || d.status === 'failed');
+  const currentDownloads = downloads.filter((d) => d.catalogMatch === true);
+  const active = currentDownloads.find((d) => ACTIVE_STATUSES.has(d.status))
+    ?? currentDownloads.find((d) => d.status === 'paused' || d.status === 'failed');
   const completed = downloads.find((d) =>
-    d.status === 'complete' && models.some((model) => model.id === d.modelId));
+    d.status === 'complete' && d.catalogMatch === true && d.installed === true);
+  const retired = downloads.find((d) =>
+    d.catalogMatch !== true && (d.status === 'paused' || d.status === 'failed'));
 
   // Prefer the real server-side pick (actual RAM + free disk on this machine).
   // Fall back to the browser's coarse RAM estimate only if that call fails —
@@ -214,6 +217,16 @@ async function renderCardInto(container, userId) {
       </div>
       ${recommended ? `<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.5rem;">${recommendReason ? escapeHtml(recommendReason) : `Recommended for your machine: <strong>${escapeHtml(recommended.displayName)}</strong> (${recommendedSize}).`}</div>` : ''}
     `;
+    if (retired) {
+      body += `
+        <div style="margin-top: 0.75rem; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
+          <div style="font-size: 0.8rem; color: var(--text-muted);">
+            A saved download for ${escapeHtml(retired.modelId)} no longer matches the maintained catalog.
+          </div>
+          <button class="btn btn-outline btn-sm" style="margin-top: 0.5rem;" data-action="embedded-cancel-download" data-download-id="${escapeHtml(retired.id)}">Dismiss</button>
+        </div>
+      `;
+    }
   }
 
   container.innerHTML = `

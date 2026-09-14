@@ -52,6 +52,8 @@ const downloading = {
   bytesDownloaded: 2,
   totalBytes: 4,
   error: null,
+  catalogMatch: true,
+  installed: false,
 };
 
 beforeEach(() => {
@@ -84,6 +86,8 @@ describe('local model download controls', () => {
         status: 'complete',
         percent: 100,
         bytesDownloaded: 4,
+        catalogMatch: false,
+        installed: false,
       }],
     });
     const container = document.getElementById('embedded-llm-card-target');
@@ -93,6 +97,69 @@ describe('local model download controls', () => {
     expect(container.textContent).not.toContain('Local model artifact verified');
     expect(container.querySelector('[data-action="embedded-start-download"]')).not.toBeNull();
     expect(container.querySelector('#embedded-model-select')?.value).toBe(model.id);
+  });
+
+  it('does not treat an old artifact revision under a stable model id as installed', async () => {
+    mocks.list.mockResolvedValue({
+      downloads: [{
+        ...downloading,
+        status: 'complete',
+        percent: 100,
+        bytesDownloaded: 4,
+        catalogMatch: false,
+        installed: false,
+      }],
+    });
+    const container = document.getElementById('embedded-llm-card-target');
+
+    await mountEmbeddedLlmCard(container, 'user-id');
+
+    expect(container.textContent).not.toContain('Local model artifact verified');
+    expect(container.querySelector('[data-action="embedded-start-download"]')).not.toBeNull();
+  });
+
+  it.each(['paused', 'failed'])(
+    'offers maintained downloads and dismissal for a retired %s row',
+    async (status) => {
+      mocks.list.mockResolvedValue({
+        downloads: [{
+          ...downloading,
+          modelId: 'retired-model',
+          status,
+          catalogMatch: false,
+        }],
+      });
+      mocks.cancel.mockResolvedValue({ ok: true });
+      const container = document.getElementById('embedded-llm-card-target');
+
+      await mountEmbeddedLlmCard(container, 'user-id');
+
+      expect(container.querySelector('[data-action="embedded-start-download"]')).not.toBeNull();
+      expect(container.querySelector('[data-action="embedded-resume-download"]')).toBeNull();
+      const dismiss = container.querySelector('[data-action="embedded-cancel-download"]');
+      expect(dismiss?.textContent).toBe('Dismiss');
+      dismiss.click();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mocks.cancel).toHaveBeenCalledWith(downloading.id);
+    },
+  );
+
+  it('shows installed state only when the server verifies the active artifact', async () => {
+    mocks.list.mockResolvedValue({
+      downloads: [{
+        ...downloading,
+        status: 'complete',
+        percent: 100,
+        bytesDownloaded: 4,
+        installed: true,
+      }],
+    });
+    const container = document.getElementById('embedded-llm-card-target');
+
+    await mountEmbeddedLlmCard(container, 'user-id');
+
+    expect(container.textContent).toContain('Local model artifact verified');
   });
 
   it.each([

@@ -11,16 +11,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import express from "express";
 import type { Express } from "express";
 
-const { mockRepo, mockStartDownload, mockPauseDownload, mockCancelDownload } =
-  vi.hoisted(() => ({
-    mockRepo: {
-      findById: vi.fn(),
-      listForUser: vi.fn(),
-    },
-    mockStartDownload: vi.fn(),
-    mockPauseDownload: vi.fn(),
-    mockCancelDownload: vi.fn(),
-  }));
+const {
+  mockRepo,
+  mockStartDownload,
+  mockPauseDownload,
+  mockCancelDownload,
+  mockInspectManagedActiveModel,
+} = vi.hoisted(() => ({
+  mockRepo: {
+    findById: vi.fn(),
+    listForUser: vi.fn(),
+  },
+  mockStartDownload: vi.fn(),
+  mockPauseDownload: vi.fn(),
+  mockCancelDownload: vi.fn(),
+  mockInspectManagedActiveModel: vi.fn(),
+}));
+
+vi.mock("@skytwin/embedded-llm", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@skytwin/embedded-llm")>()),
+  inspectManagedActiveModelAsync: mockInspectManagedActiveModel,
+}));
 
 vi.mock("@skytwin/db", () => ({
   modelDownloadRepository: mockRepo,
@@ -30,9 +41,14 @@ vi.mock("../embedded-llm/downloader.js", () => ({
   startDownload: mockStartDownload,
   pauseDownload: mockPauseDownload,
   cancelDownload: mockCancelDownload,
+  resolveModelDir: () => "/tmp/skytwin-models",
 }));
 
 import { createEmbeddedLlmRouter } from "../routes/embedded-llm.js";
+import {
+  MODEL_REGISTRY,
+  managedArtifactFilename,
+} from "@skytwin/embedded-llm";
 
 const USER_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const DOWNLOAD_ID = "dddddddd-eeee-ffff-aaaa-111111111111";
@@ -50,6 +66,15 @@ const SAMPLE_ROW = {
   started_at: new Date("2026-05-09T01:00:00Z"),
   paused_at: null,
   completed_at: null,
+};
+
+const CURRENT_MODEL = MODEL_REGISTRY[0]!;
+const CURRENT_ROW = {
+  ...SAMPLE_ROW,
+  model_id: CURRENT_MODEL.id,
+  target_path: `/tmp/skytwin-models/${managedArtifactFilename(CURRENT_MODEL)}`,
+  total_bytes: CURRENT_MODEL.exactBytes,
+  sha256_expected: CURRENT_MODEL.sha256,
 };
 
 /**
@@ -121,6 +146,7 @@ async function req(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockInspectManagedActiveModel.mockResolvedValue({ state: "missing" });
 });
 
 describe("GET /api/embedded-llm/model-dir", () => {
@@ -359,6 +385,41 @@ describe("GET /api/embedded-llm/downloads/user/:userId", () => {
     const downloads = body["downloads"] as Array<Record<string, unknown>>;
     expect(downloads).toHaveLength(1);
     expect(downloads[0]?.["percent"]).toBe(50);
+  });
+
+  it("marks only the exact current catalog artifact as installed", async () => {
+    mockRepo.listForUser.mockResolvedValue([
+      { ...CURRENT_ROW, status: "complete" },
+      {
+        ...CURRENT_ROW,
+        id: "eeeeeeee-ffff-aaaa-bbbb-222222222222",
+        sha256_expected: "f".repeat(64),
+        status: "complete",
+      },
+    ]);
+    mockInspectManagedActiveModel.mockResolvedValue({
+      state: "verified",
+      manifest: {
+        modelId: CURRENT_MODEL.id,
+        exactBytes: CURRENT_MODEL.exactBytes,
+        sha256: CURRENT_MODEL.sha256,
+      },
+      model: CURRENT_MODEL,
+      path: CURRENT_ROW.target_path,
+    });
+
+    const { body } = await req(
+      buildApp(),
+      "GET",
+      `/api/embedded-llm/downloads/user/${USER_ID}`,
+    );
+    const downloads = body["downloads"] as Array<Record<string, unknown>>;
+    expect(downloads[0]).toMatchObject({ catalogMatch: true, installed: true });
+    expect(downloads[1]).toMatchObject({
+      catalogMatch: false,
+      installed: false,
+    });
+    expect(JSON.stringify(downloads)).not.toContain("sha256");
   });
 });
 
