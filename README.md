@@ -150,7 +150,8 @@ remains a separate prerequisite, while a cloud provider remains an explicit opt-
 
 > **Release boundary:** published installers currently predate the guarded,
 > account-free sample session and verified managed-model delivery in this source
-> tree. Check the release notes for the exact features in an artifact. Desktop builds produced from current source
+> tree. Check the release notes for the exact features in an artifact. Desktop
+> builds produced from current source
 > can open a short-lived sample whose database-backed surface remains read-only;
 > approve, reject, correct, and learn interactions run only in a separate,
 > session-local simulation that cannot reach providers or execution adapters.
