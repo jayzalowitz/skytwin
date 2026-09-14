@@ -14,9 +14,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run",
+    "test": "vitest run && node --test ../../scripts/release-evidence/verify-adversarial-evidence.test.mjs",
+    "test:vitest": "vitest run",
     "lint": "tsc --noEmit",
-    "eval": "tsx src/runner.ts"
+    "eval": "pnpm eval:adversarial",
+    "eval:adversarial": "tsx src/adversarial-cli.ts"
   },
   "dependencies": {
     "@skytwin/decision-engine": "workspace:*",

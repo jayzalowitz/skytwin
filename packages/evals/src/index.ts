@@ -27,6 +27,23 @@ export { DecisionLatencyTracker } from './metrics/decision-latency.js';
 export { RegressionDetector } from './regression-detector.js';
 export { AccuracyTracker, type DecisionRecord } from './accuracy-tracker.js';
 export {
+  buildAdversarialEvidence,
+  canonicalJson,
+  collectDispatchCalls,
+  evaluateAdversarialScenario,
+  loadAdversarialCatalog,
+  type AdversarialCatalog,
+  type AdversarialDispatchCall,
+  type AdversarialEvidenceReport,
+  type AdversarialResult,
+  type AdversarialScenario,
+} from './adversarial-evidence.js';
+export {
+  executeMappedAdversarialTests,
+  type ExecutableTestResult,
+  type TestProcessRunner,
+} from './adversarial-test-executor.js';
+export {
   ContinuousEvalRunner,
   type EvalRepositoryPort,
   type EvalSuite,

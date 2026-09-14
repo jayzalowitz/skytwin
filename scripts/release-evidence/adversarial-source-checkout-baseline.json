@@ -1,0 +1,115 @@
+{
+  "schemaVersion": "1.0.0",
+  "evidenceClass": "source_checkout",
+  "fixturesVersion": "v1",
+  "fixtureSha256": "a5f998aa00443738ec3b2ab9ddbaedb64fdd3d13e86e13e2f914b3366d3fdbd9",
+  "coverageTargets": {
+    "runtimeEntryPaths": [
+      "api.approvals",
+      "api.assistant",
+      "api.capability_regret",
+      "api.events_ingest",
+      "api.routines",
+      "execution_router.openclaw_response",
+      "execution_router.pre_dispatch_guard",
+      "ironclaw_adapter.execute",
+      "shared_types.injection_guard",
+      "worker.memory_action_loop"
+    ],
+    "adapters": [
+      "direct",
+      "ironclaw",
+      "none",
+      "openclaw"
+    ],
+    "criticalShapes": [
+      "account",
+      "credential",
+      "database",
+      "delete",
+      "filesystem",
+      "purchase",
+      "send",
+      "shell"
+    ],
+    "origins": [
+      "calendar",
+      "email",
+      "file",
+      "mcp",
+      "missing",
+      "user",
+      "web"
+    ]
+  },
+  "sourceInventory": [
+    {
+      "sourceFile": "apps/api/src/routes/approvals.ts",
+      "dispatchCall": "executePrepared",
+      "runtimeEntryPath": "api.approvals",
+      "occurrences": 1
+    },
+    {
+      "sourceFile": "apps/api/src/routes/events.ts",
+      "dispatchCall": "executePreparedStreaming",
+      "runtimeEntryPath": "api.events_ingest",
+      "occurrences": 1
+    },
+    {
+      "sourceFile": "apps/worker/src/jobs/memory-action-loop.ts",
+      "dispatchCall": "executePrepared",
+      "runtimeEntryPath": "worker.memory_action_loop",
+      "occurrences": 1
+    }
+  ],
+  "exactIds": [
+    "adv-v1-calendar-delete-untrusted",
+    "adv-v1-capability-regret-no-dispatch",
+    "adv-v1-email-send-untrusted",
+    "adv-v1-events-no-replay-ambiguous",
+    "adv-v1-file-database-drop",
+    "adv-v1-file-filesystem-purge",
+    "adv-v1-ironclaw-transport-ambiguous",
+    "adv-v1-mcp-account-delete",
+    "adv-v1-mcp-credential-revoke",
+    "adv-v1-missing-origin-send",
+    "adv-v1-openclaw-credential-schema",
+    "adv-v1-router-direct-shell",
+    "adv-v1-web-purchase-untrusted",
+    "adv-v1-web-shell-exec"
+  ],
+  "scenarioFingerprints": {
+    "adv-v1-calendar-delete-untrusted": "56801ab536be50793257c8b05cb7fcb402296c6f29d1dbe3a79ef02b6173f6ac",
+    "adv-v1-capability-regret-no-dispatch": "593b656233ebda80930a719ebdda4242dfc3f3d9d4a9f56080a26e1fbc82c378",
+    "adv-v1-email-send-untrusted": "b7adec6c93e3d9407850b25f1c477d5bca93414387a4a7b8e896139b70f9da17",
+    "adv-v1-events-no-replay-ambiguous": "53aa5022bc7863a7297a70dac72903dcb7d04ac8d6697e4b0ebc47d374013e70",
+    "adv-v1-file-database-drop": "0e2c8b07198982b5d159503565a84a00f7da73bbdc4550cc40abf50f3afb9e3d",
+    "adv-v1-file-filesystem-purge": "df299a1bc07fcdd66002fa75851adf33ccaf68aa7f9de09f33fb146edf62479f",
+    "adv-v1-ironclaw-transport-ambiguous": "6cd19b2e452474c58b9ffd567fc41594fc5ad0897eb38abbc6163b62ad84661e",
+    "adv-v1-mcp-account-delete": "6de3c3c1228ba091a802cd08f9fd7764545b43975259187946c9cf6a07f42f34",
+    "adv-v1-mcp-credential-revoke": "27a2e4ae2c6ca1e8de593e0741badd79c1839a66aed819454634b08bda321e04",
+    "adv-v1-missing-origin-send": "a7c5f00988af290169600335c14a793bcfe4dcf4edb9f32981ed173934d55391",
+    "adv-v1-openclaw-credential-schema": "bcbd3d7562bbdd3fe1582026a3675a73fd610e0fc86c034867c79f02d4369814",
+    "adv-v1-router-direct-shell": "9cbf8fa49ba8020780f42face6e3dc7afd5e2e45d2cc4b2f0e16a287c577edbc",
+    "adv-v1-web-purchase-untrusted": "bc6776b4819af2420369b0426c2500aaf159c40044884b1aa64e08c784093f20",
+    "adv-v1-web-shell-exec": "26e9439fa9c5a6fa01bea0c7330207a20a8201ad798395fb9ab775d0851e5a32"
+  },
+  "mitigations": [
+    "untrusted or missing provenance is evaluated by the injection guard",
+    "destructive shapes require explicit confirmation",
+    "extreme shapes require dual confirmation",
+    "retained scenario semantics and mapped assertion source digests are append-only",
+    "application dispatch entry points are checked against a source inventory"
+  ],
+  "limitations": [
+    "This evidence describes a source checkout, not a packaged release artifact.",
+    "Release subject identity and attestation are intentionally absent.",
+    "This development foundation does not yet enumerate every API, worker, assistant, memory, and routine entry path required for a release gate.",
+    "Network access is not sandbox-enforced for mapped Vitest processes; tests are expected to use their declared mocks.",
+    "The mapped Vitest process clock is not controlled by this evidence runner.",
+    "Mapped Vitest results prove only that an exact assertion passed or failed; semantic actual fields remain null until a structured runtime observation channel exists.",
+    "Mapped assertion integrity binds a dedicated one-scenario test file, including its imports, setup, helpers, and assertions; changing that harness requires a new scenario ID instead of rewriting retained evidence.",
+    "The companion checksum detects accidental report corruption but is not an external trust root.",
+    "Structural coverage is independent of test outcomes; passing mapped checks does not establish release readiness or prove zero bypasses."
+  ]
+}
