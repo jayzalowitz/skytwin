@@ -61,8 +61,9 @@ and a random process attribution nonce. A report is written with exclusive
 creation only after the live process tree accepts the first platform-native
 termination request and ports 3100 and 3200 are released. POSIX runners require
 the process group to disappear after `SIGTERM`; Windows uses the tree-aware
-`taskkill /T /F` primitive because it has no process-group `SIGTERM`. A retry or
-fallback fails the evidence run.
+`taskkill /T /F` primitive because it has no process-group `SIGTERM`. A second
+termination request, POSIX `SIGKILL`, or a still-live process group fails the
+evidence run.
 
 The live packaged probe verifies:
 
