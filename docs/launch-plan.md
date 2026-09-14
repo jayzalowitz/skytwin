@@ -130,7 +130,7 @@ Tracked in [#351](https://github.com/jayzalowitz/skytwin/issues/351). Google rev
 The mobile app exists (Expo, React Native) and the pairing flow works locally over mDNS. App Store + Play Store submissions are separate review processes with their own friction. Defer until desktop hits product-market fit signals.
 
 ### 3.3 Hosted SkyTwin
-The privacy story is "everything runs on your machine." A hosted variant is a separate product with a separate threat model. Don't conflate.
+The packaged default is local-first, while users can already opt into disclosed hosted reasoning, embedding, remote execution, and federation paths. A fully hosted SkyTwin deployment would be a separate product with a broader threat model and must not inherit claims that apply only to the packaged local default.
 
 ### 3.4 Slack, Notion, bank-feed connectors
 README hints at these. They each carry their own OAuth scope review (Slack workspace verification, Notion integration approval, Plaid for banks). Sequence them by feature value × verification cost. Banking via Plaid is the most expensive path; Slack and Notion are cheap. Notion next.

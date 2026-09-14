@@ -279,7 +279,7 @@ export async function renderSettings(container, userId) {
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
         Connect your accounts so your twin can see your email and calendar.
-        Your twin only reads data — it never sends emails or accepts invites without your permission (based on your autonomy level above).
+        It can send mail, change Gmail labels, or manage calendar events only when you approve or when your configured autonomy and policies allow it. Actions are recorded with explanations.
       </div>
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
         <div>
@@ -375,7 +375,7 @@ export async function renderSettings(container, userId) {
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
         <div>
           <div style="font-weight: 500;">Send anonymous crash reports</div>
-          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, stack trace, app version) so we can fix it. No personal data, email, or twin content is ever included. Off by default.</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, scrubbed stack trace, app version) so we can fix it. SkyTwin removes recognized email addresses, credentials, user paths, URLs, and request content before upload, but pattern-based scrubbing cannot guarantee incidental content or unknown secret formats are absent. Off by default.</div>
         </div>
         <label class="toggle-switch">
           <input type="checkbox" id="crash-reports-toggle" data-action="toggle-crash-reports">

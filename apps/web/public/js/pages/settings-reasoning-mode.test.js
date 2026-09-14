@@ -111,4 +111,18 @@ describe('credential transfer disclosures', () => {
     expect(source).toContain('stored service credentials are also registered');
     expect(source).toContain('with that configured server, which may be remote');
   });
+
+  it('does not describe write-capable Google scopes as read-only', () => {
+    expect(source).not.toContain('Your twin only reads data');
+    expect(source).toContain('send mail, change Gmail labels, or manage calendar events');
+    expect(source).toContain('configured autonomy and policies allow it');
+    expect(source).toContain('Actions are recorded with explanations');
+  });
+
+  it('states the limit of pattern-based crash-report scrubbing', () => {
+    expect(source).not.toContain('No personal data, email, or twin content is ever included');
+    expect(source).toContain('pattern-based scrubbing cannot guarantee');
+    expect(source).toContain('unknown secret formats are absent');
+    expect(source).toContain('Off by default');
+  });
 });

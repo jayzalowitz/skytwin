@@ -173,7 +173,14 @@ The remaining catch: electron-updater verifies the downloaded update's signature
 
 ### 3. Google OAuth verification (#351)
 
-Independent of the build: until Google's restricted-scope review clears, the bundled OAuth consent screen shows the unverified-app warning. Does not block cutting a build; does affect the Gmail connect experience. Tracked separately.
+Independent of the build, two review tracks affect onboarding. The bundled
+identity-and-Calendar client still needs brand and sensitive-scope verification;
+until those clear, its consent screen can show an unverified-app warning. Gmail
+scopes are dropped from that bundled flow today. Launch Gmail access instead uses
+a personal BYO client, which shows its own unverified warning and requires an
+In-production publishing status to avoid seven-day Testing authorization expiry.
+Neither track blocks cutting a build, but both affect the connection experience.
+Bundled Gmail restricted-scope verification is tracked separately in #351.
 
 ---
 
