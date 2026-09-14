@@ -7,6 +7,7 @@ function response(body, { ok = true, status = 200 } = {}) {
 
 function validConfiguration() {
   return {
+    can_admins_bypass: false,
     protection_rules: [
       {
         type: "required_reviewers",
@@ -107,6 +108,20 @@ it.each([false, undefined])(
     await expect(
       verifyReleaseEnvironment({ ...context, fetchImpl }),
     ).rejects.toThrow("must prevent self-review");
+  },
+);
+
+it.each([true, undefined])(
+  "fails closed when administrator bypass is %s",
+  async (canAdminsBypass) => {
+    const configuration = validConfiguration();
+    if (canAdminsBypass === undefined)
+      delete configuration.can_admins_bypass;
+    else configuration.can_admins_bypass = canAdminsBypass;
+    const fetchImpl = vi.fn().mockResolvedValue(response(configuration));
+    await expect(
+      verifyReleaseEnvironment({ ...context, fetchImpl }),
+    ).rejects.toThrow("must disable administrator bypass");
   },
 );
 

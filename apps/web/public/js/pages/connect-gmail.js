@@ -88,7 +88,7 @@ const STEPS = [
   {
     n: 5,
     title: 'Paste your credentials and connect',
-    blurb: 'Last step. Your Google client credentials are stored locally without app-level encryption, sent to Google for OAuth, and, when an IronClaw execution adapter is configured, also registered with that configured server, which may be remote.',
+    blurb: 'Last step. Your Google client credentials are stored without app-level encryption in SkyTwin\'s configured database (on this computer in the packaged desktop default), sent to Google for OAuth, and, when an IronClaw execution adapter is configured, also registered with that configured server, which may be remote.',
     cta: null,
     detail: [],
   },
@@ -157,10 +157,11 @@ function renderStep(step, opts) {
           value="${escapeHtml(opts.savedClientSecret ?? '')}"
           required
         >
-        <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
-          Stored locally without app-level encryption and sent to Google for OAuth. When an IronClaw
-          execution adapter is configured, these credentials are also registered with that configured
-          server, which may be remote.
+        <div data-region="credential-transfer-disclosure" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Stored without app-level encryption in SkyTwin's configured database (on this computer in
+          the packaged desktop default) and sent to Google for OAuth. When an IronClaw execution
+          adapter is configured, these credentials are also registered with that configured server,
+          which may be remote.
         </div>
       </div>
       <div id="cgm-cred-error" style="display:none;color:var(--danger,#d04646);font-size:0.85rem;margin-top:0.75rem;" role="alert"></div>
@@ -197,7 +198,7 @@ function renderDone() {
   return `
     <div class="cgm-step">
       <div class="cgm-step-header"><h2>Gmail connected ✓</h2></div>
-      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The Google client credentials stay in your local database without app-level encryption; OAuth-token encryption depends on your Credential Vault state. You won't see this wizard again unless you revoke access.</p>
+      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The Google client credentials remain without app-level encryption in SkyTwin's configured database; the packaged desktop default keeps that database on this computer. OAuth-token encryption depends on your Credential Vault state. You won't see this wizard again unless you revoke access.</p>
       <div style="display:flex;gap:0.5rem;margin-top:1rem;">
         <a class="btn btn-primary" href="#/">Open dashboard</a>
         <a class="btn btn-outline" href="#/approvals">See approvals queue</a>

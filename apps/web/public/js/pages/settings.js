@@ -221,8 +221,9 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Local brain</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Your twin's persistent memory is stored in the local database. It is not
-        encrypted by SkyTwin today; connected providers may receive selected data.
+        Your twin's persistent memory is stored in SkyTwin's configured database; the
+        packaged desktop default keeps that database on this computer. It is not encrypted
+        by SkyTwin today, and connected providers may receive selected data.
         Advanced users can switch the memory backend or inspect what's indexed.
       </div>
       <a class="btn btn-outline btn-sm" href="#/memory-settings">Manage local brain</a>
@@ -465,13 +466,13 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Data storage and network use</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        SkyTwin's persistent application database is stored on this computer and is not encrypted by SkyTwin today. Connectors contact their providers, and configured hosted-model features send selected content to that provider.
+        SkyTwin stores persistent application data in its configured CockroachDB database, without app-level encryption today. The packaged desktop default keeps that database on this computer; server and self-hosted configurations can point it elsewhere. Connectors contact their providers, and configured hosted-model features send selected content to those providers.
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
-        <strong>Stored locally:</strong> authorized email and calendar fields, selected source content, learned preferences and patterns, memory, and decision, explanation, and receipt records. Signal data is retained locally under the app’s retention policy.<br>
+        <strong>Stored in SkyTwin's configured database:</strong> authorized email and calendar fields, selected source content, learned preferences and patterns, memory, and decision, explanation, and receipt records. Signal data is retained there under the app’s retention policy.<br>
         <strong>Sent when enabled:</strong> OAuth and connector requests go to the connected service. When an IronClaw execution adapter is configured, stored service credentials are also registered with that configured server, which may be remote. In “My configured provider” mode, prompts and responses may travel to enabled providers in the chain. Separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
         <strong>Account access:</strong> ${googleConnected
-          ? 'A Google grant is stored locally so SkyTwin can read authorized inbox and calendar data. Before vault initialization it is stored in plaintext. With the API vault initialized and unlocked, new or reconnected grants are encrypted and existing complete plaintext grants can migrate on authorized use; while that vault is locked, new or reconnected writes are refused. The background worker has a separate key cache and may report encrypted grants as unavailable.'
+          ? 'A Google grant is stored in SkyTwin\'s configured database so SkyTwin can read authorized inbox and calendar data. Before vault initialization it is stored in plaintext. With the API vault initialized and unlocked, new or reconnected grants are encrypted and existing complete plaintext grants can migrate on authorized use; while that vault is locked, new or reconnected writes are refused. The background worker has a separate key cache and may report encrypted grants as unavailable.'
           : 'No accounts linked yet — no inbox or calendar data is available until you connect one.'}<br>
       </div>
     </div>
@@ -1037,6 +1038,10 @@ function ensureSettingsListener() {
         return;
       case 'switch-to-smart':
         window.switchAIBrainMode(uid, 'smart');
+        return;
+      case 'switch-to-smart-boundary-blocked':
+        document.getElementById('ai-reasoning-mode')?.focus();
+        showErrorToast('Choose On this device and save it before selecting Smart.');
         return;
       case 'switch-to-smarter':
         window.switchAIBrainMode(uid, 'smarter');
@@ -1834,13 +1839,16 @@ function renderReasoningLocation(settingsAvailable = true) {
 function renderModeToggle(providers) {
   const mode = detectAIMode(providers);
   const hasSmarterCandidate = providers.some((p) => SMARTER_PROVIDERS.has(p.provider));
+  const smartBoundaryReady = _reasoningMode === 'on_device'
+    && _persistedReasoningMode === 'on_device'
+    && !_reasoningModeRequiresConfirmation;
 
-  const pill = (label, isActive, action, helperText) => `
+  const pill = (label, isActive, action, helperText, isDisabled = false) => `
     <div style="flex: 1; min-width: 0;">
       <button class="btn ${isActive ? 'btn-primary' : 'btn-outline'} btn-sm"
               style="width: 100%; padding: 0.5rem 0.75rem; font-size: 0.85rem;"
               data-action="${action}"
-              ${isActive ? 'disabled' : ''}>
+              ${isActive || isDisabled ? 'disabled' : ''}>
         ${isActive ? '✓ ' : ''}${label}${isActive ? '' : ' →'}
       </button>
       ${helperText ? `<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">${helperText}</div>` : ''}
@@ -1852,10 +1860,13 @@ function renderModeToggle(providers) {
       ${pill(
         'Smart (prefer on-device)',
         mode === 'smart',
-        'switch-to-smart',
+        smartBoundaryReady ? 'switch-to-smart' : 'switch-to-smart-boundary-blocked',
         mode === 'smart'
           ? 'Embedded provider is first; runtime and model availability are checked separately.'
-          : 'No hosted-provider fee; requires an installed local runtime and model.',
+          : !smartBoundaryReady
+            ? 'Choose On this device above and save that boundary before selecting Smart.'
+            : 'No hosted-provider fee; requires an installed local runtime and model.',
+        !smartBoundaryReady,
       )}
       ${pill(
         'Smarter (paid API or Ollama)',
@@ -2056,6 +2067,11 @@ window.switchAIBrainMode = async function(userId, target) {
     showErrorToast(_reasoningModeRequiresConfirmation
       ? 'Choose where reasoning runs before changing provider priority.'
       : 'Save where reasoning runs before changing provider priority.');
+    return;
+  }
+  if (target === 'smart' && _reasoningMode !== 'on_device') {
+    document.getElementById('ai-reasoning-mode')?.focus();
+    showErrorToast('Choose On this device and save it before selecting Smart.');
     return;
   }
   const next = target === 'smart'

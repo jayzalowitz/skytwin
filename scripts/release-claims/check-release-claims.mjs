@@ -318,6 +318,28 @@ const READY_ACCEPTED_STATES = new Set(["proven", "limited"]);
 const SOURCE_DIGEST = /^[0-9a-f]{64}$/;
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const SPDX_ELEMENT_ID = /^SPDXRef-[A-Za-z0-9.-]+$/;
+const SPDX_UTC_TIMESTAMP =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
+const SPDX_23_CHECKSUM_ALGORITHMS = new Set([
+  "ADLER32",
+  "BLAKE2b-256",
+  "BLAKE2b-384",
+  "BLAKE2b-512",
+  "BLAKE3",
+  "MD2",
+  "MD4",
+  "MD5",
+  "MD6",
+  "SHA1",
+  "SHA224",
+  "SHA256",
+  "SHA3-256",
+  "SHA3-384",
+  "SHA3-512",
+  "SHA384",
+  "SHA512",
+]);
 const RELEASE_EVIDENCE_WORKFLOW_PATH = ".github/workflows/build.yml";
 const CI_EVIDENCE_JOB_NAME = "release-claim-ci";
 const CI_EVIDENCE_ARTIFACT_NAME = "release-claims-ci";
@@ -614,7 +636,7 @@ const CANONICAL_APPROVED_STATEMENT_DIGESTS = new Map([
   ],
   [
     "settings-memory-boundary",
-    "0e5f24bac972d64f66a04e5ba437c6ea5995727572791a37f211f5c63074d51e",
+    "574b7592a0b266785dbe2c2598565041158581cbbc56f41c98ee697a3b03ed6c",
   ],
   [
     "settings-model-availability-boundary",
@@ -622,7 +644,7 @@ const CANONICAL_APPROVED_STATEMENT_DIGESTS = new Map([
   ],
   [
     "gmail-credential-boundary",
-    "3e0821054c1d99cf4980f2aaba6914dc49f733ba4e18315adfceeac7c3e844f6",
+    "d3701a980c4a12a22762c7e3ece971e79e4d19a1da045490ba9e98b0a83ea6c9",
   ],
   [
     "dashboard-reasoning-boundary",
@@ -688,6 +710,10 @@ function isNonEmptyString(value) {
 
 function asArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function addError(errors, message) {
@@ -1896,9 +1922,11 @@ export function verifyCanonicalReleasePublisher(root) {
     !hasExactKeys(updateFeedStep, ["name", "run"]) ||
     updateFeedStep.name !== "Verify update feed reachable" ||
     String(updateFeedStep.run).trim() !== CANONICAL_UPDATE_FEED_RUN ||
-    !hasExactKeys(checkoutStep, ["uses"]) ||
+    !hasExactKeys(checkoutStep, ["uses", "with"]) ||
     checkoutStep.uses !==
       "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" ||
+    !hasExactKeys(checkoutStep.with, ["persist-credentials"]) ||
+    checkoutStep.with["persist-credentials"] !== false ||
     !hasExactKeys(setupNodeStep, ["uses", "with"]) ||
     setupNodeStep.uses !==
       "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" ||
@@ -3472,6 +3500,120 @@ export function verifyMachineEvidenceApplicability(
   return errors;
 }
 
+function isValidSpdx23Checksum(checksum) {
+  return (
+    isPlainRecord(checksum) &&
+    SPDX_23_CHECKSUM_ALGORITHMS.has(checksum.algorithm) &&
+    typeof checksum.checksumValue === "string" &&
+    /^[a-f0-9]+$/.test(checksum.checksumValue)
+  );
+}
+
+function isValidSpdxUtcTimestamp(value) {
+  if (!SPDX_UTC_TIMESTAMP.test(value ?? "")) return false;
+  const timestamp = Date.parse(value);
+  return (
+    !Number.isNaN(timestamp) &&
+    new Date(timestamp).toISOString() === value.replace(/Z$/, ".000Z")
+  );
+}
+
+function isValidSpdx23Document(sbom) {
+  if (
+    !isPlainRecord(sbom) ||
+    sbom.spdxVersion !== "SPDX-2.3" ||
+    sbom.dataLicense !== "CC0-1.0" ||
+    sbom.SPDXID !== "SPDXRef-DOCUMENT" ||
+    !isNonEmptyString(sbom.name) ||
+    !isPlainRecord(sbom.creationInfo) ||
+    !isValidSpdxUtcTimestamp(sbom.creationInfo.created) ||
+    asArray(sbom.creationInfo.creators).length === 0 ||
+    asArray(sbom.creationInfo.creators).some(
+      (creator) => !isNonEmptyString(creator),
+    ) ||
+    asArray(sbom.packages).length === 0 ||
+    asArray(sbom.files).length === 0
+  )
+    return false;
+
+  const packagesValid = sbom.packages.every(
+    (entry) =>
+      isPlainRecord(entry) &&
+      SPDX_ELEMENT_ID.test(entry.SPDXID ?? "") &&
+      isNonEmptyString(entry.downloadLocation) &&
+      isNonEmptyString(entry.name) &&
+      (entry.filesAnalyzed === undefined ||
+        typeof entry.filesAnalyzed === "boolean"),
+  );
+  const filesValid = sbom.files.every(
+    (entry) =>
+      isPlainRecord(entry) &&
+      SPDX_ELEMENT_ID.test(entry.SPDXID ?? "") &&
+      isNonEmptyString(entry.fileName) &&
+      asArray(entry.checksums).length > 0 &&
+      entry.checksums.every(isValidSpdx23Checksum),
+  );
+  if (!packagesValid || !filesValid) return false;
+
+  const elementIds = [
+    sbom.SPDXID,
+    ...sbom.packages.map((entry) => entry.SPDXID),
+    ...sbom.files.map((entry) => entry.SPDXID),
+  ];
+  if (new Set(elementIds).size !== elementIds.length) return false;
+  return (
+    Array.isArray(sbom.documentDescribes) &&
+    sbom.documentDescribes.every(
+      (id) => SPDX_ELEMENT_ID.test(id) && elementIds.includes(id),
+    )
+  );
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
+}
+
+export function buildCanonicalVerificationInstructions({
+  subjects,
+  repository,
+  sourceCommit,
+  sourceRef,
+}) {
+  const orderedSubjects = [...subjects].sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+  const provenanceCommands = orderedSubjects.map(
+    (subject) =>
+      `gh attestation verify ${shellQuote(subject.name)} --repo ${shellQuote(repository)} --bundle ${shellQuote(`${subject.sha256}.attestation.jsonl`)} --source-digest ${shellQuote(sourceCommit)} --source-ref ${shellQuote(sourceRef)} --signer-workflow ${shellQuote(`github.com/${repository}/.github/workflows/build.yml`)} --predicate-type ${shellQuote("https://slsa.dev/provenance/v1")}`,
+  );
+  return `# Verify SkyTwin release artifacts
+
+Download every release asset into one directory with these verification files.
+
+## SHA-256 checksums
+
+On Linux:
+
+\`\`\`sh
+sha256sum --check SHA256SUMS
+\`\`\`
+
+On macOS:
+
+\`\`\`sh
+shasum --algorithm 256 --check SHA256SUMS
+\`\`\`
+
+## GitHub build provenance
+
+Run every command below from that directory:
+
+\`\`\`sh
+${provenanceCommands.join("\n")}
+\`\`\`
+`;
+}
+
 export function verifyGitHubArtifactAttestation(
   { subjectPath, bundlePath, repository, sourceCommit, sourceRef, token },
   execute = execFileSync,
@@ -3637,14 +3779,12 @@ export async function verifyArtifactVerificationMaterials(
             ),
         );
       if (
-        !/^SPDX-2\.[0-9]+$/.test(sbom.spdxVersion ?? "") ||
-        sbom.dataLicense !== "CC0-1.0" ||
-        asArray(sbom.packages).length === 0 ||
+        !isValidSpdx23Document(sbom) ||
         subjects.some((subject) => !coversSubject(subject))
       )
         addError(
           errors,
-          "SPDX SBOM must include components and describe every canonical subject by SHA-256",
+          "SPDX SBOM must satisfy the SPDX 2.3 document, package, and file contract and describe every canonical subject by SHA-256",
         );
     }
   }
@@ -3654,14 +3794,16 @@ export async function verifyArtifactVerificationMaterials(
   );
   if (instructionsAsset) {
     const instructions = readFileSync(instructionsAsset.safePath, "utf8");
-    if (
-      !instructions.includes("SHA256SUMS") ||
-      !instructions.includes("gh attestation verify") ||
-      subjects.some((subject) => !instructions.includes(subject.name))
-    )
+    const canonicalInstructions = buildCanonicalVerificationInstructions({
+      subjects,
+      repository,
+      sourceCommit: releaseCommit,
+      sourceRef: triggerRef,
+    });
+    if (instructions !== canonicalInstructions)
       addError(
         errors,
-        "verification instructions must identify every subject and explain checksum and GitHub attestation verification",
+        "verification instructions must exactly match the repository-, source-, workflow-, predicate-, bundle-, and subject-bound canonical guide",
       );
   }
 

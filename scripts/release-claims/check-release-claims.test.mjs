@@ -25,6 +25,7 @@ import {
   REQUIRED_READINESS_CLAIM_IDS,
   REQUIRED_STOP_SHIP_IDS,
   REQUIRED_SURFACE_CLASSES,
+  buildCanonicalVerificationInstructions,
   isAllowlistedVerificationCommand,
   normalizeReleaseTagToRepositoryVersion,
   runChecks,
@@ -108,7 +109,15 @@ function makeReleaseAssets(root, startId = 1000) {
   });
 }
 
-function makeVerificationAssets(root, releaseAssets) {
+function makeVerificationAssets(
+  root,
+  releaseAssets,
+  {
+    repository = "owner/repository",
+    sourceCommit = "0123456789abcdef0123456789abcdef01234567",
+    sourceRef = "refs/tags/v0.7.0-beta",
+  } = {},
+) {
   const subjects = releaseAssets.flatMap((asset) => asset.subjects);
   const contents = new Map([
     [
@@ -118,12 +127,24 @@ function makeVerificationAssets(root, releaseAssets) {
     [
       "release.spdx.json",
       `${JSON.stringify({
+        SPDXID: "SPDXRef-DOCUMENT",
         spdxVersion: "SPDX-2.3",
         dataLicense: "CC0-1.0",
+        name: "SkyTwin release artifacts",
+        creationInfo: {
+          created: "2026-09-14T00:00:00Z",
+          creators: ["Tool: SkyTwin release-machine-verifier"],
+        },
         documentDescribes: subjects.map(
           (_, index) => `SPDXRef-ReleaseSubject-${index}`,
         ),
-        packages: [{ SPDXID: "SPDXRef-Package", name: "SkyTwin" }],
+        packages: [
+          {
+            SPDXID: "SPDXRef-Package",
+            downloadLocation: "NOASSERTION",
+            name: "SkyTwin",
+          },
+        ],
         files: subjects.map((subject, index) => ({
           SPDXID: `SPDXRef-ReleaseSubject-${index}`,
           fileName: subject.name,
@@ -133,7 +154,12 @@ function makeVerificationAssets(root, releaseAssets) {
     ],
     [
       "VERIFY.md",
-      `Run \`sha256sum -c SHA256SUMS\` and \`gh attestation verify\` for:\n${subjects.map((subject) => `- ${subject.name}`).join("\n")}\n`,
+      buildCanonicalVerificationInstructions({
+        subjects,
+        repository,
+        sourceCommit,
+        sourceRef,
+      }),
     ],
   ]);
   for (const subject of subjects)
@@ -396,6 +422,8 @@ ${CANONICAL_UPDATE_FEED_RUN.split("\n")
   .map((line) => `          ${line}`)
   .join("\n")}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: \${{ env.NODE_VERSION }}
@@ -688,6 +716,31 @@ describe("release claim ledger validation", () => {
       "every action in the write-capable release job must match the canonical full-SHA allowlist",
     );
   });
+
+  it.each(["true", null])(
+    "rejects checkout persist-credentials=%s in the write job",
+    (persistCredentials) => {
+      const root = makeRoot();
+      writeValidFixture(root);
+      const path = join(root, ".github/workflows/build.yml");
+      const source = readFileSync(path, "utf8");
+      writeFileSync(
+        path,
+        persistCredentials === null
+          ? source.replace(
+              "        with:\n          persist-credentials: false\n      - uses: actions/setup-node",
+              "      - uses: actions/setup-node",
+            )
+          : source.replace(
+              "          persist-credentials: false",
+              `          persist-credentials: ${persistCredentials}`,
+            ),
+      );
+      expect(verifyCanonicalReleasePublisher(root)).toContain(
+        "canonical release job must contain only the exact allowlisted step graph in order",
+      );
+    },
+  );
 
   it("rejects an alternate softprops publisher in another workflow", () => {
     const root = makeRoot();
@@ -1507,12 +1560,12 @@ describe("release claim ledger validation", () => {
     [
       "release.spdx.json",
       `${JSON.stringify({ spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0" })}\n`,
-      "SPDX SBOM must include components",
+      "SPDX SBOM must satisfy the SPDX 2.3",
     ],
     [
       "VERIFY.md",
       "No verification commands are documented.\n",
-      "verification instructions must identify every subject",
+      "verification instructions must exactly match",
     ],
   ])(
     "rejects semantically incomplete %s material",
@@ -1546,6 +1599,133 @@ describe("release claim ledger validation", () => {
       expect(errors.some((error) => error.includes(expected))).toBe(true);
     },
   );
+
+  it.each([
+    ["document creationInfo", (sbom) => delete sbom.creationInfo],
+    [
+      "package downloadLocation",
+      (sbom) => delete sbom.packages[0].downloadLocation,
+    ],
+    ["file checksums", (sbom) => delete sbom.files[0].checksums],
+    ["SPDX element ID pattern", (sbom) => (sbom.files[0].SPDXID = "bad/id")],
+    [
+      "UTC creation timestamp",
+      (sbom) => (sbom.creationInfo.created = "September 14, 2026"),
+    ],
+    [
+      "calendar-valid creation timestamp",
+      (sbom) => (sbom.creationInfo.created = "2026-02-31T00:00:00Z"),
+    ],
+    [
+      "lowercase checksum value",
+      (sbom) =>
+        (sbom.files[0].checksums[0].checksumValue = "A".repeat(64)),
+    ],
+  ])("rejects an SPDX 2.3 SBOM with invalid %s", async (_field, mutate) => {
+    const root = makeRoot();
+    const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
+    const releaseAssets = makeReleaseAssets(root);
+    const verificationAssets = makeVerificationAssets(root, releaseAssets);
+    const asset = verificationAssets.find(
+      (candidate) => candidate.name === "release.spdx.json",
+    );
+    const sbom = JSON.parse(readFileSync(join(root, asset.path), "utf8"));
+    mutate(sbom);
+    const content = `${JSON.stringify(sbom)}\n`;
+    write(root, asset.path, content);
+    asset.sha256 = createHash("sha256").update(content).digest("hex");
+    const report = makeArtifactVerificationReport(
+      releaseAssets,
+      verificationAssets,
+      sourceCommit,
+    );
+    const errors = await verifyArtifactVerificationMaterials(
+      {
+        root,
+        manifest: { releaseAssets, verificationAssets },
+        report,
+        repository: "owner/repository",
+        releaseCommit: sourceCommit,
+        triggerRef: "refs/tags/v0.7.0-beta",
+        githubToken: "token",
+      },
+      vi.fn(),
+    );
+    expect(errors.some((error) => error.includes("SPDX 2.3"))).toBe(true);
+  });
+
+  it("rejects a do-not-run guide even when it embeds every canonical command", async () => {
+    const root = makeRoot();
+    const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
+    const releaseAssets = makeReleaseAssets(root);
+    const verificationAssets = makeVerificationAssets(root, releaseAssets);
+    const asset = verificationAssets.find(
+      (candidate) => candidate.name === "VERIFY.md",
+    );
+    const canonical = readFileSync(join(root, asset.path), "utf8");
+    const content = `Do not run any of these commands.\n\n${canonical}`;
+    write(root, asset.path, content);
+    asset.sha256 = createHash("sha256").update(content).digest("hex");
+    const report = makeArtifactVerificationReport(
+      releaseAssets,
+      verificationAssets,
+      sourceCommit,
+    );
+    const errors = await verifyArtifactVerificationMaterials(
+      {
+        root,
+        manifest: { releaseAssets, verificationAssets },
+        report,
+        repository: "owner/repository",
+        releaseCommit: sourceCommit,
+        triggerRef: "refs/tags/v0.7.0-beta",
+        githubToken: "token",
+      },
+      vi.fn(),
+    );
+    expect(errors.some((error) => error.includes("exactly match"))).toBe(true);
+  });
+
+  it("does not let a longer subject-name substring hide an omitted command", async () => {
+    const root = makeRoot();
+    const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
+    const releaseAssets = makeReleaseAssets(root);
+    releaseAssets[0].subjects[0].name = "SkyTwin.exe";
+    releaseAssets[1].subjects[0].name = "SkyTwin.exe.blockmap";
+    const verificationAssets = makeVerificationAssets(root, releaseAssets);
+    const asset = verificationAssets.find(
+      (candidate) => candidate.name === "VERIFY.md",
+    );
+    const canonical = readFileSync(join(root, asset.path), "utf8");
+    const content = canonical
+      .split("\n")
+      .filter(
+        (line) =>
+          !line.startsWith("gh attestation verify 'SkyTwin.exe' --repo"),
+      )
+      .join("\n");
+    expect(content).toContain("SkyTwin.exe");
+    write(root, asset.path, content);
+    asset.sha256 = createHash("sha256").update(content).digest("hex");
+    const report = makeArtifactVerificationReport(
+      releaseAssets,
+      verificationAssets,
+      sourceCommit,
+    );
+    const errors = await verifyArtifactVerificationMaterials(
+      {
+        root,
+        manifest: { releaseAssets, verificationAssets },
+        report,
+        repository: "owner/repository",
+        releaseCommit: sourceCommit,
+        triggerRef: "refs/tags/v0.7.0-beta",
+        githubToken: "token",
+      },
+      vi.fn(),
+    );
+    expect(errors.some((error) => error.includes("exactly match"))).toBe(true);
+  });
 
   it("requires identified, verified model artifacts", () => {
     expect(

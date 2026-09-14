@@ -23,7 +23,7 @@
 > so the final gate still fails closed and the ledger remains blocked until that
 > proof pipeline ships.
 
-The satisfiable post-build contract is explicit: the tagged `build.yml` run
+The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The latter
 contains one `reports/<claim-id>.json` result for every required machine claim
 and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
@@ -46,11 +46,15 @@ checker then binds the current run to the tag-push ref and release commit,
 verifies both the evidence artifact and each subject release artifact through
 GitHub's API, hashes each local report, downloaded subject, and verification
 sidecar, and rejects unexpected claim/kind entries. It requires the checksum
-and SPDX inventories to cover every canonical subject, requires the verification
-guide to name every subject, and runs `gh attestation verify` for each subject
-against the exact repository, `build.yml` signer workflow, tag ref, and source
-SHA. This lets proof be generated after packaging without changing the source
-SHA it attests.
+and SPDX inventories to cover every canonical subject. The SBOM must satisfy
+the required SPDX 2.3 document, creation, package, file, identifier, timestamp,
+and checksum structure before subject coverage counts. `VERIFY.md` must equal a
+generated canonical guide containing working checksum commands and one exact
+`gh attestation verify` command per subject, bound to the repository, digest
+bundle, `build.yml` signer workflow, tag ref, source SHA, and SLSA provenance
+predicate. The checker then executes the same cryptographic verification for
+each subject. This lets proof be generated after packaging without changing
+the source SHA it attests.
 One CI result and ten machine reports — eleven durable report files total —
 plus the checksum inventory, SPDX SBOM, verification guide, provenance bundles,
 and generated manifest are attached to the GitHub Release. Wildcards are used
@@ -102,9 +106,10 @@ a separate onboarding constraint.
 Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
 
 The repository's `release-publication` GitHub Environment is part of this
-boundary. **As of 2026-09-12 it is not configured.** Before any release, create
-it with at least one required reviewer, prevent self-review, and add a custom
-tag policy matching the release tag. The workflow verifies those live settings and fails before release
+boundary. **As of 2026-09-14 it is not configured.** Before any release, create
+it with at least one required reviewer, prevent self-review, disable
+administrator bypass, and add a custom tag policy matching the release tag.
+The workflow verifies those live settings and fails before release
 mutation if GitHub auto-creates an unprotected environment or its configuration
 drifts. The release job has only `contents: write`, `actions: read`, and
 `attestations: read`, serializes
@@ -118,6 +123,14 @@ This is fail-safe detection and recovery, not an atomic GitHub transaction:
 credentials outside this protected workflow could still race the bounded interval
 between the absence check, draft creation, and confirmation. Repository access
 controls and exclusive release-publisher permissions remain part of the boundary.
+
+The current workflow intentionally has no provenance producer and grants no
+non-publisher job attestation-write or OIDC permission. The artifact-integrity
+producer must add one exact, pinned provenance job with only the required
+`attestations: write` and `id-token: write` capabilities, update the workflow
+allowlist, and generate the sidecars above before the ledger can move to ready.
+Until that lands, the absence is a deliberate stop-ship rather than evidence
+that can be waived.
 
 ---
 

@@ -71,6 +71,8 @@ export async function verifyReleaseEnvironment({
     throw new Error("release environment must require at least one reviewer");
   if (reviewerRule.prevent_self_review !== true)
     throw new Error("release environment must prevent self-review");
+  if (configuration?.can_admins_bypass !== false)
+    throw new Error("release environment must disable administrator bypass");
   if (configuration?.deployment_branch_policy?.custom_branch_policies !== true)
     throw new Error("release environment must use custom deployment policies");
 
