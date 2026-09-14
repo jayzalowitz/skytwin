@@ -11,6 +11,10 @@ import {
 
 const recorder = generateKeyPairSync('ed25519');
 const provider = generateKeyPairSync('ed25519');
+// This key only exercises algorithm-confusion rejection. Generate it once,
+// outside an individual test timeout, because RSA prime generation has
+// occasionally exceeded Vitest's five-second per-test budget on shared CI.
+const nonEd25519Key = generateKeyPairSync('rsa', { modulusLength: 1024 });
 const pem = (key: typeof recorder.publicKey) => key.export({ type: 'spki', format: 'pem' }).toString();
 const privatePem = (key: typeof recorder.privateKey) => key.export({ type: 'pkcs8', format: 'pem' }).toString();
 
@@ -120,9 +124,9 @@ describe('verifyInferenceReceiptExport', () => {
 
   it('rejects non-Ed25519 and mismatched recorder signing keys', () => {
     const { seal: _seal, ...unsigned } = conventionalBundle().receipt;
-    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
     expect(() => signInferenceReceipt(unsigned, {
-      keyId: 'rsa', privateKeyPem: privatePem(rsa.privateKey), publicKeyPem: pem(rsa.publicKey),
+      keyId: 'rsa', privateKeyPem: privatePem(nonEd25519Key.privateKey),
+      publicKeyPem: pem(nonEd25519Key.publicKey),
     })).toThrow('receipt signer keys must be Ed25519');
 
     const other = generateKeyPairSync('ed25519');
@@ -133,19 +137,19 @@ describe('verifyInferenceReceiptExport', () => {
 
   it('rejects a provider signature whose declared Ed25519 key is RSA', () => {
     const value = bundle();
-    const rsa = generateKeyPairSync('rsa', { modulusLength: 2048 });
     const response = Buffer.from(value.responseBase64, 'base64');
     const { seal: _seal, ...unsigned } = value.receipt;
     value.receipt = signInferenceReceipt({
       ...unsigned,
       responseSignature: {
-        algorithm: 'Ed25519', keyId: 'provider-rsa', publicKeyPem: pem(rsa.publicKey),
-        signatureBase64: sign('sha256', response, rsa.privateKey).toString('base64'),
+        algorithm: 'Ed25519', keyId: 'provider-rsa', publicKeyPem: pem(nonEd25519Key.publicKey),
+        signatureBase64: sign('sha256', response, nonEd25519Key.privateKey).toString('base64'),
       },
     }, { keyId: 'recorder-1', privateKeyPem: privatePem(recorder.privateKey), publicKeyPem: pem(recorder.publicKey) });
 
     expect(verifyInferenceReceiptExport(value, {
-      ...trustedOptions(), trustedProviderKeys: new Map([['provider-rsa', pem(rsa.publicKey)]]),
+      ...trustedOptions(),
+      trustedProviderKeys: new Map([['provider-rsa', pem(nonEd25519Key.publicKey)]]),
     }).code).toBe('INVALID_RECEIPT');
   });
 
