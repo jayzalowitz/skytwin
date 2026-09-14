@@ -1950,7 +1950,7 @@ export function verifyCanonicalReleasePublisher(root) {
     JSON.stringify(machineProducerJob.strategy.matrix.include) !==
       JSON.stringify(expectedMachineMatrix) ||
     !Array.isArray(producerSteps) ||
-    producerSteps.length !== 4 ||
+    producerSteps.length !== 6 ||
     !isRecord(producerSteps[0]) ||
     !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
     producerSteps[0].uses !==
@@ -1964,29 +1964,48 @@ export function verifyCanonicalReleasePublisher(root) {
     !hasExactKeys(producerSteps[1].with, ["path"]) ||
     producerSteps[1].with.path !== "artifacts" ||
     !isRecord(producerSteps[2]) ||
-    !hasExactKeys(producerSteps[2], ["name", "env", "run"]) ||
-    producerSteps[2].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    !hasExactKeys(producerSteps[2], ["name", "id", "if", "env", "run"]) ||
+    producerSteps[2].name !== "Resolve packaged sample provenance" ||
+    producerSteps[2].id !== "sample-provenance" ||
+    producerSteps[2].if !== "matrix.claimId == 'sample.packaged-account-free'" ||
     !hasExactKeys(producerSteps[2].env, ["GITHUB_TOKEN"]) ||
     producerSteps[2].env.GITHUB_TOKEN !== "${{ github.token }}" ||
     producerSteps[2].run !==
-      "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[3]) ||
-    !hasExactKeys(producerSteps[3], ["name", "uses", "with"]) ||
-    producerSteps[3].name !== "Upload machine evidence report" ||
-    producerSteps[3].uses !==
+    !hasExactKeys(producerSteps[3], ["name", "if", "env", "run"]) ||
+    producerSteps[3].name !== "Run canonical packaged sample verifier without GitHub API token" ||
+    producerSteps[3].if !== "matrix.claimId == 'sample.packaged-account-free'" ||
+    !hasExactKeys(producerSteps[3].env, ["SKYTWIN_RELEASE_PROVENANCE_SHA256"]) ||
+    producerSteps[3].env.SKYTWIN_RELEASE_PROVENANCE_SHA256 !==
+      "${{ steps.sample-provenance.outputs.descriptor_sha256 }}" ||
+    producerSteps[3].run !==
+      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+    !isRecord(producerSteps[4]) ||
+    !hasExactKeys(producerSteps[4], ["name", "if", "env", "run"]) ||
+    producerSteps[4].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    producerSteps[4].if !== "matrix.claimId != 'sample.packaged-account-free'" ||
+    !hasExactKeys(producerSteps[4].env, ["GITHUB_TOKEN"]) ||
+    producerSteps[4].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[4].run !==
+      "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+    !isRecord(producerSteps[5]) ||
+    !hasExactKeys(producerSteps[5], ["name", "uses", "with"]) ||
+    producerSteps[5].name !== "Upload machine evidence report" ||
+    producerSteps[5].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
-    !hasExactKeys(producerSteps[3].with, [
+    !hasExactKeys(producerSteps[5].with, [
       "name",
       "path",
       "if-no-files-found",
       "compression-level",
     ]) ||
-    producerSteps[3].with.name !==
+    producerSteps[5].with.name !==
       "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}" ||
-    producerSteps[3].with.path !==
+    producerSteps[5].with.path !==
       ".release-evidence/reports/${{ matrix.reportName }}" ||
-    producerSteps[3].with["if-no-files-found"] !== "error" ||
-    producerSteps[3].with["compression-level"] !== 0
+    producerSteps[5].with["if-no-files-found"] !== "error" ||
+    producerSteps[5].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -3730,7 +3749,7 @@ export function verifyMachineEvidenceApplicability(
       ["linux", "squashfs-root/skytwin"],
     ]);
     const expectedRunnerPlatforms = new Map([
-      ["macos", "darwin-x64"],
+      ["macos", "darwin-arm64"],
       ["windows", "win32-x64"],
       ["linux", "linux-x64"],
     ]);
@@ -4821,7 +4840,10 @@ export async function verifyPublicationEvidence(
         producerJob.head_sha !== releaseCommit) ||
       !asArray(producerJob.steps).some(
         (step) =>
-          step?.name === CANONICAL_MACHINE_VERIFIER_STEP &&
+          step?.name ===
+            (claimId === "sample.packaged-account-free"
+              ? "Run canonical packaged sample verifier without GitHub API token"
+              : CANONICAL_MACHINE_VERIFIER_STEP) &&
           step?.conclusion === "success",
       )
     )

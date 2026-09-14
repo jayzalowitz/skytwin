@@ -18,8 +18,10 @@
 > SHA-256 digests, and publishes it immediately from the same gated job. Evidence IDs
 > are deliberately not committed to this ledger: doing so would change the SHA
 > they attest and create an impossible hash cycle. The release job now generates
-> the external manifest from current-run GitHub API metadata. Upstream packaging
-> jobs now include the canonical three-platform packaged-sample verifier, but
+> the external manifest from current-run GitHub API metadata. Downstream
+> evidence-matrix jobs now include the canonical three-platform
+> packaged-sample verifier with GitHub API discovery separated from package
+> execution and a strict allowlisted child environment, but
 > the other seven machine-verifier implementations and the CI result producer
 > are still absent. The final gate therefore fails closed and the ledger remains
 > blocked until the complete proof pipeline ships.

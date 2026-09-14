@@ -6,18 +6,34 @@ It runs only inside the native machine-evidence matrix in
 [`build.yml`](../.github/workflows/build.yml), after all release artifacts from
 the same tag-push run have been downloaded.
 
-The workflow invokes it with exactly two arguments:
+The workflow invokes the same reviewed source in two separate steps. The first
+step alone receives the GitHub token and writes a nonsecret descriptor:
 
 ```bash
 node scripts/release-claims/verifiers/sample.packaged-account-free.mjs \
+  --discover \
   --platform macos \
+  --descriptor .release-evidence/provenance/sample.packaged-account-free.macos.json
+```
+
+After that credentialed process and its shell have exited, the second step has
+no `GITHUB_TOKEN` or `GH_TOKEN` and performs all parsing, extraction, execution,
+and probing. A nonsecret SHA-256 passed through the workflow output channel
+binds the descriptor bytes between the two steps:
+
+```bash
+node scripts/release-claims/verifiers/sample.packaged-account-free.mjs \
+  --verify \
+  --platform macos \
+  --descriptor .release-evidence/provenance/sample.packaged-account-free.macos.json \
   --output .release-evidence/reports/sample.packaged-account-free.macos.json
 ```
 
 `windows` and `linux` use the corresponding platform-named report. The verifier
-rejects ad-hoc provenance arguments. It obtains the repository, tag, source SHA,
-run, and token from the immutable Actions context and independently queries the
-GitHub Actions API for the current run and artifact:
+rejects ad-hoc provenance arguments. Discovery obtains the repository, tag,
+source SHA, run, and token from the Actions context and independently queries
+the GitHub Actions API for the current run and artifact. Verification rechecks
+the nonsecret context and downloaded subject against the descriptor:
 
 | Native runner | Canonical downloaded artifact | Subject kind | Derivation |
 |---|---|---|---|
@@ -34,12 +50,16 @@ identity separately from the uploaded container subject. It also revalidates
 the container after the run. Linux derives the SquashFS payload with the
 runner's trusted 7-Zip rather than executing the AppImage's extraction mode.
 
-The executable starts on an unused loopback port with a fresh temporary OS and
-Electron profile, production authentication settings, and a random process
-attribution nonce. The child environment does not inherit GitHub credentials,
-cloud credentials, proxy settings, or database configuration. A report is
-written with exclusive creation only after the process exits cleanly and port
-3100 is released.
+Credentialed GitHub artifact discovery runs in its own workflow step and exits
+after writing the provenance descriptor. A later workflow step rejects
+`GITHUB_TOKEN` and `GH_TOKEN` in the verifier environment, validates the
+descriptor and its workflow-carried digest, and launches the executable. The
+packaged child receives a strict allowlisted environment with no GitHub, cloud,
+proxy, or database credentials. It starts on an unused loopback port with a
+fresh temporary OS and Electron profile, production authentication settings,
+and a random process attribution nonce. A report is written with exclusive
+creation only after the live process tree accepts the verifier-requested
+termination without forced cleanup and port 3100 is released.
 
 The live HTTP probe verifies:
 

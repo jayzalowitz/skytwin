@@ -1,17 +1,57 @@
 import { createServer } from "node:http";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   CHECK_IDS,
   assertSafeArchiveMember,
+  makePackagedLaunch,
+  oneExecutable,
   parseCanonicalArgs,
+  parseDiscoveryDescriptor,
   probeSampleLoop,
   selectDownloadedSubject,
+  stopProcessTree,
 } from "./verifiers/sample.packaged-account-free.mjs";
 
 const roots = [];
+
+function provenanceDescriptor(overrides = {}) {
+  return {
+    schemaVersion: 1,
+    generatedBy: "release-artifact-discovery",
+    claimId: "sample.packaged-account-free",
+    sourceCommit: "a".repeat(40),
+    releaseTag: "v0.7.0-beta",
+    runId: 123,
+    repository: "owner/repo",
+    ref: "refs/tags/v0.7.0-beta",
+    releaseArtifactKind: "desktop-installer",
+    releaseArtifactId: 456,
+    releaseArtifactName: "SkyTwin-Linux-AppImage",
+    releaseArtifactSha256: "b".repeat(64),
+    subjectName: "SkyTwin.AppImage",
+    subjectPath: "artifacts/SkyTwin-Linux-AppImage/SkyTwin.AppImage",
+    subjectSha256: "c".repeat(64),
+    subjectSizeBytes: 1024,
+    subjectDevice: 10,
+    subjectInode: 20,
+    evidencePlatform: "linux",
+    runnerPlatform: "linux-x64",
+    ...overrides,
+  };
+}
+
+function descriptorBytes(value) {
+  return Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+function digest(bytes) {
+  return createHash("sha256").update(bytes).digest("hex");
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -177,21 +217,90 @@ describe("packaged sample HTTP probe", () => {
 });
 
 describe("canonical verifier inputs", () => {
-  it("accepts only the canonical two-argument CLI", () => {
-    expect(parseCanonicalArgs(["--platform", "linux", "--output", ".release-evidence/reports/sample.packaged-account-free.linux.json"])).toEqual({
+  it("accepts only the separated discovery and credential-free verification CLIs", () => {
+    expect(parseCanonicalArgs(["--discover", "--platform", "linux", "--descriptor", ".release-evidence/provenance/sample.packaged-account-free.linux.json"])).toEqual({
+      phase: "discover",
       platform: "linux",
+      descriptor: ".release-evidence/provenance/sample.packaged-account-free.linux.json",
+    });
+    expect(parseCanonicalArgs(["--verify", "--platform", "linux", "--descriptor", ".release-evidence/provenance/sample.packaged-account-free.linux.json", "--output", ".release-evidence/reports/sample.packaged-account-free.linux.json"])).toEqual({
+      phase: "verify",
+      platform: "linux",
+      descriptor: ".release-evidence/provenance/sample.packaged-account-free.linux.json",
       output: ".release-evidence/reports/sample.packaged-account-free.linux.json",
     });
     expect(() => parseCanonicalArgs(["--platform", "linux", "--commit", "0".repeat(40)])).toThrow(/canonical|only/);
     expect(() => parseCanonicalArgs(["--platform", "linux", "--platform", "macos"])).toThrow(/canonical|duplicate/);
   });
 
-  it.each(["../escape", "/absolute", "C:\\absolute", "safe/../escape", "safe//file"])("rejects unsafe archive member %s", (name) => {
+  it.each(["../escape", "..\\escape", "/absolute", "\\\\server\\share", "C:\\absolute", "safe/../escape", "safe\\..\\escape", "safe//file"])("rejects unsafe archive member %s", (name) => {
     expect(() => assertSafeArchiveMember(name)).toThrow();
   });
 
   it("accepts a normalized archive member", () => {
     expect(() => assertSafeArchiveMember("SkyTwin.app/Contents/MacOS/SkyTwin")).not.toThrow();
+    expect(() => assertSafeArchiveMember("$PLUGINSDIR\\app-64.7z")).not.toThrow();
+  });
+
+  it("launches from the isolated profile without inheriting CI authority", () => {
+    const launch = makePackagedLaunch("/artifact/SkyTwin", "/isolated/profile", "nonce");
+    expect(launch.options.cwd).toBe("/isolated/profile");
+    expect(launch.options.env.NODE_ENV).toBe("production");
+    expect(launch.options.env.SKYTWIN_DEV_AUTH_BYPASS).toBe("false");
+    expect(launch.options.env.GITHUB_TOKEN).toBeUndefined();
+    expect(launch.options.env.DATABASE_URL).toBeUndefined();
+  });
+
+  it("binds every provenance descriptor byte across the workflow boundary", () => {
+    const original = descriptorBytes(provenanceDescriptor());
+    const expectedDigest = digest(original);
+    expect(parseDiscoveryDescriptor(original, expectedDigest, { runId: 123, subjectInode: 20 }).runId).toBe(123);
+    for (const mutation of [
+      { releaseArtifactId: 999 },
+      { releaseArtifactSha256: "d".repeat(64) },
+      { subjectInode: 21 },
+      { runId: 124 },
+    ]) {
+      expect(() => parseDiscoveryDescriptor(descriptorBytes(provenanceDescriptor(mutation)), expectedDigest)).toThrow(/digest changed/);
+    }
+  });
+
+  it("rejects descriptor context mismatches and unknown fields even with a matching digest", () => {
+    const wrongRun = descriptorBytes(provenanceDescriptor({ runId: 124 }));
+    expect(() => parseDiscoveryDescriptor(wrongRun, digest(wrongRun), { runId: 123 })).toThrow(/runId/);
+    const extra = descriptorBytes({ ...provenanceDescriptor(), unexpected: true });
+    expect(() => parseDiscoveryDescriptor(extra, digest(extra))).toThrow(/keys were/);
+  });
+
+  it("requests tree-aware Windows shutdown before accepting a clean stop", async () => {
+    const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null, kill: () => false });
+    const requests = [];
+    const result = await stopProcessTree(child, {
+      platform: "win32",
+      requestWindowsTreeStop(force) {
+        requests.push(force);
+        child.exitCode = 0;
+      },
+      timeoutMs: 10,
+    });
+    expect(requests).toEqual([false]);
+    expect(result).toEqual({ requested: true, forced: false });
+  });
+
+  it("forces a lingering POSIX process group even after the direct child exits", async () => {
+    const child = Object.assign(new EventEmitter(), { pid: 43, exitCode: null, signalCode: null, kill: () => false });
+    const signals = [];
+    const result = await stopProcessTree(child, {
+      platform: "linux",
+      killGroup(signal) {
+        signals.push(signal);
+        if (signal === "SIGTERM") child.exitCode = 0;
+      },
+      groupExists: () => true,
+      timeoutMs: 1,
+    });
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
+    expect(result).toEqual({ requested: true, forced: true });
   });
 
   it("requires exactly one direct regular downloaded subject", () => {
@@ -204,6 +313,18 @@ describe("canonical verifier inputs", () => {
     expect(selectDownloadedSubject(root, config).name).toBe("SkyTwin.AppImage");
     writeFileSync(join(directory, "decoy.AppImage"), "decoy");
     expect(() => selectDownloadedSubject(root, config)).toThrow(/exactly one/);
+  });
+
+  it("accepts a canonical executable reached through a symlinked temporary-directory alias", () => {
+    const holder = mkdtempSync(join(tmpdir(), "sample-verifier-alias-"));
+    roots.push(holder);
+    const realRoot = join(holder, "real");
+    const aliasRoot = join(holder, "alias");
+    mkdirSync(join(realRoot, "SkyTwin.app", "Contents", "MacOS"), { recursive: true });
+    const executable = join(realRoot, "SkyTwin.app", "Contents", "MacOS", "SkyTwin");
+    writeFileSync(executable, "binary");
+    symlinkSync(realRoot, aliasRoot);
+    expect(oneExecutable(aliasRoot, "SkyTwin.app/Contents/MacOS/SkyTwin")).toBe(realpathSync(executable));
   });
 
   it("rejects a symlinked downloaded subject", () => {

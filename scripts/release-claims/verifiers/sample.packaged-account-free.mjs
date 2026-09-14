@@ -3,6 +3,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { execFileSync, spawn } from "node:child_process";
 import {
+  appendFileSync,
   chmodSync,
   closeSync,
   constants,
@@ -88,8 +89,9 @@ function validateCommit(commit) {
 }
 
 function inspectRegularFile(path, description) {
-  const absolute = resolve(path);
-  assert(realpathSync(absolute) === absolute, `${description} must not traverse a symbolic link`);
+  const requested = resolve(path);
+  assert(lstatSync(requested).isFile(), `${description} must be a direct regular file`);
+  const absolute = realpathSync(requested);
   const descriptor = openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
     const stat = fstatSync(descriptor);
@@ -218,9 +220,9 @@ export async function probeSampleLoop(rawBaseUrl, expectedNonce) {
   const baseUrl = validateBaseUrl(rawBaseUrl);
   const info = await requestJson(baseUrl, "/api/v1/demo/info");
   assert(info.status === 200 && info.cacheControl === "no-store", "sample info was unavailable or cacheable");
-  exactKeys(info.body, ["available", "userId", "instanceNonce"], "sample info");
   assert(info.body.available === true && info.body.userId === "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d", "packaged sample reserved identity is unavailable");
   assert(info.body.instanceNonce === expectedNonce, "sample API is not owned by the launched release subject");
+  exactKeys(info.body, ["available", "userId", "instanceNonce"], "sample info");
 
   const unauthenticated = await requestJson(baseUrl, "/api/v1/demo/simulation");
   assert(unauthenticated.status === 401 && unauthenticated.cacheControl === "no-store", "sample simulation accepted no credential");
@@ -312,45 +314,66 @@ async function targetIsUnused(baseUrl) {
   });
 }
 
-async function stopProcessTree(child) {
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  if (process.platform === "win32") {
+export async function stopProcessTree(child, dependencies = {}) {
+  const platform = dependencies.platform ?? process.platform;
+  const requestWindowsTreeStop = dependencies.requestWindowsTreeStop ?? ((force) => {
+    const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+    command(taskkill, ["/PID", String(child.pid), "/T", ...(force ? ["/F"] : [])], { stdio: "ignore" });
+  });
+  const killGroup = dependencies.killGroup ?? ((signal) => process.kill(-child.pid, signal));
+  const groupExists = dependencies.groupExists ?? (() => {
     try {
-      execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+      process.kill(-child.pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code !== "ESRCH";
+    }
+  });
+  const timeoutMs = dependencies.timeoutMs ?? 10_000;
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return { requested: false, forced: false };
+  }
+  let requested = false;
+  if (platform === "win32") {
+    try {
+      requestWindowsTreeStop(false);
+      requested = true;
+    } catch {
+      requested = false;
+    }
+  } else {
+    try {
+      killGroup("SIGTERM");
+      requested = true;
+    } catch {
+      requested = child.kill("SIGTERM");
+    }
+  }
+  const deadline = Date.now() + timeoutMs;
+  let treeStopped = false;
+  do {
+    const parentStopped = child.exitCode !== null || child.signalCode !== null;
+    treeStopped = parentStopped && (platform === "win32" || !groupExists());
+    if (!treeStopped) await new Promise((resolveDelay) => setTimeout(resolveDelay, 50));
+  } while (!treeStopped && Date.now() < deadline);
+  if (treeStopped) return { requested, forced: false };
+  if (platform === "win32") {
+    try {
+      requestWindowsTreeStop(true);
     } catch {
       child.kill("SIGKILL");
     }
   } else {
     try {
-      process.kill(-child.pid, "SIGTERM");
-    } catch {
-      child.kill("SIGTERM");
-    }
-  }
-  const exited = await Promise.race([
-    new Promise((resolveExit) => child.once("exit", () => resolveExit(true))),
-    new Promise((resolveTimeout) => setTimeout(() => resolveTimeout(false), 10_000)),
-  ]);
-  if (!exited && process.platform !== "win32") {
-    try {
-      process.kill(-child.pid, "SIGKILL");
+      killGroup("SIGKILL");
     } catch {
       child.kill("SIGKILL");
     }
   }
+  return { requested, forced: true };
 }
 
-async function bootAndProbeSampleLoop(executablePath) {
-  const baseUrl = validateBaseUrl("http://127.0.0.1:3100/");
-  assert(baseUrl.port === "3100", "packaged sample evidence must use port 3100");
-  assert(await targetIsUnused(baseUrl), "sample API port was already occupied before launch");
-  const profileRoot = mkdtempSync(join(tmpdir(), "skytwin-sample-evidence-"));
-  for (const directory of [
-    join(profileRoot, "AppData", "Roaming"), join(profileRoot, "AppData", "Local"),
-    join(profileRoot, "config"), join(profileRoot, "data"), join(profileRoot, "cache"),
-    join(profileRoot, "tmp"), join(profileRoot, "electron"),
-  ]) mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const nonce = randomBytes(32).toString("hex");
+export function makePackagedLaunch(executablePath, profileRoot, nonce) {
   const env = {
     PATH: process.env.PATH ?? "",
     SystemRoot: process.env.SystemRoot ?? "",
@@ -369,14 +392,32 @@ async function bootAndProbeSampleLoop(executablePath) {
     SKYTWIN_RELEASE_EVIDENCE_NONCE: nonce,
   };
   const executableArgs = [`--user-data-dir=${join(profileRoot, "electron")}`];
-  const launchCommand = process.platform === "linux" ? "/usr/bin/xvfb-run" : executablePath;
-  const launchArgs = process.platform === "linux" ? ["-a", executablePath, ...executableArgs] : executableArgs;
-  const child = spawn(launchCommand, launchArgs, {
-    env,
-    stdio: "ignore",
-    detached: process.platform !== "win32",
-    windowsHide: true,
-  });
+  return {
+    command: process.platform === "linux" ? "/usr/bin/xvfb-run" : executablePath,
+    args: process.platform === "linux" ? ["-a", executablePath, ...executableArgs] : executableArgs,
+    options: {
+      cwd: profileRoot,
+      env,
+      stdio: "ignore",
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    },
+  };
+}
+
+async function bootAndProbeSampleLoop(executablePath) {
+  const baseUrl = validateBaseUrl("http://127.0.0.1:3100/");
+  assert(baseUrl.port === "3100", "packaged sample evidence must use port 3100");
+  assert(await targetIsUnused(baseUrl), "sample API port was already occupied before launch");
+  const profileRoot = mkdtempSync(join(tmpdir(), "skytwin-sample-evidence-"));
+  for (const directory of [
+    join(profileRoot, "AppData", "Roaming"), join(profileRoot, "AppData", "Local"),
+    join(profileRoot, "config"), join(profileRoot, "data"), join(profileRoot, "cache"),
+    join(profileRoot, "tmp"), join(profileRoot, "electron"),
+  ]) mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const nonce = randomBytes(32).toString("hex");
+  const launch = makePackagedLaunch(executablePath, profileRoot, nonce);
+  const child = spawn(launch.command, launch.args, launch.options);
   let spawnError = null;
   child.once("error", (error) => { spawnError = error; });
   try {
@@ -403,13 +444,14 @@ async function bootAndProbeSampleLoop(executablePath) {
     }
     throw lastError;
   } finally {
-    await stopProcessTree(child);
+    const termination = await stopProcessTree(child);
     const shutdownDeadline = Date.now() + 10_000;
     while (!(await targetIsUnused(baseUrl)) && Date.now() < shutdownDeadline) {
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
     }
     const stoppedCleanly = await targetIsUnused(baseUrl);
     rmSync(profileRoot, { recursive: true, force: true });
+    assert(termination.requested && !termination.forced, "packaged sample exited unexpectedly or required forced termination");
     assert(stoppedCleanly, "packaged sample left a listener running after shutdown");
   }
 }
@@ -426,14 +468,20 @@ async function produceEvidence({ executablePath, sourceCommit, provenance }) {
       executableAfterProbe.inode === executable.inode,
     "derived packaged executable identity changed while evidence was collected",
   );
+  const {
+    evidencePlatform,
+    derivationMethod,
+    derivationPath,
+    ...reportProvenance
+  } = provenance;
   return {
+    ...reportProvenance,
     schemaVersion: 1,
     generatedBy: "release-machine-verifier",
     claimId: CLAIM_ID,
     result: "pass",
     sourceCommit,
-    ...provenance,
-    platform: provenance.evidencePlatform,
+    platform: evidencePlatform,
     runnerPlatform: `${process.platform}-${process.arch}`,
     executedBinary: {
       name: executable.name,
@@ -442,8 +490,8 @@ async function produceEvidence({ executablePath, sourceCommit, provenance }) {
       device: executable.device,
       inode: executable.inode,
       identityResult: "pass",
-      derivationMethod: provenance.derivationMethod,
-      derivationPath: provenance.derivationPath,
+      derivationMethod,
+      derivationPath,
     },
     checks: checks.map(({ checkId, assertion, measurement }) => ({
       id: checkId,
@@ -455,18 +503,26 @@ async function produceEvidence({ executablePath, sourceCommit, provenance }) {
 }
 
 export function parseCanonicalArgs(argv) {
-  assert(argv.length === 4, "expected exactly --platform <family> --output <path>");
-  assert(argv[0] === "--platform" && argv[2] === "--output", "arguments must use canonical --platform then --output order");
-  const values = new Map();
-  for (let index = 0; index < argv.length; index += 2) {
-    const flag = argv[index];
-    const value = argv[index + 1];
-    assert(flag?.startsWith("--") && value, "arguments must be --name value pairs");
-    assert(!values.has(flag.slice(2)), `duplicate argument ${flag}`);
-    values.set(flag.slice(2), value);
+  if (
+    argv.length === 5 &&
+    argv[0] === "--discover" &&
+    argv[1] === "--platform" &&
+    argv[3] === "--descriptor"
+  ) {
+    assert(argv[2] && argv[4], "discovery arguments must have values");
+    return { phase: "discover", platform: argv[2], descriptor: argv[4] };
   }
-  assert(values.size === 2 && values.has("platform") && values.has("output"), "only --platform and --output are accepted");
-  return Object.fromEntries(values);
+  if (
+    argv.length === 7 &&
+    argv[0] === "--verify" &&
+    argv[1] === "--platform" &&
+    argv[3] === "--descriptor" &&
+    argv[5] === "--output"
+  ) {
+    assert(argv[2] && argv[4] && argv[6], "verification arguments must have values");
+    return { phase: "verify", platform: argv[2], descriptor: argv[4], output: argv[6] };
+  }
+  throw new Error("arguments must use the canonical discovery or credential-free verification form");
 }
 
 function requiredEnvironment(name, pattern) {
@@ -494,11 +550,12 @@ export function assertSafeArchiveMember(rawName) {
   assert(parts.every((part) => !part.includes(":") && !/[. ]$/.test(part) && !reserved.test(part)), `archive member is unsafe on Windows: ${rawName}`);
 }
 
-function validateMemberInventory(names) {
+function validateMemberInventory(names, { allowBackslash = true } = {}) {
   assert(names.length > 0 && names.length <= 100_000, "archive member count is outside the release bound");
   const exact = new Set();
   const folded = new Set();
   for (const name of names) {
+    assert(allowBackslash || !name.includes("\\"), `archive member uses an ambiguous path separator: ${name}`);
     assertSafeArchiveMember(name);
     const normalized = name.replaceAll("\\", "/").replace(/\/$/, "");
     if (!normalized) continue;
@@ -510,8 +567,16 @@ function validateMemberInventory(names) {
 }
 
 function command(command, args, options = {}) {
+  const toolEnvironment = {
+    PATH: process.env.PATH ?? "",
+    SystemRoot: process.env.SystemRoot ?? "",
+    WINDIR: process.env.WINDIR ?? "",
+    TEMP: process.env.RUNNER_TEMP ?? tmpdir(),
+    TMP: process.env.RUNNER_TEMP ?? tmpdir(),
+  };
   return execFileSync(command, args, {
     encoding: "utf8",
+    env: toolEnvironment,
     maxBuffer: 64 * 1024 * 1024,
     stdio: ["ignore", "pipe", "pipe"],
     ...options,
@@ -563,7 +628,9 @@ export function selectDownloadedSubject(root, config) {
 }
 
 function safeSevenZipListing(archivePath, archiveType) {
-  const sevenZip = process.platform === "linux" ? "/usr/bin/7z" : "7z";
+  const sevenZip = process.platform === "linux"
+    ? "/usr/bin/7z"
+    : join(process.env.ProgramFiles ?? "C:\\Program Files", "7-Zip", "7z.exe");
   command(sevenZip, ["t", `-t${archiveType}`, archivePath]);
   const listing = command(sevenZip, ["l", "-slt", `-t${archiveType}`, archivePath]);
   let skippedContainer = false;
@@ -580,15 +647,18 @@ function safeSevenZipListing(archivePath, archiveType) {
   validateMemberInventory(members);
 }
 
-function oneExecutable(root, suffix) {
+export function oneExecutable(root, suffix) {
   const normalizedSuffix = suffix.replaceAll("\\", "/");
   const candidates = listRegularFiles(root).filter((path) =>
     relative(root, path).split(sep).join("/").endsWith(normalizedSuffix),
   );
   assert(candidates.length === 1, `expected exactly one derived executable ending in ${suffix}, found ${candidates.length}`);
-  const candidate = candidates[0];
-  assert(realpathSync(candidate) === candidate, "derived executable traverses a symbolic link");
-  return candidate;
+  const candidate = resolve(candidates[0]);
+  assert(lstatSync(candidate).isFile(), "derived executable must be a direct regular file");
+  const canonicalRoot = realpathSync(root);
+  const canonicalCandidate = realpathSync(candidate);
+  assert(canonicalCandidate.startsWith(`${canonicalRoot}${sep}`), "derived executable escapes its extraction root");
+  return canonicalCandidate;
 }
 
 export function deriveExecutable(platform, subjectPath, extractionRoot) {
@@ -624,18 +694,20 @@ for info in infos:
             raise SystemExit("zip symlink escapes extraction root")
 `;
     command("/usr/bin/python3", ["-c", zipPreflight, subjectPath]);
-    const members = command("unzip", ["-Z1", subjectPath]).split(/\r?\n/).filter(Boolean);
-    validateMemberInventory(members);
-    command("ditto", ["-x", "-k", subjectPath, extractionRoot]);
+    const members = command("/usr/bin/unzip", ["-Z1", subjectPath]).split(/\r?\n/).filter(Boolean);
+    validateMemberInventory(members, { allowBackslash: false });
+    command("/usr/bin/ditto", ["-x", "-k", subjectPath, extractionRoot]);
   } else if (platform === "windows") {
+    const sevenZip = join(process.env.ProgramFiles ?? "C:\\Program Files", "7-Zip", "7z.exe");
     safeSevenZipListing(subjectPath, "NSIS");
-    command("7z", ["x", "-tNSIS", subjectPath, `-o${extractionRoot}`, "-y", "-bb0", "-bd"]);
+    command(sevenZip, ["x", "-tNSIS", subjectPath, `-o${extractionRoot}`, "-y", "-bb0", "-bd"]);
     const payloads = listRegularFiles(extractionRoot).filter((path) => /^app-[^/\\]+\.7z$/i.test(basename(path)));
     assert(payloads.length === 1, `NSIS extraction produced ${payloads.length} application payloads`);
+    assert(basename(payloads[0]) === "app-64.7z", `NSIS application payload was ${basename(payloads[0])}, expected app-64.7z`);
     safeSevenZipListing(payloads[0], "7z");
     const payloadRoot = join(extractionRoot, "payload");
     mkdirSync(payloadRoot, { recursive: true });
-    command("7z", ["x", "-t7z", payloads[0], `-o${payloadRoot}`, "-y", "-bb0", "-bd"]);
+    command(sevenZip, ["x", "-t7z", payloads[0], `-o${payloadRoot}`, "-y", "-bb0", "-bd"]);
   } else {
     const bytes = readFileSync(subjectPath);
     assert(bytes.length >= 12 && bytes[0] === 0x7f && bytes.subarray(1, 4).toString("ascii") === "ELF", "AppImage subject is not ELF");
@@ -664,13 +736,19 @@ for info in infos:
   }
   validateExtractedTree(extractionRoot);
   const executablePath = oneExecutable(extractionRoot, config.executableSuffix);
-  const extractedPath = relative(extractionRoot, executablePath).split(sep).join("/");
+  const extractedPath = relative(realpathSync(extractionRoot), executablePath).split(sep).join("/");
   assert(extractedPath === config.extractedPath, `derived executable path ${extractedPath} did not match ${config.extractedPath}`);
-  const executableHeader = readFileSync(executablePath).subarray(0, 4);
+  const executableBytes = readFileSync(executablePath);
+  const executableHeader = executableBytes.subarray(0, 4);
   if (platform === "windows") {
     assert(executableHeader.subarray(0, 2).toString("ascii") === "MZ", "derived Windows executable is not PE/MZ");
+    assert(executableBytes.length >= 0x40, "derived Windows executable has a truncated DOS header");
+    const peOffset = executableBytes.readUInt32LE(0x3c);
+    assert(peOffset + 6 <= executableBytes.length && executableBytes.subarray(peOffset, peOffset + 4).toString("binary") === "PE\0\0", "derived Windows executable has an invalid PE header");
+    assert(executableBytes.readUInt16LE(peOffset + 4) === 0x8664, "derived Windows executable is not AMD64");
   } else if (platform === "linux") {
     assert(executableHeader[0] === 0x7f && executableHeader.subarray(1).toString("ascii") === "ELF", "derived Linux executable is not ELF");
+    assert(executableBytes.length >= 20 && executableBytes.readUInt16LE(18) === 0x3e, "derived Linux executable is not x86-64");
   } else {
     const magic = executableHeader.toString("hex");
     assert(["cffaedfe", "feedfacf", "cafebabe", "bebafeca"].includes(magic), "derived macOS executable is not Mach-O");
@@ -733,18 +811,15 @@ export async function resolveCurrentRunArtifact({ repository, runId, artifactNam
   return { id: artifact.id, digest };
 }
 
-export async function runCanonicalVerifier(argv = process.argv.slice(2)) {
-  const args = parseCanonicalArgs(argv);
-  const config = PLATFORM_CONFIG[args.platform];
-  assert(config, `unsupported --platform ${args.platform}`);
-  assert(
-    args.output === `.release-evidence/reports/${CLAIM_ID}.${args.platform}.json`,
-    "--output does not match the canonical platform report path",
-  );
-  assert(process.platform === config.nodePlatform, `--platform ${args.platform} does not match native runtime ${process.platform}`);
-  const expectedRunnerOs = { macos: "macOS", windows: "Windows", linux: "Linux" }[args.platform];
+function canonicalDescriptorPath(platform) {
+  return `.release-evidence/provenance/${CLAIM_ID}.${platform}.json`;
+}
+
+function readRunIdentity(platform, config) {
+  assert(process.platform === config.nodePlatform, `--platform ${platform} does not match native runtime ${process.platform}`);
+  const expectedRunnerOs = { macos: "macOS", windows: "Windows", linux: "Linux" }[platform];
   const expectedRunnerArch = { x64: "X64", arm64: "ARM64" }[process.arch];
-  assert(process.env.RUNNER_OS === expectedRunnerOs, `RUNNER_OS does not match ${args.platform}`);
+  assert(process.env.RUNNER_OS === expectedRunnerOs, `RUNNER_OS does not match ${platform}`);
   assert(expectedRunnerArch && process.env.RUNNER_ARCH === expectedRunnerArch, `RUNNER_ARCH does not match ${process.arch}`);
   const sourceCommit = requiredEnvironment("GITHUB_SHA", /^[0-9a-f]{40}$/);
   const runId = positiveInteger("GITHUB_RUN_ID");
@@ -752,17 +827,119 @@ export async function runCanonicalVerifier(argv = process.argv.slice(2)) {
   const ref = requiredEnvironment("GITHUB_REF", /^refs\/tags\/v[^\s]+$/);
   const releaseTag = requiredEnvironment("GITHUB_REF_NAME", /^v[^\s]+$/);
   assert(ref === `refs/tags/${releaseTag}`, "GITHUB_REF and GITHUB_REF_NAME disagree");
-  const token = requiredEnvironment("GITHUB_TOKEN", /^.+$/);
-  validateCommit(sourceCommit);
+  return { sourceCommit, runId, repository, ref, releaseTag };
+}
 
+function writeExclusiveJson(root, relativePath, expectedDirectory, value) {
+  const output = resolve(root, relativePath);
+  const directory = resolve(root, expectedDirectory);
+  assert(output.startsWith(`${directory}${sep}`), `${relativePath} must be inside ${expectedDirectory}`);
+  mkdirSync(directory, { recursive: true });
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(output, bytes, { flag: "wx", mode: 0o600 });
+  return sha256(bytes);
+}
+
+export function parseDiscoveryDescriptor(bytes, expectedSha256, expected = {}) {
+  assert(bytes.length <= 64 * 1024, "packaged sample provenance descriptor exceeds its size bound");
+  assert(sha256(bytes) === expectedSha256, "packaged sample provenance descriptor digest changed between workflow steps");
+  let value;
+  try {
+    value = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    throw new Error("packaged sample provenance descriptor is not valid JSON");
+  }
+  exactKeys(value, [
+    "schemaVersion", "generatedBy", "claimId", "sourceCommit", "releaseTag", "runId",
+    "repository", "ref", "releaseArtifactKind", "releaseArtifactId", "releaseArtifactName",
+    "releaseArtifactSha256", "subjectName", "subjectPath", "subjectSha256", "subjectSizeBytes",
+    "subjectDevice", "subjectInode", "evidencePlatform", "runnerPlatform",
+  ], "packaged sample provenance descriptor");
+  assert(value.schemaVersion === 1 && value.generatedBy === "release-artifact-discovery", "packaged sample provenance descriptor identity is invalid");
+  assert(value.claimId === CLAIM_ID, "packaged sample provenance descriptor claim is invalid");
+  assert(Number.isSafeInteger(value.releaseArtifactId) && value.releaseArtifactId > 0, "packaged sample provenance descriptor artifact id is invalid");
+  assert(Number.isSafeInteger(value.subjectSizeBytes) && value.subjectSizeBytes > 0, "packaged sample provenance descriptor subject size is invalid");
+  assert(Number.isSafeInteger(value.subjectDevice) && Number.isSafeInteger(value.subjectInode), "packaged sample provenance descriptor file identity is invalid");
+  assert(/^[0-9a-f]{64}$/.test(value.releaseArtifactSha256) && /^[0-9a-f]{64}$/.test(value.subjectSha256), "packaged sample provenance descriptor digest is invalid");
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    assert(value[key] === expectedValue, `packaged sample provenance descriptor ${key} does not match the credential-free verification input`);
+  }
+  return value;
+}
+
+function readDiscoveryDescriptor(root, relativePath, expectedSha256, expected) {
+  const descriptor = inspectRegularFile(resolve(root, relativePath), "packaged sample provenance descriptor");
+  return parseDiscoveryDescriptor(readFileSync(descriptor.path), expectedSha256, expected);
+}
+
+export async function runCanonicalVerifier(argv = process.argv.slice(2)) {
+  const args = parseCanonicalArgs(argv);
+  const config = PLATFORM_CONFIG[args.platform];
+  assert(config, `unsupported --platform ${args.platform}`);
+  assert(args.descriptor === canonicalDescriptorPath(args.platform), "--descriptor does not match the canonical platform provenance path");
+  if (args.phase === "verify") {
+    assert(
+      args.output === `.release-evidence/reports/${CLAIM_ID}.${args.platform}.json`,
+      "--output does not match the canonical platform report path",
+    );
+  }
+  const identity = readRunIdentity(args.platform, config);
+  validateCommit(identity.sourceCommit);
   const root = realpathSync(process.cwd());
   const subject = selectDownloadedSubject(root, config);
-  const artifact = await resolveCurrentRunArtifact({
-    repository,
-    runId,
-    artifactName: config.artifactName,
-    token,
-  });
+
+  if (args.phase === "discover") {
+    const token = requiredEnvironment("GITHUB_TOKEN", /^[A-Za-z0-9_=-]{20,}$/);
+    const artifact = await resolveCurrentRunArtifact({
+      repository: identity.repository,
+      runId: identity.runId,
+      artifactName: config.artifactName,
+      token,
+    });
+    const descriptorSha256 = writeExclusiveJson(root, args.descriptor, ".release-evidence/provenance", {
+      schemaVersion: 1,
+      generatedBy: "release-artifact-discovery",
+      claimId: CLAIM_ID,
+      ...identity,
+      releaseArtifactKind: config.artifactKind,
+      releaseArtifactId: artifact.id,
+      releaseArtifactName: config.artifactName,
+      releaseArtifactSha256: artifact.digest,
+      subjectName: subject.name,
+      subjectPath: `artifacts/${config.artifactName}/${subject.name}`,
+      subjectSha256: subject.sha256,
+      subjectSizeBytes: subject.sizeBytes,
+      subjectDevice: subject.device,
+      subjectInode: subject.inode,
+      evidencePlatform: args.platform,
+      runnerPlatform: `${process.platform}-${process.arch}`,
+    });
+    const githubOutput = requiredEnvironment("GITHUB_OUTPUT", /^.+$/);
+    appendFileSync(githubOutput, `descriptor_sha256=${descriptorSha256}\n`, { encoding: "utf8" });
+    return;
+  }
+
+  assert(process.env.GITHUB_TOKEN === undefined && process.env.GH_TOKEN === undefined, "package verification must not receive a GitHub API token");
+  const descriptorSha256 = requiredEnvironment("SKYTWIN_RELEASE_PROVENANCE_SHA256", /^[0-9a-f]{64}$/);
+  const expectedDescriptor = {
+    claimId: CLAIM_ID,
+    sourceCommit: identity.sourceCommit,
+    releaseTag: identity.releaseTag,
+    runId: identity.runId,
+    repository: identity.repository,
+    ref: identity.ref,
+    releaseArtifactKind: config.artifactKind,
+    releaseArtifactName: config.artifactName,
+    subjectName: subject.name,
+    subjectPath: `artifacts/${config.artifactName}/${subject.name}`,
+    subjectSha256: subject.sha256,
+    subjectSizeBytes: subject.sizeBytes,
+    subjectDevice: subject.device,
+    subjectInode: subject.inode,
+    evidencePlatform: args.platform,
+    runnerPlatform: `${process.platform}-${process.arch}`,
+  };
+  const descriptor = readDiscoveryDescriptor(root, args.descriptor, descriptorSha256, expectedDescriptor);
   const extractionRoot = mkdtempSync(join(tmpdir(), `skytwin-${args.platform}-artifact-`));
   try {
     const { executablePath, derivationPath } = deriveExecutable(args.platform, subject.path, extractionRoot);
@@ -772,19 +949,19 @@ export async function runCanonicalVerifier(argv = process.argv.slice(2)) {
     const verifier = inspectRegularFile(resolve(root, verifierPath), "canonical verifier");
     const evidence = await produceEvidence({
       executablePath,
-      sourceCommit,
+      sourceCommit: identity.sourceCommit,
       provenance: {
-        releaseTag,
-        runId,
-        repository,
-        ref,
-        releaseArtifactKind: config.artifactKind,
-        releaseArtifactId: artifact.id,
-        releaseArtifactName: config.artifactName,
-        releaseArtifactSha256: artifact.digest,
-        subjectName: subject.name,
-        subjectPath: `artifacts/${config.artifactName}/${subject.name}`,
-        subjectSha256: subject.sha256,
+        releaseTag: descriptor.releaseTag,
+        runId: descriptor.runId,
+        repository: descriptor.repository,
+        ref: descriptor.ref,
+        releaseArtifactKind: descriptor.releaseArtifactKind,
+        releaseArtifactId: descriptor.releaseArtifactId,
+        releaseArtifactName: descriptor.releaseArtifactName,
+        releaseArtifactSha256: descriptor.releaseArtifactSha256,
+        subjectName: descriptor.subjectName,
+        subjectPath: descriptor.subjectPath,
+        subjectSha256: descriptor.subjectSha256,
         producerJobName: machineProducerJobName(CLAIM_ID, args.platform),
         verifierPath,
         verifierCommand,

@@ -142,9 +142,11 @@ export function machineVerifierCommand(claimId, platform) {
   const reportName = CANONICAL_MACHINE_EVIDENCE_MATRIX.find(
     (entry) => entry.claimId === claimId && entry.platform === family,
   )?.reportName;
-  return path && family && reportName
-    ? `node ${path} --platform ${family} --output .release-evidence/reports/${reportName}`
-    : null;
+  if (!path || !family || !reportName) return null;
+  if (claimId === "sample.packaged-account-free") {
+    return `node ${path} --verify --platform ${family} --descriptor .release-evidence/provenance/${reportName} --output .release-evidence/reports/${reportName}`;
+  }
+  return `node ${path} --platform ${family} --output .release-evidence/reports/${reportName}`;
 }
 
 export function machineReportNamesForClaim(claimId) {

@@ -993,7 +993,7 @@
         },
         {
           "path": "scripts/release-claims/verifiers/sample.packaged-account-free.mjs",
-          "sha256": "ef7e1924c42f4106716383e88b9fc77aefafcf5b41055bbb93554be4eb9d82af",
+          "sha256": "ead84e925d3e06e2601aa4d320209734c7edb0353687874dc22294a2467638de",
           "why": "Canonical native verifier binds the downloaded container, derived executable, isolated runtime probe, and structured report to the current tagged run"
         }
       ],
@@ -1135,7 +1135,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "d99c309c1c1d333365e004167c12e5b4e6fd8ded13513a580f784f18bc6cee5c",
+          "sha256": "2512748cb0696bb756464e947078022a1f6a81d2da089999eedc7e1cb7c88e18",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
@@ -1167,7 +1167,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "d99c309c1c1d333365e004167c12e5b4e6fd8ded13513a580f784f18bc6cee5c",
+          "sha256": "2512748cb0696bb756464e947078022a1f6a81d2da089999eedc7e1cb7c88e18",
           "why": "Current packaging jobs do not generate the verification sidecars and attestations that the guarded publisher now requires"
         }
       ],
