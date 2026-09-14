@@ -76,6 +76,25 @@ afterEach(async () => {
 });
 
 describe('local model download controls', () => {
+  it('does not treat a legacy completion for a removed model as installed', async () => {
+    mocks.list.mockResolvedValue({
+      downloads: [{
+        ...downloading,
+        modelId: 'removed-model',
+        status: 'complete',
+        percent: 100,
+        bytesDownloaded: 4,
+      }],
+    });
+    const container = document.getElementById('embedded-llm-card-target');
+
+    await mountEmbeddedLlmCard(container, 'user-id');
+
+    expect(container.textContent).not.toContain('Local model artifact verified');
+    expect(container.querySelector('[data-action="embedded-start-download"]')).not.toBeNull();
+    expect(container.querySelector('#embedded-model-select')?.value).toBe(model.id);
+  });
+
   it.each([
     ['pause', 'embedded-pause-download', mocks.pause, "Couldn't pause"],
     ['cancel', 'embedded-cancel-download', mocks.cancel, "Couldn't cancel"],

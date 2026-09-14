@@ -159,7 +159,8 @@ async function renderCardInto(container, userId) {
 
   const active = downloads.find((d) => ACTIVE_STATUSES.has(d.status))
     ?? downloads.find((d) => d.status === 'paused' || d.status === 'failed');
-  const completed = downloads.find((d) => d.status === 'complete');
+  const completed = downloads.find((d) =>
+    d.status === 'complete' && models.some((model) => model.id === d.modelId));
 
   // Prefer the real server-side pick (actual RAM + free disk on this machine).
   // Fall back to the browser's coarse RAM estimate only if that call fails —
