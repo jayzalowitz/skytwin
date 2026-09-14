@@ -4,8 +4,8 @@ import {
   linkSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -22,7 +22,6 @@ import {
   inspectManagedActiveModel,
   inspectManagedActiveModelAsync,
   managedArtifactPath,
-  unlinkIfSameRegularFile,
   writeFileHandleFully,
 } from "../managed-model-store.js";
 import { MODEL_REGISTRY, type ModelEntry } from "../model-registry.js";
@@ -89,20 +88,6 @@ describe("managed model activation", () => {
       0,
     )).rejects.toThrow("managed_artifact_write_made_no_progress");
     expect(write).toHaveBeenCalledOnce();
-  });
-
-  it("does not unlink a replacement swapped into a reconciled path", () => {
-    const dir = directory();
-    const quarantine = join(dir, "artifact.reconciling");
-    const moved = join(dir, "verified-link-moved");
-    writeFileSync(quarantine, "verified inode");
-    const verified = statSync(quarantine, { bigint: true });
-    renameSync(quarantine, moved);
-    writeFileSync(quarantine, "untrusted replacement");
-
-    expect(unlinkIfSameRegularFile(quarantine, verified)).toBe(false);
-    expect(readFileSync(quarantine, "utf8")).toBe("untrusted replacement");
-    expect(readFileSync(moved, "utf8")).toBe("verified inode");
   });
 
   it("activates only exact bytes and verifies before returning a runtime path", async () => {
@@ -235,6 +220,12 @@ describe("managed model activation", () => {
 
     expect(existsSync(orphan)).toBe(false);
     expect(statSync(target).nlink).toBe(1);
+    const quarantine = readdirSync(dir).find(name =>
+      name.startsWith(".skytwin-orphan-"));
+    expect(quarantine).toBeDefined();
+    const retained = readdirSync(join(dir, quarantine!)).sort();
+    expect(retained).toEqual(["managed-target", "publication-link"]);
+    expect(statSync(join(dir, quarantine!, retained[0]!)).nlink).toBe(2);
     expect(inspectManagedActiveModel(dir, [model])).toMatchObject({
       state: "verified",
       model: { id: model.id },

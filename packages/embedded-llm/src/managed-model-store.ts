@@ -4,7 +4,7 @@ import {
   existsSync,
   fstatSync,
   linkSync,
-  lstatSync,
+  mkdtempSync,
   mkdirSync,
   openSync,
   closeSync,
@@ -120,28 +120,6 @@ export async function writeFileHandleFully(
       throw new Error("managed_artifact_write_made_no_progress");
     }
     written += result.bytesWritten;
-  }
-}
-
-/** Unlink only while a path still names the descriptor-verified inode. */
-export function unlinkIfSameRegularFile(
-  path: string,
-  expected: { dev: bigint; ino: bigint; nlink: bigint },
-): boolean {
-  try {
-    const current = lstatSync(path, { bigint: true });
-    if (
-      !current.isFile() ||
-      current.dev !== expected.dev ||
-      current.ino !== expected.ino ||
-      current.nlink !== expected.nlink
-    ) {
-      return false;
-    }
-    unlinkSync(path);
-    return true;
-  } catch {
-    return false;
   }
 }
 
@@ -329,11 +307,11 @@ async function withModelDirMutationLock<T>(
   }
 }
 
-async function reconcileOrphanedPublicationLink(
+async function quarantineOrphanedPublicationLinks(
   modelDir: string,
   target: string,
   model: ModelEntry,
-): Promise<void> {
+): Promise<boolean> {
   let targetHandle: FileHandle | null = null;
   try {
     targetHandle = await openFile(
@@ -347,7 +325,7 @@ async function reconcileOrphanedPublicationLink(
       Number(targetStats.size) !== model.exactBytes ||
       (await computeFileHandleSha256(targetHandle)) !== model.sha256
     ) {
-      return;
+      return false;
     }
     const afterHash = await targetHandle.stat({ bigint: true });
     if (
@@ -358,7 +336,7 @@ async function reconcileOrphanedPublicationLink(
       afterHash.ctimeNs !== targetStats.ctimeNs ||
       afterHash.nlink !== 2n
     ) {
-      return;
+      return false;
     }
 
     const prefix = `${basename(target)}.`;
@@ -384,42 +362,46 @@ async function reconcileOrphanedPublicationLink(
           continue;
         }
 
-        const quarantine = `${candidate}.${randomUUID()}.reconciling`;
-        renameSync(candidate, quarantine);
-        let quarantineHandle: FileHandle | null = null;
+        // Node does not expose unlinkat(), so an inode check followed by
+        // unlink(path) has an unavoidable same-user path-swap window. Move
+        // both names into a fresh quarantine directory instead. rename never
+        // deletes either inode, and the current verified copy can then claim
+        // the vacated managed path with link()'s no-overwrite semantics.
+        const quarantineDir = mkdtempSync(join(modelDir, ".skytwin-orphan-"));
+        const quarantinedLink = join(quarantineDir, "publication-link");
+        const quarantinedTarget = join(quarantineDir, "managed-target");
+        renameSync(candidate, quarantinedLink);
+        renameSync(target, quarantinedTarget);
+        let linkHandle: FileHandle | null = null;
+        let movedTargetHandle: FileHandle | null = null;
         try {
-          quarantineHandle = await openFile(
-            quarantine,
+          linkHandle = await openFile(
+            quarantinedLink,
             constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
           );
-          const quarantined = await quarantineHandle.stat({ bigint: true });
+          movedTargetHandle = await openFile(
+            quarantinedTarget,
+            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+          );
+          const quarantined = await linkHandle.stat({ bigint: true });
+          const movedTarget = await movedTargetHandle.stat({ bigint: true });
           if (
             !quarantined.isFile() ||
             quarantined.dev !== targetStats.dev ||
             quarantined.ino !== targetStats.ino ||
-            quarantined.nlink !== 2n
+            quarantined.nlink !== 2n ||
+            !movedTarget.isFile() ||
+            movedTarget.dev !== targetStats.dev ||
+            movedTarget.ino !== targetStats.ino ||
+            movedTarget.nlink !== 2n
           ) {
             throw new Error("orphaned_publication_link_changed");
           }
-          if (!unlinkIfSameRegularFile(quarantine, quarantined))
-            throw new Error("orphaned_publication_link_changed");
-        } catch (error) {
-          // Leave any path that failed the final identity proof untouched.
-          throw error;
         } finally {
-          await quarantineHandle?.close();
+          await linkHandle?.close();
+          await movedTargetHandle?.close();
         }
-
-        const reconciled = await targetHandle.stat({ bigint: true });
-        if (
-          reconciled.dev !== targetStats.dev ||
-          reconciled.ino !== targetStats.ino ||
-          reconciled.size !== targetStats.size ||
-          reconciled.nlink !== 1n
-        ) {
-          throw new Error("orphaned_publication_target_changed");
-        }
-        return;
+        return true;
       } finally {
         await candidateHandle?.close();
       }
@@ -427,8 +409,7 @@ async function reconcileOrphanedPublicationLink(
   } catch (error) {
     if (
       error instanceof Error &&
-      (error.message === "orphaned_publication_link_changed" ||
-        error.message === "orphaned_publication_target_changed")
+      error.message === "orphaned_publication_link_changed"
     ) {
       throw error;
     }
@@ -437,6 +418,7 @@ async function reconcileOrphanedPublicationLink(
   } finally {
     await targetHandle?.close();
   }
+  return false;
 }
 
 export async function activateManagedModel(
@@ -520,32 +502,39 @@ async function activateManagedModelUnlocked(
           ? (error as { code?: unknown }).code
           : undefined;
       if (code !== "EEXIST") throw error;
-      await reconcileOrphanedPublicationLink(modelDir, target, model);
-      try {
-        const targetHandle = await openFile(
-          target,
-          constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-        );
+      if (await quarantineOrphanedPublicationLinks(modelDir, target, model)) {
         try {
-          const targetStats = await targetHandle.stat({ bigint: true });
-          if (
-            !targetStats.isFile() ||
-            targetStats.nlink !== 1n ||
-            Number(targetStats.size) !== model.exactBytes ||
-            (await computeFileHandleSha256(targetHandle)) !== model.sha256
-          ) {
-            throw new Error("existing_managed_artifact_invalid");
-          }
-        } finally {
-          await targetHandle.close();
+          linkSync(artifactTemporary, target);
+        } catch {
+          throw new Error("existing_managed_artifact_invalid");
         }
-      } catch (targetError) {
-        if (
-          targetError instanceof Error &&
-          targetError.message === "existing_managed_artifact_invalid"
-        )
-          throw targetError;
-        throw new Error("existing_managed_artifact_invalid");
+      } else {
+        try {
+          const targetHandle = await openFile(
+            target,
+            constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+          );
+          try {
+            const targetStats = await targetHandle.stat({ bigint: true });
+            if (
+              !targetStats.isFile() ||
+              targetStats.nlink !== 1n ||
+              Number(targetStats.size) !== model.exactBytes ||
+              (await computeFileHandleSha256(targetHandle)) !== model.sha256
+            ) {
+              throw new Error("existing_managed_artifact_invalid");
+            }
+          } finally {
+            await targetHandle.close();
+          }
+        } catch (targetError) {
+          if (
+            targetError instanceof Error &&
+            targetError.message === "existing_managed_artifact_invalid"
+          )
+            throw targetError;
+          throw new Error("existing_managed_artifact_invalid");
+        }
       }
     }
   } finally {
