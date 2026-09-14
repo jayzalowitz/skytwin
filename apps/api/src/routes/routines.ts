@@ -130,6 +130,7 @@ export function createRoutinesRouter(): Router {
       if (!created) {
         res.status(409).json({
           error: 'A matching routine registration is already recorded and will not be replayed automatically.',
+          code: 'routine_write_already_recorded',
         });
         return;
       }
@@ -137,6 +138,7 @@ export function createRoutinesRouter(): Router {
       if (!policy.allowed) {
         res.status(403).json({
           error: 'Routine blocked by policy.',
+          code: 'routine_blocked_by_policy',
           reason: policy.reason,
         });
         return;
@@ -144,6 +146,7 @@ export function createRoutinesRouter(): Router {
       if (policy.requiresApproval) {
         res.status(403).json({
           error: 'Routine blocked: this action requires manual approval and cannot run unattended on a schedule.',
+          code: 'routine_requires_approval',
           reason: policy.reason,
         });
         return;
@@ -151,6 +154,7 @@ export function createRoutinesRouter(): Router {
 
       res.status(503).json({
         error: 'Unattended routine registration is not available in this release.',
+        code: 'routine_registration_unavailable',
         reason: REGISTRATION_UNAVAILABLE.reason,
       });
     } catch (error) {
@@ -239,6 +243,7 @@ export function createRoutinesRouter(): Router {
       if (!created) {
         res.status(409).json({
           error: 'A matching routine deletion is already recorded and will not be replayed automatically.',
+          code: 'routine_write_already_recorded',
         });
         return;
       }
@@ -248,6 +253,9 @@ export function createRoutinesRouter(): Router {
           error: policy.requiresApproval
             ? 'Routine deletion requires manual approval and was not dispatched.'
             : 'Routine deletion was blocked by policy.',
+          code: policy.requiresApproval
+            ? 'routine_requires_approval'
+            : 'routine_blocked_by_policy',
           reason: policy.reason,
         });
         return;
@@ -257,6 +265,7 @@ export function createRoutinesRouter(): Router {
         routineId,
         deleted: false,
         error: 'Routine deletion is not available in this release; nothing was dispatched.',
+        code: 'routine_deletion_unavailable',
         reason: DELETION_UNAVAILABLE.reason,
       });
     } catch (error) {

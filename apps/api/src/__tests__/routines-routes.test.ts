@@ -124,6 +124,7 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({ code: 'routine_registration_unavailable' });
       expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
         outcome: expect.objectContaining({
           selectedAction: null,
@@ -209,6 +210,7 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(403);
+      expect(response.body).toMatchObject({ code: 'routine_blocked_by_policy' });
       expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
         outcome: expect.objectContaining({
           selectedAction: null,
@@ -230,6 +232,7 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({ code: 'routine_write_already_recorded' });
       expect(mocks.recordNonAction).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
@@ -313,7 +316,11 @@ describe('Routines API routes', () => {
       const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
       expect(response.status).toBe(503);
-      expect(response.body).toMatchObject({ routineId: 'routine-1', deleted: false });
+      expect(response.body).toMatchObject({
+        routineId: 'routine-1',
+        deleted: false,
+        code: 'routine_deletion_unavailable',
+      });
       expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
         action: expect.objectContaining({
           actionType: 'delete_routine',
@@ -344,6 +351,7 @@ describe('Routines API routes', () => {
       const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
       expect(response.status).toBe(403);
+      expect(response.body).toMatchObject({ code: 'routine_blocked_by_policy' });
       expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
         outcome: expect.objectContaining({ reasoning: 'Routine changes are disabled by policy.' }),
         explanation: expect.any(Object),
@@ -368,6 +376,7 @@ describe('Routines API routes', () => {
       const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
       expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({ code: 'routine_write_already_recorded' });
       expect(mocks.recordNonAction).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
