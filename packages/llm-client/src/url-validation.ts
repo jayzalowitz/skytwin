@@ -279,12 +279,18 @@ function isPrivateHost(hostname: string): boolean {
   if (hostname === 'localhost') return true;
   if (isIP(hostname) === 0) return false;
   try {
+    const address = ipaddr.parse(hostname);
     // ipaddr.js tracks IPv4/IPv6 special-purpose registries, including
     // benchmark, documentation, NAT64 local-use, ORCHID, site-local,
-    // multicast, mapped, and reserved space. A custom provider may receive
-    // credentials and prompt content, so only ordinary global unicast is
-    // eligible; the explicit Ollama loopback exception is handled by callers.
-    return ipaddr.parse(hostname).range() !== 'unicast';
+    // multicast, mapped, and reserved space. Its generic `unicast` result is
+    // broader than IANA's currently assignable IPv6 global-unicast block, so
+    // also require IPv6 literals to be inside 2000::/3. A custom provider may
+    // receive credentials and prompt content; the explicit Ollama loopback
+    // exception is handled by callers.
+    if (address.kind() === 'ipv6' && !address.match(ipaddr.parseCIDR('2000::/3'))) {
+      return true;
+    }
+    return address.range() !== 'unicast';
   } catch {
     // A value Node classified as an IP but the stricter parser cannot consume
     // is not a safe network destination.

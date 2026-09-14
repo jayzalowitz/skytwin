@@ -210,4 +210,28 @@ describe('OpenAiEmbeddingProvider', () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it('cancels an unread HTTP error body before closing the pinned transport', async () => {
+    const cancel = vi.fn();
+    const body = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('partial error'));
+      },
+      cancel,
+    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(body, { status: 503 }));
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const provider = new OpenAiEmbeddingProvider({
+        apiKey: 'k',
+        baseUrl: 'https://93.184.216.34/v1',
+        dim: 1,
+      });
+      await expect(provider.embed('private memory text'))
+        .rejects.toThrow('embedding HTTP 503');
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

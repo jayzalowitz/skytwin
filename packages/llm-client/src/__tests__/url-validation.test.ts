@@ -244,9 +244,10 @@ describe('validateBaseUrl', () => {
 
     it('blocks IPv6 site-local, documentation, benchmarking, and multicast ranges', () => {
       for (const address of [
-        'fec0::1', '64:ff9b:1::a00:1', '2001:10::1', '2001:20::1',
+        'fec0::1', 'fe00::1', '64:ff9b:1::a00:1', '100:0:0:1::1',
+        '2001:10::1', '2001:20::1',
         '2001:db8::1', '2001:2::1', '2002:c000:0204::1', '3fff::1',
-        'ff02::1',
+        '4000::1', '6000::1', '8000::1', 'ff02::1',
       ]) {
         expect(() => validateBaseUrl(`https://[${address}]`, 'openai'))
           .toThrow('Private/internal URL not allowed');
