@@ -91,10 +91,13 @@ Recorded launch blockers include:
 > defines the recovery-wrapper registry and deletion intent, and Electron has a
 > locked, capability-scoped source-key broker with private API/worker child IPC.
 > Production deliberately supplies empty owner grants and still uses a temporary
-> Electron-store adapter, however. No production source field is encrypted. The
-> authenticated owner-grant clients, Cockroach-backed repository gateway, narrow
-> source consumers, plaintext migration, clean packaged-platform verification,
-> and bake period remain blockers. See the
+> Electron-store adapter, however, so this broader broker encrypts no production
+> source field. Separately, the API-local OAuth vault now encrypts new/reconnected
+> grants when its matching generation is unlocked and can migrate complete plaintext
+> grants on authorized use; without a vault, tokens remain plaintext, and the worker
+> does not receive the API key. The authenticated owner-grant clients, Cockroach-backed
+> repository gateway, remaining source consumers and migration, clean packaged-platform
+> verification, and bake period remain blockers. See the
 > [implementation status](./security/source-key-broker-implementation.md).
 
 **[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). Re-audited 2026-06-16 (full code-state findings on the issue). The encryption **infrastructure shipped** via #520 — but it is **dormant** in production and **partial**, and the memory half has an architectural conflict that makes it a design task, not a wiring task:

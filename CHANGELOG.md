@@ -82,6 +82,15 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-/review)
 
+- **OAuth grant storage now follows live vault authority without a plaintext
+  downgrade.** API callbacks store plaintext only when no vault exists. Once a
+  vault is initialized, a matching unlocked generation encrypts new and
+  reconnected token secrets while a locked or stale generation refuses the
+  write. Complete legacy plaintext pairs can migrate on authorized credential
+  use. The worker still has a separate, unpopulated key cache, so cross-process
+  use of encrypted grants remains unavailable and is disclosed in Settings and
+  the privacy documentation.
+
 - **Remembered vault passphrases now retain verifiable storage provenance.**
   New desktop records carry a format version and the exact secure OS backend
   that encrypted them. Startup deletes every legacy untagged, unsupported, or

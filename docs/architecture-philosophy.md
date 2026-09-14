@@ -92,14 +92,15 @@ These are non-negotiable, deterministic, and only change via deploy:
 - Audit log integrity: every action recorded immutably, audit table append-only, never hidden from user
 - MCP protocol conformance: stdio + http/sse transports per spec; tool call schemas validated; security model enforced
 - Authentication and OAuth token storage target: envelope-encrypted at rest, never logged in plaintext.
-  **Status:** the "never logged in plaintext" half holds today. The at-rest half does
-  not yet: tokens are written plaintext by `saveTokenForAccount`
-  (`packages/db/src/repositories/oauth-repository.ts`), and the `DbTokenStore` lazy
-  upgrade that would encrypt them still has no production key client. Electron now
-  attaches the API and worker to a source-key broker over private child-process IPC,
-  but both roles deliberately receive empty owner grants; the authenticated grant
-  flow, Cockroach-backed broker repository, and narrow source-field consumers are
-  not composed.
+  **Status:** the "never logged in plaintext" half holds today. At rest, coverage is
+  opt-in and mixed: without an initialized vault, new grants are plaintext; with the
+  matching API vault generation unlocked, new and reconnected grants are written as
+  ciphertext and existing complete plaintext grants can migrate on authorized use.
+  An initialized locked vault refuses new writes instead of downgrading them. The
+  worker's separate key cache is not populated by API unlock, so encrypted grants may
+  be unavailable there. Electron's broader source-key broker still gives API and
+  worker empty owner grants; its authenticated grant flow, Cockroach-backed repository,
+  and preference/profile/memory consumers are not composed.
   Preferences, twin profiles and memory pages are in the same position: migration
   `066` added the columns, but `setPreferenceVaultKeyProvider()` has no production
   caller, so `resolveKey` returns plaintext mode. This is a rail we intend to hold,

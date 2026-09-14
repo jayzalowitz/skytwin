@@ -42,7 +42,7 @@ const EXPECTED_SCHEMA_CORPUS_SHA256 =
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "4ba4f03112a3036b72b131f3c5277bc23a0668fb1c0a8049c59a1bcca8accb7e";
+  "bbbd589f076af06d3c882c23b0fbe74961999bd9662b41206ce27346e0f86fb5";
 
 const OWNER_KINDS = new Set([
   "user",

@@ -3043,7 +3043,7 @@
             "encrypted_refresh_token",
             "refresh_token"
           ],
-          "currentProtection": "Plaintext-compatible schema with optional AES-256-GCM sibling columns; production key delivery and complete migration are not wired.",
+          "currentProtection": "Mixed storage: without an initialized vault, API callbacks write plaintext; with the matching API vault generation unlocked, new or reconnected grants use AES-256-GCM ciphertext and null plaintext, while a locked initialized vault refuses the write. Complete legacy plaintext grants can migrate on authorized use. The worker still lacks cross-process key delivery, and migration is not complete.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-1-secrets-and-portable-config",
           "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
