@@ -130,6 +130,7 @@ export {
   policyRepository,
   getPolicyAuthorityRevision,
   explanationRepository,
+  routineNonActionRepository,
   inferenceReceiptRepository,
   feedbackRepository,
 } from './repositories/index.js';
@@ -143,6 +144,8 @@ export type {
   CreatePolicyInput,
   UpdatePolicyInput,
   CreateExplanationInput,
+  RecordRoutineNonActionInput,
+  RecordRoutineNonActionResult,
   CreateInferenceReceiptInput,
   CreateFeedbackInput,
 } from './repositories/index.js';

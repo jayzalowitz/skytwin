@@ -9,7 +9,6 @@ import type { TrustTier } from '@skytwin/shared-types';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
-import { getExecutionRouter } from '../execution-setup.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
 // sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
@@ -343,7 +342,7 @@ async function writeProvenanceNode(opts: {
  * Endpoints (all under /api/capabilities/…):
  *
  *   POST /:id/uninstall     — soft-delete; optionally revoke OAuth + drop signals
- *   POST /:id/regret        — attempt rollback of actions executed via this server
+ *   POST /:id/regret        — report rollback candidates without changing external state
  *   POST /:id/time-machine  — replay a decision without this server (read-only)
  *   POST /:id/rehearse      — show what would have auto-executed if trust tier were higher
  *
@@ -634,43 +633,18 @@ export function createCapabilitiesRouter(): Router {
         since: sinceDate,
       });
 
-      // Result enum:
-      //   - 'rolled_back'      — adapter.rollback(planId) succeeded.
-      //   - 'rollback_failed'  — the adapter ran but reported failure (e.g.
-      //                          the plan had no rollback steps, or the
-      //                          executing adapter is no longer registered).
-      //   - 'no_plan_linkage'  — the #324 FK lookup returned NULL; no plan to
-      //                          target, so nothing to dispatch. Honest
-      //                          reporting beats claiming a rollback happened.
-      const undone: Array<{
+      // Generic rollback remains report-only until #695 provides a durable,
+      // owner-bound, one-winner admission lifecycle. Merely having a provider
+      // plan id is not authority to dispatch: a concurrent request or lost
+      // response could otherwise repeat the same external reversal.
+      const unavailable: Array<{
         actionId: string;
         planId: string | null;
         adapterUsed: string | null;
-        result: 'rolled_back' | 'rollback_failed' | 'no_plan_linkage';
-        message?: string;
+        result: 'rollback_unavailable';
+        message: string;
       }> = [];
       const irreversible: Array<{ actionId: string; reason: string }> = [];
-
-      // Resolve the execution router once for the whole batch. If it can't be
-      // constructed (no adapters configured), treat every reversible action as
-      // a rollback failure rather than throwing the whole request — the user
-      // still gets an honest per-action report.
-      let router: Awaited<ReturnType<typeof getExecutionRouter>> | null = null;
-      let routerError: string | null = null;
-      const hasReversibleTarget = targets.some(
-        (t) => (t.payload?.['reversible'] === true) && t.executionPlanId,
-      );
-      if (hasReversibleTarget) {
-        try {
-          router = await getExecutionRouter();
-        } catch (err) {
-          routerError = 'Execution router unavailable';
-          log.warn('Execution router unavailable for regret rollback', {
-            serverId: id,
-            error: err instanceof Error ? err.name : 'unknown_error',
-          });
-        }
-      }
 
       for (const target of targets) {
         const payload = target.payload;
@@ -686,76 +660,24 @@ export function createCapabilitiesRouter(): Router {
           continue;
         }
 
-        if (!target.executionPlanId) {
-          undone.push({
-            actionId: target.actionId,
-            planId: null,
-            adapterUsed: null,
-            result: 'no_plan_linkage',
-          });
-          continue;
-        }
-
-        // Dispatch the rollback through the execution router, targeting the
-        // adapter that executed the plan (#324).
-        if (!router) {
-          undone.push({
-            actionId: target.actionId,
-            planId: target.executionPlanId,
-            adapterUsed: target.adapterUsed,
-            result: 'rollback_failed',
-            message: routerError ?? 'Execution router unavailable',
-          });
-          continue;
-        }
-
-        const rollback = await router.rollback(target.executionPlanId, target.adapterUsed);
-        const rollbackMessage = rollback.result.success
-          ? 'The recorded adapter confirmed rollback completion.'
-          : rollback.noAdapter
-            ? 'The recorded execution adapter is unavailable for rollback.'
-            : 'The recorded adapter could not confirm rollback completion.';
-
-        undone.push({
+        unavailable.push({
           actionId: target.actionId,
-          planId: target.executionPlanId,
-          adapterUsed: rollback.adapterUsed,
-          result: rollback.result.success ? 'rolled_back' : 'rollback_failed',
-          message: rollbackMessage,
+          planId: target.executionPlanId ?? null,
+          adapterUsed: target.adapterUsed ?? null,
+          result: 'rollback_unavailable',
+          message: target.executionPlanId
+            ? 'Automatic rollback is unavailable until durable replay protection is enabled.'
+            : 'Automatic rollback is unavailable and this action has no exact execution plan linkage.',
         });
-
-        // Audit trail (Safety Invariant #2): record every rollback attempt as
-        // a provenance node so the reversal is explainable. A rollback is the
-        // user reversing an action — recorded under the existing 'feedback'
-        // node type (no schema change) with a descriptive payload.
-        try {
-          await writeProvenanceNode({
-            userId,
-            nodeType: 'feedback',
-            refTable: 'execution_plans',
-            refId: target.executionPlanId,
-            serverId: id,
-            payload: {
-              kind: 'rollback',
-              actionId: target.actionId,
-              adapterUsed: rollback.adapterUsed,
-              success: rollback.result.success,
-              message: rollbackMessage,
-              withinHours,
-            },
-          });
-        } catch (auditErr) {
-          // Audit write failure must not mask a successful rollback — log and
-          // continue. The rollback result is still reported to the caller.
-          log.warn('Failed to write rollback provenance node', {
-            serverId: id,
-            planId: target.executionPlanId,
-            error: auditErr instanceof Error ? auditErr.message : String(auditErr),
-          });
-        }
       }
 
-      res.json({ undone, irreversible });
+      res.json({
+        status: 'report_only',
+        code: 'generic_rollback_report_only',
+        undone: [],
+        unavailable,
+        irreversible,
+      });
     } catch (err) {
       next(err);
     }

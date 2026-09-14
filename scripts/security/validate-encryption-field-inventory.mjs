@@ -38,11 +38,11 @@ const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
   "78be83cc8197f4a07fc7e1498996bf33ce56ebefa81357430a8b7443f9f2764f";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "5713f08788e82319cde02a384550c6e5f7a7be22c4048a0b1ed5b8f37870b76f";
+  "4be48c9c97a6f08c3a2c481b439f1969047e9c049ac8edb1c456a1f22296978e";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "bbbd589f076af06d3c882c23b0fbe74961999bd9662b41206ce27346e0f86fb5";
+  "e790f19a5ef98fc4c9ac81fb1ebe934922340a297beb510c6d4dc8b68c442426";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -1301,6 +1301,7 @@ export function semanticManifestHash(inventory) {
           table: table.table,
           column,
           owner: table.owner,
+          ownershipNotes: table.ownershipNotes,
           currentBoundary: table.boundary?.current,
           targetBoundary: table.boundary?.target,
           classification: group.classification,

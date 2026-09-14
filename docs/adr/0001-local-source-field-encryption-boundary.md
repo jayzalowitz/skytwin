@@ -42,8 +42,8 @@ environment maps, federation private keys, decision and explanation payloads,
 assistant messages, signals, histories, both memory backends, exports, and
 dead-letter context. Execution results and spend records are included as action
 receipts, not treated as harmless operational data. The machine-readable
- inventory classifies all 994 columns across the 104-table live schema as of
- `079-inference-receipt-capture-order.sql`; validation fails when a table or column is
+ inventory classifies all 998 columns across the 104-table live schema as of
+ `080-assistant-message-idempotency.sql`; validation fails when a table or column is
 missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
 sequence used by the production
 [`001-initial` migration runner](../../packages/db/src/migrations/001-initial.ts).
@@ -81,7 +81,13 @@ Filesystem and process-local surfaces are separate from the SQL inventory:
   is ready, startup removes legacy-untagged, unsupported, and backend-mismatched
   records across users without decrypting them. The target replaces remembered-
   passphrase storage with a device-wrapped random user key.
-- The dashboard currently stores a session token in renderer `localStorage`.
+- The dashboard stores a session token in renderer `localStorage`. While an
+  assistant send has an ambiguous result, it also stores the full pending
+  message plus its owner/thread/request identity there so a reload can retry
+  without duplicating an action. That recovery record is removed on a definite
+  result, edit/abandon, or sign-out. The sample equivalent is tab-scoped
+  `sessionStorage`; the mobile development client uses the OS secure store and
+  removes the record on disconnect.
 - `.dxt` exports are plaintext with an unkeyed SHA-256 checksum, so they are not
   confidential or authenticated against deliberate modification; their
   serializer redacts known secret-shaped arguments. `.stbk` backup archives are

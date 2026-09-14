@@ -34,7 +34,7 @@ import {
   DIRECT_TRUST_PROFILE,
   MCP_HOST_TRUST_PROFILE,
 } from '../adapter-registry.js';
-import { OPENCLAW_SKILLS } from '../openclaw-adapter.js';
+import { OpenClawAdapter, OPENCLAW_SKILLS } from '../openclaw-adapter.js';
 
 // ── Test helpers ─────────────────────────────────────────────────────
 
@@ -546,6 +546,47 @@ describe('ExecutionRouter', () => {
       expect(result.status).toBe('completed');
       expect(result.output?.['adapter_used']).toBe('ironclaw');
       expect(result.output?.['fallbacks_attempted']).toBe(0);
+    });
+
+    it('binds the authenticated owner to an OpenClaw credential callback', async () => {
+      const onCredentialNeeded = vi.fn();
+      const openclaw = new OpenClawAdapter({
+        apiUrl: 'http://localhost:9000',
+        onCredentialNeeded,
+      });
+      registry.register(
+        'openclaw', openclaw, OPENCLAW_TRUST_PROFILE, new Set(['social_media_post']),
+      );
+      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        credential_required: {
+          integration: 'social',
+          label: 'Social account',
+          fields: [{ key: 'token', label: 'Access token', secret: true }],
+          skills: ['social_media_post'],
+        },
+      }), { status: 200 }));
+      const action = makeAction({
+        actionType: 'social_media_post',
+        parameters: {
+          content: 'Hello world',
+          userId: 'untrusted-candidate-owner',
+          credentialAuthorityRevision: 'authority-revision-1',
+          credentialPolicyAuthorityRevision: 'policy-revision-1',
+          dispatchAuthorityId: 'admission-1',
+          dispatchAuthorityUpdatedAt: '2026-09-13T10:00:00.000Z',
+        },
+      });
+
+      await expect(router.executeWithRouting(
+        action, makeRiskAssessment(), 'authenticated-owner',
+      )).resolves.toMatchObject({ status: 'failed' });
+
+      expect(onCredentialNeeded).toHaveBeenCalledWith(expect.objectContaining({
+        userId: 'authenticated-owner',
+        integration: 'social',
+      }));
+      expect(action.parameters['userId']).toBe('untrusted-candidate-owner');
+      fetchSpy.mockRestore();
     });
 
     it('replaces every adapter-supplied reserved output fact with router authority', async () => {

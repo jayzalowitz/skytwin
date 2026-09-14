@@ -13,7 +13,6 @@ import {
   resetExecutionRouterForConfigChange,
   syncCredentialToIronClaw,
 } from '../execution-setup.js';
-import { sseManager } from '../sse.js';
 
 /**
  * Known service definitions with their credential fields.
@@ -147,7 +146,8 @@ export function createCredentialsRouter(): Router {
             key: f.field_key,
             label: f.field_label,
             placeholder: f.field_placeholder ?? '',
-            secret: f.is_secret,
+            // Dynamic schemas are peer-defined and always fail closed.
+            secret: true,
             optional: f.is_optional,
           })),
         };
@@ -271,7 +271,7 @@ export function createCredentialsRouter(): Router {
             key: f.field_key,
             label: f.field_label,
             placeholder: f.field_placeholder,
-            secret: f.is_secret,
+            secret: true,
             optional: f.is_optional,
           })),
           skills: Array.from(new Set(group.fields.flatMap((f) => f.skills))),
@@ -285,88 +285,16 @@ export function createCredentialsRouter(): Router {
   });
 
   /**
-   * POST /api/credentials/requirements
-   *
-   * Register credential requirements for an adapter's integration.
-   * Called by adapters (e.g. OpenClaw) when they add a skill that needs credentials.
-   *
-   * Body: {
-   *   adapter: "openclaw",
-   *   integration: "twitter",
-   *   integrationLabel: "Twitter / X",
-   *   description: "Post tweets and read your timeline",
-   *   fields: [
-   *     { key: "api_key", label: "API Key", placeholder: "...", secret: true, optional: false }
-   *   ],
-   *   skills: ["social_media_post", "draft_social_post"]
-   * }
+   * Dynamic requirements are accepted only through the in-process adapter
+   * callback, which binds the notification owner to a prepared execution.
+   * There is no installation-admin HTTP principal yet, so this legacy write
+   * surface fails closed instead of letting a user mutate global config.
    */
-  router.post('/requirements', async (req, res, next) => {
-    try {
-      const body = req.body as {
-        adapter?: string;
-        integration?: string;
-        integrationLabel?: string;
-        description?: string;
-        fields?: Array<{
-          key: string;
-          label: string;
-          placeholder?: string;
-          secret?: boolean;
-          optional?: boolean;
-        }>;
-        skills?: string[];
-        userId?: string;
-      };
-
-      if (!body.adapter || !body.integration || !body.integrationLabel || !body.fields?.length) {
-        res.status(400).json({ error: 'Missing required fields: adapter, integration, integrationLabel, fields' });
-        return;
-      }
-
-      const registered = [];
-      for (const field of body.fields) {
-        if (!field.key || !field.label) continue;
-
-        const row = await credentialRequirementRepository.register({
-          adapter: body.adapter,
-          integration: body.integration,
-          integrationLabel: body.integrationLabel,
-          description: body.description,
-          fieldKey: field.key,
-          fieldLabel: field.label,
-          fieldPlaceholder: field.placeholder,
-          isSecret: field.secret,
-          isOptional: field.optional,
-          skills: body.skills ?? [],
-        });
-        registered.push(row.field_key);
-      }
-
-      // Emit SSE notification to all connected users that a new integration is needed
-      if (body.userId) {
-        sseManager.emit(body.userId, 'credential:needed', {
-          adapter: body.adapter,
-          integration: body.integration,
-          label: body.integrationLabel,
-          description: body.description,
-          skills: body.skills,
-        });
-      } else {
-        // Broadcast to all users
-        sseManager.emitAll('credential:needed', {
-          adapter: body.adapter,
-          integration: body.integration,
-          label: body.integrationLabel,
-          description: body.description,
-          skills: body.skills,
-        });
-      }
-
-      res.json({ status: 'ok', registered });
-    } catch (error) {
-      next(error);
-    }
+  router.post('/requirements', (_req, res) => {
+    res.status(405).json({
+      error: 'HTTP dynamic credential registration is disabled; requirements are registered internally by the execution adapter.',
+      code: 'dynamic_credential_registration_unavailable',
+    });
   });
 
   /**
@@ -435,11 +363,8 @@ export function createCredentialsRouter(): Router {
    */
   router.get('/', async (_req, res, next) => {
     try {
-      const [rows, dynamicSecrets] = await Promise.all([
-        serviceCredentialRepository.getAll(),
-        getDynamicSecretKeys(),
-      ]);
-      const masked = rows.map((row) => maskRow(row, dynamicSecrets));
+      const rows = await serviceCredentialRepository.getAll();
+      const masked = rows.map((row) => maskRow(row));
       res.json({ credentials: masked });
     } catch (error) {
       next(error);
@@ -487,11 +412,8 @@ export function createCredentialsRouter(): Router {
     try {
       const { service } = req.params;
       if (['status', 'schema', 'requirements', 'unmet', 'ironclaw-status'].includes(service)) { next(); return; }
-      const [rows, dynamicSecrets] = await Promise.all([
-        serviceCredentialRepository.getByService(service),
-        getDynamicSecretKeys(),
-      ]);
-      const masked = rows.map((row) => maskRow(row, dynamicSecrets));
+      const rows = await serviceCredentialRepository.getByService(service);
+      const masked = rows.map((row) => maskRow(row));
       res.json({ credentials: masked });
     } catch (error) {
       next(error);
@@ -677,40 +599,15 @@ function maskValue(value: string): string {
   return value.slice(0, 4) + '****' + value.slice(-4);
 }
 
-/**
- * Build a set of "service:field_key" pairs that are marked is_secret
- * in the dynamic credential_requirements table.
- */
-async function getDynamicSecretKeys(): Promise<Set<string>> {
-  try {
-    const allReqs = await credentialRequirementRepository.getAll();
-    const secrets = new Set<string>();
-    for (const req of allReqs) {
-      if (req.is_secret) {
-        secrets.add(`${req.adapter}:${req.integration}:${req.field_key}`);
-      }
-    }
-    return secrets;
-  } catch {
-    return new Set();
-  }
-}
-
 function maskRow(
   row: { id: string; service: string; credential_key: string; credential_value: string; label: string | null; updated_at: Date },
-  dynamicSecrets?: Set<string>,
 ) {
   const schema = SERVICE_SCHEMAS[row.service];
   const fieldDef = schema?.fields.find((f) => f.key === row.credential_key);
 
-  // Check static schema first, then dynamic requirements, then heuristic fallback
-  const dynamicKey = `${row.service}:${row.credential_key}`;
-  const isSecret = fieldDef?.secret
-    ?? (dynamicSecrets?.has(dynamicKey)
-      || row.credential_key.includes('secret')
-      || row.credential_key.includes('key')
-      || row.credential_key.includes('token')
-      || row.credential_key.includes('password'));
+  // Only a trusted static schema may classify a value as non-secret. Unknown
+  // and peer-defined fields stay masked even if requirement metadata is absent.
+  const isSecret = fieldDef ? fieldDef.secret === true : true;
 
   return {
     id: row.id,

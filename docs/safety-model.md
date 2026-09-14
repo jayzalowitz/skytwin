@@ -139,7 +139,7 @@ Domain controls are additive to trust tier -- a domain must be both allowed AND 
 
 ### Layer 6: Approval Routing
 
-When the system determines it cannot auto-execute (due to risk, confidence, policy, or trust tier), it creates an approval request. Approval requests include:
+When a supported approval-routed action cannot auto-execute (due to risk, confidence, policy, or trust tier), it creates an approval request. Approval requests include:
 - What the system wants to do
 - Why it thinks this is the right action
 - What evidence supports this choice
@@ -148,6 +148,34 @@ When the system determines it cannot auto-execute (due to risk, confidence, poli
 - Urgency classification
 
 The user can approve, reject, edit, or let the request expire.
+
+**Assistant action-intent admission.**
+[`POST /api/assistant/messages`](../apps/api/src/routes/assistant.ts) requires a
+UUID request identity for each logical turn. [Migration
+080](../packages/db/src/migrations/080-assistant-message-idempotency.sql)
+enforces owner-scoped uniqueness for new user and assistant message rows. A
+completed retry replays the durable result; a request with only its user
+message recorded returns `202 assistant_request_recovery_required` and is not
+taken over based on elapsed time. The client explains that a fresh or edited
+request is required if no reply appears elsewhere. A
+recognized action intent never executes directly from chat: a selected action
+is stored as requiring approval, and its explanation must persist before an
+approval request can be created. If that safety path fails before approval,
+the assistant surfaces a visible non-action instead of falling through to an
+ordinary model reply. This is assistant-entry-path coverage, not release-wide
+explanation coverage.
+
+**Legacy action-taking routine admission.** The
+[`/api/routines` write routes](../apps/api/src/routes/routines.ts) do not
+register or delete remote routines in this release. The first admitted request is
+normalized into a typed candidate and risk assessment, evaluated by policy,
+and recorded before a terminal policy or unavailable response by
+[`routineNonActionRepository`](../packages/db/src/repositories/routine-non-action-repository.ts)
+in one transaction with its decision, non-action outcome, and explanation.
+The outcome keeps the evaluated candidate and risk for audit but has
+`selectedAction: null` and `autoExecute: false`; no approval request or remote
+adapter call is made. `GET /api/routines/:userId` remains a separate read-only
+listing path. This is distinct from read-only Watches.
 
 **`escalate_to_user` is a non-executing terminal.** Some candidates are *not* actions to run but a deliberate hand-off to the human: the inbound `SECURITY_ALERT` escalation (Safety Invariant 8), the scope gate's "connect write access" downgrade (#485), and a recognized-but-not-yet-autonomous chat intent (e.g. "decline that meeting" — the intent is understood but the specific event isn't resolved). `PolicyEvaluator.evaluate()` forces `requiresApproval` for **every** `escalate_to_user` regardless of trust tier, risk, autonomy, or provenance, so `autoExecute` (`= !requiresApproval && shouldAutoExecute(...)`) is always false. This is enforced server-side rather than relying on the action happening to be high-risk or untrusted-origin: a HIGH-confidence, reversible, zero-cost escalation on a *trusted* path (a user's own chat message, `user_originated`) would otherwise clear `shouldAutoExecute` and be routed to the execution router, where `escalate_to_user` has no real handler and dead-ends. The Approvals queue renders an escalation as a "tell me what to do" card alongside the alternative candidates the decision considered (`apps/api/src/routes/approvals.ts`).
 
@@ -454,7 +482,8 @@ The user can inspect:
 1. **Twin model changes:** Revert to any previous twin profile version
 2. **Policy changes:** Revert policy configurations
 3. **Trust tier changes:** Manual trust tier adjustment (user-initiated)
-4. **Executed actions (where possible):** Request rollback via IronClaw for reversible actions
+4. **Executed actions:** Generic capability rollback currently reports eligible
+   targets but does not dispatch; durable provider rollback is tracked in #695
 
 ### What Cannot Be Rolled Back
 
@@ -465,11 +494,13 @@ The user can inspect:
 
 ### Rollback Process
 
-1. User requests undo for a specific decision
-2. System checks reversibility classification
-3. If reversible: send rollback request to IronClaw, record undo as feedback
-4. If partially reversible: present user with what can and cannot be undone
-5. If irreversible: notify user that rollback is not possible, record as feedback for future avoidance
+1. User requests a rollback report for a capability and time window.
+2. The system checks owner-scoped target linkage and reversibility metadata.
+3. Reversible targets are reported as `rollback_unavailable`; no router or
+   adapter is resolved.
+4. Irreversible targets are listed with the reason recorded at execution time.
+5. Generic dispatch stays disabled until #695 proves durable one-winner
+   admission, terminal ambiguity handling, and complete explanations.
 
 ## What the System Must NEVER Do Without Explicit Approval
 

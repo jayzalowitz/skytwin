@@ -113,32 +113,16 @@ export async function genericWorkflowHandler(
 
   const outcome = await deps.decisionMaker.evaluate(context);
 
-  let executionResult: ExecutionResult | null = null;
-  if (outcome.autoExecute && outcome.selectedAction) {
-    const plan = await deps.ironclawAdapter.buildPlan(outcome.selectedAction);
-    executionResult = await deps.ironclawAdapter.execute(plan);
-  }
-
   const explanation = await deps.explanationGenerator.generate(
     decision,
     outcome,
     context,
   );
 
-  if (outcome.autoExecute && outcome.selectedAction) {
-    await deps.twinService.addEvidence(userId, {
-      id: `ev_${decision.situationType}_${decision.id}`,
-      userId,
-      source: `${decision.situationType}_workflow`,
-      type: `auto_${outcome.selectedAction.actionType}`,
-      data: {
-        action: outcome.selectedAction.actionType,
-        domain: decision.domain,
-      },
-      domain: decision.domain,
-      timestamp: new Date(),
-    });
-  }
+  // This legacy registry is not mounted by the ingest route. Its former direct
+  // adapter call bypassed durable admission, so it remains explanation-only.
+  // External execution belongs exclusively to the receipt-backed ingest path.
+  const executionResult: ExecutionResult | null = null;
 
   return {
     decisionId: decision.id,
@@ -147,6 +131,6 @@ export async function genericWorkflowHandler(
     outcome,
     explanation,
     executionResult,
-    autoHandled: outcome.autoExecute,
+    autoHandled: false,
   };
 }

@@ -1,5 +1,84 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [Unreleased] — Fail-closed action entry paths
+
+### Changed
+
+- **Assistant turns now carry durable, user-scoped retry identity.**
+  `POST /api/assistant/messages` requires a client-generated UUID `requestId`.
+  New user and assistant rows are unique per owner, request identity, and role;
+  completed retries replay persisted results, while unresolved turns return
+  `202` rather than re-entering provider or action routing. Chat-selected
+  actions are normalized to explicit approval, and an approval cannot be
+  created until its explanation is durable. This contains duplicate work but
+  does not claim provider-level exactly-once execution or automatic recovery
+  of an interrupted turn.
+
+- **Legacy action-taking routine writes now stop before remote dispatch.**
+  `POST` and `DELETE /api/routines` server-normalize the candidate, assess
+  risk, evaluate policy, and atomically persist the decision, candidate, full
+  risk assessment, deliberate non-action outcome, and explanation.
+  Registration and deletion remain unavailable; no create/delete adapter call
+  occurs. Read-only listing remains available. This supersedes the earlier
+  routine-registration behavior described below.
+
+- **Generic capability rollback is report-only.** The regret endpoint reports
+  reversible, irreversible, and exactly linked execution targets but makes no
+  router or adapter call. Generic rollback remains unavailable until #695
+  supplies durable, owner-bound one-winner admission and ambiguity handling.
+  The UI explicitly reports that no actions changed.
+
+- **Unmounted workflow helpers no longer dispatch external actions.** The
+  legacy email-triage and generic workflow helpers still evaluate and explain
+  decisions, but return `autoHandled: false` and do not call execution adapters
+  or learn from a presumed automatic action.
+
+- **The encryption inventory follows assistant retry metadata.** The reviewed
+  corpus now covers 104 tables and 998 columns through migration 080. The four
+  new assistant lifecycle fields are classified as locally exposed metadata;
+  source-field encryption remains a design contract rather than a shipped
+  protection claim.
+
+### Fixed (post-review)
+
+- **Ambiguous assistant failures retain their request identity.** Generic
+  server/transport failures and approval-response reconciliation failures no
+  longer mint a fresh logical turn on retry. The API does not report a
+  synthetic successful approval bubble unless the assistant row is durable,
+  and a streamed reply with unresolved persistence ends in a recovery-required
+  state rather than synthetic success. Browser and mobile clients persist the
+  owner-, thread-, and content-bound identity before dispatch so a reload or
+  app restart can reconcile with the same UUID. A stream that closes without a
+  validated terminal event is treated as ambiguous, never as a completed
+  reply. Pending content is removed on sign-out/disconnect; packaged-sample
+  recovery remains tab-scoped and is removed on sample exit. Assistant action
+  evaluation now also receives the user's complete autonomy settings before it
+  can create an approval.
+
+- **Legacy assistant orphans no longer block migration 080.** The ownership
+  backfill only assigns message owners that still exist, leaving legacy orphan
+  messages nullable instead of violating the new foreign key during startup.
+  For non-orphan rows, a composite foreign key enforces that the materialized
+  message owner matches its parent thread, and retry-key reads recheck that
+  ownership through the parent join.
+
+- **Unavailable routine mutation is represented consistently in the web UI.**
+  Policy 403 responses no longer masquerade as expired sessions, and existing
+  routine rows are inspection-only while remote removal is quarantined.
+
+- **OpenClaw credential notifications are owner-scoped and bounded.** Credential
+  metadata is parsed through a strict size-and-shape boundary, peer-supplied
+  identity is rejected, ownership comes from the prepared execution plan, and
+  the API emits the live setup notification only to that owner rather than
+  broadcasting. Peer-defined fields always use secret input and masking even
+  if remote or legacy metadata marks them non-secret. The user-callable
+  adapter-registration HTTP surface is disabled; installation credentials
+  remain installation-scoped for the single-owner beta, not user-portable.
+
+- **Android CI no longer requests a retired SDK package.** The mobile packaging
+  job installs `platform-tools` explicitly instead of inheriting the setup
+  action's obsolete `tools platform-tools` default.
+
 ## [Unreleased] — Verifiable desktop release artifacts
 
 ### Added

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "079-inference-receipt-capture-order.sql",
+  "asOfMigration": "080-assistant-message-idempotency.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -275,14 +275,23 @@
         },
         {
           "classification": "locally_exposed_metadata",
-          "columns": ["created_at", "id", "role", "thread_id"],
+          "columns": [
+            "client_request_id",
+            "created_at",
+            "id",
+            "request_processing_started_at",
+            "request_processing_token",
+            "role",
+            "thread_id",
+            "user_id"
+          ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
           "migrationStage": "disclosed-local-metadata",
           "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
         }
       ],
-      "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
+      "ownershipNotes": "Ownership is authoritative through assistant_threads; user_id is a denormalized request-key component constrained to match the parent when non-null. Repository access preserves the parent join and scope."
     },
     {
       "table": "assistant_threads",
@@ -693,6 +702,7 @@
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
@@ -1169,6 +1179,7 @@
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
@@ -1222,6 +1233,7 @@
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
@@ -1844,6 +1856,7 @@
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",

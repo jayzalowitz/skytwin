@@ -118,20 +118,24 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
             fieldKey: field.key,
             fieldLabel: field.label,
             fieldPlaceholder: field.placeholder,
-            isSecret: field.secret,
+            // Peer-authored metadata cannot downgrade credential secrecy.
+            isSecret: true,
             isOptional: field.optional,
             skills: req.skills,
           });
         }
-        // Notify all connected users
-        sseManager.emitAll('credential:needed', {
+        // Notify only the owner bound to the prepared action by the execution router.
+        sseManager.emit(req.userId, 'credential:needed', {
           adapter: 'openclaw',
           integration: req.integration,
           label: req.integrationLabel,
           description: req.description,
           skills: req.skills,
         });
-        log.info(`OpenClaw needs credentials for "${req.integrationLabel}" — registered requirement`);
+        log.info('OpenClaw credential requirement registered', {
+          userId: req.userId,
+          adapter: 'openclaw',
+        });
       },
     });
     registry.register('openclaw', openclawAdapter, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);

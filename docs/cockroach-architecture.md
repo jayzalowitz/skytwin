@@ -99,6 +99,8 @@ memory_rooms
 | `decision_outcomes` | Selected action and execution determination | Per-event | Audit, replay, evals |
 | `action_policies` | User-configured policy rules | Low frequency | Per-decision (policy evaluation) |
 | `approval_requests` | Pending and completed approval requests | On escalation | User review queue |
+| `assistant_threads` | Per-user conversational thread metadata | First turn, message activity, deletion | Owner-scoped thread listing and lookup |
+| `assistant_messages` | Chat turns; new writes carry owner-scoped request identity and processing metadata, with owner equality enforced against the parent thread | Once per logical turn | Thread history and completed retry replay |
 | `execution_plans` | Plans sent to IronClaw | On auto-execute | Status tracking |
 | `watches` | No-code routines (#519) — read-only signal watchers (digest/notify on a schedule) | On create / edit / pause | Per-user listing, scheduler `listDue` |
 | `watch_runs` | Canonical firing history for Watches, including matched signal refs and summary text | On each meaningful Watch firing | Briefing projection, Watches run history |

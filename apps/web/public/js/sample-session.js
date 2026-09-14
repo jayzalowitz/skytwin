@@ -5,6 +5,7 @@ import {
   KEY_SESSION_TOKEN,
   KEY_TOUR_MODE,
   KEY_USER_ID,
+  assistantPendingRequestKey,
 } from './storage-keys.js';
 
 export const SAMPLE_USER_ID = 'a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d';
@@ -16,6 +17,7 @@ const SAMPLE_KEYS = [
   KEY_TOUR_MODE,
   KEY_USER_ID,
   KEY_ONBOARDED,
+  assistantPendingRequestKey(SAMPLE_USER_ID),
 ];
 
 /** Read the tab-local sample state without treating it as real auth. */

@@ -568,6 +568,10 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
+        with:
+          # The action's default also requests the retired `tools` package,
+          # which is absent from current hosted-runner SDK repositories.
+          packages: 'platform-tools'
 
       - name: Set up Turbo remote cache
         uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e

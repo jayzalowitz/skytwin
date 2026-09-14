@@ -451,14 +451,14 @@ describe('Capabilities API routes', () => {
   // POST /:id/regret
   // =========================================================================
   describe('POST /:id/regret', () => {
-    it('returns undone and irreversible split', async () => {
+    it('reports reversible and irreversible targets without dispatching', async () => {
       const server = makeMcpServer();
       mockMcpServerRepository.getById.mockResolvedValue(server);
 
       // Two rollback targets — one reversible (no plan linkage), one not.
       // #324: the route resolves targets via the join repo method now. A
-      // reversible action with NULL executionPlanId reports
-      // `result: 'no_plan_linkage'` — honest reporting, no plan to target.
+      // reversible action with NULL executionPlanId remains visible in the
+      // report, but cannot be dispatched without a durable rollback lifecycle.
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-aaa',
@@ -486,25 +486,31 @@ describe('Capabilities API routes', () => {
 
       expect(res.status).toBe(200);
       const body = res.body as {
-        undone: Array<{ actionId: string; planId: string | null; result: string }>;
+        status: string;
+        code: string;
+        undone: unknown[];
+        unavailable: Array<{ actionId: string; planId: string | null; result: string }>;
         irreversible: Array<{ actionId: string; reason: string }>;
       };
-      expect(body.undone).toHaveLength(1);
-      expect(body.undone[0]!.actionId).toBe('action-aaa');
-      expect(body.undone[0]!.planId).toBeNull();
-      expect(body.undone[0]!.result).toBe('no_plan_linkage');
+      expect(body.status).toBe('report_only');
+      expect(body.code).toBe('generic_rollback_report_only');
+      expect(body.undone).toEqual([]);
+      expect(body.unavailable).toHaveLength(1);
+      expect(body.unavailable[0]!.actionId).toBe('action-aaa');
+      expect(body.unavailable[0]!.planId).toBeNull();
+      expect(body.unavailable[0]!.result).toBe('rollback_unavailable');
       expect(body.irreversible).toHaveLength(1);
       expect(body.irreversible[0]!.actionId).toBe('action-bbb');
       expect(body.irreversible[0]!.reason).toBe('Sent email');
-      // No plan to target → the router's rollback is never dispatched.
+      // Report-only mode never resolves or dispatches a router.
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
       expect(mockRouterRollback).not.toHaveBeenCalled();
     });
 
-    it('dispatches IronClawAdapter.rollback via the router and reports rolled_back (#324)', async () => {
+    it('does not dispatch even when exact provider plan linkage exists', async () => {
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: USER_ID }));
 
-      // Reversible action with a resolved plan id + recorded adapter — the
-      // router rollback is dispatched against the SAME adapter that executed it.
+      // Plan linkage remains useful report data, but is not rollback authority.
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-ccc',
@@ -525,23 +531,26 @@ describe('Capabilities API routes', () => {
 
       expect(res.status).toBe(200);
       const body = res.body as {
-        undone: Array<{ actionId: string; planId: string | null; adapterUsed: string | null; result: string }>;
+        status: string;
+        undone: unknown[];
+        unavailable: Array<{ actionId: string; planId: string | null; adapterUsed: string | null; result: string }>;
       };
-      expect(body.undone).toHaveLength(1);
-      expect(body.undone[0]!.planId).toBe('plan-xyz');
-      expect(body.undone[0]!.adapterUsed).toBe('ironclaw');
-      expect(body.undone[0]!.result).toBe('rolled_back');
-      // The router was asked to roll back the resolved plan, targeting the
-      // adapter recorded at execution time.
-      expect(mockRouterRollback).toHaveBeenCalledWith('plan-xyz', 'ironclaw');
-      // Audit trail: a rollback provenance node was written (Safety Invariant #2).
-      const auditCall = mockQuery.mock.calls.find(
-        (c) => typeof c[0] === 'string' && c[0].includes('capability_provenance_nodes'),
+      expect(body.status).toBe('report_only');
+      expect(body.undone).toEqual([]);
+      expect(body.unavailable).toHaveLength(1);
+      expect(body.unavailable[0]!.planId).toBe('plan-xyz');
+      expect(body.unavailable[0]!.adapterUsed).toBe('ironclaw');
+      expect(body.unavailable[0]!.result).toBe('rollback_unavailable');
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockRouterRollback).not.toHaveBeenCalled();
+      const rollbackAuditCall = mockQuery.mock.calls.find(
+        (c) => typeof c[0] === 'string' && c[0].includes('capability_provenance_nodes')
+          && Array.isArray(c[1]) && JSON.stringify(c[1]).includes('rollback'),
       );
-      expect(auditCall).toBeDefined();
+      expect(rollbackAuditCall).toBeUndefined();
     });
 
-    it('reports rollback_failed when the adapter cannot roll back (#324)', async () => {
+    it('does not consult adapter rollback results in report-only mode', async () => {
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: USER_ID }));
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
@@ -569,14 +578,16 @@ describe('Capabilities API routes', () => {
 
       expect(res.status).toBe(200);
       const body = res.body as {
-        undone: Array<{ planId: string | null; result: string; message?: string }>;
+        undone: unknown[];
+        unavailable: Array<{ planId: string | null; result: string; message?: string }>;
       };
-      expect(body.undone).toHaveLength(1);
-      expect(body.undone[0]!.planId).toBe('plan-fail');
-      expect(body.undone[0]!.result).toBe('rollback_failed');
-      expect(body.undone[0]!.message).toBe(
-        'The recorded execution adapter is unavailable for rollback.',
-      );
+      expect(body.undone).toEqual([]);
+      expect(body.unavailable).toHaveLength(1);
+      expect(body.unavailable[0]!.planId).toBe('plan-fail');
+      expect(body.unavailable[0]!.result).toBe('rollback_unavailable');
+      expect(body.unavailable[0]!.message).toContain('durable replay protection');
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockRouterRollback).not.toHaveBeenCalled();
       expect(JSON.stringify({ response: res.body, writes: mockQuery.mock.calls }))
         .not.toContain('ya29.adapter-secret');
     });

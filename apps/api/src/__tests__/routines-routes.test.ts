@@ -1,80 +1,64 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 
-// ---------------------------------------------------------------------------
-// Mock modules -- vi.hoisted ensures these are available when vi.mock
-// factories execute (vi.mock calls are hoisted above all other code).
-// ---------------------------------------------------------------------------
-
-const {
-  mockUserRepository,
-  mockPolicyRepositoryAdapter,
-  mockGetIronClawEnhancedAdapter,
-  mockPolicyEvaluator,
-} = vi.hoisted(() => ({
-  mockUserRepository: {
-    findById: vi.fn(),
-  },
-  mockPolicyRepositoryAdapter: {
-    getAllPolicies: vi.fn(),
-  },
-  mockGetIronClawEnhancedAdapter: vi.fn(),
-  mockPolicyEvaluator: {
-    evaluate: vi.fn(),
-  },
+const mocks = vi.hoisted(() => ({
+  findUser: vi.fn(),
+  getPolicies: vi.fn(),
+  evaluatePolicy: vi.fn(),
+  recordNonAction: vi.fn(),
+  getAdapter: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
-  userRepository: mockUserRepository,
-  policyRepositoryAdapter: mockPolicyRepositoryAdapter,
+  userRepository: { findById: mocks.findUser },
+  policyRepositoryAdapter: { getAllPolicies: mocks.getPolicies },
+  routineNonActionRepository: { record: mocks.recordNonAction },
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
   PolicyEvaluator: vi.fn(function PolicyEvaluator() {
-    return mockPolicyEvaluator;
+    return { evaluate: mocks.evaluatePolicy };
   }),
 }));
 
 vi.mock('../execution-setup.js', () => ({
-  getIronClawEnhancedAdapter: mockGetIronClawEnhancedAdapter,
+  getIronClawEnhancedAdapter: mocks.getAdapter,
 }));
 
 vi.mock('../middleware/require-ownership.js', () => ({
   bindUserIdParamOwnership: vi.fn(),
 }));
 
-vi.mock('@skytwin/shared-types', async () => {
-  const actual = await vi.importActual('@skytwin/shared-types');
-  return actual;
-});
-
-// ---------------------------------------------------------------------------
-// Import the module under test AFTER mocks are wired
-// ---------------------------------------------------------------------------
-
 import { createRoutinesRouter } from '../routes/routines.js';
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
+const validPlan = {
+  action: { actionType: 'send_email' },
+  explanation: 'test routine',
+};
+const adapter = {
+  createRoutine: vi.fn(),
+  listRoutines: vi.fn(),
+  deleteRoutine: vi.fn(),
+};
 
-function buildApp(): Express {
+function buildApp(authenticatedUserId?: string): Express {
   const app = express();
   app.use(express.json());
+  if (authenticatedUserId) {
+    app.use((req, _res, next) => {
+      req.authenticatedUserId = authenticatedUserId;
+      next();
+    });
+  }
   app.use('/api/routines', createRoutinesRouter());
-  // Error handler to capture next(error) calls
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(500).json({ error: err.message });
   });
   return app;
 }
 
-/**
- * Lightweight test helper that makes HTTP requests to an Express app
- * without needing supertest. Uses the native Node fetch API against
- * a locally started server.
- */
 async function request(
   app: Express,
   method: string,
@@ -83,350 +67,338 @@ async function request(
 ): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
-      const addr = server.address();
-      if (!addr || typeof addr === 'string') {
+      const address = server.address();
+      if (!address || typeof address === 'string') {
         server.close();
         reject(new Error('Could not determine port'));
         return;
       }
-      const url = `http://127.0.0.1:${addr.port}${path}`;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      const options: RequestInit = { method, headers };
-      if (body !== undefined) {
-        options.body = JSON.stringify(body);
-      }
-
-      fetch(url, options)
-        .then(async (res) => {
-          const json = await res.json().catch(() => null);
+      const options: RequestInit = {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+      };
+      if (body !== undefined) options.body = JSON.stringify(body);
+      fetch(`http://127.0.0.1:${address.port}${path}`, options)
+        .then(async (response) => {
+          const responseBody = await response.json().catch(() => null);
           server.close();
-          resolve({ status: res.status, body: json });
+          resolve({ status: response.status, body: responseBody });
         })
-        .catch((err) => {
+        .catch((error) => {
           server.close();
-          reject(err);
+          reject(error);
         });
     });
   });
 }
-
-// ---------------------------------------------------------------------------
-// Fixture data
-// ---------------------------------------------------------------------------
-
-const validPlan = {
-  action: { actionType: 'send_email' },
-  explanation: 'test routine',
-};
-
-const mockAdapter = {
-  createRoutine: vi.fn(),
-  listRoutines: vi.fn(),
-  deleteRoutine: vi.fn(),
-};
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe('Routines API routes', () => {
   let app: Express;
 
   beforeEach(() => {
     vi.clearAllMocks();
-
-    mockUserRepository.findById.mockResolvedValue({ id: 'aaaaaaaa-bbbb-cccc-dddd-000000000001', trust_tier: 'autopilot' });
-    mockPolicyRepositoryAdapter.getAllPolicies.mockResolvedValue([]);
-    mockPolicyEvaluator.evaluate.mockResolvedValue({ allowed: true });
-    mockGetIronClawEnhancedAdapter.mockResolvedValue(mockAdapter);
-
-    mockAdapter.createRoutine.mockResolvedValue({ routineId: 'routine-1' });
-    mockAdapter.listRoutines.mockResolvedValue([
+    mocks.findUser.mockResolvedValue({ id: USER_ID, trust_tier: 'autopilot' });
+    mocks.getPolicies.mockResolvedValue([]);
+    mocks.evaluatePolicy.mockResolvedValue({
+      allowed: true,
+      requiresApproval: false,
+      reason: 'Allowed by current policy.',
+    });
+    mocks.recordNonAction.mockResolvedValue({ created: true, decisionId: 'decision-1' });
+    mocks.getAdapter.mockResolvedValue(adapter);
+    adapter.createRoutine.mockResolvedValue({ routineId: 'routine-1' });
+    adapter.listRoutines.mockResolvedValue([
       { id: 'routine-1', schedule: '0 9 * * *' },
       { id: 'routine-2', schedule: '0 17 * * 1-5' },
     ]);
-    mockAdapter.deleteRoutine.mockResolvedValue({ success: true });
-
+    adapter.deleteRoutine.mockResolvedValue({ success: true });
     app = buildApp();
   });
 
-  // =========================================================================
-  // POST /api/routines
-  // =========================================================================
   describe('POST /', () => {
-    it('creates a routine successfully', async () => {
-      const res = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+    it('durably records a deliberate non-action without resolving the write adapter', async () => {
+      const response = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
         schedule: '0 9 * * *',
         plan: validPlan,
       });
 
-      expect(res.status).toBe(201);
-      const body = res.body as { userId: string; schedule: string; routineId: string };
-      expect(body.userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000001');
-      expect(body.schedule).toBe('0 9 * * *');
-      expect(body.routineId).toBe('routine-1');
-      expect(mockAdapter.createRoutine).toHaveBeenCalledWith(
-        'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        '0 9 * * *',
-        expect.objectContaining({
-          action: expect.objectContaining({
-            actionType: 'send_email',
-            parameters: expect.objectContaining({ userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001' }),
-          }),
-          steps: [],
-          rollbackSteps: [],
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({ code: 'routine_registration_unavailable' });
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: expect.objectContaining({
+          selectedAction: null,
+          riskAssessment: null,
+          allCandidates: [expect.any(Object)],
+          allRiskAssessments: [expect.any(Object)],
+          autoExecute: false,
+          requiresApproval: false,
+          reasoning: expect.stringContaining('runtime policy and explanation admission'),
         }),
+        explanation: expect.objectContaining({
+          summary: 'The routine was not registered.',
+          escalationRationale: expect.stringContaining('runtime policy and explanation admission'),
+        }),
+      }));
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+      expect(adapter.createRoutine).not.toHaveBeenCalled();
+    });
+
+    it('persists only a server-normalized candidate', async () => {
+      await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
+        schedule: '0 9 * * *',
+        plan: {
+          action: {
+            actionType: 'send_email',
+            costZeroIntent: 'verified_zero',
+            reversible: true,
+            provenance: 'user_originated',
+            estimatedCostCents: -100,
+            parameters: { subject: 'hello' },
+          },
+          steps: [{ type: 'shell_exec', command: 'unchecked' }],
+        },
+      });
+
+      const candidate = mocks.recordNonAction.mock.calls[0]![0].action;
+      expect(candidate).toMatchObject({
+        actionType: 'send_email',
+        costZeroIntent: 'unknown',
+        reversible: false,
+        provenance: 'untrusted_external',
+        estimatedCostCents: 0,
+        parameters: { subject: 'hello', userId: USER_ID },
+      });
+      expect(candidate).not.toHaveProperty('steps');
+      expect(mocks.evaluatePolicy).toHaveBeenCalledWith(
+        candidate,
+        [],
+        'autopilot',
+        expect.any(Object),
+        expect.any(Object),
       );
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
-    it('does NOT trust a caller-supplied verified_zero / reversible for a costed action type', async () => {
-      await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-        plan: { action: { actionType: 'send_email', costZeroIntent: 'verified_zero', reversible: true } },
-      });
-      const checked = mockPolicyEvaluator.evaluate.mock.calls[0]![0] as {
-        costZeroIntent: string; reversible: boolean; provenance: string;
-      };
-      expect(checked.costZeroIntent).toBe('unknown'); // server overrode the caller's claim
-      expect(checked.reversible).toBe(false); // not a free type → assumed irreversible
-      expect(checked.provenance).toBe('untrusted_external');
-    });
+    it('fails closed with no adapter access when the atomic audit write fails', async () => {
+      mocks.recordNonAction.mockRejectedValueOnce(new Error('audit transaction rolled back'));
 
-    it('classifies a known free action type as verified_zero + reversible', async () => {
-      await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-        plan: { action: { actionType: 'create_note' } },
-      });
-      const checked = mockPolicyEvaluator.evaluate.mock.calls[0]![0] as {
-        costZeroIntent: string; reversible: boolean;
-      };
-      expect(checked.costZeroIntent).toBe('verified_zero');
-      expect(checked.reversible).toBe(true);
-    });
-
-    it('registers only the normalized action — caller-supplied steps are dropped', async () => {
-      await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-        plan: { action: { actionType: 'create_note' }, steps: [{ type: 'shell_exec', cmd: 'rm -rf /' }] },
-      });
-      const registered = mockAdapter.createRoutine.mock.calls[0]![2] as { steps: unknown[] };
-      expect(registered.steps).toEqual([]); // the unchecked shell_exec step is not registered
-    });
-
-    it('returns 400 for missing fields', async () => {
-      // Missing userId
-      const res1 = await request(app, 'POST', '/api/routines', {
+      const response = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
         schedule: '0 9 * * *',
         plan: validPlan,
       });
-      expect(res1.status).toBe(400);
 
-      // Missing schedule
-      const res2 = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        plan: validPlan,
-      });
-      expect(res2.status).toBe(400);
-
-      // Missing plan
-      const res3 = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-      });
-      expect(res3.status).toBe(400);
+      expect(response.status).toBe(500);
+      expect(response.body).toEqual({ error: 'audit transaction rolled back' });
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+      expect(adapter.createRoutine).not.toHaveBeenCalled();
     });
 
-    it('returns 400 for invalid cron schedule', async () => {
-      const res = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+    it('persists the policy denial and never registers the routine', async () => {
+      mocks.evaluatePolicy.mockResolvedValueOnce({
+        allowed: false,
+        requiresApproval: false,
+        reason: 'Spend limit exceeded.',
+      });
+
+      const response = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
+        schedule: '0 9 * * *',
+        plan: validPlan,
+      });
+
+      expect(response.status).toBe(403);
+      expect(response.body).toMatchObject({ code: 'routine_blocked_by_policy' });
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: expect.objectContaining({
+          selectedAction: null,
+          riskAssessment: null,
+          reasoning: 'Spend limit exceeded.',
+        }),
+        explanation: expect.any(Object),
+      }));
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+    });
+
+    it('suppresses a replay before writing child artifacts or resolving the adapter', async () => {
+      mocks.recordNonAction.mockResolvedValueOnce({ created: false, decisionId: 'existing' });
+
+      const response = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
+        schedule: '0 9 * * *',
+        plan: validPlan,
+      });
+
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({ code: 'routine_write_already_recorded' });
+      expect(mocks.recordNonAction).toHaveBeenCalledOnce();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+    });
+
+    it('rejects malformed requests before durable writes', async () => {
+      const missing = await request(app, 'POST', '/api/routines', {
+        schedule: '0 9 * * *',
+        plan: validPlan,
+      });
+      const invalidSchedule = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
         schedule: 'not-a-cron',
         plan: validPlan,
       });
-
-      expect(res.status).toBe(400);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/Invalid schedule format/);
-    });
-
-    it('returns 400 for missing plan.action.actionType', async () => {
-      const res = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+      const missingAction = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
         schedule: '0 9 * * *',
         plan: { action: {} },
       });
 
-      expect(res.status).toBe(400);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/actionType/);
+      expect([missing.status, invalidSchedule.status, missingAction.status]).toEqual([400, 400, 400]);
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
-    it('returns 404 when user not found', async () => {
-      mockUserRepository.findById.mockResolvedValue(null);
-
-      const res = await request(app, 'POST', '/api/routines', {
-        userId: 'nonexistent-user',
+    it.each([
+      ['', 'empty'],
+      ['   ', 'whitespace'],
+      ['x'.repeat(129), 'overlong'],
+      ['send_email\nignored', 'control-character'],
+      [42, 'non-string'],
+    ])('rejects %s action types before typed artifacts are built (%s)', async (actionType, _label) => {
+      const response = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
         schedule: '0 9 * * *',
-        plan: validPlan,
+        plan: { action: { actionType } },
       });
 
-      expect(res.status).toBe(404);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/User not found/);
+      expect(response.status).toBe(400);
+      expect(mocks.evaluatePolicy).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
-    it('returns 403 when policy blocks the action', async () => {
-      mockPolicyEvaluator.evaluate.mockResolvedValue({
-        allowed: false,
-        reason: 'Spend limit exceeded',
-      });
+    it('can retry after an atomic audit failure without touching the adapter', async () => {
+      mocks.recordNonAction
+        .mockRejectedValueOnce(new Error('audit transaction rolled back'))
+        .mockResolvedValueOnce({ created: true, decisionId: 'decision-1' });
+      const requestBody = { userId: USER_ID, schedule: '0 9 * * *', plan: validPlan };
 
-      const res = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-        plan: validPlan,
-      });
+      const first = await request(app, 'POST', '/api/routines', requestBody);
+      const retry = await request(app, 'POST', '/api/routines', requestBody);
 
-      expect(res.status).toBe(403);
-      const body = res.body as { error: string; reason: string };
-      expect(body.error).toMatch(/blocked by policy/);
-      expect(body.reason).toBe('Spend limit exceeded');
-    });
-
-    it('returns 403 when the action requires approval (cannot run unattended)', async () => {
-      mockPolicyEvaluator.evaluate.mockResolvedValue({
-        allowed: true,
-        requiresApproval: true,
-        reason: 'Irreversible action requires approval',
-      });
-
-      const res = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-        plan: validPlan,
-      });
-
-      expect(res.status).toBe(403);
-      const body = res.body as { error: string; reason: string };
-      expect(body.error).toMatch(/requires manual approval/);
-      expect(body.reason).toBe('Irreversible action requires approval');
-      expect(mockAdapter.createRoutine).not.toHaveBeenCalled();
-    });
-
-    it('evaluates the action with a riskAssessment AND autonomySettings (full policy gate)', async () => {
-      await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-        plan: validPlan,
-      });
-      const evalArgs = mockPolicyEvaluator.evaluate.mock.calls[0]!;
-      expect(evalArgs).toHaveLength(5); // action, policies, tier, riskAssessment, autonomy
-      expect(evalArgs[3]).toBeDefined(); // riskAssessment (enables reversibility/risk rules)
-      expect(evalArgs[4]).toBeDefined(); // autonomySettings (enables the spend hard-limit)
-    });
-
-    it('returns 503 when adapter unavailable', async () => {
-      mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
-
-      const res = await request(app, 'POST', '/api/routines', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-        schedule: '0 9 * * *',
-        plan: validPlan,
-      });
-
-      expect(res.status).toBe(503);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/unavailable/);
+      expect(first.status).toBe(500);
+      expect(retry.status).toBe(503);
+      expect(mocks.recordNonAction).toHaveBeenCalledTimes(2);
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
   });
 
-  // =========================================================================
-  // GET /api/routines/:userId
-  // =========================================================================
   describe('GET /:userId', () => {
-    it('lists routines successfully', async () => {
-      const res = await request(app, 'GET', '/api/routines/aaaaaaaa-bbbb-cccc-dddd-000000000001');
+    it('preserves read-only routine listing', async () => {
+      const response = await request(app, 'GET', `/api/routines/${USER_ID}`);
 
-      expect(res.status).toBe(200);
-      const body = res.body as {
-        userId: string;
-        routines: Array<{ id: string; schedule: string }>;
-        available: boolean;
-      };
-      expect(body.userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000001');
-      expect(body.routines).toHaveLength(2);
-      expect(body.available).toBe(true);
-      expect(mockAdapter.listRoutines).toHaveBeenCalledWith('aaaaaaaa-bbbb-cccc-dddd-000000000001');
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({ userId: USER_ID, available: true });
+      expect(adapter.listRoutines).toHaveBeenCalledWith(USER_ID);
     });
 
-    it('returns available: false when adapter unavailable', async () => {
-      mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
+    it('reports listing unavailable when no adapter is configured', async () => {
+      mocks.getAdapter.mockResolvedValueOnce(null);
+      const response = await request(app, 'GET', `/api/routines/${USER_ID}`);
 
-      const res = await request(app, 'GET', '/api/routines/aaaaaaaa-bbbb-cccc-dddd-000000000001');
-
-      expect(res.status).toBe(200);
-      const body = res.body as {
-        userId: string;
-        routines: unknown[];
-        available: boolean;
-      };
-      expect(body.userId).toBe('aaaaaaaa-bbbb-cccc-dddd-000000000001');
-      expect(body.routines).toHaveLength(0);
-      expect(body.available).toBe(false);
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ userId: USER_ID, routines: [], available: false });
     });
   });
 
-  // =========================================================================
-  // DELETE /api/routines/:routineId
-  // =========================================================================
   describe('DELETE /:routineId', () => {
-    it('deletes owned routine successfully', async () => {
-      const res = await request(app, 'DELETE', '/api/routines/routine-1', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-      });
+    it('durably records a deliberate non-action with zero remote calls', async () => {
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
-      expect(res.status).toBe(200);
-      const body = res.body as { routineId: string; deleted: boolean };
-      expect(body.routineId).toBe('routine-1');
-      expect(body.deleted).toBe(true);
-      expect(mockAdapter.deleteRoutine).toHaveBeenCalledWith('routine-1');
+      expect(response.status).toBe(503);
+      expect(response.body).toMatchObject({
+        routineId: 'routine-1',
+        deleted: false,
+        code: 'routine_deletion_unavailable',
+      });
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        action: expect.objectContaining({
+          actionType: 'delete_routine',
+          reversible: false,
+          parameters: { userId: USER_ID, routineId: 'routine-1' },
+        }),
+        outcome: expect.objectContaining({
+          selectedAction: null,
+          riskAssessment: null,
+          autoExecute: false,
+          requiresApproval: false,
+          reasoning: expect.stringContaining('durable admission and reconciliation'),
+        }),
+        explanation: expect.objectContaining({ summary: 'The routine was not deleted.' }),
+      }));
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+      expect(adapter.listRoutines).not.toHaveBeenCalled();
+      expect(adapter.deleteRoutine).not.toHaveBeenCalled();
     });
 
-    it('returns 400 when userId missing', async () => {
-      const res = await request(app, 'DELETE', '/api/routines/routine-1', {});
-
-      expect(res.status).toBe(400);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/Missing required userId/);
-    });
-
-    it('returns 403 when routine not owned by user', async () => {
-      mockAdapter.listRoutines.mockResolvedValue([
-        { id: 'routine-99', schedule: '0 9 * * *' },
-      ]);
-
-      const res = await request(app, 'DELETE', '/api/routines/routine-1', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
+    it('persists a policy block without touching the remote adapter', async () => {
+      mocks.evaluatePolicy.mockResolvedValueOnce({
+        allowed: false,
+        requiresApproval: false,
+        reason: 'Routine changes are disabled by policy.',
       });
 
-      expect(res.status).toBe(403);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/does not belong to you/);
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+
+      expect(response.status).toBe(403);
+      expect(response.body).toMatchObject({ code: 'routine_blocked_by_policy' });
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: expect.objectContaining({ reasoning: 'Routine changes are disabled by policy.' }),
+        explanation: expect.any(Object),
+      }));
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
-    it('returns 503 when adapter unavailable', async () => {
-      mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
+    it('fails closed with no remote calls when the deletion audit transaction fails', async () => {
+      mocks.recordNonAction.mockRejectedValueOnce(new Error('audit transaction rolled back'));
 
-      const res = await request(app, 'DELETE', '/api/routines/routine-1', {
-        userId: 'aaaaaaaa-bbbb-cccc-dddd-000000000001',
-      });
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
-      expect(res.status).toBe(503);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/unavailable/);
+      expect(response.status).toBe(500);
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+      expect(adapter.listRoutines).not.toHaveBeenCalled();
+      expect(adapter.deleteRoutine).not.toHaveBeenCalled();
+    });
+
+    it('suppresses deletion replay before child records or remote access', async () => {
+      mocks.recordNonAction.mockResolvedValueOnce({ created: false, decisionId: 'existing' });
+
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({ code: 'routine_write_already_recorded' });
+      expect(mocks.recordNonAction).toHaveBeenCalledOnce();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+    });
+
+    it('rejects an authenticated owner mismatch before reads or writes', async () => {
+      app = buildApp('bbbbbbbb-bbbb-cccc-dddd-000000000002');
+
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+
+      expect(response.status).toBe(403);
+      expect(mocks.findUser).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+    });
+
+    it('rejects missing ownership input and malformed routine ids', async () => {
+      const missingOwner = await request(app, 'DELETE', '/api/routines/routine-1', {});
+      const malformedId = await request(app, 'DELETE', `/api/routines/${'x'.repeat(257)}`, { userId: USER_ID });
+
+      expect([missingOwner.status, malformedId.status]).toEqual([400, 400]);
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
   });
 });

@@ -58,6 +58,28 @@ describe('assistant Watch draft footer', () => {
   });
 });
 
+describe('assistant retry identity lifecycle', () => {
+  it('persists the owner-bound identity before opening the stream', () => {
+    expect(assistantSource.indexOf('writePendingAssistantRequest(requestUserId, requestIdentity)'))
+      .toBeLessThan(assistantSource.indexOf('sendAssistantMessageStream(requestUserId'));
+  });
+
+  it('restores pending identity and treats a user switch as a separate owner', () => {
+    expect(assistantSource).toContain('readPendingAssistantRequest(userId)');
+    expect(assistantSource).toContain('previousUserId !== userId');
+    expect(assistantSource).toContain('_state.streamController?.abort()');
+    expect(assistantSource).toContain('renderGeneration === _renderGeneration');
+    expect(assistantSource).toContain('if (!isCurrentRender()) return;');
+  });
+
+  it('clears durable identity on completion and explicit edits', () => {
+    expect(assistantSource).toContain(
+      'clearPendingAssistantRequest(requestUserId, requestIdentity.requestId)',
+    );
+    expect(assistantSource).toContain('clearPendingAssistantRequest(_state.userId)');
+  });
+});
+
 describe('onboarding capability copy', () => {
   it('does not claim screen / app / window / browser observation it cannot do', () => {
     expect(onboardingSource).not.toContain('watching which apps you use');

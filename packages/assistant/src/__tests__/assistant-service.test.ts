@@ -260,7 +260,7 @@ describe('AssistantService.replyStream', () => {
       {
         type: 'error',
         partialContent: 'Partial reply',
-        message: 'mid-stream provider failure',
+        message: 'assistant_stream_failed',
       },
     ]);
   });
@@ -408,15 +408,18 @@ describe('AssistantService.routeIntent', () => {
     }));
   });
 
-  it('downgrades router throws to null (graceful degradation to chat reply)', async () => {
+  it('turns router failures into an explicit deliberate non-action', async () => {
     const router = {
       route: vi.fn().mockRejectedValue(new Error('decision engine offline')),
     };
     const service = new AssistantService(stubLlm(), undefined, null, router);
     const result = await service.routeIntent('user-1', 'archive that email');
-    // Router threw; routeIntent returns null so the route falls through
-    // to the regular LLM chat reply instead of crashing the turn.
-    expect(result).toBeNull();
+    expect(result).toMatchObject({
+      outcome: {
+        kind: 'failed',
+        reason: expect.stringContaining('Nothing was queued or executed'),
+      },
+    });
     expect(router.route).toHaveBeenCalledTimes(1);
   });
 

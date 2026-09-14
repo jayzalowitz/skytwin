@@ -1,0 +1,365 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import express from 'express';
+import type { Express } from 'express';
+
+const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+const REQUEST_ID = '11111111-2222-3333-4444-555555555555';
+const THREAD_ID = '22222222-2222-3333-4444-555555555555';
+const USER_MESSAGE = {
+  id: '33333333-2222-3333-4444-555555555555',
+  threadId: THREAD_ID,
+  role: 'user' as const,
+  content: 'archive that email',
+  createdAt: new Date(),
+  metadata: null,
+  clientRequestId: REQUEST_ID,
+};
+const ASSISTANT_MESSAGE = {
+  id: '44444444-2222-3333-4444-555555555555',
+  threadId: THREAD_ID,
+  role: 'assistant' as const,
+  content: 'Approval required.',
+  createdAt: new Date(),
+  metadata: {
+    intentRoute: { kind: 'requires-approval', approvalRequestId: 'approval-1' },
+  },
+};
+
+const mocks = vi.hoisted(() => ({
+  findUser: vi.fn(),
+  createThread: vi.fn(),
+  createThreadWithUserMessage: vi.fn(),
+  appendUser: vi.fn(),
+  getThread: vi.fn(),
+  appendMessage: vi.fn(),
+  findAssistant: vi.fn(),
+  appendAssistant: vi.fn(),
+  routeIntent: vi.fn(),
+  reply: vi.fn(),
+  replyStream: vi.fn(),
+}));
+
+vi.mock('@skytwin/db', () => ({
+  aiProviderRepository: {
+    getEnabledForUser: vi
+      .fn()
+      .mockResolvedValue([{ provider: 'openai', api_key: 'key', model: 'model', base_url: null }]),
+  },
+  assistantRepository: {
+    findUserMessageByRequestId: mocks.findUser,
+    createThread: mocks.createThread,
+    createThreadWithUserMessage: mocks.createThreadWithUserMessage,
+    appendOrGetUserMessage: mocks.appendUser,
+    getThread: mocks.getThread,
+    appendMessage: mocks.appendMessage,
+    findAssistantMessageByRequestId: mocks.findAssistant,
+    appendOrGetAssistantMessage: mocks.appendAssistant,
+  },
+  approvalRepository: {},
+  emailLabelRepository: {},
+  mcpServerRepository: {},
+  mempalaceRepository: {},
+  userRepository: { findById: vi.fn() },
+  TwinRepositoryAdapter: vi.fn(),
+  PatternRepositoryAdapter: vi.fn(),
+  decisionRepositoryAdapter: {},
+  explanationRepositoryAdapter: {},
+  policyRepositoryAdapter: {},
+  preEffectBarrierRepository: {},
+}));
+vi.mock('@skytwin/assistant', () => ({
+  AssistantService: vi.fn(function AssistantService() {
+    return { routeIntent: mocks.routeIntent, reply: mocks.reply, replyStream: mocks.replyStream };
+  }),
+  ContextBuilder: vi.fn(),
+  detectIntent: vi.fn(() => ({ domain: 'email' })),
+}));
+vi.mock('@skytwin/llm-client', () => ({
+  LlmClient: vi.fn(),
+  AllProvidersFailedError: class AllProvidersFailedError extends Error {},
+}));
+vi.mock('@skytwin/twin-model', () => ({ TwinService: vi.fn() }));
+vi.mock('@skytwin/decision-engine', () => ({ DecisionMaker: vi.fn() }));
+vi.mock('@skytwin/policy-engine', () => ({ PolicyEvaluator: vi.fn() }));
+vi.mock('@skytwin/explanations', () => ({ ExplanationGenerator: vi.fn() }));
+vi.mock('@skytwin/core', () => ({
+  createLogger: () => ({
+    warn: vi.fn(),
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  }),
+}));
+vi.mock('@skytwin/policy-prompts', () => ({ runPrompt: vi.fn() }));
+vi.mock('@skytwin/registry-client', () => ({ RegistryClient: vi.fn() }));
+vi.mock('../memory-setup.js', () => ({ getMemoryPortForUser: vi.fn() }));
+vi.mock('../sse.js', () => ({ sseManager: { emit: vi.fn() } }));
+vi.mock('../lib/user-llm-client.js', () => ({
+  resolveUserLlmClient: vi.fn().mockResolvedValue({
+    client: {},
+    state: 'cloud_allowed',
+    reason: 'test provider',
+  }),
+}));
+
+import { createAssistantRouter } from '../routes/assistant.js';
+
+function buildApp(): Express {
+  const app = express();
+  app.use(express.json());
+  app.use('/api/assistant', createAssistantRouter());
+  return app;
+}
+
+async function post(app: Express): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(0, async () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('listen failed'));
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/assistant/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            userId: USER_ID,
+            content: USER_MESSAGE.content,
+            requestId: REQUEST_ID,
+          }),
+        });
+        resolve({
+          status: response.status,
+          body: (await response.json()) as Record<string, unknown>,
+        });
+      } catch (error) {
+        reject(error);
+      } finally {
+        server.close();
+      }
+    });
+  });
+}
+
+async function postSse(app: Express): Promise<{ status: number; contentType: string; body: string }> {
+  return new Promise((resolve, reject) => {
+    const server = app.listen(0, async () => {
+      const address = server.address();
+      if (!address || typeof address === 'string') return reject(new Error('listen failed'));
+      try {
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/assistant/messages`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+          body: JSON.stringify({
+            userId: USER_ID,
+            content: USER_MESSAGE.content,
+            requestId: REQUEST_ID,
+          }),
+        });
+        resolve({
+          status: response.status,
+          contentType: response.headers.get('content-type') ?? '',
+          body: await response.text(),
+        });
+      } catch (error) {
+        reject(error);
+      } finally {
+        server.close();
+      }
+    });
+  });
+}
+
+describe('POST /api/assistant/messages idempotency', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    let persistedAssistant = false;
+    mocks.findUser.mockResolvedValueOnce(null).mockResolvedValue(USER_MESSAGE);
+    mocks.createThread.mockResolvedValue({ id: THREAD_ID });
+    mocks.createThreadWithUserMessage.mockResolvedValue({
+      thread: { id: THREAD_ID },
+      message: USER_MESSAGE,
+      created: true,
+    });
+    mocks.appendUser.mockResolvedValue({
+      message: USER_MESSAGE,
+      created: false,
+    });
+    mocks.getThread.mockImplementation(async () => ({
+      thread: { id: THREAD_ID },
+      messages: persistedAssistant ? [USER_MESSAGE, ASSISTANT_MESSAGE] : [USER_MESSAGE],
+    }));
+    mocks.appendMessage.mockImplementation(async () => {
+      persistedAssistant = true;
+      return ASSISTANT_MESSAGE;
+    });
+    mocks.findAssistant.mockImplementation(async () =>
+      persistedAssistant ? ASSISTANT_MESSAGE : null,
+    );
+    mocks.appendAssistant.mockImplementation(async () => {
+      persistedAssistant = true;
+      return ASSISTANT_MESSAGE;
+    });
+    mocks.routeIntent.mockResolvedValue({
+      intent: { domain: 'email' },
+      outcome: { kind: 'requires-approval', approvalRequestId: 'approval-1' },
+    });
+    mocks.reply.mockResolvedValue({
+      content: 'Hello.',
+      metadata: { provider: 'test' },
+    });
+    mocks.replyStream.mockImplementation(async function* replyStream() {
+      yield { type: 'chunk', content: 'Hello.' };
+      yield {
+        type: 'done',
+        fullContent: 'Hello.',
+        metadata: { provider: 'test', model: 'test', latencyMs: 1 },
+      };
+    });
+  });
+
+  it('reuses one user message, action idempotency key, and approval bubble across two requests', async () => {
+    const app = buildApp();
+    const first = await post(app);
+    const second = await post(app);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(mocks.createThread).not.toHaveBeenCalled();
+    expect(mocks.createThreadWithUserMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.appendUser).not.toHaveBeenCalled();
+    expect(mocks.appendAssistant).toHaveBeenCalledTimes(1);
+    expect(mocks.appendMessage).not.toHaveBeenCalled();
+    expect(mocks.routeIntent).toHaveBeenCalledTimes(1);
+    expect(mocks.routeIntent.mock.calls.map((call) => call[2]?.idempotencyKey)).toEqual([
+      USER_MESSAGE.id,
+    ]);
+  });
+
+  it('returns a typed ambiguous failure when an approval bubble cannot be reconciled', async () => {
+    mocks.appendAssistant.mockRejectedValueOnce(new Error('append response unknown'));
+    mocks.findAssistant.mockRejectedValueOnce(new Error('reconciliation read unavailable'));
+
+    const response = await post(buildApp());
+
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({
+      code: 'assistant_response_reconciliation_required',
+      approvalRequestId: 'approval-1',
+    });
+    expect(mocks.routeIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns typed 202 when a concurrent duplicate cannot yet be reconciled', async () => {
+    let releaseOwner!: () => void;
+    let ownerEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      ownerEntered = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseOwner = resolve;
+    });
+    const outcome = {
+      intent: { domain: 'email' },
+      outcome: { kind: 'requires-approval', approvalRequestId: 'approval-1' },
+    };
+    mocks.routeIntent.mockImplementationOnce(async () => {
+      ownerEntered();
+      await release;
+      return outcome;
+    });
+
+    const app = buildApp();
+    const ownerRequest = post(app);
+    await entered;
+    const duplicate = await post(app);
+    releaseOwner();
+    const owner = await ownerRequest;
+
+    expect(owner.status).toBe(200);
+    expect(duplicate.status).toBe(202);
+    expect(duplicate.body).toMatchObject({
+      status: 'unresolved',
+      code: 'assistant_request_recovery_required',
+    });
+    expect(mocks.routeIntent).toHaveBeenCalledTimes(1);
+  });
+
+  it('never time-adopts an unfinished request because the original provider may still be running', async () => {
+    mocks.findUser.mockReset().mockResolvedValue(USER_MESSAGE);
+    mocks.createThreadWithUserMessage.mockReset();
+
+    const response = await post(buildApp());
+
+    expect(response.status).toBe(202);
+    expect(response.body).toMatchObject({
+      status: 'unresolved',
+      code: 'assistant_request_recovery_required',
+    });
+    expect(mocks.routeIntent).not.toHaveBeenCalled();
+    expect(mocks.reply).not.toHaveBeenCalled();
+    expect(mocks.appendAssistant).not.toHaveBeenCalled();
+  });
+
+  it('returns a completed insert-race replay in the requested SSE wire format', async () => {
+    mocks.findUser.mockReset().mockResolvedValue(null);
+    mocks.createThreadWithUserMessage.mockResolvedValueOnce({
+      thread: { id: THREAD_ID },
+      message: USER_MESSAGE,
+      created: false,
+    });
+    mocks.findAssistant.mockResolvedValue(ASSISTANT_MESSAGE);
+
+    const response = await postSse(buildApp());
+
+    expect(response.status).toBe(200);
+    expect(response.contentType).toContain('text/event-stream');
+    expect(response.body).toContain('event: thread');
+    expect(response.body).toContain('event: user');
+    expect(response.body).toContain('event: done');
+    expect(mocks.routeIntent).not.toHaveBeenCalled();
+    expect(mocks.reply).not.toHaveBeenCalled();
+  });
+
+  it('emits recovery-required instead of done when a streamed reply is not durably reconciled', async () => {
+    mocks.routeIntent.mockResolvedValueOnce(null);
+    mocks.appendAssistant.mockRejectedValueOnce(new Error('write response unavailable'));
+    mocks.findAssistant.mockRejectedValueOnce(new Error('reconciliation read unavailable'));
+
+    const response = await postSse(buildApp());
+
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('event: chunk');
+    expect(response.body).toContain('event: error');
+    expect(response.body).toContain('assistant_response_reconciliation_required');
+    expect(response.body).not.toContain('event: done');
+  });
+
+  it('reconciles a committed streamed reply after its write response is lost', async () => {
+    mocks.routeIntent.mockResolvedValueOnce(null);
+    mocks.appendAssistant.mockRejectedValueOnce(new Error('write response unavailable'));
+    mocks.findAssistant.mockResolvedValueOnce(ASSISTANT_MESSAGE);
+
+    const response = await postSse(buildApp());
+
+    expect(response.status).toBe(200);
+    expect(response.body).toContain('event: done');
+    expect(response.body).toContain(ASSISTANT_MESSAGE.id);
+    expect(response.body).not.toContain('event: error');
+  });
+
+  it('deduplicates concurrent new-thread ordinary chat after a recoverable commit response', async () => {
+    mocks.routeIntent.mockResolvedValue(null);
+    mocks.findUser.mockReset().mockResolvedValueOnce(null).mockResolvedValue(USER_MESSAGE);
+
+    const responses = await Promise.all([post(buildApp()), post(buildApp())]);
+
+    expect(responses.some((response) => response.status === 200)).toBe(true);
+    expect(responses.every((response) => response.status === 200 || response.status === 202)).toBe(
+      true,
+    );
+    expect(mocks.createThreadWithUserMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.createThread).not.toHaveBeenCalled();
+    expect(mocks.reply).toHaveBeenCalledTimes(1);
+    expect(mocks.appendAssistant).toHaveBeenCalledTimes(1);
+    expect(mocks.appendMessage).not.toHaveBeenCalled();
+  });
+});

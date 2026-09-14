@@ -28,9 +28,12 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
 async function buildPlanFromAdapter(
   adapter: OpenClawAdapter,
   actionOverrides: Partial<CandidateAction> = {},
+  executionOwnerId: string | null = 'user-1',
 ): Promise<ExecutionPlan> {
   const action = makeAction(actionOverrides);
-  return adapter.buildPlan(action);
+  const plan = await adapter.buildPlan(action);
+  if (executionOwnerId !== null) plan.executionOwnerId = executionOwnerId;
+  return plan;
 }
 
 /** Create a Response-like object for fetch mock */
@@ -85,6 +88,7 @@ describe('OpenClawAdapter credential_required handling', () => {
       // Verify the callback received the correct shape
       const requirement = onCredentialNeeded.mock
         .calls[0]![0] as OpenClawCredentialRequirement;
+      expect(requirement.userId).toBe('user-1');
       expect(requirement.integration).toBe('twitter');
       expect(requirement.integrationLabel).toBe('Twitter / X');
       expect(requirement.description).toBe('Post tweets');
@@ -147,10 +151,97 @@ describe('OpenClawAdapter credential_required handling', () => {
         key: 'channel_id',
         label: 'Default Channel',
         placeholder: '#general',
-        secret: false,
+        secret: true,
         optional: true,
       });
       expect(requirement.skills).toEqual(['send_message', 'post_update']);
+    });
+
+    it('does not let peer metadata downgrade credential fields to non-secret', async () => {
+      const onCredentialNeeded = vi.fn() as MockFn;
+      const adapter = new OpenClawAdapter({
+        apiUrl: 'http://localhost:9000',
+        onCredentialNeeded,
+      });
+      fetchMock.mockResolvedValueOnce(jsonResponse({
+        credential_required: {
+          integration: 'custom',
+          label: 'Custom',
+          fields: [
+            { key: 'auth', label: 'Authorization', secret: false },
+            { key: 'session', label: 'Session' },
+          ],
+          skills: ['custom_action'],
+        },
+      }));
+
+      await adapter.execute(await buildPlanFromAdapter(adapter));
+
+      const requirement = onCredentialNeeded.mock.calls[0]![0] as OpenClawCredentialRequirement;
+      expect(requirement.fields.map((field) => field.secret)).toEqual([true, true]);
+    });
+  });
+
+  describe('credential metadata validation', () => {
+    it.each([
+      {
+        label: 'peer-supplied owner',
+        requirement: { integration: 'github', label: 'GitHub', userId: 'another-user' },
+      },
+      {
+        label: 'unknown nested field property',
+        requirement: {
+          integration: 'github',
+          label: 'GitHub',
+          fields: [{ key: 'token', label: 'Token', secret: true, value: 'not-accepted' }],
+        },
+      },
+      {
+        label: 'oversized nested field label',
+        requirement: {
+          integration: 'github',
+          label: 'GitHub',
+          fields: [{ key: 'token', label: 'x'.repeat(81), secret: true }],
+        },
+      },
+      {
+        label: 'too many fields',
+        requirement: {
+          integration: 'github',
+          label: 'GitHub',
+          fields: Array.from({ length: 21 }, (_, index) => ({
+            key: `token_${index}`,
+            label: `Token ${index}`,
+          })),
+        },
+      },
+    ])('rejects $label without notifying a callback', async ({ requirement }) => {
+      const onCredentialNeeded = vi.fn() as MockFn;
+      const adapter = new OpenClawAdapter({
+        apiUrl: 'http://localhost:9000',
+        onCredentialNeeded,
+      });
+      fetchMock.mockResolvedValueOnce(jsonResponse({ credential_required: requirement }));
+      const plan = await buildPlanFromAdapter(adapter);
+
+      await expect(adapter.execute(plan)).rejects.toThrow('outcome is ambiguous');
+      expect(onCredentialNeeded).not.toHaveBeenCalled();
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    });
+
+    it('requires the execution-router-bound owner before notifying a callback', async () => {
+      const onCredentialNeeded = vi.fn() as MockFn;
+      const adapter = new OpenClawAdapter({
+        apiUrl: 'http://localhost:9000',
+        onCredentialNeeded,
+      });
+      fetchMock.mockResolvedValueOnce(jsonResponse({
+        credential_required: { integration: 'github', label: 'GitHub' },
+      }));
+      const plan = await buildPlanFromAdapter(adapter, {}, null);
+
+      await expect(adapter.execute(plan)).rejects.toThrow('outcome is ambiguous');
+      expect(onCredentialNeeded).not.toHaveBeenCalled();
     });
   });
 

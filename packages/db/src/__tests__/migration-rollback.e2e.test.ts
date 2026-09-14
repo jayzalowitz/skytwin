@@ -3,6 +3,7 @@
  * E2E=true MIGRATION_ROLLBACK_E2E=true pnpm --filter @skytwin/db exec vitest run \
  *   src/__tests__/migration-rollback.e2e.test.ts
  */
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { closePool } from '../connection.js';
@@ -21,6 +22,10 @@ interface SemanticConstraint {
 }
 
 const OWNED = [...SKYTWIN_OWNED_TABLES];
+const ASSISTANT_IDEMPOTENCY_MIGRATION = readFileSync(
+  new URL('../migrations/080-assistant-message-idempotency.sql', import.meta.url),
+  'utf8',
+);
 
 async function semanticConstraints(): Promise<SemanticConstraint[]> {
   const result = await pool.query<SemanticConstraint>(`
@@ -288,6 +293,73 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     try {
     await up();
     expect(await ownedTables()).toEqual(OWNED);
+    const orphanUserId = '00000000-0000-4000-8000-000000000080';
+    const orphanThreadId = '00000000-0000-4000-8000-000000000081';
+    const orphanMessageId = '00000000-0000-4000-8000-000000000082';
+    await pool.query(
+      `INSERT INTO assistant_threads (id, user_id, title) VALUES ($1, $2, 'legacy orphan')`,
+      [orphanThreadId, orphanUserId],
+    );
+    await pool.query(
+      `INSERT INTO assistant_messages (id, thread_id, role, content)
+       VALUES ($1, $2, 'user', 'legacy orphan message')`,
+      [orphanMessageId, orphanThreadId],
+    );
+    await expect(pool.query(ASSISTANT_IDEMPOTENCY_MIGRATION)).resolves.toBeDefined();
+    await expect(pool.query(
+      `SELECT user_id FROM assistant_messages WHERE id = $1`,
+      [orphanMessageId],
+    )).resolves.toMatchObject({ rows: [{ user_id: null }] });
+    await pool.query('DELETE FROM assistant_threads WHERE id = $1', [orphanThreadId]);
+    const ownerA = '00000000-0000-4000-8000-000000000083';
+    const ownerB = '00000000-0000-4000-8000-000000000084';
+    const ownedThread = '00000000-0000-4000-8000-000000000085';
+    const repairedMessage = '00000000-0000-4000-8000-000000000086';
+    await pool.query(
+      `ALTER TABLE assistant_messages
+       DROP CONSTRAINT assistant_messages_thread_owner_fkey`,
+    );
+    await pool.query(
+      `INSERT INTO users (id, email, name) VALUES
+       ($1, 'assistant-owner-a@example.test', 'Assistant owner A'),
+       ($2, 'assistant-owner-b@example.test', 'Assistant owner B')`,
+      [ownerA, ownerB],
+    );
+    await pool.query(
+      `INSERT INTO assistant_threads (id, user_id, title)
+       VALUES ($1, $2, 'owner invariant')`,
+      [ownedThread, ownerA],
+    );
+    await pool.query(
+      `INSERT INTO assistant_messages
+         (id, thread_id, role, content, user_id, client_request_id)
+       VALUES ($1, $2, 'user', 'repair owner', $3, $4)`,
+      [
+        repairedMessage,
+        ownedThread,
+        ownerB,
+        '00000000-0000-4000-8000-000000000087',
+      ],
+    );
+    await expect(pool.query(ASSISTANT_IDEMPOTENCY_MIGRATION)).resolves.toBeDefined();
+    await expect(pool.query(
+      `SELECT user_id FROM assistant_messages WHERE id = $1`,
+      [repairedMessage],
+    )).resolves.toMatchObject({ rows: [{ user_id: ownerA }] });
+    await expect(pool.query(
+      `SELECT EXISTS (
+         SELECT 1 FROM information_schema.table_constraints
+          WHERE table_schema = 'public'
+            AND table_name = 'assistant_messages'
+            AND constraint_name = 'assistant_messages_thread_owner_fkey'
+       ) AS present`,
+    )).resolves.toMatchObject({ rows: [{ present: true }] });
+    await expect(pool.query(
+      `INSERT INTO assistant_messages (thread_id, role, content, user_id, client_request_id)
+       VALUES ($1, 'user', 'wrong owner', $2, $3)`,
+      [ownedThread, ownerB, '00000000-0000-4000-8000-000000000088'],
+    )).rejects.toThrow(/foreign key|violates/i);
+    await pool.query('DELETE FROM users WHERE id IN ($1, $2)', [ownerA, ownerB]);
     const expectedColumns = await columnDefinitions();
     const expectedConstraints = await semanticConstraints();
     const expectedIndexes = await indexDefinitions();
