@@ -1,22 +1,26 @@
-import { Router, type Request, type Response } from 'express';
+import { Router, type Request, type Response } from "express";
+import { resolve } from "node:path";
 import {
   MODEL_REGISTRY,
   checkForUpgrade,
+  inspectManagedActiveModelAsync,
+  managedArtifactPath,
   recommendDefault,
+  type ManagedModelInspection,
   type RamBracket,
-} from '@skytwin/embedded-llm';
-import { modelDownloadRepository, type ModelDownloadRow } from '@skytwin/db';
+} from "@skytwin/embedded-llm";
+import { modelDownloadRepository, type ModelDownloadRow } from "@skytwin/db";
 import {
   bindUserIdParamOwnership,
   requireOwnership,
-} from '../middleware/require-ownership.js';
-import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+} from "../middleware/require-ownership.js";
+import { bindUserIdParamValidator } from "../middleware/validate-uuid.js";
 import {
   cancelDownload,
   pauseDownload,
   resolveModelDir,
   startDownload,
-} from '../embedded-llm/downloader.js';
+} from "../embedded-llm/downloader.js";
 
 /**
  * Fetch a download row and enforce that the authenticated user owns
@@ -33,14 +37,14 @@ async function loadOwnedDownload(
 ): Promise<ModelDownloadRow | null> {
   const row = await modelDownloadRepository.findById(id);
   if (!row) {
-    res.status(404).json({ error: 'download not found' });
+    res.status(404).json({ error: "download not found" });
     return null;
   }
   const authUserId = req.authenticatedUserId;
   if (authUserId !== undefined && authUserId !== row.user_id) {
     res.status(403).json({
-      error: 'Forbidden',
-      message: 'You do not have access to this resource.',
+      error: "Forbidden",
+      message: "You do not have access to this resource.",
     });
     return null;
   }
@@ -56,9 +60,6 @@ async function loadOwnedDownload(
  *   GET  /api/embedded-llm/recommend-default?bracket=<bucket>
  *
  * Downloader (AC#2):
- *   GET  /api/embedded-llm/model-dir
- *     Reports the resolved model directory the API will write to —
- *     useful for "where's my model going?" debugging UX.
  *   POST /api/embedded-llm/downloads/start    body: { userId, modelId }
  *     Idempotent on (userId, modelId). Returns the row + `resumed` flag.
  *   GET  /api/embedded-llm/downloads/:id
@@ -76,25 +77,32 @@ export function createEmbeddedLlmRouter(): Router {
 
   // ── Catalog (AC#5) ────────────────────────────────────────────
 
-  router.get('/registry', (_req, res) => {
+  router.get("/registry", (_req, res) => {
     res.json({ models: MODEL_REGISTRY });
   });
 
-  router.get('/upgrade-check', (req, res) => {
-    const currentId = req.query['currentId'];
-    if (typeof currentId !== 'string' || currentId.length === 0) {
-      res.status(400).json({ error: 'currentId query param required' });
+  router.get("/upgrade-check", (req, res) => {
+    const currentId = req.query["currentId"];
+    if (typeof currentId !== "string" || currentId.length === 0) {
+      res.status(400).json({ error: "currentId query param required" });
       return;
     }
     const upgrade = checkForUpgrade(currentId);
     res.json({ upgrade });
   });
 
-  router.get('/recommend-default', (req, res) => {
-    const bracket = req.query['bracket'];
-    const valid: ReadonlyArray<RamBracket> = ['4gb', '8gb', '16gb', '32gb-plus'];
-    if (typeof bracket !== 'string' || !valid.includes(bracket as RamBracket)) {
-      res.status(400).json({ error: 'bracket must be one of 4gb / 8gb / 16gb / 32gb-plus' });
+  router.get("/recommend-default", (req, res) => {
+    const bracket = req.query["bracket"];
+    const valid: ReadonlyArray<RamBracket> = [
+      "4gb",
+      "8gb",
+      "16gb",
+      "32gb-plus",
+    ];
+    if (typeof bracket !== "string" || !valid.includes(bracket as RamBracket)) {
+      res
+        .status(400)
+        .json({ error: "bracket must be one of 4gb / 8gb / 16gb / 32gb-plus" });
       return;
     }
     const model = recommendDefault(bracket as RamBracket);
@@ -103,21 +111,17 @@ export function createEmbeddedLlmRouter(): Router {
 
   // ── Downloader (AC#2) ─────────────────────────────────────────
 
-  router.get('/model-dir', (_req, res) => {
-    res.json({ modelDir: resolveModelDir() });
-  });
-
-  router.post('/downloads/start', requireOwnership, async (req, res, next) => {
+  router.post("/downloads/start", requireOwnership, async (req, res, next) => {
     try {
       const body = req.body as Record<string, unknown>;
-      const userId = body['userId'];
-      const modelId = body['modelId'];
-      if (typeof userId !== 'string' || userId.length === 0) {
-        res.status(400).json({ error: 'userId required' });
+      const userId = body["userId"];
+      const modelId = body["modelId"];
+      if (typeof userId !== "string" || userId.length === 0) {
+        res.status(400).json({ error: "userId required" });
         return;
       }
-      if (typeof modelId !== 'string' || modelId.length === 0) {
-        res.status(400).json({ error: 'modelId required' });
+      if (typeof modelId !== "string" || modelId.length === 0) {
+        res.status(400).json({ error: "modelId required" });
         return;
       }
       try {
@@ -132,6 +136,20 @@ export function createEmbeddedLlmRouter(): Router {
           res.status(404).json({ error: msg });
           return;
         }
+        if (
+          typeof err === "object" &&
+          err !== null &&
+          (err as { code?: unknown }).code === "insufficient_disk"
+        ) {
+          const details =
+            (err as { details?: Record<string, unknown> }).details ?? {};
+          res.status(507).json({
+            error: "insufficient_disk",
+            requiredBytes: details["requiredBytes"],
+            availableBytes: details["availableBytes"],
+          });
+          return;
+        }
         throw err;
       }
     } catch (err) {
@@ -139,21 +157,28 @@ export function createEmbeddedLlmRouter(): Router {
     }
   });
 
-  router.get('/downloads/user/:userId', async (req, res, next) => {
+  router.get("/downloads/user/:userId", async (req, res, next) => {
     try {
       const { userId } = req.params;
-      if (!userId) { res.status(400).json({ error: 'userId required' }); return; }
+      if (!userId) {
+        res.status(400).json({ error: "userId required" });
+        return;
+      }
       const rows = await modelDownloadRepository.listForUser(userId);
-      res.json({ downloads: rows.map(rowToJson) });
+      const active = await inspectManagedActiveModelAsync(resolveModelDir());
+      res.json({ downloads: rows.map((row) => rowToJson(row, active)) });
     } catch (err) {
       next(err);
     }
   });
 
-  router.get('/downloads/:id', async (req, res, next) => {
+  router.get("/downloads/:id", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       res.json({ download: rowToJson(row) });
@@ -162,10 +187,13 @@ export function createEmbeddedLlmRouter(): Router {
     }
   });
 
-  router.post('/downloads/:id/pause', async (req, res, next) => {
+  router.post("/downloads/:id/pause", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       const ok = await pauseDownload(id);
@@ -175,26 +203,35 @@ export function createEmbeddedLlmRouter(): Router {
     }
   });
 
-  router.post('/downloads/:id/resume', async (req, res, next) => {
+  router.post("/downloads/:id/resume", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       // Resume re-runs `startDownload` for this row's (userId, modelId).
       // The function's idempotent-on-active-row behavior picks up the
       // existing row and continues from `bytes_downloaded`.
       const result = await startDownload(row.user_id, row.model_id);
-      res.json({ download: rowToJson(result.download), resumed: result.resumed });
+      res.json({
+        download: rowToJson(result.download),
+        resumed: result.resumed,
+      });
     } catch (err) {
       next(err);
     }
   });
 
-  router.post('/downloads/:id/cancel', async (req, res, next) => {
+  router.post("/downloads/:id/cancel", async (req, res, next) => {
     try {
       const { id } = req.params;
-      if (!id) { res.status(400).json({ error: 'id required' }); return; }
+      if (!id) {
+        res.status(400).json({ error: "id required" });
+        return;
+      }
       const row = await loadOwnedDownload(req, res, id);
       if (!row) return;
       const ok = await cancelDownload(id);
@@ -210,7 +247,6 @@ export function createEmbeddedLlmRouter(): Router {
 interface DownloadJson {
   id: string;
   modelId: string;
-  targetPath: string;
   totalBytes: number;
   bytesDownloaded: number;
   status: string;
@@ -219,25 +255,86 @@ interface DownloadJson {
   pausedAt: string | null;
   completedAt: string | null;
   percent: number;
+  catalogMatch: boolean;
+  installed: boolean;
 }
 
-function rowToJson(r: import('@skytwin/db').ModelDownloadRow): DownloadJson {
+const PUBLIC_DOWNLOAD_ERRORS: Readonly<Record<string, string>> = {
+  timeout:
+    "Artifact transfer stalled. Retry to continue from the saved checkpoint.",
+  network_error: "Artifact transfer was interrupted. Retry to continue.",
+  source_unavailable: "The maintained model source is currently unavailable.",
+  source_metadata_mismatch:
+    "The model source did not match the maintained artifact.",
+  unapproved_redirect:
+    "The model source redirected to an unapproved location.",
+  private_source_address:
+    "The model source resolved to a blocked network address.",
+  unexpected_length: "The downloaded artifact had an unexpected size.",
+  unexpected_content_type:
+    "The model source returned an unexpected file type.",
+  resume_state_mismatch: "The saved download could not be resumed safely.",
+  cancelled: "The model download was cancelled.",
+  download_io_error:
+    "Local model storage failed. Retry or cancel the download.",
+  managed_path_mismatch: "The saved model location could not be verified.",
+  install_recovery_failed:
+    "Model installation could not be recovered safely. Retry installation.",
+};
+
+/** Never reflect arbitrary persisted diagnostics, including pre-upgrade paths. */
+function publicDownloadError(error: string | null): string | null {
+  if (error === null) return null;
+  const code = /^\[([a-z0-9_]+)\]/.exec(error)?.[1];
+  if (code !== undefined && Object.hasOwn(PUBLIC_DOWNLOAD_ERRORS, code))
+    return PUBLIC_DOWNLOAD_ERRORS[code]!;
+  if (error.startsWith("sha256 mismatch:"))
+    return "Model integrity verification failed. Retry the download.";
+  return "Local model operation failed. Retry or cancel the download.";
+}
+
+function matchesCurrentCatalog(
+  row: import("@skytwin/db").ModelDownloadRow,
+): boolean {
+  const model = MODEL_REGISTRY.find((entry) => entry.id === row.model_id);
+  return (
+    model !== undefined &&
+    row.total_bytes === model.exactBytes &&
+    row.sha256_expected.toLowerCase() === model.sha256.toLowerCase() &&
+    resolve(row.target_path) === managedArtifactPath(resolveModelDir(), model)
+  );
+}
+
+function rowToJson(
+  r: import("@skytwin/db").ModelDownloadRow,
+  active: ManagedModelInspection = { state: "missing" },
+): DownloadJson {
   const totalBytes = Number(r.total_bytes);
   const bytesDownloaded = Number(r.bytes_downloaded);
-  const percent = totalBytes > 0
-    ? Math.min(100, Math.round((bytesDownloaded / totalBytes) * 100))
-    : 0;
+  const catalogMatch = matchesCurrentCatalog(r);
+  const installed =
+    r.status === "complete" &&
+    catalogMatch &&
+    active.state === "verified" &&
+    active.manifest.modelId === r.model_id &&
+    active.manifest.exactBytes === r.total_bytes &&
+    active.manifest.sha256.toLowerCase() === r.sha256_expected.toLowerCase();
+  const percent =
+    totalBytes > 0
+      ? Math.min(100, Math.round((bytesDownloaded / totalBytes) * 100))
+      : 0;
   return {
     id: r.id,
     modelId: r.model_id,
-    targetPath: r.target_path,
     totalBytes,
     bytesDownloaded,
     status: r.status,
-    error: r.error,
+    error: publicDownloadError(r.error),
     startedAt: r.started_at.toISOString(),
     pausedAt: r.paused_at?.toISOString() ?? null,
     completedAt: r.completed_at?.toISOString() ?? null,
     percent,
+    catalogMatch,
+    installed,
   };
 }

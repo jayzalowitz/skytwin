@@ -112,15 +112,6 @@ getExecutionRouter().catch((err) =>
   }),
 );
 
-// Boot-time recovery for orphaned model downloads (#187 AC#2). Any row
-// stuck in 'downloading' from a prior process flips to 'paused' so the
-// user can resume manually. Best-effort — never blocks startup.
-recoverEmbeddedLlmDownloads().catch((err) =>
-  log.warn('Failed to recover orphaned model downloads', {
-    error: err instanceof Error ? err.message : String(err),
-  }),
-);
-
 const app: Application = express();
 
 // Trust-proxy hop count — controls whether Express trusts upstream
@@ -165,7 +156,9 @@ const trustProxyHops = (() => {
   const trimmed = raw.trim();
   if (!/^\d+$/.test(trimmed)) {
     // eslint-disable-next-line no-console
-    console.warn(`[api] TRUST_PROXY_HOPS=${raw} is invalid (must be a non-negative integer); falling back to 0 (no proxy trust). All per-IP rate limits will key on the upstream socket IP.`);
+    console.warn(
+      `[api] TRUST_PROXY_HOPS=${raw} is invalid (must be a non-negative integer); falling back to 0 (no proxy trust). All per-IP rate limits will key on the upstream socket IP.`,
+    );
     return 0;
   }
   const parsed = parseInt(trimmed, 10);
@@ -289,9 +282,7 @@ app.get('/api/health', (_req, res) => {
 app.get('/metrics', async (_req, res, next) => {
   try {
     const { getPoolStats } = await import('@skytwin/db');
-    const { formatPrometheus, PROMETHEUS_CONTENT_TYPE } = await import(
-      '@skytwin/observability'
-    );
+    const { formatPrometheus, PROMETHEUS_CONTENT_TYPE } = await import('@skytwin/observability');
     const pool = getPoolStats();
     const heap = process.memoryUsage();
     const body = formatPrometheus([
@@ -387,7 +378,7 @@ app.use(
   ),
 ); // signed, sample-identity-bound, session-local fictional commands
 app.use('/api/v1/demo', createDemoRouter()); // public — onboarding tour discovery
-app.use('/api/system', createSystemRouter()); // public — hardware detection + local-model pick for onboarding (pre-auth)
+app.use('/api/system', createSystemRouter()); // public — minimized local-model pick for onboarding (pre-auth)
 app.use('/api/capabilities', sessionAuth, requireOwnership, requestContext, createCapabilitiesRouter());
 app.use('/api/risk-profile', sessionAuth, requireOwnership, requestContext, createRiskProfileRouter());
 app.use('/api/about-me', sessionAuth, requireOwnership, requestContext, createAboutMeRouter());
@@ -422,12 +413,7 @@ app.use('/api/promotion-offers', sessionAuth, requestContext, createPromotionOff
 // server-side logs; the response always carries a safe generic message,
 // regardless of NODE_ENV (pre-fix, dev mode leaked `err.message`).
 app.use(
-  (
-    err: Error & { code?: unknown },
-    _req: express.Request,
-    res: express.Response,
-    _next: express.NextFunction,
-  ) => {
+  (err: Error & { code?: unknown }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     log.error('Unhandled error', { message: err.message, stack: err.stack });
     res.status(500).json({
       error: 'internal_error',
@@ -472,13 +458,24 @@ startupHangTimer.unref();
       clearTimeout(startupHangTimer);
       process.exit(1);
     }
-    log.info(`CRDB readiness probe ok (${dbHealth.latencyMs}ms). Binding port…`);
+    log.info(`CRDB readiness probe ok (${dbHealth.latencyMs}ms). Reconciling local model state…`);
   } catch (err) {
     log.error(
       `CRDB readiness probe threw at startup: ${err instanceof Error ? err.message : String(err)}. Refusing to bind the port.`,
     );
     clearTimeout(startupHangTimer);
     process.exit(1);
+  }
+
+  try {
+    await recoverEmbeddedLlmDownloads();
+  } catch (err) {
+    log.error(
+      `Local model recovery failed at startup: ${err instanceof Error ? err.message : String(err)}. Refusing to bind the port while worker-owned rows remain ambiguous.`,
+    );
+    clearTimeout(startupHangTimer);
+    process.exit(1);
+    return;
   }
 
   server = app.listen(port, () => {
@@ -547,9 +544,11 @@ function handleShutdown(signal: string): void {
   if (!server) {
     log.info('Shutdown signal received before HTTP server bound — closing pool and exiting');
     closePool()
-      .catch((err) => log.warn('Error closing database pool', {
-        error: err instanceof Error ? err.message : String(err),
-      }))
+      .catch((err) =>
+        log.warn('Error closing database pool', {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      )
       .finally(() => process.exit(0));
     return;
   }

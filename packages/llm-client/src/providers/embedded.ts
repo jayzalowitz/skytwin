@@ -82,11 +82,10 @@ export async function generate(
   return text.trim();
 }
 
-/**
- * Test helper — clears the port cache. Production callers never need
- * this; tests use it to reset state between cases that mock
- * `@skytwin/embedded-llm`.
- */
-export function _clearEmbeddedPortCache(): void {
+/** Clear automatic and explicit ports after the active model changes. */
+export function clearEmbeddedPortCache(): void {
   PORT_CACHE.clear();
 }
+
+/** @deprecated Test compatibility alias. */
+export const _clearEmbeddedPortCache = clearEmbeddedPortCache;

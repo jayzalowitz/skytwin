@@ -12,53 +12,53 @@ export {
   detectEmbeddedRuntimes,
   type EmbeddedRuntimeInfo,
   type EmbeddedRuntimeEntry,
-} from './runtime-detector.js';
+} from "./runtime-detector.js";
 
-export { NotAvailableError } from './errors.js';
+export { NotAvailableError } from "./errors.js";
 
 export {
   NullEmbeddedTextPort,
   type EmbeddedTextPort,
   type EmbeddedTextCapabilities,
-} from './text-port.js';
+} from "./text-port.js";
 
 export {
   NullEmbeddedSttPort,
   type EmbeddedSttPort,
   type EmbeddedSttCapabilities,
-} from './stt-port.js';
+} from "./stt-port.js";
 
 export {
   NullEmbeddedTtsPort,
   type EmbeddedTtsPort,
   type EmbeddedTtsCapabilities,
-} from './tts-port.js';
+} from "./tts-port.js";
 
 export {
   LlamaCppTextBackend,
   findFirstGgufModel,
   type LlamaCppBackendOptions,
-} from './llama-cpp-backend.js';
+} from "./llama-cpp-backend.js";
 
 export {
   WhisperCppSttBackend,
   findFirstWhisperModel,
   parseWhisperJson,
   type WhisperCppBackendOptions,
-} from './whisper-cpp-backend.js';
+} from "./whisper-cpp-backend.js";
 
 export {
   PiperTtsBackend,
   findFirstPiperModel,
   type PiperTtsBackendOptions,
-} from './piper-tts-backend.js';
+} from "./piper-tts-backend.js";
 
 export {
   createEmbeddedTextPort,
   createEmbeddedSttPort,
   createEmbeddedTtsPort,
   type CreatePortOverrides,
-} from './factory.js';
+} from "./factory.js";
 
 export {
   MODEL_REGISTRY,
@@ -66,7 +66,33 @@ export {
   listByBracket,
   checkForUpgrade,
   recommendDefault,
+  validateModelRegistry,
   type ModelEntry,
+  type ModelArtifactSource,
+  type ModelLicense,
+  type ModelRuntimeCompatibility,
+  type RegistryValidationError,
+  type RegistryValidationResult,
   type RamBracket,
   type UpgradeRecommendation,
-} from './model-registry.js';
+} from "./model-registry.js";
+
+export {
+  ACTIVE_MODEL_MANIFEST,
+  activateManagedModel,
+  computeFileSha256Async,
+  deleteInactiveManagedModel,
+  DURABLE_FILE_OPEN_FLAGS,
+  inspectManagedActiveModelAsync,
+  managedArtifactFilename,
+  managedArtifactPath,
+  syncPrivateFileForDurability,
+  type FileSyncOperations,
+  type ManagedModelInspection,
+  type ManagedModelManifest,
+} from "./managed-model-store.js";
+
+export {
+  isLlamaCppBuildCompatible,
+  parseLlamaCppBuild,
+} from "./runtime-compatibility.js";

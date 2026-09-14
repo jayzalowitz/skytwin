@@ -1,19 +1,17 @@
-import {
-  findFirstGgufModel,
-  LlamaCppTextBackend,
-} from './llama-cpp-backend.js';
-import {
-  findFirstPiperModel,
-  PiperTtsBackend,
-} from './piper-tts-backend.js';
-import { detectEmbeddedRuntimes } from './runtime-detector.js';
-import { NullEmbeddedSttPort, type EmbeddedSttPort } from './stt-port.js';
-import { NullEmbeddedTextPort, type EmbeddedTextPort } from './text-port.js';
-import { NullEmbeddedTtsPort, type EmbeddedTtsPort } from './tts-port.js';
+import { LlamaCppTextBackend } from "./llama-cpp-backend.js";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { inspectManagedActiveModelAsync } from "./managed-model-store.js";
+import { isLlamaCppBuildCompatible } from "./runtime-compatibility.js";
+import { findFirstPiperModel, PiperTtsBackend } from "./piper-tts-backend.js";
+import { detectEmbeddedRuntimes } from "./runtime-detector.js";
+import { NullEmbeddedSttPort, type EmbeddedSttPort } from "./stt-port.js";
+import { NullEmbeddedTextPort, type EmbeddedTextPort } from "./text-port.js";
+import { NullEmbeddedTtsPort, type EmbeddedTtsPort } from "./tts-port.js";
 import {
   findFirstWhisperModel,
   WhisperCppSttBackend,
-} from './whisper-cpp-backend.js';
+} from "./whisper-cpp-backend.js";
 
 export interface CreatePortOverrides {
   binaryPath?: string;
@@ -25,17 +23,38 @@ export async function createEmbeddedTextPort(
 ): Promise<EmbeddedTextPort> {
   const info = await detectEmbeddedRuntimes();
   const binaryPath = overrides.binaryPath ?? info.llamaCpp.binaryPath;
-  if (binaryPath === null || binaryPath === undefined || binaryPath === '') {
+  if (binaryPath === null || binaryPath === undefined || binaryPath === "") {
     return new NullEmbeddedTextPort();
   }
-  const modelPath =
-    overrides.modelPath ??
-    process.env['SKYTWIN_LLAMA_MODEL'] ??
-    findFirstGgufModel(info.llamaCpp.modelDir);
-  if (modelPath === null || modelPath === undefined || modelPath === '') {
+  // Explicit paths are user-managed and remain a separate, opt-in trust path.
+  // Automatic discovery only returns the digest-verified managed artifact.
+  const manualPath = overrides.modelPath ?? process.env["SKYTWIN_LLAMA_MODEL"];
+  const managedDir =
+    info.llamaCpp.modelDir ?? join(homedir(), ".skytwin", "models", "llama");
+  const inspected = manualPath
+    ? null
+    : await inspectManagedActiveModelAsync(managedDir);
+  const compatibleManagedPath =
+    inspected?.state === "verified" &&
+    isLlamaCppBuildCompatible(binaryPath, inspected.model.runtime.minimumBuild)
+      ? inspected.path
+      : null;
+  const modelPath = manualPath ?? compatibleManagedPath;
+  if (modelPath === null || modelPath === undefined || modelPath === "") {
     return new NullEmbeddedTextPort();
   }
-  return new LlamaCppTextBackend({ binaryPath, modelPath });
+  return new LlamaCppTextBackend({
+    binaryPath,
+    modelPath,
+    ...(inspected?.state === "verified" && !manualPath
+      ? {
+          verifiedModel: {
+            exactBytes: inspected.model.exactBytes,
+            sha256: inspected.model.sha256,
+          },
+        }
+      : {}),
+  });
 }
 
 export async function createEmbeddedSttPort(
@@ -43,14 +62,14 @@ export async function createEmbeddedSttPort(
 ): Promise<EmbeddedSttPort> {
   const info = await detectEmbeddedRuntimes();
   const binaryPath = overrides.binaryPath ?? info.whisper.binaryPath;
-  if (binaryPath === null || binaryPath === undefined || binaryPath === '') {
+  if (binaryPath === null || binaryPath === undefined || binaryPath === "") {
     return new NullEmbeddedSttPort();
   }
   const modelPath =
     overrides.modelPath ??
-    process.env['SKYTWIN_WHISPER_MODEL'] ??
+    process.env["SKYTWIN_WHISPER_MODEL"] ??
     findFirstWhisperModel(info.whisper.modelDir);
-  if (modelPath === null || modelPath === undefined || modelPath === '') {
+  if (modelPath === null || modelPath === undefined || modelPath === "") {
     return new NullEmbeddedSttPort();
   }
   return new WhisperCppSttBackend({ binaryPath, modelPath });
@@ -70,14 +89,14 @@ export async function createEmbeddedTtsPort(
 ): Promise<EmbeddedTtsPort> {
   const info = await detectEmbeddedRuntimes();
   const binaryPath = overrides.binaryPath ?? info.piper.binaryPath;
-  if (binaryPath === null || binaryPath === undefined || binaryPath === '') {
+  if (binaryPath === null || binaryPath === undefined || binaryPath === "") {
     return new NullEmbeddedTtsPort();
   }
   const modelPath =
     overrides.modelPath ??
-    process.env['SKYTWIN_PIPER_MODEL'] ??
+    process.env["SKYTWIN_PIPER_MODEL"] ??
     findFirstPiperModel(info.piper.modelDir);
-  if (modelPath === null || modelPath === undefined || modelPath === '') {
+  if (modelPath === null || modelPath === undefined || modelPath === "") {
     return new NullEmbeddedTtsPort();
   }
   return new PiperTtsBackend({ binaryPath, modelPath });

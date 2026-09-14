@@ -1,10 +1,17 @@
 import { spawn } from 'node:child_process';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import {
+  constants,
+  existsSync,
+  readdirSync,
+  statSync,
+} from 'node:fs';
+import { open, type FileHandle } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import type {
   EmbeddedTextCapabilities,
   EmbeddedTextPort,
 } from './text-port.js';
+import { computeFileHandleSha256 } from './managed-model-store.js';
 
 export interface LlamaCppBackendOptions {
   binaryPath: string;
@@ -12,6 +19,8 @@ export interface LlamaCppBackendOptions {
   contextWindow?: number;
   timeoutMs?: number;
   threads?: number;
+  verifiedModel?: { exactBytes: number; sha256: string };
+  spawnProcess?: typeof spawn;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -23,12 +32,16 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
   private readonly modelPath: string;
   private readonly timeoutMs: number;
   private readonly threads: number | null;
+  private readonly verifiedModel: LlamaCppBackendOptions['verifiedModel'];
+  private readonly spawnProcess: typeof spawn;
 
   constructor(opts: LlamaCppBackendOptions) {
     this.binaryPath = opts.binaryPath;
     this.modelPath = opts.modelPath;
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.threads = opts.threads ?? null;
+    this.verifiedModel = opts.verifiedModel;
+    this.spawnProcess = opts.spawnProcess ?? spawn;
     this.capabilities = {
       available: true,
       modelName: basename(opts.modelPath),
@@ -40,6 +53,9 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     prompt: string,
     opts: { maxTokens?: number; temperature?: number } = {},
   ): Promise<string> {
+    const verifiedIdentity = this.verifiedModel
+      ? await verifyModelForLaunch(this.modelPath, this.verifiedModel)
+      : null;
     const maxTokens = opts.maxTokens ?? 512;
     const temperature = opts.temperature ?? 0.7;
     const args = [
@@ -56,7 +72,27 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     }
 
     return new Promise((resolve, reject) => {
-      const child = spawn(this.binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const child = this.spawnProcess(this.binaryPath, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      if (verifiedIdentity !== null) {
+        try {
+          const after = statSync(this.modelPath, { bigint: true });
+          if (
+            after.dev !== verifiedIdentity.dev ||
+            after.ino !== verifiedIdentity.ino ||
+            after.size !== verifiedIdentity.size ||
+            after.mtimeNs !== verifiedIdentity.mtimeNs ||
+            after.ctimeNs !== verifiedIdentity.ctimeNs
+          ) {
+            child.kill('SIGKILL');
+            reject(new Error('managed model changed at the runtime launch boundary'));
+            return;
+          }
+        } catch {
+          child.kill('SIGKILL');
+          reject(new Error('managed model became unavailable at the runtime launch boundary'));
+          return;
+        }
+      }
       let stdout = '';
       let stderr = '';
       let settled = false;
@@ -92,6 +128,67 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     });
   }
 }
+
+let managedModelHashTail: Promise<void> = Promise.resolve();
+
+async function withManagedModelHashSlot<T>(operation: () => Promise<T>): Promise<T> {
+  const previous = managedModelHashTail;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  managedModelHashTail = previous.then(() => gate);
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+async function verifyModelForLaunch(
+  path: string,
+  expected: { exactBytes: number; sha256: string },
+): Promise<{
+  dev: bigint;
+  ino: bigint;
+  size: bigint;
+  mtimeNs: bigint;
+  ctimeNs: bigint;
+}> {
+  return withManagedModelHashSlot(async () => {
+    let handle: FileHandle | null = null;
+    try {
+      handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || before.nlink !== 1n || Number(before.size) !== expected.exactBytes) {
+        throw new Error('managed model identity check failed before runtime launch');
+      }
+      // Hash the descriptor already subjected to no-follow and identity checks.
+      // Async reads keep API health and unrelated requests responsive.
+      const actual = await computeFileHandleSha256(handle);
+      const after = await handle.stat({ bigint: true });
+      if (
+        actual !== expected.sha256 ||
+        after.size !== before.size ||
+        after.mtimeNs !== before.mtimeNs ||
+        after.ctimeNs !== before.ctimeNs
+      ) {
+        throw new Error('managed model integrity check failed before runtime launch');
+      }
+      return {
+        dev: after.dev,
+        ino: after.ino,
+        size: after.size,
+        mtimeNs: after.mtimeNs,
+        ctimeNs: after.ctimeNs,
+      };
+    } finally {
+      await handle?.close();
+    }
+  });
+}
+
 
 function stripEndOfTextMarker(text: string): string {
   return text

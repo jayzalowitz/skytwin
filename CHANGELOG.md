@@ -55,8 +55,8 @@ All notable changes to SkyTwin will be documented in this file.
   remaining repository/client/migration/bake gates are described separately; no
   production source field is represented as encrypted. The README, privacy page,
   and deck also stop describing a local model or `llama.cpp` runtime as bundled:
-  current source can recommend a model, but local inference still requires both
-  components to be supplied separately.
+  current source can recommend and download the pinned model only after user
+  action, while a compatible runtime remains a separate prerequisite.
 
 ## [Unreleased] — Account-free interactive sample
 
@@ -72,6 +72,29 @@ All notable changes to SkyTwin will be documented in this file.
 - **Loopback restrictions now survive the dashboard proxy boundary.** The web server rejects remote peers and non-loopback API upstreams before forwarding sample-info, session, or simulation requests, while the API requires both the resolved client and direct socket peer to be loopback.
 - **Expired simulations cannot return a late asynchronous result.** The simulation checks its signed deadline both before creating state and after policy/explanation work. Exit may present the original signed credential solely to delete the state bound to that credential; it cannot read, renew, or mutate the simulation.
 - **Sample authority is isolated to one browser tab and excluded from offline persistence.** The sample credential, reserved identity, expiry, and onboarding state live in `sessionStorage`; real sign-in authority always takes precedence and clears the tab's sample state. Generation fences prevent late renewal or exit responses from resurrecting a closed sample, including when another tab signs in or out. Concurrent reads now share one renewal, and a late 401 from an older credential reuses the current successor instead of replacing it. The API client also preserves authentication when a caller supplies additional request headers. The service worker applies the API server's case-insensitive path semantics and bypasses every `/api/v1/demo` request. It also bypasses normal product routes whenever they carry the sample bearer credential or EventSource query token, so sample credentials and responses are never cached or queued. Before sending any stored write, the worker reapplies the current policy and deletes entries that are no longer eligible; this prevents an older worker's queue from replaying sample traffic after an update. See [`sample-session.js`](apps/web/public/js/sample-session.js), [`api-client.js`](apps/web/public/js/api-client.js), [`sw-policy.js`](apps/web/public/js/pwa/sw-policy.js), and [`sw.js`](apps/web/public/sw.js).
+
+## [Unreleased] — Verified local model delivery
+
+### Added
+
+- **The automatic local-model path now has one maintained, immutable artifact.** The registry contains Qwen2.5 1.5B Instruct Q4_K_M pinned to an upstream commit, exact byte count, SHA-256, Apache-2.0 license reference, supported CPU architectures, and a minimum llama.cpp build. Registry validation rejects mutable revisions, placeholder hashes, non-canonical URLs, duplicate artifacts, and incomplete provenance at module load.
+- **Downloads enforce the artifact contract before activation.** Requests use an exact approved HTTPS origin/redirect allowlist, reject non-global DNS results, and pin each connection to the addresses that passed that check so a second DNS answer cannot rebind the request. They require canonical source metadata, exact content length/type, and a stable ETag or Last-Modified validator. Resume checkpoints bind the database row, pinned source revision, validator, and durable byte boundary. Process-wide disk accounting reserves both the remaining transfer and the full descriptor-bound activation copy across concurrent download runners; stalled transfers fail with typed errors.
+- **Managed activation is descriptor-bound and fail-closed.** Partials and manifests are opened with no-follow flags where the platform provides them and must be single-link regular files. Activation verifies the staged descriptor, copies from that descriptor into an exclusively created file, verifies the copy, publishes the content-addressed target without overwriting an existing path, fsyncs it, and switches the active manifest atomically. Activation and deletion are serialized within the process. Automatic runtime discovery returns a model only when the manifest, exact size, digest, registry entry, and llama.cpp compatibility agree. Descriptor hashing and runtime discovery now use asynchronous file I/O, and per-launch verification is serialized so large concurrent reads cannot monopolize the event loop or disk. Because llama.cpp accepts a pathname rather than a portable inherited descriptor, the backend hashes an already-open descriptor immediately before spawn and rejects a path identity change observable when spawn returns. This is best-effort pre-launch tamper detection, not a guarantee about which inode the child subsequently opens against a same-user local attacker.
+
+### Changed
+
+- Startup reconciles orphaned transfer, verification, and installation rows before the API binds its port. The bounded startup gate retries transient database failures and does not accept traffic unless an authoritative pass completes. Recovery still isolates malformed individual rows so one bad artifact cannot prevent later rows from being reconciled.
+- Successful activation invalidates both the embedded-provider discovery cache and the API's LLM client cache before the download is marked complete. Public recommendation and download responses omit raw host hardware and filesystem paths, including diagnostics persisted by earlier versions.
+- The managed model is **downloaded after user action; it is not bundled**, and the llama.cpp runtime remains a separate prerequisite. `SKYTWIN_LLAMA_MODEL` continues to be an explicit user-managed override, so it does not receive the managed registry/manifest guarantees.
+
+### Tested
+
+- Adversarial coverage includes source/target symlinks, staged hard links, a partial swapped between checkpoint restore and descriptor open, tampering, digest/length/content-type mismatches, redirect and DNS restrictions, concurrent crash-tail reservation, checkpoint disagreement, stalled transfer, state-transition races, CRDB `INT8` string normalization, bounded authoritative-read recovery retries, legacy diagnostic sanitization, runtime cache invalidation, serialized descriptor hashing, and per-row recovery isolation.
+
+### Fixed (post-/review)
+
+- **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
+- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 now describes the actual checkpoint and boot-reconciliation contract, and the reviewed SQL-corpus digest advances over the combined 94-table, 877-column schema after migration 073.
 
 ## [0.6.102.0] - 2026-08-27
 

@@ -45,10 +45,13 @@
  *     and similar callers use.
  */
 
-import { existsSync, readdirSync } from 'node:fs';
-import { execSync } from 'node:child_process';
-import { LlmClient } from '@skytwin/llm-client';
-import type { ProviderEntry } from '@skytwin/llm-client';
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { execSync } from "node:child_process";
+import { clearEmbeddedPortCache, LlmClient } from "@skytwin/llm-client";
+import type { ProviderEntry } from "@skytwin/llm-client";
+import { ACTIVE_MODEL_MANIFEST } from "@skytwin/embedded-llm";
 
 /** Module-level singleton so we construct the client once per process */
 let _cached: LlmClient | null | undefined;
@@ -59,55 +62,57 @@ let _cached: LlmClient | null | undefined;
  * chain private, and the priority order is the whole load-bearing
  * piece of this module.
  */
-export function buildProviderChain(env: Record<string, string | undefined>): ProviderEntry[] {
+export function buildProviderChain(
+  env: Record<string, string | undefined>,
+): ProviderEntry[] {
   const local: ProviderEntry[] = [];
   const cloud: ProviderEntry[] = [];
 
   if (isEmbeddedRuntimeAvailable(env)) {
     local.push({
-      name: 'embedded',
-      apiKey: '',
-      // 'auto' lets `@skytwin/embedded-llm` pick the first GGUF it finds in
-      // the configured model directory. Power users override via
-      // SKYTWIN_LLAMA_MODEL to a specific path.
-      model: env['SKYTWIN_LLAMA_MODEL'] ?? 'auto',
+      name: "embedded",
+      apiKey: "",
+      // 'auto' lets `@skytwin/embedded-llm` resolve the verified managed
+      // artifact. Power users opt into a separately user-managed path with
+      // SKYTWIN_LLAMA_MODEL.
+      model: env["SKYTWIN_LLAMA_MODEL"] ?? "auto",
     });
   }
 
-  const ollamaUrl = env['OLLAMA_BASE_URL'] ?? '';
+  const ollamaUrl = env["OLLAMA_BASE_URL"] ?? "";
   if (ollamaUrl) {
     local.push({
-      name: 'ollama',
-      apiKey: '',
-      model: env['OLLAMA_MODEL'] ?? 'llama3.2',
+      name: "ollama",
+      apiKey: "",
+      model: env["OLLAMA_MODEL"] ?? "llama3.2",
       baseUrl: ollamaUrl,
     });
   }
 
-  const anthropicKey = env['ANTHROPIC_API_KEY'] ?? '';
+  const anthropicKey = env["ANTHROPIC_API_KEY"] ?? "";
   if (anthropicKey) {
     cloud.push({
-      name: 'anthropic',
+      name: "anthropic",
       apiKey: anthropicKey,
-      model: env['ANTHROPIC_MODEL'] ?? 'claude-3-5-haiku-20241022',
+      model: env["ANTHROPIC_MODEL"] ?? "claude-3-5-haiku-20241022",
     });
   }
 
-  const openaiKey = env['OPENAI_API_KEY'] ?? '';
+  const openaiKey = env["OPENAI_API_KEY"] ?? "";
   if (openaiKey) {
     cloud.push({
-      name: 'openai',
+      name: "openai",
       apiKey: openaiKey,
-      model: env['OPENAI_MODEL'] ?? 'gpt-4o-mini',
+      model: env["OPENAI_MODEL"] ?? "gpt-4o-mini",
     });
   }
 
-  const googleKey = env['GOOGLE_API_KEY'] ?? '';
+  const googleKey = env["GOOGLE_API_KEY"] ?? "";
   if (googleKey) {
     cloud.push({
-      name: 'google',
+      name: "google",
       apiKey: googleKey,
-      model: env['GOOGLE_MODEL'] ?? 'gemini-1.5-flash',
+      model: env["GOOGLE_MODEL"] ?? "gemini-1.5-flash",
     });
   }
 
@@ -118,8 +123,8 @@ export function buildProviderChain(env: Record<string, string | undefined>): Pro
   // hosted-providers-first ordering — required for users on
   // hardware that can't run a local model and depend on cloud
   // for everything.
-  const priority = (env['SKYTWIN_LLM_PRIORITY'] ?? 'local-first').toLowerCase();
-  if (priority === 'cloud-first') {
+  const priority = (env["SKYTWIN_LLM_PRIORITY"] ?? "local-first").toLowerCase();
+  if (priority === "cloud-first") {
     return [...cloud, ...local];
   }
   // Default: local-first. Unknown values fall back to local-first
@@ -145,14 +150,19 @@ export function buildProviderChain(env: Record<string, string | undefined>): Pro
  *     - Otherwise probe PATH for `llama-cli` (Unix) / `llama-cli.exe` (Win).
  *   Model:
  *     - Prefer SKYTWIN_LLAMA_MODEL if it points at an existing file.
- *     - Otherwise scan SKYTWIN_LLAMA_MODELS for a *.gguf file.
+ *     - Otherwise require the verified managed manifest and artifact.
  *
  * Explicitly disabling: set SKYTWIN_DISABLE_EMBEDDED=1 to skip even when
  * both are present (useful when running an evaluation against only
  * hosted providers).
  */
-function isEmbeddedRuntimeAvailable(env: Record<string, string | undefined>): boolean {
-  if (env['SKYTWIN_DISABLE_EMBEDDED'] === '1' || env['SKYTWIN_DISABLE_EMBEDDED'] === 'true') {
+function isEmbeddedRuntimeAvailable(
+  env: Record<string, string | undefined>,
+): boolean {
+  if (
+    env["SKYTWIN_DISABLE_EMBEDDED"] === "1" ||
+    env["SKYTWIN_DISABLE_EMBEDDED"] === "true"
+  ) {
     return false;
   }
   if (!hasLlamaBinary(env)) return false;
@@ -161,12 +171,13 @@ function isEmbeddedRuntimeAvailable(env: Record<string, string | undefined>): bo
 }
 
 function hasLlamaBinary(env: Record<string, string | undefined>): boolean {
-  const explicit = env['SKYTWIN_LLAMACPP_BIN'];
+  const explicit = env["SKYTWIN_LLAMACPP_BIN"];
   if (explicit && existsSync(explicit)) return true;
 
-  const probeCmd = process.platform === 'win32' ? 'where llama-cli' : 'which llama-cli';
+  const probeCmd =
+    process.platform === "win32" ? "where llama-cli" : "which llama-cli";
   try {
-    execSync(probeCmd, { stdio: 'ignore', timeout: 3000 });
+    execSync(probeCmd, { stdio: "ignore", timeout: 3000 });
     return true;
   } catch {
     return false;
@@ -174,19 +185,16 @@ function hasLlamaBinary(env: Record<string, string | undefined>): boolean {
 }
 
 function hasLlamaModel(env: Record<string, string | undefined>): boolean {
-  const explicit = env['SKYTWIN_LLAMA_MODEL'];
+  const explicit = env["SKYTWIN_LLAMA_MODEL"];
   if (explicit && existsSync(explicit)) return true;
 
-  const modelDir = env['SKYTWIN_LLAMA_MODELS'];
-  if (modelDir !== undefined && modelDir !== '' && existsSync(modelDir)) {
-    try {
-      const entries = readdirSync(modelDir);
-      return entries.some((e) => e.toLowerCase().endsWith('.gguf'));
-    } catch {
-      return false;
-    }
-  }
-  return false;
+  const modelDir =
+    env["SKYTWIN_LLAMA_MODELS"] ??
+    join(homedir(), ".skytwin", "models", "llama");
+  // This synchronous function only decides whether to include the embedded
+  // provider in a cached chain. The async port factory performs the authoritative
+  // manifest, digest and runtime compatibility verification before use.
+  return existsSync(join(modelDir, ACTIVE_MODEL_MANIFEST));
 }
 
 /**
@@ -208,7 +216,7 @@ export function getLlmClientFromConfig(
     return null;
   }
 
-  _cached = new LlmClient(providers, 'system');
+  _cached = new LlmClient(providers, "system");
   return _cached;
 }
 
@@ -221,12 +229,21 @@ export function getLlmClientFromConfigFresh(
 ): LlmClient | null {
   const providers = buildProviderChain(env);
   if (providers.length === 0) return null;
-  return new LlmClient(providers, 'system');
+  return new LlmClient(providers, "system");
 }
 
 /**
  * Reset the singleton. Only for tests.
  */
 export function _resetLlmClientCache(): void {
+  _cached = undefined;
+}
+
+/**
+ * Refresh every process-local layer that can retain managed-model discovery.
+ * Activation calls this only after the durable active manifest has switched.
+ */
+export function refreshManagedLlmRuntime(): void {
+  clearEmbeddedPortCache();
   _cached = undefined;
 }
