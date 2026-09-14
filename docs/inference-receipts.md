@@ -10,12 +10,18 @@ documents. Several identifier and reason fields are free-form strings, however,
 so integrators must not place source content or secrets in them. The contract
 cannot determine whether an arbitrary string contains sensitive content.
 
-The decision-event ingest path captures every completed call made through its
-receipt-aware `LlmClient` and persists the resulting batch after the real
-`ExplanationRecord` exists but before approval creation or action execution. A
-decision may have multiple receipts because interpretation, candidate
-generation, and drafting can be separate calls. The metadata API returns the
-latest receipt; the repository and backup format retain the complete set.
+Within one successfully finalized decision-event attempt, the ingest path
+captures each completed call made through its receipt-aware `LlmClient` and
+persists the resulting batch after the real `ExplanationRecord` exists but
+before approval creation or action execution. A decision may have multiple
+receipts because interpretation, candidate generation, and drafting can be
+separate calls. The metadata API returns the latest receipt; the repository and
+backup format retain the complete set. If an attempt stops after the decision
+row is durable but before receipt finalization, re-ingestion fails closed with a
+recovery-required response before constructing a client, running inference, or
+starting side effects. It does not synthesize a complete batch from a later
+attempt's partial causative history. Availability-preserving recovery requires a
+future durable provisional trace journal or an atomic-restart design.
 Other application LLM clients, the receipt detail UI, and a product export route
 remain future work. Absence of a receipt must be displayed as unavailable and
 must never be inferred as a privacy outcome.
@@ -112,9 +118,11 @@ are rejected before database writes. Because an embedded key is not an identity
 trust root, restored rows are marked `imported_unverified`. This slice has no
 trust-aware promotion workflow, so they remain untrusted after restore.
 Canonical logical input/output and verification-evidence bytes live in
-transient request memory while the route validates and inserts receipt
-metadata, and may remain until JavaScript references are released and garbage
-collection runs. They are never written to the receipt or ingest-guard tables.
+transient request memory while an uninterrupted route validates and inserts
+receipt metadata, and may remain until JavaScript references are released and
+garbage collection runs. They are never written to the receipt or ingest-guard
+tables, which is why an interrupted pre-finalization attempt cannot be safely
+completed by retry today.
 Standalone verification bundles are more sensitive because they contain the
 supplied request and response bytes. The product does not export those bundles
 yet; integrators who create them should protect or delete the files according

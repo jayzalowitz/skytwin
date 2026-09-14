@@ -305,8 +305,8 @@ The sample credential is a distinct principal, not a user session. `apps/api/src
 ```
 GET    /api/decisions/:userId                      # List decisions for a user
 GET    /api/decisions/:decisionId/explanation      # Get the ExplanationRecord
-GET    /api/decisions/:decisionId/receipt          # Get owner-scoped receipt metadata, when present
-DELETE /api/decisions/:decisionId/receipt          # Atomically delete owner-scoped receipt metadata
+GET    /api/decisions/:decisionId/receipt          # Get latest owner-scoped receipt metadata, when present
+DELETE /api/decisions/:decisionId/receipt          # Atomically delete the full owner-scoped receipt batch
 
 POST   /api/events/ingest                          # Worker submits a signal for processing
 GET    /api/events/stream/:userId                  # SSE stream for live updates
@@ -316,14 +316,18 @@ GET    /api/approvals/:userId/history              # Recently-resolved approvals
 POST   /api/approvals/:requestId/respond           # Approve / reject / dual-confirm
 ```
 
-The receipt routes expose only signed structured metadata, not the canonical
-logical/provider-neutral verification bundle. Decision-event ingestion emits
-and atomically finalizes receipts for its completed model calls before approval
-or external execution, using either a configured recorder identity or an
-ephemeral process-local one. Other application clients, product bundle export,
-and a receipt detail UI remain uncovered. Receipt free-form strings must not
-contain source content or secrets, and local rows are not application-level
-encrypted.
+The receipt GET route exposes only the latest signed structured metadata row,
+not the canonical logical/provider-neutral verification bundle; DELETE removes
+the complete owner-scoped batch. A successfully finalized decision-event attempt
+atomically persists receipts for its completed model calls before approval or
+external execution, using either a configured recorder identity or an ephemeral
+process-local one. If an attempt stops after its decision row is durable but
+before receipt finalization, re-ingestion returns a recovery-required response
+without inference or side effects; availability-preserving recovery requires a
+future durable provisional trace journal or atomic-restart design. Other
+application clients, product bundle export, and a receipt detail UI remain
+uncovered. Receipt free-form strings must not contain source content or secrets,
+and local rows are not application-level encrypted.
 
 ### User API (`apps/api/src/routes/users.ts`)
 

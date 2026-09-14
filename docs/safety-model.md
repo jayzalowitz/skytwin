@@ -410,11 +410,16 @@ key and provider-specific attestation policy. Verification never authorizes an
 action or replaces the policy, provenance, trust-tier, spend, reversibility, or
 explanation gates above.
 
-This is decision-event coverage, not universal workflow coverage. Decision-event
-ingestion captures every completed call made through its receipt-aware client and
-atomically finalizes the batch before approval creation or external execution. It
-uses either the configured three-part recorder identity or an ephemeral
-process-local identity. Other application clients are not covered, and the
+This is decision-event coverage, not universal workflow coverage. Within a
+successfully finalized attempt, decision-event ingestion captures each completed
+call made through its receipt-aware client and atomically persists the batch
+before approval creation or external execution. It uses either the configured
+three-part recorder identity or an ephemeral process-local identity. If the
+attempt stops after its decision row is durable but before finalization, a retry
+returns recovery-required before client construction, inference, memory writes,
+approval, or execution. It does not claim a new batch is complete; preserving
+availability here requires a future durable provisional trace journal or
+atomic-restart design. Other application clients are not covered, and the
 product does not export the canonical verification bundle or show a receipt
 detail UI. The authenticated decision route can read or delete receipt metadata.
 A missing receipt therefore means “unavailable,” not “local,” “private,” or
@@ -437,9 +442,10 @@ The user can inspect:
 - Raw events: Retained for 90 days, then summarized (configurable)
 - Explanation records: Retained indefinitely
 - Feedback events: Retained indefinitely
-- Inference receipts: completed decision-event calls are automatically captured
-  and finalized; metadata rows are retained with their decision, included in
-  user backups, and deleted with that decision or user
+- Inference receipts: completed calls from successfully finalized decision-event
+  attempts are captured; metadata rows are retained with their decision,
+  included in user backups, and deleted with that decision or user. Interrupted
+  pre-finalization decisions remain recovery-required and do not proceed.
 
 ## Rollback Capabilities
 

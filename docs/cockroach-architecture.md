@@ -105,7 +105,7 @@ memory_rooms
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
 | `inference_receipts` | Signed reasoning-path records for completed decision-event model calls, ordered by durable capture completion | Atomic batch finalization before approval or execution | Owner-scoped metadata read, backup, audit |
-| `inference_receipt_completions` | Content-free marker that the full zero-or-more receipt batch is durable | Same transaction as receipt finalization | Re-ingest admission and crash recovery |
+| `inference_receipt_completions` | Content-free marker that the full zero-or-more receipt batch from one attempt is durable | Same transaction as receipt finalization | Re-ingest admission; absence on an existing decision requires recovery |
 | `decision_ingest_guards` | Captured continuation snapshot and guarded effect state for one decision | Finalized with receipt authority, then advanced by guarded claims | Retry/reconciliation without replaying ambiguous effects |
 | `execution_policy_authority` | Installation-wide revision fencing policy changes from stale dispatch claims | On global execution-policy invalidation | Every external-dispatch lease admission |
 | `execution_admission_barriers` | One-shot, graph-bound admission snapshot for memory and approval execution | Immediately before an effect-bearing dispatch | Reconciliation and duplicate-dispatch prevention |
@@ -428,11 +428,16 @@ If any step fails or a safety check doesn't pass, the entire transaction rolls b
 
 ### Decision Receipt Finalization and External Dispatch
 
-Decision-event ingestion writes the decision graph and explanation before it
-atomically inserts zero or more `inference_receipts`, in durable capture-completion
-order, plus one `inference_receipt_completions` row and the corresponding
-`decision_ingest_guards` continuation snapshot. Approval creation and execution
-preparation happen only after that transaction commits.
+A successfully finalized decision-event attempt writes the decision graph and
+explanation before atomically inserting zero or more `inference_receipts`, in
+durable capture-completion order, plus one `inference_receipt_completions` row
+and the corresponding `decision_ingest_guards` continuation snapshot. Approval
+creation and execution preparation happen only after that transaction commits.
+If an existing decision lacks the completion marker, re-ingestion stops before
+client construction, inference, memory writes, receipt admission, approval, or
+execution. Because completed-call traces are currently request-local, safe
+availability recovery requires a future durable provisional trace journal or
+atomic-restart design; a retry cannot declare a replacement batch complete.
 
 An effect-bearing continuation then creates or claims an
 `execution_admission_barriers` row tied by foreign keys to the exact decision,

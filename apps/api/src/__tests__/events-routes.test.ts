@@ -1241,7 +1241,7 @@ describe('Events API routes', () => {
       expect(mockCreateReceipts).not.toHaveBeenCalled();
     });
 
-    it('evaluates an incomplete retry only from the canonical persisted decision', async () => {
+    it('requires recovery for an incomplete persisted decision before any new work starts', async () => {
       const canonicalRawEvent = {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
         signalId: 'signal-incomplete',
@@ -1271,35 +1271,29 @@ describe('Events API routes', () => {
         data: { subject: 'Retry B', body: 'different content' },
       });
 
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({
+        code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+        error: 'Decision receipt capture is incomplete; recovery is required',
+        decisionId: 'decision-1',
+      });
+      expect(mockGetProviders).not.toHaveBeenCalled();
+      expect(mockLlmClient).not.toHaveBeenCalled();
       expect(mockInterpret).not.toHaveBeenCalled();
       expect(mockSaveDecision).not.toHaveBeenCalled();
-      expect(mockEvaluate).toHaveBeenCalledWith(expect.objectContaining({
-        decision: expect.objectContaining({
-          summary: 'Persisted interpretation A',
-          rawData: canonicalRawEvent,
-        }),
-      }));
-      expect(mockGenerate).toHaveBeenCalledWith(
-        expect.objectContaining({ rawData: canonicalRawEvent }),
-        expect.anything(),
-        expect.objectContaining({
-          decision: expect.objectContaining({ rawData: canonicalRawEvent }),
-        }),
-      );
-      expect(mockCreateReceipts).toHaveBeenCalledOnce();
-      await vi.waitFor(() => {
-        expect(mockRecordSignal).toHaveBeenCalledWith(expect.objectContaining({
-          source: 'gmail',
-          type: 'email',
-          data: canonicalRawEvent.data,
-        }));
-      });
-      expect(mockSseManager.emit).toHaveBeenCalledWith(
-        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-        'memory:page-indexed',
-        expect.objectContaining({ source: 'gmail', type: 'email' }),
-      );
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockGenerate).not.toHaveBeenCalled();
+      expect(mockRecordSignal).not.toHaveBeenCalled();
+      expect(mockSaveCandidates).not.toHaveBeenCalled();
+      expect(mockSaveOutcome).not.toHaveBeenCalled();
+      expect(mockEmitReceipt).not.toHaveBeenCalled();
+      expect(mockCreateReceipts).not.toHaveBeenCalled();
+      expect(mockApprovalCreate).not.toHaveBeenCalled();
+      expect(mockClaimExecution).not.toHaveBeenCalled();
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
+      expect(mockMarkNonEffect).not.toHaveBeenCalled();
+      expect(mockSseManager.emit).not.toHaveBeenCalled();
     });
 
     it('resumes approval creation after committed receipt capture without repeating inference', async () => {
@@ -1635,35 +1629,6 @@ describe('Events API routes', () => {
       expect(mockGetExecutionRouter).not.toHaveBeenCalled();
     });
 
-    it('falls through to the normal pipeline when no previous outcome is recoverable (first attempt crashed before saving)', async () => {
-      // The decision row exists, but the prior attempt died before receipt
-      // finalization. Recovery evaluates the canonical persisted decision.
-      mockFindBySignalId.mockResolvedValue({
-        id: 'decision-1', situationType: 'calendar_conflict', domain: 'calendar',
-        urgency: 'medium', summary: 'Persisted email',
-        rawData: {
-          userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-          signalId: 'signal-incomplete-outcome', source: 'gmail', type: 'email',
-        },
-        interpretedAt: new Date('2026-09-10T00:00:00.000Z'),
-      });
-      mockGetOutcome.mockResolvedValue(null);
-
-      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-        signalId: 'signal-incomplete-outcome',
-        source: 'gmail',
-        type: 'email',
-      });
-
-      expect(res.status).toBe(200);
-      const body = res.body as { reIngested?: boolean };
-      // The pipeline ran — no `reIngested` marker.
-      expect(body.reIngested).toBeUndefined();
-      // mockEvaluate is what runs in the normal pipeline; it must have
-      // fired since we fell through.
-      expect(mockEvaluate).toHaveBeenCalled();
-    });
   });
 
   it('does not dispatch when the ready execution claim is ambiguous or already consumed', async () => {
@@ -1721,48 +1686,6 @@ describe('Events API routes', () => {
     expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
     expect(mockSseManager.emit).not.toHaveBeenCalledWith(
       expect.anything(), 'decision:executed', expect.anything(),
-    );
-  });
-
-  it('re-emits decision:blocked-by-policy when re-ingestion falls through (previous outcome missing)', async () => {
-    // After PR B's short-circuit, a re-ingestion only silences
-    // `decision:blocked-by-policy` when the prior outcome row is
-    // recoverable (the suppression test in the
-    // "re-ingestion pipeline short-circuit" block covers that). When
-    // the prior attempt crashed before saving its outcome,
-    // getOutcome returns null and the route falls through to the
-    // normal pipeline — at which point the SSE MUST fire because the
-    // user never saw it on the failed first attempt.
-    mockEvaluate.mockResolvedValue({
-      autoExecute: false,
-      requiresApproval: false,
-      reasoning: 'All candidates blocked by policy "No travel auto-bookings".',
-      selectedAction: null,
-      allCandidates: [],
-    });
-    mockFindBySignalId.mockResolvedValue({
-      id: 'decision-1', situationType: 'travel_decision', domain: 'travel',
-      urgency: 'medium', summary: 'Persisted travel decision',
-      rawData: {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-        signalId: 'signal-incomplete-block', source: 'test', type: 'travel_decision',
-      },
-      interpretedAt: new Date('2026-09-10T00:00:00.000Z'),
-    });
-    mockGetOutcome.mockResolvedValue(null);
-
-    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-      signalId: 'signal-incomplete-block',
-      source: 'test',
-      type: 'travel_decision',
-    });
-
-    expect(res.status).toBe(200);
-    expect(mockSseManager.emit).toHaveBeenCalledWith(
-      'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-      'decision:blocked-by-policy',
-      expect.objectContaining({ decisionId: 'decision-1' }),
     );
   });
 

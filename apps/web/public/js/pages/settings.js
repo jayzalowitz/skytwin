@@ -410,7 +410,7 @@ export async function renderSettings(container, userId) {
             <option value="openai">OpenAI (GPT)</option>
             <option value="google">Google (Gemini)</option>
             <option value="ollama">Ollama (local-only in On this device mode)</option>
-            <option value="embedded">Embedded (llama.cpp, no install)</option>
+            <option value="embedded">Embedded (requires llama.cpp + model)</option>
           </select>
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
@@ -1770,7 +1770,7 @@ function renderReasoningLocation(settingsAvailable = true) {
   const boundaryDescription = _reasoningMode === 'on_device'
     ? 'Prompts stay on this device. The embedded runtime is local; loopback Ollama requests are source-qualified as local so its daemon cannot relay them to a cloud model.'
     : _reasoningMode === 'bring_your_own_provider'
-      ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Embedded inference stays local; Ollama may relay through its operator, so this mode treats it as potentially remote. This mode makes no confidential-computing claim.'
+      ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Embedded inference is ineligible in this mode; Ollama may relay through its operator, so this mode treats it as potentially remote. This mode makes no confidential-computing claim.'
       : 'This mode requires a successfully verified confidential-computing adapter for every request. No eligible adapter is available in this build.';
   const hasUnsavedMode = _reasoningMode !== _persistedReasoningMode;
   const persistedLabel = _persistedReasoningMode === 'on_device'

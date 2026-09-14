@@ -235,10 +235,9 @@ export function createEventsRouter(): Router {
       const rawEvent = validation.event;
       const userId = validation.userId;
 
-      // Resolve every known duplicate before interpretation. An incomplete
-      // prior ingest still needs a provider client for evaluation, but its
-      // canonical persisted decision — never the retry payload — is the only
-      // input allowed into that evaluation and its receipts.
+      // Resolve every known duplicate before interpretation. A finalized row
+      // can resume only its durable continuation; an incomplete row cannot be
+      // reconstructed from request-local traces and therefore fails closed.
       const signalId = typeof rawEvent['signalId'] === 'string' &&
         rawEvent['signalId'].trim().length > 0
         ? rawEvent['signalId']
@@ -255,6 +254,18 @@ export function createEventsRouter(): Router {
             userId,
             existing.id,
           );
+          // Completed inference traces exist only in request memory until the
+          // atomic finalization transaction. If that attempt stopped after the
+          // decision row was written, a retry cannot reconstruct the complete
+          // causative batch and must not invent a new one from partial history.
+          if (!preExistingIngestState?.receiptCaptureComplete) {
+            res.status(409).json({
+              code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+              error: 'Decision receipt capture is incomplete; recovery is required',
+              decisionId: existing.id,
+            });
+            return;
+          }
         }
       }
 
@@ -262,7 +273,7 @@ export function createEventsRouter(): Router {
       // the sole per-user composition root. Its trace callback observes every
       // completed call made by interpretation, candidate generation, or drafts.
       const traces: InferenceTrace[] = [];
-      const llmResolution = preExistingDecision && preExistingIngestState?.receiptCaptureComplete
+      const llmResolution = preExistingDecision
         ? null
         : await resolveUserLlmClient(userId, {
             // Take ownership immediately. Returned response provenance and a
@@ -394,9 +405,9 @@ export function createEventsRouter(): Router {
       //     that auto-execute; observer/suggest are already gated by the
       //     approval-row idempotency from #289).
       //
-      // Before receipt finalization, re-evaluation is safe because approval or
-      // execution cannot have started. Afterwards, only idempotent approval /
-      // informational work or a one-time ready→running execution claim resumes.
+      // Only a finalized continuation can reach this branch. From it, resume
+      // idempotent approval/informational work or a one-time ready→running
+      // execution claim; never reconstruct a missing receipt batch.
       if (!decisionCreated) {
         const ingestState = preExistingDecision || preExistingIngestState
           ? preExistingIngestState
@@ -522,13 +533,19 @@ export function createEventsRouter(): Router {
           });
           return;
         } else {
-          log.info('Re-ingestion before receipt finalization; running inference pipeline to completion', {
+          log.warn('Stopped re-ingestion without durable receipt completion', {
             userId,
             decisionId: decision.id,
             previousOutcomePresent: previousOutcome !== null,
             previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
             ingestState: ingestState?.effectState ?? null,
           });
+          res.status(409).json({
+            code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+            error: 'Decision receipt capture is incomplete; recovery is required',
+            decisionId: decision.id,
+          });
+          return;
         }
       }
 
