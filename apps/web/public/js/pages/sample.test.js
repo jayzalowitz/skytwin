@@ -92,6 +92,17 @@ describe('interactive sample page states', () => {
     expect(html).toContain('Reject');
   });
 
+  it('renders four addressable proposal cards for the packaged renderer proof', () => {
+    const html = renderSampleState(state([
+      proposal({ id: 'calendar-focus' }),
+      proposal({ id: 'newsletter-triage' }),
+      proposal({ id: 'focus-time-preference' }),
+      proposal({ id: 'untrusted-document', status: 'contained', allowedCommands: [] }),
+    ]));
+    expect(html).toContain('data-sample-state="populated"');
+    expect(html.match(/<article class="[^"]*sample-proposal[^"]*" data-proposal-id=/g)).toHaveLength(4);
+  });
+
   it('shows learned prediction changes and the correction control', () => {
     const html = renderSampleState(
       state(

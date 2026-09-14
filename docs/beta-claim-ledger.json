@@ -988,8 +988,38 @@
         },
         {
           "path": "apps/api/src/routes/demo.ts",
-          "sha256": "1a88bd8d454109d61b12a6f657f1d19644329a4737194d39497124f8d80a90ea",
+          "sha256": "90813a6c1ec5d90716b2b7e83d311ec66d110ffef5a853efd1fbe4d026584a75",
           "why": "Exposes packaged sample availability without enabling the development authentication bypass"
+        },
+        {
+          "path": "apps/desktop/src/release-evidence-renderer.ts",
+          "sha256": "f1c5e1d05ea11cf0ab688fed7e7a86baa864afff473d8a99151ebae1b0b9023c",
+          "why": "Drives the packaged first-run sample control and emits the nonce-bound populated-renderer proof"
+        },
+        {
+          "path": "apps/desktop/src/main.ts",
+          "sha256": "5c232b4595e5ea5a0e23772506bf2b5264c71f72223fc1f40935e999047e90eb",
+          "why": "Invokes renderer proof collection only for the verifier-provided evidence environment"
+        },
+        {
+          "path": "apps/desktop/src/service-manager.ts",
+          "sha256": "923727c70cd5f02019a0d5c311d8dd0dd42b8efb19be3d092a67e09245f5bfba",
+          "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
+        },
+        {
+          "path": "apps/web/public/js/pages/onboarding.js",
+          "sha256": "27ee1ea5972b84a36fc3a3fd3b216916828f31369d6efd0b86068cb3478e36c3",
+          "why": "Provides the real first-run sample control, session issuance flow, and sample-route transition"
+        },
+        {
+          "path": "apps/web/public/js/pages/sample.js",
+          "sha256": "5496e6d3e36a2159d373142327af91ee419d08cc1bcea979e977ee224c6ae057",
+          "why": "Renders the populated four-proposal sample surface required by packaged evidence"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/sample.packaged-account-free.mjs",
+          "sha256": "82217eda3398e650958c8d1af98645fc74eadf8d434dbf4f649df770ead3d37e",
+          "why": "Canonical native verifier binds the downloaded container, derived executable, isolated runtime probe, and structured report to the current tagged run"
         }
       ],
       "verification": [
@@ -1130,7 +1160,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "d99c309c1c1d333365e004167c12e5b4e6fd8ded13513a580f784f18bc6cee5c",
+          "sha256": "2512748cb0696bb756464e947078022a1f6a81d2da089999eedc7e1cb7c88e18",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
@@ -1162,7 +1192,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "d99c309c1c1d333365e004167c12e5b4e6fd8ded13513a580f784f18bc6cee5c",
+          "sha256": "2512748cb0696bb756464e947078022a1f6a81d2da089999eedc7e1cb7c88e18",
           "why": "Current packaging jobs do not generate the verification sidecars and attestations that the guarded publisher now requires"
         }
       ],

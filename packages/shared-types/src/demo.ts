@@ -13,9 +13,12 @@ import type { ActionProvenance, ConfirmationLevel } from './action-safety.js';
  *
  * `available: false` when the seeded demo user is missing. The server
  * intentionally omits PII like email and name even when the user exists.
+ * `instanceNonce` is present only when an evidence run supplies a process
+ * attribution nonce. It is not an authentication capability.
  */
 export type DemoInfoResponse =
-  { available: false } | { available: true; userId: string };
+  | { available: false }
+  | { available: true; userId: string; instanceNonce?: string };
 
 /** Response from `POST /api/v1/demo/session`. */
 export interface DemoSessionResponse {

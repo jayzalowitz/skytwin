@@ -633,6 +633,10 @@ export class ServiceManager {
     const bundledGoogleClientId =
       envOverride !== undefined && envOverride !== '' ? envOverride : BUNDLED_GOOGLE_CLIENT_ID || '';
     const inheritedEnv = { ...process.env } as Record<string, string>;
+    // Renderer evidence authority belongs only to the Electron main process.
+    // API/web/worker children must not be able to forge the rendered-UI proof.
+    delete inheritedEnv['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'];
+    delete inheritedEnv['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'];
     if (app.isPackaged) {
       delete inheritedEnv['SKYTWIN_API_INSTANCE_CAPABILITY'];
       delete inheritedEnv['SKYTWIN_SERVICE_TOKEN'];

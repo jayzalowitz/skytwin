@@ -464,7 +464,19 @@ ${machineMatrix}
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
+      - name: Resolve packaged sample provenance
+        id: sample-provenance
+        if: matrix.claimId == 'sample.packaged-account-free'
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+        run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform \${{ matrix.platform }} --descriptor .release-evidence/provenance/\${{ matrix.reportName }}
+      - name: Run canonical packaged sample verifier without GitHub API token
+        if: matrix.claimId == 'sample.packaged-account-free'
+        env:
+          SKYTWIN_RELEASE_PROVENANCE_SHA256: \${{ steps.sample-provenance.outputs.descriptor_sha256 }}
+        run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform \${{ matrix.platform }} --descriptor .release-evidence/provenance/\${{ matrix.reportName }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Run canonical machine verifier
+        if: matrix.claimId != 'sample.packaged-account-free'
         env:
           GITHUB_TOKEN: \${{ github.token }}
         run: node scripts/release-claims/verifiers/\${{ matrix.claimId }}.mjs --platform \${{ matrix.platform }} --output .release-evidence/reports/\${{ matrix.reportName }}
@@ -663,6 +675,22 @@ describe("release claim ledger validation", () => {
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "post-build release evidence gate must execute before the canonical publisher",
+    );
+  });
+
+  it("rejects credentials on the packaged sample execution step", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "      - name: Run canonical packaged sample verifier without GitHub API token\n        if: matrix.claimId == 'sample.packaged-account-free'\n        env:\n          SKYTWIN_RELEASE_PROVENANCE_SHA256: ${{ steps.sample-provenance.outputs.descriptor_sha256 }}\n        run:",
+        "      - name: Run canonical packaged sample verifier without GitHub API token\n        if: matrix.claimId == 'sample.packaged-account-free'\n        env:\n          SKYTWIN_RELEASE_PROVENANCE_SHA256: ${{ steps.sample-provenance.outputs.descriptor_sha256 }}\n          GITHUB_TOKEN: ${{ github.token }}\n        run:",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
     );
   });
 
@@ -2004,6 +2032,7 @@ describe("release claim ledger validation", () => {
         "sample.packaged-account-free",
         {
           platform: "macos",
+          runnerPlatform: "darwin-arm64",
           executedBinary: {
             name: "SkyTwin",
             sizeBytes: 1024,
@@ -2018,6 +2047,30 @@ describe("release claim ledger validation", () => {
         [],
       ),
     ).toEqual([]);
+    for (const mutation of [
+      { runnerPlatform: "linux-x64" },
+      { executedBinary: { derivationPath: "decoy/SkyTwin" } },
+    ]) {
+      const report = {
+        platform: "macos",
+        runnerPlatform: "darwin-arm64",
+        ...mutation,
+        executedBinary: {
+          name: "SkyTwin",
+          sizeBytes: 1024,
+          sha256: "e".repeat(64),
+          device: 1,
+          inode: 2,
+          identityResult: "pass",
+          derivationMethod: "zip-ditto",
+          derivationPath: "SkyTwin.app/Contents/MacOS/SkyTwin",
+          ...(mutation.executedBinary ?? {}),
+        },
+      };
+      expect(
+        verifyMachineEvidenceApplicability("sample.packaged-account-free", report, []),
+      ).toHaveLength(1);
+    }
   });
 
   it("requires native reports for sample mode and signing", () => {

@@ -597,9 +597,8 @@ jobs:
           path: apps/mobile/SkyTwin-iOS-simulator.zip
           if-no-files-found: warn
 
-  # The reviewed machine-verifier scripts land in the evidence-producing
-  # follow-up. Until they exist, tag builds stop here instead of accepting a
-  # hand-authored passing report.
+  # Missing machine-verifier implementations fail closed here instead of
+  # allowing a hand-authored passing report into the release artifact graph.
   release-machine-evidence:
     name: release-machine-evidence / ${{ matrix.claimId }} / ${{ matrix.platform }}
     if: startsWith(github.ref, 'refs/tags/v')
@@ -670,7 +669,19 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
+      - name: Resolve packaged sample provenance
+        id: sample-provenance
+        if: matrix.claimId == 'sample.packaged-account-free'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }}
+      - name: Run canonical packaged sample verifier without GitHub API token
+        if: matrix.claimId == 'sample.packaged-account-free'
+        env:
+          SKYTWIN_RELEASE_PROVENANCE_SHA256: ${{ steps.sample-provenance.outputs.descriptor_sha256 }}
+        run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}
       - name: Run canonical machine verifier
+        if: matrix.claimId != 'sample.packaged-account-free'
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}

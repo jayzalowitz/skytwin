@@ -149,6 +149,7 @@ export function createDemoRouter(): Router {
    * DEMO_USER_ID slot for a real account can't accidentally leak PII.
    */
   router.get('/info', async (req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store');
     try {
       const ip = req.ip;
       if (!isLocalDemoRequest(ip, req.socket.remoteAddress)) {
@@ -163,7 +164,12 @@ export function createDemoRouter(): Router {
         res.json(unavailable);
         return;
       }
-      const ok: DemoInfoResponse = { available: true, userId: user.id };
+      const evidenceNonce = process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'];
+      const ok: DemoInfoResponse = {
+        available: true,
+        userId: user.id,
+        ...(evidenceNonce ? { instanceNonce: evidenceNonce } : {}),
+      };
       res.json(ok);
     } catch (error) {
       next(error);
