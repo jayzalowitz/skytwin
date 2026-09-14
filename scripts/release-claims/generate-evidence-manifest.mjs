@@ -9,6 +9,7 @@ import {
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
   CANONICAL_RELEASE_ASSETS,
+  machineProducerJobName,
   machineReportNamesForClaim,
 } from "./release-constants.mjs";
 
@@ -202,6 +203,20 @@ for (const readiness of ledger.release.readinessClaims) {
     for (const reportName of reportNames) {
       const reportPath = join(reportsDirectory, reportName);
       const report = JSON.parse(readFileSync(reportPath, "utf8"));
+      const producerJobName = machineProducerJobName(
+        readiness.claimId,
+        report.platform,
+      );
+      const producerJob = oneBy(
+        jobsPage.jobs,
+        "name",
+        producerJobName,
+        `machine evidence producer job for ${readiness.claimId}`,
+      );
+      if (producerJob.conclusion !== "success")
+        throw new Error(
+          `machine evidence producer job did not pass for ${readiness.claimId}`,
+        );
       const releaseArtifact = oneBy(
         artifactsPage.artifacts,
         "id",
@@ -226,6 +241,12 @@ for (const readiness of ledger.release.readinessClaims) {
         sourceCommit: releaseCommit,
         releaseTag: tag,
         platform: report.platform,
+        producerJobId: producerJob.id,
+        producerJobName: producerJob.name,
+        producerJobConclusion: producerJob.conclusion,
+        verifierPath: report.verifierPath,
+        verifierCommand: report.verifierCommand,
+        verifierSha256: report.verifierSha256,
         releaseArtifactKind: report.releaseArtifactKind,
         releaseArtifactId: releaseArtifact.id,
         releaseArtifactName: releaseArtifact.name,

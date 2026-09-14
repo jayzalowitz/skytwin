@@ -94,6 +94,38 @@ export async function assertReleaseTagTargetsCommit(context) {
     );
 }
 
+export async function assertReleaseCommitOnMain({
+  repository,
+  commit,
+  token,
+  fetchImpl = globalThis.fetch,
+}) {
+  const expected = String(commit ?? "").toLowerCase();
+  if (!repository || !token)
+    throw new Error("GitHub release context is required");
+  if (!/^[a-f0-9]{40}$/.test(expected))
+    throw new Error("release commit must be a full 40-character SHA");
+
+  const comparison = await readJsonWithRetry({
+    fetchImpl,
+    url: `https://api.github.com/repos/${repository}/compare/${expected}...main`,
+    headers: githubHeaders(token),
+    operation: "release commit main ancestry lookup",
+  });
+  if (
+    !["ahead", "identical"].includes(comparison?.status) ||
+    String(comparison?.merge_base_commit?.sha ?? "").toLowerCase() !== expected
+  )
+    throw new Error(
+      `release commit ${expected} is not an ancestor of the current main branch`,
+    );
+}
+
+export async function assertReleaseSource(context) {
+  await assertReleaseTagTargetsCommit(context);
+  await assertReleaseCommitOnMain(context);
+}
+
 export async function assertReleaseTagAbsent({
   repository,
   tag,
@@ -324,7 +356,7 @@ export async function publishVerifiedDraft({
 
   // target_commitish is ignored when a release tag already exists. Resolve the
   // Git ref itself immediately before the one and only publication request.
-  await assertReleaseTagTargetsCommit({
+  await assertReleaseSource({
     repository,
     tag,
     commit,
@@ -404,7 +436,7 @@ export async function publishVerifiedDraft({
       throw new Error(
         "published release changed during publication verification",
       );
-    await assertReleaseTagTargetsCommit({
+    await assertReleaseSource({
       repository,
       tag,
       commit,
@@ -433,8 +465,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     token: process.env.GITHUB_TOKEN,
   };
   if (mode === "--assert-absent") await assertReleaseTagAbsent(context);
-  else if (mode === "--assert-tag-target")
-    await assertReleaseTagTargetsCommit(context);
+  else if (mode === "--assert-tag-target") await assertReleaseSource(context);
   else
     await publishVerifiedDraft({
       ...context,

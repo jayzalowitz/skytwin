@@ -1,14 +1,14 @@
 # SkyTwin Launch Plan
 
-This document tracks the path from "code in a feature branch" to "grandma can download and use the app." It is updated as items close. Where a task has a hard external dependency (Apple Developer enrollment, Google verification review, etc.), that's called out so the dependency can be unblocked in parallel with the surrounding engineering work.
+This document tracks the path from the current `main` baseline to "grandma can download and use the app." It is updated as items close. Where a task has a hard external dependency (Apple Developer enrollment, Google verification review, etc.), that's called out so the dependency can be unblocked in parallel with the surrounding engineering work.
 
 The plan is intentionally specific about **what's done**, **what blocks launch**, **what improves launch**, and **what is explicitly NOT in scope for launch**. Don't accept tasks that creep into Tier 3 before Tier 1 ships.
 
 ---
 
-## Tier 0 — What's already shipped (in PR #350)
+## Tier 0 — Current baseline on `main`
 
-These are done in code and live on the `jayzalowitz/grandma-proof-install` branch. Verified locally on Darwin arm64 + by CI on Linux. Will reach users once the PR merges to `main`.
+These capabilities are present on `main`. Release support remains governed by the claim ledger and the Tier 1 gates below; code presence is not evidence that a public binary has cleared them.
 
 - **Native CRDB single-binary install** — drops the Docker Desktop dependency for the entire `install.sh` path. Hash-verified binary download for darwin-arm64, darwin-amd64, linux-amd64, linux-arm64, win32-amd64.
 - **Docker validation harness** — `bin/validate-installs` and a CI matrix that drives `install.sh` end-to-end against fresh Ubuntu 22.04 / Debian 12 / Fedora 40 containers.
@@ -27,18 +27,13 @@ These are done in code and live on the `jayzalowitz/grandma-proof-install` branc
 
 ## Tier 1 — Launch blockers (must ship before public download links go anywhere)
 
-### 1.1 Merge PR #350 to main
-**Dependency:** review pass. PR is at https://github.com/jayzalowitz/skytwin/pull/350.
+### 1.1 Finish the evidence-gated release train
+**Dependency:** reviewed release consumer plus current-run evidence producers.
 
-Until this merges:
-- GitHub Pages doesn't serve the privacy/ToS/connect-gmail pages (Pages is pointed at `main/docs`).
-- Brand verification can't be submitted (Google can't fetch the consent-screen URLs because they 404).
-- The bundled CRDB + Gmail-wizard fixes can't reach users.
-
-Nothing else in Tier 1 unblocks until this is done.
+The release consumer must remain fail-closed while the producer work lands. The remaining producer scope includes the `release-claims-ci` artifact, canonical claim/platform machine-verifier jobs and reports, signing/notarization proof, an SPDX 2.3 release SBOM, checksums and verification instructions, and source-bound provenance attestations. Each machine report must bind the exact successful producer job, reviewed verifier source digest, command, release artifact, tag run, and structured observations. The authoritative completion state is `docs/beta-claim-ledger.json`; none of its stop-ship conditions may be waived informally.
 
 ### 1.2 Submit brand verification + Calendar sensitive-scope review
-**Dependency:** §1.1. **Owner:** SkyTwin team. **Time:** ~1–3 weeks of Google review.
+**Dependency:** public policy pages reachable from `main`. **Owner:** SkyTwin team. **Time:** ~1–3 weeks of Google review.
 
 After Pages goes live:
 1. Click **Verify branding** on https://console.cloud.google.com/auth/branding?project=skytwin-492700.
@@ -73,20 +68,16 @@ Upload as **unlisted YouTube**. Paste the URL into the Google verification submi
 ### 1.5 Tag the first public release
 **Dependency:** §1.3 (so the artifacts that build are usable). **Owner:** SkyTwin team. **Time:** 5 minutes + ~15 minutes for the workflow to build all three platforms.
 
-```bash
-git checkout main && git pull
-git tag -a v0.6.57.0 -m "First public release"
-git push origin v0.6.57.0
-```
+Follow [`release-procedure.md`](./release-procedure.md) only after `VERSION`, the package metadata, and the ledger all authorize the same `v0.7.0-beta` release. The workflow rejects a tag whose commit is not already merged into the current `main` branch.
 
 The `release` job in `.github/workflows/build.yml` takes over after the three desktop package jobs. It can publish only after the ledger is ready and current-run CI, machine, signing, model, checksum, provenance, and exact artifact-set evidence pass. It creates an unpublished draft, verifies every attached name and digest against the evidence manifest, and immediately publishes from the same controlled job. Do not publish a draft manually. Today the open stop-ship conditions intentionally prevent this path from reaching draft creation.
 
 The full, step-by-step runbook (including these gaps and the clean-machine verification) lives in [`release-procedure.md`](./release-procedure.md).
 
-### 1.6 README rewrite: lead with download
+### 1.6 README download surface: promote only verified artifacts
 **Dependency:** §1.5. **Owner:** SkyTwin team. **Time:** 30 minutes.
 
-The current README leads with `curl … | bash`. After §1.5, the front door becomes:
+The README already exposes technical-preview download links. After §1.5, replace preview caveats only with the exact filenames and support language authorized by the verified release manifest:
 
 ```markdown
 ## Install

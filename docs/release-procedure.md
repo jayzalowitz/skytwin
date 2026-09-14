@@ -24,7 +24,9 @@
 > proof pipeline ships.
 
 The intended post-build contract is explicit: the tagged `build.yml` run
-must produce `release-claims-ci` and `release-evidence` artifacts. The latter
+must produce `release-claims-ci` and `release-evidence` artifacts. The former
+requires a dedicated CI-result producer; it is not currently emitted by the
+`release-claim-ci` job. The latter
 contains one `reports/<claim-id>.json` result for every required machine claim
 and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
 `release.spdx.json`, `VERIFY.md`, and digest-named provenance bundles.
@@ -34,8 +36,10 @@ as its GitHub artifact metadata.
 Each report is created only after its subject release artifact is uploaded, so
 it can record the upload action's immutable artifact ID, name, digest, platform,
 artifact kind, subject filename, and subject SHA-256. Reports use schema version
-1, identify `release-machine-verifier` as their generator, and contain a
-non-empty list of uniquely named passing checks with observed results. A later aggregation step
+1, identify `release-machine-verifier` as their generator, bind the canonical
+successful claim/platform job and reviewed verifier path/command/source digest,
+and contain the exact uniquely named passing checks with structured assertion,
+measurement, and exit-code observations. A later aggregation step
 uploads those reports as the separate `release-evidence` artifact. After
 downloading artifacts, the final job runs
 `scripts/release-claims/generate-evidence-manifest.mjs`, which queries the
@@ -101,7 +105,7 @@ a separate onboarding constraint.
 1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
-4. **`release`** (`needs:` `test` plus the three desktop jobs) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus ten machine reports (eleven durable report files total), checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, and independently dereferences the release tag to the triggering commit before it changes the draft to public.
+4. **`release`** (`needs:` `test` plus the three desktop jobs) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus ten machine reports (eleven durable report files total), checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public.
 
 Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
 
@@ -131,6 +135,16 @@ producer must add one exact, pinned provenance job with only the required
 allowlist, and generate the sidecars above before the ledger can move to ready.
 Until that lands, the absence is a deliberate stop-ship rather than evidence
 that can be waived.
+
+The machine-evidence producers and the separate `release-claims-ci` artifact
+producer are also absent today. Future machine reports must come from the exact
+successful claim/platform job and canonical verifier step, carry the reviewed
+verifier path, command, and source digest, and provide structured observations;
+the release job independently checks those bindings against the current GitHub
+run. The SPDX producer must emit a 2.3 document namespace, explicit package
+analysis state, a component inventory, and package-to-file relationships that
+cover every release subject. Until those producers land, the gate remains
+blocked by design.
 
 ---
 

@@ -19,9 +19,13 @@ import {
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
   SAMPLE_EVIDENCE_PLATFORMS,
+  machineProducerJobName,
   machineReportNamesForClaim,
+  machineVerifierCommand,
+  machineVerifierPath,
 } from "./release-constants.mjs";
 
 export {
@@ -31,8 +35,12 @@ export {
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  machineProducerJobName,
   machineReportNamesForClaim,
+  machineVerifierCommand,
+  machineVerifierPath,
 } from "./release-constants.mjs";
 
 export const CLAIM_STATES = new Set([
@@ -1354,6 +1362,39 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
         addError(errors, `${prefix}.${field} must be a positive integer`);
     }
     if (
+      !Number.isSafeInteger(evidence.producerJobId) ||
+      evidence.producerJobId <= 0
+    )
+      addError(errors, `${prefix}.producerJobId must be a positive integer`);
+    const expectedProducerJobName = machineProducerJobName(
+      evidence.claimId,
+      evidence.platform,
+    );
+    if (evidence.producerJobName !== expectedProducerJobName)
+      addError(
+        errors,
+        `${prefix}.producerJobName must identify the canonical claim/platform producer job`,
+      );
+    if (evidence.producerJobConclusion !== "success")
+      addError(errors, `${prefix}.producerJobConclusion must be success`);
+    const expectedVerifierPath = machineVerifierPath(evidence.claimId);
+    const expectedVerifierCommand = machineVerifierCommand(
+      evidence.claimId,
+      evidence.platform,
+    );
+    if (evidence.verifierPath !== expectedVerifierPath)
+      addError(errors, `${prefix}.verifierPath must be the canonical verifier`);
+    if (evidence.verifierCommand !== expectedVerifierCommand)
+      addError(
+        errors,
+        `${prefix}.verifierCommand must invoke the canonical verifier exactly`,
+      );
+    if (!SOURCE_DIGEST.test(evidence.verifierSha256 ?? ""))
+      addError(
+        errors,
+        `${prefix}.verifierSha256 must be a lowercase SHA-256 digest`,
+      );
+    if (
       ![
         "desktop-archive",
         "desktop-installer",
@@ -1833,7 +1874,9 @@ export function verifyCanonicalReleasePublisher(root) {
     "Verify protected release environment",
   );
   const absenceGateIndex = stepIndexByName("Refuse an existing release tag");
-  const tagTargetGateIndex = stepIndexByName("Verify release tag target");
+  const tagTargetGateIndex = stepIndexByName(
+    "Verify release tag target and main ancestry",
+  );
   const controlledPublishIndex = stepIndexByName(
     "Verify exact draft assets and publish",
   );
@@ -2069,7 +2112,7 @@ export function verifyCanonicalReleasePublisher(root) {
   });
   assertExactRunStep({
     index: tagTargetGateIndex,
-    name: "Verify release tag target",
+    name: "Verify release tag target and main ancestry",
     run: "node scripts/release-claims/publish-verified-draft.mjs --assert-tag-target",
     env: githubTokenEnvironment,
     error:
@@ -3355,6 +3398,25 @@ function hasExactPassingChecks(checks, expectedIds) {
   );
 }
 
+function hasExactPassingMachineChecks(checks, expectedIds) {
+  if (
+    !sameStringSet(
+      asArray(checks).map((check) => check?.id),
+      expectedIds,
+    )
+  )
+    return false;
+  return asArray(checks).every(
+    (check) =>
+      check.testId === check.id &&
+      check.result === "pass" &&
+      isPlainRecord(check.observed) &&
+      check.observed.exitCode === 0 &&
+      isNonEmptyString(check.observed.assertion) &&
+      isNonEmptyString(check.observed.measurement),
+  );
+}
+
 export function verifyMachineEvidenceApplicability(
   claimId,
   report,
@@ -3518,18 +3580,29 @@ function isValidSpdxUtcTimestamp(value) {
   );
 }
 
-function isValidSpdx23Document(sbom) {
+function isValidSpdxDocumentNamespace(value) {
+  if (!isNonEmptyString(value) || value.includes("#")) return false;
+  try {
+    return new URL(value).href === value;
+  } catch {
+    return false;
+  }
+}
+
+export function isValidSpdx23Document(sbom) {
   if (
     !isPlainRecord(sbom) ||
     sbom.spdxVersion !== "SPDX-2.3" ||
     sbom.dataLicense !== "CC0-1.0" ||
     sbom.SPDXID !== "SPDXRef-DOCUMENT" ||
     !isNonEmptyString(sbom.name) ||
+    !isValidSpdxDocumentNamespace(sbom.documentNamespace) ||
     !isPlainRecord(sbom.creationInfo) ||
     !isValidSpdxUtcTimestamp(sbom.creationInfo.created) ||
     asArray(sbom.creationInfo.creators).length === 0 ||
     asArray(sbom.creationInfo.creators).some(
-      (creator) => !isNonEmptyString(creator),
+      (creator) =>
+        !/^(?:Person|Organization|Tool):\s+\S/.test(String(creator ?? "")),
     ) ||
     asArray(sbom.packages).length === 0 ||
     asArray(sbom.files).length === 0
@@ -3542,8 +3615,8 @@ function isValidSpdx23Document(sbom) {
       SPDX_ELEMENT_ID.test(entry.SPDXID ?? "") &&
       isNonEmptyString(entry.downloadLocation) &&
       isNonEmptyString(entry.name) &&
-      (entry.filesAnalyzed === undefined ||
-        typeof entry.filesAnalyzed === "boolean"),
+      isNonEmptyString(entry.versionInfo) &&
+      typeof entry.filesAnalyzed === "boolean",
   );
   const filesValid = sbom.files.every(
     (entry) =>
@@ -3561,11 +3634,44 @@ function isValidSpdx23Document(sbom) {
     ...sbom.files.map((entry) => entry.SPDXID),
   ];
   if (new Set(elementIds).size !== elementIds.length) return false;
+  const packageIds = new Set(sbom.packages.map((entry) => entry.SPDXID));
+  const fileIds = new Set(sbom.files.map((entry) => entry.SPDXID));
+  if (
+    !sameStringSet(sbom.documentDescribes, [...packageIds]) ||
+    !Array.isArray(sbom.relationships)
+  )
+    return false;
+  const relationshipsValid = sbom.relationships.every(
+    (relationship) =>
+      isPlainRecord(relationship) &&
+      elementIds.includes(relationship.spdxElementId) &&
+      elementIds.includes(relationship.relatedSpdxElement) &&
+      isNonEmptyString(relationship.relationshipType),
+  );
+  if (!relationshipsValid) return false;
+  const describedPackages = new Set(
+    sbom.relationships
+      .filter(
+        (relationship) =>
+          relationship.spdxElementId === sbom.SPDXID &&
+          relationship.relationshipType === "DESCRIBES" &&
+          packageIds.has(relationship.relatedSpdxElement),
+      )
+      .map((relationship) => relationship.relatedSpdxElement),
+  );
+  const containedFiles = new Set(
+    sbom.relationships
+      .filter(
+        (relationship) =>
+          packageIds.has(relationship.spdxElementId) &&
+          relationship.relationshipType === "CONTAINS" &&
+          fileIds.has(relationship.relatedSpdxElement),
+      )
+      .map((relationship) => relationship.relatedSpdxElement),
+  );
   return (
-    Array.isArray(sbom.documentDescribes) &&
-    sbom.documentDescribes.every(
-      (id) => SPDX_ELEMENT_ID.test(id) && elementIds.includes(id),
-    )
+    sameStringSet([...describedPackages], [...packageIds]) &&
+    sameStringSet([...containedFiles], [...fileIds])
   );
 }
 
@@ -3767,10 +3873,19 @@ export async function verifyArtifactVerificationMaterials(
     if (sbom) {
       const described = new Set(asArray(sbom.documentDescribes));
       const files = asArray(sbom.files);
+      const contained = new Set(
+        asArray(sbom.relationships)
+          .filter(
+            (relationship) =>
+              described.has(relationship?.spdxElementId) &&
+              relationship?.relationshipType === "CONTAINS",
+          )
+          .map((relationship) => relationship.relatedSpdxElement),
+      );
       const coversSubject = (subject) =>
         files.some(
           (file) =>
-            described.has(file?.SPDXID) &&
+            contained.has(file?.SPDXID) &&
             [subject.name, subject.path].includes(file?.fileName) &&
             asArray(file?.checksums).some(
               (checksum) =>
@@ -4239,7 +4354,8 @@ export async function verifyPublicationEvidence(
     if (
       evidence.repository !== repository ||
       evidence.sourceCommit !== releaseCommit ||
-      evidence.releaseTag !== tag
+      evidence.releaseTag !== tag ||
+      evidence.producerJobConclusion !== "success"
     )
       continue;
     if (
@@ -4259,6 +4375,13 @@ export async function verifyPublicationEvidence(
         `${prefix} is not bound to a subject in the complete canonical release asset inventory`,
       );
     }
+    const producerJobResponse = await fetchChecked(
+      fetchImpl,
+      `${apiRoot}/jobs/${evidence.producerJobId}`,
+      { headers },
+      `${prefix} producer job`,
+      errors,
+    );
     const evidenceArtifactResponse = await fetchChecked(
       fetchImpl,
       `${apiRoot}/artifacts/${evidence.evidenceArtifactId}`,
@@ -4273,11 +4396,18 @@ export async function verifyPublicationEvidence(
       `${prefix} release artifact`,
       errors,
     );
-    if (!evidenceArtifactResponse || !releaseArtifactResponse) continue;
+    if (
+      !producerJobResponse ||
+      !evidenceArtifactResponse ||
+      !releaseArtifactResponse
+    )
+      continue;
+    let producerJob;
     let evidenceArtifact;
     let releaseArtifact;
     try {
-      [evidenceArtifact, releaseArtifact] = await Promise.all([
+      [producerJob, evidenceArtifact, releaseArtifact] = await Promise.all([
+        producerJobResponse.json(),
         evidenceArtifactResponse.json(),
         releaseArtifactResponse.json(),
       ]);
@@ -4285,6 +4415,29 @@ export async function verifyPublicationEvidence(
       addError(errors, `${prefix} API response was not valid JSON`);
       continue;
     }
+    const expectedProducerJobName = machineProducerJobName(
+      claimId,
+      evidence.platform,
+    );
+    if (
+      producerJob.id !== evidence.producerJobId ||
+      producerJob.name !== expectedProducerJobName ||
+      producerJob.name !== evidence.producerJobName ||
+      producerJob.conclusion !== "success" ||
+      producerJob.run_url !==
+        `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
+      (producerJob.head_sha !== undefined &&
+        producerJob.head_sha !== releaseCommit) ||
+      !asArray(producerJob.steps).some(
+        (step) =>
+          step?.name === CANONICAL_MACHINE_VERIFIER_STEP &&
+          step?.conclusion === "success",
+      )
+    )
+      addError(
+        errors,
+        `${prefix} producer is not the canonical successful verifier job and step from the current run`,
+      );
     if (
       evidenceArtifact.id !== evidence.evidenceArtifactId ||
       evidenceArtifact.name !== evidence.evidenceArtifactName ||
@@ -4348,12 +4501,29 @@ export async function verifyPublicationEvidence(
       addError(errors, `${prefix} report is not valid JSON`);
       continue;
     }
+    const expectedVerifierPath = machineVerifierPath(claimId);
+    const expectedVerifierCommand = machineVerifierCommand(
+      claimId,
+      evidence.platform,
+    );
+    const verifierPath = resolveContainedRegularFile(
+      root,
+      expectedVerifierPath,
+    );
+    if (
+      !verifierPath ||
+      sha256(readFileSync(verifierPath)) !== evidence.verifierSha256
+    )
+      addError(
+        errors,
+        `${prefix} canonical verifier source is missing or does not match verifierSha256`,
+      );
     const expectedCheckIds = CANONICAL_MACHINE_EVIDENCE_CHECKS.get(claimId);
     if (
       report.schemaVersion !== 1 ||
       report.generatedBy !== "release-machine-verifier" ||
       report.result !== "pass" ||
-      !hasExactPassingChecks(report.checks, expectedCheckIds) ||
+      !hasExactPassingMachineChecks(report.checks, expectedCheckIds) ||
       !sameStringSet(evidence.checkIds, expectedCheckIds) ||
       report.claimId !== claimId ||
       report.sourceCommit !== releaseCommit ||
@@ -4368,7 +4538,13 @@ export async function verifyPublicationEvidence(
       report.releaseArtifactSha256 !== evidence.releaseArtifactSha256 ||
       report.subjectName !== evidence.subjectName ||
       report.subjectPath !== evidence.subjectPath ||
-      report.subjectSha256 !== evidence.subjectSha256
+      report.subjectSha256 !== evidence.subjectSha256 ||
+      report.producerJobId !== evidence.producerJobId ||
+      report.producerJobName !== expectedProducerJobName ||
+      report.producerJobConclusion !== "success" ||
+      report.verifierPath !== expectedVerifierPath ||
+      report.verifierCommand !== expectedVerifierCommand ||
+      report.verifierSha256 !== evidence.verifierSha256
     ) {
       addError(
         errors,

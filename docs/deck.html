@@ -796,7 +796,7 @@
             <p class="row-b"><span class="mono danger">CVE-2025-32711</span>, “EchoLeak,” <span class="mono">CVSS 9.3</span>. One crafted email exfiltrated whatever Microsoft 365 Copilot had in context. No click from the victim. An assistant that reads your inbox and treats what it reads as instructions is not hypothetically exposed. It is exposed by construction.</p>
           </div>
           <div class="row">
-            <p class="row-t"><span class="row-n">02</span>Three days ago.</p>
+            <p class="row-t"><span class="row-n">02</span>Reported on 2026-08-24.</p>
             <p class="row-b">TechCrunch (<span class="mono">2026-08-24</span>) reported privacy and security concerns about Instinct, a personal assistant with access to email, calendar, screen, audio and keystrokes. Per that reporting: it would not delete a user's Gmail records on request; it summarized an inbox after access had been disconnected, while storing emails in plain text; it was phishable into unauthorized email access; and Katie Jacobs Stanton said it “sent an innocuous email on my behalf without checking with me first.”</p>
           </div>
           <div class="row">
@@ -936,7 +936,7 @@
 
         <details class="srcs">
           <summary>Sources · 6 file references</summary>
-          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/ironclaw-adapter/src/handlers/email-action-handler.ts#L5">packages/ironclaw-adapter/src/handlers/email-action-handler.ts:5</a> (GMAIL_API, 4 fetch calls) and calendar-action-handler.ts (Calendar v3, 1 fetch). <span class="mono">grep -c 'fetch('</span> returns 0 for the finance, task, smart-home, social, document and health handlers, all of which throw to force fallback; smart-home-action-handler.ts:6-8 says so in a comment. <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/execution-setup.ts#L62-L132">apps/api/src/execution-setup.ts:62-132</a> registers configured execution adapters. Brand-voice guidance is in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 2. Corrects <a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md">README.md</a>'s illustrative scenarios, which are not supported-workflow assertions.</p>
+          <p class="src"><a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/ironclaw-adapter/src/handlers/email-action-handler.ts#L5">packages/ironclaw-adapter/src/handlers/email-action-handler.ts:5</a> (GMAIL_API, 3 fetch calls) and calendar-action-handler.ts (Calendar v3, 1 fetch). <span class="mono">grep -c 'fetch('</span> returns 0 for the finance, task, smart-home, social, document and health handlers, all of which throw to force fallback; smart-home-action-handler.ts:6-8 says so in a comment. <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/api/src/execution-setup.ts#L62-L132">apps/api/src/execution-setup.ts:62-132</a> registers configured execution adapters. Brand-voice guidance is in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">docs/demo.md</a> Step 2. Corrects <a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md">README.md</a>'s illustrative scenarios, which are not supported-workflow assertions.</p>
         </details>
       </div>
     </section>
@@ -1235,7 +1235,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           <div class="row span2">
             <p class="row-t"><span class="row-n">07</span>Ten external runtime dependencies, across 30 packages and six Node apps.</p>
             <p class="mono mt-md mb-sm">@modelcontextprotocol/sdk · ajv · bonjour-service · chrono-node · express · ipaddr.js · pg · tweetnacl · undici · zod</p>
-            <p class="row-b">25 of 30 packages have zero. Five LLM providers, no model-vendor SDKs — their APIs use <span class="mono">fetch</span>, with <span class="mono">undici</span> pinning validated DNS for custom endpoints. The Prometheus endpoint is hand-written. The dashboard has no bundler and no framework: 22,045 lines of non-test vanilla JS across 45 files, 26 of them page modules, and <span class="mono">express</span> is its only runtime dependency. One database, no broker, no Redis. One grep disproves any of it if it's false.</p>
+            <p class="row-b">25 of 30 packages have zero. Five LLM providers, no model-vendor SDKs — their APIs use <span class="mono">fetch</span>, with <span class="mono">undici</span> pinning validated DNS for custom endpoints. The Prometheus endpoint is hand-written. The dashboard has no bundler and no framework: 22,062 lines of non-test vanilla JS across 45 files, 26 of them page modules, and <span class="mono">express</span> is its only runtime dependency. One database, no broker, no Redis. One grep disproves any of it if it's false.</p>
           </div>
         </div>
 

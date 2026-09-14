@@ -1130,7 +1130,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "caebeae3ac6ee39a4b3a02cb06176f121a25cef14e703fedd6f4953c7062f1d3",
+          "sha256": "4f6d8b90f82a208cd9565a86233fab1edad944ee238abd4efed4c9650e5ec07c",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
@@ -1162,7 +1162,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "caebeae3ac6ee39a4b3a02cb06176f121a25cef14e703fedd6f4953c7062f1d3",
+          "sha256": "4f6d8b90f82a208cd9565a86233fab1edad944ee238abd4efed4c9650e5ec07c",
           "why": "Current packaging jobs do not generate the verification sidecars and attestations that the guarded publisher now requires"
         }
       ],

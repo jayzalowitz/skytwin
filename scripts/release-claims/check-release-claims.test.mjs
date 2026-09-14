@@ -18,7 +18,11 @@ import {
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  machineProducerJobName,
+  machineVerifierCommand,
+  machineVerifierPath,
   CANONICAL_RELEASE_EVIDENCE_RUN,
   CANONICAL_UPDATE_FEED_RUN,
   REQUIRED_CATEGORIES,
@@ -131,18 +135,20 @@ function makeVerificationAssets(
         spdxVersion: "SPDX-2.3",
         dataLicense: "CC0-1.0",
         name: "SkyTwin release artifacts",
+        documentNamespace:
+          "https://github.com/owner/repository/releases/tag/v0.7.0-beta/spdx",
         creationInfo: {
           created: "2026-09-14T00:00:00Z",
           creators: ["Tool: SkyTwin release-machine-verifier"],
         },
-        documentDescribes: subjects.map(
-          (_, index) => `SPDXRef-ReleaseSubject-${index}`,
-        ),
+        documentDescribes: ["SPDXRef-Package"],
         packages: [
           {
             SPDXID: "SPDXRef-Package",
             downloadLocation: "NOASSERTION",
             name: "SkyTwin",
+            versionInfo: "0.7.0-beta",
+            filesAnalyzed: true,
           },
         ],
         files: subjects.map((subject, index) => ({
@@ -150,6 +156,18 @@ function makeVerificationAssets(
           fileName: subject.name,
           checksums: [{ algorithm: "SHA256", checksumValue: subject.sha256 }],
         })),
+        relationships: [
+          {
+            spdxElementId: "SPDXRef-DOCUMENT",
+            relationshipType: "DESCRIBES",
+            relatedSpdxElement: "SPDXRef-Package",
+          },
+          ...subjects.map((_, index) => ({
+            spdxElementId: "SPDXRef-Package",
+            relationshipType: "CONTAINS",
+            relatedSpdxElement: `SPDXRef-ReleaseSubject-${index}`,
+          })),
+        ],
       })}\n`,
     ],
     [
@@ -450,7 +468,7 @@ ${CANONICAL_RELEASE_EVIDENCE_RUN.split("\n")
         env:
           GITHUB_TOKEN: \${{ github.token }}
         run: node scripts/release-claims/publish-verified-draft.mjs --assert-absent
-      - name: Verify release tag target
+      - name: Verify release tag target and main ancestry
         env:
           GITHUB_TOKEN: \${{ github.token }}
         run: node scripts/release-claims/publish-verified-draft.mjs --assert-tag-target
@@ -1602,6 +1620,10 @@ describe("release claim ledger validation", () => {
 
   it.each([
     ["document creationInfo", (sbom) => delete sbom.creationInfo],
+    ["document namespace", (sbom) => delete sbom.documentNamespace],
+    ["package analysis state", (sbom) => delete sbom.packages[0].filesAnalyzed],
+    ["package version", (sbom) => delete sbom.packages[0].versionInfo],
+    ["package/file relationships", (sbom) => delete sbom.relationships],
     [
       "package downloadLocation",
       (sbom) => delete sbom.packages[0].downloadLocation,
@@ -1618,8 +1640,7 @@ describe("release claim ledger validation", () => {
     ],
     [
       "lowercase checksum value",
-      (sbom) =>
-        (sbom.files[0].checksums[0].checksumValue = "A".repeat(64)),
+      (sbom) => (sbom.files[0].checksums[0].checksumValue = "A".repeat(64)),
     ],
   ])("rejects an SPDX 2.3 SBOM with invalid %s", async (_field, mutate) => {
     const root = makeRoot();
@@ -2688,6 +2709,15 @@ describe("release claim ledger validation", () => {
     const releaseAsset = releaseAssets[0];
     const subject = releaseAsset.subjects[0];
     const checkIds = CANONICAL_MACHINE_EVIDENCE_CHECKS.get(claimId);
+    const producerJobId = 404;
+    const producerJobName = machineProducerJobName(claimId, "macos-arm64");
+    const verifierPath = machineVerifierPath(claimId);
+    const verifierCommand = machineVerifierCommand(claimId, "macos-arm64");
+    const verifierSource = "// reviewed fixture verifier\n";
+    const verifierSha256 = createHash("sha256")
+      .update(verifierSource)
+      .digest("hex");
+    write(root, verifierPath, verifierSource);
     const report = {
       schemaVersion: 1,
       generatedBy: "release-machine-verifier",
@@ -2697,7 +2727,11 @@ describe("release claim ledger validation", () => {
           id: checkIds[0],
           testId: checkIds[0],
           result: "pass",
-          observed: "The fixture subject completed its scoped acceptance test.",
+          observed: {
+            assertion: "packaged persistence survived a restart",
+            measurement: "one write/read round trip",
+            exitCode: 0,
+          },
         },
       ],
       claimId,
@@ -2707,6 +2741,12 @@ describe("release claim ledger validation", () => {
       ref,
       runId,
       platform: "macos-arm64",
+      producerJobId,
+      producerJobName,
+      producerJobConclusion: "success",
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
       releaseArtifactKind: "desktop-installer",
       releaseArtifactId: releaseAsset.artifactId,
       releaseArtifactName: releaseAsset.artifactName,
@@ -2744,6 +2784,12 @@ describe("release claim ledger validation", () => {
           sourceCommit: commit,
           releaseTag: tag,
           platform: report.platform,
+          producerJobId,
+          producerJobName,
+          producerJobConclusion: "success",
+          verifierPath,
+          verifierCommand,
+          verifierSha256,
           releaseArtifactKind: report.releaseArtifactKind,
           releaseArtifactId: report.releaseArtifactId,
           releaseArtifactName: report.releaseArtifactName,
@@ -2775,6 +2821,20 @@ describe("release claim ledger validation", () => {
           path: ".github/workflows/build.yml",
           repository: { full_name: "owner/repository" },
         };
+      } else if (String(url).includes("/jobs/")) {
+        body = {
+          id: producerJobId,
+          name: producerJobName,
+          conclusion: "success",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            {
+              name: CANONICAL_MACHINE_VERIFIER_STEP,
+              conclusion: "success",
+            },
+          ],
+        };
       } else if (id === 202) {
         body = {
           id,
@@ -2804,6 +2864,35 @@ describe("release claim ledger validation", () => {
     expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
       [],
     );
+
+    report.checks[0].observed = "an arbitrary passing sentence";
+    write(root, reportPath, `${JSON.stringify(report)}\n`);
+    manifest.evidence[0].reportSha256 = createHash("sha256")
+      .update(`${JSON.stringify(report)}\n`)
+      .digest("hex");
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("report is not a passing result"),
+      ),
+    ).toBe(true);
+    report.checks[0].observed = {
+      assertion: "packaged persistence survived a restart",
+      measurement: "one write/read round trip",
+      exitCode: 0,
+    };
+    write(root, reportPath, `${JSON.stringify(report)}\n`);
+    manifest.evidence[0].reportSha256 = createHash("sha256")
+      .update(`${JSON.stringify(report)}\n`)
+      .digest("hex");
+
+    write(root, verifierPath, "// changed fixture verifier\n");
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) =>
+          error.includes("verifier source is missing or does not match"),
+      ),
+    ).toBe(true);
+    write(root, verifierPath, verifierSource);
 
     manifest.evidence[0].releaseArtifactSha256 = "f".repeat(64);
     report.releaseArtifactSha256 = "f".repeat(64);

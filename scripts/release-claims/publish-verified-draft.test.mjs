@@ -15,6 +15,7 @@ import {
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
 } from "./release-constants.mjs";
 import {
+  assertReleaseCommitOnMain,
   assertReleaseTagAbsent,
   assertReleaseTagTargetsCommit,
   publishVerifiedDraft,
@@ -151,6 +152,7 @@ function githubFixture({
   tagCommit = COMMIT,
   annotated = false,
   tagFailures = 0,
+  mainStatus = "ahead",
 } = {}) {
   let release = releaseBody(manifestDigest);
   let publicationRequests = 0;
@@ -168,6 +170,13 @@ function githubFixture({
     }
     if (url.endsWith(`/git/tags/${TAG_OBJECT}`))
       return response({ object: { type: "commit", sha: tagCommit } });
+    if (url.includes(`/compare/${COMMIT}...main`))
+      return response({
+        status: mainStatus,
+        merge_base_commit: {
+          sha: mainStatus === "diverged" ? MOVED_COMMIT : COMMIT,
+        },
+      });
     if (url.endsWith("/releases/7") && !options.method) {
       if (!release.draft && confirmationOutcome !== "success") {
         confirmationFailures += 1;
@@ -295,6 +304,23 @@ it("rejects a tag moved away from the verified commit", async () => {
   ).rejects.toThrow(`resolves to ${MOVED_COMMIT}`);
 });
 
+it("rejects a release commit that is not merged into main", async () => {
+  const fetchImpl = vi.fn().mockResolvedValue(
+    response({
+      status: "diverged",
+      merge_base_commit: { sha: MOVED_COMMIT },
+    }),
+  );
+  await expect(
+    assertReleaseCommitOnMain({
+      repository: "owner/repo",
+      commit: COMMIT,
+      token: "token",
+      fetchImpl,
+    }),
+  ).rejects.toThrow("is not an ancestor of the current main branch");
+});
+
 it("loads a draft by release ID because GitHub's tag endpoint returns 404 for drafts", async () => {
   const { manifestPath, manifestDigest } = fixture();
   const github = githubFixture({ manifestDigest });
@@ -349,6 +375,16 @@ it("does not publish when the tag moves after draft creation", async () => {
   expect(github.release().draft).toBe(true);
 });
 
+it("does not publish when the tagged commit is outside main", async () => {
+  const { manifestPath, manifestDigest } = fixture();
+  const github = githubFixture({ manifestDigest, mainStatus: "diverged" });
+  await expect(
+    publishVerifiedDraft(publishContext(manifestPath, github.fetchImpl)),
+  ).rejects.toThrow("is not an ancestor of the current main branch");
+  expect(github.publicationRequests()).toBe(0);
+  expect(github.release().draft).toBe(true);
+});
+
 it("returns a release to draft when the tag moves after publication", async () => {
   const { manifestPath, manifestDigest } = fixture();
   let tagReads = 0;
@@ -360,6 +396,29 @@ it("returns a release to draft when the tag moves after publication", async () =
         object: {
           type: "commit",
           sha: tagReads === 1 ? COMMIT : MOVED_COMMIT,
+        },
+      });
+    }
+    return github.fetchImpl(url, options);
+  });
+  await expect(
+    publishVerifiedDraft(publishContext(manifestPath, fetchImpl)),
+  ).rejects.toThrow("release was returned to draft");
+  expect(github.publicationRequests()).toBe(1);
+  expect(github.release().draft).toBe(true);
+});
+
+it("returns a release to draft when main ancestry no longer verifies", async () => {
+  const { manifestPath, manifestDigest } = fixture();
+  let ancestryReads = 0;
+  const github = githubFixture({ manifestDigest });
+  const fetchImpl = vi.fn(async (url, options) => {
+    if (url.includes(`/compare/${COMMIT}...main`)) {
+      ancestryReads += 1;
+      return response({
+        status: ancestryReads === 1 ? "ahead" : "diverged",
+        merge_base_commit: {
+          sha: ancestryReads === 1 ? COMMIT : MOVED_COMMIT,
         },
       });
     }

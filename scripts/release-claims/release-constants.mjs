@@ -91,6 +91,32 @@ export const CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS = Object.freeze([
 
 export const SAMPLE_EVIDENCE_PLATFORMS = new Set(["macos", "windows", "linux"]);
 
+export const CANONICAL_MACHINE_VERIFIER_STEP = "Run canonical machine verifier";
+
+export function machineEvidencePlatformFamily(platform) {
+  return [...SAMPLE_EVIDENCE_PLATFORMS].find(
+    (family) =>
+      platform === family || String(platform ?? "").startsWith(`${family}-`),
+  );
+}
+
+export function machineProducerJobName(claimId, platform) {
+  const family = machineEvidencePlatformFamily(platform);
+  return family ? `release-machine-evidence / ${claimId} / ${family}` : null;
+}
+
+export function machineVerifierPath(claimId) {
+  return CANONICAL_MACHINE_EVIDENCE_CHECKS.has(claimId)
+    ? `scripts/release-claims/verifiers/${claimId}.mjs`
+    : null;
+}
+
+export function machineVerifierCommand(claimId, platform) {
+  const path = machineVerifierPath(claimId);
+  const family = machineEvidencePlatformFamily(platform);
+  return path && family ? `node ${path} --platform ${family}` : null;
+}
+
 export function machineReportNamesForClaim(claimId) {
   return claimId === "sample.packaged-account-free"
     ? [...SAMPLE_EVIDENCE_PLATFORMS].map(

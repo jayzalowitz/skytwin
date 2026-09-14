@@ -697,8 +697,9 @@ jobs:
         run: node scripts/release-claims/publish-verified-draft.mjs --assert-absent
 
       # target_commitish is ignored for an existing tag. Dereference the tag
-      # itself immediately before draft creation, including annotated tags.
-      - name: Verify release tag target
+      # itself immediately before draft creation, including annotated tags,
+      # and reject any source commit not already merged into main.
+      - name: Verify release tag target and main ancestry
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/release-claims/publish-verified-draft.mjs --assert-tag-target

@@ -228,6 +228,15 @@ All notable changes to SkyTwin will be documented in this file.
   contain only keyed digests and both pending rows and tombstones are managed by
   short CockroachDB TTLs; user purge leaves no raw email in fence records.
 
+## [Unreleased] — Release evidence gate
+
+### Fixed
+
+- **Release evidence now fails closed on incomplete or advisory-only material.** The verifier requires an SPDX 2.3 release profile with document namespace and package-to-file relationships, exact subject digests, byte-exact runnable checksum and provenance instructions, cryptographic GitHub attestation verification bound to the tag source, canonical successful machine-verifier jobs, and a protected release environment with self-review and administrator bypass disabled. Publication also rejects a tagged commit that is not merged into `main`, and the release checkout does not persist its write-capable token in Git configuration. Evidence and provenance producers remain separate blocked prerequisites; this gate does not claim those materials exist yet.
+<!-- release-claims:start -->
+> **Current release status:** The desktop-first `v0.7.0-beta` is blocked. The structured [beta claim ledger](docs/beta-claim-ledger.json) is authoritative for current public claims and release gates.
+<!-- release-claims:end -->
+
 ## [Unreleased] — Explicit reasoning boundaries
 
 ### Added
@@ -246,10 +255,6 @@ All notable changes to SkyTwin will be documented in this file.
 - **Provider transport and settings boundaries now fail closed under edge conditions found during review.** Default Ollama calls deny redirects, DNS resolution obeys request cancellation, early Anthropic stream termination aborts and cancels the body, provider priorities cannot implicitly select a reasoning location, and null/default endpoints round-trip safely. Custom endpoints are canonicalized at environment, API-validation, persistence, and adapter boundaries; query strings, fragments, embedded credentials, and non-global benchmark/site-local addresses are rejected before a prompt or stored key is considered. The separately configured embedding path now uses the same DNS-pinned, redirect-denying transport before sending memory text. Unsaved reasoning-location changes are visibly marked as drafts and cannot be activated through connection tests or priority autosaves; model/location edits invalidate stale provider-boundary labels until the server validates and saves them.
 - **Cost and migration decisions use the exact admitted state.** Draft-email pricing comes from the frozen provider chain used for dispatch, disabled offline endpoints remain recoverable without weakening validation when enabled or tested, credential reuse is authority-bound after URL canonicalization, and the legacy SQL migration leaves ambiguous URL spellings confirmation-required.
 - **Launch-facing disclosures now enumerate the actual remote-AI paths and masking scope.** The privacy policy and Settings distinguish mode-scoped reasoning from the separately environment-configured OpenAI-compatible embedding path, which can send memory text for indexing and semantic-search query text. Public and engineering docs now state that email masking covers only raw-event and episodic-memory fragments in two decision prompts. Stale full-page Settings imagery containing an obsolete storage claim has been removed from the README, public demo, and deck privacy section pending a fresh live capture, and the deck's dependency/source metrics are recomputed from this tree.
-- **Release evidence now fails closed on incomplete or advisory-only material.** The verifier requires SPDX 2.3 document/package/file structure and exact subject digests, byte-exact runnable checksum and provenance instructions, cryptographic GitHub attestation verification bound to the tag source, and a protected release environment with self-review and administrator bypass disabled. The release checkout does not persist its write-capable token in Git configuration. Provenance production remains a separate blocked prerequisite; this gate does not claim those materials exist yet.
-<!-- release-claims:start -->
-> **Current release status:** The desktop-first `v0.7.0-beta` is blocked. The structured [beta claim ledger](docs/beta-claim-ledger.json) is authoritative for current public claims and release gates.
-<!-- release-claims:end -->
 
 ## [0.6.102.0] - 2026-08-27
 

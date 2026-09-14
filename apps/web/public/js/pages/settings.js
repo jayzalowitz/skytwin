@@ -1832,9 +1832,9 @@ function renderReasoningLocation(settingsAvailable = true) {
  *   - Switch-to-Smarter is disabled when no hosted/Ollama provider exists
  *     in the chain (we don't auto-add one because the user has to supply
  *     an API key).
- *   - Switch-to-Smart is always available — if no embedded entry exists
- *     yet, `applySmartMode` adds one with `model: 'auto'` so the runtime
- *     picks up the first GGUF in the detected model directory.
+ *   - Switch-to-Smart requires a saved on-device boundary. If no embedded
+ *     entry exists, `applySmartMode` adds one with `model: 'auto'` so the
+ *     runtime picks up the first GGUF in the detected model directory.
  */
 function renderModeToggle(providers) {
   const mode = detectAIMode(providers);
