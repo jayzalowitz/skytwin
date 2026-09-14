@@ -1,6 +1,7 @@
 import { query, withTransaction } from '../connection.js';
 import type { AIProviderSettingsRow, ReasoningModeSettingsRow } from '../types.js';
 import {
+  canonicalizeProviderBaseUrl,
   hasSameProviderCredentialEndpoint,
   type AIProviderName,
   type ReasoningMode,
@@ -13,6 +14,12 @@ class ProviderCredentialEndpointChangedError extends Error {
     super(`A fresh credential is required when changing the ${provider} endpoint authority`);
     this.name = 'ProviderCredentialEndpointChangedError';
   }
+}
+
+function canonicalProviderInput(
+  provider: Omit<UpsertAIProviderInput, 'userId'>,
+): Omit<UpsertAIProviderInput, 'userId'> {
+  return { ...provider, baseUrl: canonicalizeProviderBaseUrl(provider.baseUrl) };
 }
 
 function credentialForReplacement(
@@ -106,6 +113,7 @@ export const aiProviderRepository = {
    * Uses ON CONFLICT to update if (user_id, provider) already exists.
    */
   async upsert(input: UpsertAIProviderInput): Promise<AIProviderSettingsRow> {
+    const baseUrl = canonicalizeProviderBaseUrl(input.baseUrl);
     const result = await query<AIProviderSettingsRow>(
       `INSERT INTO ai_provider_settings (user_id, provider, api_key, model, base_url, priority, enabled)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -122,7 +130,7 @@ export const aiProviderRepository = {
         input.provider,
         input.apiKey ?? '',
         input.model,
-        input.baseUrl ?? null,
+        baseUrl ?? null,
         input.priority,
         input.enabled ?? true,
       ],
@@ -143,10 +151,13 @@ export const aiProviderRepository = {
         [userId],
       );
       const existingProviders = new Map(existing.rows.map((row) => [row.provider, row]));
-      const replacements = providers.map((provider) => ({
-        provider,
-        apiKey: credentialForReplacement(provider, existingProviders.get(provider.provider)),
-      }));
+      const replacements = providers.map((input) => {
+        const provider = canonicalProviderInput(input);
+        return {
+          provider,
+          apiKey: credentialForReplacement(provider, existingProviders.get(provider.provider)),
+        };
+      });
 
       await client.query('DELETE FROM ai_provider_settings WHERE user_id = $1', [userId]);
 
@@ -186,10 +197,13 @@ export const aiProviderRepository = {
         [userId],
       );
       const existingProviders = new Map(existing.rows.map((row) => [row.provider, row]));
-      const replacements = providers.map((provider) => ({
-        provider,
-        apiKey: credentialForReplacement(provider, existingProviders.get(provider.provider)),
-      }));
+      const replacements = providers.map((input) => {
+        const provider = canonicalProviderInput(input);
+        return {
+          provider,
+          apiKey: credentialForReplacement(provider, existingProviders.get(provider.provider)),
+        };
+      });
       await client.query('DELETE FROM ai_provider_settings WHERE user_id = $1', [userId]);
 
       const rows: AIProviderSettingsRow[] = [];

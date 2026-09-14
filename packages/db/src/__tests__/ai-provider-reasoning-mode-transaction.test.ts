@@ -63,6 +63,27 @@ describe('atomic reasoning-mode provider replacement', () => {
     ]);
   });
 
+  it('canonicalizes provider URLs before persistence', async () => {
+    clientQueryMock
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ provider: 'ollama' }] });
+
+    await aiProviderRepository.replaceAllWithReasoningMode(
+      'user-1',
+      'on_device',
+      [{
+        provider: 'ollama', apiKey: '', model: 'qwen',
+        baseUrl: 'http://127.1:11434', priority: 0,
+      }],
+    );
+
+    expect(clientQueryMock.mock.calls[3]![1]).toEqual([
+      'user-1', 'ollama', '', 'qwen', 'http://127.0.0.1:11434/', 0, true,
+    ]);
+  });
+
   it('rejects the whole transaction result when a provider insert fails', async () => {
     clientQueryMock
       .mockResolvedValueOnce({ rows: [] })

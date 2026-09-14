@@ -23,6 +23,9 @@ CREATE TABLE IF NOT EXISTS reasoning_mode_settings (
 --   * no enabled providers, or only provably local adapters -> on_device
 --   * only conventional hosted adapters -> bring_your_own_provider
 --   * mixed chains or custom Ollama URLs -> explicit confirmation required
+-- Legacy non-canonical URL spellings (for example short/octal IPv4) remain
+-- confirmation-required: this SQL migration deliberately does not reproduce a
+-- runtime URL parser. New repository writes canonicalize URLs before storage.
 INSERT INTO reasoning_mode_settings (user_id, mode, requires_confirmation)
 SELECT
   u.id,
@@ -35,7 +38,7 @@ SELECT
           a.provider = 'ollama'
           AND (
             a.base_url IS NULL
-            OR a.base_url ~* '^https?://(localhost\.?|127\.0\.0\.1|\[::1\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$'
+            OR a.base_url ~* '^https?://(localhost\.?|127\.0\.0\.1\.?|\[::1\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$'
           )
         )
       )
@@ -54,7 +57,7 @@ SELECT
           a.provider = 'ollama'
           AND (
             a.base_url IS NULL
-            OR a.base_url ~* '^https?://(localhost\.?|127\.0\.0\.1|\[::1\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$'
+            OR a.base_url ~* '^https?://(localhost\.?|127\.0\.0\.1\.?|\[::1\])(:([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5]))?([/?#].*)?$'
           )
         )
       )

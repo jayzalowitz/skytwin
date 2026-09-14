@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  canonicalizeProviderBaseUrl,
   hasSameProviderCredentialEndpoint,
   parseReasoningMode,
   providerCredentialEndpointAuthority,
@@ -19,6 +20,17 @@ describe('reasoning modes', () => {
 });
 
 describe('provider credential endpoint authority', () => {
+  it('canonicalizes every supported loopback URL spelling before persistence', () => {
+    expect(canonicalizeProviderBaseUrl('http://localhost.:11434'))
+      .toBe('http://localhost:11434/');
+    expect(canonicalizeProviderBaseUrl('http://127.0.0.1.:11434'))
+      .toBe('http://127.0.0.1:11434/');
+    expect(canonicalizeProviderBaseUrl('http://127.1:11434'))
+      .toBe('http://127.0.0.1:11434/');
+    expect(canonicalizeProviderBaseUrl('http://[0:0:0:0:0:0:0:1]:11434'))
+      .toBe('http://[::1]:11434/');
+  });
+
   it('compares the scheme, host, and effective port rather than URL paths', () => {
     expect(hasSameProviderCredentialEndpoint(
       'openai',
@@ -42,6 +54,9 @@ describe('provider credential endpoint authority', () => {
       .toBe('http://127.0.0.1:11434');
     expect(hasSameProviderCredentialEndpoint(
       'ollama', null, 'http://127.0.0.1:11434/api/chat',
+    )).toBe(true);
+    expect(hasSameProviderCredentialEndpoint(
+      'ollama', null, 'http://127.1:11434',
     )).toBe(true);
     expect(hasSameProviderCredentialEndpoint(
       'ollama', null, 'http://localhost:11434/api/chat',

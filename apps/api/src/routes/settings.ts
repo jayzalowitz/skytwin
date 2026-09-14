@@ -22,6 +22,7 @@ import {
   LlmClient,
   providerPrivacyCapabilities,
   providersForReasoningMode,
+  validateBaseUrl,
   validateBaseUrlWithDns,
 } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
@@ -498,7 +499,11 @@ export function createSettingsRouter(): Router {
         seenProviders.add(p.provider);
         if (p.baseUrl) {
           try {
-            await validateBaseUrlWithDns(p.baseUrl, p.provider);
+            if (p.enabled === false) {
+              validateBaseUrl(p.baseUrl, p.provider);
+            } else {
+              await validateBaseUrlWithDns(p.baseUrl, p.provider);
+            }
           } catch (err) {
             res.status(400).json({ error: err instanceof Error ? err.message : 'Invalid base URL' });
             return;
