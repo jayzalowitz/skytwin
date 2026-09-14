@@ -7,22 +7,27 @@
 > match, ready status, and synchronized versions before packaging. After
 > packaging, the release job requires a generated evidence manifest bound to
 > that same repository, tag, and SHA. It verifies required CI runs, jobs, and
-> artifact digests through the GitHub API, plus digest-bound machine reports
-> downloaded with the evidence artifact. The raw CI and machine reports are also
-> published as exact, digest-verified release assets so the proof remains
-> auditable after Actions artifact retention expires. The job then rejects any
+> artifact digests through the GitHub API, plus digest-bound machine reports and
+> artifact-verification material downloaded with the evidence artifact. The raw
+> reports, checksum inventory, SPDX SBOM, verification guide, and
+> cryptographically verified provenance bundles are also published as exact,
+> digest-verified release assets so the proof remains auditable after Actions
+> artifact retention expires. The job then rejects any
 > existing draft or public release for the tag, creates an unpublished draft,
 > verifies that draft by its numeric release ID, exact asset names, and GitHub
 > SHA-256 digests, and publishes it immediately from the same gated job. Evidence IDs
 > are deliberately not committed to this ledger: doing so would change the SHA
 > they attest and create an impossible hash cycle. The release job now generates
 > the external manifest from current-run GitHub API metadata. Upstream packaging
-> jobs do not yet produce the required machine reports, so the final gate still
-> fails closed and the ledger remains blocked until that proof pipeline ships.
+> jobs do not yet produce the required machine reports or verification sidecars,
+> so the final gate still fails closed and the ledger remains blocked until that
+> proof pipeline ships.
 
 The satisfiable post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The latter
-contains one `reports/<claim-id>.json` result for every required machine claim.
+contains one `reports/<claim-id>.json` result for every required machine claim
+and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
+`release.spdx.json`, `VERIFY.md`, and digest-named provenance bundles.
 The CI artifact contains `result.json`, bound to the current run, source commit,
 and tag ref; the final checker hashes and validates that downloaded file as well
 as its GitHub artifact metadata.
@@ -39,12 +44,18 @@ current run's jobs and artifacts through GitHub's API and writes
 artifact whose digest it records, so there is no self-referential hash. The
 checker then binds the current run to the tag-push ref and release commit,
 verifies both the evidence artifact and each subject release artifact through
-GitHub's API, hashes each local report and downloaded subject path, and rejects
-unexpected claim/kind entries. This lets proof be generated after packaging
-without changing the source SHA it attests.
-The ten canonical report files and the generated manifest are attached to the
-GitHub Release with explicit paths. Wildcard report uploads are prohibited, and
-the controlled publisher rejects missing, extra, or digest-changed assets.
+GitHub's API, hashes each local report, downloaded subject, and verification
+sidecar, and rejects unexpected claim/kind entries. It requires the checksum
+and SPDX inventories to cover every canonical subject, requires the verification
+guide to name every subject, and runs `gh attestation verify` for each subject
+against the exact repository, `build.yml` signer workflow, tag ref, and source
+SHA. This lets proof be generated after packaging without changing the source
+SHA it attests.
+One CI result and ten machine reports — eleven durable report files total —
+plus the checksum inventory, SPDX SBOM, verification guide, provenance bundles,
+and generated manifest are attached to the GitHub Release. Wildcards are used
+only for the manifest-validated verification directory and package outputs; the
+controlled publisher rejects missing, extra, duplicate, or digest-changed assets.
 
 Quantified claims carry additional applicability evidence. The signing report
 must enumerate every installer and desktop archive subject in the release asset
@@ -86,7 +97,7 @@ a separate onboarding constraint.
 1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
-4. **`release`** (`needs:` the three desktop jobs) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, ten raw evidence reports, and evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, and independently dereferences the release tag to the triggering commit before it changes the draft to public.
+4. **`release`** (`needs:` `test` plus the three desktop jobs) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus ten machine reports (eleven durable report files total), checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, and independently dereferences the release tag to the triggering commit before it changes the draft to public.
 
 Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
 
@@ -95,7 +106,8 @@ boundary. **As of 2026-09-12 it is not configured.** Before any release, create
 it with at least one required reviewer, prevent self-review, and add a custom
 tag policy matching the release tag. The workflow verifies those live settings and fails before release
 mutation if GitHub auto-creates an unprotected environment or its configuration
-drifts. The release job has only `contents: write` and `actions: read`, serializes
+drifts. The release job has only `contents: write`, `actions: read`, and
+`attestations: read`, serializes
 publication per tag without cancellation, and scans the authenticated release
 inventory immediately before draft creation so the upload action cannot reuse a
 draft or mutate an existing public release. It re-fetches by release ID and

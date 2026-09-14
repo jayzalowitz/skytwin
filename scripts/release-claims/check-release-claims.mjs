@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
@@ -12,6 +13,9 @@ import { extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  ARTIFACT_VERIFICATION_RELEASE_PATTERN,
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
@@ -21,6 +25,9 @@ import {
 } from "./release-constants.mjs";
 
 export {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  ARTIFACT_VERIFICATION_RELEASE_PATTERN,
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
@@ -303,6 +310,7 @@ node scripts/release-claims/check-release-claims.mjs \\
 const CANONICAL_RELEASE_FILE_PATTERNS = new Set([
   ...CANONICAL_RELEASE_ASSETS.map(([name]) => `artifacts/${name}/*`),
   ...CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+  ARTIFACT_VERIFICATION_RELEASE_PATTERN,
   ".release-evidence/manifest.json",
 ]);
 
@@ -614,7 +622,7 @@ const CANONICAL_APPROVED_STATEMENT_DIGESTS = new Map([
   ],
   [
     "gmail-credential-boundary",
-    "a0eadecfec72da88b55d99a0d4dde30873c3605270513b46c108824bcf4a1792",
+    "3e0821054c1d99cf4980f2aaba6914dc49f733ba4e18315adfceeac7c3e844f6",
   ],
   [
     "dashboard-reasoning-boundary",
@@ -1416,6 +1424,55 @@ function validateReleaseAssetManifest(manifest, errors) {
   }
 }
 
+function validateArtifactVerificationAssetManifest(manifest, errors) {
+  const canonical = new Map(CANONICAL_ARTIFACT_VERIFICATION_ASSETS);
+  const seenNames = new Set();
+  const seenPaths = new Set();
+  const seenCanonical = new Set();
+  let provenanceBundleCount = 0;
+  for (const [index, asset] of asArray(
+    manifest?.verificationAssets,
+  ).entries()) {
+    const prefix = `release evidence manifest verificationAssets[${index}]`;
+    const canonicalKind = canonical.get(asset?.name);
+    const expectedKind =
+      canonicalKind ??
+      (/^[a-f0-9]{64}\.attestation\.jsonl$/.test(asset?.name ?? "")
+        ? "provenance-bundle"
+        : null);
+    if (!expectedKind) {
+      addError(errors, `${prefix}.name is not canonical`);
+      continue;
+    }
+    if (asset.kind !== expectedKind)
+      addError(errors, `${prefix}.kind must be ${expectedKind}`);
+    if (asset.path !== `${ARTIFACT_VERIFICATION_DIRECTORY}/${asset.name}`)
+      addError(errors, `${prefix}.path is not canonical`);
+    if (!SOURCE_DIGEST.test(asset.sha256 ?? ""))
+      addError(errors, `${prefix}.sha256 must be a SHA-256 digest`);
+    if (seenNames.has(asset.name))
+      addError(errors, `${prefix}.name is duplicated`);
+    if (seenPaths.has(asset.path))
+      addError(errors, `${prefix}.path is duplicated`);
+    seenNames.add(asset.name);
+    seenPaths.add(asset.path);
+    if (canonicalKind) seenCanonical.add(asset.name);
+    else provenanceBundleCount += 1;
+  }
+  for (const [name] of canonical) {
+    if (!seenCanonical.has(name))
+      addError(
+        errors,
+        `release evidence manifest is missing artifact-verification asset: ${name}`,
+      );
+  }
+  if (provenanceBundleCount === 0)
+    addError(
+      errors,
+      "release evidence manifest is missing artifact-verification provenance bundles",
+    );
+}
+
 function collectDownloadedArtifactSubjects(root, artifactName, errors) {
   const directory = resolve(root, "artifacts", artifactName);
   if (
@@ -2089,13 +2146,18 @@ export function verifyCanonicalReleasePublisher(root) {
   )
     addError(errors, "release publication must serialize without cancellation");
   if (
-    !hasExactKeys(releaseJob.permissions, ["contents", "actions"]) ||
+    !hasExactKeys(releaseJob.permissions, [
+      "contents",
+      "actions",
+      "attestations",
+    ]) ||
     releaseJob.permissions.contents !== "write" ||
-    releaseJob.permissions.actions !== "read"
+    releaseJob.permissions.actions !== "read" ||
+    releaseJob.permissions.attestations !== "read"
   )
     addError(
       errors,
-      "release job permissions must be limited to contents:write and actions:read",
+      "release job permissions must be limited to contents:write, actions:read, and attestations:read",
     );
   const controlledPublishCommand =
     "node scripts/release-claims/publish-verified-draft.mjs .release-evidence/manifest.json";
@@ -3269,6 +3331,7 @@ export function verifyMachineEvidenceApplicability(
   claimId,
   report,
   releaseAssets,
+  verificationAssets = [],
 ) {
   const errors = [];
   if (claimId === "sample.packaged-account-free") {
@@ -3323,6 +3386,17 @@ export function verifyMachineEvidenceApplicability(
       );
   }
   if (claimId === "release.artifact-verification") {
+    const verificationAssetsByPath = new Map(
+      asArray(verificationAssets).map((asset) => [asset?.path, asset]),
+    );
+    const referencesVerificationAsset = (reference, kind) => {
+      const asset = verificationAssetsByPath.get(reference?.path);
+      return (
+        asset?.kind === kind &&
+        asset?.sha256 === reference?.sha256 &&
+        SOURCE_DIGEST.test(reference?.sha256 ?? "")
+      );
+    };
     const expectedSubjects = asArray(releaseAssets)
       .flatMap((asset) =>
         asArray(asset.subjects).map(
@@ -3340,21 +3414,30 @@ export function verifyMachineEvidenceApplicability(
         isNonEmptyString(subject?.path) &&
         SOURCE_DIGEST.test(subjectDigest ?? "") &&
         subject?.checksum?.algorithm === "sha256" &&
-        isNonEmptyString(subject?.checksum?.path) &&
-        SOURCE_DIGEST.test(subject?.checksum?.sha256 ?? "") &&
+        referencesVerificationAsset(subject?.checksum, "checksums") &&
         subject?.checksum?.subjectSha256 === subjectDigest &&
         subject?.checksum?.result === "pass" &&
-        ["spdx-json", "cyclonedx-json"].includes(subject?.sbom?.format) &&
-        isNonEmptyString(subject?.sbom?.path) &&
-        SOURCE_DIGEST.test(subject?.sbom?.sha256 ?? "") &&
+        subject?.sbom?.format === "spdx-json" &&
+        referencesVerificationAsset(subject?.sbom, "sbom") &&
         subject?.sbom?.subjectSha256 === subjectDigest &&
         subject?.sbom?.result === "pass" &&
-        isNonEmptyString(subject?.provenance?.attestationId) &&
+        subject?.provenance?.verificationMethod === "gh-attestation-verify" &&
+        subject?.provenance?.bundlePath ===
+          `${ARTIFACT_VERIFICATION_DIRECTORY}/${subjectDigest}.attestation.jsonl` &&
+        referencesVerificationAsset(
+          {
+            path: subject?.provenance?.bundlePath,
+            sha256: subject?.provenance?.bundleSha256,
+          },
+          "provenance-bundle",
+        ) &&
         subject?.provenance?.subjectSha256 === subjectDigest &&
         subject?.provenance?.sourceCommit === report?.sourceCommit &&
         subject?.provenance?.result === "pass" &&
-        isNonEmptyString(subject?.verificationInstructions?.path) &&
-        SOURCE_DIGEST.test(subject?.verificationInstructions?.sha256 ?? "") &&
+        referencesVerificationAsset(
+          subject?.verificationInstructions,
+          "verification-instructions",
+        ) &&
         subject?.verificationInstructions?.subjectSha256 === subjectDigest &&
         subject?.verificationInstructions?.result === "pass"
       );
@@ -3389,6 +3472,248 @@ export function verifyMachineEvidenceApplicability(
   return errors;
 }
 
+export function verifyGitHubArtifactAttestation(
+  { subjectPath, bundlePath, repository, sourceCommit, sourceRef, token },
+  execute = execFileSync,
+) {
+  const output = execute(
+    "gh",
+    [
+      "attestation",
+      "verify",
+      subjectPath,
+      "--repo",
+      repository,
+      "--bundle",
+      bundlePath,
+      "--source-digest",
+      sourceCommit,
+      "--source-ref",
+      sourceRef,
+      "--signer-workflow",
+      `github.com/${repository}/.github/workflows/build.yml`,
+      "--predicate-type",
+      "https://slsa.dev/provenance/v1",
+      "--format",
+      "json",
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, GH_TOKEN: token },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    },
+  );
+  const verified = JSON.parse(output);
+  if (!Array.isArray(verified) || verified.length === 0)
+    throw new Error("GitHub CLI returned no verified attestations");
+}
+
+export async function verifyArtifactVerificationMaterials(
+  {
+    root,
+    manifest,
+    report,
+    repository,
+    releaseCommit,
+    triggerRef,
+    githubToken,
+  },
+  attestationVerifier = verifyGitHubArtifactAttestation,
+) {
+  const errors = [];
+  const verificationDirectory = resolve(root, ARTIFACT_VERIFICATION_DIRECTORY);
+  if (
+    !isInsideRoot(root, verificationDirectory) ||
+    !existsSync(verificationDirectory) ||
+    hasSymlinkComponent(root, verificationDirectory) ||
+    !lstatSync(verificationDirectory).isDirectory()
+  ) {
+    return ["artifact-verification material directory is missing or unsafe"];
+  }
+
+  const actualPaths = [];
+  for (const entry of readdirSync(verificationDirectory, {
+    withFileTypes: true,
+  })) {
+    const path = join(verificationDirectory, entry.name);
+    if (!entry.isFile() || entry.isSymbolicLink()) {
+      addError(
+        errors,
+        `artifact-verification material is not a direct regular file: ${relativePath(root, path)}`,
+      );
+      continue;
+    }
+    actualPaths.push(relativePath(root, path));
+  }
+  const declaredPaths = asArray(manifest?.verificationAssets)
+    .map((asset) => asset?.path)
+    .sort();
+  if (!sameStringSet(actualPaths.sort(), declaredPaths))
+    addError(
+      errors,
+      "artifact-verification material inventory does not exactly equal the manifest",
+    );
+
+  const assetsByPath = new Map();
+  for (const asset of asArray(manifest?.verificationAssets)) {
+    const safePath = resolveContainedRegularFile(root, asset?.path);
+    if (!safePath) {
+      addError(
+        errors,
+        `artifact-verification material is missing or unsafe: ${asset?.path ?? "missing"}`,
+      );
+      continue;
+    }
+    const actualDigest = sha256(readFileSync(safePath));
+    if (actualDigest !== asset.sha256)
+      addError(
+        errors,
+        `artifact-verification material digest changed: ${asset.path}`,
+      );
+    assetsByPath.set(asset.path, { ...asset, safePath });
+  }
+
+  const subjects = asArray(manifest?.releaseAssets).flatMap((asset) =>
+    asArray(asset?.subjects),
+  );
+  const subjectNames = subjects.map((subject) => subject?.name);
+  if (
+    subjectNames.some((name) => !isNonEmptyString(name)) ||
+    new Set(subjectNames).size !== subjectNames.length
+  )
+    addError(
+      errors,
+      "canonical release subjects must have unique published filenames",
+    );
+
+  const checksumAsset = [...assetsByPath.values()].find(
+    (asset) => asset.kind === "checksums",
+  );
+  if (checksumAsset) {
+    const checksumEntries = readFileSync(checksumAsset.safePath, "utf8")
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== "")
+      .map((line) => line.match(/^([a-f0-9]{64}) [ *]([^/\\]+)$/));
+    const actualChecksums = checksumEntries
+      .filter(Boolean)
+      .map((match) => `${match[2]}:${match[1]}`)
+      .sort();
+    const expectedChecksums = subjects
+      .map((subject) => `${subject.name}:${subject.sha256}`)
+      .sort();
+    if (
+      checksumEntries.some((entry) => entry === null) ||
+      !sameStringSet(actualChecksums, expectedChecksums)
+    )
+      addError(
+        errors,
+        "SHA256SUMS must exactly cover every canonical published subject",
+      );
+  }
+
+  const sbomAsset = [...assetsByPath.values()].find(
+    (asset) => asset.kind === "sbom",
+  );
+  if (sbomAsset) {
+    let sbom;
+    try {
+      sbom = JSON.parse(readFileSync(sbomAsset.safePath, "utf8"));
+    } catch {
+      addError(errors, "artifact-verification SBOM is not valid JSON");
+    }
+    if (sbom) {
+      const described = new Set(asArray(sbom.documentDescribes));
+      const files = asArray(sbom.files);
+      const coversSubject = (subject) =>
+        files.some(
+          (file) =>
+            described.has(file?.SPDXID) &&
+            [subject.name, subject.path].includes(file?.fileName) &&
+            asArray(file?.checksums).some(
+              (checksum) =>
+                checksum?.algorithm === "SHA256" &&
+                checksum?.checksumValue === subject.sha256,
+            ),
+        );
+      if (
+        !/^SPDX-2\.[0-9]+$/.test(sbom.spdxVersion ?? "") ||
+        sbom.dataLicense !== "CC0-1.0" ||
+        asArray(sbom.packages).length === 0 ||
+        subjects.some((subject) => !coversSubject(subject))
+      )
+        addError(
+          errors,
+          "SPDX SBOM must include components and describe every canonical subject by SHA-256",
+        );
+    }
+  }
+
+  const instructionsAsset = [...assetsByPath.values()].find(
+    (asset) => asset.kind === "verification-instructions",
+  );
+  if (instructionsAsset) {
+    const instructions = readFileSync(instructionsAsset.safePath, "utf8");
+    if (
+      !instructions.includes("SHA256SUMS") ||
+      !instructions.includes("gh attestation verify") ||
+      subjects.some((subject) => !instructions.includes(subject.name))
+    )
+      addError(
+        errors,
+        "verification instructions must identify every subject and explain checksum and GitHub attestation verification",
+      );
+  }
+
+  const coveredSubjects = asArray(report?.coveredSubjects);
+  const referencedBundlePaths = coveredSubjects.map(
+    (subject) => subject?.provenance?.bundlePath,
+  );
+  const declaredBundlePaths = asArray(manifest?.verificationAssets)
+    .filter((asset) => asset?.kind === "provenance-bundle")
+    .map((asset) => asset.path);
+  if (
+    referencedBundlePaths.some((path) => !isNonEmptyString(path)) ||
+    !sameStringSet([...new Set(referencedBundlePaths)], declaredBundlePaths)
+  )
+    addError(
+      errors,
+      "provenance bundle inventory must exactly cover every canonical subject",
+    );
+
+  if (errors.length > 0) return errors;
+  for (const subject of coveredSubjects) {
+    const releaseSubject = subjects.find(
+      (candidate) =>
+        candidate.path === subject.path && candidate.sha256 === subject.sha256,
+    );
+    const bundle = assetsByPath.get(subject.provenance.bundlePath);
+    const subjectPath = releaseSubject
+      ? resolveContainedRegularFile(root, releaseSubject.path)
+      : null;
+    if (!subjectPath || !bundle) {
+      addError(errors, `provenance material is missing for ${subject.path}`);
+      continue;
+    }
+    try {
+      await attestationVerifier({
+        subjectPath,
+        bundlePath: bundle.safePath,
+        repository,
+        sourceCommit: releaseCommit,
+        sourceRef: triggerRef,
+        token: githubToken,
+      });
+    } catch (error) {
+      addError(
+        errors,
+        `GitHub attestation verification failed for ${subject.path}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return errors;
+}
+
 export async function verifyPublicationEvidence(
   ledger,
   manifest,
@@ -3401,6 +3726,7 @@ export async function verifyPublicationEvidence(
     triggerRef,
     githubToken,
     fetchImpl = globalThis.fetch,
+    attestationVerifier = verifyGitHubArtifactAttestation,
   } = {},
 ) {
   const errors = [];
@@ -3454,6 +3780,7 @@ export async function verifyPublicationEvidence(
       "release evidence manifest ref does not match the triggering tag ref",
     );
   validateReleaseAssetManifest(manifest, errors);
+  validateArtifactVerificationAssetManifest(manifest, errors);
   if (errors.length > 0) return errors;
 
   const requiredPairs = new Set();
@@ -3910,8 +4237,24 @@ export async function verifyPublicationEvidence(
       claimId,
       report,
       [...releaseAssetsByName.values()],
+      manifest.verificationAssets,
     ))
       addError(errors, `${prefix} ${applicabilityError}`);
+    if (claimId === "release.artifact-verification") {
+      for (const materialError of await verifyArtifactVerificationMaterials(
+        {
+          root,
+          manifest,
+          report,
+          repository,
+          releaseCommit,
+          triggerRef,
+          githubToken,
+        },
+        attestationVerifier,
+      ))
+        addError(errors, `${prefix} ${materialError}`);
+    }
   }
   return errors;
 }

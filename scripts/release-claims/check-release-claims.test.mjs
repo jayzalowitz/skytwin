@@ -10,8 +10,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  ARTIFACT_VERIFICATION_RELEASE_PATTERN,
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
@@ -30,7 +33,9 @@ import {
   scanProhibitedClaims,
   validateLedgerShape,
   verifyApprovedStatements,
+  verifyArtifactVerificationMaterials,
   verifyCanonicalReleasePublisher,
+  verifyGitHubArtifactAttestation,
   verifyMachineEvidenceApplicability,
   machineReportNamesForClaim,
   verifyPublicationEvidence,
@@ -101,6 +106,108 @@ function makeReleaseAssets(root, startId = 1000) {
       ],
     };
   });
+}
+
+function makeVerificationAssets(root, releaseAssets) {
+  const subjects = releaseAssets.flatMap((asset) => asset.subjects);
+  const contents = new Map([
+    [
+      "SHA256SUMS",
+      `${subjects.map((subject) => `${subject.sha256}  ${subject.name}`).join("\n")}\n`,
+    ],
+    [
+      "release.spdx.json",
+      `${JSON.stringify({
+        spdxVersion: "SPDX-2.3",
+        dataLicense: "CC0-1.0",
+        documentDescribes: subjects.map(
+          (_, index) => `SPDXRef-ReleaseSubject-${index}`,
+        ),
+        packages: [{ SPDXID: "SPDXRef-Package", name: "SkyTwin" }],
+        files: subjects.map((subject, index) => ({
+          SPDXID: `SPDXRef-ReleaseSubject-${index}`,
+          fileName: subject.name,
+          checksums: [{ algorithm: "SHA256", checksumValue: subject.sha256 }],
+        })),
+      })}\n`,
+    ],
+    [
+      "VERIFY.md",
+      `Run \`sha256sum -c SHA256SUMS\` and \`gh attestation verify\` for:\n${subjects.map((subject) => `- ${subject.name}`).join("\n")}\n`,
+    ],
+  ]);
+  for (const subject of subjects)
+    contents.set(`${subject.sha256}.attestation.jsonl`, "{}\n");
+  const canonical = new Map(CANONICAL_ARTIFACT_VERIFICATION_ASSETS);
+  return [...contents].map(([name, content]) => {
+    const path = `${ARTIFACT_VERIFICATION_DIRECTORY}/${name}`;
+    write(root, path, content);
+    return {
+      kind: canonical.get(name) ?? "provenance-bundle",
+      name,
+      path,
+      sha256: createHash("sha256").update(content).digest("hex"),
+    };
+  });
+}
+
+function makeArtifactVerificationReport(
+  releaseAssets,
+  verificationAssets,
+  sourceCommit,
+) {
+  const byPath = new Map(
+    verificationAssets.map((asset) => [asset.path, asset]),
+  );
+  const reference = (path) => ({ path, sha256: byPath.get(path).sha256 });
+  return {
+    sourceCommit,
+    coveredSubjects: releaseAssets.flatMap((asset) =>
+      asset.subjects.map((subject) => {
+        const checksum = reference(
+          `${ARTIFACT_VERIFICATION_DIRECTORY}/SHA256SUMS`,
+        );
+        const sbom = reference(
+          `${ARTIFACT_VERIFICATION_DIRECTORY}/release.spdx.json`,
+        );
+        const verificationInstructions = reference(
+          `${ARTIFACT_VERIFICATION_DIRECTORY}/VERIFY.md`,
+        );
+        const bundle = reference(
+          `${ARTIFACT_VERIFICATION_DIRECTORY}/${subject.sha256}.attestation.jsonl`,
+        );
+        return {
+          path: subject.path,
+          sha256: subject.sha256,
+          checksum: {
+            ...checksum,
+            algorithm: "sha256",
+            subjectSha256: subject.sha256,
+            result: "pass",
+          },
+          sbom: {
+            ...sbom,
+            format: "spdx-json",
+            subjectSha256: subject.sha256,
+            result: "pass",
+          },
+          provenance: {
+            verificationMethod: "gh-attestation-verify",
+            bundlePath: bundle.path,
+            bundleSha256: bundle.sha256,
+            sourceCommit,
+            subjectSha256: subject.sha256,
+            result: "pass",
+          },
+          verificationInstructions: {
+            ...verificationInstructions,
+            subjectSha256: subject.sha256,
+            result: "pass",
+          },
+        };
+      }),
+    ),
+  };
 }
 
 function releaseAssetApiBody(asset, runId, commit) {
@@ -281,6 +388,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      attestations: read
     steps:
       - name: Verify update feed reachable
         run: |
@@ -330,6 +438,7 @@ ${CANONICAL_RELEASE_EVIDENCE_RUN.split("\n")
           files: |
 ${[...CANONICAL_RELEASE_ASSETS].map(([name]) => `            artifacts/${name}/*`).join("\n")}
 ${CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS.map((path) => `            ${path}`).join("\n")}
+            ${ARTIFACT_VERIFICATION_RELEASE_PATTERN}
             .release-evidence/manifest.json
       - name: Verify exact draft assets and publish
         env:
@@ -1100,31 +1209,57 @@ describe("release claim ledger validation", () => {
         subjects: [{ path: "latest.yml", sha256: "c".repeat(64) }],
       },
     ];
+    const verificationAssets = [
+      {
+        kind: "checksums",
+        path: `${ARTIFACT_VERIFICATION_DIRECTORY}/SHA256SUMS`,
+        sha256: "d".repeat(64),
+      },
+      {
+        kind: "sbom",
+        path: `${ARTIFACT_VERIFICATION_DIRECTORY}/release.spdx.json`,
+        sha256: "e".repeat(64),
+      },
+      {
+        kind: "verification-instructions",
+        path: `${ARTIFACT_VERIFICATION_DIRECTORY}/VERIFY.md`,
+        sha256: "f".repeat(64),
+      },
+      ...assets.flatMap((asset) =>
+        asset.subjects.map((subject) => ({
+          kind: "provenance-bundle",
+          path: `${ARTIFACT_VERIFICATION_DIRECTORY}/${subject.sha256}.attestation.jsonl`,
+          sha256: subject.sha256,
+        })),
+      ),
+    ];
     const evidenceFor = ({ path, sha256 }) => ({
       path,
       sha256,
       checksum: {
         algorithm: "sha256",
-        path: "SHA256SUMS",
+        path: `${ARTIFACT_VERIFICATION_DIRECTORY}/SHA256SUMS`,
         sha256: "d".repeat(64),
         subjectSha256: sha256,
         result: "pass",
       },
       sbom: {
         format: "spdx-json",
-        path: `${path}.spdx.json`,
+        path: `${ARTIFACT_VERIFICATION_DIRECTORY}/release.spdx.json`,
         sha256: "e".repeat(64),
         subjectSha256: sha256,
         result: "pass",
       },
       provenance: {
-        attestationId: `attestation:${path}`,
+        verificationMethod: "gh-attestation-verify",
+        bundlePath: `${ARTIFACT_VERIFICATION_DIRECTORY}/${sha256}.attestation.jsonl`,
+        bundleSha256: sha256,
         sourceCommit,
         subjectSha256: sha256,
         result: "pass",
       },
       verificationInstructions: {
-        path: "VERIFY.md",
+        path: `${ARTIFACT_VERIFICATION_DIRECTORY}/VERIFY.md`,
         sha256: "f".repeat(64),
         subjectSha256: sha256,
         result: "pass",
@@ -1139,6 +1274,7 @@ describe("release claim ledger validation", () => {
         "release.artifact-verification",
         report,
         assets,
+        verificationAssets,
       ),
     ).toHaveLength(1);
 
@@ -1150,6 +1286,7 @@ describe("release claim ledger validation", () => {
         "release.artifact-verification",
         report,
         assets,
+        verificationAssets,
       ),
     ).toEqual([]);
 
@@ -1160,6 +1297,7 @@ describe("release claim ledger validation", () => {
         "release.artifact-verification",
         missingSbom,
         assets,
+        verificationAssets,
       ),
     ).toHaveLength(1);
 
@@ -1171,6 +1309,7 @@ describe("release claim ledger validation", () => {
         "release.artifact-verification",
         wrongProvenanceCommit,
         assets,
+        verificationAssets,
       ),
     ).toHaveLength(1);
 
@@ -1181,9 +1320,232 @@ describe("release claim ledger validation", () => {
         "release.artifact-verification",
         missingInstructions,
         assets,
+        verificationAssets,
+      ),
+    ).toHaveLength(1);
+
+    const selfAssertedOnly = structuredClone(report);
+    selfAssertedOnly.coveredSubjects[0].provenance = {
+      attestationId: "not-independent-proof",
+      sourceCommit,
+      subjectSha256: selfAssertedOnly.coveredSubjects[0].sha256,
+      result: "pass",
+    };
+    expect(
+      verifyMachineEvidenceApplicability(
+        "release.artifact-verification",
+        selfAssertedOnly,
+        assets,
+        verificationAssets,
       ),
     ).toHaveLength(1);
   });
+
+  it("hashes real artifact-verification materials and independently verifies every provenance bundle", async () => {
+    const root = makeRoot();
+    const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
+    const releaseAssets = makeReleaseAssets(root);
+    const verificationAssets = makeVerificationAssets(root, releaseAssets);
+    const report = makeArtifactVerificationReport(
+      releaseAssets,
+      verificationAssets,
+      sourceCommit,
+    );
+    const attestationVerifier = vi.fn().mockResolvedValue(undefined);
+    const context = {
+      root,
+      manifest: { releaseAssets, verificationAssets },
+      report,
+      repository: "owner/repository",
+      releaseCommit: sourceCommit,
+      triggerRef: "refs/tags/v0.7.0-beta",
+      githubToken: "token",
+    };
+    expect(
+      await verifyArtifactVerificationMaterials(context, attestationVerifier),
+    ).toEqual([]);
+    expect(attestationVerifier).toHaveBeenCalledTimes(releaseAssets.length);
+    expect(attestationVerifier).toHaveBeenCalledWith(
+      expect.objectContaining({
+        repository: "owner/repository",
+        sourceCommit,
+        sourceRef: "refs/tags/v0.7.0-beta",
+      }),
+    );
+
+    write(
+      root,
+      `${ARTIFACT_VERIFICATION_DIRECTORY}/VERIFY.md`,
+      "tampered instructions\n",
+    );
+    expect(
+      await verifyArtifactVerificationMaterials(context, attestationVerifier),
+    ).toContain(
+      `artifact-verification material digest changed: ${ARTIFACT_VERIFICATION_DIRECTORY}/VERIFY.md`,
+    );
+  });
+
+  it("invokes GitHub's cryptographic verifier with exact provenance identity constraints", () => {
+    const execute = vi.fn().mockReturnValue('[{"verificationResult":{}}]');
+    verifyGitHubArtifactAttestation(
+      {
+        subjectPath: "/tmp/app.dmg",
+        bundlePath: "/tmp/app.attestation.jsonl",
+        repository: "owner/repository",
+        sourceCommit: "a".repeat(40),
+        sourceRef: "refs/tags/v0.7.0-beta",
+        token: "token",
+      },
+      execute,
+    );
+    expect(execute).toHaveBeenCalledWith(
+      "gh",
+      [
+        "attestation",
+        "verify",
+        "/tmp/app.dmg",
+        "--repo",
+        "owner/repository",
+        "--bundle",
+        "/tmp/app.attestation.jsonl",
+        "--source-digest",
+        "a".repeat(40),
+        "--source-ref",
+        "refs/tags/v0.7.0-beta",
+        "--signer-workflow",
+        "github.com/owner/repository/.github/workflows/build.yml",
+        "--predicate-type",
+        "https://slsa.dev/provenance/v1",
+        "--format",
+        "json",
+      ],
+      expect.objectContaining({
+        encoding: "utf8",
+        env: expect.objectContaining({ GH_TOKEN: "token" }),
+      }),
+    );
+  });
+
+  it("rejects extra materials and failed cryptographic attestations", async () => {
+    const root = makeRoot();
+    const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
+    const releaseAssets = makeReleaseAssets(root);
+    const verificationAssets = makeVerificationAssets(root, releaseAssets);
+    const report = makeArtifactVerificationReport(
+      releaseAssets,
+      verificationAssets,
+      sourceCommit,
+    );
+    const context = {
+      root,
+      manifest: { releaseAssets, verificationAssets },
+      report,
+      repository: "owner/repository",
+      releaseCommit: sourceCommit,
+      triggerRef: "refs/tags/v0.7.0-beta",
+      githubToken: "token",
+    };
+    write(
+      root,
+      `${ARTIFACT_VERIFICATION_DIRECTORY}/unpublished.txt`,
+      "extra\n",
+    );
+    expect(
+      await verifyArtifactVerificationMaterials(context, vi.fn()),
+    ).toContain(
+      "artifact-verification material inventory does not exactly equal the manifest",
+    );
+
+    rmSync(join(root, ARTIFACT_VERIFICATION_DIRECTORY, "unpublished.txt"));
+    const failedVerifier = vi
+      .fn()
+      .mockRejectedValue(new Error("signature did not verify"));
+    const errors = await verifyArtifactVerificationMaterials(
+      context,
+      failedVerifier,
+    );
+    expect(errors).toHaveLength(releaseAssets.length);
+    expect(
+      errors.every((error) => error.includes("signature did not verify")),
+    ).toBe(true);
+  });
+
+  it("rejects duplicate flattened filenames while allowing provenance bundles to be shared by digest", async () => {
+    const root = makeRoot();
+    const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
+    const releaseAssets = makeReleaseAssets(root);
+    releaseAssets[1].subjects[0].name = releaseAssets[0].subjects[0].name;
+    releaseAssets[1].subjects[0].sha256 = releaseAssets[0].subjects[0].sha256;
+    const verificationAssets = makeVerificationAssets(root, releaseAssets);
+    const report = makeArtifactVerificationReport(
+      releaseAssets,
+      verificationAssets,
+      sourceCommit,
+    );
+    const errors = await verifyArtifactVerificationMaterials(
+      {
+        root,
+        manifest: { releaseAssets, verificationAssets },
+        report,
+        repository: "owner/repository",
+        releaseCommit: sourceCommit,
+        triggerRef: "refs/tags/v0.7.0-beta",
+        githubToken: "token",
+      },
+      vi.fn(),
+    );
+    expect(errors).toContain(
+      "canonical release subjects must have unique published filenames",
+    );
+    expect(
+      verificationAssets.filter((asset) => asset.kind === "provenance-bundle"),
+    ).toHaveLength(releaseAssets.length - 1);
+  });
+
+  it.each([
+    ["SHA256SUMS", "bad checksum material\n", "SHA256SUMS must exactly cover"],
+    [
+      "release.spdx.json",
+      `${JSON.stringify({ spdxVersion: "SPDX-2.3", dataLicense: "CC0-1.0" })}\n`,
+      "SPDX SBOM must include components",
+    ],
+    [
+      "VERIFY.md",
+      "No verification commands are documented.\n",
+      "verification instructions must identify every subject",
+    ],
+  ])(
+    "rejects semantically incomplete %s material",
+    async (name, content, expected) => {
+      const root = makeRoot();
+      const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
+      const releaseAssets = makeReleaseAssets(root);
+      const verificationAssets = makeVerificationAssets(root, releaseAssets);
+      const asset = verificationAssets.find(
+        (candidate) => candidate.name === name,
+      );
+      write(root, asset.path, content);
+      asset.sha256 = createHash("sha256").update(content).digest("hex");
+      const report = makeArtifactVerificationReport(
+        releaseAssets,
+        verificationAssets,
+        sourceCommit,
+      );
+      const errors = await verifyArtifactVerificationMaterials(
+        {
+          root,
+          manifest: { releaseAssets, verificationAssets },
+          report,
+          repository: "owner/repository",
+          releaseCommit: sourceCommit,
+          triggerRef: "refs/tags/v0.7.0-beta",
+          githubToken: "token",
+        },
+        vi.fn(),
+      );
+      expect(errors.some((error) => error.includes(expected))).toBe(true);
+    },
+  );
 
   it("requires identified, verified model artifacts", () => {
     expect(
@@ -1970,6 +2332,7 @@ describe("release claim ledger validation", () => {
     for (const condition of ledger.release.stopShipConditions)
       condition.status = "met";
     for (const claim of ledger.claims) claim.state = "proven";
+    const releaseAssets = makeReleaseAssets(root);
     const manifest = {
       schemaVersion: 1,
       repository: "owner/repository",
@@ -1977,7 +2340,8 @@ describe("release claim ledger validation", () => {
       tag: "v0.7.0-beta",
       ref: "refs/tags/v0.7.0-beta",
       runId: 111,
-      releaseAssets: makeReleaseAssets(root),
+      releaseAssets,
+      verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [],
     };
     for (const readiness of ledger.release.readinessClaims) {
@@ -2060,6 +2424,7 @@ describe("release claim ledger validation", () => {
   it("rejects arbitrary machine-report URLs without fetching them", async () => {
     const commit = "0123456789abcdef0123456789abcdef01234567";
     const root = makeRoot();
+    const releaseAssets = makeReleaseAssets(root);
     let fetchCalls = 0;
     const errors = await verifyPublicationEvidence(
       {
@@ -2079,7 +2444,8 @@ describe("release claim ledger validation", () => {
         tag: "v0.7.0-beta",
         ref: "refs/tags/v0.7.0-beta",
         runId: 1,
-        releaseAssets: makeReleaseAssets(root),
+        releaseAssets,
+        verificationAssets: makeVerificationAssets(root, releaseAssets),
         evidence: [
           {
             claimId: "storage.desktop-crdb",
@@ -2179,6 +2545,7 @@ describe("release claim ledger validation", () => {
       ref,
       runId,
       releaseAssets,
+      verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [
         {
           claimId,
@@ -2346,6 +2713,7 @@ describe("release claim ledger validation", () => {
       ref,
       runId,
       releaseAssets,
+      verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [evidence],
     };
     let jobRunId = runId;

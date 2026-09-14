@@ -4,7 +4,11 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import { CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS } from "./release-constants.mjs";
+import {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
+  CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+} from "./release-constants.mjs";
 
 const READ_ATTEMPTS = 3;
 const REDRAFT_ATTEMPTS = 3;
@@ -216,6 +220,37 @@ export async function publishVerifiedDraft({
       expected.set(subject.name, subject.sha256);
     }
   }
+  const canonicalVerificationAssets = new Map(
+    CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
+  );
+  const seenVerificationKinds = new Set();
+  for (const asset of manifest.verificationAssets ?? []) {
+    const canonicalKind = canonicalVerificationAssets.get(asset?.name);
+    const expectedKind =
+      canonicalKind ??
+      (/^[a-f0-9]{64}\.attestation\.jsonl$/.test(asset?.name ?? "")
+        ? "provenance-bundle"
+        : null);
+    if (
+      !expectedKind ||
+      asset.kind !== expectedKind ||
+      asset.path !== `${ARTIFACT_VERIFICATION_DIRECTORY}/${asset.name}` ||
+      !/^[a-f0-9]{64}$/.test(asset.sha256 ?? "")
+    )
+      throw new Error("invalid artifact-verification asset in manifest");
+    if (expected.has(asset.name))
+      throw new Error(
+        `artifact-verification asset name conflicts with ${asset.name}`,
+      );
+    expected.set(asset.name, asset.sha256);
+    seenVerificationKinds.add(asset.kind);
+  }
+  for (const [, kind] of CANONICAL_ARTIFACT_VERIFICATION_ASSETS) {
+    if (!seenVerificationKinds.has(kind))
+      throw new Error(`missing artifact-verification ${kind} asset`);
+  }
+  if (!seenVerificationKinds.has("provenance-bundle"))
+    throw new Error("missing artifact-verification provenance bundles");
   const durableReports = new Map();
   const canonicalDurableReports = new Set(
     CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,

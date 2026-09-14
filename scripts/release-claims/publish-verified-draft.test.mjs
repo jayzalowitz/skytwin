@@ -10,7 +10,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS } from "./release-constants.mjs";
+import {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+} from "./release-constants.mjs";
 import {
   assertReleaseTagAbsent,
   assertReleaseTagTargetsCommit,
@@ -73,6 +76,17 @@ function fixture() {
     releaseAssets: [
       { subjects: [{ name: "app.dmg", sha256: "b".repeat(64) }] },
     ],
+    verificationAssets: [
+      ["checksums", "SHA256SUMS", "c"],
+      ["sbom", "release.spdx.json", "d"],
+      ["verification-instructions", "VERIFY.md", "e"],
+      ["provenance-bundle", `${"b".repeat(64)}.attestation.jsonl`, "f"],
+    ].map(([kind, name, digest]) => ({
+      kind,
+      name,
+      path: `${ARTIFACT_VERIFICATION_DIRECTORY}/${name}`,
+      sha256: digest.repeat(64),
+    })),
     evidence: [
       ...CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS.map((reportPath, index) => ({
         reportPath,
@@ -113,6 +127,13 @@ function releaseBody(manifestDigest, overrides = {}) {
     target_commitish: "ignored-when-the-tag-exists",
     assets: [
       { name: "app.dmg", digest: `sha256:${"b".repeat(64)}` },
+      { name: "SHA256SUMS", digest: `sha256:${"c".repeat(64)}` },
+      { name: "release.spdx.json", digest: `sha256:${"d".repeat(64)}` },
+      { name: "VERIFY.md", digest: `sha256:${"e".repeat(64)}` },
+      {
+        name: `${"b".repeat(64)}.attestation.jsonl`,
+        digest: `sha256:${"f".repeat(64)}`,
+      },
       ...CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS.map((reportPath, index) => ({
         name: reportPath.split("/").at(-1),
         digest: `sha256:${reportDigest(index)}`,
@@ -442,6 +463,60 @@ it("rejects a missing or digest-changed durable evidence release asset", async (
     await expect(
       publishVerifiedDraft(publishContext(manifestPath, fetchImpl)),
     ).rejects.toThrow("do not exactly match");
+  }
+});
+
+it("rejects missing, digest-changed, or unpublished verification materials", async () => {
+  const { manifestPath, manifestDigest } = fixture();
+  for (const mutate of [
+    (assets) => assets.filter(({ name }) => name !== "release.spdx.json"),
+    (assets) =>
+      assets.map((asset) =>
+        asset.name === "VERIFY.md"
+          ? { ...asset, digest: `sha256:${"0".repeat(64)}` }
+          : asset,
+      ),
+    (assets) => [
+      ...assets,
+      { name: "unpublished.txt", digest: `sha256:${"1".repeat(64)}` },
+    ],
+  ]) {
+    const changed = releaseBody(manifestDigest);
+    changed.assets = mutate(changed.assets);
+    await expect(
+      publishVerifiedDraft(
+        publishContext(
+          manifestPath,
+          vi.fn().mockResolvedValue(response(changed)),
+        ),
+      ),
+    ).rejects.toThrow("do not exactly match");
+  }
+});
+
+it("rejects extra or duplicate verification materials in the manifest", async () => {
+  for (const mutate of [
+    (manifest) =>
+      manifest.verificationAssets.push({
+        kind: "sbom",
+        name: "unexpected.json",
+        path: `${ARTIFACT_VERIFICATION_DIRECTORY}/unexpected.json`,
+        sha256: "1".repeat(64),
+      }),
+    (manifest) =>
+      manifest.verificationAssets.push(
+        structuredClone(manifest.verificationAssets[0]),
+      ),
+  ]) {
+    const { manifestPath } = fixture();
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    mutate(manifest);
+    writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+    const fetchImpl = vi.fn();
+    await expect(
+      publishVerifiedDraft(publishContext(manifestPath, fetchImpl)),
+    ).rejects.toThrow(/(?:invalid|conflicts)/);
+    expect(fetchImpl).not.toHaveBeenCalled();
   }
 });
 

@@ -88,7 +88,7 @@ const STEPS = [
   {
     n: 5,
     title: 'Paste your credentials and connect',
-    blurb: 'Last step. Your Google client credentials are stored in SkyTwin\'s local database without app-level encryption and sent to Google only for OAuth authorization.',
+    blurb: 'Last step. Your Google client credentials are stored locally without app-level encryption, sent to Google for OAuth, and, when an IronClaw execution adapter is configured, also registered with that configured server, which may be remote.',
     cta: null,
     detail: [],
   },
@@ -158,8 +158,9 @@ function renderStep(step, opts) {
           required
         >
         <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
-          Stored in your local SkyTwin database without app-level encryption. The client secret is sent
-          to Google's OAuth service when completing authorization.
+          Stored locally without app-level encryption and sent to Google for OAuth. When an IronClaw
+          execution adapter is configured, these credentials are also registered with that configured
+          server, which may be remote.
         </div>
       </div>
       <div id="cgm-cred-error" style="display:none;color:var(--danger,#d04646);font-size:0.85rem;margin-top:0.75rem;" role="alert"></div>

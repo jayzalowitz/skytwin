@@ -64,6 +64,17 @@ export const CANONICAL_RELEASE_ASSETS = Object.freeze([
   ["SkyTwin-Linux-update-manifest", "update-manifest"],
 ]);
 
+export const ARTIFACT_VERIFICATION_DIRECTORY =
+  ".release-evidence/artifact-verification";
+
+export const CANONICAL_ARTIFACT_VERIFICATION_ASSETS = Object.freeze([
+  ["SHA256SUMS", "checksums"],
+  ["release.spdx.json", "sbom"],
+  ["VERIFY.md", "verification-instructions"],
+]);
+
+export const ARTIFACT_VERIFICATION_RELEASE_PATTERN = `${ARTIFACT_VERIFICATION_DIRECTORY}/*`;
+
 export const CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS = Object.freeze([
   "artifacts/release-claims-ci/result.json",
   ".release-evidence/reports/storage.desktop-crdb.json",

@@ -573,13 +573,13 @@
       "id": "oauth-encryption-present-tense",
       "pattern": "OAuth (?:tokens|credentials) are (?:protected with |secured by )?(?:encryption|encrypted) at rest",
       "flags": "i",
-      "reason": "The shipping OAuth grant path writes plaintext and production key handoff is incomplete"
+      "reason": "OAuth token storage is mixed: callbacks use plaintext only before vault initialization; a matching unlocked API vault encrypts new and reconnected grants, while worker key handoff remains unavailable"
     },
     {
       "id": "credential-save-encrypted",
       "pattern": "Saved encrypted in your local SkyTwin database",
       "flags": "i",
-      "reason": "The credential form must not imply the dormant vault covers new OAuth grants"
+      "reason": "The Google OAuth client-credential form stores its client secret without app-level encryption; OAuth token-secret storage is a separate vault-state-dependent path"
     },
     {
       "id": "bundled-default-model",
@@ -609,7 +609,7 @@
       "id": "packaged-sample-shipped",
       "pattern": "packaged (?:builds?|installers?|artifacts?) (?:ship|include|offer)s? (?:an? |the )?(?:account-free |fully populated )?sample",
       "flags": "i",
-      "reason": "Sample data is source/development-only until packaged production provisioning and isolation tests pass"
+      "reason": "Current source contains a guarded packaged sample path, but no published artifact or tagged clean-machine evidence proves that path"
     },
     {
       "id": "supported-installer-available",
@@ -627,7 +627,7 @@
       "id": "packaged-sample-account-free",
       "pattern": "No account or inbox needed[ —-]+explore with a sample profile",
       "flags": "i",
-      "reason": "The current packaged artifact does not provision the source-only sample fixture"
+      "reason": "Published installers predate the guarded packaged sample path in current source, and tagged clean-machine evidence is absent"
     },
     {
       "id": "unverified-self-update",
@@ -669,7 +669,7 @@
       "id": "unproven-confidential-mode",
       "pattern": "confidential (?:inference|reasoning|AI) (?:is |comes )?(?:available|supported|enabled|ready|verified)",
       "flags": "i",
-      "reason": "No attestation-verified confidential provider or receipt exists yet"
+      "reason": "Signed receipt primitives exist, but no production attestation-backed provider, pinned provider and recorder trust roots, provider-specific verification policy, or product receipt export path is wired"
     },
     {
       "id": "unproven-universal-explanations",
@@ -717,7 +717,7 @@
     {
       "id": "gmail-credential-boundary",
       "path": "apps/web/public/js/pages/connect-gmail.js",
-      "exact": "Stored in your local SkyTwin database without app-level encryption."
+      "exact": "Stored locally without app-level encryption and sent to Google for OAuth."
     },
     {
       "id": "dashboard-reasoning-boundary",
@@ -1126,12 +1126,12 @@
       "scope": "Every artifact named in the beta platform support matrix, built from the release tag.",
       "owner": "release-engineering",
       "state": "deferred",
-      "limitation": "CI explicitly disables automatic signing, the tag workflow can create a draft release from unsigned artifacts, and no notarization evidence is produced.",
+      "limitation": "CI explicitly disables automatic signing and produces no notarization evidence; the gated tag workflow therefore refuses draft creation until digest-bound signing evidence proves every supported artifact.",
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "371f30e7337672e6fcf8b0dfce67808d1d478e7d77e8938744c74c08e232df4b",
-          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and the release job uploads their outputs"
+          "sha256": "96a191c4d5fd3a4796b23976e1bd258785b503572849a567c4308294cc8233da",
+          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
           "path": "apps/desktop/package.json",
@@ -1162,8 +1162,8 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "371f30e7337672e6fcf8b0dfce67808d1d478e7d77e8938744c74c08e232df4b",
-          "why": "Current release workflow uploads build outputs without checksum/SBOM/attestation generation"
+          "sha256": "96a191c4d5fd3a4796b23976e1bd258785b503572849a567c4308294cc8233da",
+          "why": "Current packaging jobs do not generate the verification sidecars and attestations that the guarded publisher now requires"
         }
       ],
       "verification": [

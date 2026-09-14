@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
   CANONICAL_RELEASE_ASSETS,
@@ -126,6 +128,50 @@ const releaseAssets = CANONICAL_RELEASE_ASSETS.map(([artifactName, kind]) => {
   };
 });
 
+const canonicalVerificationAssets = new Map(
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
+);
+const verificationDirectory = resolve(ARTIFACT_VERIFICATION_DIRECTORY);
+const verificationDirectoryStat = lstatSync(verificationDirectory);
+if (
+  verificationDirectoryStat.isSymbolicLink() ||
+  !verificationDirectoryStat.isDirectory()
+)
+  throw new Error(
+    `${ARTIFACT_VERIFICATION_DIRECTORY} must be a real directory`,
+  );
+const verificationAssets = readdirSync(verificationDirectory, {
+  withFileTypes: true,
+}).map((entry) => {
+  if (!entry.isFile() || entry.isSymbolicLink())
+    throw new Error(
+      `${ARTIFACT_VERIFICATION_DIRECTORY} must contain only direct regular files`,
+    );
+  const canonicalKind = canonicalVerificationAssets.get(entry.name);
+  const kind =
+    canonicalKind ??
+    (/^[a-f0-9]{64}\.attestation\.jsonl$/.test(entry.name)
+      ? "provenance-bundle"
+      : null);
+  if (!kind)
+    throw new Error(`unexpected artifact-verification material: ${entry.name}`);
+  const path = join(ARTIFACT_VERIFICATION_DIRECTORY, entry.name);
+  if (!lstatSync(path).isFile())
+    throw new Error(`${path} is not a regular verification material`);
+  return {
+    kind,
+    name: entry.name,
+    path,
+    sha256: digestOf(path),
+  };
+});
+for (const [name] of CANONICAL_ARTIFACT_VERIFICATION_ASSETS) {
+  if (!verificationAssets.some((asset) => asset.name === name))
+    throw new Error(`missing artifact-verification material: ${name}`);
+}
+if (!verificationAssets.some((asset) => asset.kind === "provenance-bundle"))
+  throw new Error("artifact-verification provenance bundles are missing");
+
 const evidence = [];
 for (const readiness of ledger.release.readinessClaims) {
   for (const kind of readiness.requiredEvidenceKinds) {
@@ -154,44 +200,44 @@ for (const readiness of ledger.release.readinessClaims) {
 
     const reportNames = machineReportNamesForClaim(readiness.claimId);
     for (const reportName of reportNames) {
-    const reportPath = join(reportsDirectory, reportName);
-    const report = JSON.parse(readFileSync(reportPath, "utf8"));
-    const releaseArtifact = oneBy(
-      artifactsPage.artifacts,
-      "id",
-      report.releaseArtifactId,
-      `release artifact for ${readiness.claimId}`,
-    );
-    evidence.push({
-      claimId: readiness.claimId,
-      kind,
-      checkIds: CANONICAL_MACHINE_EVIDENCE_CHECKS.get(readiness.claimId),
-      repository,
-      runId,
-      ref,
-      evidenceArtifactId: machineArtifact.id,
-      evidenceArtifactName: machineArtifact.name,
-      evidenceArtifactSha256: String(machineArtifact.digest).replace(
-        /^sha256:/,
-        "",
-      ),
-      reportPath: `.release-evidence/reports/${reportName}`,
-      reportSha256: digestOf(reportPath),
-      sourceCommit: releaseCommit,
-      releaseTag: tag,
-      platform: report.platform,
-      releaseArtifactKind: report.releaseArtifactKind,
-      releaseArtifactId: releaseArtifact.id,
-      releaseArtifactName: releaseArtifact.name,
-      releaseArtifactSha256: String(releaseArtifact.digest).replace(
-        /^sha256:/,
-        "",
-      ),
-      subjectName: report.subjectName,
-      subjectPath: `artifacts/${releaseArtifact.name}/${report.subjectName}`,
-      subjectSha256: report.subjectSha256,
-      why: "Machine report bound to an immutable release artifact from this run",
-    });
+      const reportPath = join(reportsDirectory, reportName);
+      const report = JSON.parse(readFileSync(reportPath, "utf8"));
+      const releaseArtifact = oneBy(
+        artifactsPage.artifacts,
+        "id",
+        report.releaseArtifactId,
+        `release artifact for ${readiness.claimId}`,
+      );
+      evidence.push({
+        claimId: readiness.claimId,
+        kind,
+        checkIds: CANONICAL_MACHINE_EVIDENCE_CHECKS.get(readiness.claimId),
+        repository,
+        runId,
+        ref,
+        evidenceArtifactId: machineArtifact.id,
+        evidenceArtifactName: machineArtifact.name,
+        evidenceArtifactSha256: String(machineArtifact.digest).replace(
+          /^sha256:/,
+          "",
+        ),
+        reportPath: `.release-evidence/reports/${reportName}`,
+        reportSha256: digestOf(reportPath),
+        sourceCommit: releaseCommit,
+        releaseTag: tag,
+        platform: report.platform,
+        releaseArtifactKind: report.releaseArtifactKind,
+        releaseArtifactId: releaseArtifact.id,
+        releaseArtifactName: releaseArtifact.name,
+        releaseArtifactSha256: String(releaseArtifact.digest).replace(
+          /^sha256:/,
+          "",
+        ),
+        subjectName: report.subjectName,
+        subjectPath: `artifacts/${releaseArtifact.name}/${report.subjectName}`,
+        subjectSha256: report.subjectSha256,
+        why: "Machine report bound to an immutable release artifact from this run",
+      });
     }
   }
 }
@@ -207,6 +253,7 @@ writeFileSync(
       ref,
       runId,
       releaseAssets,
+      verificationAssets,
       evidence,
     },
     null,

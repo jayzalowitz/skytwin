@@ -972,12 +972,7 @@
           </div>
           </div>
         <div class="full-figure">
-            <figure>
-              <div class="crop" style="--sx:284; --sy:126; --sw:823; --sh:590;">
-<p class="dim">Settings capture withheld pending replacement after the public-copy audit.</p>
-              </div>
-              <figcaption>Settings · the ladder · captured 2026-06-15. Iris marks only the selected rung.</figcaption>
-            </figure>
+            <p class="honest">Current Settings ladder capture withheld pending replacement after the public-copy audit.</p>
             <p class="src mt-md">Copy drift, stated rather than hidden: the settings page ships “Just watch” for the bottom rung while <span class="mono">TIER_DISPLAY_LABELS</span> at policy.ts:128-129 reads “Watch &amp; Suggest”. The table above uses the label the app actually renders.</p>
             <div class="honest">
               <b>Honest note</b>
@@ -1082,12 +1077,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
             <p>Caps compose in one direction only. Global settings are the ceiling; an LLM-interpreted risk profile can only clamp down; per-app overrides clamp again; and boolean rails like “always ask before doing something that can't be undone” are OR-ed, so no lower layer can relax them. If the model misreads your risk profile, the worst case is over-restriction.</p>
             <p>And the model is never allowed to price its own action. Candidates emitted by an LLM strategy carry a cost intent of <span class="mono">unknown</span>, and unknown is refused the zero-cost fast path and escalated to a human. Negative costs are rejected outright as a spend-tracking bypass.</p>
           </div>
-          <figure>
-            <div class="crop" style="--sx:284; --sy:2636; --sw:823; --sh:332;">
-<p class="dim">Settings capture withheld pending replacement after the public-copy audit.</p>
-            </div>
-            <figcaption>Settings · spending guardrails.</figcaption>
-        </figure>
+          <p class="honest">Current spending-guardrails capture withheld pending replacement after the public-copy audit.</p>
             <div class="honest">
               <b>Honest footnote</b>
               That spend rule's own description says “unless the user has configured spend limits.” The rule has no such condition. The code is stricter than its own doc. We would rather fix the doc than loosen the rule.
@@ -1120,12 +1110,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           <p>The switch that stops automatic action is Settings → Pause auto-execution (#379), the panel beside this text. Signal sync continues and otherwise-allowed actions route to review. Self-hosters get a matching operator switch, <span class="mono">SKYTWIN_AUTO_EXECUTE_DISABLED</span>, that the interface cannot clear. Either one flips the same flag inside the evaluator, and the ordering is the interesting part: it is applied at the <em>end</em> of policy evaluation, not the start, so it can only escalate things to you — it can never turn a refusal into an approval. That was a real bug once; the source comment records it. There is no single whole-system stop today.</p>
         </div>
 
-        <figure class="col-fig mt-lg">
-          <div class="crop" style="--sx:284; --sy:2257; --sw:823; --sh:205;">
-<p class="dim">Settings capture withheld pending replacement after the public-copy audit.</p>
-          </div>
-          <figcaption>Settings · the panic button. The red is the product's own.</figcaption>
-        </figure>
+        <p class="honest col-fig mt-lg">Current pause-control capture withheld pending replacement after the public-copy audit.</p>
         <p class="dim mt-md">Pause stops your twin from acting. It keeps watching, so nothing is lost. One caveat, fixed while this deck was in review: the primary inbound-mail path did not pass per-user autonomy settings to the evaluator, so only the operator switch fired there. <a href="https://github.com/jayzalowitz/skytwin/pull/615">#615</a> routes them through — <span class="mono">decision-maker.ts:256</span> now passes <span class="mono">context.autonomySettings</span>.</p>
       </div>
     </section>
@@ -1148,12 +1133,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           <div>
             <p>“Delete everything about me” — profile, decisions, memory, preferences, OAuth tokens, sessions, spend records — runs as one serializable transaction. Either all of it is gone or nothing changed. There is no half-deleted state to discover later, and the endpoint is ownership-gated so nobody can purge anyone else.</p>
           </div>
-          <figure>
-            <div class="crop" style="--sx:284; --sy:3668; --sw:823; --sh:186;">
-<p class="dim">Settings capture withheld pending replacement after the public-copy audit.</p>
-            </div>
-            <figcaption>Settings · one transaction, or nothing.</figcaption>
-          </figure>
+          <p class="honest">Current data-deletion capture withheld pending replacement after the public-copy audit.</p>
         </div>
 
         <details class="srcs">
@@ -1183,8 +1163,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           <p>And whatever it learned about you is a list you can edit — not a chat transcript, not a pile of vectors. Every entry carries how sure the twin is and where it came from, and every entry has two controls: Edit, and “That's not right.” The page says it in the twin's own words: corrections are the fastest way I get smarter.</p>
         </div>
 
-        <p>Historical learned-preference capture withheld pending replacement after the public-copy audit.</p>
-          <p class="src">Cropped to one row on purpose: the third card on that capture renders a preference as raw JSON, which contradicts the plain-language standard the rest of this deck argues for. It is a bug in the frame, so the bug is named here rather than shown as if it were fine.</p>
+        <p class="honest">Current learned-preference capture withheld pending replacement after the public-copy audit.</p>
         </div>
 
         <p class="col mt-md">That is the loop. The “no” you type on an approval card lands here, and this page is what gets promoted on <a href="#07-gate-ladder">the ladder</a>.</p>
@@ -1256,7 +1235,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
           <div class="row span2">
             <p class="row-t"><span class="row-n">07</span>Ten external runtime dependencies, across 30 packages and six Node apps.</p>
             <p class="mono mt-md mb-sm">@modelcontextprotocol/sdk · ajv · bonjour-service · chrono-node · express · ipaddr.js · pg · tweetnacl · undici · zod</p>
-            <p class="row-b">25 of 30 packages have zero. Five LLM providers, no model-vendor SDKs — their APIs use <span class="mono">fetch</span>, with <span class="mono">undici</span> pinning validated DNS for custom endpoints. The Prometheus endpoint is hand-written. The dashboard has no bundler and no framework: 22,041 lines of non-test vanilla JS across 45 files, 26 of them page modules, and <span class="mono">express</span> is its only runtime dependency. One database, no broker, no Redis. One grep disproves any of it if it's false.</p>
+            <p class="row-b">25 of 30 packages have zero. Five LLM providers, no model-vendor SDKs — their APIs use <span class="mono">fetch</span>, with <span class="mono">undici</span> pinning validated DNS for custom endpoints. The Prometheus endpoint is hand-written. The dashboard has no bundler and no framework: 22,045 lines of non-test vanilla JS across 45 files, 26 of them page modules, and <span class="mono">express</span> is its only runtime dependency. One database, no broker, no Redis. One grep disproves any of it if it's false.</p>
           </div>
         </div>
 
@@ -1361,7 +1340,7 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
 
         <details class="srcs">
           <summary>Sources · release history, architecture, schema and validation</summary>
-          <p class="src">Release history and the current source version live in <a href="https://github.com/jayzalowitz/skytwin/blob/main/CHANGELOG.md">CHANGELOG.md</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/VERSION">VERSION</a>. Package and app responsibilities are mapped in <a href="https://github.com/jayzalowitz/skytwin/blob/main/ARCHITECTURE.md">ARCHITECTURE.md</a>; database changes live under <a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/db/src/migrations">packages/db/src/migrations</a>. Test, evaluation, installer and package matrices are defined by the repository's <a href="https://github.com/jayzalowitz/skytwin/tree/main/.github/workflows">GitHub Actions workflows</a>. Installer targets come from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a>. These source-tree checks do not certify the still-published June installers.</p>
+          <p class="src">Release history and the current source version live in <a href="https://github.com/jayzalowitz/skytwin/blob/main/CHANGELOG.md">CHANGELOG.md</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/VERSION">VERSION</a>. Package and app responsibilities are mapped in the <a href="https://github.com/jayzalowitz/skytwin/blob/main/README.md#architecture">README architecture section</a>; database changes live under <a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/db/src/migrations">packages/db/src/migrations</a>. Test, evaluation, installer and package matrices are defined by the repository's <a href="https://github.com/jayzalowitz/skytwin/tree/main/.github/workflows">GitHub Actions workflows</a>. Installer targets come from <a href="https://github.com/jayzalowitz/skytwin/blob/main/apps/desktop/package.json">apps/desktop/package.json</a>. These source-tree checks do not certify the still-published June installers.</p>
         </details>
       </div>
     </section>
@@ -1376,8 +1355,8 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <div class="status">
           <div>
             <ul>
-              <li><strong>No release has been cut since June, even though the build is green again.</strong> Two facts that it would be convenient to tell as one. The release job only fires on a <span class="mono">v*</span> tag; the newest tag is v0.6.58.0, published June 2, which is why the download you get is the June build, with assets stamped 0.3.0 because <span class="mono">apps/desktop/package.json</span> was pinned there and electron-builder rejects our four-segment <span class="mono">VERSION</span> — so electron-updater compared 0.3.0 against 0.3.0 and auto-update could never fire. <a href="https://github.com/jayzalowitz/skytwin/pull/613">#613</a> now derives a real three-segment version at package time. The repo is on 0.6.102.0. For the two months after that the pipeline was green and simply was not tagged. Separately, the build <em>was</em> red from early August: seven tests failed inside one helper, <span class="mono">computeBidirectionalThreadCounts</span>, and because that job failed all six downstream build and release jobs were skipped — so a tag pushed then would not have produced artifacts either. That was fixed the day this deck shipped: the fixtures pinned absolute dates against a rolling <span class="mono">Date.now()</span> window and aged out on a calendar date rather than on a commit. <span class="mono">Test</span> passes on main again and the packaging jobs run. The tag is still the missing step, and it is first in the queue.</li>
-              <li><strong>The installers aren't code-signed.</strong> Gatekeeper and SmartScreen will warn you on first launch. That needs a $99/yr Apple membership, a roughly $400/yr Windows certificate, and the secrets wired into a workflow that currently disables signing outright. Procurement, not code.</li>
+              <li><strong>No release has been cut since June, even though the build is green again.</strong> Two facts that it would be convenient to tell as one. The release job only fires on a <span class="mono">v*</span> tag; the newest tag is v0.6.58.0, published June 2, which is why the download you get is the June build, with assets stamped 0.3.0 because <span class="mono">apps/desktop/package.json</span> was pinned there and electron-builder rejects our four-segment <span class="mono">VERSION</span> — so electron-updater compared 0.3.0 against 0.3.0 and auto-update could never fire. <a href="https://github.com/jayzalowitz/skytwin/pull/613">#613</a> now derives a real three-segment version at package time. The repo is on 0.6.102.0. For the two months after that the pipeline was green and simply was not tagged. Separately, the build <em>was</em> red from early August: seven tests failed inside one helper, <span class="mono">computeBidirectionalThreadCounts</span>, and because that job failed all six downstream build and release jobs were skipped — so a tag pushed then would not have produced artifacts either. That was fixed the day this deck shipped: the fixtures pinned absolute dates against a rolling <span class="mono">Date.now()</span> window and aged out on a calendar date rather than on a commit. <span class="mono">Test</span> passes on main again and the packaging jobs run. A tag is not the next step: version alignment, a ready claim ledger, the required evidence producers, signing, and artifact gates must clear before the tag workflow may create a draft.</li>
+              <li><strong>The installers aren't code-signed.</strong> Gatekeeper and SmartScreen will warn you on first launch. The certificates are external procurement; wiring their secrets into the applicable package jobs and producing digest-bound signing and notarization evidence is still release-engineering work.</li>
               <li><strong>Gmail is not one click. Calendar is.</strong> The bundled Google client is approved for identity and calendar only; connecting Gmail means creating your own Google Cloud project through an in-app wizard, about five minutes. Both Gmail scopes are classified restricted, and clearing that permanently needs a $15k–$50k/yr third-party assessment, deliberately deferred until there's revenue.</li>
               <li><strong>There is no general production source-field encryption boundary yet.</strong> OAuth token secrets have a narrow opt-in API-local vault: no vault means plaintext; a matching unlocked vault encrypts new/reconnected grants and can migrate complete legacy grants on authorized use; the worker does not receive that key. OAuth account metadata, preferences, twin profiles, memory pages, receipt rows, and searchable indexes remain readable. The broader source-key broker still gives its API and worker children empty owner grants. <a href="#15-local-data">The panel on the local-data slide</a> has the specifics.</li>
               <li><strong>Per-user pause, per-user spend caps, domain lists and quiet hours were not applied on the primary inbound-mail path</strong> — the autonomy settings weren't passed to the evaluator there. Trust tiers, the injection guard, the escalate-only terminal, the built-in deny policies and the operator kill switch still were, and the blanket cost-above-zero deny is why the missing spend check was never exploitable for money. We found this writing the deck, filed it, and <a href="https://github.com/jayzalowitz/skytwin/pull/615">#615</a> closed it a day later. Left on this slide because the deck should show its own corrections, not quietly delete them.</li>
@@ -1518,8 +1497,8 @@ const provenance: ActionProvenance = action.provenance ?? 'untrusted_external';<
         <a href="https://github.com/jayzalowitz/skytwin/blob/main/packages/shared-types/src/policy.ts">policy.ts</a>
         <a href="demo.html">Demo storyboard</a>
       </div>
-      <p>SkyTwin is an open-source personal-automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>, licensed Apache 2.0. Screenshots captured 2026-06-15 against v0.6.x; code references rechecked on this 0.6.102.0 release-candidate branch on 2026-09-13.</p>
-      <p>install.sh's header advertises a “hash-verified” CockroachDB download and the script contains no checksum logic (issue #369) — that claim is deliberately not repeated on this page; only the desktop build script genuinely verifies a sha256.</p>
+      <p>SkyTwin is an open-source personal-automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>, licensed Apache 2.0. Historical screenshots were captured 2026-06-15 against v0.6.x and are withheld pending replacement; code references were rechecked on this 0.6.102.0 release-candidate branch on 2026-09-14.</p>
+      <p>The source installer delegates CockroachDB setup to <span class="mono">bin/skytwin-db</span>, which verifies the downloaded archive against a pinned SHA-256 before extraction. Desktop packaging independently verifies the CockroachDB archive embedded in its bundle.</p>
     </div>
   </footer>
 

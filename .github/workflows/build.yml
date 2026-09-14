@@ -624,6 +624,7 @@ jobs:
     permissions:
       contents: write
       actions: read
+      attestations: read
     steps:
       # #370 AC#2: confirm the GitHub Releases endpoint this repo's
       # electron-updater feed lives behind is reachable before we publish a
@@ -730,6 +731,7 @@ jobs:
             .release-evidence/reports/models.verified-delivery.json
             .release-evidence/reports/release.signing.json
             .release-evidence/reports/release.artifact-verification.json
+            .release-evidence/artifact-verification/*
             .release-evidence/manifest.json
 
       - name: Verify exact draft assets and publish

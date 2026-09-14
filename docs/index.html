@@ -219,7 +219,7 @@
       <h2>Install</h2>
       <p class="section-lede">Current unsigned technical-preview artifacts (<code>.dmg</code> / <code>.exe</code> / <code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code>) are available from <a href="https://github.com/jayzalowitz/skytwin/releases/latest">the latest release</a>, but they predate the guarded packaged sample described above. Check each release's notes for exact contents. The update client can check for new artifacts, but signed-update installation is not yet verified. Or build from source in one command on macOS / Linux / WSL:</p>
       <pre class="code"><code>curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash</code></pre>
-      <p style="color:var(--text-dim);font-size:.88rem;margin-top:.8rem;">Beta builds aren't code-signed yet, so macOS Gatekeeper / Windows SmartScreen will warn on first launch — right-click → Open (macOS) or More info → Run anyway (Windows). Signing is in progress.</p>
+      <p style="color:var(--text-dim);font-size:.88rem;margin-top:.8rem;">Technical-preview builds aren't code-signed, so macOS Gatekeeper / Windows SmartScreen will warn on first launch — right-click → Open (macOS) or More info → Run anyway (Windows). Signing, notarization, and clean-machine trust evidence remain stop-ship gates for the public beta.</p>
     </section>
 
     <section class="wrap">

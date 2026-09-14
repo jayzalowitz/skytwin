@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 const source = readFileSync(new URL('./settings.js', import.meta.url), 'utf8');
+const connectGmailSource = readFileSync(new URL('./connect-gmail.js', import.meta.url), 'utf8');
 const apiSource = readFileSync(new URL('../api-client.js', import.meta.url), 'utf8');
 
 describe('reasoning-location settings boundary', () => {
@@ -40,5 +41,22 @@ describe('reasoning-location settings boundary', () => {
     const locationRenderer = source.slice(start, end);
     expect(locationRenderer).toContain('data-action="ai-reasoning-mode"');
     expect(locationRenderer).not.toMatch(/on(?:click|change|input|keydown)\s*=/i);
+  });
+});
+
+describe('credential transfer disclosures', () => {
+  it('discloses Google credential storage and conditional IronClaw transfer before submit', () => {
+    expect(connectGmailSource).toContain('stored locally without app-level encryption');
+    expect(connectGmailSource).toContain('sent to Google for OAuth');
+    expect(connectGmailSource).toContain('when an IronClaw execution adapter is configured');
+    expect(connectGmailSource).toContain('registered with that configured server');
+    expect(connectGmailSource).toContain('which may be remote');
+    expect(connectGmailSource).not.toContain('sent to Google only');
+  });
+
+  it('includes conditional IronClaw credential transfer in the Settings network summary', () => {
+    expect(source).toContain('When an IronClaw execution adapter is configured');
+    expect(source).toContain('stored service credentials are also registered');
+    expect(source).toContain('with that configured server, which may be remote');
   });
 });
