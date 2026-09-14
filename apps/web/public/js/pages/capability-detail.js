@@ -351,7 +351,7 @@ export async function renderCapabilityDetail(container, userId, serverId) {
             Rehearse (30d)
           </button>
           <button class="btn btn-outline btn-sm" data-action="capability-regret" data-hours="24">
-            Regret last 24h
+            Review rollback options
           </button>
           <button class="btn btn-outline btn-sm" data-action="capability-provenance">
             View provenance
@@ -586,7 +586,7 @@ async function handleDetailRehearse(serverId, userId, daysBack, btn) {
 }
 
 async function handleDetailRegret(serverId, userId, withinHours) {
-  if (!confirm(`Roll back reversible actions from this capability in the last ${withinHours}h?`)) return;
+  if (!confirm(`Review reversible actions from the last ${withinHours}h? No changes will be made.`)) return;
   const resultEl = document.getElementById('capability-action-result');
   try {
     const { undone, unavailable, irreversible, status } = await regretCapability(
