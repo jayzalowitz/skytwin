@@ -157,6 +157,11 @@ export class OpenAiEmbeddingProvider implements EmbeddingProvider {
           requestInit,
         )).response;
       if (!res.ok) {
+        // A response body may be arbitrarily large or never finish. Abort and
+        // cancel it before closing the pinned dispatcher; Agent.close() waits
+        // for outstanding work and must not extend this request past timeout.
+        ctrl.abort();
+        await res.body?.cancel().catch(() => undefined);
         throw new Error(`embedding HTTP ${res.status}`);
       }
       const json = (await res.json()) as { data?: Array<{ embedding: number[] }> };
