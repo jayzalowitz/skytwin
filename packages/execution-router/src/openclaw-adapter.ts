@@ -110,7 +110,9 @@ function parseCredentialRequirement(
       ...(candidate['placeholder'] !== undefined
         ? { placeholder: candidate['placeholder'] as string }
         : {}),
-      ...(candidate['secret'] !== undefined ? { secret: candidate['secret'] as boolean } : {}),
+      // The peer describes the field but cannot downgrade how SkyTwin handles
+      // its value. There is no trusted local non-secret allowlist for peer fields.
+      secret: true,
       ...(candidate['optional'] !== undefined ? { optional: candidate['optional'] as boolean } : {}),
     });
   }

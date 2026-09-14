@@ -81,7 +81,13 @@ Filesystem and process-local surfaces are separate from the SQL inventory:
   is ready, startup removes legacy-untagged, unsupported, and backend-mismatched
   records across users without decrypting them. The target replaces remembered-
   passphrase storage with a device-wrapped random user key.
-- The dashboard currently stores a session token in renderer `localStorage`.
+- The dashboard stores a session token in renderer `localStorage`. While an
+  assistant send has an ambiguous result, it also stores the full pending
+  message plus its owner/thread/request identity there so a reload can retry
+  without duplicating an action. That recovery record is removed on a definite
+  result, edit/abandon, or sign-out. The sample equivalent is tab-scoped
+  `sessionStorage`; the mobile development client uses the OS secure store and
+  removes the record on disconnect.
 - `.dxt` exports are plaintext with an unkeyed SHA-256 checksum, so they are not
   confidential or authenticated against deliberate modification; their
   serializer redacts known secret-shaped arguments. `.stbk` backup archives are

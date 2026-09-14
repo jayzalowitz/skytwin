@@ -28,6 +28,10 @@
 > The final gate therefore fails closed and the ledger remains blocked until the
 > complete proof pipeline ships.
 
+The supported beta topology is one non-demo human owner per installation.
+Installation credentials are shared configuration, so multi-owner local installs
+and hosted service deployments are outside this release procedure.
+
 The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The former
 requires a dedicated CI-result producer; it is not currently emitted by the
@@ -126,9 +130,12 @@ non-fast-forward changes, with the repository administrator role as its explicit
 bypass actor. The environment's sole deployment policy is the exact
 `v0.7.0-beta` tag (policy ID `59983025`), which the release verifier also
 requires for this claim ledger.
-The workflow verifies those live settings and fails before release
-mutation if GitHub auto-creates an unprotected environment or its configuration
-drifts. The release job has only `contents: write`, `actions: read`, and
+The workflow verifies that at least one reviewer is required, self-review and
+administrator bypass are disabled, custom deployment policies are enabled, and
+a tag policy matches the release tag. It fails before release mutation if those
+invariants drift or GitHub auto-creates an unprotected environment. Operators
+must separately compare the exact identities and ruleset details recorded above.
+The release job has only `contents: write`, `actions: read`, and
 `attestations: read`, serializes
 publication per tag without cancellation, and scans the authenticated release
 inventory immediately before draft creation so the upload action cannot reuse a

@@ -192,7 +192,7 @@ describe('Credentials API routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Default: no dynamic credential requirements (used by maskRow's secret detection)
+    // Default: no dynamic credential requirements.
     mockCredentialRequirementRepository.getAll.mockResolvedValue([]);
     mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
     mockRevokeCredentialFromIronClaw.mockResolvedValue(false);
@@ -486,7 +486,7 @@ describe('Credentials API routes', () => {
         integration: string;
         label: string;
         description: string | null;
-        fields: Array<{ key: string; label: string }>;
+        fields: Array<{ key: string; label: string; secret: boolean }>;
         skills: string[];
       }> };
       expect(body.requirements).toHaveLength(1);
@@ -497,6 +497,7 @@ describe('Credentials API routes', () => {
       expect(req.integration).toBe('twitter');
       expect(req.label).toBe('Twitter / X');
       expect(req.fields).toHaveLength(2);
+      expect(req.fields.every((field) => field.secret === true)).toBe(true);
       expect(req.skills).toEqual(expect.arrayContaining(['skill_a', 'skill_b']));
     });
 
@@ -515,191 +516,22 @@ describe('Credentials API routes', () => {
   // POST /api/credentials/requirements
   // =========================================================================
   describe('POST /requirements', () => {
-    it('registers new requirements and returns registered field keys', async () => {
-      mockCredentialRequirementRepository.register.mockImplementation(async (input: { fieldKey: string }) => ({
-        ...makeRequirementRow({ field_key: input.fieldKey }),
-      }));
-
+    it('fails closed because no installation-admin HTTP principal exists', async () => {
       const res = await request(app, 'POST', '/api/credentials/requirements', {
         adapter: 'openclaw',
         integration: 'twitter',
         integrationLabel: 'Twitter / X',
-        description: 'Post tweets',
-        fields: [
-          { key: 'api_key', label: 'API Key', placeholder: 'sk-...', secret: true, optional: false },
-          { key: 'api_secret', label: 'API Secret', placeholder: '...', secret: true, optional: false },
-        ],
-        skills: ['social_media_post'],
-      });
-
-      expect(res.status).toBe(200);
-      const body = res.body as { status: string; registered: string[] };
-      expect(body.status).toBe('ok');
-      expect(body.registered).toEqual(['api_key', 'api_secret']);
-      expect(mockCredentialRequirementRepository.register).toHaveBeenCalledTimes(2);
-
-      // Verify the first register call
-      expect(mockCredentialRequirementRepository.register).toHaveBeenCalledWith({
-        adapter: 'openclaw',
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-        description: 'Post tweets',
-        fieldKey: 'api_key',
-        fieldLabel: 'API Key',
-        fieldPlaceholder: 'sk-...',
-        isSecret: true,
-        isOptional: false,
-        skills: ['social_media_post'],
-      });
-    });
-
-    it('returns 400 when adapter is missing', async () => {
-      const res = await request(app, 'POST', '/api/credentials/requirements', {
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-        fields: [{ key: 'api_key', label: 'API Key' }],
-      });
-
-      expect(res.status).toBe(400);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/Missing required fields/);
-    });
-
-    it('returns 400 when integration is missing', async () => {
-      const res = await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integrationLabel: 'Twitter / X',
-        fields: [{ key: 'api_key', label: 'API Key' }],
-      });
-
-      expect(res.status).toBe(400);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/Missing required fields/);
-    });
-
-    it('returns 400 when integrationLabel is missing', async () => {
-      const res = await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        fields: [{ key: 'api_key', label: 'API Key' }],
-      });
-
-      expect(res.status).toBe(400);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/Missing required fields/);
-    });
-
-    it('returns 400 when fields is empty', async () => {
-      const res = await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-        fields: [],
-      });
-
-      expect(res.status).toBe(400);
-      const body = res.body as { error: string };
-      expect(body.error).toMatch(/Missing required fields/);
-    });
-
-    it('returns 400 when fields is missing entirely', async () => {
-      const res = await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-      });
-
-      expect(res.status).toBe(400);
-    });
-
-    it('skips fields that are missing key or label', async () => {
-      mockCredentialRequirementRepository.register.mockImplementation(async (input: { fieldKey: string }) => ({
-        ...makeRequirementRow({ field_key: input.fieldKey }),
-      }));
-
-      const res = await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-        fields: [
-          { key: 'api_key', label: 'API Key' },
-          { key: '', label: 'Empty Key' },       // empty key, should skip
-          { key: 'secret', label: '' },            // empty label, should skip
-          { label: 'No Key Field' },               // missing key, should skip
-        ],
-        skills: ['social_media_post'],
-      });
-
-      expect(res.status).toBe(200);
-      const body = res.body as { registered: string[] };
-      // Only the valid field should be registered
-      expect(body.registered).toEqual(['api_key']);
-      expect(mockCredentialRequirementRepository.register).toHaveBeenCalledTimes(1);
-    });
-
-    it('emits SSE to specific user when userId is provided', async () => {
-      mockCredentialRequirementRepository.register.mockImplementation(async (input: { fieldKey: string }) => ({
-        ...makeRequirementRow({ field_key: input.fieldKey }),
-      }));
-
-      await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-        fields: [{ key: 'api_key', label: 'API Key' }],
-        skills: ['social_media_post'],
+        fields: [{ key: 'auth', label: 'Authorization', secret: false }],
         userId: 'user-123',
       });
 
-      expect(mockSseManager.emit).toHaveBeenCalledWith('user-123', 'credential:needed', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        label: 'Twitter / X',
-        description: undefined,
-        skills: ['social_media_post'],
+      expect(res.status).toBe(405);
+      expect(res.body).toMatchObject({
+        code: 'dynamic_credential_registration_unavailable',
       });
-      expect(mockSseManager.emitAll).not.toHaveBeenCalled();
-    });
-
-    it('broadcasts SSE to all users when no userId is provided', async () => {
-      mockCredentialRequirementRepository.register.mockImplementation(async (input: { fieldKey: string }) => ({
-        ...makeRequirementRow({ field_key: input.fieldKey }),
-      }));
-
-      await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-        fields: [{ key: 'api_key', label: 'API Key' }],
-        skills: ['social_media_post'],
-      });
-
-      expect(mockSseManager.emitAll).toHaveBeenCalledWith('credential:needed', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        label: 'Twitter / X',
-        description: undefined,
-        skills: ['social_media_post'],
-      });
+      expect(mockCredentialRequirementRepository.register).not.toHaveBeenCalled();
       expect(mockSseManager.emit).not.toHaveBeenCalled();
-    });
-
-    it('defaults skills to empty array when not provided', async () => {
-      mockCredentialRequirementRepository.register.mockImplementation(async (input: { fieldKey: string }) => ({
-        ...makeRequirementRow({ field_key: input.fieldKey }),
-      }));
-
-      await request(app, 'POST', '/api/credentials/requirements', {
-        adapter: 'openclaw',
-        integration: 'twitter',
-        integrationLabel: 'Twitter / X',
-        fields: [{ key: 'api_key', label: 'API Key' }],
-        // skills intentionally omitted
-      });
-
-      expect(mockCredentialRequirementRepository.register).toHaveBeenCalledWith(
-        expect.objectContaining({ skills: [] }),
-      );
+      expect(mockSseManager.emitAll).not.toHaveBeenCalled();
     });
   });
 
@@ -837,7 +669,7 @@ describe('Credentials API routes', () => {
       expect(clientSecret.hasValue).toBe(true);
     });
 
-    it('masks values by key name heuristic when service has no static schema', async () => {
+    it('masks every value when service has no trusted static schema', async () => {
       const rows = [
         makeCredentialRow({
           id: 'cred-3',
@@ -881,9 +713,29 @@ describe('Credentials API routes', () => {
       expect(apiToken.credentialValue).not.toBe('twitter-api-token-value-999');
       expect(apiToken.credentialValue).toContain('****');
 
-      // username does NOT contain secret/key/token/password -> not masked
+      // Benign names are still peer-defined and therefore masked.
       const username = body.credentials.find((c) => c.credentialKey === 'username')!;
-      expect(username.credentialValue).toBe('@skytwin');
+      expect(username.credentialValue).toBe('****');
+    });
+
+    it('masks benignly named dynamic credentials even when stored metadata says non-secret', async () => {
+      mockCredentialRequirementRepository.getAll.mockRejectedValue(
+        new Error('requirement metadata unavailable'),
+      );
+      mockServiceCredentialRepository.getAll.mockResolvedValue([
+        makeCredentialRow({
+          service: 'openclaw:custom',
+          credential_key: 'auth',
+          credential_value: 'opaque-credential-value',
+        }),
+      ]);
+
+      const res = await request(app, 'GET', '/api/credentials');
+
+      expect(res.status).toBe(200);
+      const body = res.body as { credentials: Array<{ credentialValue: string }> };
+      expect(body.credentials[0]!.credentialValue).toContain('****');
+      expect(body.credentials[0]!.credentialValue).not.toContain('opaque-credential-value');
     });
 
     it('returns empty array when no credentials exist', async () => {
@@ -1416,7 +1268,7 @@ describe('Credentials API routes', () => {
       expect(body.credentials[0]!.credentialValue).toContain('****');
     });
 
-    it('does NOT mask non-secret fields with no heuristic match', async () => {
+    it('fails closed for every field without a trusted static schema', async () => {
       mockServiceCredentialRepository.getAll.mockResolvedValue([
         makeCredentialRow({
           service: 'unknown-service',
@@ -1435,10 +1287,12 @@ describe('Credentials API routes', () => {
       const body = res.body as { credentials: Array<{ credentialKey: string; credentialValue: string }> };
 
       const apiUrl = body.credentials.find((c) => c.credentialKey === 'api_url')!;
-      expect(apiUrl.credentialValue).toBe('http://localhost:4000');
+      expect(apiUrl.credentialValue).toContain('****');
+      expect(apiUrl.credentialValue).not.toBe('http://localhost:4000');
 
       const ownerId = body.credentials.find((c) => c.credentialKey === 'owner_id')!;
-      expect(ownerId.credentialValue).toBe('skytwin-default');
+      expect(ownerId.credentialValue).toContain('****');
+      expect(ownerId.credentialValue).not.toBe('skytwin-default');
     });
 
     it('uses schema definition over heuristic (non-secret override)', async () => {

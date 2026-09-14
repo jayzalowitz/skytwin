@@ -15,6 +15,11 @@ import {
   wireApiRetry,
 } from '../api-client.js';
 import { assistantDraftKey } from '../storage-keys.js';
+import {
+  clearPendingAssistantRequest,
+  readPendingAssistantRequest,
+  writePendingAssistantRequest,
+} from '../assistant-request-store.js';
 import { getEffectiveUserId } from '../sample-session.js';
 import { showToast } from '../toast.js';
 import { renderTierPromotionModal } from '../components/tier-promotion-modal.js';
@@ -51,9 +56,33 @@ let _state = {
 
 let _assistantListenerWired = false;
 let _watchDraft = null;
+let _renderGeneration = 0;
 
 export async function renderAssistant(container, userId) {
+  const renderGeneration = ++_renderGeneration;
+  const isCurrentRender = () =>
+    renderGeneration === _renderGeneration &&
+    _state.userId === userId &&
+    isOnAssistantRoute();
+  const previousUserId = _state.userId;
+  if (previousUserId && previousUserId !== userId) {
+    _state.streamController?.abort();
+    _state.streamController = null;
+    _state.activeThreadId = null;
+    _state.messages = [];
+    _state.threads = [];
+    _state.sending = false;
+  }
   _state.userId = userId;
+  if (!_state.sending) {
+    _state.pendingRequest = readPendingAssistantRequest(userId);
+    if (_state.pendingRequest) {
+      _state.activeThreadId = _state.pendingRequest.threadId;
+      if (!readDraft(_state.pendingRequest.threadId)) {
+        writeDraft(_state.pendingRequest.threadId, _state.pendingRequest.content);
+      }
+    }
+  }
   ensureAssistantListener();
   wirePromotionSseListener();
 
@@ -61,8 +90,10 @@ export async function renderAssistant(container, userId) {
   let threads = [];
   try {
     const data = await fetchAssistantThreads(userId);
+    if (!isCurrentRender()) return;
     threads = Array.isArray(data?.threads) ? data.threads : [];
   } catch (err) {
+    if (!isCurrentRender()) return;
     container.innerHTML = renderApiError(err, {
       context: "Couldn't load the assistant.",
       retry: () => renderAssistant(container, userId),
@@ -75,15 +106,18 @@ export async function renderAssistant(container, userId) {
   // Default-select the most recent thread on first render of an existing
   // session. If there are no threads, leave the right pane on the empty
   // state and the composer ready to start a new conversation.
-  if (!_state.activeThreadId && threads.length > 0) {
+  if (!_state.activeThreadId && !_state.pendingRequest && threads.length > 0) {
     _state.activeThreadId = threads[0].id;
   }
 
   if (_state.activeThreadId) {
+    const threadIdToLoad = _state.activeThreadId;
     try {
-      const data = await fetchAssistantThread(_state.activeThreadId, userId);
+      const data = await fetchAssistantThread(threadIdToLoad, userId);
+      if (!isCurrentRender() || _state.activeThreadId !== threadIdToLoad) return;
       _state.messages = Array.isArray(data?.messages) ? data.messages : [];
     } catch {
+      if (!isCurrentRender() || _state.activeThreadId !== threadIdToLoad) return;
       // Thread might've been deleted in another tab — clear and continue
       // rendering the empty state so the user isn't stuck.
       _state.activeThreadId = null;
@@ -93,6 +127,7 @@ export async function renderAssistant(container, userId) {
     _state.messages = [];
   }
 
+  if (!isCurrentRender()) return;
   paint(container);
 }
 
@@ -888,6 +923,7 @@ function ensureAssistantListener() {
     if (target.getAttribute('data-region') !== 'composer-input') return;
     const nextContent = /** @type {HTMLTextAreaElement} */ (target).value.trim();
     if (_state.pendingRequest && nextContent !== _state.pendingRequest.content) {
+      clearPendingAssistantRequest(_state.userId);
       _state.pendingRequest = null;
     }
     writeDraft(_state.activeThreadId, /** @type {HTMLTextAreaElement} */ (target).value);
@@ -901,6 +937,8 @@ function isOnAssistantRoute() {
 // ── Handlers ────────────────────────────────────────────────────────
 
 function handleNewThread() {
+  clearPendingAssistantRequest(_state.userId);
+  _state.pendingRequest = null;
   _state.activeThreadId = null;
   _state.messages = [];
   const container = document.getElementById('page-content');
@@ -925,6 +963,8 @@ function handleSuggestion(prompt) {
 
 async function handleSelectThread(threadId) {
   if (threadId === _state.activeThreadId) return;
+  clearPendingAssistantRequest(_state.userId);
+  _state.pendingRequest = null;
   _state.activeThreadId = threadId;
   _state.messages = [];
   const container = document.getElementById('page-content');
@@ -1025,12 +1065,20 @@ async function handleSend() {
   const input = container?.querySelector('[data-region="composer-input"]');
   const content = (input?.value ?? '').trim();
   if (!content) return;
+  const requestUserId = _state.userId;
+  const requestThreadId = _state.activeThreadId;
 
   const requestIdentity = resolveAssistantRequestIdentity(
     _state.pendingRequest,
     content,
-    _state.activeThreadId,
+    requestThreadId,
   );
+  if (!writePendingAssistantRequest(requestUserId, requestIdentity)) {
+    showToast('This message cannot be sent safely because its retry identity could not be saved.', {
+      kind: 'danger',
+    });
+    return;
+  }
   _state.pendingRequest = requestIdentity;
 
   _state.sending = true;
@@ -1070,24 +1118,33 @@ async function handleSend() {
   // race between abort + done doesn't leave a dangling controller.
   const controller = new AbortController();
   _state.streamController = controller;
+  const isCurrentSend = () =>
+    _state.userId === requestUserId &&
+    _state.streamController === controller &&
+    _state.pendingRequest?.requestId === requestIdentity.requestId &&
+    isOnAssistantRoute();
 
   try {
-    await sendAssistantMessageStream(_state.userId, content, _state.activeThreadId, {
+    await sendAssistantMessageStream(requestUserId, content, requestThreadId, {
       onThread: (thread) => {
+        if (!isCurrentSend()) return;
         if (thread?.isNew && thread?.id) {
           _state.activeThreadId = thread.id;
         }
         if (_state.pendingRequest?.requestId === requestIdentity.requestId && thread?.id) {
           _state.pendingRequest.threadId = thread.id;
+          writePendingAssistantRequest(requestUserId, _state.pendingRequest);
         }
       },
       onUserMessage: (userMessage) => {
+        if (!isCurrentSend()) return;
         _state.messages = _state.messages
           .filter((m) => m.id !== 'optimistic')
           .concat([userMessage]);
         if (container) paint(container);
       },
       onChunk: (chunk) => {
+        if (!isCurrentSend()) return;
         streamingContent += chunk;
         if (!receivedFirstChunk) {
           // First chunk: insert the streaming bubble + drop the typing dots.
@@ -1124,9 +1181,9 @@ async function handleSend() {
         }
       },
       onDone: (assistantMessage) => {
-        if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
-          _state.pendingRequest = null;
-        }
+        clearPendingAssistantRequest(requestUserId, requestIdentity.requestId);
+        if (!isCurrentSend()) return;
+        _state.pendingRequest = null;
         // Replace the streaming bubble with the persisted one.
         _state.messages = _state.messages
           .filter((m) => m.id !== streamingAssistantId)
@@ -1144,8 +1201,17 @@ async function handleSend() {
         // A terminal generation failure permits a new logical request. An
         // ambiguous persistence result retains the request identity so a retry
         // can only reconcile, never invoke the provider a second time.
+        const isDefiniteGenerationFailure = [
+          'assistant_stream_failed',
+          'assistant_providers_failed',
+          'assistant_generation_failed',
+        ].includes(message);
+        if (isDefiniteGenerationFailure) {
+          clearPendingAssistantRequest(requestUserId, requestIdentity.requestId);
+        }
+        if (!isCurrentSend()) return;
         if (
-          message !== 'assistant_response_reconciliation_required' &&
+          isDefiniteGenerationFailure &&
           _state.pendingRequest?.requestId === requestIdentity.requestId
         ) {
           _state.pendingRequest = null;
@@ -1167,6 +1233,7 @@ async function handleSend() {
         const friendlyStreamError = {
           assistant_stream_failed: 'The reply stopped unexpectedly.',
           assistant_providers_failed: 'Every configured AI provider failed. Try again shortly.',
+          assistant_generation_failed: 'The assistant could not generate a reply. Try again shortly.',
           assistant_response_reconciliation_required: 'The reply was shown but could not be saved safely. If it does not appear in history, start a new chat or edit the message before sending again.',
         }[message] ?? 'The reply stopped unexpectedly.';
         _state.messages = _state.messages.concat([
@@ -1188,11 +1255,18 @@ async function handleSend() {
     // free of network round-trips.
     try {
       const data = await fetchAssistantThreads(_state.userId);
-      _state.threads = Array.isArray(data?.threads) ? data.threads : _state.threads;
+      if (
+        _state.userId === requestUserId &&
+        _state.streamController === controller &&
+        isOnAssistantRoute()
+      ) {
+        _state.threads = Array.isArray(data?.threads) ? data.threads : _state.threads;
+      }
     } catch {
       /* keep stale threads list — will refresh on next render */
     }
   } catch (err) {
+    if (!isCurrentSend()) return;
     // User-initiated stop: keep whatever streamed so far as a real
     // assistant bubble (no error caveat), drop the optimistic placeholder
     // tag so it stops looking transient. The server may still have
@@ -1215,11 +1289,13 @@ async function handleSend() {
       _state.activeThreadId = err.threadId;
       if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
         _state.pendingRequest.threadId = err.threadId;
+        writePendingAssistantRequest(requestUserId, _state.pendingRequest);
       }
     } else if (shouldRetireAssistantRequestIdentity(err?.status, err?.code)) {
       // Retire only definite pre-admission/client rejections or typed terminal
       // generation failures. Generic 5xx can follow a durable side effect.
       if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
+        clearPendingAssistantRequest(requestUserId, requestIdentity.requestId);
         _state.pendingRequest = null;
       }
     }
@@ -1248,14 +1324,18 @@ async function handleSend() {
     _state.messages = _state.messages.concat([errorBubble]);
     if (input) input.value = content;
   } finally {
-    _state.sending = false;
     // Clear only if it's still ours — defensive in case a race somehow
     // started a second send before we got here (shouldn't be possible
     // because handleSend bails when _state.sending is true, but cheap).
-    if (_state.streamController === controller) {
+    const ownsController = _state.streamController === controller;
+    if (ownsController) {
+      _state.sending = false;
       _state.streamController = null;
     }
-    if (container) paint(container);
+    if (
+      container && _state.userId === requestUserId && ownsController &&
+      isOnAssistantRoute()
+    ) paint(container);
   }
 }
 

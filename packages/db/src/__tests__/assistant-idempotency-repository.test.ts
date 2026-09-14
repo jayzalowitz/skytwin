@@ -41,6 +41,8 @@ describe('assistantRepository idempotent user append', () => {
     );
     expect(mockClientQuery.mock.calls[0]![0]).toContain('WHERE id = $1 AND user_id = $3');
     expect(mockClientQuery.mock.calls[1]![0]).toContain('user_id = $1');
+    expect(mockClientQuery.mock.calls[1]![0]).toContain('JOIN assistant_threads AS thread');
+    expect(mockClientQuery.mock.calls[1]![0]).toContain('thread.user_id = $1');
   });
 
   it('atomically creates a new thread and first keyed message', async () => {
@@ -92,6 +94,7 @@ describe('assistantRepository idempotent user append', () => {
     expect(result.created).toBe(true);
     expect(result.message.id).toBe(ROW.id);
     expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
+    expect(mockQuery.mock.calls[0]![0]).toContain('JOIN assistant_threads AS thread');
   });
 
   it('reconciles a lost commit response by reading the durable row', async () => {
@@ -107,6 +110,7 @@ describe('assistantRepository idempotent user append', () => {
 
     expect(result).toMatchObject({ created: false, message: { id: ROW.id } });
     expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
+    expect(mockQuery.mock.calls[0]![0]).toContain('thread.user_id = $1');
   });
 
   it('reconciles an assistant response by the same user-scoped request key', async () => {
@@ -128,5 +132,33 @@ describe('assistantRepository idempotent user append', () => {
     expect(result.role).toBe('assistant');
     expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
     expect(mockQuery.mock.calls[0]![0]).toContain("role = 'assistant'");
+    expect(mockQuery.mock.calls[0]![0]).toContain('JOIN assistant_threads AS thread');
+  });
+
+  it('requires parent ownership on direct request-key lookup', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await expect(assistantRepository.findUserMessageByRequestId(
+      '44444444-4444-4444-8444-444444444444',
+      ROW.client_request_id,
+    )).resolves.toBeNull();
+
+    expect(mockQuery.mock.calls[0]![0]).toContain('thread.id = message.thread_id');
+    expect(mockQuery.mock.calls[0]![0]).toContain('thread.user_id = $1');
+    expect(mockQuery.mock.calls[0]![0]).toContain('message.user_id = $1');
+  });
+
+  it('requires parent ownership on assistant response lookup', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    await expect(assistantRepository.findAssistantMessageByRequestId(
+      '44444444-4444-4444-8444-444444444444',
+      ROW.client_request_id,
+    )).resolves.toBeNull();
+
+    expect(mockQuery.mock.calls[0]![0]).toContain('thread.id = message.thread_id');
+    expect(mockQuery.mock.calls[0]![0]).toContain('thread.user_id = $1');
+    expect(mockQuery.mock.calls[0]![0]).toContain('message.user_id = $1');
+    expect(mockQuery.mock.calls[0]![0]).toContain("message.role = 'assistant'");
   });
 });

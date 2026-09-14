@@ -46,22 +46,34 @@ All notable changes to SkyTwin will be documented in this file.
   longer mint a fresh logical turn on retry. The API does not report a
   synthetic successful approval bubble unless the assistant row is durable,
   and a streamed reply with unresolved persistence ends in a recovery-required
-  state rather than synthetic success. Safe partial stream content is retained
-  behind user-facing error text. Assistant action evaluation now also receives
-  the user's complete autonomy settings before it can create an approval.
+  state rather than synthetic success. Browser and mobile clients persist the
+  owner-, thread-, and content-bound identity before dispatch so a reload or
+  app restart can reconcile with the same UUID. A stream that closes without a
+  validated terminal event is treated as ambiguous, never as a completed
+  reply. Pending content is removed on sign-out/disconnect; packaged-sample
+  recovery remains tab-scoped and is removed on sample exit. Assistant action
+  evaluation now also receives the user's complete autonomy settings before it
+  can create an approval.
 
 - **Legacy assistant orphans no longer block migration 080.** The ownership
   backfill only assigns message owners that still exist, leaving legacy orphan
   messages nullable instead of violating the new foreign key during startup.
+  For non-orphan rows, a composite foreign key enforces that the materialized
+  message owner matches its parent thread, and retry-key reads recheck that
+  ownership through the parent join.
 
 - **Unavailable routine mutation is represented consistently in the web UI.**
   Policy 403 responses no longer masquerade as expired sessions, and existing
   routine rows are inspection-only while remote removal is quarantined.
 
-- **OpenClaw credential prompts are owner-scoped and bounded.** Credential
+- **OpenClaw credential notifications are owner-scoped and bounded.** Credential
   metadata is parsed through a strict size-and-shape boundary, peer-supplied
   identity is rejected, ownership comes from the prepared execution plan, and
-  the API emits the setup prompt only to that owner rather than broadcasting.
+  the API emits the live setup notification only to that owner rather than
+  broadcasting. Peer-defined fields always use secret input and masking even
+  if remote or legacy metadata marks them non-secret. The user-callable
+  adapter-registration HTTP surface is disabled; installation credentials
+  remain installation-scoped for the single-owner beta, not user-portable.
 
 ## [Unreleased] — Verifiable desktop release artifacts
 

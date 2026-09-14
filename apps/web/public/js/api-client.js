@@ -51,8 +51,9 @@ export function resolveAssistantRequestIdentity(pending, content, threadId = nul
  * with the same key.
  */
 export function shouldRetireAssistantRequestIdentity(status = 0, code = '') {
-  if (status >= 400 && status < 500) return true;
-  return code === 'assistant_providers_failed' || code === 'assistant_generation_failed';
+  return code === 'assistant_request_id_conflict' ||
+    code === 'assistant_providers_failed' ||
+    code === 'assistant_generation_failed';
 }
 
 /** Invalidate every in-flight sample start before disposal begins. */
@@ -908,9 +909,9 @@ export function sendAssistantMessage(
  *   - onError({ message, partialContent }) — terminal error event
  *
  * Returns a Promise that resolves when the stream closes (after `done`
- * or `error`). The promise rejects only on transport-level failures
- * (network down, 5xx before SSE handshake) — server-emitted error events
- * resolve normally and surface via `onError`.
+ * or `error`). The promise rejects on transport failures and malformed or
+ * unterminated streams. Valid server-emitted error events resolve normally
+ * and surface via `onError`.
  */
 export async function sendAssistantMessageStream(userId, content, threadId, callbacks = {}, options = {}) {
   const { onThread, onUserMessage, onChunk, onDone, onError } = callbacks;
@@ -943,14 +944,29 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
 
   if (res.status === 202) {
     const pending = await res.json().catch(() => null);
+    const responseThread = pending?.thread;
+    const persistedUserMessage = pending?.userMessage;
+    const validPending = pending?.status === 'unresolved' &&
+      pending?.code === 'assistant_request_recovery_required' &&
+      responseThread && typeof responseThread === 'object' &&
+      typeof responseThread.id === 'string' && responseThread.isNew === false &&
+      (threadId == null || responseThread.id === threadId) &&
+      persistedUserMessage && typeof persistedUserMessage === 'object' &&
+      typeof persistedUserMessage.id === 'string' &&
+      persistedUserMessage.threadId === responseThread.id &&
+      persistedUserMessage.role === 'user' &&
+      persistedUserMessage.content === content &&
+      persistedUserMessage.clientRequestId === requestId;
     const error = new ApiError({
       kind: 'pending',
       friendlyMessage: 'That request could not be reconciled safely. If no reply appears, start a new chat or edit the message before sending again.',
       serverMessage: pending?.error || pending?.message || 'Assistant request requires recovery',
       status: res.status,
-      code: pending?.code || 'assistant_request_recovery_required',
+      code: validPending
+        ? 'assistant_request_recovery_required'
+        : 'assistant_response_reconciliation_required',
     });
-    error.threadId = typeof pending?.thread?.id === 'string' ? pending.thread.id : null;
+    error.threadId = validPending ? responseThread.id : null;
     throw error;
   }
 
@@ -967,13 +983,81 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
   const reader = res.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
+  let terminalEvent = null;
+  let announcedThreadId = threadId ?? null;
+  let validatedUserMessage = false;
+
+  const protocolError = (code, message) => new ApiError({
+    kind: 'server',
+    friendlyMessage: message,
+    serverMessage: code,
+    status: 0,
+    code,
+  });
 
   const dispatch = (event, data) => {
-    if (event === 'thread') onThread?.(data);
-    else if (event === 'user') onUserMessage?.(data);
+    if (terminalEvent) {
+      throw protocolError(
+        'assistant_stream_event_after_terminal',
+        'The assistant returned an invalid stream. Retry this message to reconcile it safely.',
+      );
+    }
+    if (event === 'thread') {
+      if (
+        !data || typeof data !== 'object' || typeof data.id !== 'string' ||
+        typeof data.isNew !== 'boolean' ||
+        (announcedThreadId !== null && data.id !== announcedThreadId)
+      ) {
+        throw protocolError(
+          'assistant_stream_request_mismatch',
+          'The assistant returned a thread that did not match this request. Retry to reconcile it safely.',
+        );
+      }
+      announcedThreadId = data.id;
+      onThread?.(data);
+    } else if (event === 'user') {
+      if (
+        !data || typeof data !== 'object' || announcedThreadId === null ||
+        data.threadId !== announcedThreadId || data.role !== 'user' ||
+        data.content !== content || data.clientRequestId !== requestId ||
+        typeof data.id !== 'string'
+      ) {
+        throw protocolError(
+          'assistant_stream_request_mismatch',
+          'The assistant returned a message that did not match this request. Retry to reconcile it safely.',
+        );
+      }
+      validatedUserMessage = true;
+      onUserMessage?.(data);
+    }
     else if (event === 'chunk') onChunk?.(data?.content ?? '');
-    else if (event === 'done') onDone?.(data);
-    else if (event === 'error') onError?.(data);
+    else if (event === 'done') {
+      if (
+        !data || typeof data !== 'object' ||
+        typeof data.id !== 'string' || data.threadId !== announcedThreadId ||
+        data.role !== 'assistant' || typeof data.content !== 'string' ||
+        data.clientRequestId !== requestId || !validatedUserMessage
+      ) {
+        throw protocolError(
+          'assistant_stream_invalid_terminal',
+          'The assistant returned an incomplete final response. Retry this message to reconcile it safely.',
+        );
+      }
+      terminalEvent = 'done';
+      onDone?.(data);
+    } else if (event === 'error') {
+      if (
+        !data || typeof data !== 'object' || typeof data.message !== 'string' ||
+        announcedThreadId === null || !validatedUserMessage
+      ) {
+        throw protocolError(
+          'assistant_stream_invalid_terminal',
+          'The assistant returned an incomplete error response. Retry this message to reconcile it safely.',
+        );
+      }
+      terminalEvent = 'error';
+      onError?.(data);
+    }
   };
 
   try {
@@ -993,12 +1077,19 @@ export async function sendAssistantMessageStream(userId, content, threadId, call
         boundary = buffer.indexOf('\n\n');
       }
     }
+    buffer += decoder.decode();
     // Flush any final fragment (defensive; well-behaved servers always
     // end with `\n\n` after the terminal event).
     const tail = buffer.trim();
     if (tail.length > 0) {
       const parsed = parseSseEvent(tail);
       if (parsed) dispatch(parsed.event, parsed.data);
+    }
+    if (!terminalEvent) {
+      throw protocolError(
+        'assistant_stream_terminal_missing',
+        'The assistant connection ended before completion. Retry this message to reconcile it safely.',
+      );
     }
   } catch (err) {
     // Aborted by caller (Stop button) — surface to caller via the same

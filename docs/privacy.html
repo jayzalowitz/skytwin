@@ -86,6 +86,10 @@
     </ul>
     <p>Those files are protected by your operating system's normal file permissions — the same protection as the rest of your home directory. There is no additional SkyTwin-managed encryption layer over them by default.</p>
 
+    <p><strong>Supported beta topology:</strong> one non-demo human owner per installation. Service credentials and dynamically discovered credential requirements are installation-wide configuration, not separate per-user records. Do not use this beta as a local multi-owner or hosted service.</p>
+
+    <p>If an assistant send ends without a definite result, the dashboard temporarily keeps the full pending message and its retry UUID in renderer <code>localStorage</code>; the mobile development client keeps the same recovery record in the operating system secure store. This prevents a reload or app restart from creating a second action for the same logical request. The record is removed after a definite completion or failure, when you edit or explicitly abandon the message, and when you sign out or disconnect. The packaged sample uses tab-scoped <code>sessionStorage</code> and removes the record on sample exit.</p>
+
     <div class="callout">
       <strong>Turn on full-disk encryption.</strong> The single most effective thing you can do to protect the data SkyTwin stores is to enable your operating system's full-disk encryption: <strong>FileVault</strong> on macOS, <strong>BitLocker</strong> on Windows, or <strong>LUKS</strong>/<code>dm-crypt</code> on Linux. That is what actually protects your SkyTwin database if your machine is lost or stolen or its disk is imaged. We recommend enabling it before you connect an account.
     </div>

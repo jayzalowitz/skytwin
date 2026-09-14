@@ -23,10 +23,18 @@ UPDATE assistant_messages
 
 UPDATE assistant_messages AS message
    SET user_id = thread.user_id
-  FROM assistant_threads AS thread
+ FROM assistant_threads AS thread
   JOIN users AS owner ON owner.id = thread.user_id
  WHERE message.thread_id = thread.id
-   AND message.user_id IS NULL;
+   AND message.user_id IS DISTINCT FROM thread.user_id;
+
+CREATE UNIQUE INDEX IF NOT EXISTS assistant_threads_id_user_id_unique_idx
+  ON assistant_threads (id, user_id);
+
+ALTER TABLE assistant_messages
+  ADD CONSTRAINT IF NOT EXISTS assistant_messages_thread_owner_fkey
+  FOREIGN KEY (thread_id, user_id)
+  REFERENCES assistant_threads (id, user_id) ON DELETE CASCADE;
 
 CREATE UNIQUE INDEX IF NOT EXISTS assistant_messages_user_request_unique_idx
   ON assistant_messages (user_id, client_request_id, role)

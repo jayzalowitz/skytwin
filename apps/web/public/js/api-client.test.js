@@ -20,6 +20,11 @@ import {
 
 const source = readFileSync(new URL('./api-client.js', import.meta.url), 'utf8');
 const ASSISTANT_REQUEST_ID = '11111111-2222-4333-8444-555555555555';
+const ASSISTANT_STREAM_PREFIX =
+  'event: thread\ndata: {"id":"thread-1","isNew":false}\n\n' +
+  `event: user\ndata: {"id":"user-message-1","threadId":"thread-1","role":"user","content":"hello","clientRequestId":"${ASSISTANT_REQUEST_ID}"}\n\n`;
+const ASSISTANT_DONE =
+  `event: done\ndata: {"id":"assistant-1","threadId":"thread-1","role":"assistant","content":"complete","clientRequestId":"${ASSISTANT_REQUEST_ID}"}`;
 
 describe('api client', () => {
   const values = new Map();
@@ -60,8 +65,11 @@ describe('api client', () => {
   });
 
   it('retires assistant request identities only after definite failures', () => {
-    expect(shouldRetireAssistantRequestIdentity(400, '')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(400, '')).toBe(false);
     expect(shouldRetireAssistantRequestIdentity(409, 'assistant_request_id_conflict')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(401, '')).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(403, '')).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(429, '')).toBe(false);
     expect(shouldRetireAssistantRequestIdentity(502, 'assistant_providers_failed')).toBe(true);
     expect(shouldRetireAssistantRequestIdentity(502, 'assistant_generation_failed')).toBe(true);
     expect(shouldRetireAssistantRequestIdentity(503, '')).toBe(false);
@@ -125,7 +133,7 @@ describe('api client', () => {
 
   it('sends the caller-supplied requestId on streaming assistant requests', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response('event: done\ndata: {"id":"assistant-1"}\n\n', {
+      new Response(`${ASSISTANT_STREAM_PREFIX}${ASSISTANT_DONE}\n\n`, {
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
       }),
@@ -148,12 +156,98 @@ describe('api client', () => {
     });
   });
 
+  it('rejects a clean assistant stream EOF without a terminal event', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(
+        ASSISTANT_STREAM_PREFIX +
+        'event: chunk\ndata: {"content":"partial"}\n\n',
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    ));
+
+    await expect(sendAssistantMessageStream(
+      'user-1', 'hello', 'thread-1', {}, { requestId: ASSISTANT_REQUEST_ID },
+    )).rejects.toMatchObject({ code: 'assistant_stream_terminal_missing' });
+  });
+
+  it('rejects a truncated assistant terminal payload', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(`${ASSISTANT_STREAM_PREFIX}event: done\ndata: {"id":`, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }),
+    ));
+
+    await expect(sendAssistantMessageStream(
+      'user-1', 'hello', 'thread-1', {}, { requestId: ASSISTANT_REQUEST_ID },
+    )).rejects.toMatchObject({ code: 'assistant_stream_invalid_terminal' });
+  });
+
+  it('accepts a valid done event in the final unterminated SSE fragment', async () => {
+    const onDone = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(
+        `${ASSISTANT_STREAM_PREFIX}${ASSISTANT_DONE}`,
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    ));
+
+    await sendAssistantMessageStream(
+      'user-1', 'hello', 'thread-1', { onDone }, { requestId: ASSISTANT_REQUEST_ID },
+    );
+    expect(onDone).toHaveBeenCalledWith(expect.objectContaining({ content: 'complete' }));
+  });
+
+  it('accepts a validated terminal assistant error', async () => {
+    const onError = vi.fn();
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(
+        `${ASSISTANT_STREAM_PREFIX}event: error\ndata: {"message":"assistant_stream_failed","partialContent":"partial"}\n\n`,
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      ),
+    ));
+
+    await sendAssistantMessageStream(
+      'user-1', 'hello', 'thread-1', { onError }, { requestId: ASSISTANT_REQUEST_ID },
+    );
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ partialContent: 'partial' }));
+  });
+
+  it('rejects a terminal event bound to another request identity', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      `${ASSISTANT_STREAM_PREFIX}${ASSISTANT_DONE.replace(ASSISTANT_REQUEST_ID, 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee')}\n\n`,
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )));
+
+    await expect(sendAssistantMessageStream(
+      'user-1', 'hello', 'thread-1', {}, { requestId: ASSISTANT_REQUEST_ID },
+    )).rejects.toMatchObject({ code: 'assistant_stream_invalid_terminal' });
+  });
+
+  it('rejects a persisted user event whose content does not match the request', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(
+      `${ASSISTANT_STREAM_PREFIX.replace('"content":"hello"', '"content":"other"')}${ASSISTANT_DONE}\n\n`,
+      { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+    )));
+
+    await expect(sendAssistantMessageStream(
+      'user-1', 'hello', 'thread-1', {}, { requestId: ASSISTANT_REQUEST_ID },
+    )).rejects.toMatchObject({ code: 'assistant_stream_request_mismatch' });
+  });
+
   it('surfaces an unresolved duplicate without parsing JSON as SSE', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
       new Response(JSON.stringify({
         status: 'unresolved',
         code: 'assistant_request_recovery_required',
         thread: { id: 'thread-1', isNew: false },
+        userMessage: {
+          id: 'user-message-1',
+          threadId: 'thread-1',
+          role: 'user',
+          content: 'hello',
+          clientRequestId: ASSISTANT_REQUEST_ID,
+        },
       }), {
         status: 202,
         headers: { 'Content-Type': 'application/json' },
@@ -170,6 +264,55 @@ describe('api client', () => {
       status: 202,
       code: 'assistant_request_recovery_required',
       threadId: 'thread-1',
+    });
+  });
+
+  it.each([
+    ['another thread', {
+      status: 'unresolved',
+      code: 'assistant_request_recovery_required',
+      thread: { id: 'thread-2', isNew: false },
+      userMessage: {
+        id: 'user-message-1', threadId: 'thread-2', role: 'user', content: 'hello',
+        clientRequestId: ASSISTANT_REQUEST_ID,
+      },
+    }],
+    ['different content', {
+      status: 'unresolved',
+      code: 'assistant_request_recovery_required',
+      thread: { id: 'thread-1', isNew: false },
+      userMessage: {
+        id: 'user-message-1', threadId: 'thread-1', role: 'user', content: 'other',
+        clientRequestId: ASSISTANT_REQUEST_ID,
+      },
+    }],
+    ['another request identity', {
+      status: 'unresolved',
+      code: 'assistant_request_recovery_required',
+      thread: { id: 'thread-1', isNew: false },
+      userMessage: {
+        id: 'user-message-1', threadId: 'thread-1', role: 'user', content: 'hello',
+        clientRequestId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+      },
+    }],
+  ])('does not adopt a 202 response bound to %s', async (_description, body) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(body), {
+        status: 202,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ));
+
+    await expect(sendAssistantMessageStream(
+      'user-1',
+      'hello',
+      'thread-1',
+      {},
+      { requestId: ASSISTANT_REQUEST_ID },
+    )).rejects.toMatchObject({
+      status: 202,
+      code: 'assistant_response_reconciliation_required',
+      threadId: null,
     });
   });
 

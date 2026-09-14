@@ -18,6 +18,11 @@ import {
   type AssistantMessage,
 } from '../services/api-client';
 import { getSession } from '../services/session-store';
+import {
+  clearPendingAssistantRequest,
+  loadPendingAssistantRequest,
+  savePendingAssistantRequest,
+} from '../services/assistant-request-store';
 
 /**
  * ChatScreen — talk to your twin from your phone.
@@ -51,11 +56,14 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
+  const [requestIdentityReady, setRequestIdentityReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const threadIdRef = useRef<string | undefined>(undefined);
   const scrollRef = useRef<ScrollView | null>(null);
   const consumedTextRef = useRef<string | null>(null);
   const pendingRequestRef = useRef<AssistantRequestIdentity | null>(null);
+  const pendingOwnerRef = useRef<string | null>(null);
+  const composerTouchedRef = useRef(false);
 
   // Pre-fill the composer when a transcript is handed over from the Voice
   // screen. Consume each distinct value exactly once — keyed on the value
@@ -63,8 +71,11 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
   // doesn't wire `onInitialTextConsumed` still can't clobber an edited draft.
   useEffect(() => {
     if (initialText && initialText.trim() && consumedTextRef.current !== initialText) {
+      composerTouchedRef.current = true;
       consumedTextRef.current = initialText;
       if (pendingRequestRef.current?.content !== initialText.trim()) {
+        void clearPendingAssistantRequest(pendingOwnerRef.current);
+        pendingOwnerRef.current = null;
         pendingRequestRef.current = null;
       }
       setInput(initialText.trim());
@@ -72,9 +83,37 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
     }
   }, [initialText, onInitialTextConsumed]);
 
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      const session = await getSession();
+      if (!session) {
+        if (active) setRequestIdentityReady(true);
+        return;
+      }
+      try {
+        const pending = await loadPendingAssistantRequest(session.userId);
+        if (!active) return;
+        if (pending && !composerTouchedRef.current) {
+          pendingOwnerRef.current = session.userId;
+          pendingRequestRef.current = pending;
+          threadIdRef.current = pending.threadId ?? undefined;
+          setInput(pending.content);
+          setError('A previous send ended ambiguously. Send again to reconcile it safely.');
+        }
+        setRequestIdentityReady(true);
+      } catch {
+        if (active) {
+          setError('Chat is unavailable because its safe retry state could not be read. Restart the app and try again.');
+        }
+      }
+    })();
+    return () => { active = false; };
+  }, []);
+
   const send = useCallback(async () => {
     const content = input.trim();
-    if (!content || sending) return;
+    if (!content || sending || !requestIdentityReady) return;
 
     const requestIdentity = resolveAssistantRequestIdentity(
       pendingRequestRef.current,
@@ -103,8 +142,15 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
     try {
       const session = await getSession();
       if (!session) {
-        pendingRequestRef.current = null;
         fail('Your session expired — pair with your SkyTwin again.');
+        return;
+      }
+      try {
+        await savePendingAssistantRequest(session.userId, requestIdentity);
+        pendingOwnerRef.current = session.userId;
+      } catch {
+        pendingRequestRef.current = null;
+        fail('This message cannot be sent safely because its retry identity could not be saved.');
         return;
       }
       const client = new SkyTwinApiClient(session.baseUrl, session.token);
@@ -116,11 +162,15 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
       );
       if (!result.success) {
         if (shouldRetireAssistantRequestIdentity(result.statusCode, result.code)) {
+          await clearPendingAssistantRequest(session.userId, requestIdentity.requestId);
+          pendingOwnerRef.current = null;
           pendingRequestRef.current = null;
         }
         fail(result.error);
         return;
       }
+      await clearPendingAssistantRequest(session.userId, requestIdentity.requestId);
+      pendingOwnerRef.current = null;
       pendingRequestRef.current = null;
       threadIdRef.current = result.data.thread.id;
       const reply: AssistantMessage = result.data.assistantMessage;
@@ -133,10 +183,13 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
     } finally {
       setSending(false);
     }
-  }, [input, sending]);
+  }, [input, sending, requestIdentityReady]);
 
   const handleInputChange = useCallback((value: string) => {
+    composerTouchedRef.current = true;
     if (pendingRequestRef.current?.content !== value.trim()) {
+      void clearPendingAssistantRequest(pendingOwnerRef.current);
+      pendingOwnerRef.current = null;
       pendingRequestRef.current = null;
     }
     setInput(value);
@@ -194,13 +247,16 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
           placeholder="Message your twin…"
           placeholderTextColor="#6c6c84"
           multiline
-          editable={!sending}
+          editable={!sending && requestIdentityReady}
           accessibilityLabel="Message your twin"
         />
         <Pressable
           onPress={send}
-          disabled={sending || input.trim().length === 0}
-          style={[styles.sendButton, (sending || input.trim().length === 0) && styles.sendButtonDisabled]}
+          disabled={sending || !requestIdentityReady || input.trim().length === 0}
+          style={[
+            styles.sendButton,
+            (sending || !requestIdentityReady || input.trim().length === 0) && styles.sendButtonDisabled,
+          ]}
           accessibilityRole="button"
           accessibilityLabel="Send message"
         >

@@ -4,7 +4,7 @@
     "targetVersion": "v0.7.0-beta",
     "status": "blocked",
     "audience": "Technical early adopters, self-hosters, privacy-conscious power users, AI builders, and contributors",
-    "releaseSurface": "Desktop-first public beta; mobile is not a supported beta distribution surface",
+    "releaseSurface": "Desktop-first public beta for one non-demo human owner per installation; mobile and multi-owner or hosted service topologies are not supported beta distribution surfaces",
     "auditBaseline": {
       "ref": "origin/main",
       "commit": "563c60f43e461910a16f30423cbab4ce8092fb61",
@@ -941,7 +941,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "6dc6db88771542a5a733b713e5be5834334e5891b77cd4db8e6feb9f854f15a9",
+          "sha256": "201b62ce77215f5cddcdd0c968ae894e4627b4ce18b3b94ada372b4b9f31a567",
           "why": "Public disclosure names connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -951,7 +951,7 @@
         },
         {
           "path": "packages/execution-router/src/openclaw-adapter.ts",
-          "sha256": "a4659b68deb9ae2ee5446cafb57565753a2f1f8802b462625248bed661e48b5b",
+          "sha256": "0889156103c1b62dd3bb2f02fc0956ccca111a9fa543990b4fe6430a4459ecf3",
           "why": "Configured HTTP execution sends action descriptions, parameters, and steps to the adapter endpoint"
         },
         {

@@ -97,6 +97,11 @@ export function assistantDraftKey(threadId) {
   return `skytwin_assistant_draft_${threadId || 'new'}`;
 }
 
+/** Durable retry identity for one user's ambiguous assistant turn. */
+export function assistantPendingRequestKey(userId) {
+  return `skytwin_assistant_pending_request_${userId}`;
+}
+
 // ── Sweep helpers ──────────────────────────────────────────────────────
 
 /**

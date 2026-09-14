@@ -118,7 +118,8 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
             fieldKey: field.key,
             fieldLabel: field.label,
             fieldPlaceholder: field.placeholder,
-            isSecret: field.secret,
+            // Peer-authored metadata cannot downgrade credential secrecy.
+            isSecret: true,
             isOptional: field.optional,
             skills: req.skills,
           });

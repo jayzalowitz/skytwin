@@ -495,9 +495,13 @@ describe('execution-setup', () => {
         userId: 'owner-1',
         integration: 'github',
         integrationLabel: 'GitHub',
-        fields: [{ key: 'token', label: 'Token', secret: true }],
+        fields: [{ key: 'token', label: 'Token', secret: false }],
         skills: ['create_issue'],
       });
+
+      expect(mockCredentialRequirementRepository.register).toHaveBeenCalledWith(
+        expect.objectContaining({ fieldKey: 'token', isSecret: true }),
+      );
 
       expect(mockSseManager.emit).toHaveBeenCalledWith(
         'owner-1',

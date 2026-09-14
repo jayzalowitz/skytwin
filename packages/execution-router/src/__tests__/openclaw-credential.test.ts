@@ -151,10 +151,34 @@ describe('OpenClawAdapter credential_required handling', () => {
         key: 'channel_id',
         label: 'Default Channel',
         placeholder: '#general',
-        secret: false,
+        secret: true,
         optional: true,
       });
       expect(requirement.skills).toEqual(['send_message', 'post_update']);
+    });
+
+    it('does not let peer metadata downgrade credential fields to non-secret', async () => {
+      const onCredentialNeeded = vi.fn() as MockFn;
+      const adapter = new OpenClawAdapter({
+        apiUrl: 'http://localhost:9000',
+        onCredentialNeeded,
+      });
+      fetchMock.mockResolvedValueOnce(jsonResponse({
+        credential_required: {
+          integration: 'custom',
+          label: 'Custom',
+          fields: [
+            { key: 'auth', label: 'Authorization', secret: false },
+            { key: 'session', label: 'Session' },
+          ],
+          skills: ['custom_action'],
+        },
+      }));
+
+      await adapter.execute(await buildPlanFromAdapter(adapter));
+
+      const requirement = onCredentialNeeded.mock.calls[0]![0] as OpenClawCredentialRequirement;
+      expect(requirement.fields.map((field) => field.secret)).toEqual([true, true]);
     });
   });
 

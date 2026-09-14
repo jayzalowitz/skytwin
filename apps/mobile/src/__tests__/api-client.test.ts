@@ -321,9 +321,64 @@ describe('API client request construction', () => {
     });
   });
 
+  it('treats a malformed successful assistant response as ambiguous', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    });
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+
+    const result = await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', 'thread-1', ASSISTANT_REQUEST_ID,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'assistant_response_reconciliation_required',
+    });
+  });
+
+  it('rejects assistant success data bound to another request or thread', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        thread: { id: 'thread-other', isNew: false },
+        userMessage: {
+          id: 'user-message-1',
+          threadId: 'thread-other',
+          role: 'user',
+          content: 'retry me',
+          clientRequestId: ASSISTANT_REQUEST_ID,
+        },
+        assistantMessage: {
+          id: 'assistant-message-1',
+          threadId: 'thread-other',
+          role: 'assistant',
+          content: 'done',
+          clientRequestId: 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee',
+        },
+      }),
+    });
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+
+    const result = await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', 'thread-1', ASSISTANT_REQUEST_ID,
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      code: 'assistant_response_reconciliation_required',
+    });
+  });
+
   it('retains assistant request identity across ambiguous failures', () => {
-    expect(shouldRetireAssistantRequestIdentity(400)).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(400)).toBe(false);
     expect(shouldRetireAssistantRequestIdentity(409, 'assistant_request_id_conflict')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(401)).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(403)).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(429)).toBe(false);
     expect(shouldRetireAssistantRequestIdentity(502, 'assistant_providers_failed')).toBe(true);
     expect(shouldRetireAssistantRequestIdentity(502, 'assistant_generation_failed')).toBe(true);
     expect(shouldRetireAssistantRequestIdentity(503)).toBe(false);

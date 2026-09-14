@@ -53,11 +53,12 @@ export function resolveAssistantRequestIdentity(
 }
 
 export function shouldRetireAssistantRequestIdentity(
-  statusCode?: number,
+  _statusCode?: number,
   code?: string,
 ): boolean {
-  if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) return true;
-  return code === 'assistant_providers_failed' || code === 'assistant_generation_failed';
+  return code === 'assistant_request_id_conflict' ||
+    code === 'assistant_providers_failed' ||
+    code === 'assistant_generation_failed';
 }
 
 // -- Response types matching the API routes --
@@ -309,8 +310,10 @@ export interface ApprovalResponse {
 
 export interface AssistantMessage {
   id: string;
+  threadId: string;
   role: 'user' | 'assistant';
   content: string;
+  clientRequestId: string | null;
   createdAt?: string;
   metadata?: Record<string, unknown> | null;
 }
@@ -549,6 +552,48 @@ export class SkyTwinApiClient {
         statusCode: 202,
         code: 'assistant_request_recovery_required',
       };
+    }
+    if (result.success) {
+      const response = result.data as unknown;
+      const record = response && typeof response === 'object'
+        ? response as Record<string, unknown>
+        : null;
+      const responseThread = record?.['thread'];
+      const userMessage = record?.['userMessage'];
+      const assistantMessage = record?.['assistantMessage'];
+      const validThread = responseThread && typeof responseThread === 'object' &&
+        typeof (responseThread as Record<string, unknown>)['id'] === 'string' &&
+        typeof (responseThread as Record<string, unknown>)['isNew'] === 'boolean';
+      const responseThreadId = validThread
+        ? (responseThread as { id: string }).id
+        : '';
+      const validMessage = (
+        value: unknown,
+        role: 'user' | 'assistant',
+        expectedContent?: string,
+      ) => {
+        if (!value || typeof value !== 'object') return false;
+        const message = value as Record<string, unknown>;
+        return typeof message['id'] === 'string' &&
+          message['threadId'] === responseThreadId &&
+          message['role'] === role &&
+          typeof message['content'] === 'string' &&
+          (expectedContent === undefined || message['content'] === expectedContent) &&
+          message['clientRequestId'] === requestId;
+      };
+      if (
+        !validThread ||
+        (threadId !== undefined && responseThreadId !== threadId) ||
+        !validMessage(userMessage, 'user', content) ||
+        !validMessage(assistantMessage, 'assistant')
+      ) {
+        return {
+          success: false,
+          error: 'The assistant returned a response that could not be matched to this request. Retry to reconcile it safely.',
+          statusCode: 502,
+          code: 'assistant_response_reconciliation_required',
+        };
+      }
     }
     return result as ApiResult<AssistantSendResponse>;
   }

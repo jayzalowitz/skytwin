@@ -9,6 +9,7 @@ import {
 import { showSavedToast, showErrorToast } from '../toast.js';
 import { KEY_USER_ID, KEY_ONBOARDED, KEY_SESSION_TOKEN } from '../storage-keys.js';
 import { clearSampleSession, getEffectiveUserId } from '../sample-session.js';
+import { clearPendingAssistantRequest } from '../assistant-request-store.js';
 import { formatMoney } from '../format.js';
 
 const TIERS = [
@@ -2165,6 +2166,8 @@ window.signOut = function() {
   // token, the next user-switch / new-onboarding flow would still send
   // the prior user's bearer header from api-client.js authHeaders(),
   // either 403'ing the new identity or silently keeping the old one.
+  const departingUserId = getEffectiveUserId();
+  clearPendingAssistantRequest(departingUserId);
   localStorage.removeItem(KEY_USER_ID);
   localStorage.removeItem(KEY_ONBOARDED);
   localStorage.removeItem(KEY_SESSION_TOKEN);

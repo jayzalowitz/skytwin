@@ -450,6 +450,10 @@ previews and published installers predate the guarded sample and verified manage
 model source paths. The core decision pipeline, twin model, policy engine,
 swappable memory layer, and Google connectors are implemented, while mobile
 remains a source/development surface rather than part of the beta support matrix.
+The supported beta topology is one non-demo human owner per installation.
+Installation credentials and dynamically discovered credential requirements are
+shared installation configuration; local multi-owner and hosted deployments are
+outside the beta support boundary.
 
 **Free and open-source forever for personal use.** Team and hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure — see [`docs/launch-plan.md`](./docs/launch-plan.md) for the split.
 

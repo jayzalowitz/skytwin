@@ -124,10 +124,14 @@ export const assistantRepository = {
       });
     } catch {
       const existing = await query<AssistantMessageRow>(
-        `SELECT id, thread_id, role, content, created_at, metadata, client_request_id,
-                request_processing_token
-           FROM assistant_messages
-          WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+        `SELECT message.id, message.thread_id, message.role, message.content,
+                message.created_at, message.metadata, message.client_request_id,
+                message.request_processing_token
+           FROM assistant_messages AS message
+           JOIN assistant_threads AS thread
+             ON thread.id = message.thread_id AND thread.user_id = $1
+          WHERE message.user_id = $1 AND message.client_request_id = $2
+            AND message.role = 'user'`,
         [userId, clientRequestId],
       );
       const row = existing.rows[0];
@@ -148,9 +152,13 @@ export const assistantRepository = {
     clientRequestId: string,
   ): Promise<AssistantMessage | null> {
     const result = await query<AssistantMessageRow>(
-      `SELECT id, thread_id, role, content, created_at, metadata, client_request_id
-         FROM assistant_messages
-        WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+      `SELECT message.id, message.thread_id, message.role, message.content,
+              message.created_at, message.metadata, message.client_request_id
+         FROM assistant_messages AS message
+         JOIN assistant_threads AS thread
+           ON thread.id = message.thread_id AND thread.user_id = $1
+        WHERE message.user_id = $1 AND message.client_request_id = $2
+          AND message.role = 'user'`,
       [userId, clientRequestId],
     );
     return result.rows[0] ? rowToMessage(result.rows[0]) : null;
@@ -161,9 +169,13 @@ export const assistantRepository = {
     clientRequestId: string,
   ): Promise<AssistantMessage | null> {
     const result = await query<AssistantMessageRow>(
-      `SELECT id, thread_id, role, content, created_at, metadata, client_request_id
-         FROM assistant_messages
-        WHERE user_id = $1 AND client_request_id = $2 AND role = 'assistant'`,
+      `SELECT message.id, message.thread_id, message.role, message.content,
+              message.created_at, message.metadata, message.client_request_id
+         FROM assistant_messages AS message
+         JOIN assistant_threads AS thread
+           ON thread.id = message.thread_id AND thread.user_id = $1
+        WHERE message.user_id = $1 AND message.client_request_id = $2
+          AND message.role = 'assistant'`,
       [userId, clientRequestId],
     );
     return result.rows[0] ? rowToMessage(result.rows[0]) : null;
@@ -205,10 +217,14 @@ export const assistantRepository = {
           return { message: rowToMessage(row), created: true };
         }
         const existing = await client.query<AssistantMessageRow>(
-          `SELECT id, thread_id, role, content, created_at, metadata, client_request_id,
-                    request_processing_token
-             FROM assistant_messages
-            WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+          `SELECT message.id, message.thread_id, message.role, message.content,
+                  message.created_at, message.metadata, message.client_request_id,
+                  message.request_processing_token
+             FROM assistant_messages AS message
+             JOIN assistant_threads AS thread
+               ON thread.id = message.thread_id AND thread.user_id = $1
+            WHERE message.user_id = $1 AND message.client_request_id = $2
+              AND message.role = 'user'`,
           [userId, clientRequestId],
         );
         if (!existing.rows[0]) throw new Error('assistant_idempotency_conflict');
@@ -219,10 +235,14 @@ export const assistantRepository = {
       });
     } catch {
       const existing = await query<AssistantMessageRow>(
-        `SELECT id, thread_id, role, content, created_at, metadata, client_request_id,
-                request_processing_token
-           FROM assistant_messages
-          WHERE user_id = $1 AND client_request_id = $2 AND role = 'user'`,
+        `SELECT message.id, message.thread_id, message.role, message.content,
+                message.created_at, message.metadata, message.client_request_id,
+                message.request_processing_token
+           FROM assistant_messages AS message
+           JOIN assistant_threads AS thread
+             ON thread.id = message.thread_id AND thread.user_id = $1
+          WHERE message.user_id = $1 AND message.client_request_id = $2
+            AND message.role = 'user'`,
         [userId, clientRequestId],
       );
       if (existing.rows[0]) return {
