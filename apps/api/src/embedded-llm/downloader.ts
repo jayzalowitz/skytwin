@@ -1088,9 +1088,10 @@ export async function recoverOnBoot(
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      const orphaned =
+      const scan =
         await modelDownloadRepository.listWorkerOwnedNonterminal();
-      if (orphaned.length === 0) return;
+      const orphaned = scan.rows;
+      if (orphaned.length === 0 && scan.invalidRows === 0) return;
       let recovered = 0;
       for (const row of orphaned) {
         try {
@@ -1162,10 +1163,11 @@ export async function recoverOnBoot(
       // the local loop alone.
       const remaining =
         await modelDownloadRepository.listWorkerOwnedNonterminal();
-      if (remaining.length === 0) return;
+      const remainingCount = remaining.rows.length + remaining.invalidRows;
+      if (remainingCount === 0) return;
       if (attempt === maxAttempts) {
         throw new Error(
-          `model download recovery left ${remaining.length} worker-owned row(s) after ${maxAttempts} attempt(s)`,
+          `model download recovery left ${remainingCount} worker-owned row(s) after ${maxAttempts} attempt(s)`,
         );
       }
     } catch (error) {

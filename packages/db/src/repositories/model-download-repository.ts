@@ -25,6 +25,11 @@ export interface ModelDownloadRow {
   completed_at: Date | null;
 }
 
+export interface ModelDownloadRecoveryScan {
+  rows: ModelDownloadRow[];
+  invalidRows: number;
+}
+
 interface ModelDownloadDatabaseRow
   extends Omit<ModelDownloadRow, "total_bytes" | "bytes_downloaded"> {
   /** Cockroach INT8 values are strings in node-postgres' default parser. */
@@ -117,22 +122,24 @@ export const modelDownloadRepository = {
   },
 
   /** Durable rows whose worker launch or execution cannot survive process restart. */
-  async listWorkerOwnedNonterminal(): Promise<ModelDownloadRow[]> {
+  async listWorkerOwnedNonterminal(): Promise<ModelDownloadRecoveryScan> {
     const result = await query<ModelDownloadDatabaseRow>(
       `SELECT * FROM model_downloads
        WHERE status IN ('pending', 'downloading', 'verifying', 'installing')
        ORDER BY started_at ASC`,
     );
     const recoverable: ModelDownloadRow[] = [];
+    let invalidRows = 0;
     for (const row of result.rows) {
       try {
         recoverable.push(normalizeModelDownloadRow(row));
       } catch {
         // A malformed legacy byte count must not prevent later independent
         // rows from reaching boot reconciliation.
+        invalidRows += 1;
       }
     }
-    return recoverable;
+    return { rows: recoverable, invalidRows };
   },
 
   /**

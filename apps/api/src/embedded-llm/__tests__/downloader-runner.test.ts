@@ -78,6 +78,10 @@ function testRow(
   } as const;
 }
 
+function recoveryScan(rows: readonly unknown[] = [], invalidRows = 0) {
+  return { rows, invalidRows };
+}
+
 function dependencies(
   overrides: Partial<DownloadRunnerDependencies> = {},
 ): DownloadRunnerDependencies {
@@ -114,7 +118,7 @@ beforeEach(() => {
     },
   );
   mockRepo.checkpointProgress.mockResolvedValue(true);
-  mockRepo.listWorkerOwnedNonterminal.mockResolvedValue([]);
+  mockRepo.listWorkerOwnedNonterminal.mockResolvedValue(recoveryScan());
   mockRepo.findActive.mockResolvedValue(null);
 });
 
@@ -646,8 +650,8 @@ describe("boot recovery", () => {
     const dir = tempDir();
     const pending = testRow(dir, "pending");
     mockRepo.listWorkerOwnedNonterminal
-      .mockResolvedValueOnce([pending])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(recoveryScan([pending]))
+      .mockResolvedValueOnce(recoveryScan());
     mockRepo.transitionStatus.mockResolvedValue(true);
 
     await recoverOnBoot({
@@ -669,8 +673,8 @@ describe("boot recovery", () => {
     const verifying = { ...testRow(dir, "verifying"), id: "verify-id" };
     const installing = { ...testRow(dir, "installing"), id: "install-id" };
     mockRepo.listWorkerOwnedNonterminal
-      .mockResolvedValueOnce([downloading, verifying, installing])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(recoveryScan([downloading, verifying, installing]))
+      .mockResolvedValueOnce(recoveryScan());
     mockRepo.transitionStatus.mockResolvedValue(true);
     await recoverOnBoot({
       modelDir: () => dir,
@@ -716,8 +720,8 @@ describe("boot recovery", () => {
     const dir = tempDir();
     const installing = testRow(dir, "installing");
     mockRepo.listWorkerOwnedNonterminal
-      .mockResolvedValueOnce([installing])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(recoveryScan([installing]))
+      .mockResolvedValueOnce(recoveryScan());
     mockRepo.transitionStatus.mockResolvedValue(true);
     await recoverOnBoot({
       modelDir: () => dir,
@@ -738,8 +742,8 @@ describe("boot recovery", () => {
     const malformed = testRow(dir, "installing");
     const later = { ...testRow(dir, "downloading"), id: "later-id" };
     mockRepo.listWorkerOwnedNonterminal
-      .mockResolvedValueOnce([malformed, later])
-      .mockResolvedValueOnce([malformed]);
+      .mockResolvedValueOnce(recoveryScan([malformed, later]))
+      .mockResolvedValueOnce(recoveryScan([malformed]));
     mockRepo.transitionStatus.mockResolvedValue(true);
     await expect(
       recoverOnBoot({
@@ -758,10 +762,30 @@ describe("boot recovery", () => {
     );
   });
 
+  it("reconciles valid rows but fails authority while malformed rows remain", async () => {
+    const later = { ...testRow("/tmp", "downloading"), id: "later-valid" };
+    mockRepo.listWorkerOwnedNonterminal
+      .mockResolvedValueOnce(recoveryScan([later], 1))
+      .mockResolvedValueOnce(recoveryScan([], 1));
+    mockRepo.transitionStatus.mockResolvedValue(true);
+
+    await expect(recoverOnBoot({
+      modelDir: () => "/tmp",
+      inspectActive: () => ({ state: "missing" }),
+      maxAttempts: 1,
+    })).rejects.toThrow(/left 1 worker-owned row/);
+    expect(mockRepo.transitionStatus).toHaveBeenCalledWith(
+      later.id,
+      ["downloading"],
+      "paused",
+      { bytesDownloaded: later.bytes_downloaded },
+    );
+  });
+
   it("retries a transient initial authoritative query failure", async () => {
     mockRepo.listWorkerOwnedNonterminal
       .mockRejectedValueOnce(new Error("recovery database unavailable"))
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(recoveryScan());
     const wait = vi.fn().mockResolvedValue(undefined);
 
     await recoverOnBoot({
@@ -779,9 +803,9 @@ describe("boot recovery", () => {
   it("retries a transient final authoritative query failure", async () => {
     const row = testRow("/tmp", "downloading");
     mockRepo.listWorkerOwnedNonterminal
-      .mockResolvedValueOnce([row])
+      .mockResolvedValueOnce(recoveryScan([row]))
       .mockRejectedValueOnce(new Error("reconciliation read unavailable"))
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(recoveryScan());
     const wait = vi.fn().mockResolvedValue(undefined);
 
     await recoverOnBoot({
@@ -805,9 +829,9 @@ describe("boot recovery", () => {
         mockRepo.listWorkerOwnedNonterminal.mockRejectedValue(failure);
       } else {
         mockRepo.listWorkerOwnedNonterminal
-          .mockResolvedValueOnce([row])
+          .mockResolvedValueOnce(recoveryScan([row]))
           .mockRejectedValueOnce(failure)
-          .mockResolvedValueOnce([row])
+          .mockResolvedValueOnce(recoveryScan([row]))
           .mockRejectedValueOnce(failure);
       }
       const wait = vi.fn().mockResolvedValue(undefined);
@@ -833,10 +857,10 @@ describe("boot recovery", () => {
     const dir = tempDir();
     const row = testRow(dir, "downloading");
     mockRepo.listWorkerOwnedNonterminal
-      .mockResolvedValueOnce([row])
-      .mockResolvedValueOnce([row])
-      .mockResolvedValueOnce([row])
-      .mockResolvedValueOnce([]);
+      .mockResolvedValueOnce(recoveryScan([row]))
+      .mockResolvedValueOnce(recoveryScan([row]))
+      .mockResolvedValueOnce(recoveryScan([row]))
+      .mockResolvedValueOnce(recoveryScan());
     mockRepo.transitionStatus
       .mockResolvedValueOnce(false)
       .mockResolvedValueOnce(true);

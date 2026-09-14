@@ -105,7 +105,7 @@ describe("model download compare-and-set updates", () => {
     queryMock.mockResolvedValue({ rowCount: 0, rows: [] });
     await expect(
       modelDownloadRepository.listWorkerOwnedNonterminal(),
-    ).resolves.toEqual([]);
+    ).resolves.toEqual({ rows: [], invalidRows: 0 });
     expect(queryMock.mock.calls[0]![0]).toContain(
       "status IN ('pending', 'downloading', 'verifying', 'installing')",
     );
@@ -133,13 +133,16 @@ describe("model download compare-and-set updates", () => {
     });
 
     await expect(modelDownloadRepository.listWorkerOwnedNonterminal())
-      .resolves.toEqual([
-        expect.objectContaining({
-          id: "later-valid",
-          total_bytes: 1_117_320_736,
-          bytes_downloaded: 0,
-        }),
-      ]);
+      .resolves.toEqual({
+        invalidRows: 1,
+        rows: [
+          expect.objectContaining({
+            id: "later-valid",
+            total_bytes: 1_117_320_736,
+            bytes_downloaded: 0,
+          }),
+        ],
+      });
   });
 
   it("bulk recovery keeps both transfer and verification resumable", async () => {
