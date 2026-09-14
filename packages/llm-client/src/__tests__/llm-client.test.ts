@@ -109,7 +109,7 @@ describe('LlmClient', () => {
         onInferenceTrace: (trace) => traces.push(trace),
         now: () => new Date('2026-09-10T00:00:00.000Z'),
       });
-      await client.generate('private prompt', { maxTokens: 12 });
+      await client.generate('private prompt', { maxTokens: 12, invocationKind: 'interactive' });
       expect(traces).toHaveLength(1);
       expect(traces[0]).toMatchObject({
         reasoningMode: 'conventional_cloud', status: 'conventional',
@@ -134,7 +134,11 @@ describe('LlmClient', () => {
         baseUrl: 'https://bound.example/v1',
       };
       const prompt = [{ role: 'user' as const, content: 'bound prompt' }];
-      const options = { maxTokens: 12, systemPrompt: 'bound system' };
+      const options = {
+        maxTokens: 12,
+        systemPrompt: 'bound system',
+        invocationKind: 'interactive' as const,
+      };
       const traces: import('../types.js').InferenceTrace[] = [];
       const client = new LlmClient([provider], 'snapshot-user', {
         onInferenceTrace: (trace) => traces.push(trace),
@@ -174,9 +178,12 @@ describe('LlmClient', () => {
       const { LlmClient } = await freshImport();
       mockOllamaGenerate.mockResolvedValue('local response');
       const traces: import('../types.js').InferenceTrace[] = [];
-      const client = new LlmClient([{ name: 'ollama', apiKey: '', model: 'local' }], 'local-user', {
-        onInferenceTrace: (trace) => traces.push(trace),
-      });
+      const client = LlmClient.forReasoningMode(
+        'on_device',
+        [{ name: 'ollama', apiKey: '', model: 'local' }],
+        'local-user',
+        { onInferenceTrace: (trace) => traces.push(trace) },
+      );
       await client.generate('prompt');
       expect(traces[0]).toMatchObject({
         reasoningMode: 'on_device', status: 'on_device',
@@ -200,7 +207,7 @@ describe('LlmClient', () => {
         { ...openaiProvider, reasoningMode: 'verified_confidential', confidentialVerifier: verifier },
         { name: 'ollama', apiKey: '', model: 'local' },
       ], 'fallback-user', { onInferenceTrace: (trace) => traces.push(trace) });
-      const result = await client.generate('prompt');
+      const result = await client.generate('prompt', { invocationKind: 'interactive' });
       expect(result.content).toBe('safe local result');
       expect(traces.map((item) => item.status)).toEqual(['verification_failed', 'local_fallback']);
       expect(traces[1]!.fallback).toEqual({

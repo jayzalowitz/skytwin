@@ -26,6 +26,7 @@ export async function cleanupLegacyFlatDecisions(
   await client.query(`DELETE FROM execution_events WHERE plan_id IN (${flatPlanFilter})`, [userId]);
   await client.query(`DELETE FROM decision_outcomes WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
   await client.query(`DELETE FROM execution_plans WHERE decision_id IN (${flatDecisionFilter})`, [userId]);
+  // @encryption-inventory-dynamic-sql tables=approval_requests,candidate_actions,episodic_memories,explanation_records,feedback_events,skill_gap_log
   for (const childTable of [
     'candidate_actions',
     'approval_requests',

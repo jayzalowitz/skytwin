@@ -26,7 +26,7 @@ import {
   workerDeadLetterRepository,
   setWorkerGenerationAuthorityLossHandler,
 } from '@skytwin/db';
-import { withRetry, RetryableHttpError, CircuitBreaker, createLogger } from '@skytwin/core';
+import { CircuitBreaker, createLogger } from '@skytwin/core';
 import { workerCredentialKeyCache } from './credential-key-cache.js';
 import { SignalDeduper, DEFAULT_TTL_MS } from './signal-dedupe.js';
 import { buildIngestHeaders } from './ingest-headers.js';

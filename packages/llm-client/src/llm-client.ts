@@ -315,7 +315,7 @@ export class LlmClient {
     for (const entry of this.chain) {
       const { provider, generateFn, circuitBreaker } = entry;
 
-      if (invocation.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+      if (invocationOptions.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
         attempted.push(`${provider.name}(price-unavailable)`);
         executionPath.push({ provider: provider.name, outcome: 'price_unavailable' });
         continue;
@@ -407,7 +407,7 @@ export class LlmClient {
     for (const entry of this.chain) {
       const { provider, streamFn, circuitBreaker } = entry;
 
-      if (invocation.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
+      if (invocationOptions.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
         attempted.push(`${provider.name}(price-unavailable)`);
         executionPath.push({ provider: provider.name, outcome: 'price_unavailable' });
         continue;

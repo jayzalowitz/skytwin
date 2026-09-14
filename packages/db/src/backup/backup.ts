@@ -382,7 +382,8 @@ export function validateBackupData(value: unknown): string[] {
                   .test(state.sourceExecutionPlanId))) ||
             (state.receiptCaptureComplete &&
               (typeof state.receiptExplanationId !== 'string' ||
-                !explanationIds.has(state.receiptExplanationId))) ||
+                !explanations.some((explanation) =>
+                  sameUuid(explanation.id, state.receiptExplanationId)))) ||
             (!state.receiptCaptureComplete && state.receiptExplanationId !== null)) {
           problems.push(`decisions[${index}].ingestState has inconsistent linkage or classification`);
         }

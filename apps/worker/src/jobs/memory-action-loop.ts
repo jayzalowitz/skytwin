@@ -583,7 +583,7 @@ async function executeAllowedOpportunity(
     const dispatchable = actionUnchanged && dispatchPolicy.allowed && !dispatchPolicy.requiresApproval
       ? await runAdmitted(deps.signal, () =>
         executionAdmissionRepository.isDispatchable(admission, {
-          ...admissionAuthority,
+          ...admissionAuthority!,
           policySnapshot: dispatchPolicy as unknown as Record<string, unknown>,
         }))
       : false;

@@ -10,11 +10,16 @@ const recorderKey = {
   privateKeyPem: recorder.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
   publicKeyPem: recorder.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
 };
-const linkage = { userId: 'user', decisionId: 'decision', explanationId: 'explanation' };
+const linkage = {
+  userId: '11111111-1111-4111-8111-111111111111',
+  decisionId: '22222222-2222-4222-8222-222222222222',
+  explanationId: '33333333-3333-4333-8333-333333333333',
+};
 
 function trace(overrides: Partial<InferenceTrace> = {}): InferenceTrace {
   return {
-    id: 'receipt', reasoningMode: 'conventional_cloud', status: 'conventional',
+    id: '44444444-4444-4444-8444-444444444444',
+    reasoningMode: 'conventional_cloud', status: 'conventional',
     provider: 'openai', model: 'model', endpointIdentity: 'https://api.openai.com',
     request: Buffer.from('request'), response: Buffer.from('response'),
     cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',

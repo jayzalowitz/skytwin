@@ -164,9 +164,9 @@ describe('inferenceReceiptRepository', () => {
     value.receipt = signInferenceReceipt({ ...unsigned, id: 'not-a-uuid' }, {
       keyId: 'recorder', privateKeyPem, publicKeyPem,
     });
-    const result = await inferenceReceiptRepository.createForUser(value.receipt.userId, {
+    const result = await inferenceReceiptRepository.createManyForUser(value.receipt.userId, [{
       bundle: value, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
-    });
+    }], completionFor(value));
     expect(result).toBeNull();
     expect(mockQuery).not.toHaveBeenCalled();
   });
