@@ -671,11 +671,8 @@ export function getGoogleAuthUrl(userId, { desktop = false, newUser = false, nex
   // shape before threading it through signed state. Lets the desktop
   // newUser wizard poll for the just-created userId.
   if (pendingKey) params.set('pendingKey', pendingKey);
-  // Optional scope-tier opt-in. Today the only accepted value is 'gmail',
-  // which adds gmail.readonly + gmail.modify to the requested scope list
-  // when (and only when) the caller has user-supplied OAuth credentials.
-  // The bundled SkyTwin-team client rejects ?include=gmail with HTTP 412
-  // and code GMAIL_REQUIRES_BYO_CLIENT — by design.
+  // Legacy experimental scope-tier parameter. The supported preview rejects
+  // Google before this can be used; keep it only for explicit source testing.
   if (include) params.set('include', include);
   return fetchJSON(`${API}/oauth/google/authorize?${params.toString()}`);
 }

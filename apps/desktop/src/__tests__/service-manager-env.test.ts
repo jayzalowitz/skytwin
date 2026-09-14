@@ -14,6 +14,8 @@ import { tmpdir } from 'os';
  *  2. `SKYTWIN_DEV_AUTH_BYPASS` is pinned to `'false'` AFTER the
  *     `...process.env` spread, so a developer's shell bypass can never be
  *     inherited into a packaged build.
+ *  3. Packaged children are pinned to the disabled Google connection mode and
+ *     receive no bundled/default Google client ID.
  */
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'skytwin-sm-env-'));
@@ -36,6 +38,11 @@ vi.mock('../cockroach-manager.js', () => ({
 }));
 
 const { ServiceManager } = await import('../service-manager.js');
+const { app: electronApp } = await import('electron');
+
+function setPackaged(value: boolean): void {
+  (electronApp as unknown as { isPackaged: boolean }).isPackaged = value;
+}
 
 /** `getEnv` is private; the test reaches it deliberately rather than
  *  exercising it through a real process fork. */
@@ -55,18 +62,28 @@ describe('ServiceManager.getEnv()', () => {
     SKYTWIN_RELEASE_EVIDENCE_NONCE: process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'],
     SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE: process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'],
     SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF: process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'],
+    SKYTWIN_GOOGLE_CONNECTION_MODE: process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'],
+    SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'],
+    GOOGLE_CLIENT_ID: process.env['GOOGLE_CLIENT_ID'],
+    GOOGLE_CLIENT_SECRET: process.env['GOOGLE_CLIENT_SECRET'],
   };
 
   beforeEach(() => {
+    setPackaged(false);
     delete process.env['SKYTWIN_DEV_AUTH_BYPASS'];
     delete process.env['SKYTWIN_SERVICE_TOKEN'];
     delete process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'];
     delete process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'];
     delete process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'];
+    delete process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'];
+    delete process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'];
+    delete process.env['GOOGLE_CLIENT_ID'];
+    delete process.env['GOOGLE_CLIENT_SECRET'];
     rmSync(join(userDataDir, 'secrets'), { recursive: true, force: true });
   });
 
   afterEach(() => {
+    setPackaged(false);
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -117,6 +134,33 @@ describe('ServiceManager.getEnv()', () => {
     // Pinned AFTER the ...process.env spread — the shell value loses.
     expect(env['SKYTWIN_DEV_AUTH_BYPASS']).toBe('false');
     expect(env['NODE_ENV']).toBe('production');
+  });
+
+  it('forces packaged children into disabled Google mode despite inherited opt-in and credentials', () => {
+    setPackaged(true);
+    process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] = 'experimental';
+    process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] = 'launcher-default-client';
+    process.env['GOOGLE_CLIENT_ID'] = 'launcher-client';
+    process.env['GOOGLE_CLIENT_SECRET'] = 'launcher-secret';
+
+    const env = envOf(new ServiceManager());
+
+    expect(env['SKYTWIN_GOOGLE_CONNECTION_MODE']).toBe('disabled');
+    expect(env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID']).toBe('');
+    // Operator credentials may remain inherited, but cannot enable Google: the
+    // typed mode above is the downstream runtime authority.
+    expect(env['GOOGLE_CLIENT_ID']).toBe('launcher-client');
+    expect(env['GOOGLE_CLIENT_SECRET']).toBe('launcher-secret');
+  });
+
+  it('retains an explicit experimental opt-in for source-development children', () => {
+    process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] = 'experimental';
+    process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] = 'operator-client';
+
+    const env = envOf(new ServiceManager());
+
+    expect(env['SKYTWIN_GOOGLE_CONNECTION_MODE']).toBe('experimental');
+    expect(env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID']).toBe('operator-client');
   });
 
   it('keeps renderer-proof authority out of every service child environment', () => {

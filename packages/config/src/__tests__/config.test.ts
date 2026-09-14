@@ -13,6 +13,7 @@ describe('loadConfig', () => {
     expect(cfg.useMockIronclaw).toBe(false);
     expect(cfg.desktopMode).toBe(false);
     expect(cfg.ironclawPreferChat).toBe(false);
+    expect(cfg.googleConnectionMode).toBe('disabled');
   });
 
   it('reads values from the provided environment', () => {
@@ -47,6 +48,16 @@ describe('loadConfig', () => {
     expect(loadConfig({ USE_MOCK_IRONCLAW: 'TRUE' }).useMockIronclaw).toBe(false);
     expect(loadConfig({ USE_MOCK_IRONCLAW: '1' }).useMockIronclaw).toBe(false);
     expect(loadConfig({ USE_MOCK_IRONCLAW: '' }).useMockIronclaw).toBe(false);
+  });
+
+  it('enables experimental Google connections only with the exact opt-in', () => {
+    expect(loadConfig({ SKYTWIN_GOOGLE_CONNECTION_MODE: 'experimental' }).googleConnectionMode)
+      .toBe('experimental');
+
+    for (const value of ['', 'disabled', 'enabled', 'EXPERIMENTAL', ' experimental ']) {
+      expect(loadConfig({ SKYTWIN_GOOGLE_CONNECTION_MODE: value }).googleConnectionMode)
+        .toBe('disabled');
+    }
   });
 
   it('honors GATEWAY_AUTH_TOKEN as a fallback for IRONCLAW_GATEWAY_TOKEN', () => {

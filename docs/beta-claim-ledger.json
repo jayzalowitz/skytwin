@@ -831,7 +831,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "8a70ae0d3136ad5132561ff30b607698e3840dd8ce56497c40fba757d84530c9",
+          "sha256": "804a91e01898fe0ddf5e89e41ff6f5e470c47f6b7cd081d860962328d6001130",
           "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
         }
       ],
@@ -919,7 +919,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "a54d5e69a755a11479970eeb9b535447e219f3a8b22be7f122f41d3be11f17a4",
+          "sha256": "7ec14592f741274aaf2eda2e034d4b4ad2f4609022aa86d4130930c3ec21f2e1",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         }
       ],
@@ -941,7 +941,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "201b62ce77215f5cddcdd0c968ae894e4627b4ce18b3b94ada372b4b9f31a567",
+          "sha256": "b1335fd84988d9f39b4b376a6c89b96e00411fcf3c80f3ec3ee412ac0832b469",
           "why": "Public disclosure names connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -1003,12 +1003,12 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "923727c70cd5f02019a0d5c311d8dd0dd42b8efb19be3d092a67e09245f5bfba",
+          "sha256": "71fa5fd9e6c6f9ec801b8a625121ada376560063c332fe58e0c7066c1dfb11c7",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
           "path": "apps/web/public/js/pages/onboarding.js",
-          "sha256": "27ee1ea5972b84a36fc3a3fd3b216916828f31369d6efd0b86068cb3478e36c3",
+          "sha256": "97cea4f7ad82430f14853bd1eeb6c0b67268bb2d287c7af0d757500f2f7f15d6",
           "why": "Provides the real first-run sample control, session issuance flow, and sample-route transition"
         },
         {
@@ -1107,7 +1107,7 @@
         },
         {
           "path": "packages/execution-router/src/execution-router.ts",
-          "sha256": "56668a9812feccfeb21092706351f6bcf0441bc765ba676d9036e525039ec356",
+          "sha256": "48529d30a114c859618725a23505b1c88365982e70a1b6bd0a6d29b138a87227",
           "why": "Independent provenance/severity backstop before adapter execution"
         }
       ],

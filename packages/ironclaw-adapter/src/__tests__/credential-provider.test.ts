@@ -45,9 +45,55 @@ describe('DbCredentialProvider', () => {
     provider = new DbCredentialProvider();
     vi.stubGlobal('fetch', fetchMock);
     mockLoadConfig.mockReturnValue({
+      googleConnectionMode: 'experimental',
       googleClientId: 'test-client-id',
       googleClientSecret: 'test-client-secret',
     });
+  });
+
+  it('rejects Google before reading or refreshing credentials when disabled', async () => {
+    mockLoadConfig.mockReturnValue({
+      googleConnectionMode: 'disabled',
+      googleClientId: 'inert-client-id',
+      googleClientSecret: 'inert-client-secret',
+    });
+    mockOauthRepository.getToken.mockResolvedValue({
+      access_token: 'must-not-dispatch',
+      refresh_token: 'must-not-refresh',
+      expires_at: new Date(Date.now() + 120_000),
+      scopes: ['email'],
+    });
+
+    const result = await provider.getAccessToken('user_1', 'google');
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Google connection is unavailable in this preview.',
+    });
+    expect(mockOauthRepository.getToken).not.toHaveBeenCalled();
+    expect(mockOauthRepository.getTokenByAccount).not.toHaveBeenCalled();
+    expect(mockCredentialVaultMetaRepository.getForUser).not.toHaveBeenCalled();
+    expect(mockServiceCredentialRepository.getAsMap).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects Google dispatch before reading credentials or binding its lease', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+
+    const result = await provider.startDispatch({
+      userId: 'user_1', provider: 'google', decisionId: 'decision_1',
+      actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
+      policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
+    });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Google connection is unavailable in this preview.',
+    });
+    expect(mockOauthRepository.getToken).not.toHaveBeenCalled();
+    expect(mockCredentialDispatchLeaseRepository.bindCredential).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   afterEach(() => {
@@ -567,6 +613,7 @@ describe('DbCredentialProvider', () => {
 
   it('falls back to DB credentials when loadConfig returns empty googleClientId/googleClientSecret', async () => {
     mockLoadConfig.mockReturnValue({
+      googleConnectionMode: 'experimental',
       googleClientId: '',
       googleClientSecret: '',
     });
@@ -609,6 +656,7 @@ describe('DbCredentialProvider', () => {
 
   it('returns error when neither config nor DB has Google client credentials', async () => {
     mockLoadConfig.mockReturnValue({
+      googleConnectionMode: 'experimental',
       googleClientId: '',
       googleClientSecret: '',
     });

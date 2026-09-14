@@ -3,6 +3,8 @@ import { loadConfig } from '@skytwin/config';
 import { serviceCredentialRepository, credentialRequirementRepository } from '@skytwin/db';
 import {
   getExecutionRuntimeVersionInfo,
+  isGoogleAccountIntegration,
+  isGoogleIntegrationIdentifier,
   type ExecutionRuntimeName,
 } from '@skytwin/shared-types';
 import {
@@ -92,6 +94,62 @@ interface AdapterStatus {
   installHint?: string;
 }
 
+function googleConnectionsAvailable(): boolean {
+  return loadConfig().googleConnectionMode === 'experimental';
+}
+
+function isBlockedGoogleRequirement(
+  key: string,
+  group: {
+    adapter: string;
+    fields: Array<{ skills: string[] }>;
+  },
+): boolean {
+  return !googleConnectionsAvailable() && isGoogleAccountIntegration({
+    key,
+    adapter: group.adapter,
+    integration: key.split(':')[1] ?? key,
+    skills: group.fields.flatMap((field) => field.skills),
+  });
+}
+
+async function isBlockedGoogleService(service: string): Promise<boolean> {
+  if (googleConnectionsAvailable()) return false;
+  if (isGoogleIntegrationIdentifier(service)) return true;
+
+  const parts = service.includes(':') ? service.split(':') : ['', service];
+  const adapter = parts[0] ?? '';
+  const integration = parts[1] ?? service;
+  try {
+    const requirements = adapter
+      ? await credentialRequirementRepository.getByAdapter(adapter)
+      : await credentialRequirementRepository.getByIntegration(integration);
+    const matching = requirements.filter((requirement) =>
+      adapter ? requirement.integration === integration : true,
+    );
+    return isGoogleAccountIntegration({
+      key: service,
+      adapter,
+      integration,
+      skills: matching.flatMap((requirement) => requirement.skills),
+    });
+  } catch {
+    // Identifier aliases are already denied without a repository read. If an
+    // unrelated dynamic requirement cannot be resolved, leave its normal
+    // route-level error handling in control.
+    return false;
+  }
+}
+
+async function filterVisibleCredentialRows<T extends { service: string }>(rows: T[]): Promise<T[]> {
+  if (googleConnectionsAvailable()) return rows;
+  const blocked = new Map<string, boolean>();
+  await Promise.all(Array.from(new Set(rows.map((row) => row.service))).map(async (service) => {
+    blocked.set(service, await isBlockedGoogleService(service));
+  }));
+  return rows.filter((row) => !blocked.get(row.service));
+}
+
 function withExecutionRuntimeMetadata(name: string, status: AdapterStatus): AdapterStatus {
   if (name !== 'ironclaw' && name !== 'openclaw') return status;
 
@@ -114,6 +172,22 @@ function withExecutionRuntimeMetadata(name: string, status: AdapterStatus): Adap
 export function createCredentialsRouter(): Router {
   const router = Router();
 
+  // Preserve any existing Google credential rows for a future explicit
+  // re-authentication migration, but do not expose a mutation or sync surface
+  // while the account-free preview boundary is active.
+  router.use('/google', (_req, res, next) => {
+    if (googleConnectionsAvailable()) {
+      next();
+      return;
+    }
+    res.status(503).json({
+      error: 'Google connection is unavailable in this preview.',
+      code: 'GOOGLE_CONNECTION_DISABLED',
+      available: false,
+      mode: 'disabled',
+    });
+  });
+
   /**
    * GET /api/credentials/schema
    *
@@ -124,6 +198,7 @@ export function createCredentialsRouter(): Router {
   router.get('/schema', async (_req, res, next) => {
     try {
       const grouped = await credentialRequirementRepository.getAllGrouped();
+      const googleAvailable = googleConnectionsAvailable();
 
       // Convert dynamic requirements into the same shape as static schemas
       const dynamic: Record<string, {
@@ -136,6 +211,9 @@ export function createCredentialsRouter(): Router {
       }> = {};
 
       for (const [key, group] of grouped) {
+        if (isBlockedGoogleRequirement(key, group)) {
+          continue;
+        }
         dynamic[key] = {
           label: group.label,
           description: group.description ?? '',
@@ -153,7 +231,12 @@ export function createCredentialsRouter(): Router {
         };
       }
 
-      res.json({ services: SERVICE_SCHEMAS, integrations: dynamic });
+      const services = googleAvailable
+        ? SERVICE_SCHEMAS
+        : Object.fromEntries(
+            Object.entries(SERVICE_SCHEMAS).filter(([service]) => service !== 'google'),
+          );
+      res.json({ services, integrations: dynamic });
     } catch (error) {
       next(error);
     }
@@ -206,9 +289,10 @@ export function createCredentialsRouter(): Router {
       // and Google handles the rest. Operators who want to ship a
       // hosted SaaS just set GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET in
       // their deploy env, no code change needed.
-      const hostedConfigured = !!(config.googleClientId && config.googleClientSecret);
+      const googleAvailable = config.googleConnectionMode === 'experimental';
+      const hostedConfigured = googleAvailable && !!(config.googleClientId && config.googleClientSecret);
       let googleConfigured = hostedConfigured;
-      if (!googleConfigured) {
+      if (googleAvailable && !googleConfigured) {
         try {
           const dbCreds = await serviceCredentialRepository.getAsMap('google');
           googleConfigured = !!(dbCreds['client_id'] && dbCreds['client_secret']);
@@ -234,7 +318,13 @@ export function createCredentialsRouter(): Router {
         },
         // `hosted` = env vars set by the operator (no user setup needed).
         // `configured` = either hosted OR user-supplied via Setup page.
-        google: { configured: googleConfigured, hosted: hostedConfigured },
+        google: {
+          configured: googleConfigured,
+          hosted: hostedConfigured,
+          available: googleAvailable,
+          mode: config.googleConnectionMode,
+          ...(googleAvailable ? {} : { code: 'GOOGLE_CONNECTION_DISABLED' }),
+        },
         unmetIntegrations,
       });
     } catch (error) {
@@ -261,6 +351,7 @@ export function createCredentialsRouter(): Router {
       }> = [];
 
       for (const [key, group] of grouped) {
+        if (isBlockedGoogleRequirement(key, group)) continue;
         result.push({
           key,
           adapter: group.adapter,
@@ -320,10 +411,11 @@ export function createCredentialsRouter(): Router {
    */
   router.get('/ironclaw-status', async (_req, res, next) => {
     try {
-      const [rows, adapter] = await Promise.all([
+      const [storedRows, adapter] = await Promise.all([
         serviceCredentialRepository.getAll(),
         getIronClawEnhancedAdapter(),
       ]);
+      const rows = await filterVisibleCredentialRows(storedRows);
 
       let ironclawCredentials = new Set<string>();
       let reachable = false;
@@ -364,8 +456,29 @@ export function createCredentialsRouter(): Router {
   router.get('/', async (_req, res, next) => {
     try {
       const rows = await serviceCredentialRepository.getAll();
-      const masked = rows.map((row) => maskRow(row));
+      const masked = (await filterVisibleCredentialRows(rows)).map((row) => maskRow(row));
       res.json({ credentials: masked });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // Dynamic adapter integrations use `adapter:integration` service keys.
+  // Apply the same preview boundary before every generic read or mutation so
+  // aliases such as `openclaw:gmail` cannot bypass the exact `/google` guard.
+  router.use('/:service', async (req, res, next) => {
+    const service = req.params['service'];
+    try {
+      if (!service || !(await isBlockedGoogleService(service))) {
+        next();
+        return;
+      }
+      res.status(503).json({
+        error: 'Google connection is unavailable in this preview.',
+        code: 'GOOGLE_CONNECTION_DISABLED',
+        available: false,
+        mode: 'disabled',
+      });
     } catch (error) {
       next(error);
     }
@@ -570,6 +683,7 @@ async function getUnmetRequirements(): Promise<
     }> = [];
 
     for (const [key, group] of grouped) {
+      if (isBlockedGoogleRequirement(key, group)) continue;
       const serviceKey = key; // adapter:integration
       const creds = await serviceCredentialRepository.getAsMap(serviceKey);
       const requiredFields = group.fields.filter((f) => !f.is_optional);

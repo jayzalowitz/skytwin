@@ -1,5 +1,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { RiskTier, ConfidenceLevel, RiskDimension } from '@skytwin/shared-types';
+import {
+  RiskTier,
+  ConfidenceLevel,
+  RiskDimension,
+  isGoogleAccountActionType,
+} from '@skytwin/shared-types';
 import type {
   CandidateAction,
   RiskAssessment,
@@ -247,6 +252,71 @@ describe('ExecutionRouter', () => {
   beforeEach(() => {
     registry = new AdapterRegistry();
     router = new ExecutionRouter(registry, createDispatchAuthority());
+  });
+
+  it.each(['send_email', 'create_calendar_event'])
+    ('denies disabled account action %s before any adapter or dispatch call', async (actionType) => {
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      const adapters = ['ironclaw', 'direct', 'openclaw'].map((name) => {
+        const adapter = createMockAdapter(name);
+        localRegistry.register(
+          name,
+          adapter,
+          name === 'ironclaw'
+            ? IRONCLAW_TRUST_PROFILE
+            : name === 'direct' ? DIRECT_TRUST_PROFILE : OPENCLAW_TRUST_PROFILE,
+        );
+        return {
+          buildPlan: vi.spyOn(adapter, 'buildPlan'),
+          execute: vi.spyOn(adapter, 'execute'),
+        };
+      });
+      const localRouter = new ExecutionRouter(localRegistry, authority, (action) =>
+        isGoogleAccountActionType(action.actionType)
+          ? { allowed: false, reason: 'Account-backed actions are unavailable in this preview.' }
+          : { allowed: true });
+
+      await expect(localRouter.prepareExecution(
+        makeAction({ actionType }), makeRiskAssessment(), 'user-1', { approved: true },
+      )).rejects.toMatchObject({
+        name: 'NoRequestExecutionError',
+        message: 'Account-backed actions are unavailable in this preview.',
+      });
+
+      for (const adapter of adapters) {
+        expect(adapter.buildPlan).not.toHaveBeenCalled();
+        expect(adapter.execute).not.toHaveBeenCalled();
+      }
+      expect(authority.start).not.toHaveBeenCalled();
+      expect(authority.terminalize).not.toHaveBeenCalled();
+    });
+
+  it('re-checks the admission boundary before consuming a prepared action', async () => {
+    const authority = createDispatchAuthority();
+    const adapter = createMockAdapter('ironclaw');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    let enabled = true;
+    const localRouter = new ExecutionRouter(registry, authority, () =>
+      enabled
+        ? { allowed: true }
+        : { allowed: false, reason: 'Account-backed actions are unavailable in this preview.' });
+    const action = makeAction();
+    const risk = makeRiskAssessment();
+    const prepared = await localRouter.prepareExecution(action, risk, 'user-1', { approved: true });
+    enabled = false;
+
+    await expect(localRouter.executePrepared(
+      prepared,
+      { ...action, parameters: { ...action.parameters, executionPlanId: prepared.planId } },
+      prepared.riskAssessment,
+      'user-1',
+      { approved: true },
+    )).rejects.toBeInstanceOf(NoRequestExecutionError);
+    expect(authority.start).not.toHaveBeenCalled();
+    expect(authority.terminalize).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each([

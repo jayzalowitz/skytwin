@@ -100,6 +100,14 @@ export interface ExecutionDispatchAuthorityPort {
   }): Promise<boolean>;
 }
 
+export type ExecutionAdmissionDecision =
+  | { allowed: true }
+  | { allowed: false; reason: string };
+
+export type ExecutionAdmissionGuard = (
+  action: Readonly<CandidateAction>,
+) => ExecutionAdmissionDecision;
+
 /**
  * Outcome of routing a rollback request through the registry.
  *
@@ -559,11 +567,24 @@ function bindTrustedPlanContext(
 export class ExecutionRouter {
   private readonly registry: AdapterRegistry;
   private readonly dispatchAuthority: ExecutionDispatchAuthorityPort;
+  private readonly admissionGuard?: ExecutionAdmissionGuard;
   private readonly preparedExecutions = new WeakMap<object, PreparedExecutionState>();
 
-  constructor(registry: AdapterRegistry, dispatchAuthority: ExecutionDispatchAuthorityPort) {
+  constructor(
+    registry: AdapterRegistry,
+    dispatchAuthority: ExecutionDispatchAuthorityPort,
+    admissionGuard?: ExecutionAdmissionGuard,
+  ) {
     this.registry = registry;
     this.dispatchAuthority = dispatchAuthority;
+    this.admissionGuard = admissionGuard;
+  }
+
+  private assertAdmitted(action: CandidateAction): void {
+    const decision = this.admissionGuard?.(action);
+    if (decision && !decision.allowed) {
+      throw new NoRequestExecutionError(decision.reason);
+    }
   }
 
   private authorityInput(
@@ -696,6 +717,7 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<RoutingDecision> {
+    this.assertAdmitted(action);
     // An explicit MCP target is execution authority, not descriptive routing
     // metadata. It can only cross the MCP host boundary whose DB claim checks
     // the exact server/tool opt-in; never reinterpret it through another
@@ -775,6 +797,9 @@ export class ExecutionRouter {
   ): Promise<PreparedExecution> {
     assertValidExecutionInputs(action, sourceRiskAssessment);
     assertExecutionPermitted(action, context);
+    // Runtime feature boundaries must be checked before adapter plan building
+    // or request preparation. A denial here is proven to have made no request.
+    this.assertAdmitted(action);
     const streaming = context?.streaming === true;
     const exactMcp = requiresExactMcpRouting(action);
     const capableNames = exactMcp
@@ -915,6 +940,9 @@ export class ExecutionRouter {
     const handle = prepared.handle;
     const state = this.preparedExecutions.get(handle);
     this.preparedExecutions.delete(handle);
+    // Re-check after consuming the one-shot handle so a boundary tightened
+    // after preparation cannot execute a stale plan.
+    this.assertAdmitted(action);
     const currentEntry = state ? this.registry.get(state.adapterName) : undefined;
     if (!state || currentEntry?.adapter !== state.adapter ||
         this.registry.getRevision(state.adapterName) !== state.registryRevision ||

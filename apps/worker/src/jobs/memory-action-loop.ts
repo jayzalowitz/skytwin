@@ -54,6 +54,8 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
+  isGoogleAccountActionType,
+  isGoogleAccountIntegration,
   normalizeAdapterOutput,
   normalizeExecutionError,
   parseAutonomySettings,
@@ -1294,6 +1296,11 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
         apiUrl: openclawApiUrl,
         apiKey: openclawCreds['api_key'] || config.openclawApiKey || undefined,
         onCredentialNeeded: async (req) => {
+          if (config.googleConnectionMode !== 'experimental' && isGoogleAccountIntegration({
+            adapter: 'openclaw',
+            integration: req.integration,
+            skills: req.skills,
+          })) return;
           for (const field of req.fields) {
             await credentialRequirementRepository.register({
               adapter: 'openclaw',
@@ -1315,7 +1322,17 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
     );
   }
 
-  return new ExecutionRouter(registry, executionDispatchLeaseRepository);
+  return new ExecutionRouter(
+    registry,
+    executionDispatchLeaseRepository,
+    (action) => config.googleConnectionMode !== 'experimental' &&
+        isGoogleAccountActionType(action.actionType)
+      ? {
+          allowed: false,
+          reason: 'Account-backed email and calendar actions are unavailable in this preview.',
+        }
+      : { allowed: true },
+  );
 }
 
 async function getStoredCredentials(service: string): Promise<Record<string, string>> {

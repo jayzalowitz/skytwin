@@ -1,5 +1,6 @@
 import { fetchJSON, escapeHtml } from '../api-client.js';
 import { getEffectiveUserId } from '../sample-session.js';
+import { isGoogleAccountIntegration } from '../google-preview-boundary.js';
 
 // Module-level sync lookup for dynamic integration card rendering
 let _syncLookup = {};
@@ -9,8 +10,7 @@ let _syncLookup = {};
  *
  * Design goals:
  * - IronClaw and OpenClaw auto-detect; show their live status, not setup forms
- * - Google OAuth is the one thing that genuinely needs manual user setup
- * - Rich step-by-step instructions for Google credentials
+ * - Google account setup is visibly unavailable on the preview surface
  * - Advanced override section for IronClaw/OpenClaw (collapsed by default)
  */
 export async function renderSetup(container, _userId) {
@@ -38,16 +38,7 @@ export async function renderSetup(container, _userId) {
     if (!credLookup[cred.service]) credLookup[cred.service] = {};
     credLookup[cred.service][cred.credentialKey] = cred;
   }
-  const syncLookup = buildSyncLookup(ironclawSync);
-
-  const googleCreds = credLookup['google'] || {};
-  const googleConfigured = status?.google?.configured ?? false;
-  // UX review #1 (P0) groundwork: when the operator has shipped hosted
-  // OAuth credentials via env vars (GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET),
-  // the user doesn't need to do the GCP walkthrough at all — they just
-  // click "Connect with Google" in Settings. The Setup page collapses
-  // to a small "already set up" card in that case.
-  const googleHosted = status?.google?.hosted ?? false;
+  buildSyncLookup(ironclawSync);
 
   const ironclaw = status?.adapters?.ironclaw ?? { registered: false, healthy: false, url: '' };
   const openclaw = status?.adapters?.openclaw ?? { registered: false, healthy: false, url: '' };
@@ -65,13 +56,13 @@ export async function renderSetup(container, _userId) {
         <span class="card-title">Let's connect your twin to your life</span>
       </div>
       <div class="card-subtitle">
-        Two things to do here: link your Google account so your twin can see your email and calendar,
-        then (optionally) plug in any other accounts you want help with. Everything else runs itself.
+        Review the integrations available in this preview. The isolated sample
+        remains the supported way to explore the decision loop without an account.
       </div>
       <div style="margin-top: 0.75rem; display: flex; gap: 1rem; flex-wrap: wrap; font-size: 0.85rem;">
         <span style="display: inline-flex; align-items: center; gap: 0.4rem;">
-          <span style="width: 8px; height: 8px; border-radius: 50%; background: ${googleConfigured ? 'var(--success)' : 'var(--warning, #e6a700)'};"></span>
-          Google account ${googleConfigured ? 'configured' : 'needs setup'}
+          <span style="width: 8px; height: 8px; border-radius: 50%; background: var(--text-dim);"></span>
+          Gmail and Google Calendar unavailable
         </span>
         <span style="display: inline-flex; align-items: center; gap: 0.4rem;">
           <span style="width: 8px; height: 8px; border-radius: 50%; background: ${anyEngineHealthy ? 'var(--success)' : 'var(--warning, #e6a700)'};"></span>
@@ -80,164 +71,16 @@ export async function renderSetup(container, _userId) {
       </div>
     </div>
 
-    <!-- ── Google OAuth — hosted vs BYO ──────────────────────────
-         When the operator has shipped hosted credentials via env vars,
-         the user just needs to click "Sign in with Google" in Settings —
-         no GCP walkthrough required. UX review #1 (P0). -->
-    ${googleHosted ? `
-    <div class="card" id="google-setup-card" style="border-left: 3px solid var(--success);">
+    <div class="card" id="google-setup-card">
       <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-        <span class="card-title">Google account</span>
-        <span style="color: var(--success); font-weight: 600; font-size: 0.85rem;">Ready</span>
+        <span class="card-title">Google (Gmail + Calendar)</span>
+        <span style="color: var(--text-dim); font-weight: 600; font-size: 0.85rem;">Unavailable in preview</span>
       </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Your SkyTwin install includes Google access — no developer setup needed.
-        Open Settings → Connected accounts and click <strong>Connect</strong> to link your Google account in one click.
+      <div class="card-subtitle" style="line-height: 1.7;">
+        Google account connection and credential entry are disabled on this preview surface.
+        SkyTwin will not ask for a Google client ID, client secret, or account grant here.
       </div>
-      <a class="btn btn-primary" href="#/settings">Open Settings →</a>
     </div>
-    ` : `
-    <div class="card" id="google-setup-card" style="border-left: 3px solid ${googleConfigured ? 'var(--success)' : 'var(--warning, #e6a700)'};">
-      <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
-        <span class="card-title">Google account credentials</span>
-        ${googleConfigured
-          ? '<span style="color: var(--success); font-weight: 600; font-size: 0.85rem;">Configured</span>'
-          : '<span style="color: var(--warning, #e6a700); font-weight: 600; font-size: 0.85rem;">Needs setup</span>'}
-      </div>
-      <div class="card-subtitle" style="margin-bottom: 1rem;">
-        To read your email and calendar, SkyTwin needs API credentials from Google Cloud.
-        This is a one-time setup that takes about 5 minutes.
-      </div>
-
-      <details ${googleConfigured ? '' : 'open'} style="margin-bottom: 1.25rem;">
-        <summary style="cursor: pointer; color: var(--primary); font-size: 0.9rem; font-weight: 600; margin-bottom: 0.75rem;">
-          Step-by-step instructions
-        </summary>
-        <div style="font-size: 0.85rem; line-height: 1.9; color: var(--text-secondary, var(--text-muted));">
-          <div style="margin-bottom: 1rem;">
-            <strong>Step 1 — Create a Google Cloud project</strong>
-            <ol style="padding-left: 1.25rem; margin-top: 0.25rem;">
-              <li>Go to <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">console.cloud.google.com</a></li>
-              <li>Click the project selector at the top and choose <strong>New Project</strong></li>
-              <li>Name it anything (e.g. "SkyTwin") and click <strong>Create</strong></li>
-            </ol>
-          </div>
-
-          <div style="margin-bottom: 1rem;">
-            <strong>Step 2 — Enable the Gmail and Calendar APIs</strong>
-            <ol style="padding-left: 1.25rem; margin-top: 0.25rem;">
-              <li>In your new project, go to <a href="https://console.cloud.google.com/apis/library" target="_blank" rel="noopener">APIs &amp; Services &gt; Library</a></li>
-              <li>Search for <strong>Gmail API</strong> and click <strong>Enable</strong></li>
-              <li>Go back to Library, search for <strong>Google Calendar API</strong> and click <strong>Enable</strong></li>
-            </ol>
-          </div>
-
-          <div style="margin-bottom: 1rem;">
-            <strong>Step 3 — Configure the OAuth consent screen</strong>
-            <ol style="padding-left: 1.25rem; margin-top: 0.25rem;">
-              <li>Go to <a href="https://console.cloud.google.com/apis/credentials/consent" target="_blank" rel="noopener">APIs &amp; Services &gt; OAuth consent screen</a></li>
-              <li>Choose <strong>External</strong> (unless you have a Google Workspace org)</li>
-              <li>Fill in the app name (e.g. "SkyTwin") and your email as developer contact</li>
-              <li>On the <strong>Scopes</strong> page, add:
-                <ul style="list-style: disc; padding-left: 1.25rem;">
-                  <li><code>https://www.googleapis.com/auth/gmail.readonly</code></li>
-                  <li><code>https://www.googleapis.com/auth/gmail.modify</code></li>
-                  <li><code>https://www.googleapis.com/auth/calendar.readonly</code></li>
-                  <li><code>https://www.googleapis.com/auth/calendar.events</code></li>
-                </ul>
-              </li>
-              <li>On the <strong>Test users</strong> page, add the Google account you'll use with SkyTwin</li>
-              <li>Click <strong>Save and Continue</strong> through the rest</li>
-            </ol>
-          </div>
-
-          <div style="margin-bottom: 1rem;">
-            <strong>Step 4 — Create OAuth credentials</strong>
-            <ol style="padding-left: 1.25rem; margin-top: 0.25rem;">
-              <li>Go to <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">APIs &amp; Services &gt; Credentials</a></li>
-              <li>Click <strong>Create Credentials</strong> &gt; <strong>OAuth client ID</strong></li>
-              <li>Application type: <strong>Web application</strong></li>
-              <li>Name: anything (e.g. "SkyTwin local")</li>
-              <li>Under <strong>Authorized redirect URIs</strong>, add:<br>
-                <code style="user-select: all; background: var(--bg); padding: 0.15rem 0.4rem; border-radius: 3px;">http://localhost:3100/api/oauth/google/callback</code>
-              </li>
-              <li>Click <strong>Create</strong></li>
-              <li>Copy the <strong>Client ID</strong> and <strong>Client Secret</strong> shown in the dialog</li>
-            </ol>
-          </div>
-
-          <div style="padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); border-left: 2px solid var(--primary);">
-            <strong>Tip:</strong> Your project will be in "Testing" mode, which is fine for personal use.
-            The consent screen will show a warning, but you can click through it since this is your own app.
-          </div>
-        </div>
-      </details>
-
-      <div style="margin-bottom: 0.5rem; font-weight: 600; font-size: 0.9rem;">Paste your credentials here</div>
-
-      <div class="form-group" style="margin-bottom: 0.75rem;">
-        <label style="display: flex; justify-content: space-between; align-items: center;">
-          <span>Client ID</span>
-          ${googleCreds['client_id']?.hasValue ? '<span style="font-size: 0.75rem; color: var(--success);">saved</span>' : ''}
-        </label>
-        <input
-          class="form-input"
-          type="text"
-          id="cred-google-client_id"
-          placeholder="e.g. 123456789-abc.apps.googleusercontent.com"
-          value="${escapeHtml(googleCreds['client_id']?.credentialValue ?? '')}"
-          data-service="google"
-          data-key="client_id"
-          autocomplete="off"
-        >
-      </div>
-
-      <div class="form-group" style="margin-bottom: 0.75rem;">
-        <label style="display: flex; justify-content: space-between; align-items: center;">
-          <span>Client Secret</span>
-          ${googleCreds['client_secret']?.hasValue ? '<span style="font-size: 0.75rem; color: var(--success);">saved</span>' : ''}
-        </label>
-        <input
-          class="form-input"
-          type="password"
-          id="cred-google-client_secret"
-          placeholder="e.g. GOCSPX-..."
-          value=""
-          data-service="google"
-          data-key="client_secret"
-          autocomplete="off"
-        >
-        ${googleCreds['client_secret']?.hasValue ? `<div style="font-size: 0.75rem; color: var(--text-muted); margin-top: 0.25rem;">Currently set (${escapeHtml(googleCreds['client_secret'].credentialValue)}). Leave blank to keep.</div>` : ''}
-      </div>
-
-      <div class="form-group" style="margin-bottom: 0.75rem;">
-        <label style="display: flex; justify-content: space-between; align-items: center;">
-          <span>Redirect URI <span style="color: var(--text-muted); font-weight: 400;">(usually leave as default)</span></span>
-        </label>
-        <input
-          class="form-input"
-          type="text"
-          id="cred-google-redirect_uri"
-          placeholder="http://localhost:3100/api/oauth/google/callback"
-          value="${escapeHtml(googleCreds['redirect_uri']?.credentialValue ?? '')}"
-          data-service="google"
-          data-key="redirect_uri"
-          autocomplete="off"
-        >
-      </div>
-
-      <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <button class="btn btn-primary btn-sm" data-save-service="google" data-auto-connect="${googleConfigured ? 'false' : 'true'}">
-          ${googleConfigured ? 'Update' : 'Save and connect now'}
-        </button>
-        ${googleConfigured ? `
-          <button class="btn btn-outline btn-sm" data-action="connect-google">Connect Google account</button>
-        ` : ''}
-        <span id="save-status-google" style="font-size: 0.85rem;"></span>
-      </div>
-      ${renderIronClawSyncSummary('google', syncLookup)}
-    </div>
-    `}
 
     <!-- ── What's next ── -->
 
@@ -246,13 +89,10 @@ export async function renderSetup(container, _userId) {
         <span class="card-title">What happens next</span>
       </div>
       <div class="card-subtitle" style="line-height: 1.7;">
-        ${googleConfigured
-          ? `Your credentials are saved. Click <strong>Connect Google account</strong> above and you'll be sent
-             to Google to sign in — back here in 30 seconds, your twin starts learning from your email and calendar.`
-          : `Click <strong>Save and connect now</strong> and we'll send you straight to Google to sign in.
-             Back here in 30 seconds, your twin starts learning from your email and calendar.`
-        }
+        Try the account-free sample to inspect fictional decisions, policy results,
+        explanations, and corrections without granting access to a real account.
       </div>
+      <a class="btn btn-primary" href="#/sample">Open the sample</a>
     </div>
 
     <!-- ── Dynamic integrations from adapters ── -->
@@ -275,7 +115,7 @@ export async function renderSetup(container, _userId) {
         <div style="margin-bottom: 1.25rem;">
           <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.5rem;">Live status</div>
           ${renderAdapterStatus('Sandboxed execution server (IronClaw)', ironclaw, 'Highest trust — actions are sandboxed, audited, and reversible. Auto-detects on localhost:4000.', true)}
-          ${renderAdapterStatus('Built-in handlers', direct, 'Native handlers for email, calendar, finance, and more. Always available.')}
+          ${renderAdapterStatus('Built-in handlers', direct, 'Local handlers are available where required account connections are supported. Gmail and Google Calendar actions are unavailable in this preview.')}
           ${renderAdapterStatus('Local-AI execution (OpenClaw)', openclaw, 'Community engine that uses a local LLM for broader skills. Optional.', true)}
           <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
             Your twin automatically picks the most trusted engine that's available and falls back if one is down.
@@ -365,17 +205,16 @@ export async function renderSetup(container, _userId) {
       if (service) window.syncServiceToIronClaw(service);
     });
   });
-  container.querySelectorAll('button[data-action="connect-google"]').forEach(btn => {
-    btn.addEventListener('click', () => window.handleConnectGoogleFromSetup());
-  });
 }
 
 /**
  * Render integration sections that adapters have dynamically registered.
  * These appear when e.g. OpenClaw adds a skill that needs Twitter API keys.
  */
-function renderDynamicIntegrations(integrations, credLookup) {
-  const keys = Object.keys(integrations);
+export function renderDynamicIntegrations(integrations, credLookup) {
+  const keys = Object.keys(integrations).filter(
+    (key) => !isGoogleAccountIntegration({ key, ...integrations[key] }),
+  );
   if (keys.length === 0) return '';
 
   return keys.map(key => {

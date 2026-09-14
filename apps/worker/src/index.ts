@@ -61,6 +61,7 @@ import {
 import { forwardSignalToApi as forwardSignalUnderAdmission } from './signal-forwarder.js';
 import { createWorkerLifecycle } from './worker-lifecycle.js';
 import { installGenerationFetch } from './generation-fetch.js';
+import { buildUserOAuthConnectors } from './connector-discovery.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -369,6 +370,8 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
 }
 
 async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
+  if (config.googleConnectionMode !== 'experimental') return null;
+
   let clientId = config.googleClientId;
   let clientSecret = config.googleClientSecret;
   let redirectUri = config.googleRedirectUri;
@@ -391,24 +394,19 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
     }
   }
 
-  // Layer 2: bundled PKCE-only fallback (desktop installer default). Mirrors
-  // apps/api/src/routes/oauth.ts:resolveGoogleConfig() so the worker can
-  // refresh tokens minted by the bundled-client OAuth flow. PKCE refresh
-  // omits client_secret entirely (verified in packages/connectors/src/oauth/
-  // google-oauth.ts:refreshAccessToken — empty clientSecret is the PKCE
-  // signal). Without this fallback, the grandma-grade default install
-  // signs the user in (API has the bundled id) but the worker can't read
-  // their inbox/calendar — tokens exist, nothing processes them.
+  // Layer 2: optional PKCE-only client ID for explicitly experimental source
+  // deployments. PKCE refresh omits client_secret entirely (verified in
+  // packages/connectors/src/oauth/google-oauth.ts:refreshAccessToken).
   if (!clientId) {
-    const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
-    if (bundled) {
-      clientId = bundled;
+    const experimentalDefault = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
+    if (experimentalDefault) {
+      clientId = experimentalDefault;
       clientSecret = '';
     }
   }
 
   if (!clientId) {
-    log.warn('Google OAuth tokens exist, but no Google client ID is configured (env/DB/bundle all empty); skipping Google connectors');
+    log.warn('Google OAuth tokens exist, but no Google client ID is configured (env/DB/default all empty); skipping Google connectors');
     return null;
   }
 
@@ -561,39 +559,44 @@ async function discoverUsers(): Promise<UserConnectors[]> {
       const hasGoogle = userTokenList.some((t) => t.provider === 'google');
       const hasMicrosoft = userTokenList.some((t) => t.provider === 'microsoft');
 
-      if (hasGoogle && googleConfig === undefined) googleConfig = await resolveGoogleConfig();
-      if (hasMicrosoft && microsoftConfig === undefined) microsoftConfig = await resolveMicrosoftConfig();
-
-      // A user is "usable" for a provider only when they have a token AND a
-      // resolvable client config for it. One DbTokenStore per user carries
-      // whichever configs resolved (provider-aware refresh routes correctly);
-      // the connectors attached are gated on usability.
-      const usableGoogle = hasGoogle && !!googleConfig;
-      const usableMicrosoft = hasMicrosoft && !!microsoftConfig;
-
-      if (usableGoogle || usableMicrosoft) {
-        const tokenStore = new DbTokenStore(
-          oauthRepository,
-          googleConfig ?? undefined,
-          microsoftConfig ?? undefined,
-        );
-        tokenStore.setKeyCache(workerKeyCache);
-        // Audit-log every credential-vault decryption (#393). The sink writes
-        // to access_log with actor='worker'; failures are swallowed and logged
-        // at the call site so a CRDB blip doesn't block legitimate refreshes.
-        tokenStore.setAuditLog(
-          { recordAccess: (input) => accessLogRepository.record(input) },
-          'worker',
-        );
-        if (usableGoogle) {
-          connectors.push(new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver));
-          connectors.push(new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore));
-        }
-        if (usableMicrosoft) {
-          connectors.push(new OutlookMailConnector(userId, tokenStore, gmailCursorStore));
-          connectors.push(new OutlookCalendarConnector(userId, tokenStore, gmailCursorStore));
-        }
-      }
+      const providerConnectors = await buildUserOAuthConnectors<DbTokenStore, SignalConnector>({
+        googleConnectionMode: config.googleConnectionMode,
+        hasGoogleToken: hasGoogle,
+        hasMicrosoftToken: hasMicrosoft,
+        resolveGoogleConfig: async () => {
+          if (googleConfig === undefined) googleConfig = await resolveGoogleConfig();
+          return googleConfig;
+        },
+        resolveMicrosoftConfig: async () => {
+          if (microsoftConfig === undefined) microsoftConfig = await resolveMicrosoftConfig();
+          return microsoftConfig;
+        },
+        createTokenStore: (resolvedGoogleConfig, resolvedMicrosoftConfig) => {
+          const tokenStore = new DbTokenStore(
+            oauthRepository,
+            resolvedGoogleConfig,
+            resolvedMicrosoftConfig,
+          );
+          tokenStore.setKeyCache(workerKeyCache);
+          // Audit-log every credential-vault decryption (#393). The sink writes
+          // to access_log with actor='worker'; failures are swallowed and logged
+          // at the call site so a CRDB blip doesn't block legitimate refreshes.
+          tokenStore.setAuditLog(
+            { recordAccess: (input) => accessLogRepository.record(input) },
+            'worker',
+          );
+          return tokenStore;
+        },
+        createGmailConnector: (tokenStore) =>
+          new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver),
+        createGoogleCalendarConnector: (tokenStore) =>
+          new GoogleCalendarConnector(userId, tokenStore, gmailCursorStore),
+        createOutlookMailConnector: (tokenStore) =>
+          new OutlookMailConnector(userId, tokenStore, gmailCursorStore),
+        createOutlookCalendarConnector: (tokenStore) =>
+          new OutlookCalendarConnector(userId, tokenStore, gmailCursorStore),
+      });
+      connectors.push(...providerConnectors);
 
       if (connectors.length > 0) {
         result.push({ userId, connectors });

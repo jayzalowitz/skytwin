@@ -1,19 +1,10 @@
 /**
- * Connect-Gmail wizard.
+ * Connect-Gmail preview boundary.
  *
- * Why this exists as a wizard separate from setup.js:
- *   Gmail features in SkyTwin (content-aware triage, body summarisation,
- *   draft replies) live behind Google's *restricted* OAuth scope tier.
- *   The bundled SkyTwin-team OAuth client doesn't have those scopes
- *   verified through Google's assigned security-assessment path (see
- *   docs/google-verification.md and issue #351), so every user who wants
- *   Gmail in SkyTwin walks this five-step flow, pasting their own Google
- *   Cloud OAuth credentials at the end. Personal-use projects may use a
- *   verification exception, but remain subject to Google's user-data rules.
- *
- *   This is NOT a fallback or a degraded mode. It's the launch Gmail
- *   experience. About five minutes to set up, then SkyTwin gets full body
- *   access and the inbox-triage marquee features work as designed.
+ * The preview deliberately renders a neutral unavailable state and does
+ * not wire the legacy account-connection wizard retained below. That keeps
+ * credential entry and account synchronization outside the preview while
+ * preserving the code for a later architecture-gated release.
  *
  * Singleton delegator: like every other page in this dashboard, the
  * click handler is wired ONCE with a module-level `_listenerWired`
@@ -283,19 +274,9 @@ async function submitCredentials() {
   }
   if (errEl) errEl.style.display = 'none';
 
-  // KNOWN LIMITATION (codex P2): PUT /api/credentials/google sits behind
-  // sessionAuth + requireOwnership (see apps/api/src/index.ts:230). The
-  // localhost dev-bypass covers it when SKYTWIN_DEV_AUTH_BYPASS=true OR
-  // NODE_ENV=development. In a production self-hosted install where the
-  // operator unset the bundled OAuth client (NO_GOOGLE_CLIENT_CONFIGURED),
-  // the no-userId bootstrap user arriving here has no session, so this
-  // PUT returns 401. Workarounds for that scenario: (a) set
-  // SKYTWIN_DEV_AUTH_BYPASS=true on the install if it's running on
-  // localhost-only, or (b) seed an initial admin user before the first
-  // bootstrap connect-gmail walk-through. A proper fix (one-time
-  // bootstrap token or "no users yet → allow first PUT" guard) is its
-  // own scoped change — tracked in launch-plan §2.6. The default launch
-  // path keeps the bundled client_id and never reaches this branch.
+  // Legacy experimental handler retained without a rendered entry point.
+  // Do not use development authentication bypasses as a first-use bootstrap;
+  // a supported flow needs a separately reviewed, one-use authority design.
   try {
     await fetchJSON('/api/credentials/google', {
       method: 'PUT',
@@ -404,36 +385,22 @@ async function rerender() {
 }
 
 export async function renderConnectGmail(container) {
-  wireDelegator();
-  const current = getCurrentStep();
-  const params = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
-
-  // ?done=1 — set by /api/oauth/google/callback after a successful
-  // Gmail OAuth grant (or by the post-Save redirect once the consent
-  // round-trip lands back on /#/). Show the celebration card.
-  if (params.get('done') === '1') {
-    clearWizardState();
-    container.innerHTML = `<div class="cgm-wrap">${renderHeader()}${renderDone()}</div>`;
-    injectStyles();
-    return;
-  }
-
-  // ?connected=google — set by /api/oauth/google/callback when the user
-  // is deep-linked into this page from the onboarding wizard (or any
-  // /authorize call passing `next=connect-gmail`). Render an "OK, Google
-  // is connected, here's the next step" banner above the wizard so the
-  // user understands why they're seeing the five-step flow.
-  const justConnectedGoogle = params.get('connected') === 'google';
-  const justConnectedAccount = params.get('account') ?? '';
-
-  const opts = current === 5 ? await loadSavedCreds() : {};
-  const step = STEPS[current - 1];
   container.innerHTML = `
     <div class="cgm-wrap">
-      ${renderHeader()}
-      ${justConnectedGoogle ? renderGoogleConnectedBanner(justConnectedAccount) : ''}
-      ${renderProgressDots(current)}
-      ${renderStep(step, opts)}
+      <div class="cgm-header">
+        <h1>Google accounts are unavailable in this preview</h1>
+        <p>Gmail and Google Calendar connection, credential entry, and account synchronization are disabled on this surface.</p>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Explore without an account</span>
+          <span style="font-size:0.75rem;color:var(--text-dim);">Sample only</span>
+        </div>
+        <div class="card-subtitle" style="margin-bottom:1rem;">
+          The isolated sample uses fictional data and does not ask for a Google client ID, client secret, or account grant.
+        </div>
+        <a class="btn btn-primary" href="#/sample">Open the sample</a>
+      </div>
     </div>
   `;
   injectStyles();
@@ -457,8 +424,8 @@ function renderGoogleConnectedBanner(account) {
 function renderHeader() {
   return `
     <div class="cgm-header">
-      <h1>Connect Gmail to SkyTwin</h1>
-      <p>Five-minute setup, one time. Calendar already works through the bundled SkyTwin app — this hooks Gmail up using your own free Google Cloud OAuth credentials so SkyTwin can read your inbox and act on what it finds. <a href="https://jayzalowitz.github.io/skytwin/connect-gmail.html" target="_blank" rel="noopener">Why is this step needed?</a></p>
+      <h1>Google connection unavailable</h1>
+      <p>The supported preview is an account-free sample. Google connection remains disabled while its authorization and credential-custody boundaries are completed.</p>
     </div>
   `;
 }

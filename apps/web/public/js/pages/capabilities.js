@@ -16,6 +16,7 @@ import {
 } from '../api-client.js';
 import { showToast } from '../toast.js';
 import { getEffectiveUserId } from '../sample-session.js';
+import { isGoogleAccountIntegration } from '../google-preview-boundary.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton click delegator guard.
@@ -197,10 +198,15 @@ export async function renderCapabilities(container, userId) {
     lifebooksData = { lifebooks: [] };
   }
 
-  _cachedInstalled = capData.installed ?? [];
-  _cachedSuggestions = capData.suggestions ?? [];
-  _cachedDormant = capData.dormant ?? [];
-  _cachedRecipes = recipesData.recipes ?? [];
+  _cachedInstalled = (capData.installed ?? []).filter(server =>
+    !isGoogleAccountIntegration({ key: server.registry_id }));
+  _cachedSuggestions = (capData.suggestions ?? []).filter(suggestion =>
+    !isGoogleAccountIntegration({ key: suggestion.registry_id }));
+  _cachedDormant = (capData.dormant ?? []).filter(server =>
+    !isGoogleAccountIntegration({ key: server.registry_id }));
+  _cachedRecipes = (recipesData.recipes ?? []).filter(recipe =>
+    !(recipe.registryIds ?? []).some(registryId =>
+      isGoogleAccountIntegration({ key: registryId })));
   _cachedPendingOptIns = optInsData.optIns ?? [];
   // `GET /api/lifebooks/:userId` already calls `listVisible()` server-side,
   // so the response is hidden-filtered. Defensive client-side filter uses
@@ -566,7 +572,12 @@ async function renderRegistryResults(userId, state) {
 
   try {
     const { entries } = await searchCapabilityRegistry(userId, q, category);
-    const filtered = applyLifebookFilter(entries ?? [], lifebookDomain);
+    const previewSafeEntries = (entries ?? []).filter(entry =>
+      !isGoogleAccountIntegration({
+        key: entry.id,
+        adapter: entry.oauthProvider,
+      }));
+    const filtered = applyLifebookFilter(previewSafeEntries, lifebookDomain);
     if (filtered.length === 0) {
       const lifebookMsg = lifebookDomain
         ? ` for the "${escapeHtml(lifebookDomain)}" Lifebook`
@@ -675,6 +686,10 @@ async function handleSnoozeSuggestion(id, userId, days) {
 }
 
 async function handleInstallFromSuggestion(registryId, userId) {
+  if (isGoogleAccountIntegration({ key: registryId })) {
+    showToast('Google account capabilities are unavailable in this preview.', { kind: 'info' });
+    return;
+  }
   // Install from suggestion: placeholder — actual install wiring is via mcp-host (#176 follow-up)
   showToast(`Install requested for ${registryId} — wiring coming soon.`, { kind: 'info' });
 }
@@ -693,6 +708,10 @@ async function handleInstallRecipe(slug, userId, btn) {
 }
 
 async function handleInstallRegistryEntry(registryId, userId, btn) {
+  if (isGoogleAccountIntegration({ key: registryId })) {
+    showToast('Google account capabilities are unavailable in this preview.', { kind: 'info' });
+    return;
+  }
   // Direct registry install: placeholder — mcp-host wiring is downstream (#176 follow-up)
   showToast(`Install requested for ${registryId} — wiring coming soon.`, { kind: 'info' });
 }

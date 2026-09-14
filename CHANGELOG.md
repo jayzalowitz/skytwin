@@ -4,6 +4,20 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **The supported preview is account-free sample only; Google account access is
+  fail-closed.** The packaged desktop no longer carries a project-owned Google
+  client ID and pins its managed API and worker children to disabled Google
+  mode. Authorization, callback, credential mutation/synchronization, connector
+  discovery, capability installation, and every known account-backed email or
+  calendar action refuse before provider contact, adapter preparation, or a
+  dispatch lease. Dynamic Google/Gmail/Calendar aliases are filtered across
+  credential reads, writes, sync, and UI surfaces; stale connector-health rows
+  cannot restore a reconnect prompt. Existing stored tokens and credentials
+  are retained for a future reviewed migration. Managed Google access is
+  deferred, and an experimental source flag is not a supported operator/BYO
+  path. This correction supersedes current-looking bundled-client and
+  five-minute-setup entries below without rewriting their historical record.
+
 - **Assistant turns now carry durable, user-scoped retry identity.**
   `POST /api/assistant/messages` requires a client-generated UUID `requestId`.
   New user and assistant rows are unique per owner, request identity, and role;

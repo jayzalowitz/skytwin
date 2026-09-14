@@ -176,23 +176,6 @@ async function fetchJsonBounded<T>(
 }
 
 /**
- * Google OAuth `client_id` baked into the desktop bundle.
- *
- * Registered in the SkyTwin Google Cloud project (`skytwin-492700`) as
- * an OAuth client of type "Desktop app", created 2026-05-22. PKCE
- * binds each auth code to a per-flow verifier the API holds in memory;
- * the public client_id alone redeems nothing. The token redirect
- * lands on `http://127.0.0.1:NNNN/api/oauth/google/callback` and never
- * traverses our infrastructure — tokens stay on the user's machine,
- * encrypted by `credential-vault`.
- *
- * Override at build time via `SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID` env if
- * shipping a forked SkyTwin build that should consent under a
- * different brand.
- */
-const BUNDLED_GOOGLE_CLIENT_ID = '594829999930-kpjopcs1pak0rp0omimuegr5ugcv5l8h.apps.googleusercontent.com';
-
-/**
  * Manages the API server and worker as child processes.
  * Health monitoring every 5s, restart with exponential backoff,
  * 5 failures in 5 minutes marks as failed.
@@ -622,16 +605,6 @@ export class ServiceManager {
   }
 
   private getEnv(): Record<string, string> {
-    // Bundle-default Google OAuth client_id. Empty when the desktop was
-    // built without one — env wins over this. The desktop bundle ships
-    // with the SkyTwin-team-registered verified OAuth client (type:
-    // "Installed application"), so users never have to create their own
-    // Google Cloud OAuth app. PKCE binds each authorization code to a
-    // per-flow verifier the API holds in memory; a leaked client_id
-    // alone redeems nothing.
-    const envOverride = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'];
-    const bundledGoogleClientId =
-      envOverride !== undefined && envOverride !== '' ? envOverride : BUNDLED_GOOGLE_CLIENT_ID || '';
     const inheritedEnv = { ...process.env } as Record<string, string>;
     // Renderer evidence authority belongs only to the Electron main process.
     // API/web/worker children must not be able to forge the rendered-UI proof.
@@ -653,7 +626,15 @@ export class ServiceManager {
       // the purpose of the all-in-one bundle.
       USE_MOCK_IRONCLAW: process.env['USE_MOCK_IRONCLAW'] ?? 'true',
       NODE_ENV: 'production',
-      SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: bundledGoogleClientId,
+      // Google account connections are outside the packaged preview boundary.
+      // Pin this after inherited environment so a launcher shell cannot opt the
+      // API or worker into the experimental source-development path.
+      SKYTWIN_GOOGLE_CONNECTION_MODE: app.isPackaged
+        ? 'disabled'
+        : process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] ?? 'disabled',
+      SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: app.isPackaged
+        ? ''
+        : process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '',
       API_PORT: '3100',
       WORKER_PORT: '3101',
       API_BASE_URL: 'http://127.0.0.1:3100',

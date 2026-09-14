@@ -145,6 +145,12 @@ export class DbCredentialProvider implements CredentialProvider {
     allowPlaintextMigration: boolean,
     dispatchProof?: DispatchLeaseProof,
   ): Promise<CredentialOutcome> {
+    if (provider === 'google' && loadConfig().googleConnectionMode !== 'experimental') {
+      return markCredentialRequestBoundary(
+        { success: false, error: 'Google connection is unavailable in this preview.' },
+        false,
+      );
+    }
     const token = accountEmail
       ? await oauthRepository.getTokenByAccount(userId, provider, accountEmail)
       : await oauthRepository.getToken(userId, provider);

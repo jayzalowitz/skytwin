@@ -33,12 +33,11 @@ import {
 } from '../api-client.js';
 import {
   KEY_USER_ID,
-  KEY_SESSION_TOKEN,
   KEY_ONBOARDED,
   KEY_ONBOARDING_STATE,
   ONBOARDING_STATE_VERSION,
 } from '../storage-keys.js';
-import { clearSampleSession, getEffectiveUserId, isSampleMode } from '../sample-session.js';
+import { getEffectiveUserId, isSampleMode } from '../sample-session.js';
 
 /**
  * Persist the in-flight wizard state to localStorage (#390). Called
@@ -186,105 +185,6 @@ async function handleOnboardingClick(e) {
       break;
 
     // ── Email choice ────────────────────────────────────────────────────────
-    case 'onb-email-google': {
-      const btn = target;
-      btn.disabled = true;
-      btn.textContent = 'Redirecting…';
-      try {
-        const { startGoogleSignIn } = await import('../google-signin.js');
-        // After Google consent, deep-link straight into the Gmail
-        // walkthrough. The bundled OAuth client only carries Calendar +
-        // identity scopes today; Gmail is gated behind the BYO setup at
-        // /#/connect-gmail and the user shouldn't have to discover the
-        // follow-up CTA on the dashboard themselves. The connect-gmail
-        // page no-ops gracefully if Gmail is already wired up.
-        //
-        // Desktop newUser flow: startGoogleSignIn generates a UUIDv4
-        // pendingKey, threads it through state, and polls for the
-        // resulting userId once /callback writes the handoff row.
-        // onComplete fires when the poll resolves — we set the userId
-        // in localStorage and drop the user on the deep-link route
-        // exactly as the web redirect would have.
-        const result = await startGoogleSignIn({
-          newUser: true,
-          next: 'connect-gmail',
-          onComplete: (completion) => {
-            if (completion.connected && completion.userId) {
-              clearSampleSession();
-              // The pending endpoint mints the session — store the
-              // token first so subsequent API calls authenticate.
-              // Without it, the dashboard would 401 the moment the
-              // wizard lands on the deep-link route.
-              if (completion.sessionToken) {
-                localStorage.setItem(KEY_SESSION_TOKEN, completion.sessionToken);
-              }
-              localStorage.setItem(KEY_USER_ID, completion.userId);
-              // Mark onboarding complete + tear down the wizard overlay so
-              // the dashboard underneath becomes the active surface. Without
-              // these three lines the modal stays mounted on top of the
-              // deep-link route, the user can't reach the page they were
-              // sent to, and a reload re-opens first-run onboarding because
-              // KEY_ONBOARDED is unset. Mirrors the tour-mode path (see
-              // 'onb-start-tour' case below) which does the same dance.
-              localStorage.setItem(KEY_ONBOARDED, 'true');
-              if (_wizardState) _wizardState.userId = completion.userId;
-              if (typeof window.skyTwinSetUserId === 'function') {
-                window.skyTwinSetUserId(completion.userId);
-              }
-              hideWizard();
-              window.location.hash = completion.nextHash || '#/connect-gmail';
-              return;
-            }
-            // Timeout (5 min) — let the user retry rather than sitting
-            // on a frozen button. The pending row has either expired
-            // or the user closed the browser tab without consenting.
-            const retryBtn = document.querySelector('[data-action="onb-email-google"]');
-            if (retryBtn instanceof HTMLButtonElement) {
-              retryBtn.disabled = false;
-              retryBtn.textContent = 'Continue with Google';
-            }
-            showWizardError("We didn't see your Google sign-in come through. Try again, or use email below.");
-          },
-        });
-        if (result.status === 'redirecting') return;
-        if (result.status === 'polling') {
-          // Desktop: OAuth opened in the system browser; pendingKey
-          // poll is running in the background and will fire
-          // onComplete above when /callback writes the handoff row.
-          // The button stays disabled with "Waiting for Google…" as
-          // the active status — the wizard auto-advances when the
-          // poll resolves.
-          btn.textContent = 'Waiting for Google…';
-          hideWizardError();
-          return;
-        }
-        // status === 'error'. If the server tagged the failure as a
-        // missing-config code (NO_GOOGLE_CLIENT_CONFIGURED — this
-        // SkyTwin build has no bundled OAuth client), bounce the user
-        // straight into the connect-gmail wizard. That same five-step
-        // walkthrough sets up their OAuth client, which then lets the
-        // bundled flow work on retry.
-        if (result.code === 'NO_GOOGLE_CLIENT_CONFIGURED') {
-          // Re-enable the button before the hashchange so a router that
-          // synchronously re-renders the wizard doesn't leave it stuck
-          // on "Redirecting…".
-          btn.disabled = false;
-          btn.textContent = 'Continue with Google';
-          window.location.hash = result.help || '#/connect-gmail';
-          return;
-        }
-        throw new Error(result.error || 'No authorize URL returned');
-      } catch (err) {
-        showWizardError(
-          err.message?.includes('credentials')
-            ? 'Google API key not configured — use email below or set it up in Settings.'
-            : (err.message || 'Could not start Google sign-in.'),
-        );
-        btn.disabled = false;
-        btn.textContent = 'Continue with Google';
-      }
-      break;
-    }
     case 'onb-email-submit': {
       const emailInput = document.getElementById('onb-email-input');
       const nameInput = document.getElementById('onb-name-input');
@@ -452,21 +352,11 @@ function renderWelcome() {
       How would you like to start?
     </div>
 
-    <!-- Two clear ways to start — the wall of options was overwhelming for
-         non-technical first-runs (user feedback). Everything else (tell-about-
-         yourself, the not-yet-wired computer observer) moved into a collapsed
-         "More ways to start" so the primary path is obvious. -->
+    <!-- The isolated sample is the preview's primary path. Google account
+         connections stay visible as an unavailable neutral state, never as
+         an action affordance. -->
     <div style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1rem;">
-      <button class="btn btn-primary btn-lg" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
-              data-action="onb-choose-email">
-        <span style="font-size:1.2rem;">✉</span>
-        <div>
-          <div style="font-weight:600;">Connect your email</div>
-          <div style="font-size:0.78rem;opacity:0.8;">Link Gmail so your twin can start from your real inbox.</div>
-        </div>
-      </button>
-
-      <button id="onb-tour-button" class="btn btn-outline btn-lg" disabled
+      <button id="onb-tour-button" class="btn btn-primary btn-lg" disabled
               style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
               data-action="onb-start-tour"
               title="Sample profile not seeded — run pnpm db:seed">
@@ -476,6 +366,14 @@ function renderWelcome() {
           <div id="onb-tour-subtext" style="font-size:0.78rem;opacity:0.7;">Checking sample profile…</div>
         </div>
       </button>
+
+      <div style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text-muted);">
+        <span style="font-size:1.2rem;" aria-hidden="true">✉</span>
+        <div>
+          <div style="font-weight:600;color:var(--text);">Gmail and Google Calendar</div>
+          <div style="font-size:0.78rem;">Unavailable in this preview. No account or credentials are needed for the sample.</div>
+        </div>
+      </div>
     </div>
 
     <!-- Local-model recommendation: this endpoint can establish artifact fit,
@@ -489,14 +387,13 @@ function renderWelcome() {
     <details style="margin-bottom:0.5rem;">
       <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-muted);">More ways to start</summary>
       <div style="display:flex;flex-direction:column;gap:0.6rem;margin-top:0.6rem;">
-        <button class="btn btn-outline" style="text-align:left;display:flex;align-items:center;gap:0.75rem;"
-                data-action="onb-choose-about-me">
+        <div style="text-align:left;display:flex;align-items:center;gap:0.75rem;padding:0.75rem;border:1px solid var(--border);border-radius:var(--radius-sm);color:var(--text-muted);">
           <span style="font-size:1.1rem;">💬</span>
           <div>
-            <div style="font-weight:600;">Tell SkyTwin about yourself</div>
-            <div style="font-size:0.76rem;opacity:0.8;">Answer a few quick questions so your twin knows where to start.</div>
+            <div style="font-weight:600;color:var(--text);">Personal setup</div>
+            <div style="font-size:0.76rem;opacity:0.8;">Coming after the isolated sample preview.</div>
           </div>
-        </button>
+        </div>
         <div style="font-size:0.74rem;color:var(--text-muted);padding:0 0.25rem;">
           💻 Learning from the apps on your computer is coming soon —
           track it on <a href="https://github.com/jayzalowitz/skytwin/issues/389" target="_blank" rel="noopener">issue #389</a>.
@@ -565,19 +462,13 @@ function renderWelcome() {
 function renderEmailChoice() {
   renderContent(`
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
-    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">Sign in to get started</div>
+    <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">Gmail and Google Calendar are unavailable</div>
     <div class="onboarding-desc" style="margin-bottom:1rem;">
-      Connect with Google so your twin can see your email and calendar from day one.
+      This preview does not connect to Gmail or Google Calendar. Return to the sample for the supported first-run experience, or continue with an email address without linking an account.
     </div>
 
-    <button class="btn btn-primary btn-lg" style="width:100%;display:flex;align-items:center;justify-content:center;gap:0.5rem;margin-bottom:1rem;"
-            data-action="onb-email-google">
-      <span style="font-weight:700;">G</span>
-      <span>Continue with Google</span>
-    </button>
-
     <details style="margin-bottom:1rem;">
-      <summary style="cursor:pointer;color:var(--text-muted);font-size:0.85rem;">Use an email address instead</summary>
+      <summary style="cursor:pointer;color:var(--text-muted);font-size:0.85rem;">Continue with an email address</summary>
       <div style="margin-top:0.75rem;padding:0.75rem;border:1px solid var(--border);border-radius:var(--radius-sm);">
         <div class="form-group">
           <label style="font-size:0.85rem;">Your name</label>
@@ -895,8 +786,6 @@ const DET_QUESTIONS = [
       { value: 'linear', label: 'Linear' },
       { value: 'slack', label: 'Slack' },
       { value: 'notion', label: 'Notion' },
-      { value: 'gmail', label: 'Gmail' },
-      { value: 'calendar', label: 'Calendar' },
       { value: 'none', label: 'None of the above' },
     ],
   },

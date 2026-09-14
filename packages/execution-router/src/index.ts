@@ -11,6 +11,8 @@ export type {
   RollbackRoutingResult,
   ExecutionDispatchAuthorityPort,
   ExecutionDispatchLeaseGrant,
+  ExecutionAdmissionDecision,
+  ExecutionAdmissionGuard,
 } from './execution-router.js';
 
 export {

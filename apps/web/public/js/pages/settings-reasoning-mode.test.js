@@ -78,29 +78,19 @@ describe('credential transfer disclosures', () => {
     webApi.fetchJSON.mockResolvedValue({ credentials: [] });
   });
 
-  it('renders Google storage and conditional IronClaw transfer before submit', async () => {
+  it('renders Google as unavailable without credential or connection controls', async () => {
     localStorage.setItem('skytwin_connect_gmail_step', '5');
     const container = document.getElementById('page-content');
     await renderConnectGmail(container);
 
-    const form = document.getElementById('cgm-cred-form');
-    const submit = form?.querySelector('button[type="submit"]');
-    const disclosure = form?.querySelector('[data-region="credential-transfer-disclosure"]');
-    const disclosureText = disclosure?.textContent.replace(/\s+/g, ' ').trim();
-
-    expect(form).toBeInstanceOf(HTMLFormElement);
-    expect(disclosure).toBeInstanceOf(HTMLDivElement);
-    expect(disclosureText).toContain('sent to Google for OAuth');
-    expect(disclosureText).toContain('When an IronClaw execution adapter is configured');
-    expect(disclosureText).toContain('registered with that configured server');
-    expect(disclosureText).toContain('which may be remote');
-    expect(submit).toBeInstanceOf(HTMLButtonElement);
-    expect(disclosure.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-    expect(webApi.fetchJSON).toHaveBeenCalledWith('/api/credentials/google');
-
-    expect(connectGmailSource).toContain('packaged desktop default');
-    expect(connectGmailSource).toContain('sent to Google for OAuth');
-    expect(connectGmailSource).not.toContain('sent to Google only');
+    expect(container.textContent).toContain('Google accounts are unavailable in this preview');
+    expect(container.textContent).toContain('isolated sample');
+    expect(container.querySelector('input')).toBeNull();
+    expect(container.querySelector('form')).toBeNull();
+    expect(container.querySelector('[data-action]')).toBeNull();
+    expect(container.querySelector('a[href="#/sample"]')).toBeInstanceOf(HTMLAnchorElement);
+    expect(webApi.fetchJSON).not.toHaveBeenCalled();
+    expect(connectGmailSource).toContain('legacy account-connection wizard retained below');
   });
 
   it('includes conditional IronClaw credential transfer in the Settings network summary', () => {
@@ -112,11 +102,12 @@ describe('credential transfer disclosures', () => {
     expect(source).toContain('with that configured server, which may be remote');
   });
 
-  it('does not describe write-capable Google scopes as read-only', () => {
-    expect(source).not.toContain('Your twin only reads data');
-    expect(source).toContain('send mail, change Gmail labels, or manage calendar events');
-    expect(source).toContain('configured autonomy and policies allow it');
-    expect(source).toContain('Actions are recorded with explanations');
+  it('renders Settings Google status as unavailable without account actions', () => {
+    expect(source).toContain('Google (Gmail + Calendar)');
+    expect(source).toContain('Unavailable in this preview');
+    expect(source).toContain('No account access');
+    expect(source).not.toContain('data-action="connect-google"');
+    expect(source).not.toContain('data-action="disconnect-google"');
   });
 
   it('states the limit of pattern-based crash-report scrubbing', () => {

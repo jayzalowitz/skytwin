@@ -384,12 +384,9 @@ export const _stateTtlMsForTests = STATE_TTL_MS;
  * in the dashboard.
  */
 /**
- * Source of the Google OAuth config currently in use. Drives the
- * tier-gating below: only `userSupplied` configs can request the
- * restricted Gmail scopes, because the bundled client is intentionally
- * NOT submitted for Google's restricted-scope security assessment
- * (that's a $15k–$50k annual third-party CASA audit we don't want to
- * pay for at launch). The same OAuth code path serves both tiers.
+ * Source of the experimental Google OAuth config currently in use. This
+ * distinction remains for minimum-scope enforcement in source development;
+ * the supported preview keeps the entire route family disabled.
  */
 type GoogleConfigSource = 'user-supplied' | 'bundled' | 'unset';
 
@@ -398,20 +395,17 @@ interface ResolvedGoogleConfig extends GoogleOAuthConfig {
 }
 
 /**
- * Build the Google OAuth config. Three sources, in priority order:
+ * Build the experimental Google OAuth config. Three sources, in priority order:
  *   1. User-supplied credentials in the DB (Setup page) — wins. These
  *      come from a Google Cloud OAuth client the user created in their
- *      own GCP project. Google does NOT require app verification for
- *      a user's own OAuth client used only by themselves, so this is
- *      how we light up Gmail (restricted-scope) without a SkyTwin-side
- *      security assessment.
+ *      own GCP project. This path remains unsupported until the OAuth
+ *      generation, transaction, session, scope, and custody gates land.
  *   2. Confidential-client env vars (`GOOGLE_CLIENT_ID`/`_SECRET`) —
  *      the self-hosted/ops path. Operator-owned clients also count as
  *      user-supplied for tier-gating purposes.
- *   3. PKCE-only default client_id baked into the desktop bundle
- *      (`SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`). The SkyTwin team owns
- *      this client; it is verified by Google for identity + calendar
- *      scopes only, so the bundled flow CANNOT request Gmail.
+ *   3. An explicitly injected PKCE-only default client_id
+ *      (`SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID`). Official packaged previews
+ *      forcibly clear this value and ship no project-owned Google client.
  *
  * `clientSecret` is the literal empty string in PKCE mode — downstream
  * code keys on `secret === ''` to choose the PKCE token-exchange
@@ -444,10 +438,9 @@ async function resolveGoogleConfig(): Promise<ResolvedGoogleConfig> {
     // No service_credentials table yet — fall through.
   }
 
-  // Layer 3: PKCE-only default (desktop bundle). Used iff neither env
-  // vars nor DB supplied a clientId. Marked source: 'bundled' so the
-  // /authorize handler can reject ?include=gmail requests until the
-  // user wires their own OAuth client via Setup.
+  // Layer 3: legacy PKCE-only default label. Official packaged previews
+  // clear this input; it remains solely for explicit experimental source
+  // testing and preserves the narrower scope behavior.
   if (!clientId) {
     const bundled = process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '';
     if (bundled) {
@@ -655,29 +648,20 @@ function handleCredentialSaveConflict(
 }
 
 /**
- * Scope tiers. The split exists for two reasons:
+ * Experimental source-development scope tiers. The split exists to keep
+ * requests minimal while the supported preview rejects Google entirely.
  *
- *   1. Google classifies Gmail's `readonly`/`modify` as **restricted**
- *      scopes — requesting them in a published OAuth client means
- *      passing the annual CASA Tier 2/3 security assessment ($15k–$50k,
- *      4–8 weeks). Calendar's `readonly`/`events` are **sensitive** but
- *      not restricted — just normal app review, no assessor fee.
+ *   1. Google classifies Gmail's `readonly`/`modify` as restricted scopes,
+ *      while Calendar's `readonly`/`events` are sensitive. The applicable
+ *      review and assessment requirements must be verified before support.
  *
  *   2. Most users only need calendar + identity to get value from the
  *      twin (scheduling, meeting suggestions). Forcing the Gmail
  *      consent prompt on those users is unnecessary friction even when
- *      we *do* have the bundled client verified for Gmail.
+ *      a future supported client can request them.
  *
- * Stage 1 (now): the bundled SkyTwin-team client is verified for
- *   IDENTITY + CALENDAR. Users who want Gmail features paste their own
- *   OAuth credentials into Setup; their own GCP project + their own
- *   email as a test user → no app verification needed.
- *
- * Stage 2 (post-launch, when revenue funds the audit): submit the
- *   bundled client through CASA. The code below stays the same — the
- *   gate just turns into "always allow Gmail with bundled" once Google
- *   updates the verification status. Document the rollout in
- *   docs/google-verification.md.
+ * No client or scope set in this helper is a release-readiness claim. See
+ * docs/google-verification.md for the deferred architecture and approval work.
  */
 const IDENTITY_SCOPES_LIST = ['openid', 'email', 'profile'];
 
@@ -765,6 +749,24 @@ async function consumePkceVerifier(state: string): Promise<string | undefined> {
  */
 export function createOAuthRouter(): Router {
   const router = Router();
+
+  // The release-candidate surface is account-free by default. Keep this
+  // guard ahead of both authentication and every Google-specific handler so
+  // stale callbacks, pending handoffs, and stored token rows cannot revive a
+  // disabled integration. Source developers must opt in explicitly; client
+  // credentials alone are never treated as authority to enable Google.
+  router.use('/google', (_req, res, next) => {
+    if (loadConfig().googleConnectionMode === 'experimental') {
+      next();
+      return;
+    }
+    res.status(503).json({
+      error: 'Google connection is unavailable in this preview.',
+      code: 'GOOGLE_CONNECTION_DISABLED',
+      available: false,
+      mode: 'disabled',
+    });
+  });
 
   // All OAuth management endpoints require an authenticated user except:
   //   - /google/callback                  public (browser redirect from Google)

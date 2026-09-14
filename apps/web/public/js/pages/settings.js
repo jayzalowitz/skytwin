@@ -1,4 +1,4 @@
-import { fetchUser, updateTrustTier, fetchOAuthStatus, disconnectProvider, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
+import { fetchUser, updateTrustTier, escapeHtml, fetchSettings, updateAutonomySettings, updateIronClawChannel, upsertDomainPolicy, deleteDomainPolicy, createEscalationTrigger, deleteEscalationTrigger, createSession, fetchSessions, revokeSession, saveAIProviders, testAIProvider, fetchRoutines, deleteRoutine, startFederationPairing, completeFederationPairing, listFederationPeers, unpairFederationPeer } from '../api-client.js';
 import { mountThemeSwitcher } from '../theme-switcher.js';
 import { mountEmbeddedLlmCard } from '../components/embedded-llm-card.js';
 import {
@@ -104,28 +104,24 @@ function renderPromotionCriteriaSection(currentTier) {
 
 export async function renderSettings(container, userId) {
   let user = null;
-  let googleStatus = null;
   let settings = null;
   let sessions = [];
   let routines = [];
 
   try {
-    const [userResult, oauthResult, settingsResult, sessionsResult, routinesResult] = await Promise.allSettled([
+    const [userResult, settingsResult, sessionsResult, routinesResult] = await Promise.allSettled([
       fetchUser(userId),
-      fetchOAuthStatus(userId, 'google'),
       fetchSettings(userId),
       fetchSessions(userId),
       fetchRoutines(userId),
     ]);
     user = userResult.status === 'fulfilled' ? userResult.value?.user : null;
-    googleStatus = oauthResult.status === 'fulfilled' ? oauthResult.value : null;
     settings = settingsResult.status === 'fulfilled' ? settingsResult.value : null;
     sessions = sessionsResult.status === 'fulfilled' ? (sessionsResult.value?.sessions ?? []) : [];
     routines = routinesResult.status === 'fulfilled' ? (routinesResult.value?.routines ?? []) : [];
   } catch { /* empty */ }
 
   const currentTier = user?.trust_tier ?? 'suggest';
-  const googleConnected = googleStatus?.connected ?? false;
   const domainPolicies = settings?.domainPolicies ?? [];
   const escalationTriggers = settings?.escalationTriggers ?? [];
   const autonomy = settings?.autonomySettings ?? {};
@@ -147,15 +143,7 @@ export async function renderSettings(container, userId) {
   const ironclawChannel = settings?.ironclawChannel ?? 'skytwin';
   const ironclawChannels = settings?.ironclawChannels ?? ['skytwin', 'telegram', 'discord', 'slack', 'signal'];
 
-  // Check for ?connected= query param after OAuth redirect
-  const params = new URLSearchParams(window.location.hash.split('?')[1] || '');
-  const justConnected = params.get('connected');
-
   container.innerHTML = `
-    ${justConnected ? `<div class="card" style="border-left: 3px solid var(--success);">
-      <span style="color: var(--success); font-weight: 600;">Connected!</span> Your ${escapeHtml(justConnected)} account is now linked. Your twin will start learning from your data.
-    </div>` : ''}
-
     ${(new URLSearchParams(window.location.search).get('dev') === '1') ? `
     <details class="card collapsible-card">
       <summary class="card-header collapsible-header">
@@ -279,22 +267,15 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Connected accounts</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Connect your accounts so your twin can see your email and calendar.
-        It can send mail, change Gmail labels, or manage calendar events only when you approve or when your configured autonomy and policies allow it. Actions are recorded with explanations.
+        Real-account connections are outside this preview's supported surface.
+        The account-free sample remains available without credentials.
       </div>
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
         <div>
           <div style="font-weight: 600; font-size: 0.9rem;">Google (Gmail + Calendar)</div>
-          <div style="font-size: 0.8rem; color: var(--text-muted);">
-            ${googleConnected ? 'Connected — your twin is learning from your email and calendar' : 'Not connected'}
-          </div>
+          <div style="font-size: 0.8rem; color: var(--text-muted);">Unavailable in this preview</div>
         </div>
-        <div>
-          ${googleConnected
-            ? `<button class="btn btn-outline btn-sm" data-action="disconnect-google">Disconnect</button>`
-            : `<button class="btn btn-primary btn-sm" data-action="connect-google">Connect</button>`
-          }
-        </div>
+        <span style="font-size: 0.75rem; color: var(--text-dim);">No account access</span>
       </div>
     </div>
 
@@ -366,7 +347,7 @@ export async function renderSettings(container, userId) {
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
         <div>
           <div style="font-weight: 500;">Pause background work when idle</div>
-          <div style="font-size: 0.85rem; color: var(--text-muted);">Stop polling Gmail and generating decisions after 5 minutes of inactivity. Resumes automatically when you come back.</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">Pause supported background work after 5 minutes of inactivity. Resumes automatically when you come back.</div>
         </div>
         <label class="toggle-switch">
           <input type="checkbox" id="idle-pause-toggle" data-action="toggle-idle-pause">
@@ -472,9 +453,7 @@ export async function renderSettings(container, userId) {
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
         <strong>Stored in SkyTwin's configured database:</strong> authorized email and calendar fields, selected source content, learned preferences and patterns, memory, and decision, explanation, and receipt records. Signal data is retained there under the app’s retention policy.<br>
         <strong>Sent when enabled:</strong> OAuth and connector requests go to the connected service. When an IronClaw execution adapter is configured, stored service credentials are also registered with that configured server, which may be remote. In “My configured provider” mode, prompts and responses may travel to enabled providers in the chain. Separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
-        <strong>Account access:</strong> ${googleConnected
-          ? 'A Google grant is stored in SkyTwin\'s configured database so SkyTwin can read authorized inbox and calendar data. Before vault initialization it is stored in plaintext. With the API vault initialized and unlocked, new or reconnected grants are encrypted and existing complete plaintext grants can migrate on authorized use; while that vault is locked, new or reconnected writes are refused. The background worker has a separate key cache and may report encrypted grants as unavailable.'
-          : 'No accounts linked yet — no inbox or calendar data is available until you connect one.'}<br>
+        <strong>Account access:</strong> Gmail and Google Calendar connections are unavailable in this preview; the sample uses fictional data and no account grant.<br>
       </div>
     </div>
 
@@ -849,9 +828,8 @@ window.federationUnpair = async function(userId, peerId) {
 // argument so the singleton always acts on the current user even after
 // the dev "Switch user" button changes localStorage. Hash-route gate
 // keeps the singleton from misfiring on other pages — the SPA reuses
-// one #page-content container, so data-action names that overlap with
-// other pages (e.g. "connect-google" also lives on dashboard) need an
-// authoritative scope, and the URL hash is it.
+// one #page-content container, so any overlapping data-action names need
+// an authoritative scope, and the URL hash is it.
 let _settingsListenerWired = false;
 
 function ensureSettingsListener() {
@@ -1024,12 +1002,6 @@ function ensureSettingsListener() {
         return;
       case 'save-tier':
         window.saveTier(uid);
-        return;
-      case 'connect-google':
-        window.handleConnectGoogle(uid);
-        return;
-      case 'disconnect-google':
-        window.handleDisconnectGoogle(uid);
         return;
       case 'save-ai-providers':
         window.saveAIProvidersHandler(uid);
@@ -1221,74 +1193,6 @@ function scheduleTierAutosave(userId) {
     }
   }, 800);
 }
-
-window.handleConnectGoogle = async function(userId) {
-  try {
-    // In the desktop app, open OAuth in the system browser to support
-    // passkeys/WebAuthn which Electron's BrowserWindow cannot handle.
-    // The `desktop` flag must be set at authorize-time so the server can
-    // sign it into the state — mutating the signed state on the client
-    // breaks HMAC verification on the callback.
-    const { startGoogleSignIn } = await import('../google-signin.js');
-    const result = await startGoogleSignIn({
-      userId,
-      onComplete: async (connected) => {
-        // Desktop polling runs for up to 5 minutes — the user may have
-        // navigated away. Re-query the container and bail unless we're
-        // still on /settings, so we don't render over another page.
-        if (window.location.hash.split('?')[0] !== '#/settings') return;
-        const banner = document.getElementById('oauth-polling-banner');
-        if (!connected) {
-          if (banner) banner.textContent = 'Sign-in timed out. Refresh the page to try again.';
-          return;
-        }
-        banner?.remove();
-        const container = document.getElementById('page-content');
-        if (!container) return;
-        await renderSettings(container, userId);
-      },
-    });
-    // Re-query the container after the await — a navigation during the
-    // startGoogleSignIn call could have detached the original element.
-    const pageContent = document.getElementById('page-content');
-    if (!pageContent) return;
-    if (result.status === 'polling') {
-      pageContent.insertAdjacentHTML(
-        'afterbegin',
-        '<div class="info-banner" id="oauth-polling-banner">Waiting for Google sign-in to complete in your browser\u2026</div>',
-      );
-      return;
-    }
-    if (result.status === 'redirecting') {
-      return;
-    }
-    if (result.status === 'error') {
-      const msg = /credentials|authorize url/i.test(result.error || '')
-        ? 'Google access isn\'t set up on this server yet. Head to <a href="#/setup">Connect</a> for the 5-minute walkthrough.'
-        : escapeHtml(result.error || 'Could not start Google sign-in.');
-      pageContent.insertAdjacentHTML('afterbegin', `<div class="error-banner">${msg}</div>`);
-      return;
-    }
-  } catch (err) {
-    document.getElementById('page-content')?.insertAdjacentHTML(
-      'afterbegin',
-      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
-    );
-  }
-};
-
-window.handleDisconnectGoogle = async function(userId) {
-  try {
-    await disconnectProvider('google', userId);
-    const { renderSettings } = await import('./settings.js');
-    await renderSettings(document.getElementById('page-content'), userId);
-  } catch (err) {
-    document.getElementById('page-content').insertAdjacentHTML(
-      'afterbegin',
-      `<div class="error-banner">${escapeHtml(err.message)}</div>`,
-    );
-  }
-};
 
 window.toggleEmailAttribution = async function(userId, checkbox) {
   const enabled = checkbox.checked;

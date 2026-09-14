@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { loadConfig } from '@skytwin/config';
 import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, executionRepository, oauthRepository, CredentialDispatchConflictError, query } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { Request } from 'express';
@@ -6,7 +7,11 @@ import { createLogger } from '@skytwin/core';
 import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
-import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+import {
+  isGoogleAccountIntegration,
+  isGoogleAccountRegistryIdentifier,
+  PROMOTION_THRESHOLDS,
+} from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 // SSE event constants — imported for re-export and for use in callers that
@@ -305,6 +310,42 @@ const CAPABILITY_RECIPES: CapabilityRecipe[] = [
     category: 'lifestyle',
   },
 ];
+
+function googleCapabilitySurfaceAvailable(): boolean {
+  return loadConfig().googleConnectionMode === 'experimental';
+}
+
+function isBlockedGoogleRegistryEntry(entry: {
+  id: string;
+  oauthProvider?: string | null;
+}): boolean {
+  return !googleCapabilitySurfaceAvailable() && isGoogleAccountIntegration({
+    key: entry.id,
+    integration: entry.oauthProvider ?? undefined,
+  });
+}
+
+function filterRecipeForGoogleBoundary(
+  recipe: CapabilityRecipe,
+  additionallyBlockedIds: ReadonlySet<string> = new Set(),
+): CapabilityRecipe | null {
+  if (googleCapabilitySurfaceAvailable()) return recipe;
+  const registryIds = recipe.registryIds.filter((registryId) =>
+    !isGoogleAccountRegistryIdentifier(registryId) && !additionallyBlockedIds.has(registryId));
+  if (registryIds.length === 0) return null;
+  if (registryIds.length === recipe.registryIds.length) return recipe;
+  return {
+    ...recipe,
+    description: `${recipe.displayName} capabilities available in this preview.`,
+    registryIds,
+  };
+}
+
+function availableCapabilityRecipes(): CapabilityRecipe[] {
+  return CAPABILITY_RECIPES
+    .map((recipe) => filterRecipeForGoogleBoundary(recipe))
+    .filter((recipe): recipe is CapabilityRecipe => recipe !== null);
+}
 
 /**
  * Write an audit node into capability_provenance_nodes.
@@ -1021,6 +1062,10 @@ export function createCapabilitiesRouter(): Router {
 
       let entries = await registryClient.search(q);
 
+      if (!googleCapabilitySurfaceAvailable()) {
+        entries = entries.filter((entry) => !isBlockedGoogleRegistryEntry(entry));
+      }
+
       if (category) {
         entries = entries.filter((e) => e.category === category);
       }
@@ -1053,7 +1098,12 @@ export function createCapabilitiesRouter(): Router {
         try {
           // Build a lightweight registry summary so the prompt has context.
           const allEntries = await registryClient.getAll();
-          const registrySummary = allEntries.slice(0, 50).map((e) => ({
+          const blockedRegistryIds = new Set(
+            allEntries.filter(isBlockedGoogleRegistryEntry).map((entry) => entry.id),
+          );
+          const registrySummary = allEntries
+            .filter((entry) => !isBlockedGoogleRegistryEntry(entry))
+            .slice(0, 50).map((e) => ({
             id: e.id,
             displayName: e.displayName,
             category: e.category,
@@ -1083,19 +1133,24 @@ export function createCapabilitiesRouter(): Router {
           });
 
           if (!result.fellBackToDeterministic && Array.isArray(result.output) && result.output.length > 0) {
+            const availableOutput = googleCapabilitySurfaceAvailable()
+              ? result.output
+              : result.output.filter((recommendation) =>
+                  !isGoogleAccountRegistryIdentifier(recommendation.registryId) &&
+                  !blockedRegistryIds.has(recommendation.registryId));
             // Synthesize a single recipe from the LLM's ordered registry list.
             // CapabilityRecipe (local-defined above) is the API response shape;
             // it doesn't have a slot for per-item rationale, so we fold the
             // reasons into the description and order the registryIds by the
             // LLM's priority.
-            const recipe: CapabilityRecipe = {
+            const recipe: CapabilityRecipe | null = filterRecipeForGoogleBoundary({
               slug: 'llm-recommended',
               displayName: 'Recommended for you',
-              description: result.output.map((r) => `${r.name}: ${r.reason}`).join('\n'),
-              registryIds: result.output.map((r) => r.registryId),
+              description: availableOutput.map((r) => `${r.name}: ${r.reason}`).join('\n'),
+              registryIds: availableOutput.map((r) => r.registryId),
               category: 'productivity',
-            };
-            return res.json({ recipes: [recipe] });
+            }, blockedRegistryIds);
+            if (recipe) return res.json({ recipes: [recipe] });
           }
         } catch (err) {
           log.warn('recipe-recommendation prompt failed, using hardcoded fallback', {
@@ -1105,7 +1160,7 @@ export function createCapabilitiesRouter(): Router {
       }
 
       // Deterministic fallback: 6 hardcoded recipes.
-      res.json({ recipes: CAPABILITY_RECIPES });
+      res.json({ recipes: availableCapabilityRecipes() });
     } catch (err) {
       next(err);
     }
@@ -1218,9 +1273,19 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const recipe = CAPABILITY_RECIPES.find((r) => r.slug === slug);
-      if (!recipe) {
+      const sourceRecipe = CAPABILITY_RECIPES.find((r) => r.slug === slug);
+      const recipe = sourceRecipe ? filterRecipeForGoogleBoundary(sourceRecipe) : null;
+      if (!sourceRecipe) {
         res.status(404).json({ error: `Recipe '${slug}' not found` });
+        return;
+      }
+      if (!recipe) {
+        res.status(503).json({
+          error: 'This capability recipe is unavailable while Google connections are disabled.',
+          code: 'GOOGLE_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
         return;
       }
 
@@ -1657,9 +1722,29 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
+      if (!googleCapabilitySurfaceAvailable() &&
+          isGoogleAccountRegistryIdentifier(registryId)) {
+        res.status(503).json({
+          error: 'Google account capabilities are unavailable in this preview.',
+          code: 'GOOGLE_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
+        return;
+      }
+
       // Look up the registry entry for metadata
       const entries = await registryClient.search(registryId);
       const entry = entries.find((e) => e.id === registryId);
+      if (entry && isBlockedGoogleRegistryEntry(entry)) {
+        res.status(503).json({
+          error: 'Google account capabilities are unavailable in this preview.',
+          code: 'GOOGLE_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
+        return;
+      }
       const displayName = entry?.displayName ?? registryId;
 
       log.info('Capability install requested', { userId, registryId, displayName });

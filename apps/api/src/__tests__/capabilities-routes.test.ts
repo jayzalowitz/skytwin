@@ -10,10 +10,14 @@ import type { Express } from 'express';
 const {
   mockMcpServerRepository,
   mockAppSuggestionRepository,
+  mockProvenanceRepository,
   mockExecutionRepository,
   mockOauthRepository,
   mockGetExecutionRouter,
   mockRouterRollback,
+  mockRegistrySearch,
+  mockRegistryGetAll,
+  mockLoadConfig,
   mockQuery,
 } = vi.hoisted(() => ({
   mockMcpServerRepository: {
@@ -34,18 +38,27 @@ const {
     markDismissed: vi.fn(),
     markSnoozed: vi.fn(),
   },
+  mockProvenanceRepository: { writeNode: vi.fn() },
   mockExecutionRepository: {
     getRollbackTargetsByServer: vi.fn(),
   },
   mockOauthRepository: { deleteById: vi.fn() },
   mockGetExecutionRouter: vi.fn(),
   mockRouterRollback: vi.fn(),
+  mockRegistrySearch: vi.fn(),
+  mockRegistryGetAll: vi.fn(),
+  mockLoadConfig: vi.fn(),
   mockQuery: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/db', () => ({
   mcpServerRepository: mockMcpServerRepository,
   appSuggestionRepository: mockAppSuggestionRepository,
+  provenanceRepository: mockProvenanceRepository,
   executionRepository: mockExecutionRepository,
   oauthRepository: mockOauthRepository,
   CredentialDispatchConflictError: class CredentialDispatchConflictError extends Error {},
@@ -70,19 +83,8 @@ vi.mock('../lib/user-llm-client.js', () => ({
 vi.mock('@skytwin/registry-client', () => ({
   RegistryClient: vi.fn(function RegistryClient() {
     return {
-    search: vi.fn().mockResolvedValue([
-      {
-        id: '@modelcontextprotocol/server-filesystem',
-        displayName: 'Filesystem',
-        transport: 'stdio',
-        oauthProvider: null,
-        category: 'developer',
-        description: 'Read and write files.',
-        keywords: ['files', 'filesystem'],
-        verified: 'anthropic',
-      },
-    ]),
-    getAll: vi.fn().mockResolvedValue([]),
+      search: mockRegistrySearch,
+      getAll: mockRegistryGetAll,
     };
   }),
 }));
@@ -206,6 +208,21 @@ function makeMcpServer(overrides: Partial<{
 describe('Capabilities API routes', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockRegistrySearch.mockResolvedValue([
+      {
+        id: '@modelcontextprotocol/server-filesystem',
+        displayName: 'Filesystem',
+        transport: 'stdio',
+        oauthProvider: null,
+        category: 'developer',
+        description: 'Read and write files.',
+        keywords: ['files', 'filesystem'],
+        verified: 'anthropic',
+      },
+    ]);
+    mockRegistryGetAll.mockResolvedValue([]);
+    mockProvenanceRepository.writeNode.mockResolvedValue(undefined);
     // Default: query succeeds with empty rows (used for provenance insert)
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
     // Default: suggestion mocks return empty arrays
@@ -777,6 +794,40 @@ describe('Capabilities API routes', () => {
         expect(entry.category).toBe('developer');
       }
     });
+
+    it('filters Google account entries while preserving a non-Google neighbor when disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockRegistrySearch.mockResolvedValue([
+        {
+          id: 'gmail-mcp',
+          displayName: 'Gmail',
+          oauthProvider: null,
+          category: 'productivity',
+        },
+        {
+          id: 'custom-google-photos',
+          displayName: 'Photos',
+          oauthProvider: 'google',
+          category: 'productivity',
+        },
+        {
+          id: '@modelcontextprotocol/server-github',
+          displayName: 'GitHub',
+          oauthProvider: 'github',
+          category: 'developer',
+        },
+      ]);
+
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'GET', `/api/capabilities/registry?userId=${USER_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = res.body as { entries: Array<{ id: string }> };
+      expect(body.entries.map((entry) => entry.id)).toEqual([
+        '@modelcontextprotocol/server-github',
+      ]);
+      expect(mockRegistrySearch).toHaveBeenCalledWith('');
+    });
   });
 
   // =========================================================================
@@ -927,6 +978,25 @@ describe('Capabilities API routes', () => {
       expect(slugs).toContain('developer-pack');
       expect(slugs).toContain('productivity-pack');
     });
+
+    it('filters Google account registry IDs from deterministic recipes while disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'GET', `/api/capabilities/recipes?userId=${USER_ID}`);
+
+      expect(res.status).toBe(200);
+      const body = res.body as { recipes: Array<{ slug: string; description: string; registryIds: string[] }> };
+      const allIds = body.recipes.flatMap((recipe) => recipe.registryIds);
+      expect(allIds).not.toContain('gmail-mcp');
+      expect(allIds).not.toContain('google-calendar-mcp');
+      expect(allIds).not.toContain('@modelcontextprotocol/server-google-drive');
+      expect(allIds).toContain('@modelcontextprotocol/server-github');
+      expect(body.recipes.find((recipe) => recipe.slug === 'productivity-pack'))
+        .toMatchObject({
+          description: 'Productivity pack capabilities available in this preview.',
+          registryIds: ['@notionhq/notion-mcp-server', '@modelcontextprotocol/server-slack'],
+        });
+    });
   });
 
   describe('POST /recipes/:slug/install', () => {
@@ -956,6 +1026,91 @@ describe('Capabilities API routes', () => {
         `/api/capabilities/recipes/nonexistent-pack/install?userId=${USER_ID}`,
       );
       expect(res.status).toBe(404);
+    });
+
+    it('returns only non-Google jobs from a mixed recipe while disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const app = buildApp(USER_ID);
+      const res = await request(
+        app,
+        'POST',
+        `/api/capabilities/recipes/productivity-pack/install?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        jobs: [
+          { registryId: '@notionhq/notion-mcp-server', status: 'pending_user_oauth' },
+          { registryId: '@modelcontextprotocol/server-slack', status: 'pending_user_oauth' },
+        ],
+      });
+    });
+  });
+
+  describe('POST /install', () => {
+    it('rejects a known Google capability before registry lookup or provenance writes', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'POST', `/api/capabilities/install?userId=${USER_ID}`, {
+        registryId: 'gmail-mcp',
+      });
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({
+        code: 'GOOGLE_CONNECTION_DISABLED',
+        available: false,
+        mode: 'disabled',
+      });
+      expect(mockRegistrySearch).not.toHaveBeenCalled();
+      expect(mockProvenanceRepository.writeNode).not.toHaveBeenCalled();
+    });
+
+    it('rejects a registry entry declaring Google OAuth before provenance writes', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockRegistrySearch.mockResolvedValue([
+        {
+          id: 'custom-google-photos',
+          displayName: 'Photos',
+          oauthProvider: 'google',
+          category: 'productivity',
+        },
+      ]);
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'POST', `/api/capabilities/install?userId=${USER_ID}`, {
+        registryId: 'custom-google-photos',
+      });
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+      expect(mockRegistrySearch).toHaveBeenCalledWith('custom-google-photos');
+      expect(mockProvenanceRepository.writeNode).not.toHaveBeenCalled();
+    });
+
+    it('preserves direct install placeholders for a non-Google neighbor while disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockRegistrySearch.mockResolvedValue([
+        {
+          id: '@modelcontextprotocol/server-github',
+          displayName: 'GitHub',
+          oauthProvider: 'github',
+          category: 'developer',
+        },
+      ]);
+      const app = buildApp(USER_ID);
+      const res = await request(app, 'POST', `/api/capabilities/install?userId=${USER_ID}`, {
+        registryId: '@modelcontextprotocol/server-github',
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        job: {
+          registryId: '@modelcontextprotocol/server-github',
+          displayName: 'GitHub',
+          status: 'pending_user_oauth',
+        },
+      });
+      expect(mockRegistrySearch).toHaveBeenCalledWith('@modelcontextprotocol/server-github');
+      expect(mockProvenanceRepository.writeNode).toHaveBeenCalledOnce();
     });
   });
 

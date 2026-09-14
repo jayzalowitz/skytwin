@@ -29,6 +29,11 @@ import {
 } from '@skytwin/execution-router';
 import { McpHost } from '@skytwin/mcp-host';
 import { sharedMetricsCollector } from '@skytwin/observability';
+import {
+  isGoogleAccountActionType,
+  isGoogleAccountIntegration,
+  isGoogleIntegrationIdentifier,
+} from '@skytwin/shared-types';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
 import { accessLogRepository, credentialRequirementRepository, executionDispatchLeaseRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
@@ -108,6 +113,11 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
       apiUrl: openclawConfig.apiUrl,
       apiKey: openclawConfig.apiKey || undefined,
       onCredentialNeeded: async (req: OpenClawCredentialRequirement) => {
+        if (config.googleConnectionMode !== 'experimental' && isGoogleAccountIntegration({
+          adapter: 'openclaw',
+          integration: req.integration,
+          skills: req.skills,
+        })) return;
         // Persist the requirement so the Setup page discovers it
         for (const field of req.fields) {
           await credentialRequirementRepository.register({
@@ -188,7 +198,17 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
     log.info(`Discovered ${discovered.length} plugin adapter(s) from ${config.adapterPluginDir}`);
   }
 
-  return new ExecutionRouter(registry, executionDispatchLeaseRepository);
+  return new ExecutionRouter(
+    registry,
+    executionDispatchLeaseRepository,
+    (action) => config.googleConnectionMode !== 'experimental' &&
+        isGoogleAccountActionType(action.actionType)
+      ? {
+          allowed: false,
+          reason: 'Account-backed email and calendar actions are unavailable in this preview.',
+        }
+      : { allowed: true },
+  );
 }
 
 async function getStoredCredentials(service: string): Promise<Record<string, string>> {
@@ -240,10 +260,37 @@ export function ironClawCredentialName(service: string, credentialKey: string): 
   return `${service}.${credentialKey}`;
 }
 
+async function isGoogleCredentialService(service: string): Promise<boolean> {
+  if (isGoogleIntegrationIdentifier(service)) return true;
+  try {
+    const grouped = await credentialRequirementRepository.getAllGrouped();
+    const group = grouped.get(service);
+    if (!group) return false;
+    return isGoogleAccountIntegration({
+      key: service,
+      adapter: group.adapter,
+      integration: service.split(':')[1] ?? service,
+      skills: group.fields.flatMap((field) => field.skills),
+    });
+  } catch {
+    // A dynamic service cannot be classified safely without its registered
+    // requirement. Static neighboring services remain usable.
+    return service.includes(':');
+  }
+}
+
 export async function syncUnsyncedCredentialsToIronClaw(
   adapter: IronClawEnhancedAdapter,
 ): Promise<void> {
-  const unsynced = await serviceCredentialRepository.getUnsyncedCredentials().catch(() => []);
+  const candidates = await serviceCredentialRepository.getUnsyncedCredentials().catch(() => []);
+  const serviceDecisions = new Map<string, boolean>();
+  await Promise.all(Array.from(new Set(candidates.map((credential) => credential.service)))
+    .map(async (service) => {
+      serviceDecisions.set(service, await isGoogleCredentialService(service));
+    }));
+  // OAuth and account-backed material are not execution-adapter credentials.
+  // Keep aliases out of the generic sync path in every mode.
+  const unsynced = candidates.filter((credential) => !serviceDecisions.get(credential.service));
   // Register concurrently in bounded batches of 5
   const BATCH_SIZE = 5;
   const synced: Array<{ service: string; key: string }> = [];
@@ -277,6 +324,7 @@ export async function syncCredentialToIronClaw(
   credentialKey: string,
   credentialValue: string,
 ): Promise<boolean> {
+  if (await isGoogleCredentialService(service)) return false;
   const adapter = await getIronClawEnhancedAdapter();
   if (!adapter) return false;
 
@@ -295,6 +343,7 @@ export async function revokeCredentialFromIronClaw(
   service: string,
   credentialKey: string,
 ): Promise<boolean> {
+  if (await isGoogleCredentialService(service)) return false;
   const adapter = await getIronClawEnhancedAdapter();
   if (!adapter) return false;
 

@@ -44,7 +44,7 @@ const {
     mockAdapterRegistry: mockRegistry,
     mockExecutionRouter: mockRouter,
     mockOpenClawAdapter: vi.fn(),
-    mockCredentialRequirementRepository: { register: vi.fn() },
+    mockCredentialRequirementRepository: { register: vi.fn(), getAllGrouped: vi.fn() },
     mockSseManager: { emit: vi.fn(), emitAll: vi.fn() },
   };
 });
@@ -193,6 +193,7 @@ describe('execution-setup', () => {
     mockIsIronClawEnhancedAdapter.mockReturnValue(false);
     mockAdapterRegistry._map.clear();
     mockServiceCredentialRepository.getAsMap.mockResolvedValue({});
+    mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map());
   });
 
   // =========================================================================
@@ -208,11 +209,11 @@ describe('execution-setup', () => {
   // syncUnsyncedCredentialsToIronClaw
   // =========================================================================
   describe('syncUnsyncedCredentialsToIronClaw', () => {
-    it('registers unsynced credentials and marks them as synced', async () => {
+    it('registers non-Google credentials and marks them as synced', async () => {
       const adapter = makeAdapter();
       const rows = [
-        makeCredentialRow({ service: 'google', credential_key: 'client_id', credential_value: 'id-val' }),
-        makeCredentialRow({ id: 'cred-2', service: 'google', credential_key: 'client_secret', credential_value: 'secret-val' }),
+        makeCredentialRow({ service: 'github', credential_key: 'client_id', credential_value: 'id-val' }),
+        makeCredentialRow({ id: 'cred-2', service: 'slack', credential_key: 'client_secret', credential_value: 'secret-val' }),
       ];
       mockServiceCredentialRepository.getUnsyncedCredentials.mockResolvedValue(rows);
       mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
@@ -221,16 +222,16 @@ describe('execution-setup', () => {
 
       // Both credentials should be registered
       expect(adapter.registerCredential).toHaveBeenCalledTimes(2);
-      expect(adapter.registerCredential).toHaveBeenCalledWith('google.client_id', 'id-val');
-      expect(adapter.registerCredential).toHaveBeenCalledWith('google.client_secret', 'secret-val');
+      expect(adapter.registerCredential).toHaveBeenCalledWith('github.client_id', 'id-val');
+      expect(adapter.registerCredential).toHaveBeenCalledWith('slack.client_secret', 'secret-val');
 
       // Both should be marked synced
       expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(2);
-      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('google', 'client_id');
-      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('google', 'client_secret');
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('github', 'client_id');
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('slack', 'client_secret');
     });
 
-    it('re-registers unsynced credentials even when IronClaw already has the name', async () => {
+    it('never exports Google credentials while syncing neighboring services', async () => {
       const adapter = makeAdapter({
         listCredentials: vi.fn().mockResolvedValue([
           { name: 'google.client_id', configuredAt: '2026-01-01T00:00:00Z' },
@@ -238,20 +239,44 @@ describe('execution-setup', () => {
       });
       const rows = [
         makeCredentialRow({ service: 'google', credential_key: 'client_id', credential_value: 'id-val' }),
-        makeCredentialRow({ id: 'cred-2', service: 'google', credential_key: 'client_secret', credential_value: 'secret-val' }),
+        makeCredentialRow({ id: 'cred-2', service: 'github', credential_key: 'token', credential_value: 'token-val' }),
       ];
       mockServiceCredentialRepository.getUnsyncedCredentials.mockResolvedValue(rows);
       mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
 
       await syncUnsyncedCredentialsToIronClaw(adapter as never);
 
-      // Unsynced rows mean the local value changed or was never confirmed, so
-      // every row must be sent to IronClaw even if the remote already has a name.
-      expect(adapter.registerCredential).toHaveBeenCalledTimes(2);
-      expect(adapter.registerCredential).toHaveBeenCalledWith('google.client_id', 'id-val');
-      expect(adapter.registerCredential).toHaveBeenCalledWith('google.client_secret', 'secret-val');
+      expect(adapter.registerCredential).toHaveBeenCalledTimes(1);
+      expect(adapter.registerCredential).toHaveBeenCalledWith('github.token', 'token-val');
+      expect(adapter.registerCredential).not.toHaveBeenCalledWith('google.client_id', expect.anything());
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(1);
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('github', 'token');
+      expect(mockServiceCredentialRepository.markSynced).not.toHaveBeenCalledWith('google', 'client_id');
+    });
 
-      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(2);
+    it('never exports aliased or skill-shaped account credentials', async () => {
+      const adapter = makeAdapter();
+      const accountRequirement = {
+        adapter: 'custom',
+        fields: [{ skills: ['send_email'] }],
+      };
+      mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map([
+        ['custom:mail', accountRequirement],
+      ]));
+      mockServiceCredentialRepository.getUnsyncedCredentials.mockResolvedValue([
+        makeCredentialRow({ service: 'openclaw:gmail', credential_key: 'token' }),
+        makeCredentialRow({ id: 'cred-2', service: 'openclaw:google_calendar', credential_key: 'token' }),
+        makeCredentialRow({ id: 'cred-3', service: 'custom:mail', credential_key: 'token' }),
+        makeCredentialRow({ id: 'cred-4', service: 'github', credential_key: 'token' }),
+      ]);
+      mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
+
+      await syncUnsyncedCredentialsToIronClaw(adapter as never);
+
+      expect(adapter.registerCredential).toHaveBeenCalledTimes(1);
+      expect(adapter.registerCredential).toHaveBeenCalledWith('github.token', 'test-value');
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(1);
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('github', 'token');
     });
 
     it('handles partial failures via Promise.allSettled — only marks successes as synced', async () => {
@@ -302,9 +327,7 @@ describe('execution-setup', () => {
       const adapter = makeAdapter({
         listCredentials,
       });
-      const rows = [
-        makeCredentialRow({ service: 'google', credential_key: 'client_id', credential_value: 'val' }),
-      ];
+      const rows = [makeCredentialRow({ service: 'github', credential_key: 'token', credential_value: 'val' })];
       mockServiceCredentialRepository.getUnsyncedCredentials.mockResolvedValue(rows);
       mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
 
@@ -510,16 +533,86 @@ describe('execution-setup', () => {
       );
       expect(mockSseManager.emitAll).not.toHaveBeenCalled();
     });
+
+    it('drops account-backed OpenClaw requirements while disabled', async () => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'disabled',
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: 'http://localhost:9000',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+
+      await createExecutionRouter();
+
+      const options = mockOpenClawAdapter.mock.calls[0]?.[0] as {
+        onCredentialNeeded: (requirement: {
+          userId: string;
+          integration: string;
+          integrationLabel: string;
+          fields: Array<{ key: string; label: string }>;
+          skills: string[];
+        }) => Promise<void>;
+      };
+      await options.onCredentialNeeded({
+        userId: 'owner-1',
+        integration: 'mail',
+        integrationLabel: 'Peer mail',
+        fields: [{ key: 'token', label: 'Token' }],
+        skills: ['send_email'],
+      });
+
+      expect(mockCredentialRequirementRepository.register).not.toHaveBeenCalled();
+      expect(mockSseManager.emit).not.toHaveBeenCalled();
+    });
   });
 
   // =========================================================================
   // syncCredentialToIronClaw
   // =========================================================================
   describe('syncCredentialToIronClaw', () => {
+    it('rejects Google before resolving or calling an adapter', async () => {
+      const adapter = makeAdapter();
+      setupRouterWithAdapter(adapter);
+
+      const result = await syncCredentialToIronClaw('google', 'client_secret', 'my-secret');
+
+      expect(result).toBe(false);
+      expect(adapter.registerCredential).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.markSynced).not.toHaveBeenCalled();
+    });
+
+    it.each(['openclaw:gmail', 'openclaw:google_calendar', 'google:calendar'])
+      ('rejects the alias %s before resolving or calling an adapter', async (service) => {
+        const adapter = makeAdapter();
+        setupRouterWithAdapter(adapter);
+
+        const result = await syncCredentialToIronClaw(service, 'token', 'my-secret');
+
+        expect(result).toBe(false);
+        expect(adapter.registerCredential).not.toHaveBeenCalled();
+        expect(mockServiceCredentialRepository.markSynced).not.toHaveBeenCalled();
+      });
+
+    it('rejects a skill-shaped dynamic service before resolving the adapter', async () => {
+      const adapter = makeAdapter();
+      setupRouterWithAdapter(adapter);
+      mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map([
+        ['custom:mail', { adapter: 'custom', fields: [{ skills: ['send_email'] }] }],
+      ]));
+
+      const result = await syncCredentialToIronClaw('custom:mail', 'token', 'my-secret');
+
+      expect(result).toBe(false);
+      expect(adapter.registerCredential).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.markSynced).not.toHaveBeenCalled();
+    });
+
     it('returns false when no adapter is available', async () => {
       setupRouterWithAdapter(null);
 
-      const result = await syncCredentialToIronClaw('google', 'client_secret', 'my-secret');
+      const result = await syncCredentialToIronClaw('github', 'token', 'my-secret');
 
       expect(result).toBe(false);
     });
@@ -529,11 +622,11 @@ describe('execution-setup', () => {
       setupRouterWithAdapter(adapter);
       mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
 
-      const result = await syncCredentialToIronClaw('google', 'client_secret', 'my-secret');
+      const result = await syncCredentialToIronClaw('github', 'token', 'my-secret');
 
       expect(result).toBe(true);
-      expect(adapter.registerCredential).toHaveBeenCalledWith('google.client_secret', 'my-secret');
-      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('google', 'client_secret');
+      expect(adapter.registerCredential).toHaveBeenCalledWith('github.token', 'my-secret');
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('github', 'token');
     });
 
     it('returns false when registerCredential throws', async () => {
@@ -542,7 +635,7 @@ describe('execution-setup', () => {
       });
       setupRouterWithAdapter(adapter);
 
-      const result = await syncCredentialToIronClaw('google', 'client_secret', 'my-secret');
+      const result = await syncCredentialToIronClaw('github', 'token', 'my-secret');
 
       expect(result).toBe(false);
       expect(mockServiceCredentialRepository.markSynced).not.toHaveBeenCalled();
@@ -553,22 +646,24 @@ describe('execution-setup', () => {
   // revokeCredentialFromIronClaw
   // =========================================================================
   describe('revokeCredentialFromIronClaw', () => {
-    it('returns false when no adapter is available', async () => {
-      setupRouterWithAdapter(null);
+    it('rejects Google before resolving or calling an adapter', async () => {
+      const adapter = makeAdapter();
+      setupRouterWithAdapter(adapter);
 
       const result = await revokeCredentialFromIronClaw('google', 'client_secret');
 
       expect(result).toBe(false);
+      expect(adapter.revokeCredential).not.toHaveBeenCalled();
     });
 
     it('returns true on successful revocation', async () => {
       const adapter = makeAdapter();
       setupRouterWithAdapter(adapter);
 
-      const result = await revokeCredentialFromIronClaw('google', 'client_secret');
+      const result = await revokeCredentialFromIronClaw('github', 'token');
 
       expect(result).toBe(true);
-      expect(adapter.revokeCredential).toHaveBeenCalledWith('google.client_secret');
+      expect(adapter.revokeCredential).toHaveBeenCalledWith('github.token');
     });
 
     it('returns false when revokeCredential throws', async () => {
@@ -577,7 +672,7 @@ describe('execution-setup', () => {
       });
       setupRouterWithAdapter(adapter);
 
-      const result = await revokeCredentialFromIronClaw('google', 'client_secret');
+      const result = await revokeCredentialFromIronClaw('github', 'token');
 
       expect(result).toBe(false);
     });
