@@ -557,13 +557,15 @@ export function selectDownloadedSubject(root, config) {
   assert(entries.length === 1, `${config.artifactName} must contain exactly one direct subject`);
   const entry = entries[0];
   assert(entry?.isFile() && !entry.isSymbolicLink(), `${config.artifactName} subject must be a direct regular file`);
+  assert(/^[A-Za-z0-9][A-Za-z0-9_.+() -]{0,240}$/.test(entry.name), `${config.artifactName} subject name is unsafe`);
   assert(entry.name.endsWith(config.subjectSuffix), `${config.artifactName} subject has the wrong file type`);
   return inspectRegularFile(join(artifactDirectory, entry.name), `${config.artifactName} subject`);
 }
 
-function safeSevenZipListing(archivePath) {
+function safeSevenZipListing(archivePath, archiveType) {
   const sevenZip = process.platform === "linux" ? "/usr/bin/7z" : "7z";
-  const listing = command(sevenZip, ["l", "-slt", archivePath]);
+  command(sevenZip, ["t", `-t${archiveType}`, archivePath]);
+  const listing = command(sevenZip, ["l", "-slt", `-t${archiveType}`, archivePath]);
   let skippedContainer = false;
   const members = [];
   for (const line of listing.split(/\r?\n/)) {
@@ -594,18 +596,46 @@ export function deriveExecutable(platform, subjectPath, extractionRoot) {
   assert(config, `unsupported platform ${platform}`);
   mkdirSync(extractionRoot, { recursive: true });
   if (platform === "macos") {
+    const zipPreflight = String.raw`
+import posixpath, stat, sys, zipfile
+archive = zipfile.ZipFile(sys.argv[1])
+infos = archive.infolist()
+if not infos or len(infos) > 100000:
+    raise SystemExit("zip member count outside release bound")
+expanded = 0
+for info in infos:
+    if info.flag_bits & 1:
+        raise SystemExit("encrypted zip member")
+    expanded += info.file_size
+    if expanded > 8 * 1024 * 1024 * 1024:
+        raise SystemExit("expanded zip exceeds release bound")
+    if info.file_size > 64 * 1024 * 1024 and info.compress_size * 1000 < info.file_size:
+        raise SystemExit("zip compression ratio exceeds release bound")
+    mode = info.external_attr >> 16
+    kind = stat.S_IFMT(mode)
+    if kind not in (0, stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK):
+        raise SystemExit("zip contains special file")
+    if kind == stat.S_IFLNK:
+        target = archive.read(info).decode("utf-8", "strict")
+        if "\\" in target or target.startswith("/"):
+            raise SystemExit("zip symlink target is unsafe")
+        resolved = posixpath.normpath(posixpath.join(posixpath.dirname(info.filename), target))
+        if resolved == ".." or resolved.startswith("../"):
+            raise SystemExit("zip symlink escapes extraction root")
+`;
+    command("/usr/bin/python3", ["-c", zipPreflight, subjectPath]);
     const members = command("unzip", ["-Z1", subjectPath]).split(/\r?\n/).filter(Boolean);
     validateMemberInventory(members);
     command("ditto", ["-x", "-k", subjectPath, extractionRoot]);
   } else if (platform === "windows") {
-    safeSevenZipListing(subjectPath);
-    command("7z", ["x", subjectPath, `-o${extractionRoot}`, "-y"]);
+    safeSevenZipListing(subjectPath, "NSIS");
+    command("7z", ["x", "-tNSIS", subjectPath, `-o${extractionRoot}`, "-y", "-bb0", "-bd"]);
     const payloads = listRegularFiles(extractionRoot).filter((path) => /^app-[^/\\]+\.7z$/i.test(basename(path)));
     assert(payloads.length === 1, `NSIS extraction produced ${payloads.length} application payloads`);
-    safeSevenZipListing(payloads[0]);
+    safeSevenZipListing(payloads[0], "7z");
     const payloadRoot = join(extractionRoot, "payload");
     mkdirSync(payloadRoot, { recursive: true });
-    command("7z", ["x", payloads[0], `-o${payloadRoot}`, "-y"]);
+    command("7z", ["x", "-t7z", payloads[0], `-o${payloadRoot}`, "-y", "-bb0", "-bd"]);
   } else {
     const bytes = readFileSync(subjectPath);
     assert(bytes.length >= 12 && bytes[0] === 0x7f && bytes.subarray(1, 4).toString("ascii") === "ELF", "AppImage subject is not ELF");
@@ -627,7 +657,7 @@ export function deriveExecutable(platform, subjectPath, extractionRoot) {
       }
     }
     assert(valid.length === 1, `AppImage contained ${valid.length} valid SquashFS payloads`);
-    safeSevenZipListing(valid[0]);
+    safeSevenZipListing(valid[0], "SquashFS");
     const squashfsRoot = join(extractionRoot, "squashfs-root");
     mkdirSync(squashfsRoot, { recursive: true });
     command("/usr/bin/7z", ["x", "-tSquashFS", valid[0], `-o${squashfsRoot}`, "-y", "-bb0", "-bd"]);
@@ -664,7 +694,13 @@ async function githubJson(path, token) {
     signal: AbortSignal.timeout(15_000),
   });
   assert(response.ok, `GitHub API ${path} returned HTTP ${response.status}`);
-  return response.json();
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  assert(bytes.length <= 16 * 1024 * 1024, `GitHub API ${path} exceeded the response-size limit`);
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error(`GitHub API ${path} returned invalid JSON`);
+  }
 }
 
 export async function resolveCurrentRunArtifact({ repository, runId, artifactName, token }) {
@@ -770,7 +806,7 @@ export async function runCanonicalVerifier(argv = process.argv.slice(2)) {
     const reportsRoot = resolve(root, ".release-evidence", "reports");
     assert(output.startsWith(`${reportsRoot}${sep}`), "--output must be inside .release-evidence/reports");
     mkdirSync(reportsRoot, { recursive: true });
-    writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx" });
+    writeFileSync(output, `${JSON.stringify(evidence, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   } finally {
     rmSync(extractionRoot, { recursive: true, force: true });
   }
