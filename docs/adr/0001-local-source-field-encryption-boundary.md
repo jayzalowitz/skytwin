@@ -4,6 +4,7 @@
 - Date: 2026-09-10
 - Issue: [#634](https://github.com/jayzalowitz/skytwin/issues/634)
 - Inventory: [`docs/security/encryption-field-inventory.json`](../security/encryption-field-inventory.json)
+- Implementation status: [`docs/security/source-key-broker-implementation.md`](../security/source-key-broker-implementation.md)
 - Decision owners: security and desktop/runtime maintainers
 
 ## Context

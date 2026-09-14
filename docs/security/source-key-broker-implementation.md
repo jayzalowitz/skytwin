@@ -8,10 +8,12 @@ The implemented kernel provides a random per-user root, a versioned mandatory
 passphrase recovery wrapper, explicit scrypt parameters, purpose-separated
 HKDF data keys, context-bound AES-256-GCM envelopes, strict envelope parsing,
 per-child capabilities, role/field/owner authorization, and a one-hour lock
-barrier with bounded child acknowledgements. The source-vault preload surface
-and IPC handlers are deliberately unavailable: loopback-port identity is not
-an ownership proof. Runtime activation remains blocked until Electron can bind
-the broker to services it started and to authenticated owner grants.
+key-cache TTL plus a lock barrier with bounded child acknowledgements. Electron
+main attaches the API and worker through private child-process IPC, but gives
+them empty owner grants. The renderer-facing source-vault preload surface and
+handlers are deliberately unavailable: loopback-port identity is not an
+ownership proof. Runtime activation remains blocked on authenticated
+owner-bound grants and clients for the services Electron already starts.
 
 Migration 073 defines the CockroachDB recovery-key registry and durable device
 wrapper deletion intent. The broker also supports explicit device opt-in, but

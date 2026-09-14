@@ -95,16 +95,20 @@ These are non-negotiable, deterministic, and only change via deploy:
   **Status:** the "never logged in plaintext" half holds today. The at-rest half does
   not yet: tokens are written plaintext by `saveTokenForAccount`
   (`packages/db/src/repositories/oauth-repository.ts`), and the `DbTokenStore` lazy
-  upgrade that would encrypt them runs only in the worker, wired to a `KeyCache` that
-  nothing populates because cross-process unlock IPC isn't built — `apps/worker/src/index.ts`
-  says so in a comment ("this cache is empty … plaintext tokens flow through").
+  upgrade that would encrypt them still has no production key client. Electron now
+  attaches the API and worker to a source-key broker over private child-process IPC,
+  but both roles deliberately receive empty owner grants; the authenticated grant
+  flow, Cockroach-backed broker repository, and narrow source-field consumers are
+  not composed.
   Preferences, twin profiles and memory pages are in the same position: migration
   `066` added the columns, but `setPreferenceVaultKeyProvider()` has no production
   caller, so `resolveKey` returns plaintext mode. This is a rail we intend to hold,
   not one we hold yet; `docs/privacy.html` states the same thing to users. The
-  proposed implementation and locked-state contract is recorded in
+  accepted contract is recorded in
   [`ADR 0001`](./adr/0001-local-source-field-encryption-boundary.md); the ADR and
-  its field inventory are design evidence only and do not change this status.
+  its field inventory do not change this status. The implemented, deliberately
+  inactive broker foundation is tracked in
+  [`source-key-broker-implementation.md`](./security/source-key-broker-implementation.md).
 - Database schema migrations: only via deploy with explicit migration file
 
 Any future change here is a deliberate engineering decision, not a runtime option.

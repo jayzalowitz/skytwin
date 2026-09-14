@@ -50,6 +50,14 @@ All notable changes to SkyTwin will be documented in this file.
   than producing an incomplete field list. Mutation tests bind the exact runner,
   migration corpus, supported DDL, and 94-table/877-column inventory.
 
+- **Launch-facing documentation now matches the inactive runtime boundary.** The
+  accepted ADR, private child-process IPC, empty production owner grants, and
+  remaining repository/client/migration/bake gates are described separately; no
+  production source field is represented as encrypted. The README, privacy page,
+  and deck also stop describing a local model or `llama.cpp` runtime as bundled:
+  current source can recommend a model, but local inference still requires both
+  components to be supplied separately.
+
 ## [Unreleased] — Account-free interactive sample
 
 ### Added
