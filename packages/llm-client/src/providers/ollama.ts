@@ -55,10 +55,11 @@ export async function generate(
       }),
       signal: controller.signal,
     } satisfies RequestInit;
-    customFetch = options.baseUrl
-      ? await fetchCustomProviderUrl(requestUrl, 'ollama', requestInit)
-      : undefined;
-    const res = customFetch?.response ?? await fetch(requestUrl, requestInit);
+    // The default endpoint is loopback, but a local service can still return a
+    // 307/308 redirect that would carry the prompt off-device. Always use the
+    // pinned, redirect-denying transport so `on_device` remains exact.
+    customFetch = await fetchCustomProviderUrl(requestUrl, 'ollama', requestInit);
+    const res = customFetch.response;
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');

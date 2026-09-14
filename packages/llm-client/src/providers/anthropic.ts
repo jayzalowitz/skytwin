@@ -132,7 +132,12 @@ export async function* streamGenerate(
 
     yield* parseAnthropicSseStream(res.body);
   } finally {
+    // `AsyncIterator.return()` reaches this block when a downstream SSE client
+    // disconnects. Abort and cancel before closing the one-request dispatcher;
+    // otherwise `Agent.close()` can wait forever for an unread response body.
+    controller.abort();
     clearTimeout(timeout);
+    await customFetch?.response.body?.cancel().catch(() => undefined);
     await customFetch?.close();
   }
 }

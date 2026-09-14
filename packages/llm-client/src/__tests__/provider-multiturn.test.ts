@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { generate as anthropicGenerate } from '../providers/anthropic.js';
+import {
+  generate as anthropicGenerate,
+  streamGenerate as anthropicStreamGenerate,
+} from '../providers/anthropic.js';
 import { generate as openaiGenerate } from '../providers/openai.js';
 import { generate as googleGenerate } from '../providers/google.js';
 import { generate as ollamaGenerate } from '../providers/ollama.js';
@@ -34,6 +37,36 @@ describe('Anthropic provider — multi-turn translation', () => {
   });
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('aborts and cancels a custom stream when its consumer stops early', async () => {
+    const encoded = new TextEncoder().encode(
+      'event: content_block_delta\ndata: {"type":"content_block_delta","delta":{"type":"text_delta","text":"first"}}\n\n',
+    );
+    const cancel = vi.fn();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoded);
+      },
+      cancel,
+    });
+    const request: { signal?: AbortSignal } = {};
+    vi.stubGlobal('fetch', vi.fn(async (_input, init?: RequestInit) => {
+      request.signal = init?.signal as AbortSignal;
+      return new Response(body, { status: 200 });
+    }));
+
+    const stream = anthropicStreamGenerate(
+      'key',
+      'claude-test',
+      'hello',
+      { baseUrl: 'https://93.184.216.34' },
+    )[Symbol.asyncIterator]();
+    await expect(stream.next()).resolves.toEqual({ done: false, value: 'first' });
+    await stream.return?.(undefined);
+
+    expect(request.signal?.aborted).toBe(true);
+    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it('wraps a string prompt as a single user-role message', async () => {
@@ -224,6 +257,22 @@ describe('Ollama provider — switched to /api/chat', () => {
     expect(captured[0]!.url).toContain('/api/chat');
     expect(captured[0]!.url).not.toContain('/api/generate');
     expect(captured[0]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+  });
+
+  it('rejects redirects from the default loopback endpoint', async () => {
+    const spy = vi.fn().mockResolvedValue(new Response('', {
+      status: 307,
+      headers: { Location: 'https://external.example/collect' },
+    }));
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt')).rejects.toThrow(
+      'Redirects are not allowed',
+    );
+    expect(spy).toHaveBeenCalledWith(
+      'http://127.0.0.1:11434/api/chat',
+      expect.objectContaining({ redirect: 'manual', dispatcher: expect.any(Object) }),
+    );
   });
 
   it('passes a multi-turn ChatMessage[] through unchanged', async () => {
