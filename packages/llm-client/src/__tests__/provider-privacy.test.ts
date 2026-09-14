@@ -192,4 +192,9 @@ describe('reasoning-mode provider policy', () => {
       mode: 'bring_your_own_provider', providers: [openai],
     });
   });
+
+  it('rejects an embedded cross-mode chain before prompt processing', () => {
+    expect(() => providersForReasoningMode('bring_your_own_provider', [openai, embedded]))
+      .toThrow(expect.objectContaining({ code: 'cross_mode_provider', provider: 'embedded' }));
+  });
 });

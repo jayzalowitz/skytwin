@@ -29,7 +29,7 @@ describe('per-user LLM composition root', () => {
 
   it('builds a mode-scoped client from enabled settings', async () => {
     await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
-      state: 'ready', client: { hasProviders: true },
+      state: 'ready', client: { hasProviders: true }, mode: 'on_device',
     });
   });
 

@@ -2,7 +2,6 @@ import type {
   AIProviderName,
   InferenceFallbackV1,
   InferenceReceiptStatus,
-  InferenceReasoningMode,
   ProviderExecutionMetadata,
   ProviderPricingCapability,
   ReasoningMode,
@@ -44,10 +43,9 @@ export interface ConfidentialInferenceVerifier {
 /** Canonical logical input/output bytes and provider facts captured by one client instance. */
 export interface InferenceTrace {
   id: string;
-  reasoningMode: InferenceReasoningMode;
   status: InferenceReceiptStatus;
-  provider: AIProviderName;
-  model: string;
+  /** Selected mode plus adapter-derived runtime facts for this exact call. */
+  execution: ProviderExecutionMetadata;
   endpointIdentity: string;
   request: Uint8Array;
   response: Uint8Array;
@@ -67,10 +65,6 @@ export interface ProviderEntry {
   apiKey: string;
   model: string;
   baseUrl?: string;
-  /** Defaults to on-device for embedded/Ollama and conventional cloud otherwise. */
-  reasoningMode?: InferenceReasoningMode;
-  /** Required for verified-confidential entries. Unverified responses are never returned. */
-  confidentialVerifier?: ConfidentialInferenceVerifier;
 }
 
 export interface LlmClientOptions {

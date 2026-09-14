@@ -60,11 +60,14 @@ const PROVIDER_NAMES = new Set<AIProviderName>([
 ]);
 
 function snapshotProvider(provider: ProviderEntry): ProviderEntry {
+  const allowedKeys = new Set(['name', 'apiKey', 'model', 'baseUrl']);
+  const ownKeys = Reflect.ownKeys(provider);
   const name = provider.name;
   const apiKey = provider.apiKey;
   const model = provider.model;
   const baseUrl = provider.baseUrl;
-  if (!PROVIDER_NAMES.has(name)
+  if (ownKeys.some((key) => typeof key !== 'string' || !allowedKeys.has(key))
+      || !PROVIDER_NAMES.has(name)
       || typeof apiKey !== 'string'
       || typeof model !== 'string'
       || (baseUrl !== undefined && typeof baseUrl !== 'string')) {
@@ -233,6 +236,19 @@ function assertLocalProvider(provider: ProviderEntry): void {
   }
 }
 
+function assertConfiguredProvider(provider: ProviderEntry): void {
+  // The embedded adapter has no network path and can only truthfully report
+  // on-device execution. Reject the mode mismatch before prompt processing;
+  // a post-response classification failure would be too late.
+  if (provider.name === 'embedded') {
+    throw new ProviderModePolicyError(
+      'cross_mode_provider',
+      'The embedded provider is eligible only for on-device reasoning',
+      provider.name,
+    );
+  }
+}
+
 /**
  * Validate a provider chain before constructing an LLM client. This function
  * rejects a mixed chain instead of silently filtering it: a configuration
@@ -261,6 +277,8 @@ export function providersForReasoningMode(
   }
   if (mode === 'on_device') {
     providerSnapshot.forEach(assertLocalProvider);
+  } else {
+    providerSnapshot.forEach(assertConfiguredProvider);
   }
   return Object.freeze({ mode, providers: providerSnapshot });
 }

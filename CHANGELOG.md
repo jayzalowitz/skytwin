@@ -9,11 +9,12 @@ All notable changes to SkyTwin will be documented in this file.
   for exact externally supplied request, response, and evidence bytes; its
   repository create boundary requires caller-supplied recorder roots and, for a
   confidential result, a provider key plus provider-specific attestation
-  policy. Owner-scoped metadata read/delete routes and schema-v2 backup/restore
-  coverage ship, with restored rows explicitly untrusted. Production does not
-  yet configure recorder keys, call the create boundary, emit receipts, export
-  verifier bundles, or show a receipt UI, so this adds no verified-confidential
-  product claim. The source-checkout command and those limitations are
+  policy. Owner-scoped metadata read/delete routes and schema-v3 backup/restore
+  coverage ship, with restored rows explicitly untrusted. Decision-event
+  ingestion calls the create boundary with an ephemeral process key or an
+  explicitly configured recorder key. Product verifier-bundle export, receipt
+  detail UI, and confidential-provider attestation remain unavailable, so this
+  adds no verified-confidential product claim. The source-checkout command and those limitations are
   documented in [`docs/inference-receipts.md`](docs/inference-receipts.md).
 
 - **The local encryption inventory now includes receipt storage.** Migration
@@ -30,9 +31,10 @@ All notable changes to SkyTwin will be documented in this file.
 - **Receipt verification now enforces its declared cryptographic and storage
   contract.** Recorder and provider keys must parse as Ed25519, recorder key
   pairs must match, invalid clocks or freshness-policy values fail closed, and
-  all database-bound identities must be UUIDs before trust evaluation. The
-  schema now permits at most one receipt per decision, matching the singular
-  owner-scoped API.
+  all database-bound identities must be UUIDs before trust evaluation. Receipt
+  batches persist an explicit provider-call ordinal; the singular compatibility
+  read returns the last captured call deterministically while backup retains all
+  rows and rejects duplicate identities before restore.
 
 - **Decision-event inference now produces durable receipt batches before
   approval or action execution.** Interpretation, candidate-generation, and
@@ -49,7 +51,7 @@ All notable changes to SkyTwin will be documented in this file.
   0001 defines key custody, locked behavior, context-bound envelopes,
   crash-safe migration and rotation, backup/restore, deletion after key loss,
   the intentionally readable search-derivative boundary, and the supported
-  desktop-beta scope. A machine-readable inventory classifies all 993 columns
+  desktop-beta scope. A machine-readable inventory classifies all 994 columns
   across the 104 live tables and ties each table to its currently discoverable
   SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
   classification drift, invalid ownership/boundary values, or weakened critical
@@ -89,7 +91,7 @@ All notable changes to SkyTwin will be documented in this file.
   migration entry points cannot execute an unreviewed SQL path, and unsupported
   CockroachDB table DDL—including implicit-column forms—stops validation rather
   than producing an incomplete field list. Mutation tests bind the exact runner,
-  migration corpus, supported DDL, and 104-table/993-column inventory.
+  migration corpus, supported DDL, and 104-table/994-column inventory.
 
 - **Launch-facing documentation now matches the inactive runtime boundary.** The
   accepted ADR, private child-process IPC, empty production owner grants, and
@@ -135,7 +137,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed (post-/review)
 
 - **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
-- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 describes the actual checkpoint and boot-reconciliation contract; the reviewed SQL-corpus digest now covers the combined 104-table, 993-column schema through migration 078, including the locally readable inference-receipt metadata and reasoning-mode boundaries.
+- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 describes the actual checkpoint and boot-reconciliation contract; the reviewed SQL-corpus digest now covers the combined 104-table, 994-column schema through migration 079, including the locally readable inference-receipt metadata and reasoning-mode boundaries.
 
 ### Fixed
 

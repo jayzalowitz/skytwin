@@ -2,10 +2,11 @@ import {
   aiProviderRepository,
   type AIProviderSettingsRow,
 } from '@skytwin/db';
-import type { AIProviderName } from '@skytwin/shared-types';
+import type { AIProviderName, ReasoningMode } from '@skytwin/shared-types';
 import {
   LlmClient,
   ProviderModePolicyError,
+  type LlmClientOptions,
   type ProviderEntry,
 } from '@skytwin/llm-client';
 
@@ -28,7 +29,7 @@ function toProvider(row: AIProviderSettingsRow): ProviderEntry | null {
 }
 
 export type UserLlmClientResolution =
-  | { state: 'ready'; client: LlmClient }
+  | { state: 'ready'; client: LlmClient; mode: ReasoningMode }
   | {
     state: 'no_provider' | 'confirmation_required' | 'policy_blocked';
     client: null;
@@ -39,7 +40,10 @@ export type UserLlmClientResolution =
  * The sole per-user LLM composition root. Every caller receives the same
  * persisted location policy and enabled-provider interpretation.
  */
-export async function resolveUserLlmClient(userId: string): Promise<UserLlmClientResolution> {
+export async function resolveUserLlmClient(
+  userId: string,
+  options: LlmClientOptions = {},
+): Promise<UserLlmClientResolution> {
   const { providers: allRows, reasoningMode: setting } =
     await aiProviderRepository.getReasoningSnapshotForUser(userId);
   const rows = allRows.filter((row) => row.enabled);
@@ -64,7 +68,13 @@ export async function resolveUserLlmClient(userId: string): Promise<UserLlmClien
   try {
     return {
       state: 'ready',
-      client: LlmClient.forReasoningMode(setting.mode, providers as ProviderEntry[], userId),
+      client: LlmClient.forReasoningMode(
+        setting.mode,
+        providers as ProviderEntry[],
+        userId,
+        options,
+      ),
+      mode: setting.mode,
     };
   } catch (error) {
     if (error instanceof ProviderModePolicyError) {
@@ -74,6 +84,9 @@ export async function resolveUserLlmClient(userId: string): Promise<UserLlmClien
   }
 }
 
-export async function buildUserLlmClient(userId: string): Promise<LlmClient | null> {
-  return (await resolveUserLlmClient(userId)).client;
+export async function buildUserLlmClient(
+  userId: string,
+  options: LlmClientOptions = {},
+): Promise<LlmClient | null> {
+  return (await resolveUserLlmClient(userId, options)).client;
 }

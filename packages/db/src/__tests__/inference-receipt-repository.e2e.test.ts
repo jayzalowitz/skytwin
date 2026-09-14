@@ -1543,6 +1543,26 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     expect(await inferenceReceiptRepository.findByIdForUser(owner.userId, bundle.receipt.id)).toBeNull();
   });
 
+  it('returns the last provider call by durable capture order when timestamps tie', async () => {
+    const owner = await createGraph('capture-order');
+    const first = receiptBundle(owner);
+    const second = receiptBundle(owner);
+    const created = await inferenceReceiptRepository.createManyForUser(
+      owner.userId,
+      [first, second].map((bundle) => ({
+        bundle,
+        trustedRecorderKeys: new Map([['e2e-recorder', publicKeyPem]]),
+      })),
+      completionForGraph(owner, 'non_effect'),
+    );
+
+    expect(created?.receipts.map((row) => row.capture_ordinal)).toEqual([0, 1]);
+    await expect(inferenceReceiptRepository.findByDecisionForUser(
+      owner.userId,
+      owner.decisionId,
+    )).resolves.toMatchObject({ id: second.receipt.id, capture_ordinal: 1 });
+  });
+
   it('uses the durable explanation UUID returned by the real generator and adapter', async () => {
     const graph = await createGraph('durable-explanation', 'auto_execute');
     const continuation = completionForGraph(graph, 'auto_execute').continuation;

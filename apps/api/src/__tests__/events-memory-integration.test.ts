@@ -158,6 +158,12 @@ vi.mock('@skytwin/llm-client', () => ({
   LlmClient: vi.fn(),
 }));
 
+vi.mock('../lib/user-llm-client.js', () => ({
+  resolveUserLlmClient: vi.fn().mockResolvedValue({
+    state: 'no_provider', client: null, reason: 'No provider in test',
+  }),
+}));
+
 vi.mock('@skytwin/core', async () => {
   const actual: typeof import('@skytwin/core') = await vi.importActual('@skytwin/core');
   return {

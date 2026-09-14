@@ -81,8 +81,9 @@ detectable, but an attacker can replace both data and embedded keys. Identity
 trust still requires comparing its key ID and public key with a trusted release
 or provider key published out of band. The repository create boundary requires
 its caller to supply trusted recorder keys; it never accepts the bundle's key
-as its own authority. There is no production caller or recorder-key
-configuration in this slice. A `verified` confidential receipt additionally
+as its own authority. Decision-event ingestion is the production caller and
+uses either the three-part recorder-key configuration described above or a
+process-local ephemeral key. A `verified` confidential receipt additionally
 requires a caller-configured provider key and a provider-specific
 attestation-policy verifier. Hashing opaque evidence is not attestation
 verification, so this generic CLI deliberately cannot return `PASS` for a
@@ -102,7 +103,11 @@ Rows cascade-delete with their decision or user and can be
 explicitly deleted atomically through the authenticated
 `DELETE /api/decisions/:decisionId/receipt` route. User backups include the
 canonical receipt metadata; restore verifies its self-contained metadata seal
-and exact linkage before writing it. Because an embedded key is not an identity
+and exact linkage before writing it. Provider-call order is persisted as a
+zero-based capture ordinal, so multiple calls with one transaction timestamp
+still have a deterministic latest row. Older schema-v3 archives without the
+ordinal remain accepted and derive it from array order; duplicate receipt IDs
+are rejected before database writes. Because an embedded key is not an identity
 trust root, restored rows are marked `imported_unverified`. This slice has no
 trust-aware promotion workflow, so they remain untrusted after restore.
 Canonical logical input/output and verification-evidence bytes live in

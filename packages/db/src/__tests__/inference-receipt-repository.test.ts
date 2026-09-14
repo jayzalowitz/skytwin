@@ -207,10 +207,57 @@ describe('inferenceReceiptRepository', () => {
     const [sql, args] = mockTransactionQuery.mock.calls[2]!;
     expect(sql).toContain('JOIN explanation_records er ON er.decision_id = d.id');
     expect(sql).toContain('WHERE d.user_id = $1');
-    expect(sql).toContain('$7::JSONB, true');
+    expect(sql).toContain('$8::JSONB, true');
     expect(sql).toContain('version::INT4 AS version');
+    expect(sql).toContain('capture_ordinal::INT4 AS capture_ordinal');
     expect(args[0]).toBe(bundle.receipt.userId);
-    expect(args[7]).toBe(bundle.receipt.userId);
+    expect(args[5]).toBe(0);
+    expect(args[8]).toBe(bundle.receipt.userId);
+  });
+
+  it('accepts UUID linkage that differs only by case before querying', async () => {
+    const bundle = fixture();
+    const { seal: _seal, ...unsigned } = bundle.receipt;
+    bundle.receipt = signInferenceReceipt({
+      ...unsigned,
+      userId: unsigned.userId.toUpperCase(),
+      decisionId: unsigned.decisionId.toUpperCase(),
+      explanationId: unsigned.explanationId.toUpperCase(),
+    }, { keyId: 'recorder', privateKeyPem, publicKeyPem });
+    const completion = completionFor(fixture());
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [authorityFor(completion)], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: bundle.receipt.id }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ decision_id: completion.decisionId }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ continuation_snapshot: completion.continuation }], rowCount: 1 });
+
+    await expect(inferenceReceiptRepository.createManyForUser(
+      unsigned.userId,
+      [{ bundle, trustedRecorderKeys: new Map([['recorder', publicKeyPem]]) }],
+      completion,
+    )).resolves.not.toBeNull();
+    expect(mockWithTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('rejects duplicate receipt IDs case-insensitively before opening a transaction', async () => {
+    const first = fixture();
+    const second = fixture();
+    const { seal: _seal, ...unsigned } = second.receipt;
+    second.receipt = signInferenceReceipt({
+      ...unsigned,
+      id: unsigned.id.toUpperCase(),
+    }, { keyId: 'recorder', privateKeyPem, publicKeyPem });
+
+    await expect(inferenceReceiptRepository.createManyForUser(
+      first.receipt.userId,
+      [first, second].map((bundle) => ({
+        bundle,
+        trustedRecorderKeys: new Map([['recorder', publicKeyPem]]),
+      })),
+      completionFor(first),
+    )).resolves.toBeNull();
+    expect(mockWithTransaction).not.toHaveBeenCalled();
   });
 
   it('rejects the batch when the locked linkage is not owned', async () => {
@@ -414,12 +461,23 @@ describe('inferenceReceiptRepository', () => {
     }], completion);
 
     const receiptInsertArgs = mockTransactionQuery.mock.calls[2]![1] as unknown[];
-    expect(JSON.parse(receiptInsertArgs[6] as string)).toMatchObject({ model: 'model' });
+    expect(JSON.parse(receiptInsertArgs[7] as string)).toMatchObject({ model: 'model' });
     expect(bundle.receipt.model).toBe('changed-during-trust-lookup');
     expect(mockTransactionQuery.mock.calls[4]![1].slice(-3)).toEqual(['non_effect', null, 'non_effect']);
     expect(JSON.parse(mockTransactionQuery.mock.calls[4]![1][6])).toMatchObject({
       outcome: { reasoning: 'test outcome' },
     });
+  });
+
+  it('uses capture ordinal as the deterministic singular compatibility order', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [], rowCount: 0 });
+    await inferenceReceiptRepository.findByDecisionForUser(
+      '22222222-2222-4222-8222-222222222222',
+      '33333333-3333-4333-8333-333333333333',
+    );
+    expect(mockQuery.mock.calls[0]![0]).toContain(
+      'ORDER BY ir.capture_ordinal DESC, ir.created_at DESC, ir.id DESC LIMIT 1',
+    );
   });
 
   it('reads the owner-scoped guard and claims ready execution only once', async () => {

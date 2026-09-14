@@ -19,7 +19,6 @@ import {
   approvalRepository,
   executionRepository,
   userRepository,
-  aiProviderRepository,
   emailLabelRepository,
   mempalaceRepository,
   TwinRepositoryAdapter,
@@ -48,9 +47,8 @@ import {
   SituationType,
   TrustTier,
 } from '@skytwin/shared-types';
-import type { AIProviderName } from '@skytwin/shared-types';
-import { emitInferenceReceipt, LlmClient } from '@skytwin/llm-client';
-import type { InferenceTrace, ProviderEntry, ReceiptSigningKey } from '@skytwin/llm-client';
+import { emitInferenceReceipt } from '@skytwin/llm-client';
+import type { InferenceTrace, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
 import { NoRequestExecutionError } from '@skytwin/execution-router';
 import { generateKeyPairSync } from 'node:crypto';
@@ -78,6 +76,7 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 
 /**
  * Best-effort: write an inbound raw event into the user's MemoryPort as a
@@ -115,11 +114,6 @@ async function recordSignalToMemory(
  * Build an LlmClient from the user's enabled AI provider settings.
  * Returns null if the user has no enabled providers.
  */
-interface ReceiptAwareLlmClient {
-  client: LlmClient;
-  traces: InferenceTrace[];
-}
-
 let receiptSigningKey: ReceiptSigningKey | undefined;
 
 function getReceiptSigningKey(): ReceiptSigningKey {
@@ -146,29 +140,6 @@ function getReceiptSigningKey(): ReceiptSigningKey {
     publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
   };
   return receiptSigningKey;
-}
-
-async function buildLlmClientForUser(userId: string): Promise<ReceiptAwareLlmClient | null> {
-  const rows = await aiProviderRepository.getEnabledForUser(userId);
-  if (rows.length === 0) return null;
-
-  const providers: ProviderEntry[] = rows.map((r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
-    name: r.provider as AIProviderName,
-    apiKey: r.api_key,
-    model: r.model,
-    baseUrl: r.base_url ?? undefined,
-    reasoningMode: r.provider === 'embedded' || r.provider === 'ollama'
-      ? 'on_device'
-      : 'conventional_cloud',
-  }));
-
-  const traces: InferenceTrace[] = [];
-  return {
-    client: new LlmClient(providers, userId, {
-      onInferenceTrace: (trace) => traces.push(trace),
-    }),
-    traces,
-  };
 }
 
 export function createEventsRouter(): Router {
@@ -264,8 +235,37 @@ export function createEventsRouter(): Router {
       const rawEvent = validation.event;
       const userId = validation.userId;
 
-      // 0. Build per-user LLM client and strategies (or fall back to rule-based)
-      const receiptAwareLlm = await buildLlmClientForUser(userId);
+      // A finalized duplicate must not construct a provider client or make a
+      // fresh inference call. The later create/save path remains the
+      // concurrency backstop for two genuinely simultaneous first ingests.
+      const signalId = typeof rawEvent['signalId'] === 'string' &&
+        rawEvent['signalId'].trim().length > 0
+        ? rawEvent['signalId']
+        : null;
+      let preCapturedDecision: _DecisionObject | null = null;
+      if (signalId && decisionRepositoryAdapter.findBySignalId) {
+        const existing = await decisionRepositoryAdapter.findBySignalId(userId, signalId);
+        if (existing) {
+          const state = await inferenceReceiptRepository.getContinuationForDecision(
+            userId,
+            existing.id,
+          );
+          if (state?.receiptCaptureComplete) preCapturedDecision = existing;
+        }
+      }
+
+      // 0. The persisted mode and provider snapshot are resolved atomically by
+      // the sole per-user composition root. Its trace callback observes every
+      // completed call made by interpretation, candidate generation, or drafts.
+      const traces: InferenceTrace[] = [];
+      const llmResolution = preCapturedDecision
+        ? null
+        : await resolveUserLlmClient(userId, {
+            onInferenceTrace: (trace) => traces.push(trace),
+          });
+      const receiptAwareLlm = llmResolution?.state === 'ready'
+        ? { client: llmResolution.client, traces, mode: llmResolution.mode }
+        : null;
       const llmClient = receiptAwareLlm?.client ?? null;
 
       let interpreter: SituationInterpreter;
@@ -329,14 +329,21 @@ export function createEventsRouter(): Router {
         }
       }
 
-      // 1. Interpret the raw event
-      const decision = await interpreter.interpret(rawEvent);
+      let decision: _DecisionObject;
+      let decisionCreated: boolean;
+      if (preCapturedDecision) {
+        decision = preCapturedDecision;
+        decisionCreated = false;
+      } else {
+        // 1. Interpret the raw event
+        decision = await interpreter.interpret(rawEvent);
 
-      // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work.
-      // `decisionCreated` is false when the row was already persisted for this
-      // (user_id, signal_id) — a re-ingestion. Callers gate side-effects on it
-      // so duplicate ingests don't re-fire UI notifications etc.
-      const { created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision);
+        // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work.
+        // `decisionCreated` is false when the row was already persisted for this
+        // (user_id, signal_id) — a re-ingestion. Callers gate side-effects on it
+        // so duplicate ingests don't re-fire UI notifications etc.
+        ({ created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision));
+      }
 
       let resumedAfterReceiptCapture: {
         outcome: DecisionOutcome;
@@ -661,7 +668,7 @@ export function createEventsRouter(): Router {
           // cloud and local runtimes. Confidential mode must arrive through a
           // separately configured verifier + pinned trust-root integration;
           // never bootstrap trust from fields returned by the verifier itself.
-          if (trace.reasoningMode === 'verified_confidential' || trace.verification) {
+          if (trace.execution.reasoningMode === 'verified_private_cloud' || trace.verification) {
             throw new Error('Confidential receipt emission is not configured for decision events');
           }
           const bundle = emitInferenceReceipt(trace, {

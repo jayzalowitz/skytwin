@@ -204,8 +204,9 @@ async function collectDecisions(userId: string): Promise<DecisionBundle[]> {
   );
   const receipts = await query<InferenceReceiptRow>(
     `SELECT id, version::INT4 AS version, decision_id, explanation_id,
-       status, receipt, trusted, created_at
-       FROM inference_receipts WHERE decision_id = ANY($1) ORDER BY created_at ASC`,
+       capture_ordinal::INT4 AS capture_ordinal, status, receipt, trusted, created_at
+       FROM inference_receipts WHERE decision_id = ANY($1)
+       ORDER BY decision_id ASC, capture_ordinal ASC, created_at ASC, id ASC`,
     [decisionIds],
   );
   const ingestStates = await query<{
@@ -341,11 +342,30 @@ export function validateBackupData(value: unknown): string[] {
           problems.push(`decisions[${index}].explanations[${explanationIndex}] has inconsistent linkage`);
         }
       }
+      const receiptIds = new Set<string>();
+      const captureOrdinals = new Set<number>();
       for (const [receiptIndex, receipt] of receipts.entries()) {
         const signed = snapshotInferenceReceipt(receipt?.receipt);
+        const normalizedReceiptId = typeof receipt?.id === 'string'
+          ? receipt.id.toLowerCase()
+          : null;
+        if (normalizedReceiptId !== null && receiptIds.has(normalizedReceiptId)) {
+          problems.push(`decisions[${index}].inferenceReceipts[${receiptIndex}] duplicates a receipt id`);
+        } else if (normalizedReceiptId !== null) {
+          receiptIds.add(normalizedReceiptId);
+        }
+        const captureOrdinal = receipt?.capture_ordinal ?? receiptIndex;
+        if (Number.isSafeInteger(captureOrdinal) && captureOrdinal >= 0) {
+          if (captureOrdinals.has(captureOrdinal)) {
+            problems.push(`decisions[${index}].inferenceReceipts[${receiptIndex}] duplicates a capture ordinal`);
+          } else {
+            captureOrdinals.add(captureOrdinal);
+          }
+        }
         const linkedExplanation = explanations.some((explanation) =>
           sameUuid(explanation.id, receipt?.explanation_id));
         if (!receipt || !sameUuid(receipt.decision_id, bundle.decision.id) ||
+            !Number.isSafeInteger(captureOrdinal) || captureOrdinal < 0 ||
             !linkedExplanation || !signed || !verifyInferenceReceiptSeal(signed) ||
             !sameUuid(signed.id, receipt.id) || !sameUuid(signed.decisionId, receipt.decision_id) ||
             !sameUuid(signed.explanationId, receipt.explanation_id) ||
@@ -367,7 +387,7 @@ export function validateBackupData(value: unknown): string[] {
           'non_effect', 'ready', 'running', 'completed', 'failed', 'restored_non_replay',
         ];
         const executionStatuses = ['completed', 'failed', 'ambiguous', null];
-        if (state.decisionId !== bundle.decision.id ||
+        if (!sameUuid(state.decisionId, bundle.decision.id) ||
             typeof state.receiptCaptureComplete !== 'boolean' ||
             !['auto_execute', 'approval', 'non_effect'].includes(state.continuationKind) ||
             (state.continuationKind === 'approval'
@@ -604,7 +624,7 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         bump('explanation_records');
       }
 
-      for (const r of bundle.inferenceReceipts ?? []) {
+      for (const [captureOrdinal, r] of (bundle.inferenceReceipts ?? []).entries()) {
         const signed = snapshotInferenceReceipt(r.receipt);
         if (!signed || !verifyInferenceReceiptSeal(signed) || !sameUuid(signed.id, r.id) ||
             !sameUuid(signed.userId, data.user.id) ||
@@ -616,12 +636,13 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         }
         const insertedReceipt = await client.query(
           `INSERT INTO inference_receipts (
-             id, version, decision_id, explanation_id, status, receipt, trusted, created_at
-           ) SELECT $1,$2,d.id,e.id,$5,$6,false,$7
+             id, version, decision_id, explanation_id, capture_ordinal,
+             status, receipt, trusted, created_at
+           ) SELECT $1,$2,d.id,e.id,$5,$6,$7,false,$8
              FROM decisions d JOIN explanation_records e ON e.decision_id = d.id
             WHERE d.id=$3 AND e.id=$4`,
-          [r.id, r.version, r.decision_id, r.explanation_id, r.status,
-            JSON.stringify(signed), r.created_at],
+          [r.id, r.version, r.decision_id, r.explanation_id,
+            r.capture_ordinal ?? captureOrdinal, r.status, JSON.stringify(signed), r.created_at],
         );
         if (insertedReceipt.rowCount !== 1) {
           throw new Error(`receipt ${r.id} could not be linked during restore`);

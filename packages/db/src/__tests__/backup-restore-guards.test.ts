@@ -236,8 +236,8 @@ describe('validateBackupData', () => {
     storedReceipt['decision_id'] = decisionId.toLowerCase();
     storedReceipt['explanation_id'] = explanationId.toLowerCase();
     const ingestState = bundle['ingestState'] as Record<string, unknown>;
-    ingestState['decisionId'] = decisionId.toLowerCase();
-    ingestState['receiptExplanationId'] = explanationId.toLowerCase();
+    ingestState['decisionId'] = decisionId;
+    ingestState['receiptExplanationId'] = explanationId;
 
     const payload = validPayload();
     (payload['user'] as Record<string, unknown>)['id'] = userId.toLowerCase();
@@ -257,6 +257,43 @@ describe('validateBackupData', () => {
 
     expect(validateBackupData(payload)).toContain(
       'decisions[0].inferenceReceipts must contain at most one receipt',
+    );
+  });
+
+  it('rejects duplicate schema-v3 receipt IDs case-insensitively before restore', async () => {
+    const bundle = decisionBundle();
+    const receipt = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    bundle['inferenceReceipts'] = [receipt, { ...receipt, id: RECEIPT_ID.toUpperCase() }];
+    const payload = validPayload();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts[1] duplicates a receipt id',
+    );
+    await expect(restoreBackup(payload)).resolves.toMatchObject({
+      success: false,
+      reason: 'invalid_data',
+    });
+    expect(clientQuery).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate schema-v3 capture ordinals before restore', () => {
+    const bundle = decisionBundle();
+    const first = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    first['capture_ordinal'] = 0;
+    const secondReceipt = signedReceipt({ id: '55555555-5555-4555-8555-555555555555' });
+    const second = {
+      ...first,
+      id: secondReceipt.id,
+      receipt: secondReceipt,
+      capture_ordinal: 0,
+    };
+    bundle['inferenceReceipts'] = [first, second];
+    const payload = validPayload();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts[1] duplicates a capture ordinal',
     );
   });
 

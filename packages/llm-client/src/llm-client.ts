@@ -16,7 +16,6 @@ import type {
   ChatMessage,
   InferenceTrace,
   LlmClientOptions,
-  ConfidentialVerificationResult,
   ProviderPricingSnapshot,
 } from './types.js';
 import {
@@ -106,19 +105,9 @@ function snapshotProvider(provider: ProviderEntry): Readonly<ProviderEntry> {
   const apiKey = provider.apiKey;
   const model = provider.model;
   const baseUrl = provider.baseUrl;
-  const reasoningMode = provider.reasoningMode;
-  const verifier = provider.confidentialVerifier;
-  const verify = verifier?.verify;
-  return Object.freeze({
-    name,
-    apiKey,
-    model,
-    baseUrl,
-    reasoningMode,
-    ...(verifier && typeof verify === 'function'
-      ? { confidentialVerifier: Object.freeze({ verify: verify.bind(verifier) }) }
-      : {}),
-  });
+  return Object.freeze(baseUrl === undefined
+    ? { name, apiKey, model }
+    : { name, apiKey, model, baseUrl });
 }
 
 function snapshotPrompt(prompt: string | ChatMessage[]): string | ChatMessage[] {
@@ -136,32 +125,6 @@ function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOpt
     systemPrompt: options.systemPrompt,
     timeoutMs: options.timeoutMs,
     invocationKind: options.invocationKind,
-  });
-}
-
-function snapshotVerification(result: ConfidentialVerificationResult): ConfidentialVerificationResult {
-  if (result.outcome !== 'verified') {
-    return Object.freeze({
-      outcome: result.outcome,
-      verifierVersion: result.verifierVersion,
-      reason: result.reason,
-    });
-  }
-  return Object.freeze({
-    outcome: result.outcome,
-    inferenceId: result.inferenceId,
-    attestationPolicyVersion: result.attestationPolicyVersion,
-    verifierVersion: result.verifierVersion,
-    evidence: Uint8Array.from(result.evidence),
-    measurementIdentity: result.measurementIdentity,
-    responseSignature: Object.freeze({
-      algorithm: result.responseSignature.algorithm,
-      keyId: result.responseSignature.keyId,
-      publicKeyPem: result.responseSignature.publicKeyPem,
-      signatureBase64: result.responseSignature.signatureBase64,
-    }),
-    verifiedAt: result.verifiedAt,
-    freshUntil: result.freshUntil,
   });
 }
 
@@ -197,13 +160,6 @@ function canonicalLogicalInputBytes(
   }), 'utf8');
 }
 
-function modeFor(provider: ProviderEntry): InferenceTrace['reasoningMode'] {
-  if (provider.reasoningMode) return provider.reasoningMode;
-  return provider.name === 'embedded' || provider.name === 'ollama'
-    ? 'on_device'
-    : 'conventional_cloud';
-}
-
 /**
  * Thrown when all providers in the chain have failed or have open circuits.
  */
@@ -227,11 +183,11 @@ export class LlmClient {
   private readonly options: LlmClientOptions;
   private readonly reasoningMode: ReasoningMode;
 
-  constructor(
+  private constructor(
     providers: readonly ProviderEntry[],
-    userId?: string,
-    options: LlmClientOptions = {},
-    reasoningMode: ReasoningMode = 'bring_your_own_provider',
+    userId: string | undefined,
+    options: LlmClientOptions,
+    reasoningMode: ReasoningMode,
   ) {
     this.options = Object.freeze({
       onInferenceTrace: options.onInferenceTrace,
@@ -308,7 +264,6 @@ export class LlmClient {
     const invocationOptions = snapshotGenerateOptions(options);
     const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
-    let confidentialFallbackReason: string | undefined;
     const executionPath: ProviderExecutionAttempt[] = [];
     const invocationId = randomUUID();
 
@@ -340,14 +295,12 @@ export class LlmClient {
             reasoningMode: this.reasoningMode,
           }),
         );
-        const recorded = await this.recordSuccessfulInference(
-          provider, logicalRequest, content, confidentialFallbackReason,
-        );
-        if (!recorded.accepted) {
-          confidentialFallbackReason = recorded.failureReason;
-          circuitBreaker.recordFailure();
-          continue;
-        }
+        const successfulPath = [
+          ...executionPath,
+          { provider: provider.name, outcome: 'succeeded' as const },
+        ];
+        const execution = this.executionMetadata(provider, invocationId, successfulPath);
+        this.recordSuccessfulInference(provider, logicalRequest, content, execution);
         circuitBreaker.recordSuccess();
         executionPath.push({ provider: provider.name, outcome: 'succeeded' });
 
@@ -356,7 +309,7 @@ export class LlmClient {
           provider: provider.name,
           model: provider.model,
           latencyMs: Date.now() - start,
-          execution: this.executionMetadata(provider, invocationId, executionPath.slice()),
+          execution,
         };
       } catch (err) {
         if (!(err instanceof ProviderModePolicyError)) {
@@ -400,7 +353,6 @@ export class LlmClient {
     const invocationOptions = snapshotGenerateOptions(options);
     const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
-    let confidentialFallbackReason: string | undefined;
     const executionPath: ProviderExecutionAttempt[] = [];
     const invocationId = randomUUID();
 
@@ -437,28 +389,16 @@ export class LlmClient {
         )) {
           if (chunk.length === 0) continue;
           collected.push(chunk);
-          // Confidential output is buffered until its verifier accepts the
-          // response binding. Streaming it first would disclose unverified
-          // output and make a strict failure impossible to retract.
-          if (modeFor(provider) !== 'verified_confidential') {
-            firstChunkSeen = true;
-            yield { type: 'chunk', content: chunk };
-          }
+          firstChunkSeen = true;
+          yield { type: 'chunk', content: chunk };
         }
         const content = collected.join('');
-        const recorded = await this.recordSuccessfulInference(
-          provider, logicalRequest, content, confidentialFallbackReason,
-        );
-        if (!recorded.accepted) {
-          confidentialFallbackReason = recorded.failureReason;
-          circuitBreaker.recordFailure();
-          continue;
-        }
-        if (modeFor(provider) === 'verified_confidential') {
-          for (const chunk of collected) {
-            if (chunk.length > 0) yield { type: 'chunk', content: chunk };
-          }
-        }
+        const successfulPath = [
+          ...executionPath,
+          { provider: provider.name, outcome: 'succeeded' as const },
+        ];
+        const execution = this.executionMetadata(provider, invocationId, successfulPath);
+        this.recordSuccessfulInference(provider, logicalRequest, content, execution);
         circuitBreaker.recordSuccess();
         executionPath.push({ provider: provider.name, outcome: 'succeeded' });
         yield {
@@ -467,7 +407,7 @@ export class LlmClient {
           provider: provider.name,
           model: provider.model,
           latencyMs: Date.now() - start,
-          execution: this.executionMetadata(provider, invocationId, executionPath.slice()),
+          execution,
         };
         return;
       } catch (err) {
@@ -491,79 +431,47 @@ export class LlmClient {
     throw new AllProvidersFailedError(attempted);
   }
 
-  private async recordSuccessfulInference(
+  private recordSuccessfulInference(
     provider: Readonly<ProviderEntry>,
     logicalRequest: Uint8Array,
     content: string,
-    fallbackReason?: string,
-  ): Promise<{ accepted: boolean; failureReason?: string }> {
-    const mode = modeFor(provider);
+    execution: ProviderExecutionMetadata,
+  ): void {
     const request = Uint8Array.from(logicalRequest);
     const response = Buffer.from(content, 'utf8');
     const endpoint = endpointIdentity(provider);
-    let verification: ConfidentialVerificationResult | undefined;
-
-    if (mode === 'verified_confidential') {
-      try {
-        verification = provider.confidentialVerifier
-          ? snapshotVerification(await provider.confidentialVerifier.verify({
-              provider: provider.name,
-              model: provider.model,
-              endpointIdentity: endpoint,
-              request: Uint8Array.from(request),
-              response: Uint8Array.from(response),
-            }))
-          : {
-              outcome: 'verification_unavailable',
-              verifierVersion: 'unconfigured',
-              reason: 'No confidential verifier was configured for this provider.',
-            };
-      } catch (error) {
-        verification = {
-          outcome: 'verification_unavailable',
-          verifierVersion: 'verifier-error',
-          reason: error instanceof Error ? error.message : 'Confidential verifier failed.',
-        };
-      }
-    }
-
-    const status: InferenceTrace['status'] = mode === 'on_device'
-      ? fallbackReason ? 'local_fallback' : 'on_device'
-      : mode === 'conventional_cloud'
+    const capabilities = execution.capabilities;
+    const status: InferenceTrace['status'] = execution.reasoningMode === 'on_device'
+      && capabilities.executionLocation === 'on_device'
+      && (capabilities.networkScope === 'none' || capabilities.networkScope === 'loopback')
+      && capabilities.confidentiality === 'device_local'
+      ? 'on_device'
+      : execution.reasoningMode === 'bring_your_own_provider'
+        && capabilities.executionLocation === 'remote_service'
+        && capabilities.networkScope === 'external'
         ? 'conventional'
-        : verification?.outcome ?? 'verification_unavailable';
+        : (() => {
+            throw new ProviderModePolicyError(
+              'cross_mode_provider',
+              'Observed provider execution facts do not match the selected reasoning mode',
+              provider.name,
+            );
+          })();
 
     const trace: InferenceTrace = {
-      id: crypto.randomUUID(),
-      reasoningMode: mode,
+      id: randomUUID(),
       status,
-      provider: provider.name,
-      model: provider.model,
+      execution,
       endpointIdentity: endpoint,
       request,
       response,
-      cost: mode === 'on_device'
+      cost: capabilities.pricing.kind === 'zero'
         ? { basis: 'exact', currency: 'USD', amountMinor: 0 }
         : { basis: 'unknown' },
       createdAt: (this.options.now?.() ?? new Date()).toISOString(),
-      verifierVersion: verification?.verifierVersion ?? 'skytwin-llm-boundary-v1',
-      ...(mode === 'on_device' && fallbackReason ? {
-        fallback: {
-          origin: 'verified_confidential' as const,
-          destination: 'on_device' as const,
-          reason: fallbackReason,
-        },
-      } : {}),
-      ...(verification?.outcome === 'verified' ? { verification } : {}),
-      ...(verification && verification.outcome !== 'verified'
-        ? { verificationFailureReason: verification.reason }
-        : {}),
+      verifierVersion: 'skytwin-llm-boundary-v1',
     };
     this.options.onInferenceTrace?.(trace);
-    if (mode !== 'verified_confidential' || verification?.outcome === 'verified') {
-      return { accepted: true };
-    }
-    return { accepted: false, failureReason: verification?.reason ?? 'Confidential verification failed.' };
   }
 
   /**

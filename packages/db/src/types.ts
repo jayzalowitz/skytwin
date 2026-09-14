@@ -301,6 +301,8 @@ export interface InferenceReceiptRow {
   version: number;
   decision_id: string;
   explanation_id: string;
+  /** Zero-based provider-call order within one atomic decision capture. */
+  capture_ordinal: number;
   status: string;
   receipt: unknown;
   trusted: boolean;

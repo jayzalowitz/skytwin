@@ -19,11 +19,50 @@ const linkage = {
 function trace(overrides: Partial<InferenceTrace> = {}): InferenceTrace {
   return {
     id: '44444444-4444-4444-8444-444444444444',
-    reasoningMode: 'conventional_cloud', status: 'conventional',
-    provider: 'openai', model: 'model', endpointIdentity: 'https://api.openai.com',
+    status: 'conventional',
+    execution: {
+      reasoningMode: 'bring_your_own_provider', provider: 'openai', model: 'model',
+      request: { invocationId: '55555555-5555-4555-8555-555555555555', providerRequestId: null },
+      capabilities: {
+        executionLocation: 'remote_service', networkScope: 'external',
+        confidentiality: 'provider_standard', attestationPolicy: 'not_applicable',
+        retention: { classification: 'provider_terms', summary: 'provider terms', policyUrl: null },
+        modalities: ['text'],
+        pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' },
+      },
+      verificationStatus: 'not_applicable',
+      executionPath: [{ provider: 'openai', outcome: 'succeeded' }],
+      costBasis: {
+        pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' },
+        inputTokens: null, outputTokens: null,
+      },
+      receiptId: null,
+    },
+    endpointIdentity: 'https://api.openai.com',
     request: Buffer.from('request'), response: Buffer.from('response'),
     cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
     verifierVersion: 'boundary-v1', ...overrides,
+  };
+}
+
+function confidentialExecution(): InferenceTrace['execution'] {
+  return {
+    reasoningMode: 'verified_private_cloud', provider: 'openai', model: 'model',
+    request: { invocationId: '55555555-5555-4555-8555-555555555555', providerRequestId: null },
+    capabilities: {
+      executionLocation: 'remote_service', networkScope: 'external',
+      confidentiality: 'attested_tee', attestationPolicy: 'required',
+      retention: { classification: 'provider_declared', summary: 'attested service', policyUrl: null },
+      modalities: ['text'],
+      pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' },
+    },
+    verificationStatus: 'verified',
+    executionPath: [{ provider: 'openai', outcome: 'succeeded' }],
+    costBasis: {
+      pricing: { kind: 'unknown', unit: 'nano_usd', source: 'unknown', reason: 'not_reported' },
+      inputTokens: null, outputTokens: null,
+    },
+    receiptId: null,
   };
 }
 
@@ -41,7 +80,7 @@ describe('emitInferenceReceipt', () => {
 
   it('never allows verified status without a trusted verifier result', () => {
     expect(() => emitInferenceReceipt(trace({
-      reasoningMode: 'verified_confidential', status: 'verified',
+      status: 'verified', execution: confidentialExecution(),
     }), linkage, recorderKey)).toThrow(/trusted verifier result/);
   });
 
@@ -51,7 +90,7 @@ describe('emitInferenceReceipt', () => {
     const response = Buffer.from('verified response');
     const evidence = Buffer.from('attestation evidence');
     const bundle = emitInferenceReceipt(trace({
-      reasoningMode: 'verified_confidential', status: 'verified', response,
+      status: 'verified', execution: confidentialExecution(), response,
       verifierVersion: 'near-verifier-v1',
       verification: {
         outcome: 'verified', attestationPolicyVersion: 'near-policy-v1',

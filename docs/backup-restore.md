@@ -119,6 +119,10 @@ reference. Restored decisions are historical data, not queued work: every
 restored decision receives a `restored_non_replay` guard. Current builds still
 accept schema-version-1 and -2 archives and apply the same fail-safe tombstone;
 older builds reject newer schemas instead of silently dropping safety state.
+Current schema-version-3 exports order multi-call receipt batches with a durable
+capture ordinal. Earlier schema-version-3 archives that omit it remain valid and
+derive the ordinal from array order; duplicate receipt IDs or ordinals are
+rejected before the restore transaction begins.
 
 ## Exit codes
 

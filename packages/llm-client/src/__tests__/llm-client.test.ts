@@ -105,14 +105,21 @@ describe('LlmClient', () => {
       const { LlmClient } = await freshImport();
       mockOpenaiGenerate.mockResolvedValue('cloud response');
       const traces: import('../types.js').InferenceTrace[] = [];
-      const client = new LlmClient([openaiProvider], 'receipt-user', {
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [openaiProvider], 'receipt-user', {
         onInferenceTrace: (trace) => traces.push(trace),
         now: () => new Date('2026-09-10T00:00:00.000Z'),
       });
       await client.generate('private prompt', { maxTokens: 12, invocationKind: 'interactive' });
       expect(traces).toHaveLength(1);
       expect(traces[0]).toMatchObject({
-        reasoningMode: 'conventional_cloud', status: 'conventional',
+        execution: {
+          reasoningMode: 'bring_your_own_provider',
+          provider: 'openai',
+          model: 'gpt-4o',
+          capabilities: { executionLocation: 'remote_service', networkScope: 'external' },
+          executionPath: [{ provider: 'openai', outcome: 'succeeded' }],
+        },
+        status: 'conventional',
         endpointIdentity: 'https://api.openai.com', cost: { basis: 'unknown' },
       });
       expect(Buffer.from(traces[0]!.request).toString()).toBe(
@@ -140,7 +147,7 @@ describe('LlmClient', () => {
         invocationKind: 'interactive' as const,
       };
       const traces: import('../types.js').InferenceTrace[] = [];
-      const client = new LlmClient([provider], 'snapshot-user', {
+      const client = LlmClient.forReasoningMode('bring_your_own_provider', [provider], 'snapshot-user', {
         onInferenceTrace: (trace) => traces.push(trace),
       });
 
@@ -164,7 +171,7 @@ describe('LlmClient', () => {
         }),
       );
       expect(traces[0]).toMatchObject({
-        model: 'bound-model',
+        execution: { model: 'bound-model' },
         endpointIdentity: 'https://bound.example/v1',
       });
       expect(Buffer.from(traces[0]!.request).toString()).toBe(JSON.stringify({
@@ -186,35 +193,26 @@ describe('LlmClient', () => {
       );
       await client.generate('prompt');
       expect(traces[0]).toMatchObject({
-        reasoningMode: 'on_device', status: 'on_device',
+        execution: {
+          reasoningMode: 'on_device',
+          capabilities: { executionLocation: 'on_device', networkScope: 'loopback' },
+          executionPath: [{ provider: 'ollama', outcome: 'succeeded' }],
+        },
+        status: 'on_device',
         cost: { basis: 'exact', currency: 'USD', amountMinor: 0 },
       });
       expect(traces[0]).not.toHaveProperty('verification');
     });
 
-    it('rejects unverified confidential output and records explicit local fallback', async () => {
+    it('rejects caller-injected receipt modes before any provider call', async () => {
       const { LlmClient } = await freshImport();
-      mockOpenaiGenerate.mockResolvedValue('unverified secret result');
-      mockOllamaGenerate.mockResolvedValue('safe local result');
-      const traces: import('../types.js').InferenceTrace[] = [];
-      const verifier = {
-        verify: vi.fn().mockResolvedValue({
-          outcome: 'verification_failed' as const,
-          verifierVersion: 'near-v1', reason: 'response binding did not match',
-        }),
-      };
-      const client = new LlmClient([
-        { ...openaiProvider, reasoningMode: 'verified_confidential', confidentialVerifier: verifier },
-        { name: 'ollama', apiKey: '', model: 'local' },
-      ], 'fallback-user', { onInferenceTrace: (trace) => traces.push(trace) });
-      const result = await client.generate('prompt', { invocationKind: 'interactive' });
-      expect(result.content).toBe('safe local result');
-      expect(traces.map((item) => item.status)).toEqual(['verification_failed', 'local_fallback']);
-      expect(traces[1]!.fallback).toEqual({
-        origin: 'verified_confidential', destination: 'on_device',
-        reason: 'response binding did not match',
-      });
-      expect(traces[0]).not.toHaveProperty('verification');
+      expect(() => LlmClient.forReasoningMode('bring_your_own_provider', [{
+        ...openaiProvider,
+        reasoningMode: 'verified_confidential',
+      } as unknown as ProviderEntry], 'spoof-user')).toThrow(
+        expect.objectContaining({ code: 'invalid_provider' }),
+      );
+      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
     });
 
     it('passes prompt and options to the provider', async () => {
@@ -410,6 +408,46 @@ describe('LlmClient', () => {
       expect(response.execution).toMatchObject({
         reasoningMode: 'on_device',
         capabilities: { executionLocation: 'on_device', networkScope: 'loopback' },
+      });
+    });
+
+    it('classifies remote Ollama in bring-your-own mode as conventional with unknown cost', async () => {
+      const { LlmClient } = await freshImport();
+      const traces: import('../types.js').InferenceTrace[] = [];
+      mockOllamaGenerate.mockResolvedValue('remote operator response');
+      const client = LlmClient.forReasoningMode(
+        'bring_your_own_provider',
+        [{
+          name: 'ollama', apiKey: '', model: 'hosted-model',
+          baseUrl: 'https://ollama.operator.example',
+        }],
+        'user-remote-ollama',
+        { onInferenceTrace: (trace) => traces.push(trace) },
+      );
+
+      const response = await client.generate('hello', { invocationKind: 'interactive' });
+
+      expect(response.execution).toMatchObject({
+        reasoningMode: 'bring_your_own_provider',
+        capabilities: {
+          executionLocation: 'remote_service',
+          networkScope: 'external',
+          pricing: { kind: 'unknown' },
+        },
+      });
+      expect(traces).toHaveLength(1);
+      expect(traces[0]).toMatchObject({
+        status: 'conventional',
+        execution: {
+          reasoningMode: 'bring_your_own_provider',
+          provider: 'ollama',
+          capabilities: {
+            executionLocation: 'remote_service',
+            networkScope: 'external',
+            pricing: { kind: 'unknown' },
+          },
+        },
+        cost: { basis: 'unknown' },
       });
     });
 

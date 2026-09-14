@@ -157,6 +157,11 @@ function instant(value: unknown): string | null {
   return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
+function sameUuid(left: unknown, right: unknown): boolean {
+  return typeof left === 'string' && typeof right === 'string'
+    && left.toLowerCase() === right.toLowerCase();
+}
+
 /** All methods require the authenticated owner; ownership is checked by join. */
 export const inferenceReceiptRepository = {
   /** Persist all calls linked to one explanation atomically, or persist none. */
@@ -188,9 +193,9 @@ export const inferenceReceiptRepository = {
           ? finalization.confirmationLevel !== 'single' && finalization.confirmationLevel !== 'dual'
           : finalization.confirmationLevel !== null) ||
         typeof finalization.decisionId !== 'string' || typeof finalization.explanationId !== 'string' ||
-        expectedOutcome.decisionId !== finalization.decisionId ||
-        expectedExplanation.decisionId !== finalization.decisionId ||
-        expectedExplanation.id !== finalization.explanationId ||
+        !sameUuid(expectedOutcome.decisionId, finalization.decisionId) ||
+        !sameUuid(expectedExplanation.decisionId, finalization.decisionId) ||
+        !sameUuid(expectedExplanation.id, finalization.explanationId) ||
         expectedKind !== finalization.continuationKind ||
         (expectedOutcome.autoExecute && expectedOutcome.requiresApproval) ||
         (finalization.continuationKind === 'auto_execute' && selectedPolicyVerdict !== 'allowed') ||
@@ -233,11 +238,15 @@ export const inferenceReceiptRepository = {
       });
     }
     if (verified.some(({ result }) => !result.valid || !result.trusted)) return null;
+    const receiptIds = new Set<string>();
     if (verified.some(({ bundle }) => {
       const receipt = bundle.receipt;
-      return receipt.userId !== userId
-        || receipt.decisionId !== finalization.decisionId
-        || receipt.explanationId !== finalization.explanationId;
+      const normalizedId = receipt.id.toLowerCase();
+      if (receiptIds.has(normalizedId)) return true;
+      receiptIds.add(normalizedId);
+      return !sameUuid(receipt.userId, userId)
+        || !sameUuid(receipt.decisionId, finalization.decisionId)
+        || !sameUuid(receipt.explanationId, finalization.explanationId);
     })) return null;
 
     return withTransaction(async (client) => {
@@ -334,19 +343,22 @@ export const inferenceReceiptRepository = {
       }
 
       const rows: InferenceReceiptRow[] = [];
-      for (const { bundle } of verified) {
+      for (const [captureOrdinal, { bundle }] of verified.entries()) {
         const receipt = bundle.receipt;
         const result = await client.query<InferenceReceiptRow>(
-          `INSERT INTO inference_receipts (id, version, decision_id, explanation_id, status, receipt, trusted)
-           SELECT $2, $3, d.id, er.id, $6, $7::JSONB, true
+          `INSERT INTO inference_receipts (
+             id, version, decision_id, explanation_id, capture_ordinal, status, receipt, trusted
+           )
+           SELECT $2, $3, d.id, er.id, $6, $7, $8::JSONB, true
            FROM decisions d
            JOIN explanation_records er ON er.decision_id = d.id
            WHERE d.user_id = $1 AND d.id = $4 AND er.id = $5
-             AND $1 = $8 AND $4 = $9 AND $5 = $10
+             AND $1::UUID = $9::UUID AND $4::UUID = $10::UUID AND $5::UUID = $11::UUID
            RETURNING id, version::INT4 AS version, decision_id, explanation_id,
-             status, receipt, trusted, created_at`,
+             capture_ordinal::INT4 AS capture_ordinal, status, receipt, trusted, created_at`,
           [userId, receipt.id, receipt.version, receipt.decisionId, receipt.explanationId,
-            receipt.status, JSON.stringify(receipt), receipt.userId, receipt.decisionId, receipt.explanationId],
+            captureOrdinal, receipt.status, JSON.stringify(receipt), receipt.userId,
+            receipt.decisionId, receipt.explanationId],
         );
         if (!result.rows[0]) throw new Error('Inference receipt linkage was not persisted');
         rows.push(result.rows[0]);
@@ -898,7 +910,8 @@ export const inferenceReceiptRepository = {
   async findByIdForUser(userId: string, id: string): Promise<InferenceReceiptRow | null> {
     const result = await query<InferenceReceiptRow>(
       `SELECT ir.id, ir.version::INT4 AS version, ir.decision_id, ir.explanation_id,
-         ir.status, ir.receipt, ir.trusted, ir.created_at FROM inference_receipts ir
+         ir.capture_ordinal::INT4 AS capture_ordinal, ir.status, ir.receipt, ir.trusted,
+         ir.created_at FROM inference_receipts ir
        JOIN decisions d ON d.id = ir.decision_id
        WHERE d.user_id = $1 AND ir.id = $2`, [userId, id],
     );
@@ -908,10 +921,11 @@ export const inferenceReceiptRepository = {
   async findByDecisionForUser(userId: string, decisionId: string): Promise<InferenceReceiptRow | null> {
     const result = await query<InferenceReceiptRow>(
       `SELECT ir.id, ir.version::INT4 AS version, ir.decision_id, ir.explanation_id,
-         ir.status, ir.receipt, ir.trusted, ir.created_at FROM inference_receipts ir
+         ir.capture_ordinal::INT4 AS capture_ordinal, ir.status, ir.receipt, ir.trusted,
+         ir.created_at FROM inference_receipts ir
        JOIN decisions d ON d.id = ir.decision_id
        WHERE d.user_id = $1 AND ir.decision_id = $2
-       ORDER BY ir.created_at DESC LIMIT 1`, [userId, decisionId],
+       ORDER BY ir.capture_ordinal DESC, ir.created_at DESC, ir.id DESC LIMIT 1`, [userId, decisionId],
     );
     return result.rows[0] ?? null;
   },
@@ -919,9 +933,12 @@ export const inferenceReceiptRepository = {
   async listForUser(userId: string, opts: PaginationOptions = {}): Promise<InferenceReceiptRow[]> {
     const result = await query<InferenceReceiptRow>(
       `SELECT ir.id, ir.version::INT4 AS version, ir.decision_id, ir.explanation_id,
-         ir.status, ir.receipt, ir.trusted, ir.created_at FROM inference_receipts ir
+         ir.capture_ordinal::INT4 AS capture_ordinal, ir.status, ir.receipt, ir.trusted,
+         ir.created_at FROM inference_receipts ir
        JOIN decisions d ON d.id = ir.decision_id
-       WHERE d.user_id = $1 ORDER BY ir.created_at DESC LIMIT $2 OFFSET $3`,
+       WHERE d.user_id = $1
+       ORDER BY ir.created_at DESC, ir.decision_id DESC, ir.capture_ordinal DESC, ir.id DESC
+       LIMIT $2 OFFSET $3`,
       [userId, opts.limit ?? 50, opts.offset ?? 0],
     );
     return result.rows;

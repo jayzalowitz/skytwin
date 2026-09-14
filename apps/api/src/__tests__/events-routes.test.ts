@@ -17,6 +17,7 @@ const {
   mockSaveCandidates,
   mockGetOutcome,
   mockSaveOutcome,
+  mockFindBySignalId,
   mockGetProviders,
   mockCreateReceipts,
   mockGetIngestState,
@@ -58,6 +59,7 @@ const {
   mockSaveCandidates: vi.fn(),
   mockGetOutcome: vi.fn(),
   mockSaveOutcome: vi.fn(),
+  mockFindBySignalId: vi.fn(),
   mockGetProviders: vi.fn(),
   mockCreateReceipts: vi.fn(),
   mockGetIngestState: vi.fn(),
@@ -153,6 +155,7 @@ vi.mock('@skytwin/db', () => ({
   TwinRepositoryAdapter: vi.fn(),
   PatternRepositoryAdapter: vi.fn(),
   decisionRepositoryAdapter: {
+    findBySignalId: mockFindBySignalId,
     saveDecision: mockSaveDecision,
     saveCandidates: mockSaveCandidates,
     saveOutcome: mockSaveOutcome,
@@ -185,6 +188,25 @@ vi.mock('@skytwin/db', () => ({
 vi.mock('@skytwin/llm-client', () => ({
   LlmClient: mockLlmClient,
   emitInferenceReceipt: mockEmitReceipt,
+}));
+
+vi.mock('../lib/user-llm-client.js', () => ({
+  resolveUserLlmClient: vi.fn(async (
+    userId: string,
+    options: { onInferenceTrace?: (trace: unknown) => void },
+  ) => {
+    const providers = await mockGetProviders();
+    if (providers.length === 0) {
+      return { state: 'no_provider', client: null, reason: 'No provider in test' };
+    }
+    return {
+      state: 'ready',
+      client: mockLlmClient(providers, userId, options),
+      mode: providers[0]?.provider === 'embedded' || providers[0]?.provider === 'ollama'
+        ? 'on_device'
+        : 'bring_your_own_provider',
+    };
+  }),
 }));
 
 vi.mock('../workflows/registry.js', () => ({
@@ -351,6 +373,7 @@ describe('Events API routes', () => {
     }));
     mockSaveCandidates.mockResolvedValue([]);
     mockSaveOutcome.mockImplementation(async (o: unknown) => o);
+    mockFindBySignalId.mockResolvedValue(null);
     mockGetOutcome.mockResolvedValue(null);
     mockApprovalFindByDecisionId.mockResolvedValue(null);
     mockExecutionRepository.getByDecisionId.mockResolvedValue(null);
@@ -406,8 +429,9 @@ describe('Events API routes', () => {
       options: { onInferenceTrace: (trace: unknown) => void },
     ) {
       options.onInferenceTrace({
-        id: 'receipt-1', reasoningMode: 'conventional_cloud', status: 'conventional',
-        provider: 'openai', model: 'model', endpointIdentity: 'https://api.openai.com',
+        id: 'receipt-1', status: 'conventional',
+        execution: { reasoningMode: 'bring_your_own_provider' },
+        endpointIdentity: 'https://api.openai.com',
         request: Buffer.from('request'), response: Buffer.from('response'),
         cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
         verifierVersion: 'boundary-v1',
@@ -1154,6 +1178,39 @@ describe('Events API routes', () => {
   // would run the action a SECOND time (real send-the-email-twice bug for
   // users at trust tiers that auto-execute).
   describe('re-ingestion pipeline short-circuit', () => {
+    it('looks up a finalized signal before constructing any provider client', async () => {
+      mockFindBySignalId.mockResolvedValue({
+        id: 'decision-1',
+        situationType: 'calendar_conflict',
+        domain: 'calendar',
+        urgency: 'medium',
+        summary: 'Previously captured signal',
+      });
+      mockGetIngestState.mockResolvedValue(ingestState('completed'));
+      mockGetProviders.mockResolvedValue([
+        { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
+      ]);
+
+      const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        signalId: 'signal-finalized',
+        source: 'test',
+        type: 'calendar_event',
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockFindBySignalId).toHaveBeenCalledWith(
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'signal-finalized',
+      );
+      expect(mockGetProviders).not.toHaveBeenCalled();
+      expect(mockLlmClient).not.toHaveBeenCalled();
+      expect(mockInterpret).not.toHaveBeenCalled();
+      expect(mockSaveDecision).not.toHaveBeenCalled();
+      expect(mockEvaluate).not.toHaveBeenCalled();
+      expect(mockCreateReceipts).not.toHaveBeenCalled();
+    });
+
     it('reruns an otherwise persisted decision when receipt finalization is incomplete', async () => {
       mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
       mockGetOutcome.mockResolvedValue({

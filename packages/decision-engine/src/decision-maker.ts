@@ -33,6 +33,8 @@ import type { CandidateGenerator } from './strategies/candidate-strategy.js';
  * satisfy this contract at composition time.
  */
 export interface DecisionRepositoryPort {
+  /** Optional owner-scoped duplicate probe used before provider composition. */
+  findBySignalId?(userId: string, signalId: string): Promise<DecisionObject | null>;
   /**
    * Persist a decision, or return the existing one on a re-ingestion of
    * the same `(user_id, signal_id)`. Returns `{ decision, created }` —

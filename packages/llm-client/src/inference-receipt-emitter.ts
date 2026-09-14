@@ -17,6 +17,45 @@ export interface ReceiptSigningKey {
   publicKeyPem: string;
 }
 
+function receiptReasoningMode(trace: InferenceTrace) {
+  const { execution, status } = trace;
+  const { capabilities } = execution;
+  const lastAttempt = execution.executionPath.at(-1);
+  if (!lastAttempt || lastAttempt.provider !== execution.provider) {
+    throw new Error('Receipt trace must end with the observed provider attempt');
+  }
+  if (execution.reasoningMode === 'on_device') {
+    if (capabilities.executionLocation !== 'on_device' ||
+        (capabilities.networkScope !== 'none' && capabilities.networkScope !== 'loopback') ||
+        capabilities.confidentiality !== 'device_local' ||
+        capabilities.pricing.kind !== 'zero' ||
+        (status !== 'on_device' && status !== 'local_fallback') ||
+        lastAttempt.outcome !== 'succeeded') {
+      throw new Error('On-device receipt facts do not match the selected reasoning mode');
+    }
+    return 'on_device' as const;
+  }
+  if (execution.reasoningMode === 'bring_your_own_provider') {
+    if (capabilities.executionLocation !== 'remote_service' ||
+        capabilities.networkScope !== 'external' ||
+        status !== 'conventional' ||
+        lastAttempt.outcome !== 'succeeded') {
+      throw new Error('Conventional receipt facts do not match the selected reasoning mode');
+    }
+    return 'conventional_cloud' as const;
+  }
+  if (capabilities.executionLocation !== 'remote_service' ||
+      capabilities.networkScope !== 'external' ||
+      capabilities.confidentiality !== 'attested_tee' ||
+      capabilities.attestationPolicy !== 'required' ||
+      !['verified', 'verification_failed', 'verification_unavailable', 'verification_stale']
+        .includes(status) ||
+      (status === 'verified' ? lastAttempt.outcome !== 'succeeded' : lastAttempt.outcome !== 'failed')) {
+    throw new Error('Confidential receipt facts do not match the selected reasoning mode');
+  }
+  return 'verified_confidential' as const;
+}
+
 /**
  * Finalize one boundary trace only after its durable decision and explanation
  * identifiers exist. Raw bytes remain in transient request memory until their
@@ -28,6 +67,7 @@ export function emitInferenceReceipt(
   linkage: ReceiptLinkage,
   signingKey: ReceiptSigningKey,
 ): InferenceReceiptExportV1 {
+  const reasoningMode = receiptReasoningMode(trace);
   const verified = trace.status === 'verified' ? trace.verification : undefined;
   if (trace.status === 'verified' && !verified) {
     throw new Error('Verified receipt emission requires a trusted verifier result');
@@ -40,9 +80,9 @@ export function emitInferenceReceipt(
     version: 1,
     id: trace.id,
     ...linkage,
-    reasoningMode: trace.reasoningMode,
-    provider: trace.provider,
-    model: trace.model,
+    reasoningMode,
+    provider: trace.execution.provider,
+    model: trace.execution.model,
     endpointIdentity: trace.endpointIdentity,
     requestSha256: sha256Hex(trace.request),
     responseSha256: sha256Hex(trace.response),

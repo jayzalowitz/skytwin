@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "078-execution-admission-barriers.sql",
+  "asOfMigration": "079-inference-receipt-capture-order.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -2198,6 +2198,7 @@
         {
           "classification": "locally_exposed_metadata",
           "columns": [
+            "capture_ordinal",
             "created_at",
             "decision_id",
             "explanation_id",
@@ -2206,10 +2207,10 @@
             "trusted",
             "version"
           ],
-          "currentProtection": "Locally readable receipt identifiers, status, trust marker, version, and timestamp in CockroachDB.",
+          "currentProtection": "Locally readable receipt identifiers, capture order, status, trust marker, version, and timestamp in CockroachDB.",
           "targetProtection": "Remain locally readable for ownership checks, lookup, retention, audit, and deletion; disclose that status and linkage reveal receipt activity.",
           "migrationStage": "disclosed-local-metadata",
-          "rationale": "Receipt lookup and ownership require stable identifiers and status; user ownership continues to resolve through the linked decision."
+          "rationale": "Receipt lookup and ownership require stable identifiers, provider-call order, and status; user ownership continues to resolve through the linked decision."
         },
         {
           "classification": "deferred_source",
