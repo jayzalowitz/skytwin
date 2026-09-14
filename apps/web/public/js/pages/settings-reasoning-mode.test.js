@@ -121,8 +121,10 @@ describe('credential transfer disclosures', () => {
 
   it('states the limit of pattern-based crash-report scrubbing', () => {
     expect(source).not.toContain('No personal data, email, or twin content is ever included');
-    expect(source).toContain('pattern-based scrubbing cannot guarantee');
-    expect(source).toContain('unknown secret formats are absent');
+    expect(source).toContain('recognized email addresses, credential patterns, and user-home paths');
+    expect(source).toContain('no dedicated account, message, calendar, memory, or twin-profile fields');
+    expect(source).toContain('may still contain incidental content or unknown secret formats');
+    expect(source).not.toContain('URLs, and request content before upload');
     expect(source).toContain('Off by default');
   });
 });

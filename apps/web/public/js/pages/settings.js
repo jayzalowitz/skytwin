@@ -375,7 +375,7 @@ export async function renderSettings(container, userId) {
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
         <div>
           <div style="font-weight: 500;">Send anonymous crash reports</div>
-          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, scrubbed stack trace, app version) so we can fix it. SkyTwin removes recognized email addresses, credentials, user paths, URLs, and request content before upload, but pattern-based scrubbing cannot guarantee incidental content or unknown secret formats are absent. Off by default.</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, scrubbed message and stack trace, app version) so we can fix it. SkyTwin applies pattern-based scrubbing for recognized email addresses, credential patterns, and user-home paths before upload. The report has no dedicated account, message, calendar, memory, or twin-profile fields, but messages and stack traces may still contain incidental content or unknown secret formats. Off by default.</div>
         </div>
         <label class="toggle-switch">
           <input type="checkbox" id="crash-reports-toggle" data-action="toggle-crash-reports">
