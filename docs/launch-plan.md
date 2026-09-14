@@ -122,7 +122,7 @@ Still open under [#630](https://github.com/jayzalowitz/skytwin/issues/630): fres
 ## Tier 3 — Post-launch / strategic (don't start before Tier 1 + 2 land)
 
 ### 3.1 Gmail restricted-scope verification
-Tracked in [#351](https://github.com/jayzalowitz/skytwin/issues/351). Annual ~$15k–$50k CASA assessment + Google review. Don't start until:
+Tracked in [#351](https://github.com/jayzalowitz/skytwin/issues/351). Google review plus any assigned CASA assessment; obtain the current assurance-level assignment, lab quote, and schedule before budgeting. Don't start until:
 - BYO Gmail friction is measurably hurting funnel conversion (instrument the wizard step-completion drop-off rate first).
 - SkyTwin has revenue that comfortably absorbs the recurring fee.
 
@@ -158,7 +158,7 @@ One-time:
 - Demo video editing: $0 (raw screen capture is fine for Google review) to ~$500 (professional cut for the homepage)
 
 Deferred until §3.1 trigger:
-- CASA assessment: **$15k–$50k annually**
+- CASA assessment: **current authorized-lab quote required; annual revalidation applies**
 
 Total recurring annual cost to start: **$500–$1000** including domain.
 

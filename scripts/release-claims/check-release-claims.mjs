@@ -363,7 +363,7 @@ const SPDX_23_RELATIONSHIP_TYPES = new Set([
   "DATA_FILE_OF",
   "DEPENDENCY_MANIFEST_OF",
   "DEPENDENCY_OF",
-  "DEPENDENT_OF",
+  "DEPENDS_ON",
   "DESCENDANT_OF",
   "DESCRIBED_BY",
   "DESCRIBES",
@@ -1871,6 +1871,32 @@ export function verifyCanonicalReleasePublisher(root) {
     );
   const canonicalWorkflow = parsedWorkflows.get(workflowPath);
   if (!isRecord(canonicalWorkflow)) return errors;
+  const mutableCanonicalActionLocations = [];
+  const isImmutableActionReference = (reference) =>
+    typeof reference === "string" &&
+    (reference.startsWith("./") ||
+      /^[^@\s]+@[a-f0-9]{40}$/.test(reference) ||
+      /^docker:\/\/[^\s]+@sha256:[a-f0-9]{64}$/.test(reference));
+  for (const [jobName, job] of Object.entries(canonicalWorkflow.jobs ?? {})) {
+    if (!isRecord(job)) continue;
+    if (job.uses !== undefined && !isImmutableActionReference(job.uses))
+      mutableCanonicalActionLocations.push(`jobs.${jobName}.uses`);
+    for (const [stepIndex, step] of asArray(job.steps).entries()) {
+      if (
+        isRecord(step) &&
+        step.uses !== undefined &&
+        !isImmutableActionReference(step.uses)
+      )
+        mutableCanonicalActionLocations.push(
+          `jobs.${jobName}.steps[${stepIndex}].uses`,
+        );
+    }
+  }
+  if (mutableCanonicalActionLocations.length > 0)
+    addError(
+      errors,
+      `canonical build workflow actions must use immutable full commit SHAs: ${mutableCanonicalActionLocations.join(", ")}`,
+    );
   const releaseJob = isRecord(canonicalWorkflow.jobs)
     ? canonicalWorkflow.jobs.release
     : undefined;
@@ -2037,6 +2063,51 @@ export function verifyCanonicalReleasePublisher(root) {
     addError(
       errors,
       "only the verified aggregator may upload the release-evidence artifact",
+    );
+  const machineInputUploaders = [];
+  const dynamicArtifactUploaders = [];
+  for (const [jobName, job] of Object.entries(canonicalWorkflow.jobs ?? {})) {
+    if (!isRecord(job)) continue;
+    for (const [stepIndex, step] of asArray(job.steps).entries()) {
+      if (
+        !isRecord(step) ||
+        typeof step.uses !== "string" ||
+        !step.uses.startsWith("actions/upload-artifact@")
+      )
+        continue;
+      const artifactName = step.with?.name;
+      const location = `jobs.${jobName}.steps[${stepIndex}]`;
+      if (typeof artifactName !== "string") {
+        dynamicArtifactUploaders.push(location);
+        continue;
+      }
+      if (artifactName.startsWith("release-machine-evidence-"))
+        machineInputUploaders.push({ jobName, artifactName, location });
+      if (
+        artifactName.includes("${{") &&
+        !(
+          jobName === "release-machine-evidence" &&
+          artifactName ===
+            "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+        )
+      )
+        dynamicArtifactUploaders.push(location);
+    }
+  }
+  if (
+    machineInputUploaders.length !== 1 ||
+    machineInputUploaders[0]?.jobName !== "release-machine-evidence" ||
+    machineInputUploaders[0]?.artifactName !==
+      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+  )
+    addError(
+      errors,
+      "only the canonical machine producer may upload artifacts matching the release-machine-evidence prefix",
+    );
+  if (dynamicArtifactUploaders.length > 0)
+    addError(
+      errors,
+      `non-canonical artifact uploads must use static names: ${dynamicArtifactUploaders.join(", ")}`,
     );
   const actionIndexes = releaseSteps
     .map((step, index) =>
@@ -3821,6 +3892,14 @@ function isValidSpdxDocumentNamespace(value) {
   }
 }
 
+function isValidSpdxPackageVerificationCode(value) {
+  return (
+    isPlainRecord(value) &&
+    Object.keys(value).length === 1 &&
+    /^[a-f0-9]{40}$/.test(value.packageVerificationCodeValue ?? "")
+  );
+}
+
 export function isValidSpdx23Document(sbom) {
   if (
     !isPlainRecord(sbom) ||
@@ -3848,7 +3927,8 @@ export function isValidSpdx23Document(sbom) {
       isNonEmptyString(entry.downloadLocation) &&
       isNonEmptyString(entry.name) &&
       isNonEmptyString(entry.versionInfo) &&
-      entry.filesAnalyzed === true,
+      entry.filesAnalyzed === true &&
+      isValidSpdxPackageVerificationCode(entry.packageVerificationCode),
   );
   const filesValid = sbom.files.every(
     (entry) =>
@@ -4125,9 +4205,64 @@ export async function verifyArtifactVerificationMaterials(
                 checksum?.checksumValue === subject.sha256,
             ),
         );
+      const filesById = new Map(files.map((file) => [file?.SPDXID, file]));
+      const subjectsForPackage = (packageId) => {
+        const containedFileIds = asArray(sbom.relationships)
+          .filter(
+            (relationship) =>
+              relationship?.spdxElementId === packageId &&
+              relationship?.relationshipType === "CONTAINS",
+          )
+          .map((relationship) => relationship.relatedSpdxElement);
+        const matchedSubjects = containedFileIds.map((fileId) => {
+          const file = filesById.get(fileId);
+          return subjects.find(
+            (subject) =>
+              [subject.name, subject.path].includes(file?.fileName) &&
+              asArray(file?.checksums).some(
+                (checksum) =>
+                  checksum?.algorithm === "SHA256" &&
+                  checksum?.checksumValue === subject.sha256,
+              ),
+          );
+        });
+        return matchedSubjects.every(Boolean) &&
+          new Set(matchedSubjects.map((subject) => subject.path)).size ===
+            matchedSubjects.length
+          ? matchedSubjects
+          : null;
+      };
+      const hasValidPackageVerificationCodes = asArray(sbom.packages).every(
+        (spdxPackage) => {
+          const packageSubjects = subjectsForPackage(spdxPackage?.SPDXID);
+          if (!packageSubjects || packageSubjects.length === 0) return false;
+          const fileSha1s = packageSubjects
+            .map((subject) => {
+              const subjectPath = resolveContainedRegularFile(
+                root,
+                subject.path,
+              );
+              return subjectPath
+                ? createHash("sha1")
+                    .update(readFileSync(subjectPath))
+                    .digest("hex")
+                : null;
+            })
+            .sort();
+          if (fileSha1s.some((digest) => digest === null)) return false;
+          const expectedCode = createHash("sha1")
+            .update(fileSha1s.join(""))
+            .digest("hex");
+          return (
+            spdxPackage?.packageVerificationCode
+              ?.packageVerificationCodeValue === expectedCode
+          );
+        },
+      );
       if (
         !isValidSpdx23Document(sbom) ||
-        subjects.some((subject) => !coversSubject(subject))
+        subjects.some((subject) => !coversSubject(subject)) ||
+        !hasValidPackageVerificationCodes
       )
         addError(
           errors,

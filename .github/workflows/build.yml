@@ -40,8 +40,8 @@ jobs:
       desktop: ${{ steps.filter.outputs.desktop }}
       mobile: ${{ steps.filter.outputs.mobile }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dorny/paths-filter@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d
         id: filter
         with:
           filters: |
@@ -70,11 +70,11 @@ jobs:
     name: release-claim-ci
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -82,7 +82,7 @@ jobs:
       # Turbo cache is opportunistic; GitHub cache API failures must not fail
       # correctness gates after install/build/test pass.
       - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
         continue-on-error: true
 
       - run: pnpm install --frozen-lockfile
@@ -126,9 +126,9 @@ jobs:
     name: Migration rollback — CockroachDB
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v5
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -177,21 +177,21 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
         continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/Library/Caches/electron
@@ -241,14 +241,14 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload macOS DMG
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-dmg
           path: apps/desktop/dist-electron/*.dmg
           if-no-files-found: error
 
       - name: Upload macOS ZIP
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-zip
           path: apps/desktop/dist-electron/*.zip
@@ -261,7 +261,7 @@ jobs:
       # `release` job attaches it. Without this asset on the Release, an
       # installed app's checkForUpdates() against the GitHub provider fails.
       - name: Upload macOS update manifest (latest-mac.yml)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-update-manifest
           path: apps/desktop/dist-electron/latest-mac.yml
@@ -278,11 +278,11 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -293,7 +293,7 @@ jobs:
       # wall-clock here; missing the TS-compile cache is negligible.
 
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/AppData/Local/electron/Cache
@@ -344,7 +344,7 @@ jobs:
         run: pnpm --filter skytwin-desktop run package:win --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
 
       - name: Upload Windows installer
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Windows-installer
           path: apps/desktop/dist-electron/*.exe
@@ -354,7 +354,7 @@ jobs:
       # Generated by electron-builder alongside the NSIS installer regardless
       # of `--publish never`; collected here so the `release` job attaches it.
       - name: Upload Windows update manifest (latest.yml)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Windows-update-manifest
           path: apps/desktop/dist-electron/latest.yml
@@ -368,21 +368,21 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
         continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             ~/.cache/electron
@@ -409,7 +409,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Linux AppImage
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-AppImage
@@ -417,7 +417,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux deb
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-deb
@@ -425,7 +425,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux rpm
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-rpm
@@ -438,7 +438,7 @@ jobs:
       # Linux package step's own `continue-on-error: true` tolerance — a Linux
       # packaging hiccup must not fail the whole tagged build.
       - name: Upload Linux update manifest (latest-linux.yml)
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Linux-update-manifest
@@ -454,28 +454,28 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: actions/setup-java@v5
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Set up Gradle (cached)
-        uses: gradle/actions/setup-gradle@v6
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v4
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
 
       - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
         continue-on-error: true
 
       - run: pnpm install --frozen-lockfile
@@ -503,7 +503,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Android APK
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-Android-apk
@@ -519,21 +519,21 @@ jobs:
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
-      - uses: pnpm/action-setup@v5
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
       - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@v1
+        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
         continue-on-error: true
 
       - name: Cache CocoaPods
-        uses: actions/cache@v6
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           path: |
             apps/mobile/ios/Pods
@@ -586,7 +586,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload iOS simulator build
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: SkyTwin-iOS-simulator

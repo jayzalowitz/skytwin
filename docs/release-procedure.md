@@ -52,7 +52,8 @@ GitHub's API, hashes each local report, downloaded subject, and verification
 sidecar, and rejects unexpected claim/kind entries. It requires the checksum
 and SPDX inventories to cover every canonical subject. The SBOM must satisfy
 the required SPDX 2.3 document, creation, package, file, identifier, timestamp,
-and checksum structure before subject coverage counts. `VERIFY.md` must equal a
+checksum, relationship-vocabulary, and package-verification-code contract before
+subject coverage counts. `VERIFY.md` must equal a
 generated canonical guide containing working checksum commands and one exact
 `gh attestation verify` command per subject, bound to the repository, digest
 bundle, `build.yml` signer workflow, tag ref, source SHA, and SLSA provenance
@@ -65,10 +66,11 @@ and generated manifest are attached to the GitHub Release. Wildcards are used
 only for the manifest-validated verification directory and package outputs; the
 controlled publisher rejects missing, extra, duplicate, or digest-changed assets.
 
-Quantified claims carry additional applicability evidence. The signing report
-must enumerate every installer and desktop archive subject in the release asset
-inventory, including its digest, platform, passing OS signature result, and a
-passing notarization result for macOS. The verified-model report must enumerate
+Quantified claims carry additional applicability evidence. The three native
+signing reports must collectively enumerate every installer and desktop archive
+subject in the release asset inventory. Each report covers only its platform and
+records every subject digest and passing OS signature result; the macOS report
+also requires a passing notarization result. The verified-model report must enumerate
 the recommended model artifact with its source, disclosed license, published
 SHA-256, passing digest verification, and passing deletion check. Omitting one
 of these subjects fails the final gate.

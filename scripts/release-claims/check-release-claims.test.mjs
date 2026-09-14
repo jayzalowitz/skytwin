@@ -32,6 +32,7 @@ import {
   REQUIRED_SURFACE_CLASSES,
   buildCanonicalVerificationInstructions,
   isAllowlistedVerificationCommand,
+  isValidSpdx23Document,
   normalizeReleaseTagToRepositoryVersion,
   runChecks,
   runPublicationChecks,
@@ -130,6 +131,18 @@ function makeVerificationAssets(
   } = {},
 ) {
   const subjects = releaseAssets.flatMap((asset) => asset.subjects);
+  const packageVerificationCodeValue = createHash("sha1")
+    .update(
+      subjects
+        .map((subject) =>
+          createHash("sha1")
+            .update(readFileSync(join(root, subject.path)))
+            .digest("hex"),
+        )
+        .sort()
+        .join(""),
+    )
+    .digest("hex");
   const contents = new Map([
     [
       "SHA256SUMS",
@@ -156,6 +169,7 @@ function makeVerificationAssets(
             name: "SkyTwin",
             versionInfo: "0.7.0-beta",
             filesAnalyzed: true,
+            packageVerificationCode: { packageVerificationCodeValue },
           },
         ],
         files: subjects.map((subject, index) => ({
@@ -820,6 +834,52 @@ describe("release claim ledger validation", () => {
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "every action in the write-capable release job must match the canonical full-SHA allowlist",
+    );
+  });
+
+  it("rejects a mutable action in an upstream artifact producer", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "actions/checkout@v7",
+      ),
+    );
+    expect(
+      verifyCanonicalReleasePublisher(root).some((error) =>
+        error.startsWith(
+          "canonical build workflow actions must use immutable full commit SHAs:",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("rejects a second artifact whose name matches the machine-input prefix", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "\n  release:\n",
+        `
+  rogue-machine-input:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-machine-evidence-forged
+          path: .release-evidence/reports
+
+  release:
+`,
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "only the canonical machine producer may upload artifacts matching the release-machine-evidence prefix",
     );
   });
 
@@ -1744,11 +1804,25 @@ describe("release claim ledger validation", () => {
       (sbom) => (sbom.packages[0].filesAnalyzed = false),
     ],
     ["package version", (sbom) => delete sbom.packages[0].versionInfo],
+    [
+      "package verification code",
+      (sbom) => delete sbom.packages[0].packageVerificationCode,
+    ],
+    [
+      "incorrect package verification code",
+      (sbom) =>
+        (sbom.packages[0].packageVerificationCode.packageVerificationCodeValue =
+          "0".repeat(40)),
+    ],
     ["package/file relationships", (sbom) => delete sbom.relationships],
     [
       "unknown relationship type",
       (sbom) =>
         (sbom.relationships[0].relationshipType = "NOT_AN_SPDX_RELATIONSHIP"),
+    ],
+    [
+      "near-miss relationship type",
+      (sbom) => (sbom.relationships[0].relationshipType = "DEPENDENT_OF"),
     ],
     [
       "package downloadLocation",
@@ -1799,6 +1873,24 @@ describe("release claim ledger validation", () => {
       vi.fn(),
     );
     expect(errors.some((error) => error.includes("SPDX 2.3"))).toBe(true);
+  });
+
+  it("accepts the SPDX 2.3 DEPENDS_ON relationship token", () => {
+    const root = makeRoot();
+    const releaseAssets = makeReleaseAssets(root);
+    makeVerificationAssets(root, releaseAssets);
+    const sbom = JSON.parse(
+      readFileSync(
+        join(root, ARTIFACT_VERIFICATION_DIRECTORY, "release.spdx.json"),
+        "utf8",
+      ),
+    );
+    sbom.relationships.push({
+      spdxElementId: "SPDXRef-ReleaseSubject-0",
+      relationshipType: "DEPENDS_ON",
+      relatedSpdxElement: "SPDXRef-Package",
+    });
+    expect(isValidSpdx23Document(sbom)).toBe(true);
   });
 
   it("rejects a do-not-run guide even when it embeds every canonical command", async () => {
