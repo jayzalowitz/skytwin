@@ -89,9 +89,9 @@ These are non-negotiable, deterministic, and only change via deploy:
 - FS denylist (compile-time constant): `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `*.pem`, `*.key`, `id_rsa*`, `credentials`, `.env*`, browser cookie/session stores, password manager dirs, OS-protected paths
 - Resource governor: CPU < 2% avg, memory < 64MB scan, IO < 1GB/day default, yields within 200ms of user input, pauses on battery < 20% AC-unplugged, pauses on thermal `serious`/`critical`
 - User-set absolute spend ceilings (per-action, daily, monthly)
-- Audit log integrity: every action recorded immutably, audit table append-only, never hidden from user
+- Audit log integrity target: supported action paths append records that remain visible to the user; release-wide path coverage is not yet proven
 - MCP protocol conformance: stdio + http/sse transports per spec; tool call schemas validated; security model enforced
-- Authentication and OAuth token storage target: envelope-encrypted at rest, never logged in plaintext.
+- Target rail for authentication and OAuth token storage: envelope-encrypted at rest, never logged in plaintext.
   **Status:** the "never logged in plaintext" half holds today. At rest, coverage is
   opt-in and mixed: without an initialized vault, new grants are plaintext; with the
   matching API vault generation unlocked, new and reconnected grants are written as

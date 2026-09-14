@@ -2,15 +2,15 @@
 
 ## The constraint we have to design around
 
-Google's OAuth verification has three tiers, with sharply different costs:
+Google classifies OAuth scopes by sensitivity and assigns the verification path. Google or its assessment framework—not the app developer—determines whether an external security assessment is required and which current CASA assurance level applies.
 
-| Scope tier | Scopes in SkyTwin | Verification cost | Time to clear |
-|------------|-------------------|-------------------|---------------|
-| **Non-sensitive** | `openid`, `email`, `profile` | Free (auto-approved on submission) | Same day |
-| **Sensitive** | `calendar.readonly`, `calendar.events` | Free (manual app review, no third party) | Days–weeks |
-| **Restricted** | `gmail.readonly`, `gmail.modify` | **CASA Tier 2 or 3 security assessment, $15k–$50k/year**, plus Google's review | 4–8 weeks for assessment + weeks for review |
+| Scope class | Scopes in SkyTwin | Verification path |
+|-------------|-------------------|-------------------|
+| **Non-sensitive** | `openid`, `email`, `profile` | Consent-screen configuration; Google may still review branding or policy compliance. |
+| **Sensitive** | `calendar.readonly`, `calendar.events` | Google OAuth verification before the bundled production client can present these scopes as approved. |
+| **Restricted** | `gmail.readonly`, `gmail.modify` | Google OAuth verification plus any security assessment Google assigns. Assessment level, timing, and assessor price require a current assignment and quote. |
 
-The restricted-scope assessment is the killer. It's required annually, conducted by Google-empanelled third-party assessors (Bishop Fox, Leviathan, Schellman, etc.), and it audits the entire app's data-handling — even though SkyTwin keeps user data exclusively on the user's own machine.
+Restricted-scope review can include annual CASA revalidation by an authorized lab. It evaluates the application, deployment infrastructure, and applicable user-data storage. SkyTwin's packaged desktop defaults to a local database, but users may configure remote storage or providers, and selected prompt data can leave the machine when a hosted reasoning mode is enabled. See Google's [OAuth verification guidance](https://support.google.com/cloud/answer/9110914) and the current [CASA assurance-level model](https://appdefensealliance.dev/casa/casa-tiering).
 
 ## The elegant fix: tiered OAuth at the code level
 
@@ -19,13 +19,13 @@ SkyTwin ships with **two** OAuth code paths, both already implemented in `apps/a
 ### Tier 1 — Bundled client (Identity + Calendar only)
 
 - The SkyTwin-team OAuth client `594829999930-kpjopcs1pak0rp0omimuegr5ugcv5l8h.apps.googleusercontent.com` (Desktop app, project `skytwin-492700`).
-- Verified by Google for `openid`, `email`, `profile`, `calendar.readonly`, `calendar.events` — sensitive but not restricted.
+- Configured to request `openid`, `email`, `profile`, `calendar.readonly`, and `calendar.events`; brand and sensitive-scope verification are still pending.
 - Used by default for every "Sign in with Google" click in the desktop app.
-- Cost: $0. Just the (one-time) Google app review for the Calendar scope.
+- External assessment cost: none currently identified for this sensitive-scope path; Google review is still required.
 
 ### Tier 2 — Bring-your-own client (Gmail)
 
-**This is the launch Gmail experience**, not a fallback. SkyTwin's content-aware features — body summarisation, draft replies, classification by what the email *says* — all live behind Gmail's restricted scope tier. Until SkyTwin can fund the annual CASA assessment ($15k–$50k for tier 3, recurring) the cleanest way to unlock those features is for each user to plug in their own Google Cloud OAuth client. Their client is private to them, so Google's restricted-scope rules don't apply.
+**This is the launch Gmail experience**, not a fallback. SkyTwin's content-aware features — body summarisation, draft replies, classification by what the email *says* — all live behind Gmail's restricted scope class. Until the bundled client completes Google's assigned verification path, the launch route is for each user to plug in their own Google Cloud OAuth client. A personal-use project with fewer than 100 users may use Google's verification exception and click through the unverified-app warning, but it must still comply with the [Google API Services User Data Policy](https://support.google.com/cloud/answer/13464323).
 
 - Documented at [`/connect-gmail.html`](https://jayzalowitz.github.io/skytwin/connect-gmail.html) — five-minute walkthrough on the public web.
 - In-app wizard at `#/connect-gmail` in the SkyTwin dashboard ([apps/web/public/js/pages/connect-gmail.js](https://github.com/jayzalowitz/skytwin/blob/main/apps/web/public/js/pages/connect-gmail.js)) — same five steps, with progress dots, per-step deep links into GCP Console, and a final paste-and-connect form that PUTs to `/api/credentials/google` then redirects through `/api/oauth/google/authorize?include=gmail`.
@@ -57,7 +57,7 @@ Checklist:
 | OAuth consent screen Branding URLs | **done via browser agent** | App name "SkyTwin", homepage/privacy/ToS URLs, `jayzalowitz.github.io` in Authorized domains. |
 | App published (Testing → Production) | **done** (user clicked Publish) | Out of Testing-mode user cap; unverified-app warning still shows until app review clears. |
 | App logo uploaded | **todo** | 120×120 PNG. Required only when we submit for verification (Testing mode skips it). |
-| Submit for brand verification | **todo** | Click "Verify branding" on `https://console.cloud.google.com/auth/branding?project=skytwin-492700`. Cannot submit until GitHub Pages goes live (PR #350 must merge for `/docs` to actually serve). |
+| Submit for brand verification | **todo** | GitHub Pages is live. After the logo and review materials are ready, click "Verify branding" on `https://console.cloud.google.com/auth/branding?project=skytwin-492700`. |
 
 ## Sensitive-scope review for Calendar (cheap, manual)
 
@@ -71,7 +71,7 @@ Calendar review typically clears in 1–4 weeks. No third-party fees.
 
 ## Restricted-scope verification for Gmail (the hard gate)
 
-Tracked in [Issue #TBD](https://github.com/jayzalowitz/skytwin/issues) (to be created — see [`docs/google-verification.md` § Issue draft](#issue-draft-restricted-scope-verification) below). Until this is funded and submitted, SkyTwin uses Tier 2 (BYO Gmail) for inbox features.
+Tracked in [issue #351](https://github.com/jayzalowitz/skytwin/issues/351). Until Google's assigned verification and assessment path is completed, SkyTwin uses Tier 2 (BYO Gmail) for inbox features.
 
 ## Scope justifications
 
@@ -79,7 +79,7 @@ Tracked in [Issue #TBD](https://github.com/jayzalowitz/skytwin/issues) (to be cr
 
 ### `openid` + `email` + `profile`
 
-> Required to identify which Google account is connecting so SkyTwin can key the local twin profile on the verified email address. The profile name is shown on the user's local dashboard ("Signed in as Jane Smith") so they know which account the twin is operating on behalf of. No data leaves the user's machine.
+> Required to identify which Google account is connecting so SkyTwin can key the local twin profile on the verified email address. The profile name is shown on the user's local dashboard ("Signed in as Jane Smith") so they know which account the twin is operating on behalf of. Google processes the OAuth request, and SkyTwin stores the resulting profile and grant in the user's local application database; configured hosted-model features have separate disclosures.
 
 ### `https://www.googleapis.com/auth/calendar.readonly`
 
@@ -87,7 +87,7 @@ Tracked in [Issue #TBD](https://github.com/jayzalowitz/skytwin/issues) (to be cr
 
 ### `https://www.googleapis.com/auth/calendar.events`
 
-> Required for SkyTwin's calendar-management feature: with the user's approval — or automatically for events matching patterns the user has explicitly taught the twin — SkyTwin creates, modifies, or responds to calendar invites. Each action produces an explanation record visible in the dashboard's "Recent actions" feed. The narrower `calendar.events.owned` would not work because the invites SkyTwin must respond to are typically events the user does not own (incoming invitations from others).
+> Required for SkyTwin's calendar-management feature: with the user's approval — or automatically for events matching patterns the user has explicitly taught the twin — SkyTwin creates, modifies, or responds to calendar invites. Supported calendar paths can produce explanation records visible in the dashboard's "Recent actions" feed; release-wide coverage remains under audit. The narrower `calendar.events.owned` would not work because the invites SkyTwin must respond to are typically events the user does not own (incoming invitations from others).
 
 ### `https://www.googleapis.com/auth/gmail.readonly` (Tier 2 only)
 
@@ -108,7 +108,7 @@ When submitting for sensitive- or restricted-scope review, record a 2–3 minute
 5. (For Calendar review) Show a conflict-detection card. Decline an event from the dashboard; show the resulting RSVP in Google Calendar's web UI.
 6. (For Gmail review, Tier 2 BYO) Open the Connect Gmail walkthrough at `/connect-gmail.html`; show a credential paste; show a real Gmail signal coming through the Approvals queue.
 7. Approve a Gmail action from the dashboard. If the action is a draft reply, point out the SkyTwin footer preview and Settings toggle before send, then show the resulting Gmail message.
-8. End on the dashboard's "Recent actions" feed showing each action with its explanation record.
+8. End on the dashboard's "Recent actions" feed showing explanation details for the recorded actions exercised by the verification flow.
 
 Upload as unlisted YouTube. Paste the link into the verification submission.
 
@@ -120,24 +120,24 @@ Use this when filing the GitHub issue for the eventual Gmail-tier-1 work:
 >
 > **Body:**
 >
-> Today SkyTwin uses a tiered OAuth design (see `docs/google-verification.md`): the bundled SkyTwin-team OAuth client is verified for Calendar and identity scopes only. Users who want Gmail features go through the BYO walkthrough at `/connect-gmail.html` and use their own private OAuth client.
+> Today SkyTwin uses a tiered OAuth design (see `docs/google-verification.md`): the bundled SkyTwin-team OAuth client is configured for Calendar and identity scopes, with brand and sensitive-scope verification still pending. Users who want Gmail features go through the BYO walkthrough at `/connect-gmail.html` and use their own personal OAuth client.
 >
-> This is the right design for launch — it costs $0 and unblocks every user without waiting on Google. But the 5-minute BYO step is friction, and once SkyTwin has revenue to support it we should submit the bundled client through Google's restricted-scope CASA assessment so Gmail "just works" out of the box.
+> This is the launch design because it avoids waiting for bundled-client verification. It still carries Google's unverified-app warning, user cap, policy obligations, and publishing-status rules. The BYO step is friction; once usage justifies it, submit the bundled client through Google's assigned restricted-scope verification and assessment path so Gmail can work without per-user client setup.
 >
 > ### What needs to happen
 >
-> - [ ] Pick a CASA Tier 2 (read-only) or Tier 3 (modify) assessor from <https://cloud.google.com/security/compliance/casa-tier-2-assessors>. Tier 3 is required for `gmail.modify`.
+> - [ ] Obtain Google's current assessment assignment, including the required CASA assurance level, then select an authorized lab.
 > - [ ] Pre-assessment readiness review (internal): walk the assessor's standard checklist against `packages/credential-vault`, `apps/api`, the data-flow diagram in `docs/technical-spec.md`. Fix anything obvious.
-> - [ ] Engage the assessor; budget 4–8 weeks for the engagement and $15k–$50k for the fee.
+> - [ ] Obtain current lab quotes and schedule the assessment; do not plan against an unverified fixed price or duration.
 > - [ ] Submit to Google with the CASA Letter of Validation, scope justifications (already drafted in `docs/google-verification.md`), and the demo video.
 > - [ ] After approval: bake the change in code by removing the `source === 'user-supplied'` gate in `resolveRequestedScopes()` for Gmail. Update `docs/connect-gmail.html` to read "this used to be required; not anymore."
 >
-> ### Cost benchmark
+> ### Assessment planning
 >
-> Bishop Fox, Leviathan, Schellman, NCC, and other empanelled assessors generally quote $15k–$30k for Tier 2 and $25k–$50k for Tier 3, *annually*. The CASA fee renews every year regardless of whether code changed.
+> CASA applications are revalidated annually. The required assurance level is assigned from factors such as data sensitivity, user count, risk tolerance, and internal/external risk indicators. Record a current authorized-lab quote before budgeting; Google and CASA do not publish a single guaranteed price for this app.
 >
 > ### Don't do this before
 >
 > - User base is large enough that the friction of BYO Gmail is genuinely blocking sign-ups.
-> - SkyTwin has revenue (or a sponsor) that covers an annual five-figure expense without strain.
+> - SkyTwin has revenue (or a sponsor) that covers the current quoted assessment cost without strain.
 > - We've shipped at least one feature that genuinely needs the body of every email at sub-second latency — if BYO is fine for power users, the assessment may never be worth it.

@@ -358,8 +358,8 @@ function renderBrainPrompt() {
         <a href="#/settings" class="btn btn-outline btn-sm">Or bring your own API key</a>
       </div>
       <div style="font-size: 0.8rem; color: var(--text-muted); line-height: 1.5;">
-        <strong>Local brain</strong> — runs on your machine, no API keys, no per-message cost, your data never leaves the device.<br>
-        <strong>API key</strong> — uses Anthropic / OpenAI / Google. Faster on a small laptop, but each message goes to that provider.
+        <strong>On-device model</strong> — keeps the reasoning prompt on this device and has no per-message provider fee; a compatible runtime and model must be installed.<br>
+        <strong>Hosted provider</strong> — uses Anthropic / OpenAI / Google. Each reasoning request sends its prompt to the provider you configure.
       </div>
     </div>
   `;

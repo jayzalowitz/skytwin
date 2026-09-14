@@ -228,6 +228,16 @@ All notable changes to SkyTwin will be documented in this file.
   contain only keyed digests and both pending rows and tombstones are managed by
   short CockroachDB TTLs; user purge leaves no raw email in fence records.
 
+## [Unreleased] — Release evidence gate
+
+### Fixed
+
+- **Release evidence now fails closed on incomplete or advisory-only material.** The verifier requires an SPDX 2.3 release profile with document namespace, exact relationship vocabulary, analyzed packages, validated package verification codes, and package-to-file coverage; exact subject digests; byte-exact runnable checksum and provenance instructions; cryptographic GitHub attestation verification bound to the tag source; and a protected release environment with self-review and administrator bypass disabled. Every action in the artifact-producing build workflow is pinned to an immutable commit. A native platform matrix must execute each reviewed machine-verifier command and an exclusive dependent job must aggregate its immutable reports; signing proof is split across macOS, Windows, and Linux. Publication also rejects a tagged commit that is not merged into `main`, and the release checkout does not persist its write-capable token in Git configuration. Verifier implementations, CI-result generation, signing, and provenance remain blocked prerequisites; this gate does not claim those materials exist yet.
+- **Launch-facing Google and privacy copy now matches the implemented boundaries.** The Gmail walkthrough explains Testing-mode seven-day authorization expiry and the personal-use In-production path; it distinguishes a verification exception from Google's continuing user-data policy. Settings no longer describes write-capable Google scopes as read-only or promises that pattern-based crash scrubbing can never retain incidental content. The launch plan also distinguishes the local-first packaged default from opt-in hosted providers and a future fully hosted deployment.
+<!-- release-claims:start -->
+> **Current release status:** The desktop-first `v0.7.0-beta` is blocked. The structured [beta claim ledger](docs/beta-claim-ledger.json) is authoritative for current public claims and release gates.
+<!-- release-claims:end -->
+
 ## [Unreleased] — Explicit reasoning boundaries
 
 ### Added

@@ -98,4 +98,30 @@ describe('settings provider mutation gate', () => {
       'Choose where reasoning runs before changing provider priority.',
     );
   });
+
+  it('disables Smart and refuses its mutation while the saved boundary is BYOP', async () => {
+    api.fetchSettings.mockResolvedValue({
+      aiProviders: [
+        { provider: 'openai', model: 'gpt-5', priority: 0, enabled: true },
+      ],
+      reasoningMode: { mode: 'bring_your_own_provider', requiresConfirmation: false },
+    });
+    const container = document.getElementById('page-content');
+    await renderSettings(container, 'aaaaaaaa-bbbb-cccc-dddd-000000000001');
+
+    const smart = document.querySelector('[data-action="switch-to-smart-boundary-blocked"]');
+    expect(smart).toBeInstanceOf(HTMLButtonElement);
+    expect(smart.disabled).toBe(true);
+    expect(document.getElementById('ai-mode-toggle')?.textContent).toContain(
+      'Choose On this device above and save that boundary before selecting Smart.',
+    );
+
+    await window.switchAIBrainMode('aaaaaaaa-bbbb-cccc-dddd-000000000001', 'smart');
+
+    expect(api.saveAIProviders).not.toHaveBeenCalled();
+    expect(document.activeElement?.id).toBe('ai-reasoning-mode');
+    expect(toast.showErrorToast).toHaveBeenCalledWith(
+      'Choose On this device and save it before selecting Smart.',
+    );
+  });
 });

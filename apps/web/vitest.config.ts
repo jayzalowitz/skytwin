@@ -7,8 +7,8 @@ import { defineConfig } from 'vitest/config';
  *  - `src/**` — accessibility tests (#402) that mount markup into a real DOM
  *    (jsdom) before handing it to axe-core.
  * Vitest 4 removed `environmentMatchGlobs`, so model the split as explicit
- * projects. `passWithNoTests` keeps the script green if a family is ever moved
- * out.
+ * projects. The root `passWithNoTests` keeps the script green if tests are ever
+ * moved out; Vitest 4 intentionally excludes that option from project configs.
  */
 export default defineConfig({
   test: {
@@ -19,7 +19,6 @@ export default defineConfig({
           environment: 'node',
           include: ['public/js/**/*.test.{js,ts}'],
           setupFiles: ['./test/setup.ts'],
-          passWithNoTests: true,
         },
       },
       {
@@ -28,7 +27,6 @@ export default defineConfig({
           environment: 'jsdom',
           include: ['src/**/*.test.ts'],
           setupFiles: ['./test/setup.ts'],
-          passWithNoTests: true,
         },
       },
     ],

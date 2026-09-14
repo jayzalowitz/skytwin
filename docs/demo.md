@@ -5,10 +5,9 @@ time. Aim for five minutes end-to-end. Hand it to a friend with a phone in
 their other hand and read along.
 
 > **Screenshots:** the live-UI captures the launch will use are tracked as
-> a follow-up to this PR. The repo's existing demo stills live under
-> [`docs/screenshots/`](./screenshots/) (`dashboard.png`, `approvals.png`,
-> `decisions.png`, `onboarding.png`, `settings.png`) — those are the
-> baseline; a fresh capture run against the post-Tier-2-polish UI is what
+> a follow-up to this PR. The repository still contains historical captures,
+> but public use is withheld pending replacement after the claim audit. A fresh
+> capture run against the post-Tier-2-polish UI is what
 > the launch video needs. The text walkthrough below is independently
 > runnable against a fresh dev install. If you're recording the launch
 > video, this file is the script.
@@ -149,10 +148,10 @@ decision is logged with your approval. On the worker's next cycle, the
 action actually runs against Gmail (or the mock connector in the sample
 profile).
 
-The viewer should now understand the safety model in one sentence:
-**every action has an explanation, and the explanation came from observable
-evidence, and the user is the source of truth via approve/reject.** That's
-the whole pitch.
+The viewer should now understand the demonstrated path: **this recorded action
+has an explanation derived from observable evidence, and the user remains the
+source of truth via approve/reject.** Release-wide explanation coverage is a
+separate beta gate.
 
 ---
 

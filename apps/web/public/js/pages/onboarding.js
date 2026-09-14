@@ -120,7 +120,9 @@ function ensureWizardListener() {
 }
 
 async function handleOnboardingClick(e) {
-  // Guard: only fire when the wizard overlay is visible
+  if (!isOnWizard()) return;
+  // The route is authoritative; the overlay check handles a dismissed wizard
+  // that remains mounted at the root route.
   const overlay = document.getElementById('onboarding-overlay');
   if (!overlay || overlay.style.display === 'none') return;
 
@@ -529,7 +531,7 @@ function renderWelcome() {
         el.textContent = rec.reason;
       }
     })
-    .catch(() => { /* keep the generic private-by-default line */ });
+    .catch(() => { /* keep the generic availability-check line */ });
 
   // Tour CTA is rendered disabled with "Checking…" copy; resolved state
   // depends on the demo seed being present. When available: enable +
@@ -608,8 +610,9 @@ function renderComputerChoice() {
     </div>
     <div class="onboarding-desc" style="margin-bottom:1rem;">
       During idle time, SkyTwin can scan the code projects on this machine to learn which tools and
-      technologies you work with — so it can suggest capabilities that fit your work. It runs locally,
-      never uploads your data, and never reads your file contents or any natural-language text.
+      technologies you work with — so it can suggest capabilities that fit your work. Scanning happens
+      locally and reads project metadata rather than source-file contents. If you configure a hosted model,
+      later capability inference may send selected metadata to that provider.
     </div>
 
     <div style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-sm);padding:0.75rem;margin-bottom:1rem;font-size:0.85rem;">

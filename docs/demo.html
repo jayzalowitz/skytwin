@@ -142,8 +142,7 @@
       border-bottom: 1px solid var(--border);
       background-image:
         linear-gradient(90deg, rgba(14, 15, 19, .97) 0%, rgba(14, 15, 19, .82) 45%, rgba(14, 15, 19, .28) 100%),
-        linear-gradient(0deg, rgba(14, 15, 19, .82) 0%, rgba(14, 15, 19, .1) 44%),
-        url("screenshots/onboarding.png");
+        linear-gradient(0deg, rgba(14, 15, 19, .82) 0%, rgba(14, 15, 19, .1) 44%);
       background-size: cover;
       background-position: center top;
     }
@@ -377,8 +376,7 @@
         padding-top: 7rem;
         background-image:
           linear-gradient(90deg, rgba(14, 15, 19, .96) 0%, rgba(14, 15, 19, .86) 100%),
-          linear-gradient(0deg, rgba(14, 15, 19, .84) 0%, rgba(14, 15, 19, .12) 44%),
-          url("screenshots/onboarding.png");
+          linear-gradient(0deg, rgba(14, 15, 19, .84) 0%, rgba(14, 15, 19, .12) 44%);
         background-position: center top;
       }
       .actions { display: grid; }
@@ -410,7 +408,7 @@
           <h1>Five minutes from cold start to trust.</h1>
           <p class="lede">Current source gives packaged desktop builds a guarded account-free sample for inspecting fictional decisions and explanations without a private inbox. Its product data remains read-only; approve, reject, correct, and learn interactions run only in an isolated session-local simulation with no external effects. Published installers predate it.</p>
           <div class="actions">
-            <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">View beta releases</a>
+            <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Published installers do not include this sample. View technical preview</a>
             <a class="button" href="demo.md">Read the operator script</a>
           </div>
         </div>
@@ -451,7 +449,7 @@
               <p>The first-run modal offers Google setup, a direct self-description path, and a sample profile. In packaged builds produced from current source, that sample is a short-lived, tab-scoped session: it safely shows populated read-only views and offers a separate isolated feedback simulation. Published installers predate this path.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/onboarding.png" alt="SkyTwin onboarding modal offering email connection, self-description, or a sample profile" loading="lazy">
+              <figcaption>Onboarding capture withheld pending replacement after the public-copy audit.</figcaption>
             </figure>
           </article>
 
@@ -462,7 +460,7 @@
               <p>The briefing is the memorable surface. It separates action from awareness, shows what SkyTwin handled, and gives power users a path to inspect why.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/briefing.png" alt="SkyTwin briefing with to-dos, topics, and Power view" loading="lazy">
+              <p>Historical briefing capture withheld pending replacement after the public-copy audit.</p>
             </figure>
           </article>
 
@@ -473,7 +471,7 @@
               <p>The pending-action screen is where the safety model becomes visible. The packaged sample can approve, reject, or correct fixed fictional proposals and inspect the policy and explanation result. Those interactions change only bounded session-local simulation state; they cannot persist feedback or reach a connector, credential, provider, or execution adapter.</p>
             </div>
             <figure class="frame">
-              <img src="screenshots/approvals.png" alt="SkyTwin approvals page with pending actions that need the user's OK" loading="lazy">
+              <p>Historical approvals capture withheld pending replacement after the public-copy audit.</p>
             </figure>
           </article>
 
@@ -499,7 +497,7 @@
         <div>
           <p class="eyebrow">No-human render</p>
           <h2>Generate the launch video without screen recording.</h2>
-          <p>The recorder drives the UI with Playwright, captures frames, synthesizes narration with local Piper TTS (via the app's own <code>/api/voice/synthesize</code>), and assembles an mp4 with ffmpeg. No API keys, no cloud — every dependency is local-first and open-source.</p>
+          <p>The recorder drives the UI with Playwright, captures frames, synthesizes narration with a locally installed Piper TTS runtime (via the app's own <code>/api/voice/synthesize</code>), and assembles an mp4 with ffmpeg. This recording path does not require a hosted model key.</p>
         </div>
         <pre><code># one-time: install the standalone recorder + headless browser
 cd scripts/demo
@@ -531,7 +529,7 @@ pnpm record   # narration via local Piper /api/voice/synthesize</code></pre>
 
   <footer>
     <div class="wrap">
-      <p>SkyTwin demo assets live in <a href="https://github.com/jayzalowitz/skytwin/tree/main/docs/screenshots">docs/screenshots</a>. The operator script is <a href="demo.md">docs/demo.md</a>.</p>
+      <p>The operator script is <a href="demo.md">docs/demo.md</a>. Fresh public captures remain pending the claim audit.</p>
       <p>Last updated: 2026-09-13.</p>
     </div>
   </footer>

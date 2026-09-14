@@ -15,23 +15,17 @@
 # Search Console DNS-token dance entirely.
 
 title: SkyTwin
-description: A digital twin that learns what you'd want — and does it. Open source, runs locally.
+description: An open-source, local-first digital-twin technical preview.
 url: https://jayzalowitz.github.io
 baseurl: /skytwin
 
 # Don't process the technical-spec / safety-model / etc. markdown
 # files as web pages — they're for reading on GitHub.
 #
-# `screenshots/` used to be in the list below and is deliberately removed.
-# `exclude` drops paths from the built site entirely — it is not a "don't
-# render this as a page" switch — so listing the directory meant every PNG
-# under /skytwin/screenshots 404'd in production. Verified 2026-08-27:
-# https://jayzalowitz.github.io/skytwin/screenshots/briefing.png returned
-# 404 while index.html returned 200. That broke the index.html hero and the
-# demo.html captures, and it would have broken every screenshot on the new
-# deck.html plus its og:image unfurl had the directory stayed excluded.
-# Do not add it back. Only *.md files that would otherwise be rendered as
-# pages belong in this list.
+# Historical screenshots are intentionally excluded from the built site. Their
+# text predates the release-claim audit, and the public pages no longer embed
+# them. Keep the source files for historical review until truthful replacement
+# captures are available.
 #
 # `launch-readiness-report.md` and `launch-plan.md` are INTERNAL audit /
 # sequencing documents. They describe known gaps in candid engineering
@@ -40,6 +34,7 @@ baseurl: /skytwin
 # contradicting account of the same facts on the same origin. Keep them
 # GitHub-only.
 exclude:
+  - screenshots
   - architecture-philosophy.md
   - cockroach-architecture.md
   - decision-engine.md

@@ -77,8 +77,8 @@ describe('onboarding capability copy', () => {
     expect(onboardingSource).toContain(
       'local inference also requires a compatible llama.cpp runtime',
     );
-    expect(onboardingSource).not.toContain(
-      'Your AI runs privately on this computer',
+    expect(onboardingSource).not.toMatch(
+      /Your AI runs privately on (?:this|your) computer/,
     );
     expect(onboardingSource).not.toContain("we'll use <strong>");
   });

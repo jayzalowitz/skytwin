@@ -175,7 +175,7 @@ DecisionOutcome
 ExecutionPlan → sent to IronClaw
 ExecutionResult → received from IronClaw
 
-ExplanationRecord → persisted for every decision
+ExplanationRecord → persisted by supported decision paths; release-wide coverage remains a beta gate
 FeedbackEvent → user response, feeds back to twin
 ```
 

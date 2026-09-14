@@ -5,15 +5,14 @@
  *   Gmail features in SkyTwin (content-aware triage, body summarisation,
  *   draft replies) live behind Google's *restricted* OAuth scope tier.
  *   The bundled SkyTwin-team OAuth client doesn't have those scopes
- *   verified (annual ~$15k–$50k CASA assessment we won't pay for at
- *   launch — see docs/google-verification.md and issue #351), so every
- *   user who wants Gmail in SkyTwin walks this five-step flow once,
- *   pasting their own Google Cloud OAuth credentials at the end. Their
- *   own client is private to them; Google's verification rules don't
- *   apply to a developer using their own client.
+ *   verified through Google's assigned security-assessment path (see
+ *   docs/google-verification.md and issue #351), so every user who wants
+ *   Gmail in SkyTwin walks this five-step flow, pasting their own Google
+ *   Cloud OAuth credentials at the end. Personal-use projects may use a
+ *   verification exception, but remain subject to Google's user-data rules.
  *
  *   This is NOT a fallback or a degraded mode. It's the launch Gmail
- *   experience. Five minutes to set up, then SkyTwin gets full body
+ *   experience. About five minutes to set up, then SkyTwin gets full body
  *   access and the inbox-triage marquee features work as designed.
  *
  * Singleton delegator: like every other page in this dashboard, the
@@ -69,6 +68,7 @@ const STEPS = [
       'App name: <code>my-skytwin</code>. Support email: your Gmail. Developer email: your Gmail.',
       'Click <strong>Save and Continue</strong> through every step. Skip the scopes screen. Skip the test-users screen for now (you\'ll add yourself in a second).',
       'When the wizard finishes, click <strong>Audience</strong> in the left sidebar. Under "Test users" click <strong>Add users</strong> and add your own Gmail address. Save.',
+      'Testing-mode Gmail authorization expires after seven days. On <strong>Audience</strong>, click <strong>Publish app</strong> and confirm <strong>In production</strong> for a durable personal connection. Google will still show the unverified-app warning until verification clears.',
     ],
   },
   {
@@ -88,7 +88,7 @@ const STEPS = [
   {
     n: 5,
     title: 'Paste your credentials and connect',
-    blurb: 'Last step. The credentials are saved encrypted in SkyTwin\'s local database — they never leave your machine.',
+    blurb: 'Last step. Your Google client credentials are stored without app-level encryption in SkyTwin\'s configured database (on this computer in the packaged desktop default), sent to Google for OAuth, and, when an IronClaw execution adapter is configured, also registered with that configured server, which may be remote.',
     cta: null,
     detail: [],
   },
@@ -157,8 +157,11 @@ function renderStep(step, opts) {
           value="${escapeHtml(opts.savedClientSecret ?? '')}"
           required
         >
-        <div style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
-          Saved encrypted in your local SkyTwin database. The string never leaves your machine.
+        <div data-region="credential-transfer-disclosure" style="font-size: 0.78rem; color: var(--text-muted); margin-top: 0.25rem;">
+          Stored without app-level encryption in SkyTwin's configured database (on this computer in
+          the packaged desktop default) and sent to Google for OAuth. When an IronClaw execution
+          adapter is configured, these credentials are also registered with that configured server,
+          which may be remote.
         </div>
       </div>
       <div id="cgm-cred-error" style="display:none;color:var(--danger,#d04646);font-size:0.85rem;margin-top:0.75rem;" role="alert"></div>
@@ -195,7 +198,7 @@ function renderDone() {
   return `
     <div class="cgm-step">
       <div class="cgm-step-header"><h2>Gmail connected ✓</h2></div>
-      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The setup is one-time — credentials live encrypted in your local database; you won't see this wizard again unless you revoke access.</p>
+      <p>SkyTwin is now reading your inbox. The first few signals should show up in the Approvals queue within a minute or so. The Google client credentials remain without app-level encryption in SkyTwin's configured database; the packaged desktop default keeps that database on this computer. OAuth-token encryption depends on your Credential Vault state. If your Google Cloud project remains in Testing, Google expires Gmail authorization after seven days; publish the project to In production for a durable personal connection.</p>
       <div style="display:flex;gap:0.5rem;margin-top:1rem;">
         <a class="btn btn-primary" href="#/">Open dashboard</a>
         <a class="btn btn-outline" href="#/approvals">See approvals queue</a>

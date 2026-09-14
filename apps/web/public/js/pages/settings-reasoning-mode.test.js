@@ -1,8 +1,29 @@
+// @vitest-environment jsdom
 import { readFileSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { resolve } from 'node:path';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const source = readFileSync(new URL('./settings.js', import.meta.url), 'utf8');
-const apiSource = readFileSync(new URL('../api-client.js', import.meta.url), 'utf8');
+const webApi = vi.hoisted(() => ({
+  fetchJSON: vi.fn(),
+}));
+
+vi.mock('../api-client.js', () => ({
+  escapeHtml: (value) => {
+    const div = document.createElement('div');
+    div.textContent = String(value ?? '');
+    return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  },
+  fetchJSON: webApi.fetchJSON,
+}));
+
+import { renderConnectGmail } from './connect-gmail.js';
+
+const source = readFileSync(resolve(process.cwd(), 'public/js/pages/settings.js'), 'utf8');
+const connectGmailSource = readFileSync(
+  resolve(process.cwd(), 'public/js/pages/connect-gmail.js'),
+  'utf8',
+);
+const apiSource = readFileSync(resolve(process.cwd(), 'public/js/api-client.js'), 'utf8');
 
 describe('reasoning-location settings boundary', () => {
   it('renders local, explicit-provider, unavailable-private, confirmation, and error states', () => {
@@ -40,5 +61,70 @@ describe('reasoning-location settings boundary', () => {
     const locationRenderer = source.slice(start, end);
     expect(locationRenderer).toContain('data-action="ai-reasoning-mode"');
     expect(locationRenderer).not.toMatch(/on(?:click|change|input|keydown)\s*=/i);
+  });
+});
+
+describe('credential transfer disclosures', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    const entries = new Map();
+    vi.stubGlobal('localStorage', {
+      getItem: vi.fn((key) => entries.get(key) ?? null),
+      setItem: vi.fn((key, value) => entries.set(key, String(value))),
+      removeItem: vi.fn((key) => entries.delete(key)),
+    });
+    document.body.innerHTML = '<main id="page-content"></main>';
+    window.location.hash = '#/connect-gmail';
+    webApi.fetchJSON.mockResolvedValue({ credentials: [] });
+  });
+
+  it('renders Google storage and conditional IronClaw transfer before submit', async () => {
+    localStorage.setItem('skytwin_connect_gmail_step', '5');
+    const container = document.getElementById('page-content');
+    await renderConnectGmail(container);
+
+    const form = document.getElementById('cgm-cred-form');
+    const submit = form?.querySelector('button[type="submit"]');
+    const disclosure = form?.querySelector('[data-region="credential-transfer-disclosure"]');
+    const disclosureText = disclosure?.textContent.replace(/\s+/g, ' ').trim();
+
+    expect(form).toBeInstanceOf(HTMLFormElement);
+    expect(disclosure).toBeInstanceOf(HTMLDivElement);
+    expect(disclosureText).toContain('sent to Google for OAuth');
+    expect(disclosureText).toContain('When an IronClaw execution adapter is configured');
+    expect(disclosureText).toContain('registered with that configured server');
+    expect(disclosureText).toContain('which may be remote');
+    expect(submit).toBeInstanceOf(HTMLButtonElement);
+    expect(disclosure.compareDocumentPosition(submit) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(webApi.fetchJSON).toHaveBeenCalledWith('/api/credentials/google');
+
+    expect(connectGmailSource).toContain('packaged desktop default');
+    expect(connectGmailSource).toContain('sent to Google for OAuth');
+    expect(connectGmailSource).not.toContain('sent to Google only');
+  });
+
+  it('includes conditional IronClaw credential transfer in the Settings network summary', () => {
+    expect(source).toContain('configured CockroachDB database');
+    expect(source).toContain('server and self-hosted configurations can point it elsewhere');
+    expect(source).not.toContain('persistent application database is stored on this computer');
+    expect(source).toContain('When an IronClaw execution adapter is configured');
+    expect(source).toContain('stored service credentials are also registered');
+    expect(source).toContain('with that configured server, which may be remote');
+  });
+
+  it('does not describe write-capable Google scopes as read-only', () => {
+    expect(source).not.toContain('Your twin only reads data');
+    expect(source).toContain('send mail, change Gmail labels, or manage calendar events');
+    expect(source).toContain('configured autonomy and policies allow it');
+    expect(source).toContain('Actions are recorded with explanations');
+  });
+
+  it('states the limit of pattern-based crash-report scrubbing', () => {
+    expect(source).not.toContain('No personal data, email, or twin content is ever included');
+    expect(source).toContain('recognized email addresses, credential patterns, and user-home paths');
+    expect(source).toContain('no dedicated account, message, calendar, memory, or twin-profile fields');
+    expect(source).toContain('may still contain incidental content or unknown secret formats');
+    expect(source).not.toContain('URLs, and request content before upload');
+    expect(source).toContain('Off by default');
   });
 });

@@ -20,7 +20,7 @@ SkyTwin exists because we believe there's a better loop:
 4. Infer what the user would likely want, using the twin as a proxy
 5. Classify risk, reversibility, and sensitivity
 6. Execute safe actions through IronClaw -- or escalate with context when confidence is low
-7. Explain every action taken
+7. Require an explanation for supported action paths and audit coverage before expanding them
 8. Learn from feedback, reversals, edits, and outcomes
 
 The thesis: **if you build a real model of what someone wants, you can act on their behalf in bounded domains without constantly pestering them.** Not for everything. Not without guardrails. But for the 80% of operational decisions where the right answer is knowable and the downside is manageable.
@@ -83,7 +83,7 @@ auto-execute      escalate
 [Twin Model Update]
 ```
 
-Every path through this loop produces an explanation record. Every outcome feeds back into the twin model. The system gets better at predicting what you want and more calibrated about when to act autonomously.
+The target architecture requires explanation and feedback records across this loop. Current release-wide path coverage is not yet proven; supported paths must be audited before they enter the beta matrix.
 
 ## System Modules
 
@@ -176,10 +176,10 @@ The adapter uses an interface pattern so the real IronClaw API can be swapped in
 
 ### 8. Explanation / Audit Layer
 
-Every meaningful action produces an explanation record. This is not optional logging -- it is a first-class system requirement. If SkyTwin can't explain why it did something, it shouldn't have done it.
+Explanation coverage for meaningful supported actions is a first-class system requirement, not optional logging. Current release-wide coverage remains under audit. If SkyTwin cannot explain a path, that path should not enter the supported matrix.
 
 **Responsibilities:**
-- Explanation record generation for every action
+- Explanation record generation for audited, supported action paths
 - Human-readable summary production
 - Evidence citation (which preferences, which signals)
 - Alternative action documentation (why X over Y)
@@ -334,7 +334,7 @@ The system must accurately classify reversibility and adjust its confidence thre
 
 ### 5. Explanation Is Mandatory
 
-Every action the system takes must produce an explanation that a reasonable person can understand. The explanation must include: what happened, what evidence was used, which preferences were invoked, why this action was chosen over alternatives, and how the user can correct future behavior if the action was wrong.
+Before an action path becomes supported, it must produce an explanation that a reasonable person can understand. The explanation must include: what happened, what evidence was used, which preferences were invoked, why this action was chosen over alternatives, and how the user can correct future behavior if the action was wrong. This is a design requirement; the current beta audit has not yet established release-wide coverage.
 
 Explanations are not debugging artifacts. They are a product feature. If the system can't explain why it did something, it shouldn't have done it.
 

@@ -1,0 +1,5164 @@
+#!/usr/bin/env node
+
+import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+} from "node:fs";
+import { extname, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import { parseDocument } from "yaml";
+import {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  ARTIFACT_VERIFICATION_RELEASE_PATTERN,
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
+  CANONICAL_CI_EVIDENCE_CHECKS,
+  CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+  CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_EVIDENCE_MATRIX,
+  CANONICAL_MACHINE_VERIFIER_STEP,
+  CANONICAL_RELEASE_ASSETS,
+  SAMPLE_EVIDENCE_PLATFORMS,
+  machineEvidencePlatformFamily,
+  machineProducerJobName,
+  machineReportNamesForClaim,
+  machineVerifierCommand,
+  machineVerifierPath,
+} from "./release-constants.mjs";
+
+export {
+  ARTIFACT_VERIFICATION_DIRECTORY,
+  ARTIFACT_VERIFICATION_RELEASE_PATTERN,
+  CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
+  CANONICAL_CI_EVIDENCE_CHECKS,
+  CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+  CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_EVIDENCE_MATRIX,
+  CANONICAL_MACHINE_VERIFIER_STEP,
+  CANONICAL_RELEASE_ASSETS,
+  machineEvidencePlatformFamily,
+  machineProducerJobName,
+  machineReportNamesForClaim,
+  machineVerifierCommand,
+  machineVerifierPath,
+} from "./release-constants.mjs";
+
+export const CLAIM_STATES = new Set([
+  "proven",
+  "limited",
+  "deferred",
+  "prohibited",
+]);
+
+export const REQUIRED_CATEGORIES = new Set([
+  "open-source",
+  "local-storage",
+  "encryption",
+  "inference",
+  "network-use",
+  "sample-mode",
+  "connectors",
+  "signing",
+  "model-delivery",
+  "action-safety",
+  "artifact-verification",
+]);
+
+export const DEFAULT_LEDGER_PATH = "docs/beta-claim-ledger.json";
+
+export const REQUIRED_SURFACE_CLASSES = new Set([
+  "root-public",
+  "docs-public",
+  "web-public",
+  "desktop-public",
+  "mobile-public",
+  "release-metadata",
+  "release-templates",
+]);
+
+export const REQUIRED_READINESS_CLAIM_IDS = new Set([
+  "storage.desktop-crdb",
+  "encryption.oauth-default",
+  "encryption.twin-state-default",
+  "inference.on-device-availability",
+  "inference.confidential-verification",
+  "network.explicit-boundaries",
+  "sample.packaged-account-free",
+  "connectors.direct-provider-access",
+  "models.verified-delivery",
+  "safety.policy-and-provenance",
+  "safety.explanation-coverage",
+  "release.signing",
+  "release.artifact-verification",
+]);
+
+export const CANONICAL_CLAIM_CATEGORIES = new Map([
+  ["license.apache-2", "open-source"],
+  ["storage.desktop-crdb", "local-storage"],
+  ["encryption.oauth-default", "encryption"],
+  ["encryption.twin-state-default", "encryption"],
+  ["inference.on-device-availability", "inference"],
+  ["inference.confidential-verification", "inference"],
+  ["network.explicit-boundaries", "network-use"],
+  ["sample.packaged-account-free", "sample-mode"],
+  ["connectors.direct-provider-access", "connectors"],
+  ["models.verified-delivery", "model-delivery"],
+  ["safety.policy-and-provenance", "action-safety"],
+  ["safety.explanation-coverage", "action-safety"],
+  ["release.signing", "signing"],
+  ["release.artifact-verification", "artifact-verification"],
+]);
+
+const CANONICAL_READINESS_CLAIM_DIGESTS = new Map([
+  [
+    "storage.desktop-crdb",
+    "60cd42fdd7dc7a28889c76ef605c007e2f0cd917b5308110aa261246e0a09311",
+  ],
+  [
+    "encryption.oauth-default",
+    "6680cc06febcf4edd2df1886ed206e7d462098f71be0e07769610578450384b2",
+  ],
+  [
+    "encryption.twin-state-default",
+    "b9cef65321bd6695d4f97a2dd47e726a4d243378c2eb7d812a5056c44a59ebca",
+  ],
+  [
+    "inference.on-device-availability",
+    "aa50cfc127466c896417a4d1e47e1807a78e236d93ff52016e4324dbb6e2e3c5",
+  ],
+  [
+    "inference.confidential-verification",
+    "3747194142a1e6870b9dc244bb42171aaf9dddd3f51e46cb850f1cfbacc784c9",
+  ],
+  [
+    "network.explicit-boundaries",
+    "df3e5bc679f498545535f43a6956c1c94a047de346bf2dd1a5e581916fcae55d",
+  ],
+  [
+    "sample.packaged-account-free",
+    "594ea72f3bb8815d3dff2adb69da57cd53be3be76164858b0d475c90df03d560",
+  ],
+  [
+    "connectors.direct-provider-access",
+    "b0005c32b3d7a5a4d627edc8a66c0cabf2a939014b07e8f4da9d7d442f4e407a",
+  ],
+  [
+    "models.verified-delivery",
+    "933c06e9d7e0d33db05e1ab474f74d4ed3d62bc8eaf0f6dd0ccf374542b8cd3a",
+  ],
+  [
+    "safety.policy-and-provenance",
+    "b475c6e3b8d92be5da61743f2eeb11ced1239ca881d4b63a249d465194685267",
+  ],
+  [
+    "safety.explanation-coverage",
+    "4e5edb062f9344a1735df7483c207082dd699ab6a8b06721189fc63632dd0325",
+  ],
+  [
+    "release.signing",
+    "1adf5347b841b1ddb4711c5098c7e3dbfbcd38327301b75806130f4dc02e72c3",
+  ],
+  [
+    "release.artifact-verification",
+    "f6afd120ba5f210d46f0799036a4a3f4f1b5782a8e349ca6fd7c9d868b2b6b2c",
+  ],
+]);
+
+export const CANONICAL_READINESS_EVIDENCE_KINDS = new Map([
+  ["storage.desktop-crdb", ["source", "machine"]],
+  ["encryption.oauth-default", ["source", "ci"]],
+  ["encryption.twin-state-default", ["source", "ci"]],
+  ["inference.on-device-availability", ["source", "machine"]],
+  ["inference.confidential-verification", ["source", "ci", "machine"]],
+  ["network.explicit-boundaries", ["source", "machine"]],
+  ["sample.packaged-account-free", ["source", "machine"]],
+  ["connectors.direct-provider-access", ["source", "ci"]],
+  ["models.verified-delivery", ["source", "machine"]],
+  ["safety.policy-and-provenance", ["source", "ci"]],
+  ["safety.explanation-coverage", ["source", "ci"]],
+  ["release.signing", ["source", "machine"]],
+  ["release.artifact-verification", ["source", "machine"]],
+]);
+
+export const REQUIRED_STOP_SHIP_IDS = new Set([
+  "claims-ci",
+  "minimum-hardware",
+  "packaged-sample",
+  "production-key-management",
+  "verified-model-delivery",
+  "reasoning-mode-proof",
+  "signed-artifacts",
+  "artifact-evidence",
+  "release-artifact-scope",
+  "release-evals",
+  "beta-bake",
+]);
+
+const CANONICAL_STOP_SHIP_CONDITIONS = new Map([
+  [
+    "claims-ci",
+    {
+      owner: "release-engineering",
+      condition:
+        "The claim ledger and deterministic stale/prohibited-claim check pass on the release commit in CI with an immutable run identifier",
+    },
+  ],
+  [
+    "minimum-hardware",
+    {
+      owner: "desktop-inference",
+      condition:
+        "Minimum supported OS, RAM, free-disk, architecture, and sample-loop latency are proven on the final artifact",
+    },
+  ],
+  [
+    "packaged-sample",
+    {
+      owner: "desktop-product",
+      condition:
+        "A production build initializes an isolated account-free sample and completes the documented loop without the development auth bypass",
+    },
+  ],
+  [
+    "production-key-management",
+    {
+      owner: "security",
+      condition:
+        "The agreed encryption boundary and production key lifecycle are implemented, migrated, tested, and disclosed",
+    },
+  ],
+  [
+    "verified-model-delivery",
+    {
+      owner: "desktop-inference",
+      condition:
+        "The recommended model has a real digest, source, license, size, compatibility metadata, resilient download, and deletion controls",
+    },
+  ],
+  [
+    "reasoning-mode-proof",
+    {
+      owner: "inference-security",
+      condition:
+        "On-device, verified-private, and conventional provider modes are explicit; verified-private admission remains unavailable until a production attestation-backed provider and verifier persist independently verifiable receipts",
+    },
+  ],
+  [
+    "signed-artifacts",
+    {
+      owner: "release-engineering",
+      condition:
+        "Every supported platform artifact satisfies its signing and notarization requirements on a clean machine",
+    },
+  ],
+  [
+    "artifact-evidence",
+    {
+      owner: "release-engineering",
+      condition:
+        "Every distributed artifact has SHA-256 checksums, an SBOM, build provenance/attestation, and independent verification instructions",
+    },
+  ],
+  [
+    "release-artifact-scope",
+    {
+      owner: "release-engineering",
+      condition:
+        "The v-tag release job distributes only platforms included in the supported beta matrix; Android and iOS simulator outputs remain excluded or separately gated",
+    },
+  ],
+  [
+    "release-evals",
+    {
+      owner: "safety-evals",
+      condition:
+        "A release-SHA-bound adversarial evaluation pack proves the public safety thresholds and discloses denominators, failures, and limitations",
+    },
+  ],
+  [
+    "beta-bake",
+    {
+      owner: "release-owner",
+      condition:
+        "The release candidate completes the invited-tester bake and all release-blocking defects are closed or explicitly mitigated",
+    },
+  ],
+]);
+
+export const RELEASE_PUBLISHER_ACTION =
+  "softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64";
+
+const CANONICAL_RELEASE_JOB_ACTIONS = new Set([
+  "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+  "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  RELEASE_PUBLISHER_ACTION,
+]);
+
+const AUDITED_NON_RELEASE_SECRET_NAMES = new Set();
+
+export const CANONICAL_UPDATE_FEED_RUN = `curl -fsSL --max-time 10 --retry 3 --retry-delay 2 \\
+  "https://github.com/\${{ github.repository }}/releases/latest" \\
+  -o /dev/null`;
+
+export const CANONICAL_RELEASE_EVIDENCE_RUN = `cp -R artifacts/release-evidence .release-evidence
+node scripts/release-claims/generate-evidence-manifest.mjs \\
+  docs/beta-claim-ledger.json \\
+  .release-evidence/reports \\
+  .release-evidence/manifest.json
+node scripts/release-claims/check-release-claims.mjs \\
+  --require-ready \\
+  --tag "\${GITHUB_REF_NAME}" \\
+  --commit "\${GITHUB_SHA}" \\
+  --repository "\${GITHUB_REPOSITORY}" \\
+  --run-id "\${GITHUB_RUN_ID}" \\
+  --ref "\${GITHUB_REF}" \\
+  --evidence-manifest .release-evidence/manifest.json`;
+
+const CANONICAL_RELEASE_FILE_PATTERNS = new Set([
+  ...CANONICAL_RELEASE_ASSETS.map(([name]) => `artifacts/${name}/*`),
+  ...CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+  ARTIFACT_VERIFICATION_RELEASE_PATTERN,
+  ".release-evidence/manifest.json",
+]);
+
+const READY_ACCEPTED_STATES = new Set(["proven", "limited"]);
+const SOURCE_DIGEST = /^[0-9a-f]{64}$/;
+const COMMIT_SHA = /^[0-9a-f]{40}$/;
+const GITHUB_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+const SPDX_ELEMENT_ID = /^SPDXRef-[A-Za-z0-9.-]+$/;
+const SPDX_UTC_TIMESTAMP =
+  /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$/;
+const SPDX_23_CHECKSUM_ALGORITHMS = new Set([
+  "ADLER32",
+  "BLAKE2b-256",
+  "BLAKE2b-384",
+  "BLAKE2b-512",
+  "BLAKE3",
+  "MD2",
+  "MD4",
+  "MD5",
+  "MD6",
+  "SHA1",
+  "SHA224",
+  "SHA256",
+  "SHA3-256",
+  "SHA3-384",
+  "SHA3-512",
+  "SHA384",
+  "SHA512",
+]);
+const SPDX_23_RELATIONSHIP_TYPES = new Set([
+  "AMENDS",
+  "ANCESTOR_OF",
+  "BUILD_DEPENDENCY_OF",
+  "BUILD_TOOL_OF",
+  "CONTAINED_BY",
+  "CONTAINS",
+  "COPY_OF",
+  "DATA_FILE_OF",
+  "DEPENDENCY_MANIFEST_OF",
+  "DEPENDENCY_OF",
+  "DEPENDS_ON",
+  "DESCENDANT_OF",
+  "DESCRIBED_BY",
+  "DESCRIBES",
+  "DEV_DEPENDENCY_OF",
+  "DEV_TOOL_OF",
+  "DISTRIBUTION_ARTIFACT",
+  "DOCUMENTATION_OF",
+  "DYNAMIC_LINK",
+  "EXAMPLE_OF",
+  "EXPANDED_FROM_ARCHIVE",
+  "FILE_ADDED",
+  "FILE_DELETED",
+  "FILE_MODIFIED",
+  "GENERATED_FROM",
+  "GENERATES",
+  "HAS_PREREQUISITE",
+  "METAFILE_OF",
+  "OPTIONAL_COMPONENT_OF",
+  "OPTIONAL_DEPENDENCY_OF",
+  "OTHER",
+  "PACKAGE_OF",
+  "PATCH_APPLIED",
+  "PATCH_FOR",
+  "PREREQUISITE_FOR",
+  "PROVIDED_DEPENDENCY_OF",
+  "REQUIREMENT_DESCRIPTION_FOR",
+  "RUNTIME_DEPENDENCY_OF",
+  "SPECIFICATION_FOR",
+  "STATIC_LINK",
+  "TEST_CASE_OF",
+  "TEST_DEPENDENCY_OF",
+  "TEST_OF",
+  "TEST_TOOL_OF",
+  "VARIANT_OF",
+]);
+const RELEASE_EVIDENCE_WORKFLOW_PATH = ".github/workflows/build.yml";
+const CI_EVIDENCE_JOB_NAME = "release-claim-ci";
+const CI_EVIDENCE_ARTIFACT_NAME = "release-claims-ci";
+const MACHINE_EVIDENCE_ARTIFACT_NAME = "release-evidence";
+const CANONICAL_AUDIT_BASELINE = Object.freeze({
+  ref: "origin/main",
+  commit: "563c60f43e461910a16f30423cbab4ce8092fb61",
+  auditedOn: "2026-09-14",
+});
+const PUBLIC_DOCUMENT_EXTENSIONS = Object.freeze([
+  ".adoc",
+  ".css",
+  ".htm",
+  ".html",
+  ".js",
+  ".json",
+  ".md",
+  ".mdx",
+  ".mjs",
+  ".plist",
+  ".rst",
+  ".sh",
+  ".svg",
+  ".toml",
+  ".ts",
+  ".tsx",
+  ".txt",
+  ".webmanifest",
+  ".xml",
+  ".yaml",
+  ".yml",
+]);
+const HISTORICAL_CHANGELOG_EXCEPTIONS = Object.freeze([
+  {
+    ruleId: "stale-launch-ready",
+    exact: "launch-ready on the engineering side",
+  },
+  {
+    ruleId: "stale-all-code-shipped",
+    exact: "every code-writable launch criterion has shipped",
+  },
+  {
+    ruleId: "unverified-private-model-availability",
+    exact: "your AI runs privately on this computer",
+  },
+]);
+const HISTORICAL_STALE_ASSET_EXCEPTIONS = Object.freeze([
+  {
+    assetId: "briefing-pre-claim-audit",
+    exact: "briefing.png",
+  },
+]);
+const PUBLIC_BINARY_EXTENSIONS = new Set([
+  ".avif",
+  ".bmp",
+  ".gif",
+  ".heic",
+  ".icns",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".pdf",
+  ".png",
+  ".tif",
+  ".tiff",
+  ".webp",
+]);
+const PUBLIC_BINARY_ROOTS = [
+  "docs",
+  "apps/web/public",
+  "apps/desktop/assets",
+  "apps/mobile/assets",
+];
+
+const CANONICAL_STALE_ASSETS = new Map([
+  ["approvals-pre-claim-audit", "docs/screenshots/approvals.png"],
+  ["briefing-pre-claim-audit", "docs/screenshots/briefing.png"],
+  ["dashboard-pre-claim-audit", "docs/screenshots/dashboard.png"],
+  ["decisions-pre-claim-audit", "docs/screenshots/decisions.png"],
+  ["onboarding-pre-claim-audit", "docs/screenshots/onboarding.png"],
+  ["settings-pre-claim-audit", "docs/screenshots/settings.png"],
+  ["setup-pre-claim-audit", "docs/screenshots/setup.png"],
+  ["twin-pre-claim-audit", "docs/screenshots/twin.png"],
+]);
+
+const CANONICAL_PUBLIC_BINARY_ASSETS = new Map([
+  ["apps/desktop/assets/icon.icns", "reviewed-no-text"],
+  ["apps/desktop/assets/icon.ico", "reviewed-no-text"],
+  ["apps/desktop/assets/icons/256x256.png", "reviewed-no-text"],
+  ["apps/desktop/assets/icons/512x512.png", "reviewed-no-text"],
+  ["apps/mobile/assets/adaptive-icon.png", "reviewed-no-text"],
+  ["apps/mobile/assets/icon.png", "reviewed-no-text"],
+  ["apps/mobile/assets/notification-icon.png", "reviewed-no-text"],
+  ["apps/mobile/assets/splash.png", "reviewed-no-text"],
+  ["docs/screenshots/approvals.png", "prohibited-stale"],
+  ["docs/screenshots/briefing.png", "prohibited-stale"],
+  ["docs/screenshots/dashboard.png", "prohibited-stale"],
+  ["docs/screenshots/decisions.png", "prohibited-stale"],
+  ["docs/screenshots/onboarding.png", "prohibited-stale"],
+  ["docs/screenshots/settings.png", "prohibited-stale"],
+  ["docs/screenshots/setup.png", "prohibited-stale"],
+  ["docs/screenshots/twin.png", "prohibited-stale"],
+]);
+const CANONICAL_PUBLIC_BINARY_DIGESTS = new Map([
+  [
+    "apps/desktop/assets/icon.icns",
+    "d3717bc93cd429ed28562365b214157673a55f83f755b444b6e1e3dd47e83982",
+  ],
+  [
+    "apps/desktop/assets/icon.ico",
+    "55874d598e2ea907ac644a450a9f1a1083806857fc1b8cbca5a3cf00a5a35790",
+  ],
+  [
+    "apps/desktop/assets/icons/256x256.png",
+    "10b6dcc147d91f72bd6cfae0026f7c8c710b2a7a746e3be23e982eb52a561480",
+  ],
+  [
+    "apps/desktop/assets/icons/512x512.png",
+    "0f16c2f036885e9b38a68cc8fbb9b3918af1133ceffb572b260ad89fcdb48e65",
+  ],
+  [
+    "apps/mobile/assets/adaptive-icon.png",
+    "a4d4d3fe96557ad8dc6208e0cef6d6369aa3337f82c62186d7cdf6419218418b",
+  ],
+  [
+    "apps/mobile/assets/icon.png",
+    "a4d4d3fe96557ad8dc6208e0cef6d6369aa3337f82c62186d7cdf6419218418b",
+  ],
+  [
+    "apps/mobile/assets/notification-icon.png",
+    "a4d4d3fe96557ad8dc6208e0cef6d6369aa3337f82c62186d7cdf6419218418b",
+  ],
+  [
+    "apps/mobile/assets/splash.png",
+    "5588814424f5655372944a711bb59e5a58e18ef8adef5571372ee407115e3c5a",
+  ],
+  [
+    "docs/screenshots/approvals.png",
+    "39d97b021f527b1b8aed3e444c1c43b134369db021d3bc1acfcb19ee7c0260a1",
+  ],
+  [
+    "docs/screenshots/briefing.png",
+    "591f9145a8be3f5c3fab27386ad70e0da6c75019f6458e8377bf70c32a9f6931",
+  ],
+  [
+    "docs/screenshots/dashboard.png",
+    "ac3c68686e4d223eed38c31a5b99c158e88bdcbd7e19f77878de83fc2a8d254b",
+  ],
+  [
+    "docs/screenshots/decisions.png",
+    "67a0d595da153bd7f1effe86c5147a2af7fd9a61f0378f6adad30a7e285c378e",
+  ],
+  [
+    "docs/screenshots/onboarding.png",
+    "25081687e85f30dc71e14a8ad530e8e819ba072698ab304503125a3fad5b713b",
+  ],
+  [
+    "docs/screenshots/settings.png",
+    "93e2d66e98c268f81865abff379531dcc484dd4f6a80ea3c8c51f438ca58b212",
+  ],
+  [
+    "docs/screenshots/setup.png",
+    "51216f50224c7f01d6acd8d6cdfc9203e5a39fccba5855a6c901c9a840a1cc4d",
+  ],
+  [
+    "docs/screenshots/twin.png",
+    "e53fd86bf5d74c397866dfd8ba70c0a085294402ce186477cacdc260539d9dfb",
+  ],
+]);
+
+const CANONICAL_PROHIBITED_RULE_DIGESTS = new Map([
+  [
+    "absolute-local-product",
+    "a96c20071c9a19b28ee05b03c2806a7cf7c35d4915adc7a6a1abc833df1fa06e",
+  ],
+  [
+    "absolute-no-operated-service",
+    "eeee704f35b03432116fadeccc2a4803235cb6a54ea12a7eea017981a622d424",
+  ],
+  [
+    "absolute-server-transfer",
+    "70804030d2208b9f006bede6c3a7cafba7e81b9fe1b20797cd3979b01234cd6a",
+  ],
+  [
+    "nothing-to-install",
+    "a58a57dec0dd300ff01aa9b98933492781fd325a81f26487091a760cd3ef9249",
+  ],
+  [
+    "absolute-device-egress",
+    "e7c715e76ed86d6dab93fe739ec6ee6a6075d5ab8812565a234f1251b96b8d0c",
+  ],
+  [
+    "absolute-user-data-egress",
+    "8e8be895f666dd9b2b0bcd3d006fc555739a068fc7400df4691eff8ce30ae8fe",
+  ],
+  [
+    "absolute-percent-local",
+    "680631b3e0c2a5a697f863f0a7523b0455d32c3c18dc359f254b98d2294e3a74",
+  ],
+  [
+    "oauth-encryption-present-tense",
+    "a593ce039ec470a982e17a5d0eb98a72fe0c30dbd75ac80265b49ffd32b49961",
+  ],
+  [
+    "credential-save-encrypted",
+    "13c2d0fa82ebce33e93f6171b1442aca1e7b70cb9757be24e99e6e8b4c3718ea",
+  ],
+  [
+    "bundled-default-model",
+    "23b727d4be5a65df002cf3d4e8cc9df0607b4c00074f8df027dfc24c9e5b451b",
+  ],
+  [
+    "stale-launch-ready",
+    "72033cf451a0ea0eee88b0ac8bd73a8459c929ff3b554b7167af2ed8997f2ec4",
+  ],
+  [
+    "stale-all-code-shipped",
+    "e523d88f9f2f7befdf46975d405352a6fef21d638376c02fd742bd3ed050c25e",
+  ],
+  [
+    "absolute-no-server-path",
+    "ca7a565f487cceefc83e56bfd48770fb03ecc5aa21ea29c521360902bcf8829a",
+  ],
+  [
+    "packaged-sample-shipped",
+    "71fd7ff7daa64343ec23a8ce04931db465e174998f52f6d132869f9031238334",
+  ],
+  [
+    "supported-installer-available",
+    "838c5a3dc924f0fe31e07c241c3e4bc1cf9c41f438963588b35be06245e3ae10",
+  ],
+  [
+    "desktop-beta-download",
+    "2d61bf4fa0c182f6653c6628930b4ec48f09890fae594afd8bfbded197be534e",
+  ],
+  [
+    "packaged-sample-account-free",
+    "73baba64f6b23f47ec869c2dfb3c4f2673ec3811fdeacaea54a3d92653623995",
+  ],
+  [
+    "unverified-self-update",
+    "b41359ba45ac24d6a6f836564cabde452ef96c2ac99bd366dee5cc1a0eafc02a",
+  ],
+  [
+    "local-mode-availability",
+    "b9b65abc7e2c53a04e1e396d922655924137924bb9af9b9fa6be1bf38fd6b0bf",
+  ],
+  [
+    "offline-mode-availability",
+    "a2a2e1c39cc49516fbf96a4a733464ae8507590456022ee76033e4b3117488fb",
+  ],
+  [
+    "implicit-local-model",
+    "2b1de0f1649875f6f6ae9f660bf80a4ad1907c6d116c7d57828177ec04e7c870",
+  ],
+  [
+    "unverified-private-model-availability",
+    "690c3a5e51ee02be353d633c3a039f8d354fd720984d5bb6851a202128d01f4e",
+  ],
+  [
+    "idle-miner-zero-egress",
+    "a1fb3d2afccec489b35586d6e203188940aba4ee5a1c1aa20d3d0baf2e4a1be9",
+  ],
+  [
+    "unproven-confidential-mode",
+    "1f3b71b3f78deb753d5e4a61fc1dfaa56c503751154821b251a3fb9075a65a47",
+  ],
+  [
+    "unproven-universal-explanations",
+    "eb50709b3b331295993f4f22905ca5276f2a1bf5ee2aefb910ac9f75ac2a6490",
+  ],
+]);
+
+const CANONICAL_APPROVED_STATEMENT_DIGESTS = new Map([
+  [
+    "readme-release-status",
+    "34d49f5e5686768c9e35366fd49fbac6cac670940e2e03a9cf6bc2c14ffd6c89",
+  ],
+  [
+    "privacy-storage-boundary",
+    "c349858ccc9402b7a191137eb30db256fc3b7125dfe18cc67a0d530580bc2693",
+  ],
+  [
+    "privacy-encryption-boundary",
+    "52282febb8d701d818daa292292e76b1ae01fc1966d38e9da80466e47504da35",
+  ],
+  [
+    "onboarding-reasoning-boundary",
+    "0eeb5555602b98190fce76ced7cd246b582659b1e798f6299f669c9af9c8a11a",
+  ],
+  [
+    "onboarding-idle-miner-boundary",
+    "1644541ffcb82216a4ce7e459c4837fcbc4d8638792700ed0497c56ec426d768",
+  ],
+  [
+    "settings-memory-boundary",
+    "574b7592a0b266785dbe2c2598565041158581cbbc56f41c98ee697a3b03ed6c",
+  ],
+  [
+    "settings-model-availability-boundary",
+    "14abf7c5c200cf7196f2d5efa68107eef4e6dcb95cbc083304e4a519e80d567e",
+  ],
+  [
+    "gmail-credential-boundary",
+    "d3701a980c4a12a22762c7e3ece971e79e4d19a1da045490ba9e98b0a83ea6c9",
+  ],
+  [
+    "dashboard-reasoning-boundary",
+    "6df0e2b2c052caab3eb1b665896e26bc51e01f29be6e8c3ae22f3e4b565c8602",
+  ],
+  [
+    "landing-artifact-boundary",
+    "102d952a9aaf31af869e40cfe4eca127b7ac47c224ec8f50f8ded9c525762afb",
+  ],
+  [
+    "landing-sample-boundary",
+    "031b068eb9ec1158fe3ee885888a44e957ddfffcdcdf5503d1a2571d4c8f3708",
+  ],
+  [
+    "landing-update-boundary",
+    "597c96c9099a28ddcf56b35ae73c37417d2941e7e8c81d496ea2ee1bf54020e2",
+  ],
+  [
+    "artifact-signing-boundary",
+    "9f6c521c26306a7e51ba56770be9f3a56bfdaa04bf0c45cd69be4565aa2c25cf",
+  ],
+  [
+    "all-release-tags-gated",
+    "ed0749e46e8d899689df10019ccb2b0e4b513d68c9ec667acb35de6ce9e60038",
+  ],
+  [
+    "all-release-tag-condition",
+    "76bf2712ba8db560a444e3888c6b16074129e03c6181c3ed57d0ecaae784d9ca",
+  ],
+  [
+    "post-build-release-evidence-gate",
+    "bfa9e0dc764d49ba87129c9fce599c4d6d97164956357db979ce55d008f48b52",
+  ],
+  [
+    "external-release-evidence-manifest",
+    "3a3b21a49764c0fd54800d32dcfe33ed4eb5eb07ea3fa15af35ca05275c22561",
+  ],
+]);
+const VERIFICATION_PACKAGE_FILTERS = new Set([
+  "skytwin-desktop",
+  "@skytwin/api",
+  "@skytwin/connectors",
+  "@skytwin/db",
+  "@skytwin/embedded-llm",
+  "@skytwin/execution-router",
+  "@skytwin/explanations",
+  "@skytwin/policy-engine",
+]);
+const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
+const FOUR_SEGMENT_TAG = new RegExp(
+  `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})$`,
+);
+const BETA_TAG = new RegExp(
+  `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})-beta(?:\\.([1-9][0-9]{0,8}))?$`,
+);
+const FOUR_SEGMENT_VERSION = new RegExp(
+  `^${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}$`,
+);
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function isPlainRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function addError(errors, message) {
+  errors.push(message);
+}
+
+function sha256(content) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function relativePath(root, path) {
+  return relative(root, path).split("\\").join("/");
+}
+
+function lineAt(content, index) {
+  return content.slice(0, index).split(/\r?\n/).length;
+}
+
+function decodeHtmlEntities(content) {
+  const named = new Map([
+    ["amp", "&"],
+    ["apos", "'"],
+    ["gt", ">"],
+    ["lt", "<"],
+    ["mdash", "—"],
+    ["nbsp", " "],
+    ["ndash", "–"],
+    ["quot", '"'],
+  ]);
+  return content.replace(
+    /&(?:#(x[0-9a-f]+|[0-9]+)|([a-z][a-z0-9]+));/gi,
+    (entity, numeric, name) => {
+      if (numeric) {
+        const base = numeric[0].toLowerCase() === "x" ? 16 : 10;
+        const digits = base === 16 ? numeric.slice(1) : numeric;
+        const codePoint = Number.parseInt(digits, base);
+        if (
+          !Number.isSafeInteger(codePoint) ||
+          codePoint < 0 ||
+          codePoint > 0x10ffff
+        )
+          return entity;
+        try {
+          return String.fromCodePoint(codePoint);
+        } catch {
+          return entity;
+        }
+      }
+      return named.get(name.toLowerCase()) ?? entity;
+    },
+  );
+}
+
+function normalizeClaimText(content) {
+  return (
+    decodeHtmlEntities(content)
+      // Preserve quoted attribute values while dropping element names. Removing
+      // the whole tag would hide alt/title/meta claims; retaining the whole tag
+      // would insert element names between adjacent visible words.
+      .replace(/<[^>]*>/g, (tag) =>
+        [...tag.matchAll(/["']([^"']+)["']/g)]
+          .map((match) => match[1])
+          .join(" "),
+      )
+      .replace(/\\(?:n|r|t)/g, " ")
+      .replace(/["'`]/g, " ")
+      .replace(/\s*\+\s*/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+  );
+}
+
+function stripCodeComments(content) {
+  let output = "";
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index];
+    const next = content[index + 1];
+    if (lineComment) {
+      if (character === "\n") {
+        lineComment = false;
+        output += character;
+      } else output += " ";
+      continue;
+    }
+    if (blockComment) {
+      if (character === "*" && next === "/") {
+        output += "  ";
+        index += 1;
+        blockComment = false;
+      } else output += character === "\n" ? "\n" : " ";
+      continue;
+    }
+    if (quote) {
+      output += character;
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      output += character;
+    } else if (character === "/" && next === "/") {
+      output += "  ";
+      index += 1;
+      lineComment = true;
+    } else if (character === "/" && next === "*") {
+      output += "  ";
+      index += 1;
+      blockComment = true;
+    } else output += character;
+  }
+  return output;
+}
+
+function nonCommentContent(content, extension) {
+  let result = content.replace(/<!--[\s\S]*?-->/g, (comment) =>
+    comment.replace(/[^\n]/g, " "),
+  );
+  if ([".css", ".js", ".mjs", ".ts", ".tsx"].includes(extension))
+    result = stripCodeComments(result);
+  if ([".sh", ".yaml", ".yml"].includes(extension))
+    result = result.replace(/^[ \t]*#.*$/gm, "");
+  return result;
+}
+
+function extractComposedLiteralText(content) {
+  const literals = [];
+  const uncommented = stripCodeComments(content);
+  let quote = null;
+  let escaped = false;
+  let literal = "";
+  for (const character of uncommented) {
+    if (!quote) {
+      if (character === "'" || character === '"' || character === "`") {
+        quote = character;
+        literal = "";
+      }
+      continue;
+    }
+    if (escaped) {
+      literal += character;
+      escaped = false;
+    } else if (character === "\\") {
+      literal += character;
+      escaped = true;
+    } else if (character === quote) {
+      literals.push(
+        literal
+          // Keep literal words inside template interpolation visible. This is
+          // deliberately conservative: identifiers may create false positives,
+          // but deleting the expression lets public claims evade the audit.
+          .replace(/\$\{/g, " ")
+          .replace(/[{}]/g, " ")
+          .replace(/\\(?:n|r|t)/g, " ")
+          .replace(/\\(['"`\\])/g, "$1"),
+      );
+      quote = null;
+      literal = "";
+    } else {
+      literal += character;
+    }
+  }
+  return normalizeClaimText(literals.join("\n"));
+}
+
+function isInsideRoot(root, path) {
+  const relativeToRoot = relative(root, path);
+  return (
+    relativeToRoot === "" ||
+    (!relativeToRoot.startsWith("..") && !relativeToRoot.startsWith("/"))
+  );
+}
+
+function hasSymlinkComponent(root, absolute) {
+  const relativeToRoot = relative(root, absolute);
+  if (
+    relativeToRoot === "" ||
+    relativeToRoot.startsWith("..") ||
+    relativeToRoot.startsWith(sep)
+  )
+    return relativeToRoot !== "";
+  let cursor = root;
+  for (const component of relativeToRoot.split(sep)) {
+    cursor = join(cursor, component);
+    if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) return true;
+  }
+  return false;
+}
+
+function resolveContainedRegularFile(root, candidate) {
+  const absoluteRoot = realpathSync(resolve(root));
+  const absolute = resolve(absoluteRoot, candidate);
+  if (!isInsideRoot(absoluteRoot, absolute) || !existsSync(absolute))
+    return null;
+  if (hasSymlinkComponent(absoluteRoot, absolute)) return null;
+  const resolved = realpathSync(absolute);
+  if (!isInsideRoot(absoluteRoot, resolved)) return null;
+  const stat = lstatSync(absolute);
+  return stat.isFile() && !stat.isSymbolicLink() ? absolute : null;
+}
+
+export function normalizeReleaseTagToRepositoryVersion(tag) {
+  if (!isNonEmptyString(tag)) return null;
+
+  const stable = FOUR_SEGMENT_TAG.exec(tag);
+  if (stable) return stable.slice(1, 5).join(".");
+
+  const beta = BETA_TAG.exec(tag);
+  if (!beta) return null;
+  const [, major, minor, patch, build] = beta;
+  return `${major}.${minor}.${patch}.${build ?? "0"}`;
+}
+
+function tokenizeVerificationCommand(command) {
+  if (!isNonEmptyString(command) || command.length > 1000) return null;
+  const tokens = [];
+  let token = "";
+  let quote = null;
+  let escaped = false;
+
+  for (const character of command) {
+    if (escaped) {
+      token += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (character === quote) quote = null;
+      else if (character === "`" || character === "$" || character === "\n")
+        return null;
+      else token += character;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+      continue;
+    }
+    if (/\s/.test(character)) {
+      if (token) tokens.push(token);
+      token = "";
+      continue;
+    }
+    if (";|&<>`$".includes(character)) return null;
+    token += character;
+  }
+  if (escaped || quote) return null;
+  if (token) tokens.push(token);
+  return tokens;
+}
+
+export function isAllowlistedVerificationCommand(command) {
+  const tokens = tokenizeVerificationCommand(command);
+  if (!tokens) return false;
+
+  if (
+    tokens.length === 2 &&
+    tokens[0] === "pnpm" &&
+    tokens[1] === "claims:check"
+  )
+    return true;
+
+  if (
+    tokens.length >= 4 &&
+    tokens[0] === "pnpm" &&
+    tokens[1] === "--filter" &&
+    VERIFICATION_PACKAGE_FILTERS.has(tokens[2]) &&
+    tokens[3] === "test" &&
+    tokens.slice(4).every((token) => /^[-A-Za-z0-9_@.*\/]+$/.test(token))
+  ) {
+    return true;
+  }
+
+  if (
+    tokens.length < 5 ||
+    tokens[0] !== "rg" ||
+    tokens[1] !== "-n" ||
+    tokens[2] !== "--"
+  ) {
+    return false;
+  }
+  const pattern = tokens[3];
+  const paths = tokens.slice(4);
+  return (
+    !pattern.startsWith("-") &&
+    /^[ A-Za-z0-9_@.*\/:'"|(){}\[\].,+?^$\\=-]+$/.test(pattern) &&
+    paths.every(
+      (path) =>
+        !path.startsWith("-") &&
+        !path.split("/").includes("..") &&
+        /^[A-Za-z0-9_@.*\/.-]+$/.test(path),
+    )
+  );
+}
+
+function collectSurfaceFiles(root, surface, errors) {
+  root = realpathSync(resolve(root));
+  const absolute = resolve(root, surface.path);
+  if (!isInsideRoot(root, absolute)) {
+    addError(errors, `claim surface escapes repository root: ${surface.path}`);
+    return [];
+  }
+  if (!existsSync(absolute)) {
+    addError(errors, `claim surface does not exist: ${surface.path}`);
+    return [];
+  }
+
+  if (hasSymlinkComponent(realpathSync(resolve(root)), absolute)) {
+    addError(
+      errors,
+      `claim surface may not traverse symlinks: ${surface.path}`,
+    );
+    return [];
+  }
+
+  const stat = lstatSync(absolute);
+  if (stat.isFile()) return [absolute];
+  if (!stat.isDirectory()) {
+    addError(
+      errors,
+      `claim surface is neither a file nor directory: ${surface.path}`,
+    );
+    return [];
+  }
+
+  const extensions = new Set(asArray(surface.extensions));
+  const excluded = new Set();
+  for (const excludedPath of asArray(surface.exclude)) {
+    const absoluteExcluded = resolve(root, excludedPath);
+    if (!isInsideRoot(root, absoluteExcluded)) {
+      addError(
+        errors,
+        `claim surface exclusion escapes repository root: ${excludedPath}`,
+      );
+      continue;
+    }
+    excluded.add(absoluteExcluded);
+  }
+  const files = [];
+  const ignoredDirectoryNames = new Set([
+    "node_modules",
+    "dist",
+    "coverage",
+    "__tests__",
+    "__mocks__",
+  ]);
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      if (excluded.has(path)) continue;
+      if (entry.isDirectory() && ignoredDirectoryNames.has(entry.name))
+        continue;
+      if (entry.isSymbolicLink()) {
+        addError(
+          errors,
+          `claim surface contains a symlink: ${relativePath(root, path)}`,
+        );
+        continue;
+      }
+      if (entry.isDirectory()) visit(path);
+      if (
+        entry.isFile() &&
+        (extensions.size === 0 || extensions.has(extname(entry.name)))
+      ) {
+        files.push(path);
+      }
+    }
+  };
+  visit(absolute);
+  return files;
+}
+
+function requiredSurfaceSpecs(root) {
+  const rootDocumentExtensions = new Set([
+    ".adoc",
+    ".htm",
+    ".html",
+    ".md",
+    ".mdx",
+    ".rst",
+    ".txt",
+  ]);
+  const specs = readdirSync(root, { withFileTypes: true })
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        rootDocumentExtensions.has(extname(entry.name).toLowerCase()),
+    )
+    .map((entry) => ({ class: "root-public", path: entry.name }));
+  const optionalSpecs = [
+    {
+      class: "docs-public",
+      path: "docs",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+      exclude: ["docs/beta-claim-ledger.json"],
+    },
+    {
+      class: "web-public",
+      path: "apps/web/public",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    {
+      class: "desktop-public",
+      path: "apps/desktop/src",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+      exclude: ["apps/desktop/src/__mocks__", "apps/desktop/src/__tests__"],
+    },
+    { class: "desktop-public", path: "apps/desktop/package.json" },
+    {
+      class: "desktop-public",
+      path: "apps/desktop/scripts",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    {
+      class: "desktop-public",
+      path: "apps/api/src",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    {
+      class: "desktop-public",
+      path: "apps/worker/src",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    {
+      class: "desktop-public",
+      path: "packages",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    {
+      class: "desktop-public",
+      path: "bin",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    {
+      class: "mobile-public",
+      path: "apps/mobile/src",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+      exclude: ["apps/mobile/src/__tests__"],
+    },
+    { class: "mobile-public", path: "apps/mobile/app.json" },
+    { class: "mobile-public", path: "apps/mobile/package.json" },
+    { class: "release-metadata", path: "package.json" },
+    { class: "release-metadata", path: "VERSION" },
+    { class: "release-metadata", path: "pnpm-workspace.yaml" },
+    { class: "release-metadata", path: "turbo.json" },
+    {
+      class: "release-metadata",
+      path: ".github/workflows",
+      extensions: [".yaml", ".yml"],
+    },
+    {
+      class: "release-metadata",
+      path: ".github/scripts",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    { class: "release-metadata", path: ".github/dependabot.yml" },
+    {
+      class: "release-templates",
+      path: ".github/ISSUE_TEMPLATE",
+      extensions: PUBLIC_DOCUMENT_EXTENSIONS,
+    },
+    {
+      class: "release-templates",
+      path: ".github/PULL_REQUEST_TEMPLATE.md",
+    },
+  ];
+  return specs.concat(
+    optionalSpecs.filter((spec) => existsSync(resolve(root, spec.path))),
+  );
+}
+
+function collectPublicBinaryAssetPaths(root, errors) {
+  const paths = [];
+  const visit = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        addError(
+          errors,
+          `public asset inventory contains a symlink: ${relativePath(root, absolute)}`,
+        );
+      } else if (entry.isDirectory()) {
+        visit(absolute);
+      } else if (
+        entry.isFile() &&
+        PUBLIC_BINARY_EXTENSIONS.has(extname(entry.name).toLowerCase())
+      ) {
+        paths.push(relativePath(root, absolute));
+      }
+    }
+  };
+  for (const path of PUBLIC_BINARY_ROOTS) {
+    const absolute = resolve(root, path);
+    if (existsSync(absolute) && lstatSync(absolute).isDirectory())
+      visit(absolute);
+  }
+  return paths.sort();
+}
+
+function sameStringSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    Array.isArray(expected) &&
+    actual.length === expected.length &&
+    new Set(actual).size === actual.length &&
+    expected.every((value) => actual.includes(value))
+  );
+}
+
+function canonicalEvidenceChecks(claimId, kind) {
+  return (
+    kind === "ci"
+      ? CANONICAL_CI_EVIDENCE_CHECKS
+      : CANONICAL_MACHINE_EVIDENCE_CHECKS
+  ).get(claimId);
+}
+
+function validateExternalEvidenceShape(evidence, prefix, errors) {
+  if (!isNonEmptyString(evidence.why))
+    addError(errors, `${prefix}.why is required`);
+  if (!GITHUB_REPOSITORY.test(evidence.repository ?? ""))
+    addError(errors, `${prefix}.repository must be an owner/repository name`);
+  if (!Number.isSafeInteger(evidence.runId) || evidence.runId <= 0)
+    addError(errors, `${prefix}.runId must be a positive integer`);
+  if (!isNonEmptyString(evidence.ref))
+    addError(errors, `${prefix}.ref is required`);
+  const expectedCheckIds = canonicalEvidenceChecks(
+    evidence.claimId,
+    evidence.kind,
+  );
+  if (!expectedCheckIds) {
+    addError(
+      errors,
+      `${prefix} has no canonical semantic proof contract for ${evidence.claimId}:${evidence.kind}`,
+    );
+  } else if (!sameStringSet(evidence.checkIds, expectedCheckIds)) {
+    addError(
+      errors,
+      `${prefix}.checkIds must equal the canonical claim-specific check IDs: ${expectedCheckIds.join(", ")}`,
+    );
+  }
+  if (evidence.kind === "ci") {
+    if (!Number.isSafeInteger(evidence.artifactId) || evidence.artifactId <= 0)
+      addError(errors, `${prefix}.artifactId must be a positive integer`);
+    if (!isNonEmptyString(evidence.artifactName))
+      addError(errors, `${prefix}.artifactName is required`);
+    if (!Number.isSafeInteger(evidence.jobId) || evidence.jobId <= 0)
+      addError(errors, `${prefix}.jobId must be a positive integer`);
+    if (!isNonEmptyString(evidence.jobName))
+      addError(errors, `${prefix}.jobName is required`);
+    else if (evidence.jobName !== CI_EVIDENCE_JOB_NAME)
+      addError(errors, `${prefix}.jobName must be ${CI_EVIDENCE_JOB_NAME}`);
+    if (evidence.artifactName !== CI_EVIDENCE_ARTIFACT_NAME)
+      addError(
+        errors,
+        `${prefix}.artifactName must be ${CI_EVIDENCE_ARTIFACT_NAME}`,
+      );
+    if (!COMMIT_SHA.test(evidence.commitSha ?? ""))
+      addError(
+        errors,
+        `${prefix}.commitSha must be a lowercase 40-character commit SHA`,
+      );
+    if (!SOURCE_DIGEST.test(evidence.artifactSha256 ?? ""))
+      addError(
+        errors,
+        `${prefix}.artifactSha256 must be a lowercase SHA-256 digest`,
+      );
+    if (evidence.reportPath !== "artifacts/release-claims-ci/result.json")
+      addError(
+        errors,
+        `${prefix}.reportPath must identify the downloaded CI result`,
+      );
+    if (!SOURCE_DIGEST.test(evidence.reportSha256 ?? ""))
+      addError(
+        errors,
+        `${prefix}.reportSha256 must be a lowercase SHA-256 digest`,
+      );
+    if (evidence.conclusion !== "success")
+      addError(errors, `${prefix}.conclusion must be success`);
+  } else {
+    if (
+      evidence.artifactId !== undefined ||
+      evidence.artifactName !== undefined
+    )
+      addError(
+        errors,
+        `${prefix} must use explicit evidenceArtifact* and releaseArtifact* fields`,
+      );
+    const expectedReportPath = [
+      "sample.packaged-account-free",
+      "release.signing",
+    ].includes(evidence.claimId)
+      ? `.release-evidence/reports/${evidence.claimId}.${evidence.platform}.json`
+      : `.release-evidence/reports/${evidence.claimId}.json`;
+    if (evidence.reportPath !== expectedReportPath)
+      addError(
+        errors,
+        `${prefix}.reportPath must be a safe .release-evidence/reports/*.json path`,
+      );
+    if (evidence.evidenceArtifactName !== MACHINE_EVIDENCE_ARTIFACT_NAME)
+      addError(
+        errors,
+        `${prefix}.evidenceArtifactName must be ${MACHINE_EVIDENCE_ARTIFACT_NAME}`,
+      );
+    for (const field of [
+      "platform",
+      "releaseTag",
+      "releaseArtifactKind",
+      "releaseArtifactName",
+      "subjectName",
+    ]) {
+      if (!isNonEmptyString(evidence[field]))
+        addError(errors, `${prefix}.${field} is required`);
+    }
+    for (const field of ["releaseArtifactName", "subjectName"]) {
+      if (
+        isNonEmptyString(evidence[field]) &&
+        !/^[A-Za-z0-9][A-Za-z0-9_.+() -]{0,240}$/.test(evidence[field])
+      )
+        addError(errors, `${prefix}.${field} must be a plain filename/name`);
+    }
+    if (
+      evidence.subjectPath !==
+      `artifacts/${evidence.releaseArtifactName}/${evidence.subjectName}`
+    )
+      addError(
+        errors,
+        `${prefix}.subjectPath must identify the downloaded release artifact subject`,
+      );
+    for (const field of ["evidenceArtifactId", "releaseArtifactId"]) {
+      if (!Number.isSafeInteger(evidence[field]) || evidence[field] <= 0)
+        addError(errors, `${prefix}.${field} must be a positive integer`);
+    }
+    if (
+      !Number.isSafeInteger(evidence.producerJobId) ||
+      evidence.producerJobId <= 0
+    )
+      addError(errors, `${prefix}.producerJobId must be a positive integer`);
+    const expectedProducerJobName = machineProducerJobName(
+      evidence.claimId,
+      evidence.platform,
+    );
+    if (evidence.producerJobName !== expectedProducerJobName)
+      addError(
+        errors,
+        `${prefix}.producerJobName must identify the canonical claim/platform producer job`,
+      );
+    if (evidence.producerJobConclusion !== "success")
+      addError(errors, `${prefix}.producerJobConclusion must be success`);
+    const expectedVerifierPath = machineVerifierPath(evidence.claimId);
+    const expectedVerifierCommand = machineVerifierCommand(
+      evidence.claimId,
+      evidence.platform,
+    );
+    if (evidence.verifierPath !== expectedVerifierPath)
+      addError(errors, `${prefix}.verifierPath must be the canonical verifier`);
+    if (evidence.verifierCommand !== expectedVerifierCommand)
+      addError(
+        errors,
+        `${prefix}.verifierCommand must invoke the canonical verifier exactly`,
+      );
+    if (!SOURCE_DIGEST.test(evidence.verifierSha256 ?? ""))
+      addError(
+        errors,
+        `${prefix}.verifierSha256 must be a lowercase SHA-256 digest`,
+      );
+    if (
+      ![
+        "desktop-archive",
+        "desktop-installer",
+        "mobile-package",
+        "update-manifest",
+      ].includes(evidence.releaseArtifactKind)
+    )
+      addError(errors, `${prefix}.releaseArtifactKind is unsupported`);
+    if (!COMMIT_SHA.test(evidence.sourceCommit ?? ""))
+      addError(
+        errors,
+        `${prefix}.sourceCommit must be a lowercase 40-character commit SHA`,
+      );
+    for (const field of [
+      "evidenceArtifactSha256",
+      "releaseArtifactSha256",
+      "reportSha256",
+      "subjectSha256",
+    ]) {
+      if (!SOURCE_DIGEST.test(evidence[field] ?? ""))
+        addError(
+          errors,
+          `${prefix}.${field} must be a lowercase SHA-256 digest`,
+        );
+    }
+  }
+  for (const forbidden of ["immutableId", "path", "sha256", "reportUri"]) {
+    if (evidence[forbidden] !== undefined)
+      addError(
+        errors,
+        `${prefix}.${forbidden} is not valid for ${evidence.kind} evidence`,
+      );
+  }
+}
+
+function validateReleaseAssetManifest(manifest, errors) {
+  const expected = new Map(CANONICAL_RELEASE_ASSETS);
+  const seen = new Set();
+  const seenIds = new Set();
+  for (const [index, asset] of asArray(manifest?.releaseAssets).entries()) {
+    const prefix = `release evidence manifest releaseAssets[${index}]`;
+    if (!isNonEmptyString(asset?.artifactName)) {
+      addError(errors, `${prefix}.artifactName is required`);
+      continue;
+    }
+    if (seen.has(asset.artifactName))
+      addError(errors, `${prefix} duplicates ${asset.artifactName}`);
+    seen.add(asset.artifactName);
+    const expectedKind = expected.get(asset.artifactName);
+    if (!expectedKind)
+      addError(errors, `${prefix} is not in the canonical published asset set`);
+    else if (asset.kind !== expectedKind)
+      addError(errors, `${prefix}.kind must be ${expectedKind}`);
+    if (!Number.isSafeInteger(asset.artifactId) || asset.artifactId <= 0)
+      addError(errors, `${prefix}.artifactId must be a positive integer`);
+    else if (seenIds.has(asset.artifactId))
+      addError(errors, `${prefix}.artifactId is duplicated`);
+    else seenIds.add(asset.artifactId);
+    if (!SOURCE_DIGEST.test(asset.artifactSha256 ?? ""))
+      addError(errors, `${prefix}.artifactSha256 must be a SHA-256 digest`);
+    const subjectPaths = new Set();
+    if (asArray(asset.subjects).length === 0)
+      addError(errors, `${prefix}.subjects must be non-empty`);
+    for (const [subjectIndex, subject] of asArray(asset.subjects).entries()) {
+      const subjectPrefix = `${prefix}.subjects[${subjectIndex}]`;
+      if (
+        !isNonEmptyString(subject?.name) ||
+        !/^[A-Za-z0-9][A-Za-z0-9_.+() -]{0,240}$/.test(subject.name)
+      )
+        addError(errors, `${subjectPrefix}.name must be a plain filename`);
+      const expectedPath = `artifacts/${asset.artifactName}/${subject?.name}`;
+      if (subject?.path !== expectedPath)
+        addError(errors, `${subjectPrefix}.path must equal ${expectedPath}`);
+      if (subjectPaths.has(subject?.path))
+        addError(errors, `${subjectPrefix}.path is duplicated`);
+      subjectPaths.add(subject?.path);
+      if (!SOURCE_DIGEST.test(subject?.sha256 ?? ""))
+        addError(errors, `${subjectPrefix}.sha256 must be a SHA-256 digest`);
+    }
+  }
+  for (const [name] of expected) {
+    if (!seen.has(name))
+      addError(
+        errors,
+        `release evidence manifest is missing release asset: ${name}`,
+      );
+  }
+  for (const name of seen) {
+    if (!expected.has(name))
+      addError(
+        errors,
+        `release evidence manifest has unexpected release asset: ${name}`,
+      );
+  }
+}
+
+function validateArtifactVerificationAssetManifest(manifest, errors) {
+  const canonical = new Map(CANONICAL_ARTIFACT_VERIFICATION_ASSETS);
+  const seenNames = new Set();
+  const seenPaths = new Set();
+  const seenCanonical = new Set();
+  let provenanceBundleCount = 0;
+  for (const [index, asset] of asArray(
+    manifest?.verificationAssets,
+  ).entries()) {
+    const prefix = `release evidence manifest verificationAssets[${index}]`;
+    const canonicalKind = canonical.get(asset?.name);
+    const expectedKind =
+      canonicalKind ??
+      (/^[a-f0-9]{64}\.attestation\.jsonl$/.test(asset?.name ?? "")
+        ? "provenance-bundle"
+        : null);
+    if (!expectedKind) {
+      addError(errors, `${prefix}.name is not canonical`);
+      continue;
+    }
+    if (asset.kind !== expectedKind)
+      addError(errors, `${prefix}.kind must be ${expectedKind}`);
+    if (asset.path !== `${ARTIFACT_VERIFICATION_DIRECTORY}/${asset.name}`)
+      addError(errors, `${prefix}.path is not canonical`);
+    if (!SOURCE_DIGEST.test(asset.sha256 ?? ""))
+      addError(errors, `${prefix}.sha256 must be a SHA-256 digest`);
+    if (seenNames.has(asset.name))
+      addError(errors, `${prefix}.name is duplicated`);
+    if (seenPaths.has(asset.path))
+      addError(errors, `${prefix}.path is duplicated`);
+    seenNames.add(asset.name);
+    seenPaths.add(asset.path);
+    if (canonicalKind) seenCanonical.add(asset.name);
+    else provenanceBundleCount += 1;
+  }
+  for (const [name] of canonical) {
+    if (!seenCanonical.has(name))
+      addError(
+        errors,
+        `release evidence manifest is missing artifact-verification asset: ${name}`,
+      );
+  }
+  if (provenanceBundleCount === 0)
+    addError(
+      errors,
+      "release evidence manifest is missing artifact-verification provenance bundles",
+    );
+}
+
+function collectDownloadedArtifactSubjects(root, artifactName, errors) {
+  const directory = resolve(root, "artifacts", artifactName);
+  if (
+    !isInsideRoot(root, directory) ||
+    !existsSync(directory) ||
+    hasSymlinkComponent(root, directory) ||
+    !lstatSync(directory).isDirectory()
+  ) {
+    addError(
+      errors,
+      `downloaded release artifact directory is missing or unsafe: artifacts/${artifactName}`,
+    );
+    return [];
+  }
+  const subjects = [];
+  const visit = (current) => {
+    for (const entry of readdirSync(current, { withFileTypes: true })) {
+      const absolute = join(current, entry.name);
+      if (entry.isSymbolicLink()) {
+        addError(
+          errors,
+          `downloaded release artifact contains a symlink: ${relativePath(root, absolute)}`,
+        );
+      } else if (entry.isDirectory()) visit(absolute);
+      else if (entry.isFile()) subjects.push(relativePath(root, absolute));
+      else
+        addError(
+          errors,
+          `downloaded release artifact contains a non-regular entry: ${relativePath(root, absolute)}`,
+        );
+    }
+  };
+  visit(directory);
+  return subjects.sort();
+}
+
+export function verifyRequiredSurfaceCoverage(ledger, root) {
+  root = realpathSync(resolve(root));
+  const errors = [];
+  const configuredByClass = new Map();
+  for (const surface of asArray(ledger?.claimSurfaces)) {
+    if (!REQUIRED_SURFACE_CLASSES.has(surface?.class)) continue;
+    if (!configuredByClass.has(surface.class))
+      configuredByClass.set(surface.class, new Set());
+    for (const file of collectSurfaceFiles(root, surface, errors))
+      configuredByClass.get(surface.class).add(file);
+  }
+
+  for (const required of requiredSurfaceSpecs(root)) {
+    const requiredFiles = collectSurfaceFiles(root, required, errors);
+    const configured = configuredByClass.get(required.class) ?? new Set();
+    for (const file of requiredFiles) {
+      if (!configured.has(file)) {
+        addError(
+          errors,
+          `${required.class} claim surfaces do not cover required file: ${relativePath(root, file)}`,
+        );
+      }
+    }
+  }
+  return errors;
+}
+
+export function verifyCanonicalReleasePublisher(root) {
+  root = realpathSync(resolve(root));
+  const errors = [];
+  const workflowPath = resolveContainedRegularFile(
+    root,
+    RELEASE_EVIDENCE_WORKFLOW_PATH,
+  );
+  if (!workflowPath) {
+    addError(errors, "canonical release workflow is missing or unsafe");
+    return errors;
+  }
+  const publicationSources = [];
+  const workflowSources = [];
+  const workflowDirectory = resolve(root, ".github/workflows");
+  if (existsSync(workflowDirectory)) {
+    for (const entry of readdirSync(workflowDirectory, {
+      withFileTypes: true,
+    })) {
+      if (entry.isFile() && /\.ya?ml$/i.test(entry.name)) {
+        const path = resolve(workflowDirectory, entry.name);
+        publicationSources.push(path);
+        workflowSources.push(path);
+      }
+    }
+  }
+  for (const directoryName of [".github/scripts", "scripts"]) {
+    const directory = resolve(root, directoryName);
+    if (!existsSync(directory)) continue;
+    const visit = (current) => {
+      for (const entry of readdirSync(current, { withFileTypes: true })) {
+        const path = resolve(current, entry.name);
+        if (entry.isDirectory()) visit(path);
+        else if (entry.isFile() && !/\.test\.[^.]+$/i.test(entry.name))
+          publicationSources.push(path);
+      }
+    };
+    visit(directory);
+  }
+  const allPublicationSource = publicationSources
+    .map((path) =>
+      readFileSync(path, "utf8")
+        .split(/\r?\n/)
+        .map((line) => line.replace(/^\s*#.*$/, ""))
+        .join("\n"),
+    )
+    .join("\n");
+  const isRecord = (value) =>
+    value !== null && typeof value === "object" && !Array.isArray(value);
+  const parsedWorkflows = new Map();
+  for (const path of workflowSources) {
+    const document = parseDocument(readFileSync(path, "utf8"), {
+      merge: true,
+      uniqueKeys: true,
+    });
+    if (document.errors.length > 0) {
+      for (const error of document.errors)
+        addError(
+          errors,
+          `workflow YAML is invalid (${relativePath(root, path)}): ${error.message}`,
+        );
+      continue;
+    }
+    const workflow = document.toJS();
+    if (!isRecord(workflow)) {
+      addError(
+        errors,
+        `workflow YAML must be a mapping: ${relativePath(root, path)}`,
+      );
+      continue;
+    }
+    parsedWorkflows.set(path, workflow);
+  }
+  const containsWritePermission = (permissions) =>
+    permissions === "write-all" ||
+    (isRecord(permissions) &&
+      Object.values(permissions).some((value) => value === "write"));
+  const hasContentsWrite = (permissions) =>
+    permissions === "write-all" ||
+    (isRecord(permissions) && permissions.contents === "write");
+  const contentsWriteJobs = [];
+  for (const [path, workflow] of parsedWorkflows) {
+    if (
+      !isRecord(workflow.permissions) ||
+      Object.keys(workflow.permissions).length !== 1 ||
+      workflow.permissions.contents !== "read"
+    )
+      addError(
+        errors,
+        `workflow must declare the exact read-only default permissions: ${relativePath(root, path)}`,
+      );
+    if (containsWritePermission(workflow.permissions))
+      addError(
+        errors,
+        `workflow-level write permissions are prohibited: ${relativePath(root, path)}`,
+      );
+    if (!isRecord(workflow.jobs)) continue;
+    for (const [jobName, job] of Object.entries(workflow.jobs)) {
+      if (!isRecord(job)) continue;
+      const isCanonicalMachineProducerPermissions =
+        path === workflowPath &&
+        jobName === "release-machine-evidence" &&
+        isRecord(job.permissions) &&
+        Object.keys(job.permissions).length === 2 &&
+        job.permissions.contents === "read" &&
+        job.permissions.actions === "read";
+      if (
+        job.permissions !== undefined &&
+        (path !== workflowPath || jobName !== "release") &&
+        !isCanonicalMachineProducerPermissions
+      )
+        addError(
+          errors,
+          `non-release job permissions must inherit the exact read-only workflow default: ${relativePath(root, path)} jobs.${jobName}`,
+        );
+      if (hasContentsWrite(job.permissions))
+        contentsWriteJobs.push({ path, jobName });
+      if (
+        containsWritePermission(job.permissions) &&
+        (path !== workflowPath || jobName !== "release")
+      )
+        addError(
+          errors,
+          `write-capable workflow job is outside the canonical publisher: ${relativePath(root, path)} jobs.${jobName}`,
+        );
+    }
+  }
+  const credentialViolations = new Set();
+  const inspectNonReleaseCredentials = (value, location, key = "") => {
+    if (typeof value === "string") {
+      for (const expression of value.matchAll(/\$\{\{[\s\S]*?\}\}/g)) {
+        if (!/\bsecrets\b/.test(expression[0])) continue;
+        const secretNames = [
+          ...expression[0].matchAll(
+            /\bsecrets\s*(?:\.\s*([A-Za-z_][A-Za-z0-9_]*)|\[\s*(['"])([A-Za-z_][A-Za-z0-9_]*)\2\s*\])/g,
+          ),
+        ].map((match) => match[1] ?? match[3]);
+        if (
+          secretNames.length === 0 ||
+          secretNames.some(
+            (name) => !AUDITED_NON_RELEASE_SECRET_NAMES.has(name),
+          )
+        )
+          credentialViolations.add(
+            `${location} references a non-allowlisted secrets context`,
+          );
+      }
+      const tokenKey = /(?:^|[-_])(?:pat|token)(?:$|[-_])/i.test(key);
+      if (tokenKey && value !== "${{ github.token }}")
+        credentialViolations.add(`${location} supplies ${key}`);
+      if (key === "secrets" && value === "inherit")
+        credentialViolations.add(`${location} inherits all secrets`);
+      return;
+    }
+    if (Array.isArray(value)) {
+      for (const [index, item] of value.entries())
+        inspectNonReleaseCredentials(item, `${location}[${index}]`);
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [childKey, childValue] of Object.entries(value))
+      inspectNonReleaseCredentials(
+        childValue,
+        `${location}.${childKey}`,
+        childKey,
+      );
+  };
+  for (const [path, workflow] of parsedWorkflows) {
+    const workflowLocation = relativePath(root, path);
+    const workflowControls = Object.fromEntries(
+      Object.entries(workflow).filter(([key]) => key !== "jobs"),
+    );
+    inspectNonReleaseCredentials(workflowControls, workflowLocation);
+    if (!isRecord(workflow.jobs)) continue;
+    for (const [jobName, job] of Object.entries(workflow.jobs)) {
+      if (path === workflowPath && jobName === "release") continue;
+      inspectNonReleaseCredentials(job, `${workflowLocation} jobs.${jobName}`);
+    }
+  }
+  for (const violation of credentialViolations)
+    addError(
+      errors,
+      `non-release workflow credentials are not allowlisted: ${violation}`,
+    );
+  if (
+    contentsWriteJobs.length !== 1 ||
+    contentsWriteJobs[0]?.path !== workflowPath ||
+    contentsWriteJobs[0]?.jobName !== "release"
+  )
+    addError(
+      errors,
+      "exactly one job must have contents:write, and it must be build.yml jobs.release",
+    );
+  const publisherActions = [];
+  for (const [path, workflow] of parsedWorkflows) {
+    if (!isRecord(workflow.jobs)) continue;
+    for (const [jobName, job] of Object.entries(workflow.jobs)) {
+      if (!isRecord(job) || !Array.isArray(job.steps)) continue;
+      for (const [stepIndex, step] of job.steps.entries()) {
+        if (
+          isRecord(step) &&
+          typeof step.uses === "string" &&
+          step.uses.startsWith("softprops/action-gh-release@")
+        ) {
+          publisherActions.push({ path, jobName, stepIndex, step });
+        }
+      }
+    }
+  }
+  if (publisherActions.length !== 1)
+    addError(
+      errors,
+      `all workflows must contain exactly one GitHub release action; found ${publisherActions.length}`,
+    );
+  const canonicalWorkflow = parsedWorkflows.get(workflowPath);
+  if (!isRecord(canonicalWorkflow)) return errors;
+  const mutableCanonicalActionLocations = [];
+  const isImmutableActionReference = (reference) =>
+    typeof reference === "string" &&
+    (reference.startsWith("./") ||
+      /^[^@\s]+@[a-f0-9]{40}$/.test(reference) ||
+      /^docker:\/\/[^\s]+@sha256:[a-f0-9]{64}$/.test(reference));
+  for (const [jobName, job] of Object.entries(canonicalWorkflow.jobs ?? {})) {
+    if (!isRecord(job)) continue;
+    if (job.uses !== undefined && !isImmutableActionReference(job.uses))
+      mutableCanonicalActionLocations.push(`jobs.${jobName}.uses`);
+    for (const [stepIndex, step] of asArray(job.steps).entries()) {
+      if (
+        isRecord(step) &&
+        step.uses !== undefined &&
+        !isImmutableActionReference(step.uses)
+      )
+        mutableCanonicalActionLocations.push(
+          `jobs.${jobName}.steps[${stepIndex}].uses`,
+        );
+    }
+  }
+  if (mutableCanonicalActionLocations.length > 0)
+    addError(
+      errors,
+      `canonical build workflow actions must use immutable full commit SHAs: ${mutableCanonicalActionLocations.join(", ")}`,
+    );
+  const releaseJob = isRecord(canonicalWorkflow.jobs)
+    ? canonicalWorkflow.jobs.release
+    : undefined;
+  if (!isRecord(releaseJob) || !Array.isArray(releaseJob.steps)) {
+    addError(errors, "canonical release job is missing");
+    return errors;
+  }
+  const releaseSteps = releaseJob.steps;
+  const hasExactKeys = (value, expectedKeys) =>
+    isRecord(value) &&
+    Object.keys(value).length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(value, key));
+  const machineProducerJob =
+    canonicalWorkflow.jobs?.["release-machine-evidence"];
+  const evidenceAggregatorJob =
+    canonicalWorkflow.jobs?.["aggregate-release-evidence"];
+  const expectedMachineMatrix = CANONICAL_MACHINE_EVIDENCE_MATRIX.map(
+    (entry) => ({ ...entry }),
+  );
+  const producerSteps = isRecord(machineProducerJob)
+    ? machineProducerJob.steps
+    : null;
+  if (
+    !isRecord(machineProducerJob) ||
+    !hasExactKeys(machineProducerJob, [
+      "name",
+      "if",
+      "needs",
+      "permissions",
+      "strategy",
+      "runs-on",
+      "steps",
+    ]) ||
+    machineProducerJob.name !==
+      "release-machine-evidence / ${{ matrix.claimId }} / ${{ matrix.platform }}" ||
+    machineProducerJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
+    machineProducerJob["runs-on"] !== "${{ matrix.runner }}" ||
+    !sameStringSet(machineProducerJob.needs, [
+      "desktop-mac",
+      "desktop-windows",
+      "desktop-linux",
+    ]) ||
+    !hasExactKeys(machineProducerJob.permissions, ["contents", "actions"]) ||
+    machineProducerJob.permissions.contents !== "read" ||
+    machineProducerJob.permissions.actions !== "read" ||
+    !isRecord(machineProducerJob.strategy) ||
+    !hasExactKeys(machineProducerJob.strategy, ["fail-fast", "matrix"]) ||
+    machineProducerJob.strategy["fail-fast"] !== false ||
+    !isRecord(machineProducerJob.strategy.matrix) ||
+    !hasExactKeys(machineProducerJob.strategy.matrix, ["include"]) ||
+    JSON.stringify(machineProducerJob.strategy.matrix.include) !==
+      JSON.stringify(expectedMachineMatrix) ||
+    !Array.isArray(producerSteps) ||
+    producerSteps.length !== 4 ||
+    !isRecord(producerSteps[0]) ||
+    !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
+    producerSteps[0].uses !==
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" ||
+    !hasExactKeys(producerSteps[0].with, ["persist-credentials"]) ||
+    producerSteps[0].with["persist-credentials"] !== false ||
+    !isRecord(producerSteps[1]) ||
+    !hasExactKeys(producerSteps[1], ["uses", "with"]) ||
+    producerSteps[1].uses !==
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
+    !hasExactKeys(producerSteps[1].with, ["path"]) ||
+    producerSteps[1].with.path !== "artifacts" ||
+    !isRecord(producerSteps[2]) ||
+    !hasExactKeys(producerSteps[2], ["name", "env", "run"]) ||
+    producerSteps[2].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    !hasExactKeys(producerSteps[2].env, ["GITHUB_TOKEN"]) ||
+    producerSteps[2].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[2].run !==
+      "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+    !isRecord(producerSteps[3]) ||
+    !hasExactKeys(producerSteps[3], ["name", "uses", "with"]) ||
+    producerSteps[3].name !== "Upload machine evidence report" ||
+    producerSteps[3].uses !==
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
+    !hasExactKeys(producerSteps[3].with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    producerSteps[3].with.name !==
+      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}" ||
+    producerSteps[3].with.path !==
+      ".release-evidence/reports/${{ matrix.reportName }}" ||
+    producerSteps[3].with["if-no-files-found"] !== "error" ||
+    producerSteps[3].with["compression-level"] !== 0
+  )
+    addError(
+      errors,
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+
+  const aggregatorSteps = isRecord(evidenceAggregatorJob)
+    ? evidenceAggregatorJob.steps
+    : null;
+  if (
+    !isRecord(evidenceAggregatorJob) ||
+    !hasExactKeys(evidenceAggregatorJob, [
+      "name",
+      "if",
+      "needs",
+      "runs-on",
+      "steps",
+    ]) ||
+    evidenceAggregatorJob.name !== "Aggregate release machine evidence" ||
+    evidenceAggregatorJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
+    evidenceAggregatorJob.needs !== "release-machine-evidence" ||
+    evidenceAggregatorJob["runs-on"] !== "ubuntu-24.04" ||
+    !Array.isArray(aggregatorSteps) ||
+    aggregatorSteps.length !== 2 ||
+    !isRecord(aggregatorSteps[0]) ||
+    !hasExactKeys(aggregatorSteps[0], ["name", "uses", "with"]) ||
+    aggregatorSteps[0].name !== "Download machine evidence reports" ||
+    aggregatorSteps[0].uses !==
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
+    !hasExactKeys(aggregatorSteps[0].with, [
+      "pattern",
+      "path",
+      "merge-multiple",
+    ]) ||
+    aggregatorSteps[0].with.pattern !== "release-machine-evidence-*" ||
+    aggregatorSteps[0].with.path !== ".release-evidence/reports" ||
+    aggregatorSteps[0].with["merge-multiple"] !== true ||
+    !isRecord(aggregatorSteps[1]) ||
+    !hasExactKeys(aggregatorSteps[1], ["name", "uses", "with"]) ||
+    aggregatorSteps[1].name !== "Upload aggregated release evidence" ||
+    aggregatorSteps[1].uses !==
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
+    !hasExactKeys(aggregatorSteps[1].with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    aggregatorSteps[1].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
+    aggregatorSteps[1].with.path !== ".release-evidence" ||
+    aggregatorSteps[1].with["if-no-files-found"] !== "error" ||
+    aggregatorSteps[1].with["compression-level"] !== 0
+  )
+    addError(
+      errors,
+      "machine evidence aggregation must be the exact producer-dependent immutable artifact graph",
+    );
+
+  const aggregateUploaders = Object.entries(
+    canonicalWorkflow.jobs ?? {},
+  ).flatMap(([jobName, job]) =>
+    isRecord(job) && Array.isArray(job.steps)
+      ? job.steps
+          .filter(
+            (step) =>
+              isRecord(step) &&
+              String(step.uses ?? "").startsWith("actions/upload-artifact@") &&
+              step.with?.name === MACHINE_EVIDENCE_ARTIFACT_NAME,
+          )
+          .map(() => jobName)
+      : [],
+  );
+  if (!sameStringSet(aggregateUploaders, ["aggregate-release-evidence"]))
+    addError(
+      errors,
+      "only the verified aggregator may upload the release-evidence artifact",
+    );
+  const machineInputUploaders = [];
+  const dynamicArtifactUploaders = [];
+  for (const [jobName, job] of Object.entries(canonicalWorkflow.jobs ?? {})) {
+    if (!isRecord(job)) continue;
+    for (const [stepIndex, step] of asArray(job.steps).entries()) {
+      if (
+        !isRecord(step) ||
+        typeof step.uses !== "string" ||
+        !step.uses.startsWith("actions/upload-artifact@")
+      )
+        continue;
+      const artifactName = step.with?.name;
+      const location = `jobs.${jobName}.steps[${stepIndex}]`;
+      if (typeof artifactName !== "string") {
+        dynamicArtifactUploaders.push(location);
+        continue;
+      }
+      if (artifactName.startsWith("release-machine-evidence-"))
+        machineInputUploaders.push({ jobName, artifactName, location });
+      if (
+        artifactName.includes("${{") &&
+        !(
+          jobName === "release-machine-evidence" &&
+          artifactName ===
+            "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+        )
+      )
+        dynamicArtifactUploaders.push(location);
+    }
+  }
+  if (
+    machineInputUploaders.length !== 1 ||
+    machineInputUploaders[0]?.jobName !== "release-machine-evidence" ||
+    machineInputUploaders[0]?.artifactName !==
+      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+  )
+    addError(
+      errors,
+      "only the canonical machine producer may upload artifacts matching the release-machine-evidence prefix",
+    );
+  if (dynamicArtifactUploaders.length > 0)
+    addError(
+      errors,
+      `non-canonical artifact uploads must use static names: ${dynamicArtifactUploaders.join(", ")}`,
+    );
+  const actionIndexes = releaseSteps
+    .map((step, index) =>
+      isRecord(step) &&
+      typeof step.uses === "string" &&
+      step.uses.startsWith("softprops/action-gh-release@")
+        ? index
+        : -1,
+    )
+    .filter((index) => index !== -1);
+  if (
+    actionIndexes.length !== 1 ||
+    publisherActions.length !== 1 ||
+    publisherActions[0]?.path !== workflowPath ||
+    publisherActions[0]?.jobName !== "release" ||
+    publisherActions[0]?.stepIndex !== actionIndexes[0]
+  ) {
+    addError(
+      errors,
+      `release workflow must contain exactly one canonical GitHub release publisher; found ${actionIndexes.length}`,
+    );
+    return errors;
+  }
+  const actionIndex = actionIndexes[0];
+  const actionStep = releaseSteps[actionIndex];
+  const releaseActionReferences = releaseSteps
+    .filter((step) => isRecord(step) && typeof step.uses === "string")
+    .map((step) => step.uses);
+  if (
+    releaseActionReferences.length !== CANONICAL_RELEASE_JOB_ACTIONS.size ||
+    new Set(releaseActionReferences).size !== releaseActionReferences.length ||
+    releaseActionReferences.some(
+      (reference) => !CANONICAL_RELEASE_JOB_ACTIONS.has(reference),
+    )
+  )
+    addError(
+      errors,
+      "every action in the write-capable release job must match the canonical full-SHA allowlist",
+    );
+  if (actionStep.uses !== RELEASE_PUBLISHER_ACTION)
+    addError(
+      errors,
+      `canonical GitHub release publisher must be pinned to ${RELEASE_PUBLISHER_ACTION}`,
+    );
+  const stepIndexByName = (name) => {
+    const indexes = releaseSteps
+      .map((step, index) => (isRecord(step) && step.name === name ? index : -1))
+      .filter((index) => index !== -1);
+    return indexes.length === 1 ? indexes[0] : -1;
+  };
+  const evidenceGateIndex = stepIndexByName(
+    "Verify post-build release evidence",
+  );
+  const environmentGateIndex = stepIndexByName(
+    "Verify protected release environment",
+  );
+  const absenceGateIndex = stepIndexByName("Refuse an existing release tag");
+  const tagTargetGateIndex = stepIndexByName(
+    "Verify release tag target and main ancestry",
+  );
+  const controlledPublishIndex = stepIndexByName(
+    "Verify exact draft assets and publish",
+  );
+  if (
+    environmentGateIndex === -1 ||
+    absenceGateIndex !== environmentGateIndex + 1 ||
+    tagTargetGateIndex !== absenceGateIndex + 1 ||
+    actionIndex !== tagTargetGateIndex + 1
+  )
+    addError(
+      errors,
+      "existing releases and moved tags must be rejected immediately before draft creation",
+    );
+  if (
+    evidenceGateIndex === -1 ||
+    evidenceGateIndex >= environmentGateIndex ||
+    !String(releaseSteps[evidenceGateIndex]?.run).includes(
+      "--evidence-manifest .release-evidence/manifest.json",
+    )
+  )
+    addError(
+      errors,
+      "post-build release evidence gate must execute before the canonical publisher",
+    );
+  const canonicalPublisherPath = resolve(
+    root,
+    "scripts/release-claims/publish-verified-draft.mjs",
+  );
+  const checkerPath = resolve(
+    root,
+    "scripts/release-claims/check-release-claims.mjs",
+  );
+  const alternatePublicationSource = publicationSources
+    .filter(
+      (path) =>
+        path !== workflowPath &&
+        path !== canonicalPublisherPath &&
+        path !== checkerPath,
+    )
+    .map((path) => nonCommentContent(readFileSync(path, "utf8"), extname(path)))
+    .join("\n");
+  const workflowPublisherPatterns = [
+    /\bgh\s+release\s+(?:create|upload|edit|delete)\b/i,
+    /\bgh\s+api\b[^\n]*(?:\/releases(?:\/|\b)|releases\/assets)[^\n]*(?:--method|-X)\s*(?:POST|PATCH|PUT|DELETE)\b/i,
+    /\bcurl\b[^\n]*(?:-X|--request)\s*(?:POST|PATCH|PUT|DELETE)\b[^\n]*(?:api\.github\.com[^\n]*)?\/releases(?:\/|\b)/i,
+    /uses:\s*actions\/(?:create-release|upload-release-asset)@/i,
+    /electron-builder[^\n]*--publish\s+(?!never\b)/i,
+  ];
+  const scriptPublisherPatterns = [
+    ...workflowPublisherPatterns,
+    /octokit(?:\.rest)?\.repos\.(?:createRelease|updateRelease|deleteRelease|uploadReleaseAsset|deleteReleaseAsset)\s*\(/i,
+    /(?:fetch|request)\s*\([^\n]*(?:\/releases(?:\/|\b)|releases\/assets)[\s\S]{0,500}?method\s*:\s*["'](?:POST|PATCH|PUT|DELETE)["']/i,
+  ];
+  const hasGenericReleaseApiMutation = (source) =>
+    /(?:api\.github\.com|\/repos\/|repos\.)[^\n]{0,300}(?:\/releases(?:\/|\b)|releases\/assets)/i.test(
+      source,
+    ) &&
+    /(?:\b(?:POST|PATCH|PUT|DELETE)\b|createRelease|updateRelease|deleteRelease|uploadReleaseAsset|deleteReleaseAsset)/i.test(
+      source,
+    );
+  if (
+    workflowPublisherPatterns.some((pattern) =>
+      pattern.test(allPublicationSource),
+    ) ||
+    scriptPublisherPatterns.some((pattern) =>
+      pattern.test(alternatePublicationSource),
+    ) ||
+    hasGenericReleaseApiMutation(alternatePublicationSource)
+  )
+    addError(
+      errors,
+      "release workflow contains an alternate publisher outside the canonical gated action",
+    );
+  const installCheckerIndex = stepIndexByName("Install release claim checker");
+  const updateFeedStep = releaseSteps[0];
+  const checkoutStep = releaseSteps[1];
+  const setupNodeStep = releaseSteps[2];
+  const downloadStep = releaseSteps[4];
+  const listArtifactsStep = releaseSteps[6];
+  if (
+    releaseSteps.length !== 12 ||
+    !hasExactKeys(updateFeedStep, ["name", "run"]) ||
+    updateFeedStep.name !== "Verify update feed reachable" ||
+    String(updateFeedStep.run).trim() !== CANONICAL_UPDATE_FEED_RUN ||
+    !hasExactKeys(checkoutStep, ["uses", "with"]) ||
+    checkoutStep.uses !==
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" ||
+    !hasExactKeys(checkoutStep.with, ["persist-credentials"]) ||
+    checkoutStep.with["persist-credentials"] !== false ||
+    !hasExactKeys(setupNodeStep, ["uses", "with"]) ||
+    setupNodeStep.uses !==
+      "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" ||
+    !hasExactKeys(setupNodeStep.with, ["node-version"]) ||
+    setupNodeStep.with["node-version"] !== "${{ env.NODE_VERSION }}" ||
+    !hasExactKeys(downloadStep, ["name", "uses", "with"]) ||
+    downloadStep.name !== "Download all artifacts" ||
+    downloadStep.uses !==
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
+    !hasExactKeys(downloadStep.with, ["path"]) ||
+    downloadStep.with.path !== "artifacts" ||
+    !hasExactKeys(listArtifactsStep, ["name", "run"]) ||
+    listArtifactsStep.name !== "List artifacts" ||
+    listArtifactsStep.run !== "find artifacts -type f | sort" ||
+    installCheckerIndex !== 3 ||
+    evidenceGateIndex !== 5 ||
+    environmentGateIndex !== 7 ||
+    absenceGateIndex !== 8 ||
+    tagTargetGateIndex !== 9 ||
+    actionIndex !== 10 ||
+    controlledPublishIndex !== 11
+  )
+    addError(
+      errors,
+      "canonical release job must contain only the exact allowlisted step graph in order",
+    );
+  if (
+    !hasExactKeys(releaseJob, [
+      "name",
+      "if",
+      "needs",
+      "runs-on",
+      "timeout-minutes",
+      "environment",
+      "concurrency",
+      "permissions",
+      "steps",
+    ]) ||
+    releaseJob.name !== "Create GitHub Release" ||
+    releaseJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
+    releaseJob["runs-on"] !== "ubuntu-latest" ||
+    releaseJob["timeout-minutes"] !== 30 ||
+    !Array.isArray(releaseJob.needs) ||
+    releaseJob.needs.join("\n") !==
+      [
+        "test",
+        "desktop-mac",
+        "desktop-windows",
+        "desktop-linux",
+        "aggregate-release-evidence",
+      ].join("\n")
+  )
+    addError(
+      errors,
+      "canonical release job identity and dependencies must be exact",
+    );
+  const hasExactEnvironment = (step, expected) =>
+    isRecord(step) &&
+    hasExactKeys(step.env, Object.keys(expected)) &&
+    Object.entries(expected).every(([key, value]) => step.env[key] === value);
+  const assertExactRunStep = ({ index, name, run, env, error }) => {
+    const step = releaseSteps[index];
+    const allowedKeys = env ? ["name", "env", "run"] : ["name", "run"];
+    if (
+      index === -1 ||
+      !isRecord(step) ||
+      !hasExactKeys(step, allowedKeys) ||
+      step.name !== name ||
+      step.run !== run ||
+      (env && !hasExactEnvironment(step, env))
+    ) {
+      addError(errors, error);
+    }
+  };
+  const githubTokenEnvironment = {
+    GITHUB_TOKEN: "${{ github.token }}",
+  };
+  const checkoutIndex = releaseSteps.findIndex(
+    (step) =>
+      isRecord(step) &&
+      step.uses === "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+  );
+  const setupNodeIndex = releaseSteps.findIndex(
+    (step) =>
+      isRecord(step) &&
+      step.uses ===
+        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+  );
+  const downloadIndex = releaseSteps.findIndex(
+    (step) =>
+      isRecord(step) &&
+      step.uses ===
+        "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+  );
+  if (
+    setupNodeIndex !== checkoutIndex + 1 ||
+    installCheckerIndex !== setupNodeIndex + 1 ||
+    downloadIndex !== installCheckerIndex + 1
+  )
+    addError(
+      errors,
+      "release claim checker installation and artifact download must follow pinned checkout and Node setup",
+    );
+  assertExactRunStep({
+    index: installCheckerIndex,
+    name: "Install release claim checker",
+    run: "corepack pnpm@9.1.0 install --frozen-lockfile --ignore-scripts --filter skytwin",
+    error:
+      "release claim checker dependencies must use the exact locked install",
+  });
+  const evidenceStep = releaseSteps[evidenceGateIndex];
+  const executableEvidenceRun =
+    typeof evidenceStep?.run === "string"
+      ? evidenceStep.run
+          .split(/\r?\n/)
+          .filter((line) => line.trim() !== "" && !/^\s*#/.test(line))
+          .join("\n")
+          .trim()
+      : "";
+  if (
+    evidenceGateIndex === -1 ||
+    !isRecord(evidenceStep) ||
+    !hasExactKeys(evidenceStep, ["name", "env", "run"]) ||
+    !hasExactEnvironment(evidenceStep, githubTokenEnvironment) ||
+    executableEvidenceRun !== CANONICAL_RELEASE_EVIDENCE_RUN
+  )
+    addError(
+      errors,
+      "post-build release evidence gate must execute with canonical fail-closed controls",
+    );
+  assertExactRunStep({
+    index: environmentGateIndex,
+    name: "Verify protected release environment",
+    run: "node scripts/release-claims/verify-release-environment.mjs",
+    env: githubTokenEnvironment,
+    error:
+      "release job must fail closed when the protected environment is absent or misconfigured",
+  });
+  assertExactRunStep({
+    index: absenceGateIndex,
+    name: "Refuse an existing release tag",
+    run: "node scripts/release-claims/publish-verified-draft.mjs --assert-absent",
+    env: githubTokenEnvironment,
+    error:
+      "existing releases and moved tags must be rejected immediately before draft creation",
+  });
+  assertExactRunStep({
+    index: tagTargetGateIndex,
+    name: "Verify release tag target and main ancestry",
+    run: "node scripts/release-claims/publish-verified-draft.mjs --assert-tag-target",
+    env: githubTokenEnvironment,
+    error:
+      "existing releases and moved tags must be rejected immediately before draft creation",
+  });
+  if (
+    !hasExactKeys(actionStep, ["name", "id", "uses", "with"]) ||
+    actionStep.name !== "Create release" ||
+    actionStep.id !== "create-release-draft"
+  )
+    addError(
+      errors,
+      "canonical GitHub release publisher must not have conditional or overridden execution controls",
+    );
+  const actionWith = isRecord(actionStep.with) ? actionStep.with : undefined;
+  if (
+    !hasExactKeys(actionWith, [
+      "draft",
+      "prerelease",
+      "target_commitish",
+      "generate_release_notes",
+      "fail_on_unmatched_files",
+      "files",
+    ])
+  )
+    addError(
+      errors,
+      "canonical GitHub release publisher settings must be exact",
+    );
+  const files = typeof actionWith?.files === "string" ? actionWith.files : "";
+  if (files === "") {
+    addError(
+      errors,
+      "canonical GitHub release publisher files block is missing",
+    );
+  }
+  const patterns = files
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const patternSet = new Set(patterns);
+  if (patternSet.size !== patterns.length)
+    addError(
+      errors,
+      "canonical release publisher contains duplicate asset patterns",
+    );
+  for (const expected of CANONICAL_RELEASE_FILE_PATTERNS) {
+    if (!patternSet.has(expected))
+      addError(
+        errors,
+        `release publisher is missing canonical asset: ${expected}`,
+      );
+  }
+  for (const actual of patternSet) {
+    if (!CANONICAL_RELEASE_FILE_PATTERNS.has(actual))
+      addError(errors, `release publisher has an unexpected asset: ${actual}`);
+  }
+  if (actionWith?.draft !== true)
+    addError(errors, "canonical publisher must create an unpublished draft");
+  if (actionWith?.prerelease !== true)
+    addError(errors, "canonical publisher must mark the beta as a prerelease");
+  if (actionWith?.fail_on_unmatched_files !== true)
+    addError(
+      errors,
+      "canonical publisher must fail when an exact release asset path is missing",
+    );
+  if (
+    actionWith?.target_commitish !== "${{ github.sha }}" ||
+    actionWith?.generate_release_notes !== true
+  )
+    addError(
+      errors,
+      "canonical publisher must bind the draft to the current commit and generated notes",
+    );
+  if (releaseJob.environment !== "release-publication")
+    addError(
+      errors,
+      "release job must use the protected release-publication environment",
+    );
+  if (
+    canonicalWorkflow.defaults !== undefined ||
+    releaseJob.defaults !== undefined
+  )
+    addError(
+      errors,
+      "release publication must not inherit custom run defaults",
+    );
+  if (
+    !hasExactKeys(canonicalWorkflow.concurrency, [
+      "group",
+      "cancel-in-progress",
+    ]) ||
+    canonicalWorkflow.concurrency.group !== "build-${{ github.ref }}" ||
+    canonicalWorkflow.concurrency["cancel-in-progress"] !==
+      "${{ !startsWith(github.ref, 'refs/tags/v') }}"
+  )
+    addError(errors, "tag publication workflows must not be cancelled");
+  if (
+    !hasExactKeys(releaseJob.concurrency, ["group", "cancel-in-progress"]) ||
+    releaseJob.concurrency.group !== "release-publication-${{ github.ref }}" ||
+    releaseJob.concurrency["cancel-in-progress"] !== false
+  )
+    addError(errors, "release publication must serialize without cancellation");
+  if (
+    !hasExactKeys(releaseJob.permissions, [
+      "contents",
+      "actions",
+      "attestations",
+    ]) ||
+    releaseJob.permissions.contents !== "write" ||
+    releaseJob.permissions.actions !== "read" ||
+    releaseJob.permissions.attestations !== "read"
+  )
+    addError(
+      errors,
+      "release job permissions must be limited to contents:write, actions:read, and attestations:read",
+    );
+  const controlledPublishCommand =
+    "node scripts/release-claims/publish-verified-draft.mjs .release-evidence/manifest.json";
+  if (
+    controlledPublishIndex !== actionIndex + 1 ||
+    releaseSteps[controlledPublishIndex]?.run !== controlledPublishCommand
+  )
+    addError(
+      errors,
+      "controlled draft verification and publication must be the immediate step after draft creation",
+    );
+  assertExactRunStep({
+    index: controlledPublishIndex,
+    name: "Verify exact draft assets and publish",
+    run: controlledPublishCommand,
+    env: {
+      GITHUB_TOKEN: "${{ github.token }}",
+      RELEASE_ID: "${{ steps.create-release-draft.outputs.id }}",
+    },
+    error:
+      "controlled draft verification and publication must use canonical fail-closed controls",
+  });
+  const controlledPublishStep = releaseSteps[controlledPublishIndex];
+  if (
+    !isRecord(controlledPublishStep) ||
+    controlledPublishStep.env?.RELEASE_ID !==
+      "${{ steps.create-release-draft.outputs.id }}"
+  )
+    addError(
+      errors,
+      "controlled publisher must consume the exact draft release ID",
+    );
+  return errors;
+}
+
+export function validateLedgerShape(
+  ledger,
+  root,
+  ledgerPath = DEFAULT_LEDGER_PATH,
+) {
+  root = realpathSync(resolve(root));
+  const errors = [];
+  const absoluteLedgerPath = resolve(root, ledgerPath);
+  if (ledger?.schemaVersion !== 1) {
+    addError(errors, "schemaVersion must be 1");
+  }
+
+  const release = ledger?.release;
+  if (!release || typeof release !== "object") {
+    addError(errors, "release contract is required");
+  } else {
+    if (
+      normalizeReleaseTagToRepositoryVersion(release.targetVersion) === null
+    ) {
+      addError(
+        errors,
+        "release.targetVersion must be a canonical four-segment tag or beta tag with no leading/oversized segments",
+      );
+    }
+    if (!["blocked", "candidate", "ready"].includes(release.status)) {
+      addError(errors, "release.status must be blocked, candidate, or ready");
+    }
+    if (!isNonEmptyString(release.audience))
+      addError(errors, "release.audience is required");
+    if (!isNonEmptyString(release.releaseSurface))
+      addError(errors, "release.releaseSurface is required");
+    if (
+      release.auditBaseline?.ref !== CANONICAL_AUDIT_BASELINE.ref ||
+      release.auditBaseline?.commit !== CANONICAL_AUDIT_BASELINE.commit ||
+      release.auditBaseline?.auditedOn !== CANONICAL_AUDIT_BASELINE.auditedOn
+    ) {
+      addError(
+        errors,
+        "release.auditBaseline must retain the audited origin/main commit and date",
+      );
+    }
+    if (!Array.isArray(release.platforms) || release.platforms.length === 0) {
+      addError(
+        errors,
+        "release.platforms must record at least one candidate or deferred platform",
+      );
+    } else {
+      for (const [index, platform] of release.platforms.entries()) {
+        const prefix = `release.platforms[${index}]`;
+        if (!isNonEmptyString(platform?.name))
+          addError(errors, `${prefix}.name is required`);
+        if (
+          !["candidate", "supported", "deferred", "excluded"].includes(
+            platform?.state,
+          )
+        ) {
+          addError(
+            errors,
+            `${prefix}.state must be candidate, supported, deferred, or excluded`,
+          );
+        }
+        if (!isNonEmptyString(platform?.minimumHardware)) {
+          addError(
+            errors,
+            `${prefix}.minimumHardware must state the requirement or say it is unverified`,
+          );
+        }
+        if (!isNonEmptyString(platform?.evidence))
+          addError(errors, `${prefix}.evidence is required`);
+      }
+    }
+    if (
+      !Array.isArray(release.deferredFeatures) ||
+      release.deferredFeatures.length === 0
+    ) {
+      addError(errors, "release.deferredFeatures must be non-empty");
+    } else if (
+      release.deferredFeatures.some((feature) => !isNonEmptyString(feature))
+    ) {
+      addError(
+        errors,
+        "release.deferredFeatures entries must be non-empty strings",
+      );
+    }
+    if (
+      !Array.isArray(release.stopShipConditions) ||
+      release.stopShipConditions.length === 0
+    ) {
+      addError(errors, "release.stopShipConditions must be non-empty");
+    } else {
+      const stopShipIds = new Set();
+      for (const [index, condition] of release.stopShipConditions.entries()) {
+        const prefix = `release.stopShipConditions[${index}]`;
+        if (!isNonEmptyString(condition?.id))
+          addError(errors, `${prefix}.id is required`);
+        else if (stopShipIds.has(condition.id))
+          addError(errors, `duplicate stop-ship condition id: ${condition.id}`);
+        else stopShipIds.add(condition.id);
+        if (!["open", "met"].includes(condition?.status))
+          addError(errors, `${prefix}.status must be open or met`);
+        if (!isNonEmptyString(condition?.owner))
+          addError(errors, `${prefix}.owner is required`);
+        if (!isNonEmptyString(condition?.condition))
+          addError(errors, `${prefix}.condition is required`);
+        const canonical = CANONICAL_STOP_SHIP_CONDITIONS.get(condition?.id);
+        if (
+          canonical &&
+          (condition.owner !== canonical.owner ||
+            condition.condition !== canonical.condition)
+        ) {
+          addError(
+            errors,
+            `${prefix} owner/condition differs from the audited canonical stop-ship baseline`,
+          );
+        }
+        // No stop-ship condition has immutable resolution evidence yet. A
+        // source edit cannot convert an open blocker into a self-attested met
+        // record; advancing this baseline requires adding and verifying the
+        // external issue/artifact proof contract first.
+        if (canonical && condition.status !== "open") {
+          addError(
+            errors,
+            `${prefix} must remain open until immutable resolution evidence is implemented`,
+          );
+        }
+      }
+      for (const requiredId of REQUIRED_STOP_SHIP_IDS) {
+        if (!stopShipIds.has(requiredId))
+          addError(
+            errors,
+            `required stop-ship condition is missing: ${requiredId}`,
+          );
+      }
+      for (const id of stopShipIds) {
+        if (!REQUIRED_STOP_SHIP_IDS.has(id))
+          addError(errors, `unexpected stop-ship condition id: ${id}`);
+      }
+      const openConditions = release.stopShipConditions.filter(
+        (condition) => condition?.status !== "met",
+      );
+      if (release.status === "ready" && openConditions.length > 0) {
+        addError(
+          errors,
+          `release cannot be ready with ${openConditions.length} unmet stop-ship condition(s)`,
+        );
+      }
+    }
+  }
+
+  const claims = asArray(ledger?.claims);
+  if (claims.length === 0) addError(errors, "claims must be non-empty");
+  const ids = new Set();
+  const categories = new Set();
+  for (const [index, claim] of claims.entries()) {
+    const prefix = `claims[${index}]`;
+    if (!isNonEmptyString(claim?.id))
+      addError(errors, `${prefix}.id is required`);
+    if (ids.has(claim?.id)) addError(errors, `duplicate claim id: ${claim.id}`);
+    ids.add(claim?.id);
+    if (!isNonEmptyString(claim?.category))
+      addError(errors, `${prefix}.category is required`);
+    categories.add(claim?.category);
+    if (!isNonEmptyString(claim?.statement))
+      addError(errors, `${prefix}.statement is required`);
+    if (!isNonEmptyString(claim?.scope))
+      addError(errors, `${prefix}.scope is required`);
+    if (!isNonEmptyString(claim?.owner))
+      addError(errors, `${prefix}.owner is required`);
+    if (!CLAIM_STATES.has(claim?.state)) {
+      addError(
+        errors,
+        `${prefix}.state must be proven, limited, deferred, or prohibited`,
+      );
+    }
+    if (!Array.isArray(claim?.evidence) || claim.evidence.length === 0) {
+      addError(errors, `${prefix}.evidence must be non-empty`);
+    }
+    if (
+      !Array.isArray(claim?.verification) ||
+      claim.verification.length === 0
+    ) {
+      addError(
+        errors,
+        `${prefix}.verification must include an exact command or test`,
+      );
+    } else {
+      for (const [
+        verificationIndex,
+        verification,
+      ] of claim.verification.entries()) {
+        if (
+          !isNonEmptyString(verification?.command) ||
+          !isNonEmptyString(verification?.expected)
+        ) {
+          addError(
+            errors,
+            `${prefix}.verification[${verificationIndex}] needs command and expected`,
+          );
+        } else if (!isAllowlistedVerificationCommand(verification.command)) {
+          addError(
+            errors,
+            `${prefix}.verification[${verificationIndex}].command is not an allowlisted, shell-safe pnpm/rg command`,
+          );
+        }
+      }
+    }
+    if (claim?.state !== "proven" && !isNonEmptyString(claim?.limitation)) {
+      addError(
+        errors,
+        `${prefix}.limitation is required for ${claim?.state ?? "unknown"} claims`,
+      );
+    }
+
+    for (const [evidenceIndex, evidence] of asArray(
+      claim?.evidence,
+    ).entries()) {
+      const evidencePrefix = `${prefix}.evidence[${evidenceIndex}]`;
+      if (!isNonEmptyString(evidence?.why)) {
+        addError(errors, `${evidencePrefix}.why is required`);
+      }
+
+      const evidenceKind = evidence?.kind ?? (evidence?.path ? "source" : null);
+      if (!["source", "ci", "machine"].includes(evidenceKind)) {
+        addError(
+          errors,
+          `${evidencePrefix}.kind must be source, ci, or machine`,
+        );
+        continue;
+      }
+
+      if (evidenceKind === "ci" || evidenceKind === "machine") {
+        addError(
+          errors,
+          `${evidencePrefix} ${evidenceKind} evidence must live in the post-build release evidence manifest, not the source ledger`,
+        );
+        continue;
+      }
+
+      if (!isNonEmptyString(evidence?.path)) {
+        addError(
+          errors,
+          `${evidencePrefix}.path is required for source evidence`,
+        );
+        continue;
+      }
+      const unresolvedEvidencePath = resolve(root, evidence.path);
+      if (!isInsideRoot(root, unresolvedEvidencePath)) {
+        addError(
+          errors,
+          `${claim.id}: evidence path escapes repository root: ${evidence.path}`,
+        );
+        continue;
+      }
+      if (unresolvedEvidencePath === absoluteLedgerPath) {
+        addError(
+          errors,
+          `${claim.id}: the claim ledger cannot serve as its own evidence: ${evidence.path}`,
+        );
+        continue;
+      }
+      if (!existsSync(unresolvedEvidencePath)) {
+        addError(
+          errors,
+          `${claim.id}: evidence path does not exist: ${evidence.path}`,
+        );
+        continue;
+      }
+      const evidencePath = resolveContainedRegularFile(root, evidence.path);
+      if (!evidencePath) {
+        addError(
+          errors,
+          `${claim.id}: evidence path must be a real, regular, non-symlink repository file: ${evidence.path}`,
+        );
+        continue;
+      }
+      if (!SOURCE_DIGEST.test(evidence.sha256 ?? "")) {
+        addError(
+          errors,
+          `${evidencePrefix}.sha256 must be a lowercase SHA-256 digest for source evidence`,
+        );
+        continue;
+      }
+      const actual = sha256(readFileSync(evidencePath));
+      if (actual !== evidence.sha256) {
+        addError(
+          errors,
+          `${claim.id}: evidence changed: ${evidence.path} (expected ${evidence.sha256}, got ${actual}); re-audit this claim and update the ledger`,
+        );
+      }
+    }
+  }
+
+  for (const category of REQUIRED_CATEGORIES) {
+    if (!categories.has(category))
+      addError(errors, `required claim category is missing: ${category}`);
+  }
+  for (const [id, category] of CANONICAL_CLAIM_CATEGORIES) {
+    const claim = claims.find((candidate) => candidate?.id === id);
+    if (!claim) {
+      addError(errors, `required canonical claim is missing: ${id}`);
+    } else if (claim.category !== category) {
+      addError(
+        errors,
+        `canonical claim ${id} must remain in category ${category}`,
+      );
+    } else if (
+      CANONICAL_READINESS_CLAIM_DIGESTS.has(id) &&
+      sha256(`${claim.statement}\0${claim.scope}\0${claim.owner}`) !==
+        CANONICAL_READINESS_CLAIM_DIGESTS.get(id)
+    ) {
+      addError(errors, `canonical readiness claim meaning changed: ${id}`);
+    }
+  }
+  for (const id of ids) {
+    if (!CANONICAL_CLAIM_CATEGORIES.has(id))
+      addError(errors, `unexpected canonical claim id: ${id}`);
+  }
+  const licenseClaim = claims.find((claim) => claim?.id === "license.apache-2");
+  if (
+    licenseClaim &&
+    (licenseClaim.state !== "proven" ||
+      licenseClaim.statement !==
+        "The repository source is available under Apache License 2.0." ||
+      !asArray(licenseClaim.evidence).some(
+        (evidence) => evidence?.path === "LICENSE",
+      ))
+  ) {
+    addError(
+      errors,
+      "license.apache-2 must remain a proven Apache-2.0 source claim backed by LICENSE",
+    );
+  }
+
+  const readinessClaims = asArray(release?.readinessClaims);
+  if (readinessClaims.length === 0) {
+    addError(
+      errors,
+      "release.readinessClaims must identify claims and accepted states required for publication",
+    );
+  }
+  const readinessIds = new Set();
+  for (const [index, readiness] of readinessClaims.entries()) {
+    const prefix = `release.readinessClaims[${index}]`;
+    if (!isNonEmptyString(readiness?.claimId)) {
+      addError(errors, `${prefix}.claimId is required`);
+      continue;
+    }
+    if (readinessIds.has(readiness.claimId)) {
+      addError(errors, `duplicate readiness claim id: ${readiness.claimId}`);
+    }
+    readinessIds.add(readiness.claimId);
+    if (!ids.has(readiness.claimId))
+      addError(
+        errors,
+        `release.readinessClaims references unknown claim: ${readiness.claimId}`,
+      );
+    if (typeof readiness.critical !== "boolean")
+      addError(errors, `${prefix}.critical must be a boolean`);
+    if (
+      !Array.isArray(readiness.acceptedStates) ||
+      readiness.acceptedStates.length === 0
+    ) {
+      addError(errors, `${prefix}.acceptedStates must be non-empty`);
+      continue;
+    }
+    const acceptedStates = new Set(readiness.acceptedStates);
+    if (acceptedStates.size !== readiness.acceptedStates.length)
+      addError(errors, `${prefix}.acceptedStates must be unique`);
+    for (const state of acceptedStates) {
+      if (!READY_ACCEPTED_STATES.has(state)) {
+        addError(
+          errors,
+          `${prefix}.acceptedStates may contain only proven or limited`,
+        );
+      }
+    }
+    if (
+      readiness.critical === true &&
+      (acceptedStates.size !== 1 || !acceptedStates.has("proven"))
+    ) {
+      addError(
+        errors,
+        `${prefix} is critical and must accept only the proven state`,
+      );
+    }
+    if (
+      !Array.isArray(readiness.requiredEvidenceKinds) ||
+      readiness.requiredEvidenceKinds.length === 0
+    ) {
+      addError(errors, `${prefix}.requiredEvidenceKinds must be non-empty`);
+    } else {
+      const requiredEvidenceKinds = new Set(readiness.requiredEvidenceKinds);
+      if (requiredEvidenceKinds.size !== readiness.requiredEvidenceKinds.length)
+        addError(errors, `${prefix}.requiredEvidenceKinds must be unique`);
+      for (const kind of requiredEvidenceKinds) {
+        if (!["source", "ci", "machine"].includes(kind))
+          addError(
+            errors,
+            `${prefix}.requiredEvidenceKinds contains unsupported kind: ${kind}`,
+          );
+      }
+      if (
+        readiness.critical === true &&
+        !requiredEvidenceKinds.has("ci") &&
+        !requiredEvidenceKinds.has("machine")
+      ) {
+        addError(
+          errors,
+          `${prefix} is critical and must require immutable ci or machine evidence`,
+        );
+      }
+    }
+  }
+  for (const requiredId of REQUIRED_READINESS_CLAIM_IDS) {
+    if (!readinessIds.has(requiredId))
+      addError(errors, `required readiness claim is missing: ${requiredId}`);
+  }
+  for (const id of readinessIds) {
+    if (!REQUIRED_READINESS_CLAIM_IDS.has(id))
+      addError(errors, `unexpected readiness claim id: ${id}`);
+  }
+  for (const [claimId, canonicalKinds] of CANONICAL_READINESS_EVIDENCE_KINDS) {
+    const readiness = readinessClaims.find(
+      (candidate) => candidate?.claimId === claimId,
+    );
+    if (!readiness) continue;
+    const actualKinds = asArray(readiness.requiredEvidenceKinds);
+    if (
+      readiness.critical !== true ||
+      asArray(readiness.acceptedStates).length !== 1 ||
+      readiness.acceptedStates[0] !== "proven" ||
+      actualKinds.length !== canonicalKinds.length ||
+      canonicalKinds.some((kind) => !actualKinds.includes(kind))
+    ) {
+      addError(
+        errors,
+        `readiness contract changed for ${claimId}; critical=true, acceptedStates=[proven], and requiredEvidenceKinds=[${canonicalKinds.join(", ")}] are mandatory`,
+      );
+    }
+    if (
+      claimId === "sample.packaged-account-free" &&
+      !sameStringSet(readiness.requiredPlatforms, [
+        ...SAMPLE_EVIDENCE_PLATFORMS,
+      ])
+    ) {
+      addError(
+        errors,
+        "sample.packaged-account-free readiness requires exactly macos, windows, and linux machine evidence",
+      );
+    }
+  }
+  if (release?.status === "ready") {
+    const claimById = new Map(claims.map((claim) => [claim.id, claim]));
+    for (const readiness of readinessClaims) {
+      const claim = claimById.get(readiness?.claimId);
+      const state = claim?.state;
+      if (!asArray(readiness?.acceptedStates).includes(state)) {
+        addError(
+          errors,
+          `release cannot be ready while claim ${readiness?.claimId ?? "(missing)"} is ${state ?? "missing"}; accepted states: ${asArray(readiness?.acceptedStates).join(", ") || "none"}`,
+        );
+      }
+      const evidenceKinds = new Set(
+        asArray(claim?.evidence).map(
+          (evidence) => evidence?.kind ?? (evidence?.path ? "source" : null),
+        ),
+      );
+      for (const kind of asArray(readiness?.requiredEvidenceKinds)) {
+        if (kind !== "source") continue;
+        if (!evidenceKinds.has(kind)) {
+          addError(
+            errors,
+            `release cannot be ready while claim ${readiness?.claimId ?? "(missing)"} lacks required ${kind} evidence`,
+          );
+        }
+      }
+    }
+    if (
+      !asArray(release.platforms).some(
+        (platform) => platform.state === "supported",
+      )
+    ) {
+      addError(
+        errors,
+        "release cannot be ready without at least one supported platform",
+      );
+    }
+  } else if (
+    asArray(release?.platforms).some(
+      (platform) => platform.state === "supported",
+    )
+  ) {
+    addError(
+      errors,
+      "a blocked or candidate release cannot label a platform supported",
+    );
+  }
+
+  if (
+    !Array.isArray(ledger?.claimSurfaces) ||
+    ledger.claimSurfaces.length === 0
+  ) {
+    addError(errors, "claimSurfaces must be non-empty");
+  } else {
+    const surfaceClasses = new Set();
+    for (const [index, surface] of ledger.claimSurfaces.entries()) {
+      if (!isNonEmptyString(surface?.path))
+        addError(errors, `claimSurfaces[${index}].path is required`);
+      const hasStartMarker = surface?.startMarker !== undefined;
+      const hasEndMarker = surface?.endMarker !== undefined;
+      if (hasStartMarker || hasEndMarker) {
+        addError(
+          errors,
+          `claimSurfaces[${index}] may not use marker slices; the complete file must be scanned`,
+        );
+      }
+      if (!REQUIRED_SURFACE_CLASSES.has(surface?.class)) {
+        addError(
+          errors,
+          `claimSurfaces[${index}].class must be one of: ${[...REQUIRED_SURFACE_CLASSES].join(", ")}`,
+        );
+      } else {
+        surfaceClasses.add(surface.class);
+      }
+    }
+    for (const requiredClass of REQUIRED_SURFACE_CLASSES) {
+      if (!surfaceClasses.has(requiredClass)) {
+        addError(
+          errors,
+          `required claim surface class is missing: ${requiredClass}`,
+        );
+      }
+    }
+  }
+  if (
+    !Array.isArray(ledger?.prohibitedClaims) ||
+    ledger.prohibitedClaims.length === 0
+  ) {
+    addError(errors, "prohibitedClaims must be non-empty");
+  } else {
+    const prohibitedIds = new Set();
+    for (const [index, rule] of ledger.prohibitedClaims.entries()) {
+      if (!isNonEmptyString(rule?.id))
+        addError(errors, `prohibitedClaims[${index}].id is required`);
+      else if (prohibitedIds.has(rule.id))
+        addError(errors, `duplicate prohibited claim id: ${rule.id}`);
+      else prohibitedIds.add(rule.id);
+      if (!isNonEmptyString(rule?.pattern))
+        addError(errors, `prohibitedClaims[${index}].pattern is required`);
+      if (!isNonEmptyString(rule?.reason))
+        addError(errors, `prohibitedClaims[${index}].reason is required`);
+      const expectedDigest = CANONICAL_PROHIBITED_RULE_DIGESTS.get(rule?.id);
+      if (!expectedDigest) {
+        if (isNonEmptyString(rule?.id))
+          addError(
+            errors,
+            `unexpected canonical prohibited claim id: ${rule.id}`,
+          );
+      } else if (
+        sha256(`${rule.pattern}\0${rule.flags ?? "i"}`) !== expectedDigest
+      ) {
+        addError(errors, `canonical prohibited claim rule changed: ${rule.id}`);
+      }
+    }
+    for (const id of CANONICAL_PROHIBITED_RULE_DIGESTS.keys()) {
+      if (!prohibitedIds.has(id))
+        addError(
+          errors,
+          `required canonical prohibited claim is missing: ${id}`,
+        );
+    }
+  }
+  if (
+    !Array.isArray(ledger?.approvedStatements) ||
+    ledger.approvedStatements.length === 0
+  ) {
+    addError(errors, "approvedStatements must be non-empty");
+  } else {
+    const approvedIds = new Set();
+    for (const [index, statement] of ledger.approvedStatements.entries()) {
+      if (!isNonEmptyString(statement?.id))
+        addError(errors, `approvedStatements[${index}].id is required`);
+      else if (approvedIds.has(statement.id))
+        addError(errors, `duplicate approved statement id: ${statement.id}`);
+      else approvedIds.add(statement.id);
+      const expectedDigest = CANONICAL_APPROVED_STATEMENT_DIGESTS.get(
+        statement?.id,
+      );
+      if (!expectedDigest) {
+        if (isNonEmptyString(statement?.id))
+          addError(
+            errors,
+            `unexpected canonical approved statement id: ${statement.id}`,
+          );
+      } else if (
+        sha256(`${statement.path}\0${statement.exact}`) !== expectedDigest
+      ) {
+        addError(
+          errors,
+          `canonical approved statement changed: ${statement.id}`,
+        );
+      }
+    }
+    for (const id of CANONICAL_APPROVED_STATEMENT_DIGESTS.keys()) {
+      if (!approvedIds.has(id))
+        addError(
+          errors,
+          `required canonical approved statement is missing: ${id}`,
+        );
+    }
+  }
+
+  const staleAssetIds = new Set();
+  const staleAssetPaths = new Set();
+  for (const [index, asset] of asArray(ledger?.staleAssets).entries()) {
+    const prefix = `staleAssets[${index}]`;
+    if (!isNonEmptyString(asset?.id))
+      addError(errors, `${prefix}.id is required`);
+    else if (staleAssetIds.has(asset.id))
+      addError(errors, `duplicate stale asset id: ${asset.id}`);
+    else staleAssetIds.add(asset.id);
+    if (asset?.state !== "prohibited")
+      addError(errors, `${prefix}.state must be prohibited`);
+    if (!isNonEmptyString(asset?.reason))
+      addError(errors, `${prefix}.reason is required`);
+    if (!isNonEmptyString(asset?.path)) {
+      addError(errors, `${prefix}.path is required`);
+      continue;
+    }
+    if (staleAssetPaths.has(asset.path))
+      addError(errors, `duplicate stale asset path: ${asset.path}`);
+    staleAssetPaths.add(asset.path);
+    const assetPath = resolveContainedRegularFile(root, asset.path);
+    if (!assetPath) {
+      addError(
+        errors,
+        `${prefix}.path must identify a real, regular, non-symlink repository file`,
+      );
+      continue;
+    }
+    if (!SOURCE_DIGEST.test(asset.sha256 ?? "")) {
+      addError(errors, `${prefix}.sha256 must be a lowercase SHA-256 digest`);
+      continue;
+    }
+    const actual = sha256(readFileSync(assetPath));
+    if (actual !== asset.sha256)
+      addError(
+        errors,
+        `${asset.id}: stale asset changed: ${asset.path}; re-audit or replace it`,
+      );
+  }
+
+  for (const [id, path] of CANONICAL_STALE_ASSETS) {
+    const asset = asArray(ledger?.staleAssets).find(
+      (candidate) => candidate?.id === id,
+    );
+    if (!asset)
+      addError(errors, `required canonical stale asset is missing: ${id}`);
+    else if (asset.path !== path)
+      addError(errors, `canonical stale asset ${id} must remain at ${path}`);
+  }
+  for (const id of staleAssetIds) {
+    if (!CANONICAL_STALE_ASSETS.has(id))
+      addError(errors, `unexpected canonical stale asset id: ${id}`);
+  }
+
+  const binaryEntries = asArray(ledger?.publicBinaryAssets);
+  if (
+    ledger?.binaryAssetAudit?.reviewedOn !== "2026-09-10" ||
+    ledger?.binaryAssetAudit?.method !==
+      "Tesseract OCR plus human inspection at each recorded SHA-256; any byte change requires a new review" ||
+    !isNonEmptyString(ledger?.binaryAssetAudit?.scope)
+  ) {
+    addError(
+      errors,
+      "binaryAssetAudit must retain the dated OCR/human-review method and scope",
+    );
+  }
+  const binaryPaths = new Set();
+  for (const [index, asset] of binaryEntries.entries()) {
+    const prefix = `publicBinaryAssets[${index}]`;
+    if (!isNonEmptyString(asset?.path)) {
+      addError(errors, `${prefix}.path is required`);
+      continue;
+    }
+    if (binaryPaths.has(asset.path))
+      addError(errors, `duplicate public binary asset path: ${asset.path}`);
+    binaryPaths.add(asset.path);
+    const expectedDisposition = CANONICAL_PUBLIC_BINARY_ASSETS.get(asset.path);
+    if (!expectedDisposition)
+      addError(errors, `unexpected public binary asset: ${asset.path}`);
+    else if (asset.ocrDisposition !== expectedDisposition)
+      addError(
+        errors,
+        `${prefix}.ocrDisposition must be ${expectedDisposition}`,
+      );
+    const path = resolveContainedRegularFile(root, asset.path);
+    if (!path) {
+      addError(
+        errors,
+        `${prefix}.path must identify a real, regular, non-symlink repository file`,
+      );
+      continue;
+    }
+    if (!SOURCE_DIGEST.test(asset.sha256 ?? "")) {
+      addError(errors, `${prefix}.sha256 must be a lowercase SHA-256 digest`);
+    } else if (
+      asset.sha256 !== CANONICAL_PUBLIC_BINARY_DIGESTS.get(asset.path)
+    ) {
+      addError(
+        errors,
+        `${asset.path}: public binary asset digest differs from the audited OCR baseline`,
+      );
+    } else if (sha256(readFileSync(path)) !== asset.sha256) {
+      addError(
+        errors,
+        `${asset.path}: public binary asset changed; re-run OCR/human review and update its digest`,
+      );
+    }
+    if (
+      expectedDisposition === "prohibited-stale" &&
+      !staleAssetPaths.has(asset.path)
+    ) {
+      addError(
+        errors,
+        `${asset.path}: prohibited binary asset must also appear in staleAssets`,
+      );
+    }
+  }
+  const discoveredBinaryPaths = collectPublicBinaryAssetPaths(root, errors);
+  for (const path of discoveredBinaryPaths) {
+    if (!binaryPaths.has(path))
+      addError(
+        errors,
+        `public binary asset is missing from inventory: ${path}`,
+      );
+  }
+  for (const [path] of CANONICAL_PUBLIC_BINARY_ASSETS) {
+    if (!binaryPaths.has(path))
+      addError(
+        errors,
+        `required canonical public binary asset is missing: ${path}`,
+      );
+  }
+
+  return errors;
+}
+
+function readVersionSourceValues(ledger, root, errors) {
+  root = realpathSync(resolve(root));
+  const sources = asArray(ledger?.release?.currentVersionSources);
+  if (sources.length < 2) {
+    addError(
+      errors,
+      "release.currentVersionSources must contain at least two synchronized sources",
+    );
+    return [];
+  }
+
+  const values = [];
+  const requiredSources = new Map([
+    ["VERSION", "text"],
+    ["package.json", "package-json"],
+  ]);
+  const seenSources = new Set();
+  for (const source of sources) {
+    const absolute = resolve(root, source.path ?? "");
+    if (!isInsideRoot(root, absolute)) {
+      addError(
+        errors,
+        `version source escapes repository root: ${source.path ?? "(missing path)"}`,
+      );
+      continue;
+    }
+    if (seenSources.has(source.path)) {
+      addError(errors, `duplicate version source: ${source.path}`);
+      continue;
+    }
+    seenSources.add(source.path);
+    if (!existsSync(absolute)) {
+      addError(
+        errors,
+        `version source does not exist: ${source.path ?? "(missing path)"}`,
+      );
+      continue;
+    }
+    const sourcePath = resolveContainedRegularFile(root, source.path);
+    if (!sourcePath) {
+      addError(
+        errors,
+        `version source must be a real, regular, non-symlink repository file: ${source.path}`,
+      );
+      continue;
+    }
+    let value;
+    if (source.kind === "text") {
+      value = readFileSync(sourcePath, "utf8").trim();
+    } else if (source.kind === "package-json") {
+      try {
+        value = JSON.parse(readFileSync(sourcePath, "utf8")).version;
+      } catch (error) {
+        addError(
+          errors,
+          `invalid package-json version source ${source.path}: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        continue;
+      }
+    } else {
+      addError(
+        errors,
+        `unsupported version source kind: ${source.kind ?? "(missing)"}`,
+      );
+      continue;
+    }
+    if (!isNonEmptyString(value))
+      addError(errors, `empty version value in ${source.path}`);
+    values.push({ path: source.path, value });
+  }
+  for (const [path, kind] of requiredSources) {
+    const source = sources.find((candidate) => candidate?.path === path);
+    if (!source || source.kind !== kind) {
+      addError(
+        errors,
+        `release.currentVersionSources must include ${path} with kind ${kind}`,
+      );
+    }
+  }
+  return values;
+}
+
+export function verifyVersionSources(ledger, root) {
+  const errors = [];
+  const values = readVersionSourceValues(ledger, root, errors);
+
+  const distinct = new Set(values.map(({ value }) => value));
+  if (distinct.size > 1) {
+    addError(
+      errors,
+      `release version sources disagree: ${values.map(({ path, value }) => `${path}=${value}`).join(", ")}`,
+    );
+  } else if (distinct.size === 1) {
+    const [version] = distinct;
+    if (!FOUR_SEGMENT_VERSION.test(version)) {
+      addError(
+        errors,
+        `repository release version must be four numeric segments with no leading/oversized segments: ${version}`,
+      );
+    }
+  }
+  return errors;
+}
+
+export function verifyReleaseVersionBinding(
+  ledger,
+  root,
+  { tag = null, requireReady = false } = {},
+) {
+  const errors = [];
+  const targetTag = ledger?.release?.targetVersion;
+  const targetRepositoryVersion =
+    normalizeReleaseTagToRepositoryVersion(targetTag);
+  if (targetRepositoryVersion === null) return errors;
+
+  if (tag !== null) {
+    if (normalizeReleaseTagToRepositoryVersion(tag) === null) {
+      addError(errors, `triggering tag is not a canonical release tag: ${tag}`);
+    } else if (tag !== targetTag) {
+      addError(
+        errors,
+        `triggering tag ${tag} does not match ledger target ${targetTag}`,
+      );
+    }
+  } else if (requireReady) {
+    addError(errors, "release publication requires an explicit --tag value");
+  }
+
+  if (requireReady || ledger?.release?.status === "ready") {
+    const sourceErrors = [];
+    const values = readVersionSourceValues(ledger, root, sourceErrors);
+    errors.push(...sourceErrors);
+    const distinct = new Set(values.map(({ value }) => value));
+    if (distinct.size === 1) {
+      const [repositoryVersion] = distinct;
+      if (!FOUR_SEGMENT_VERSION.test(repositoryVersion)) {
+        addError(
+          errors,
+          `repository release version must be four numeric segments with no leading/oversized segments: ${repositoryVersion}`,
+        );
+      } else if (repositoryVersion !== targetRepositoryVersion) {
+        addError(
+          errors,
+          `ledger target ${targetTag} normalizes to repository version ${targetRepositoryVersion}, but VERSION/package.json contain ${repositoryVersion}`,
+        );
+      }
+    }
+  }
+
+  return errors;
+}
+
+export function verifyApprovedStatements(ledger, root) {
+  root = realpathSync(resolve(root));
+  const errors = [];
+  for (const statement of asArray(ledger?.approvedStatements)) {
+    if (
+      !isNonEmptyString(statement?.path) ||
+      !isNonEmptyString(statement?.exact)
+    ) {
+      addError(errors, "every approvedStatements entry needs path and exact");
+      continue;
+    }
+    const absolute = resolve(root, statement.path);
+    if (!isInsideRoot(resolve(root), absolute)) {
+      addError(
+        errors,
+        `approved statement path escapes repository root: ${statement.path}`,
+      );
+      continue;
+    }
+    if (!existsSync(absolute)) {
+      addError(
+        errors,
+        `approved statement path does not exist: ${statement.path}`,
+      );
+      continue;
+    }
+    const statementPath = resolveContainedRegularFile(root, statement.path);
+    if (!statementPath) {
+      addError(
+        errors,
+        `approved statement path must be a real, regular, non-symlink repository file: ${statement.path}`,
+      );
+      continue;
+    }
+    const content = readFileSync(statementPath, "utf8");
+    const extension = extname(statement.path).toLowerCase();
+    const visibleContent = nonCommentContent(content, extension);
+    let present = visibleContent.includes(statement.exact);
+    if (present && [".js", ".mjs", ".ts", ".tsx"].includes(extension)) {
+      present = extractComposedLiteralText(visibleContent).includes(
+        normalizeClaimText(statement.exact),
+      );
+    }
+    if (!present) {
+      addError(
+        errors,
+        `${statement.id ?? statement.path}: approved statement is missing, stale, or only present in a non-rendered/comment context in ${statement.path}: ${JSON.stringify(statement.exact)}`,
+      );
+    }
+  }
+  return errors;
+}
+
+export function scanProhibitedClaims(ledger, root) {
+  root = realpathSync(resolve(root));
+  const errors = [];
+  const documents = [];
+  const seenFiles = new Set();
+  for (const surface of asArray(ledger?.claimSurfaces)) {
+    for (const file of collectSurfaceFiles(root, surface, errors)) {
+      if (seenFiles.has(file)) continue;
+      seenFiles.add(file);
+      documents.push({ file, content: readFileSync(file, "utf8") });
+    }
+  }
+
+  for (const rule of asArray(ledger?.prohibitedClaims)) {
+    if (!isNonEmptyString(rule?.id) || !isNonEmptyString(rule?.pattern)) {
+      addError(errors, "every prohibitedClaims entry needs id and pattern");
+      continue;
+    }
+    let regex;
+    try {
+      const flags = new Set((rule.flags ?? "i").split(""));
+      flags.add("g");
+      regex = new RegExp(rule.pattern, [...flags].join(""));
+    } catch (error) {
+      addError(
+        errors,
+        `${rule.id}: invalid prohibited-claim regex: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      continue;
+    }
+
+    for (const { file, content } of documents) {
+      const relativeFile = relativePath(root, file);
+      let variantContent = content;
+      if (relativeFile === "CHANGELOG.md") {
+        for (const exception of HISTORICAL_CHANGELOG_EXCEPTIONS) {
+          if (
+            exception.ruleId === rule.id &&
+            content.toLowerCase().split(exception.exact.toLowerCase())
+              .length === 2
+          ) {
+            const at = variantContent
+              .toLowerCase()
+              .indexOf(exception.exact.toLowerCase());
+            if (at !== -1)
+              variantContent = `${variantContent.slice(0, at)}${" ".repeat(exception.exact.length)}${variantContent.slice(at + exception.exact.length)}`;
+          }
+        }
+      }
+      const isHistoricalException = (matchText, matchIndex) => {
+        if (relativeFile !== "CHANGELOG.md") return false;
+        const exception = HISTORICAL_CHANGELOG_EXCEPTIONS.find(
+          (candidate) =>
+            candidate.ruleId === rule.id &&
+            candidate.exact.toLowerCase() === matchText.toLowerCase(),
+        );
+        if (!exception) return false;
+        const occurrence = content
+          .toLowerCase()
+          .indexOf(exception.exact.toLowerCase());
+        return (
+          occurrence === matchIndex &&
+          occurrence !== -1 &&
+          content
+            .toLowerCase()
+            .indexOf(exception.exact.toLowerCase(), occurrence + 1) === -1
+        );
+      };
+      regex.lastIndex = 0;
+      let match;
+      let foundRawMatch = false;
+      while ((match = regex.exec(content)) !== null) {
+        if (isHistoricalException(match[0], match.index)) {
+          if (match[0].length === 0) regex.lastIndex += 1;
+          continue;
+        }
+        foundRawMatch = true;
+        addError(
+          errors,
+          `${relativeFile}:${lineAt(content, match.index)}: prohibited release claim ${rule.id}: ${JSON.stringify(match[0])}`,
+        );
+        if (match[0].length === 0) regex.lastIndex += 1;
+      }
+      if (!foundRawMatch) {
+        const normalized = normalizeClaimText(variantContent);
+        regex.lastIndex = 0;
+        while ((match = regex.exec(normalized)) !== null) {
+          addError(
+            errors,
+            `${relativeFile}: normalized public copy contains prohibited release claim ${rule.id}: ${JSON.stringify(match[0])}`,
+          );
+          if (match[0].length === 0) regex.lastIndex += 1;
+        }
+      }
+      if (!foundRawMatch) {
+        const composed = extractComposedLiteralText(variantContent);
+        regex.lastIndex = 0;
+        while ((match = regex.exec(composed)) !== null) {
+          addError(
+            errors,
+            `${relativeFile}: runtime-composed public copy contains prohibited release claim ${rule.id}: ${JSON.stringify(match[0])}`,
+          );
+          if (match[0].length === 0) regex.lastIndex += 1;
+        }
+      }
+    }
+  }
+  for (const asset of asArray(ledger?.staleAssets)) {
+    if (!isNonEmptyString(asset?.path)) continue;
+    const pathNeedles = new Set([asset.path, asset.path.split("/").at(-1)]);
+    for (const { file, content } of documents) {
+      if (resolve(root, asset.path) === file) continue;
+      const decodedContent = decodeHtmlEntities(content).replace(
+        /%([0-9a-f]{2})/gi,
+        (encoded, hex) => {
+          const value = Number.parseInt(hex, 16);
+          return Number.isNaN(value) ? encoded : String.fromCharCode(value);
+        },
+      );
+      for (const needle of pathNeedles) {
+        if (!needle) continue;
+        const rawIndex = content.indexOf(needle);
+        const decodedIndex = decodedContent.indexOf(needle);
+        if (rawIndex === -1 && decodedIndex === -1) continue;
+        if (
+          relativePath(root, file) === "CHANGELOG.md" &&
+          HISTORICAL_STALE_ASSET_EXCEPTIONS.some(
+            (exception) =>
+              exception.assetId === asset.id &&
+              exception.exact === needle &&
+              content.split(needle).length === 2,
+          )
+        )
+          continue;
+        addError(
+          errors,
+          `${relativePath(root, file)}:${rawIndex === -1 ? 1 : lineAt(content, rawIndex)}: prohibited stale asset reference ${asset.id}: ${needle}`,
+        );
+        break;
+      }
+    }
+  }
+  return errors;
+}
+
+async function fetchChecked(fetchImpl, url, options, description, errors) {
+  try {
+    const response = await fetchImpl(url, options);
+    if (!response.ok) {
+      addError(
+        errors,
+        `${description} lookup failed with HTTP ${response.status}`,
+      );
+      return null;
+    }
+    return response;
+  } catch (error) {
+    addError(
+      errors,
+      `${description} lookup failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
+function hasExactPassingChecks(checks, expectedIds) {
+  if (
+    !sameStringSet(
+      asArray(checks).map((check) => check?.id),
+      expectedIds,
+    )
+  )
+    return false;
+  return asArray(checks).every(
+    (check) =>
+      check.testId === check.id &&
+      check.result === "pass" &&
+      isNonEmptyString(check.observed),
+  );
+}
+
+function hasExactPassingMachineChecks(checks, expectedIds) {
+  if (
+    !sameStringSet(
+      asArray(checks).map((check) => check?.id),
+      expectedIds,
+    )
+  )
+    return false;
+  return asArray(checks).every(
+    (check) =>
+      check.testId === check.id &&
+      check.result === "pass" &&
+      isPlainRecord(check.observed) &&
+      check.observed.exitCode === 0 &&
+      isNonEmptyString(check.observed.assertion) &&
+      isNonEmptyString(check.observed.measurement),
+  );
+}
+
+export function verifyMachineEvidenceApplicability(
+  claimId,
+  report,
+  releaseAssets,
+  verificationAssets = [],
+) {
+  const errors = [];
+  if (claimId === "sample.packaged-account-free") {
+    const binary = report?.executedBinary;
+    const expectedDerivations = new Map([
+      ["macos", "zip-ditto"],
+      ["windows", "nsis-7zip"],
+      ["linux", "appimage-extract"],
+    ]);
+    if (
+      !isNonEmptyString(binary?.name) ||
+      !Number.isSafeInteger(binary?.sizeBytes) ||
+      binary.sizeBytes <= 0 ||
+      !SOURCE_DIGEST.test(binary?.sha256 ?? "") ||
+      !Number.isSafeInteger(binary?.device) ||
+      !Number.isSafeInteger(binary?.inode) ||
+      binary?.identityResult !== "pass" ||
+      expectedDerivations.get(report?.platform) !== binary?.derivationMethod ||
+      !isNonEmptyString(binary?.derivationPath)
+    )
+      errors.push(
+        "sample.packaged-account-free machine evidence must identify the unpacked executable exercised by the verifier and prove stable pre/post file identity",
+      );
+  }
+  if (claimId === "release.signing") {
+    const reportPlatform = machineEvidencePlatformFamily(report?.platform);
+    const expectedSubjects = asArray(releaseAssets)
+      .filter((asset) =>
+        ["desktop-installer", "desktop-archive"].includes(asset.kind),
+      )
+      .filter((asset) => {
+        const name = String(asset.artifactName ?? "");
+        return (
+          (reportPlatform === "macos" && name.includes("macOS")) ||
+          (reportPlatform === "windows" && name.includes("Windows")) ||
+          (reportPlatform === "linux" && name.includes("Linux"))
+        );
+      })
+      .flatMap((asset) =>
+        asArray(asset.subjects).map(
+          (subject) => `${subject.path}:${subject.sha256}`,
+        ),
+      )
+      .sort();
+    const coveredSubjects = asArray(report?.coveredSubjects);
+    const actualSubjects = coveredSubjects
+      .map((subject) => `${subject?.path}:${subject?.sha256}`)
+      .sort();
+    if (
+      !sameStringSet(actualSubjects, expectedSubjects) ||
+      expectedSubjects.length === 0 ||
+      coveredSubjects.some(
+        (subject) =>
+          machineEvidencePlatformFamily(subject?.platform) !== reportPlatform ||
+          subject?.signatureResult !== "pass" ||
+          (subject.platform.startsWith("macos") &&
+            subject.notarizationResult !== "pass"),
+      )
+    )
+      errors.push(
+        "release.signing machine evidence must prove signature trust for every published installer/archive subject and notarization for every macOS subject",
+      );
+  }
+  if (claimId === "release.artifact-verification") {
+    const verificationAssetsByPath = new Map(
+      asArray(verificationAssets).map((asset) => [asset?.path, asset]),
+    );
+    const referencesVerificationAsset = (reference, kind) => {
+      const asset = verificationAssetsByPath.get(reference?.path);
+      return (
+        asset?.kind === kind &&
+        asset?.sha256 === reference?.sha256 &&
+        SOURCE_DIGEST.test(reference?.sha256 ?? "")
+      );
+    };
+    const expectedSubjects = asArray(releaseAssets)
+      .flatMap((asset) =>
+        asArray(asset.subjects).map(
+          (subject) => `${subject.path}:${subject.sha256}`,
+        ),
+      )
+      .sort();
+    const coveredSubjects = asArray(report?.coveredSubjects);
+    const actualSubjects = coveredSubjects
+      .map((subject) => `${subject?.path}:${subject?.sha256}`)
+      .sort();
+    const hasCompleteEvidence = (subject) => {
+      const subjectDigest = subject?.sha256;
+      return (
+        isNonEmptyString(subject?.path) &&
+        SOURCE_DIGEST.test(subjectDigest ?? "") &&
+        subject?.checksum?.algorithm === "sha256" &&
+        referencesVerificationAsset(subject?.checksum, "checksums") &&
+        subject?.checksum?.subjectSha256 === subjectDigest &&
+        subject?.checksum?.result === "pass" &&
+        subject?.sbom?.format === "spdx-json" &&
+        referencesVerificationAsset(subject?.sbom, "sbom") &&
+        subject?.sbom?.subjectSha256 === subjectDigest &&
+        subject?.sbom?.result === "pass" &&
+        subject?.provenance?.verificationMethod === "gh-attestation-verify" &&
+        subject?.provenance?.bundlePath ===
+          `${ARTIFACT_VERIFICATION_DIRECTORY}/${subjectDigest}.attestation.jsonl` &&
+        referencesVerificationAsset(
+          {
+            path: subject?.provenance?.bundlePath,
+            sha256: subject?.provenance?.bundleSha256,
+          },
+          "provenance-bundle",
+        ) &&
+        subject?.provenance?.subjectSha256 === subjectDigest &&
+        subject?.provenance?.sourceCommit === report?.sourceCommit &&
+        subject?.provenance?.result === "pass" &&
+        referencesVerificationAsset(
+          subject?.verificationInstructions,
+          "verification-instructions",
+        ) &&
+        subject?.verificationInstructions?.subjectSha256 === subjectDigest &&
+        subject?.verificationInstructions?.result === "pass"
+      );
+    };
+    if (
+      expectedSubjects.length === 0 ||
+      !sameStringSet(actualSubjects, expectedSubjects) ||
+      coveredSubjects.some((subject) => !hasCompleteEvidence(subject))
+    )
+      errors.push(
+        "release.artifact-verification machine evidence must cover every canonical release subject with SHA-256 checksum, SBOM, source-bound provenance attestation, and verification instructions",
+      );
+  }
+  if (claimId === "models.verified-delivery") {
+    const modelArtifacts = asArray(report?.modelArtifacts);
+    if (
+      modelArtifacts.length === 0 ||
+      modelArtifacts.some(
+        (model) =>
+          !isNonEmptyString(model?.name) ||
+          !isNonEmptyString(model?.source) ||
+          !isNonEmptyString(model?.license) ||
+          !SOURCE_DIGEST.test(model?.sha256 ?? "") ||
+          model?.digestVerificationResult !== "pass" ||
+          model?.deletionResult !== "pass",
+      )
+    )
+      errors.push(
+        "models.verified-delivery machine evidence must identify every recommended model artifact with source, license, digest, verified delivery, and deletion proof",
+      );
+  }
+  return errors;
+}
+
+function isValidSpdx23Checksum(checksum) {
+  return (
+    isPlainRecord(checksum) &&
+    SPDX_23_CHECKSUM_ALGORITHMS.has(checksum.algorithm) &&
+    typeof checksum.checksumValue === "string" &&
+    /^[a-f0-9]+$/.test(checksum.checksumValue)
+  );
+}
+
+function isValidSpdxUtcTimestamp(value) {
+  if (!SPDX_UTC_TIMESTAMP.test(value ?? "")) return false;
+  const timestamp = Date.parse(value);
+  return (
+    !Number.isNaN(timestamp) &&
+    new Date(timestamp).toISOString() === value.replace(/Z$/, ".000Z")
+  );
+}
+
+function isValidSpdxDocumentNamespace(value) {
+  if (!isNonEmptyString(value) || value.includes("#")) return false;
+  try {
+    return new URL(value).href === value;
+  } catch {
+    return false;
+  }
+}
+
+function isValidSpdxPackageVerificationCode(value) {
+  return (
+    isPlainRecord(value) &&
+    Object.keys(value).length === 1 &&
+    /^[a-f0-9]{40}$/.test(value.packageVerificationCodeValue ?? "")
+  );
+}
+
+export function isValidSpdx23Document(sbom) {
+  if (
+    !isPlainRecord(sbom) ||
+    sbom.spdxVersion !== "SPDX-2.3" ||
+    sbom.dataLicense !== "CC0-1.0" ||
+    sbom.SPDXID !== "SPDXRef-DOCUMENT" ||
+    !isNonEmptyString(sbom.name) ||
+    !isValidSpdxDocumentNamespace(sbom.documentNamespace) ||
+    !isPlainRecord(sbom.creationInfo) ||
+    !isValidSpdxUtcTimestamp(sbom.creationInfo.created) ||
+    asArray(sbom.creationInfo.creators).length === 0 ||
+    asArray(sbom.creationInfo.creators).some(
+      (creator) =>
+        !/^(?:Person|Organization|Tool):\s+\S/.test(String(creator ?? "")),
+    ) ||
+    asArray(sbom.packages).length === 0 ||
+    asArray(sbom.files).length === 0
+  )
+    return false;
+
+  const packagesValid = sbom.packages.every(
+    (entry) =>
+      isPlainRecord(entry) &&
+      SPDX_ELEMENT_ID.test(entry.SPDXID ?? "") &&
+      isNonEmptyString(entry.downloadLocation) &&
+      isNonEmptyString(entry.name) &&
+      isNonEmptyString(entry.versionInfo) &&
+      entry.filesAnalyzed === true &&
+      isValidSpdxPackageVerificationCode(entry.packageVerificationCode),
+  );
+  const filesValid = sbom.files.every(
+    (entry) =>
+      isPlainRecord(entry) &&
+      SPDX_ELEMENT_ID.test(entry.SPDXID ?? "") &&
+      isNonEmptyString(entry.fileName) &&
+      asArray(entry.checksums).length > 0 &&
+      entry.checksums.every(isValidSpdx23Checksum),
+  );
+  if (!packagesValid || !filesValid) return false;
+
+  const elementIds = [
+    sbom.SPDXID,
+    ...sbom.packages.map((entry) => entry.SPDXID),
+    ...sbom.files.map((entry) => entry.SPDXID),
+  ];
+  if (new Set(elementIds).size !== elementIds.length) return false;
+  const packageIds = new Set(sbom.packages.map((entry) => entry.SPDXID));
+  const fileIds = new Set(sbom.files.map((entry) => entry.SPDXID));
+  if (
+    !sameStringSet(sbom.documentDescribes, [...packageIds]) ||
+    !Array.isArray(sbom.relationships)
+  )
+    return false;
+  const relationshipsValid = sbom.relationships.every(
+    (relationship) =>
+      isPlainRecord(relationship) &&
+      elementIds.includes(relationship.spdxElementId) &&
+      elementIds.includes(relationship.relatedSpdxElement) &&
+      SPDX_23_RELATIONSHIP_TYPES.has(relationship.relationshipType),
+  );
+  if (!relationshipsValid) return false;
+  const describedPackages = new Set(
+    sbom.relationships
+      .filter(
+        (relationship) =>
+          relationship.spdxElementId === sbom.SPDXID &&
+          relationship.relationshipType === "DESCRIBES" &&
+          packageIds.has(relationship.relatedSpdxElement),
+      )
+      .map((relationship) => relationship.relatedSpdxElement),
+  );
+  const containedFiles = new Set(
+    sbom.relationships
+      .filter(
+        (relationship) =>
+          packageIds.has(relationship.spdxElementId) &&
+          relationship.relationshipType === "CONTAINS" &&
+          fileIds.has(relationship.relatedSpdxElement),
+      )
+      .map((relationship) => relationship.relatedSpdxElement),
+  );
+  return (
+    sameStringSet([...describedPackages], [...packageIds]) &&
+    sameStringSet([...containedFiles], [...fileIds])
+  );
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", `'"'"'`)}'`;
+}
+
+export function buildCanonicalVerificationInstructions({
+  subjects,
+  repository,
+  sourceCommit,
+  sourceRef,
+}) {
+  const orderedSubjects = [...subjects].sort((left, right) =>
+    left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+  );
+  const provenanceCommands = orderedSubjects.map(
+    (subject) =>
+      `gh attestation verify ${shellQuote(subject.name)} --repo ${shellQuote(repository)} --bundle ${shellQuote(`${subject.sha256}.attestation.jsonl`)} --source-digest ${shellQuote(sourceCommit)} --source-ref ${shellQuote(sourceRef)} --signer-workflow ${shellQuote(`github.com/${repository}/.github/workflows/build.yml`)} --predicate-type ${shellQuote("https://slsa.dev/provenance/v1")}`,
+  );
+  return `# Verify SkyTwin release artifacts
+
+Download every release asset into one directory with these verification files.
+
+## SHA-256 checksums
+
+On Linux:
+
+\`\`\`sh
+sha256sum --check SHA256SUMS
+\`\`\`
+
+On macOS:
+
+\`\`\`sh
+shasum --algorithm 256 --check SHA256SUMS
+\`\`\`
+
+## GitHub build provenance
+
+Run every command below from that directory:
+
+\`\`\`sh
+${provenanceCommands.join("\n")}
+\`\`\`
+`;
+}
+
+export function verifyGitHubArtifactAttestation(
+  { subjectPath, bundlePath, repository, sourceCommit, sourceRef, token },
+  execute = execFileSync,
+) {
+  const output = execute(
+    "gh",
+    [
+      "attestation",
+      "verify",
+      subjectPath,
+      "--repo",
+      repository,
+      "--bundle",
+      bundlePath,
+      "--source-digest",
+      sourceCommit,
+      "--source-ref",
+      sourceRef,
+      "--signer-workflow",
+      `github.com/${repository}/.github/workflows/build.yml`,
+      "--predicate-type",
+      "https://slsa.dev/provenance/v1",
+      "--format",
+      "json",
+    ],
+    {
+      encoding: "utf8",
+      env: { ...process.env, GH_TOKEN: token },
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 60_000,
+    },
+  );
+  const verified = JSON.parse(output);
+  if (!Array.isArray(verified) || verified.length === 0)
+    throw new Error("GitHub CLI returned no verified attestations");
+}
+
+export async function verifyArtifactVerificationMaterials(
+  {
+    root,
+    manifest,
+    report,
+    repository,
+    releaseCommit,
+    triggerRef,
+    githubToken,
+  },
+  attestationVerifier = verifyGitHubArtifactAttestation,
+) {
+  const errors = [];
+  const verificationDirectory = resolve(root, ARTIFACT_VERIFICATION_DIRECTORY);
+  if (
+    !isInsideRoot(root, verificationDirectory) ||
+    !existsSync(verificationDirectory) ||
+    hasSymlinkComponent(root, verificationDirectory) ||
+    !lstatSync(verificationDirectory).isDirectory()
+  ) {
+    return ["artifact-verification material directory is missing or unsafe"];
+  }
+
+  const actualPaths = [];
+  for (const entry of readdirSync(verificationDirectory, {
+    withFileTypes: true,
+  })) {
+    const path = join(verificationDirectory, entry.name);
+    if (!entry.isFile() || entry.isSymbolicLink()) {
+      addError(
+        errors,
+        `artifact-verification material is not a direct regular file: ${relativePath(root, path)}`,
+      );
+      continue;
+    }
+    actualPaths.push(relativePath(root, path));
+  }
+  const declaredPaths = asArray(manifest?.verificationAssets)
+    .map((asset) => asset?.path)
+    .sort();
+  if (!sameStringSet(actualPaths.sort(), declaredPaths))
+    addError(
+      errors,
+      "artifact-verification material inventory does not exactly equal the manifest",
+    );
+
+  const assetsByPath = new Map();
+  for (const asset of asArray(manifest?.verificationAssets)) {
+    const safePath = resolveContainedRegularFile(root, asset?.path);
+    if (!safePath) {
+      addError(
+        errors,
+        `artifact-verification material is missing or unsafe: ${asset?.path ?? "missing"}`,
+      );
+      continue;
+    }
+    const actualDigest = sha256(readFileSync(safePath));
+    if (actualDigest !== asset.sha256)
+      addError(
+        errors,
+        `artifact-verification material digest changed: ${asset.path}`,
+      );
+    assetsByPath.set(asset.path, { ...asset, safePath });
+  }
+
+  const subjects = asArray(manifest?.releaseAssets).flatMap((asset) =>
+    asArray(asset?.subjects),
+  );
+  const subjectNames = subjects.map((subject) => subject?.name);
+  if (
+    subjectNames.some((name) => !isNonEmptyString(name)) ||
+    new Set(subjectNames).size !== subjectNames.length
+  )
+    addError(
+      errors,
+      "canonical release subjects must have unique published filenames",
+    );
+
+  const checksumAsset = [...assetsByPath.values()].find(
+    (asset) => asset.kind === "checksums",
+  );
+  if (checksumAsset) {
+    const checksumEntries = readFileSync(checksumAsset.safePath, "utf8")
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== "")
+      .map((line) => line.match(/^([a-f0-9]{64}) [ *]([^/\\]+)$/));
+    const actualChecksums = checksumEntries
+      .filter(Boolean)
+      .map((match) => `${match[2]}:${match[1]}`)
+      .sort();
+    const expectedChecksums = subjects
+      .map((subject) => `${subject.name}:${subject.sha256}`)
+      .sort();
+    if (
+      checksumEntries.some((entry) => entry === null) ||
+      !sameStringSet(actualChecksums, expectedChecksums)
+    )
+      addError(
+        errors,
+        "SHA256SUMS must exactly cover every canonical published subject",
+      );
+  }
+
+  const sbomAsset = [...assetsByPath.values()].find(
+    (asset) => asset.kind === "sbom",
+  );
+  if (sbomAsset) {
+    let sbom;
+    try {
+      sbom = JSON.parse(readFileSync(sbomAsset.safePath, "utf8"));
+    } catch {
+      addError(errors, "artifact-verification SBOM is not valid JSON");
+    }
+    if (sbom) {
+      const described = new Set(asArray(sbom.documentDescribes));
+      const files = asArray(sbom.files);
+      const contained = new Set(
+        asArray(sbom.relationships)
+          .filter(
+            (relationship) =>
+              described.has(relationship?.spdxElementId) &&
+              relationship?.relationshipType === "CONTAINS",
+          )
+          .map((relationship) => relationship.relatedSpdxElement),
+      );
+      const coversSubject = (subject) =>
+        files.some(
+          (file) =>
+            contained.has(file?.SPDXID) &&
+            [subject.name, subject.path].includes(file?.fileName) &&
+            asArray(file?.checksums).some(
+              (checksum) =>
+                checksum?.algorithm === "SHA256" &&
+                checksum?.checksumValue === subject.sha256,
+            ),
+        );
+      const filesById = new Map(files.map((file) => [file?.SPDXID, file]));
+      const subjectsForPackage = (packageId) => {
+        const containedFileIds = asArray(sbom.relationships)
+          .filter(
+            (relationship) =>
+              relationship?.spdxElementId === packageId &&
+              relationship?.relationshipType === "CONTAINS",
+          )
+          .map((relationship) => relationship.relatedSpdxElement);
+        const matchedSubjects = containedFileIds.map((fileId) => {
+          const file = filesById.get(fileId);
+          return subjects.find(
+            (subject) =>
+              [subject.name, subject.path].includes(file?.fileName) &&
+              asArray(file?.checksums).some(
+                (checksum) =>
+                  checksum?.algorithm === "SHA256" &&
+                  checksum?.checksumValue === subject.sha256,
+              ),
+          );
+        });
+        return matchedSubjects.every(Boolean) &&
+          new Set(matchedSubjects.map((subject) => subject.path)).size ===
+            matchedSubjects.length
+          ? matchedSubjects
+          : null;
+      };
+      const hasValidPackageVerificationCodes = asArray(sbom.packages).every(
+        (spdxPackage) => {
+          const packageSubjects = subjectsForPackage(spdxPackage?.SPDXID);
+          if (!packageSubjects || packageSubjects.length === 0) return false;
+          const fileSha1s = packageSubjects
+            .map((subject) => {
+              const subjectPath = resolveContainedRegularFile(
+                root,
+                subject.path,
+              );
+              return subjectPath
+                ? createHash("sha1")
+                    .update(readFileSync(subjectPath))
+                    .digest("hex")
+                : null;
+            })
+            .sort();
+          if (fileSha1s.some((digest) => digest === null)) return false;
+          const expectedCode = createHash("sha1")
+            .update(fileSha1s.join(""))
+            .digest("hex");
+          return (
+            spdxPackage?.packageVerificationCode
+              ?.packageVerificationCodeValue === expectedCode
+          );
+        },
+      );
+      if (
+        !isValidSpdx23Document(sbom) ||
+        subjects.some((subject) => !coversSubject(subject)) ||
+        !hasValidPackageVerificationCodes
+      )
+        addError(
+          errors,
+          "SPDX SBOM must satisfy the SPDX 2.3 document, package, and file contract and describe every canonical subject by SHA-256",
+        );
+    }
+  }
+
+  const instructionsAsset = [...assetsByPath.values()].find(
+    (asset) => asset.kind === "verification-instructions",
+  );
+  if (instructionsAsset) {
+    const instructions = readFileSync(instructionsAsset.safePath, "utf8");
+    const canonicalInstructions = buildCanonicalVerificationInstructions({
+      subjects,
+      repository,
+      sourceCommit: releaseCommit,
+      sourceRef: triggerRef,
+    });
+    if (instructions !== canonicalInstructions)
+      addError(
+        errors,
+        "verification instructions must exactly match the repository-, source-, workflow-, predicate-, bundle-, and subject-bound canonical guide",
+      );
+  }
+
+  const coveredSubjects = asArray(report?.coveredSubjects);
+  const referencedBundlePaths = coveredSubjects.map(
+    (subject) => subject?.provenance?.bundlePath,
+  );
+  const declaredBundlePaths = asArray(manifest?.verificationAssets)
+    .filter((asset) => asset?.kind === "provenance-bundle")
+    .map((asset) => asset.path);
+  if (
+    referencedBundlePaths.some((path) => !isNonEmptyString(path)) ||
+    !sameStringSet([...new Set(referencedBundlePaths)], declaredBundlePaths)
+  )
+    addError(
+      errors,
+      "provenance bundle inventory must exactly cover every canonical subject",
+    );
+
+  if (errors.length > 0) return errors;
+  for (const subject of coveredSubjects) {
+    const releaseSubject = subjects.find(
+      (candidate) =>
+        candidate.path === subject.path && candidate.sha256 === subject.sha256,
+    );
+    const bundle = assetsByPath.get(subject.provenance.bundlePath);
+    const subjectPath = releaseSubject
+      ? resolveContainedRegularFile(root, releaseSubject.path)
+      : null;
+    if (!subjectPath || !bundle) {
+      addError(errors, `provenance material is missing for ${subject.path}`);
+      continue;
+    }
+    try {
+      await attestationVerifier({
+        subjectPath,
+        bundlePath: bundle.safePath,
+        repository,
+        sourceCommit: releaseCommit,
+        sourceRef: triggerRef,
+        token: githubToken,
+      });
+    } catch (error) {
+      addError(
+        errors,
+        `GitHub attestation verification failed for ${subject.path}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  return errors;
+}
+
+export async function verifyPublicationEvidence(
+  ledger,
+  manifest,
+  {
+    root,
+    repository,
+    releaseCommit,
+    tag,
+    runId,
+    triggerRef,
+    githubToken,
+    fetchImpl = globalThis.fetch,
+    attestationVerifier = verifyGitHubArtifactAttestation,
+  } = {},
+) {
+  const errors = [];
+  if (!GITHUB_REPOSITORY.test(repository ?? ""))
+    addError(
+      errors,
+      "release publication requires --repository owner/repository",
+    );
+  if (!COMMIT_SHA.test(releaseCommit ?? ""))
+    addError(
+      errors,
+      "release publication requires --commit with a lowercase 40-character commit SHA",
+    );
+  if (!isNonEmptyString(tag))
+    addError(errors, "release publication requires an explicit tag");
+  if (!Number.isSafeInteger(runId) || runId <= 0)
+    addError(
+      errors,
+      "release publication requires the current positive run ID",
+    );
+  if (triggerRef !== `refs/tags/${tag}`)
+    addError(
+      errors,
+      `release publication ref must be the triggering tag ref refs/tags/${tag}`,
+    );
+  if (manifest?.schemaVersion !== 1)
+    addError(errors, "release evidence manifest schemaVersion must be 1");
+  if (manifest?.repository !== repository)
+    addError(
+      errors,
+      "release evidence manifest repository does not match the triggering repository",
+    );
+  if (manifest?.releaseCommit !== releaseCommit)
+    addError(
+      errors,
+      "release evidence manifest commit does not match the triggering release commit",
+    );
+  if (manifest?.tag !== tag)
+    addError(
+      errors,
+      "release evidence manifest tag does not match the triggering tag",
+    );
+  if (manifest?.runId !== runId)
+    addError(
+      errors,
+      "release evidence manifest runId does not match the current workflow run",
+    );
+  if (manifest?.ref !== triggerRef)
+    addError(
+      errors,
+      "release evidence manifest ref does not match the triggering tag ref",
+    );
+  validateReleaseAssetManifest(manifest, errors);
+  validateArtifactVerificationAssetManifest(manifest, errors);
+  if (errors.length > 0) return errors;
+
+  const requiredPairs = new Set();
+  for (const readiness of asArray(ledger?.release?.readinessClaims)) {
+    for (const kind of asArray(readiness?.requiredEvidenceKinds)) {
+      if (kind !== "source") requiredPairs.add(`${readiness.claimId}:${kind}`);
+    }
+  }
+  const evidenceEntries = [];
+  const seenPairs = new Set();
+  for (const [index, evidence] of asArray(manifest?.evidence).entries()) {
+    const pair = `${evidence?.claimId}:${evidence?.kind}`;
+    const canonicalMachinePlatforms =
+      evidence?.kind === "machine"
+        ? CANONICAL_MACHINE_EVIDENCE_MATRIX.filter(
+            (entry) => entry.claimId === evidence?.claimId,
+          ).map((entry) => entry.platform)
+        : [];
+    const usesPlatformIdentity = canonicalMachinePlatforms.length > 1;
+    const identity = usesPlatformIdentity
+      ? `${pair}:${evidence?.platform ?? "missing"}`
+      : pair;
+    const prefix = `release evidence manifest entry ${index}`;
+    if (!requiredPairs.has(pair)) {
+      addError(
+        errors,
+        `${prefix} is not required by the release ledger: ${pair}`,
+      );
+      continue;
+    }
+    if (
+      evidence?.kind === "machine" &&
+      !canonicalMachinePlatforms.includes(evidence?.platform)
+    ) {
+      addError(
+        errors,
+        `${prefix} has unexpected canonical machine evidence platform: ${evidence?.platform ?? "missing"}`,
+      );
+      continue;
+    }
+    if (seenPairs.has(identity)) {
+      addError(errors, `${prefix} duplicates required evidence: ${identity}`);
+      continue;
+    }
+    seenPairs.add(identity);
+    validateExternalEvidenceShape(evidence, prefix, errors);
+    evidenceEntries.push({ claimId: evidence.claimId, evidence });
+  }
+  for (const pair of requiredPairs) {
+    const [claimId, kind] = pair.split(":");
+    const canonicalMachinePlatforms =
+      kind === "machine"
+        ? CANONICAL_MACHINE_EVIDENCE_MATRIX.filter(
+            (entry) => entry.claimId === claimId,
+          ).map((entry) => entry.platform)
+        : [];
+    if (canonicalMachinePlatforms.length > 1) {
+      for (const platform of canonicalMachinePlatforms)
+        if (!seenPairs.has(`${pair}:${platform}`))
+          addError(
+            errors,
+            `release evidence manifest is missing required evidence: ${pair}:${platform}`,
+          );
+      continue;
+    }
+    if (!seenPairs.has(pair))
+      addError(
+        errors,
+        `release evidence manifest is missing required evidence: ${pair}`,
+      );
+  }
+  if (errors.length > 0) return errors;
+  const ciEntries = evidenceEntries.filter(
+    ({ evidence }) => evidence?.kind === "ci",
+  );
+  if (evidenceEntries.length > 0 && !isNonEmptyString(githubToken)) {
+    addError(errors, "release evidence verification requires GITHUB_TOKEN");
+    return errors;
+  }
+
+  for (const { claimId, evidence } of evidenceEntries) {
+    if (evidence.runId !== runId)
+      addError(
+        errors,
+        `${claimId} ${evidence.kind} evidence is not from the current workflow run`,
+      );
+    if (evidence.ref !== triggerRef)
+      addError(
+        errors,
+        `${claimId} ${evidence.kind} evidence is not bound to the triggering tag ref`,
+      );
+  }
+  if (errors.length > 0) return errors;
+
+  const apiRoot = `https://api.github.com/repos/${repository}/actions`;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${githubToken}`,
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  const currentRunResponse = await fetchChecked(
+    fetchImpl,
+    `${apiRoot}/runs/${runId}`,
+    { headers },
+    "current release workflow run",
+    errors,
+  );
+  if (!currentRunResponse) return errors;
+  let currentRun;
+  try {
+    currentRun = await currentRunResponse.json();
+  } catch {
+    addError(
+      errors,
+      "current release workflow run API response was not valid JSON",
+    );
+    return errors;
+  }
+  if (
+    currentRun.id !== runId ||
+    currentRun.head_sha !== releaseCommit ||
+    currentRun.event !== "push" ||
+    currentRun.head_branch !== tag ||
+    currentRun.path !== RELEASE_EVIDENCE_WORKFLOW_PATH ||
+    currentRun.repository?.full_name !== repository
+  ) {
+    addError(
+      errors,
+      "current workflow run is not the tag-push build.yml run for the release commit",
+    );
+    return errors;
+  }
+
+  const releaseAssetsByName = new Map();
+  for (const asset of manifest.releaseAssets) {
+    const prefix = `release asset ${asset.artifactName}`;
+    const response = await fetchChecked(
+      fetchImpl,
+      `${apiRoot}/artifacts/${asset.artifactId}`,
+      { headers },
+      prefix,
+      errors,
+    );
+    if (!response) continue;
+    let apiArtifact;
+    try {
+      apiArtifact = await response.json();
+    } catch {
+      addError(errors, `${prefix} API response was not valid JSON`);
+      continue;
+    }
+    if (
+      apiArtifact.id !== asset.artifactId ||
+      apiArtifact.name !== asset.artifactName ||
+      apiArtifact.expired !== false ||
+      apiArtifact.digest !== `sha256:${asset.artifactSha256}` ||
+      apiArtifact.workflow_run?.id !== runId ||
+      apiArtifact.workflow_run?.head_sha !== releaseCommit
+    ) {
+      addError(
+        errors,
+        `${prefix} is not an unexpired ID/name/digest-bound artifact from the current run`,
+      );
+      continue;
+    }
+    const actualPaths = collectDownloadedArtifactSubjects(
+      root,
+      asset.artifactName,
+      errors,
+    );
+    const declaredPaths = asArray(asset.subjects)
+      .map((subject) => subject.path)
+      .sort();
+    if (
+      actualPaths.length !== declaredPaths.length ||
+      actualPaths.some((path, index) => path !== declaredPaths[index])
+    ) {
+      addError(
+        errors,
+        `${prefix} subject inventory does not exactly equal the downloaded artifact contents`,
+      );
+      continue;
+    }
+    for (const subject of asset.subjects) {
+      const subjectPath = resolveContainedRegularFile(root, subject.path);
+      if (!subjectPath || sha256(readFileSync(subjectPath)) !== subject.sha256)
+        addError(
+          errors,
+          `${prefix} subject is missing, unsafe, or has the wrong digest: ${subject.path}`,
+        );
+    }
+    releaseAssetsByName.set(asset.artifactName, asset);
+  }
+
+  for (const { claimId, evidence } of ciEntries) {
+    const prefix = `${claimId} CI evidence`;
+    if (evidence.repository !== repository)
+      addError(errors, `${prefix} repository is not the triggering repository`);
+    if (evidence.commitSha !== releaseCommit)
+      addError(errors, `${prefix} commit is not the triggering release commit`);
+    if (evidence.conclusion !== "success")
+      addError(errors, `${prefix} does not record a successful conclusion`);
+    if (
+      evidence.repository !== repository ||
+      evidence.commitSha !== releaseCommit ||
+      evidence.conclusion !== "success"
+    ) {
+      continue;
+    }
+
+    const jobResponse = await fetchChecked(
+      fetchImpl,
+      `${apiRoot}/jobs/${evidence.jobId}`,
+      { headers },
+      `${prefix} job`,
+      errors,
+    );
+    const artifactResponse = await fetchChecked(
+      fetchImpl,
+      `${apiRoot}/artifacts/${evidence.artifactId}`,
+      { headers },
+      `${prefix} artifact`,
+      errors,
+    );
+    if (!jobResponse || !artifactResponse) continue;
+    let job;
+    let artifact;
+    try {
+      [job, artifact] = await Promise.all([
+        jobResponse.json(),
+        artifactResponse.json(),
+      ]);
+    } catch {
+      addError(errors, `${prefix} API response was not valid JSON`);
+      continue;
+    }
+    if (
+      job.id !== evidence.jobId ||
+      job.name !== evidence.jobName ||
+      job.conclusion !== "success" ||
+      job.run_url !==
+        `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
+      (job.head_sha !== undefined && job.head_sha !== releaseCommit)
+    ) {
+      addError(
+        errors,
+        `${prefix} job is not a successful job in the recorded run`,
+      );
+    }
+    if (
+      artifact.id !== evidence.artifactId ||
+      artifact.name !== evidence.artifactName ||
+      artifact.expired !== false ||
+      artifact.digest !== `sha256:${evidence.artifactSha256}` ||
+      artifact.workflow_run?.id !== evidence.runId ||
+      artifact.workflow_run?.head_sha !== releaseCommit
+    ) {
+      addError(
+        errors,
+        `${prefix} artifact is not an unexpired digest-bound artifact from the recorded run`,
+      );
+    }
+    const reportPath = resolveContainedRegularFile(root, evidence.reportPath);
+    if (!reportPath) {
+      addError(
+        errors,
+        `${prefix} downloaded result is missing or unsafe: ${evidence.reportPath}`,
+      );
+      continue;
+    }
+    const reportBytes = readFileSync(reportPath);
+    let report;
+    try {
+      report = JSON.parse(reportBytes.toString("utf8"));
+    } catch {
+      addError(errors, `${prefix} downloaded result is not valid JSON`);
+      continue;
+    }
+    const reportClaims = asArray(report?.claims);
+    const reportClaimIds = reportClaims.map((entry) => entry?.claimId);
+    const canonicalCiClaimIds = [...CANONICAL_CI_EVIDENCE_CHECKS.keys()];
+    const claimResult = reportClaims.find(
+      (entry) => entry?.claimId === claimId,
+    );
+    if (
+      sha256(reportBytes) !== evidence.reportSha256 ||
+      report.schemaVersion !== 1 ||
+      report.generatedBy !== "release-claim-ci-harness" ||
+      report.result !== "pass" ||
+      report.runId !== runId ||
+      report.sourceCommit !== releaseCommit ||
+      report.ref !== triggerRef ||
+      !sameStringSet(reportClaimIds, canonicalCiClaimIds) ||
+      !claimResult ||
+      !hasExactPassingChecks(
+        claimResult.checks,
+        CANONICAL_CI_EVIDENCE_CHECKS.get(claimId),
+      ) ||
+      !sameStringSet(
+        evidence.checkIds,
+        claimResult.checks.map(({ id }) => id),
+      )
+    ) {
+      addError(
+        errors,
+        `${prefix} downloaded result is not a claim-specific passing result with the canonical test IDs for the current tag run`,
+      );
+    }
+  }
+
+  for (const { claimId, evidence } of evidenceEntries.filter(
+    ({ evidence }) => evidence?.kind === "machine",
+  )) {
+    const prefix = `${claimId} machine evidence`;
+    const declaredReleaseAsset = releaseAssetsByName.get(
+      evidence.releaseArtifactName,
+    );
+    if (evidence.repository !== repository)
+      addError(errors, `${prefix} repository is not the triggering repository`);
+    if (evidence.sourceCommit !== releaseCommit)
+      addError(
+        errors,
+        `${prefix} sourceCommit is not the triggering release commit`,
+      );
+    if (evidence.releaseTag !== tag)
+      addError(errors, `${prefix} releaseTag is not the triggering tag`);
+    if (
+      evidence.repository !== repository ||
+      evidence.sourceCommit !== releaseCommit ||
+      evidence.releaseTag !== tag ||
+      evidence.producerJobConclusion !== "success"
+    )
+      continue;
+    if (
+      !declaredReleaseAsset ||
+      declaredReleaseAsset.artifactId !== evidence.releaseArtifactId ||
+      declaredReleaseAsset.kind !== evidence.releaseArtifactKind ||
+      declaredReleaseAsset.artifactSha256 !== evidence.releaseArtifactSha256 ||
+      !declaredReleaseAsset.subjects.some(
+        (subject) =>
+          subject.name === evidence.subjectName &&
+          subject.path === evidence.subjectPath &&
+          subject.sha256 === evidence.subjectSha256,
+      )
+    ) {
+      addError(
+        errors,
+        `${prefix} is not bound to a subject in the complete canonical release asset inventory`,
+      );
+    }
+    const producerJobResponse = await fetchChecked(
+      fetchImpl,
+      `${apiRoot}/jobs/${evidence.producerJobId}`,
+      { headers },
+      `${prefix} producer job`,
+      errors,
+    );
+    const evidenceArtifactResponse = await fetchChecked(
+      fetchImpl,
+      `${apiRoot}/artifacts/${evidence.evidenceArtifactId}`,
+      { headers },
+      `${prefix} report artifact`,
+      errors,
+    );
+    const releaseArtifactResponse = await fetchChecked(
+      fetchImpl,
+      `${apiRoot}/artifacts/${evidence.releaseArtifactId}`,
+      { headers },
+      `${prefix} release artifact`,
+      errors,
+    );
+    if (
+      !producerJobResponse ||
+      !evidenceArtifactResponse ||
+      !releaseArtifactResponse
+    )
+      continue;
+    let producerJob;
+    let evidenceArtifact;
+    let releaseArtifact;
+    try {
+      [producerJob, evidenceArtifact, releaseArtifact] = await Promise.all([
+        producerJobResponse.json(),
+        evidenceArtifactResponse.json(),
+        releaseArtifactResponse.json(),
+      ]);
+    } catch {
+      addError(errors, `${prefix} API response was not valid JSON`);
+      continue;
+    }
+    const expectedProducerJobName = machineProducerJobName(
+      claimId,
+      evidence.platform,
+    );
+    if (
+      producerJob.id !== evidence.producerJobId ||
+      producerJob.name !== expectedProducerJobName ||
+      producerJob.name !== evidence.producerJobName ||
+      producerJob.conclusion !== "success" ||
+      producerJob.run_url !==
+        `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
+      (producerJob.head_sha !== undefined &&
+        producerJob.head_sha !== releaseCommit) ||
+      !asArray(producerJob.steps).some(
+        (step) =>
+          step?.name === CANONICAL_MACHINE_VERIFIER_STEP &&
+          step?.conclusion === "success",
+      )
+    )
+      addError(
+        errors,
+        `${prefix} producer is not the canonical successful verifier job and step from the current run`,
+      );
+    if (
+      evidenceArtifact.id !== evidence.evidenceArtifactId ||
+      evidenceArtifact.name !== evidence.evidenceArtifactName ||
+      evidenceArtifact.expired !== false ||
+      evidenceArtifact.digest !== `sha256:${evidence.evidenceArtifactSha256}` ||
+      evidenceArtifact.workflow_run?.id !== runId ||
+      evidenceArtifact.workflow_run?.head_sha !== releaseCommit
+    ) {
+      addError(
+        errors,
+        `${prefix} report artifact is not an unexpired digest-bound artifact from the recorded run`,
+      );
+    }
+    if (
+      releaseArtifact.id !== evidence.releaseArtifactId ||
+      releaseArtifact.name !== evidence.releaseArtifactName ||
+      releaseArtifact.expired !== false ||
+      releaseArtifact.digest !== `sha256:${evidence.releaseArtifactSha256}` ||
+      releaseArtifact.workflow_run?.id !== runId ||
+      releaseArtifact.workflow_run?.head_sha !== releaseCommit
+    ) {
+      addError(
+        errors,
+        `${prefix} release artifact is not the unexpired ID/name/digest-bound artifact from the current run`,
+      );
+    }
+    const subjectPath = resolveContainedRegularFile(root, evidence.subjectPath);
+    if (!subjectPath) {
+      addError(
+        errors,
+        `${prefix} downloaded release artifact subject is missing or unsafe: ${evidence.subjectPath}`,
+      );
+    } else if (sha256(readFileSync(subjectPath)) !== evidence.subjectSha256) {
+      addError(
+        errors,
+        `${prefix} downloaded release artifact subject digest does not match subjectSha256`,
+      );
+    }
+    const reportPath = resolve(root, evidence.reportPath);
+    const evidenceRoot = resolve(root, ".release-evidence");
+    const safeReportPath = resolveContainedRegularFile(
+      root,
+      evidence.reportPath,
+    );
+    if (!isInsideRoot(evidenceRoot, reportPath) || !safeReportPath) {
+      addError(
+        errors,
+        `${prefix} report does not exist at ${evidence.reportPath}`,
+      );
+      continue;
+    }
+    const bytes = readFileSync(safeReportPath);
+    if (sha256(bytes) !== evidence.reportSha256) {
+      addError(errors, `${prefix} report digest does not match reportSha256`);
+      continue;
+    }
+    let report;
+    try {
+      report = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      addError(errors, `${prefix} report is not valid JSON`);
+      continue;
+    }
+    const expectedVerifierPath = machineVerifierPath(claimId);
+    const expectedVerifierCommand = machineVerifierCommand(
+      claimId,
+      evidence.platform,
+    );
+    const verifierPath = resolveContainedRegularFile(
+      root,
+      expectedVerifierPath,
+    );
+    if (
+      !verifierPath ||
+      sha256(readFileSync(verifierPath)) !== evidence.verifierSha256
+    )
+      addError(
+        errors,
+        `${prefix} canonical verifier source is missing or does not match verifierSha256`,
+      );
+    const expectedCheckIds = CANONICAL_MACHINE_EVIDENCE_CHECKS.get(claimId);
+    if (
+      report.schemaVersion !== 1 ||
+      report.generatedBy !== "release-machine-verifier" ||
+      report.result !== "pass" ||
+      !hasExactPassingMachineChecks(report.checks, expectedCheckIds) ||
+      !sameStringSet(evidence.checkIds, expectedCheckIds) ||
+      report.claimId !== claimId ||
+      report.sourceCommit !== releaseCommit ||
+      report.releaseTag !== tag ||
+      report.runId !== runId ||
+      report.repository !== repository ||
+      report.ref !== triggerRef ||
+      report.platform !== evidence.platform ||
+      report.releaseArtifactKind !== evidence.releaseArtifactKind ||
+      report.releaseArtifactId !== evidence.releaseArtifactId ||
+      report.releaseArtifactName !== evidence.releaseArtifactName ||
+      report.releaseArtifactSha256 !== evidence.releaseArtifactSha256 ||
+      report.subjectName !== evidence.subjectName ||
+      report.subjectPath !== evidence.subjectPath ||
+      report.subjectSha256 !== evidence.subjectSha256 ||
+      report.producerJobName !== expectedProducerJobName ||
+      report.verifierPath !== expectedVerifierPath ||
+      report.verifierCommand !== expectedVerifierCommand ||
+      report.verifierSha256 !== evidence.verifierSha256
+    ) {
+      addError(
+        errors,
+        `${prefix} report is not a passing result bound to the release artifact and commit`,
+      );
+    }
+    for (const applicabilityError of verifyMachineEvidenceApplicability(
+      claimId,
+      report,
+      [...releaseAssetsByName.values()],
+      manifest.verificationAssets,
+    ))
+      addError(errors, `${prefix} ${applicabilityError}`);
+    if (claimId === "release.artifact-verification") {
+      for (const materialError of await verifyArtifactVerificationMaterials(
+        {
+          root,
+          manifest,
+          report,
+          repository,
+          releaseCommit,
+          triggerRef,
+          githubToken,
+        },
+        attestationVerifier,
+      ))
+        addError(errors, `${prefix} ${materialError}`);
+    }
+  }
+  return errors;
+}
+
+export function runChecks({
+  root,
+  ledgerPath = DEFAULT_LEDGER_PATH,
+  requireReady = false,
+  tag = null,
+  externalEvidenceVerified = false,
+}) {
+  const absoluteRoot = realpathSync(resolve(root));
+  const absoluteLedger = resolve(absoluteRoot, ledgerPath);
+  if (!isInsideRoot(absoluteRoot, absoluteLedger)) {
+    return {
+      ledger: null,
+      errors: [`claim ledger escapes repository root: ${ledgerPath}`],
+    };
+  }
+  if (!existsSync(absoluteLedger)) {
+    return {
+      ledger: null,
+      errors: [`claim ledger does not exist: ${ledgerPath}`],
+    };
+  }
+  const safeLedgerPath = resolveContainedRegularFile(absoluteRoot, ledgerPath);
+  if (!safeLedgerPath) {
+    return {
+      ledger: null,
+      errors: [
+        `claim ledger must be a real, regular, non-symlink repository file: ${ledgerPath}`,
+      ],
+    };
+  }
+
+  let ledger;
+  try {
+    ledger = JSON.parse(readFileSync(safeLedgerPath, "utf8"));
+  } catch (error) {
+    return {
+      ledger: null,
+      errors: [
+        `claim ledger is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      ],
+    };
+  }
+
+  const errors = [
+    ...validateLedgerShape(ledger, absoluteRoot, ledgerPath),
+    ...verifyVersionSources(ledger, absoluteRoot),
+    ...verifyReleaseVersionBinding(ledger, absoluteRoot, {
+      tag,
+      requireReady,
+    }),
+    ...verifyRequiredSurfaceCoverage(ledger, absoluteRoot),
+    ...verifyCanonicalReleasePublisher(absoluteRoot),
+    ...verifyApprovedStatements(ledger, absoluteRoot),
+    ...scanProhibitedClaims(ledger, absoluteRoot),
+  ];
+  if (requireReady && ledger?.release?.status !== "ready") {
+    errors.push(
+      `release publication requires ledger status ready; found ${ledger?.release?.status ?? "missing"}`,
+    );
+  }
+  if (requireReady && !externalEvidenceVerified) {
+    errors.push(
+      "release publication evidence was not externally verified; use the publication CLI gate",
+    );
+  }
+  return { ledger, errors };
+}
+
+export function runPublicationPreflight(options) {
+  const result = runChecks({
+    ...options,
+    requireReady: true,
+    externalEvidenceVerified: true,
+  });
+  if (!GITHUB_REPOSITORY.test(options.repository ?? ""))
+    result.errors.push(
+      "release publication requires --repository owner/repository",
+    );
+  if (!COMMIT_SHA.test(options.commit ?? ""))
+    result.errors.push(
+      "release publication requires --commit with a lowercase 40-character commit SHA",
+    );
+  if (!Number.isSafeInteger(options.runId) || options.runId <= 0)
+    result.errors.push(
+      "release publication requires --run-id with the current workflow run ID",
+    );
+  if (options.ref !== `refs/tags/${options.tag}`)
+    result.errors.push(
+      `release publication requires --ref refs/tags/${options.tag}`,
+    );
+  return result;
+}
+
+export async function runPublicationChecks(options) {
+  const result = runPublicationPreflight(options);
+  if (result.errors.length > 0 || !result.ledger) return result;
+  const manifestPath = resolve(
+    options.root,
+    options.evidenceManifestPath ?? "",
+  );
+  const safeManifestPath = isNonEmptyString(options.evidenceManifestPath)
+    ? resolveContainedRegularFile(options.root, options.evidenceManifestPath)
+    : null;
+  if (
+    !isNonEmptyString(options.evidenceManifestPath) ||
+    !isInsideRoot(resolve(options.root), manifestPath) ||
+    !safeManifestPath
+  ) {
+    return {
+      ...result,
+      errors: [
+        ...result.errors,
+        "final release publication requires an existing --evidence-manifest file",
+      ],
+    };
+  }
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(safeManifestPath, "utf8"));
+  } catch (error) {
+    return {
+      ...result,
+      errors: [
+        ...result.errors,
+        `release evidence manifest is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      ],
+    };
+  }
+  const evidenceErrors = await verifyPublicationEvidence(
+    result.ledger,
+    manifest,
+    {
+      root: resolve(options.root),
+      repository: options.repository,
+      releaseCommit: options.commit,
+      tag: options.tag,
+      runId: options.runId,
+      triggerRef: options.ref,
+      githubToken: options.githubToken ?? process.env.GITHUB_TOKEN,
+      fetchImpl: options.fetchImpl,
+    },
+  );
+  return { ...result, errors: [...result.errors, ...evidenceErrors] };
+}
+
+function parseArgs(argv) {
+  const args = {
+    root: process.cwd(),
+    ledgerPath: DEFAULT_LEDGER_PATH,
+    requireReady: false,
+    tag: null,
+    commit: null,
+    repository: null,
+    evidenceManifestPath: null,
+    preflight: false,
+    runId: null,
+    ref: null,
+  };
+  for (let index = 0; index < argv.length; index += 1) {
+    if (argv[index] === "--") continue;
+    else if (argv[index] === "--root") args.root = argv[++index];
+    else if (argv[index] === "--ledger") args.ledgerPath = argv[++index];
+    else if (argv[index] === "--require-ready") args.requireReady = true;
+    else if (argv[index] === "--tag") args.tag = argv[++index];
+    else if (argv[index] === "--commit") args.commit = argv[++index];
+    else if (argv[index] === "--repository") args.repository = argv[++index];
+    else if (argv[index] === "--run-id") {
+      const value = argv[++index];
+      args.runId = /^[1-9][0-9]*$/.test(value ?? "") ? Number(value) : null;
+    } else if (argv[index] === "--ref") args.ref = argv[++index];
+    else if (argv[index] === "--evidence-manifest")
+      args.evidenceManifestPath = argv[++index];
+    else if (argv[index] === "--preflight") args.preflight = true;
+    else throw new Error(`unknown argument: ${argv[index]}`);
+  }
+  return args;
+}
+
+const isCli =
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isCli) {
+  try {
+    const args = parseArgs(process.argv.slice(2));
+    const result = args.requireReady
+      ? args.preflight
+        ? runPublicationPreflight(args)
+        : await runPublicationChecks(args)
+      : runChecks(args);
+    if (result.errors.length > 0) {
+      console.error(
+        `Release claim check failed with ${result.errors.length} error(s):`,
+      );
+      for (const error of result.errors) console.error(`- ${error}`);
+      process.exitCode = 1;
+    } else {
+      console.log(
+        `Release claim check passed: ${result.ledger.claims.length} claims, target ${result.ledger.release.targetVersion} (${result.ledger.release.status}).`,
+      );
+    }
+  } catch (error) {
+    console.error(
+      `Release claim check could not run: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+  }
+}

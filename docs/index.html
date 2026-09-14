@@ -129,7 +129,7 @@
         <a href="deck.html">Deck</a>
         <a href="connect-gmail.html">Connect Gmail</a>
         <a href="https://github.com/jayzalowitz/skytwin">GitHub</a>
-        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Releases</a>
+        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Technical preview</a>
       </div>
     </div>
   </nav>
@@ -138,14 +138,14 @@
     <section class="hero wrap">
       <p class="eyebrow">Open source · local-first · Apache 2.0</p>
       <h1>A digital twin that learns what you'd want — and does it.</h1>
-      <p class="lede">SkyTwin reads your inbox and calendar, builds a structured model of your preferences, and acts on your behalf. It splits what needs you from what's just awareness, explains every decision, and never does anything risky without asking. Local-first by default — cloud AI is opt-in.</p>
+      <p class="lede">SkyTwin reads connected inbox and calendar sources, builds a structured model of your preferences, and proposes or performs actions under trust, policy, and approval gates. Supported decision paths record explanations. Local-first by default — hosted AI is used only when configured.</p>
       <div class="actions">
-        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">View beta releases</a>
+        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download technical preview</a>
         <a class="button" href="demo.html">See the 5-minute demo</a>
         <a class="button" href="https://github.com/jayzalowitz/skytwin">View source</a>
-        <span class="note">Published installers predate the account-free sample now in source.</span>
+        <span class="note">Published installers predate the guarded account-free sample now in source.</span>
       </div>
-      <img class="shot shot-hero" src="screenshots/briefing.png" alt="SkyTwin briefing — a daily digest that separates to-dos that need you from topics to catch up on, each with citations.">
+      <p class="section-lede">Historical product captures are withheld until replacement images pass the public-copy audit.</p>
     </section>
 
     <section class="wrap">
@@ -159,8 +159,8 @@
         </div>
         <div class="card">
           <span class="tag">Decisions</span>
-          <h3>Every action is explained</h3>
-          <p>Each automated decision produces a record: what happened, what evidence was used, which of your preferences applied, why this over the alternatives, and how to correct it.</p>
+          <h3>Recorded explanations</h3>
+          <p>Supported decision paths can record what happened, the evidence and preferences used, the selected action, and correction guidance. Release-wide coverage is still under audit.</p>
         </div>
         <div class="card safe">
           <span class="tag">Safety</span>
@@ -170,7 +170,7 @@
         <div class="card">
           <span class="tag">Local-first</span>
           <h3>Local by default</h3>
-          <p>CockroachDB is embedded in the desktop app. Builds from current source can recommend and download a pinned local model only after you start the download; a compatible <code>llama.cpp</code> runtime is still supplied separately. Your data stays in a database on your own machine, and we don't run a server it flows through. Cloud AI is opt-in. In the decision pipeline, email addresses are masked in the raw-event and episodic-memory fragments before those fragments reach a provider; other prompt fragments are not covered by that masking. Turn on full-disk encryption (FileVault / BitLocker / LUKS); see the <a href="privacy.html#storage">privacy policy</a> for exactly what is and isn't encrypted at rest today.</p>
+          <p>CockroachDB is bundled with the desktop app and its persistent database stays on your machine. Builds from current source can recommend and download a pinned local model only after you start the download; a compatible <code>llama.cpp</code> runtime remains separate. Connected services and configured hosted endpoints use the network. In the decision pipeline, email addresses are masked only in the raw-event and episodic-memory fragments before those fragments reach a provider; other prompt fragments are not covered by that masking. Turn on full-disk encryption (FileVault / BitLocker / LUKS); see the <a href="privacy.html#storage">privacy policy</a> for exactly what is and isn't encrypted at rest today.</p>
         </div>
       </div>
     </section>
@@ -179,10 +179,10 @@
       <h2>See it before you connect anything</h2>
       <p class="section-lede">Current source includes a guarded account-free sample for packaged desktop builds, so a stranger can inspect fictional decisions and explanations without touching a private inbox. Product data remains read-only; approve, reject, correct, and learn interactions run only in a disposable session-local simulation with no external effects. Published installers predate this path. <a href="demo.html">See the demo boundaries and storyboard →</a></p>
       <div class="shot-grid">
-        <figure><img class="shot" loading="lazy" src="screenshots/onboarding.png" alt="Cold-start onboarding with a 'try a sample profile' path."><figcaption>Cold start — current source can open a read-only sample session in seconds.</figcaption></figure>
-        <figure><img class="shot" loading="lazy" src="screenshots/approvals.png" alt="Sample approvals queue with fixed fictional proposals."><figcaption>Approvals — inspect the proposal and why, then simulate a response without creating an external effect.</figcaption></figure>
-        <figure><img class="shot" loading="lazy" src="screenshots/decisions.png" alt="Decision history with outcomes and explanation details."><figcaption>Decision history — inspect what happened and the evidence behind it.</figcaption></figure>
-        <figure><img class="shot" loading="lazy" src="screenshots/briefing.png" alt="The briefing digest with to-dos and topics."><figcaption>Briefing — what needs you, and what's just FYI.</figcaption></figure>
+        <figure><figcaption>Onboarding capture withheld pending replacement after the public-copy audit.</figcaption></figure>
+        <figure><figcaption>Approvals capture withheld pending replacement after the public-copy audit.</figcaption></figure>
+        <figure><figcaption>Settings capture withheld pending replacement after the public-copy audit.</figcaption></figure>
+        <figure><figcaption>Briefing capture withheld pending replacement after the public-copy audit.</figcaption></figure>
       </div>
     </section>
 
@@ -217,9 +217,9 @@
 
     <section class="wrap">
       <h2>Install</h2>
-      <p class="section-lede">Published desktop installers (<code>.dmg</code> / <code>.exe</code> / <code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code>) are available on <a href="https://github.com/jayzalowitz/skytwin/releases/latest">the releases page</a>, but those artifacts currently predate the guarded packaged sample path described above. Check each release's notes for its exact contents. The app checks for updates in the background and offers a one-click restart when one's ready. Or build the current development source on macOS / Linux / WSL:</p>
+      <p class="section-lede">Current unsigned technical-preview artifacts (<code>.dmg</code> / <code>.exe</code> / <code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code>) are available from <a href="https://github.com/jayzalowitz/skytwin/releases/latest">the latest release</a>, but they predate the guarded packaged sample described above. Check each release's notes for exact contents. The update client can check for new artifacts, but signed-update installation is not yet verified. Or build from source in one command on macOS / Linux / WSL:</p>
       <pre class="code"><code>curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash</code></pre>
-      <p style="color:var(--text-dim);font-size:.88rem;margin-top:.8rem;">Beta builds aren't code-signed yet, so macOS Gatekeeper / Windows SmartScreen will warn on first launch — right-click → Open (macOS) or More info → Run anyway (Windows). Signing is in progress.</p>
+      <p style="color:var(--text-dim);font-size:.88rem;margin-top:.8rem;">Technical-preview builds aren't code-signed, so macOS Gatekeeper / Windows SmartScreen will warn on first launch — right-click → Open (macOS) or More info → Run anyway (Windows). Signing, notarization, and clean-machine trust evidence remain stop-ship gates for the public beta.</p>
     </section>
 
     <section class="wrap">

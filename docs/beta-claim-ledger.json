@@ -1,0 +1,1177 @@
+{
+  "schemaVersion": 1,
+  "release": {
+    "targetVersion": "v0.7.0-beta",
+    "status": "blocked",
+    "audience": "Technical early adopters, self-hosters, privacy-conscious power users, AI builders, and contributors",
+    "releaseSurface": "Desktop-first public beta; mobile is not a supported beta distribution surface",
+    "auditBaseline": {
+      "ref": "origin/main",
+      "commit": "563c60f43e461910a16f30423cbab4ce8092fb61",
+      "auditedOn": "2026-09-14"
+    },
+    "currentVersionSources": [
+      {
+        "path": "VERSION",
+        "kind": "text"
+      },
+      {
+        "path": "package.json",
+        "kind": "package-json"
+      }
+    ],
+    "readinessClaims": [
+      {
+        "claimId": "storage.desktop-crdb",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "machine"]
+      },
+      {
+        "claimId": "encryption.oauth-default",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "ci"]
+      },
+      {
+        "claimId": "encryption.twin-state-default",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "ci"]
+      },
+      {
+        "claimId": "inference.on-device-availability",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "machine"]
+      },
+      {
+        "claimId": "inference.confidential-verification",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "ci", "machine"]
+      },
+      {
+        "claimId": "network.explicit-boundaries",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "machine"]
+      },
+      {
+        "claimId": "sample.packaged-account-free",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "machine"],
+        "requiredPlatforms": ["macos", "windows", "linux"]
+      },
+      {
+        "claimId": "connectors.direct-provider-access",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "ci"]
+      },
+      {
+        "claimId": "models.verified-delivery",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "machine"]
+      },
+      {
+        "claimId": "safety.policy-and-provenance",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "ci"]
+      },
+      {
+        "claimId": "safety.explanation-coverage",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "ci"]
+      },
+      {
+        "claimId": "release.signing",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "machine"]
+      },
+      {
+        "claimId": "release.artifact-verification",
+        "critical": true,
+        "acceptedStates": ["proven"],
+        "requiredEvidenceKinds": ["source", "machine"]
+      }
+    ],
+    "platforms": [
+      {
+        "name": "macOS (Apple Silicon)",
+        "state": "candidate",
+        "minimumHardware": "Not yet verified; RAM, disk, OS-version, and latency floors must be established with the final local model artifact",
+        "evidence": "The build targets arm64 DMG/ZIP, but CI explicitly disables signing and no notarized clean-machine acceptance record exists"
+      },
+      {
+        "name": "macOS (Intel)",
+        "state": "deferred",
+        "minimumHardware": "Not established",
+        "evidence": "A build target exists, but local-model performance and signed clean-machine acceptance are unverified"
+      },
+      {
+        "name": "Windows (x64)",
+        "state": "deferred",
+        "minimumHardware": "Not established",
+        "evidence": "An NSIS build target exists, but signing, SmartScreen behavior, local-model performance, and clean-machine acceptance are unverified"
+      },
+      {
+        "name": "Linux (x64/arm64)",
+        "state": "deferred",
+        "minimumHardware": "Not established",
+        "evidence": "AppImage/deb/rpm targets exist; source-installer container checks do not prove packaged desktop acceptance or minimum hardware"
+      },
+      {
+        "name": "iOS and Android",
+        "state": "excluded",
+        "minimumHardware": "Not applicable to this desktop-first beta",
+        "evidence": "Mobile source and CI preparation exist, but the v-tag release publisher excludes Android and iOS artifacts from the desktop-first beta asset set"
+      }
+    ],
+    "deferredFeatures": [
+      "Arbitrary browser operation",
+      "Purchasing",
+      "General autonomous write routines",
+      "Hosted multi-user service",
+      "App-store mobile distribution",
+      "Remote custody of the full twin state",
+      "Federated multi-device synchronization",
+      "Third-party MCP marketplace"
+    ],
+    "stopShipConditions": [
+      {
+        "id": "claims-ci",
+        "status": "open",
+        "owner": "release-engineering",
+        "condition": "The claim ledger and deterministic stale/prohibited-claim check pass on the release commit in CI with an immutable run identifier"
+      },
+      {
+        "id": "minimum-hardware",
+        "status": "open",
+        "owner": "desktop-inference",
+        "condition": "Minimum supported OS, RAM, free-disk, architecture, and sample-loop latency are proven on the final artifact"
+      },
+      {
+        "id": "packaged-sample",
+        "status": "open",
+        "owner": "desktop-product",
+        "condition": "A production build initializes an isolated account-free sample and completes the documented loop without the development auth bypass"
+      },
+      {
+        "id": "production-key-management",
+        "status": "open",
+        "owner": "security",
+        "condition": "The agreed encryption boundary and production key lifecycle are implemented, migrated, tested, and disclosed"
+      },
+      {
+        "id": "verified-model-delivery",
+        "status": "open",
+        "owner": "desktop-inference",
+        "condition": "The recommended model has a real digest, source, license, size, compatibility metadata, resilient download, and deletion controls"
+      },
+      {
+        "id": "reasoning-mode-proof",
+        "status": "open",
+        "owner": "inference-security",
+        "condition": "On-device, verified-private, and conventional provider modes are explicit; verified-private admission remains unavailable until a production attestation-backed provider and verifier persist independently verifiable receipts"
+      },
+      {
+        "id": "signed-artifacts",
+        "status": "open",
+        "owner": "release-engineering",
+        "condition": "Every supported platform artifact satisfies its signing and notarization requirements on a clean machine"
+      },
+      {
+        "id": "artifact-evidence",
+        "status": "open",
+        "owner": "release-engineering",
+        "condition": "Every distributed artifact has SHA-256 checksums, an SBOM, build provenance/attestation, and independent verification instructions"
+      },
+      {
+        "id": "release-artifact-scope",
+        "status": "open",
+        "owner": "release-engineering",
+        "condition": "The v-tag release job distributes only platforms included in the supported beta matrix; Android and iOS simulator outputs remain excluded or separately gated"
+      },
+      {
+        "id": "release-evals",
+        "status": "open",
+        "owner": "safety-evals",
+        "condition": "A release-SHA-bound adversarial evaluation pack proves the public safety thresholds and discloses denominators, failures, and limitations"
+      },
+      {
+        "id": "beta-bake",
+        "status": "open",
+        "owner": "release-owner",
+        "condition": "The release candidate completes the invited-tester bake and all release-blocking defects are closed or explicitly mitigated"
+      }
+    ]
+  },
+  "claimSurfaces": [
+    {
+      "class": "root-public",
+      "path": "README.md"
+    },
+    {
+      "class": "root-public",
+      "path": "CHANGELOG.md"
+    },
+    {
+      "class": "root-public",
+      "path": "SECURITY.md"
+    },
+    {
+      "class": "root-public",
+      "path": "CONTRIBUTING.md"
+    },
+    {
+      "class": "root-public",
+      "path": "CLAUDE.md"
+    },
+    {
+      "class": "root-public",
+      "path": "AGENTS.md"
+    },
+    {
+      "class": "root-public",
+      "path": "CODE_OF_CONDUCT.md"
+    },
+    {
+      "class": "root-public",
+      "path": "DESIGN.md"
+    },
+    {
+      "class": "root-public",
+      "path": "TODOS.md"
+    },
+    {
+      "class": "docs-public",
+      "path": "docs",
+      "extensions": [
+        ".adoc",
+        ".css",
+        ".htm",
+        ".html",
+        ".js",
+        ".json",
+        ".md",
+        ".mdx",
+        ".mjs",
+        ".plist",
+        ".rst",
+        ".sh",
+        ".svg",
+        ".toml",
+        ".ts",
+        ".tsx",
+        ".txt",
+        ".webmanifest",
+        ".xml",
+        ".yaml",
+        ".yml"
+      ],
+      "exclude": ["docs/beta-claim-ledger.json"]
+    },
+    {
+      "class": "web-public",
+      "path": "apps/web/public",
+      "extensions": [".css", ".html", ".js", ".json", ".svg", ".webmanifest"]
+    },
+    {
+      "class": "desktop-public",
+      "path": "apps/desktop/src",
+      "extensions": [".css", ".html", ".js", ".json", ".svg", ".ts"],
+      "exclude": ["apps/desktop/src/__mocks__", "apps/desktop/src/__tests__"]
+    },
+    {
+      "class": "desktop-public",
+      "path": "apps/desktop/package.json"
+    },
+    {
+      "class": "desktop-public",
+      "path": "apps/desktop/scripts",
+      "extensions": [
+        ".html",
+        ".js",
+        ".json",
+        ".md",
+        ".plist",
+        ".sh",
+        ".ts",
+        ".txt",
+        ".xml"
+      ]
+    },
+    {
+      "class": "desktop-public",
+      "path": "apps/api/src",
+      "extensions": [".html", ".js", ".json", ".md", ".ts", ".txt"]
+    },
+    {
+      "class": "desktop-public",
+      "path": "apps/worker/src",
+      "extensions": [".html", ".js", ".json", ".md", ".ts", ".txt"]
+    },
+    {
+      "class": "desktop-public",
+      "path": "packages",
+      "extensions": [".html", ".js", ".json", ".md", ".sh", ".ts", ".tsx", ".txt"]
+    },
+    {
+      "class": "desktop-public",
+      "path": "bin",
+      "extensions": [".js", ".mjs", ".sh", ".ts", ".txt"]
+    },
+    {
+      "class": "mobile-public",
+      "path": "apps/mobile/src",
+      "extensions": [".css", ".html", ".js", ".json", ".svg", ".ts", ".tsx"],
+      "exclude": ["apps/mobile/src/__tests__"]
+    },
+    {
+      "class": "mobile-public",
+      "path": "apps/mobile/app.json"
+    },
+    {
+      "class": "mobile-public",
+      "path": "apps/mobile/package.json"
+    },
+    {
+      "class": "release-metadata",
+      "path": "package.json"
+    },
+    {
+      "class": "release-metadata",
+      "path": "VERSION"
+    },
+    {
+      "class": "release-metadata",
+      "path": "pnpm-workspace.yaml"
+    },
+    {
+      "class": "release-metadata",
+      "path": "turbo.json"
+    },
+    {
+      "class": "release-metadata",
+      "path": ".github/workflows",
+      "extensions": [".yaml", ".yml"]
+    },
+    {
+      "class": "release-metadata",
+      "path": ".github/scripts",
+      "extensions": [".md", ".sh", ".txt", ".yaml", ".yml"]
+    },
+    {
+      "class": "release-metadata",
+      "path": ".github/dependabot.yml"
+    },
+    {
+      "class": "release-templates",
+      "path": ".github/PULL_REQUEST_TEMPLATE.md"
+    },
+    {
+      "class": "release-templates",
+      "path": ".github/ISSUE_TEMPLATE",
+      "extensions": [".md", ".yml", ".yaml"]
+    }
+  ],
+  "staleAssets": [
+    {
+      "id": "approvals-pre-claim-audit",
+      "path": "docs/screenshots/approvals.png",
+      "state": "prohibited",
+      "sha256": "39d97b021f527b1b8aed3e444c1c43b134369db021d3bc1acfcb19ee7c0260a1",
+      "reason": "This historical capture contains release copy that does not satisfy the current claim boundary; it must not be embedded publicly until replaced and re-audited."
+    },
+    {
+      "id": "briefing-pre-claim-audit",
+      "path": "docs/screenshots/briefing.png",
+      "state": "prohibited",
+      "sha256": "591f9145a8be3f5c3fab27386ad70e0da6c75019f6458e8377bf70c32a9f6931",
+      "reason": "This historical capture contains release copy that does not satisfy the current claim boundary; it must not be embedded publicly until replaced and re-audited."
+    },
+    {
+      "id": "dashboard-pre-claim-audit",
+      "path": "docs/screenshots/dashboard.png",
+      "state": "prohibited",
+      "sha256": "ac3c68686e4d223eed38c31a5b99c158e88bdcbd7e19f77878de83fc2a8d254b",
+      "reason": "This historical capture includes a packaged sample-profile assertion that is not true of the current beta artifact and must not be embedded publicly."
+    },
+    {
+      "id": "decisions-pre-claim-audit",
+      "path": "docs/screenshots/decisions.png",
+      "state": "prohibited",
+      "sha256": "67a0d595da153bd7f1effe86c5147a2af7fd9a61f0378f6adad30a7e285c378e",
+      "reason": "This historical capture contains an unproven universal explanation-coverage assertion and must not be embedded publicly."
+    },
+    {
+      "id": "onboarding-pre-claim-audit",
+      "path": "docs/screenshots/onboarding.png",
+      "state": "prohibited",
+      "sha256": "25081687e85f30dc71e14a8ad530e8e819ba072698ab304503125a3fad5b713b",
+      "reason": "This historical capture contains release copy that does not satisfy the current claim boundary; it must not be embedded publicly until replaced and re-audited."
+    },
+    {
+      "id": "settings-pre-claim-audit",
+      "path": "docs/screenshots/settings.png",
+      "state": "prohibited",
+      "sha256": "93e2d66e98c268f81865abff379531dcc484dd4f6a80ea3c8c51f438ca58b212",
+      "reason": "This historical capture contains release copy that does not satisfy the current claim boundary; it must not be embedded publicly until replaced and re-audited."
+    },
+    {
+      "id": "setup-pre-claim-audit",
+      "path": "docs/screenshots/setup.png",
+      "state": "prohibited",
+      "sha256": "51216f50224c7f01d6acd8d6cdfc9203e5a39fccba5855a6c901c9a840a1cc4d",
+      "reason": "This historical capture contains release copy that does not satisfy the current claim boundary; it must not be embedded publicly until replaced and re-audited."
+    },
+    {
+      "id": "twin-pre-claim-audit",
+      "path": "docs/screenshots/twin.png",
+      "state": "prohibited",
+      "sha256": "e53fd86bf5d74c397866dfd8ba70c0a085294402ce186477cacdc260539d9dfb",
+      "reason": "This historical capture contains release copy that does not satisfy the current claim boundary; it must not be embedded publicly until replaced and re-audited."
+    }
+  ],
+  "publicBinaryAssets": [
+    {
+      "path": "apps/desktop/assets/icon.icns",
+      "sha256": "d3717bc93cd429ed28562365b214157673a55f83f755b444b6e1e3dd47e83982",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "apps/desktop/assets/icon.ico",
+      "sha256": "55874d598e2ea907ac644a450a9f1a1083806857fc1b8cbca5a3cf00a5a35790",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "apps/desktop/assets/icons/256x256.png",
+      "sha256": "10b6dcc147d91f72bd6cfae0026f7c8c710b2a7a746e3be23e982eb52a561480",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "apps/desktop/assets/icons/512x512.png",
+      "sha256": "0f16c2f036885e9b38a68cc8fbb9b3918af1133ceffb572b260ad89fcdb48e65",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "apps/mobile/assets/adaptive-icon.png",
+      "sha256": "a4d4d3fe96557ad8dc6208e0cef6d6369aa3337f82c62186d7cdf6419218418b",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "apps/mobile/assets/icon.png",
+      "sha256": "a4d4d3fe96557ad8dc6208e0cef6d6369aa3337f82c62186d7cdf6419218418b",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "apps/mobile/assets/notification-icon.png",
+      "sha256": "a4d4d3fe96557ad8dc6208e0cef6d6369aa3337f82c62186d7cdf6419218418b",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "apps/mobile/assets/splash.png",
+      "sha256": "5588814424f5655372944a711bb59e5a58e18ef8adef5571372ee407115e3c5a",
+      "ocrDisposition": "reviewed-no-text"
+    },
+    {
+      "path": "docs/screenshots/approvals.png",
+      "sha256": "39d97b021f527b1b8aed3e444c1c43b134369db021d3bc1acfcb19ee7c0260a1",
+      "ocrDisposition": "prohibited-stale"
+    },
+    {
+      "path": "docs/screenshots/briefing.png",
+      "sha256": "591f9145a8be3f5c3fab27386ad70e0da6c75019f6458e8377bf70c32a9f6931",
+      "ocrDisposition": "prohibited-stale"
+    },
+    {
+      "path": "docs/screenshots/dashboard.png",
+      "sha256": "ac3c68686e4d223eed38c31a5b99c158e88bdcbd7e19f77878de83fc2a8d254b",
+      "ocrDisposition": "prohibited-stale"
+    },
+    {
+      "path": "docs/screenshots/decisions.png",
+      "sha256": "67a0d595da153bd7f1effe86c5147a2af7fd9a61f0378f6adad30a7e285c378e",
+      "ocrDisposition": "prohibited-stale"
+    },
+    {
+      "path": "docs/screenshots/onboarding.png",
+      "sha256": "25081687e85f30dc71e14a8ad530e8e819ba072698ab304503125a3fad5b713b",
+      "ocrDisposition": "prohibited-stale"
+    },
+    {
+      "path": "docs/screenshots/settings.png",
+      "sha256": "93e2d66e98c268f81865abff379531dcc484dd4f6a80ea3c8c51f438ca58b212",
+      "ocrDisposition": "prohibited-stale"
+    },
+    {
+      "path": "docs/screenshots/setup.png",
+      "sha256": "51216f50224c7f01d6acd8d6cdfc9203e5a39fccba5855a6c901c9a840a1cc4d",
+      "ocrDisposition": "prohibited-stale"
+    },
+    {
+      "path": "docs/screenshots/twin.png",
+      "sha256": "e53fd86bf5d74c397866dfd8ba70c0a085294402ce186477cacdc260539d9dfb",
+      "ocrDisposition": "prohibited-stale"
+    }
+  ],
+  "binaryAssetAudit": {
+    "reviewedOn": "2026-09-10",
+    "method": "Tesseract OCR plus human inspection at each recorded SHA-256; any byte change requires a new review",
+    "scope": "Repository-owned visual binaries under docs, apps/web/public, apps/desktop/assets, and apps/mobile/assets. SVG is treated as text and scanned with the other public claim surfaces."
+  },
+  "prohibitedClaims": [
+    {
+      "id": "absolute-local-product",
+      "pattern": "SkyTwin\\s+(?:runs|operates)\\s+(?:entirely|fully|only)\\s+(?:locally|on(?:\\s+your|\\s+this)?\\s+(?:computer|machine|device))",
+      "flags": "i",
+      "reason": "Persistent storage, reasoning location, and network activity are different boundaries"
+    },
+    {
+      "id": "absolute-no-operated-service",
+      "pattern": "(?:there is no SkyTwin (?:server|cloud)|no SkyTwin (?:server|cloud)(?: exists)?|nothing is sent to a SkyTwin cloud(?:, because there (?:isn't|is not) one)?|because there (?:isn't|is not) (?:a |one )?(?:server|cloud))",
+      "flags": "i",
+      "reason": "The release must describe the current persistence and network topology by feature instead of making an unbounded operator claim"
+    },
+    {
+      "id": "absolute-server-transfer",
+      "pattern": "(?:no (?:Google |Microsoft )?(?:user )?data[^.]{0,120}(?:is )?ever (?:gets )?sent to (?:the )?(?:SkyTwin developers|(?:our|SkyTwin(?:-operated)?) servers?)|no (?:derived twin data|message or calendar content|signal or memory content|twin profile data)[^.]{0,80}(?:is |are )?ever sent to (?:the )?(?:SkyTwin developers|(?:our|SkyTwin(?:-operated)?) servers?)|crash reports? (?:carry|contain|include)(?:s)? no (?:Google |Microsoft )?user data|we cannot sell user data[^.]{0,60}we (?:do not|don't) possess it|SkyTwin development team has no operational mechanism to read (?:your )?(?:(?:Google|Microsoft)(?: or (?:Google|Microsoft))? )?user data)",
+      "flags": "i",
+      "reason": "Crash reporting and future operator topology require explicit, feature-scoped disclosure"
+    },
+    {
+      "id": "nothing-to-install",
+      "pattern": "nothing (?:else )?to install",
+      "flags": "i",
+      "reason": "The current on-device model path requires a compatible runtime and model"
+    },
+    {
+      "id": "absolute-device-egress",
+      "pattern": "(?:nothing|no data) (?:ever )?leaves (?:the user's|the|this|your) (?:computer|machine|device)",
+      "flags": "i",
+      "reason": "Connectors, configured hosted providers, update checks, downloads, and opt-in diagnostics use the network"
+    },
+    {
+      "id": "absolute-user-data-egress",
+      "pattern": "(?:(?:all|your|user) data (?:stays|remains)(?: only)? on (?:the|this|your) (?:device|computer|machine)|(?:your|user) data (?:(?:never|does not|doesn't) leave(?:s)? (?:the|this|your) (?:device|computer|machine)))",
+      "flags": "i",
+      "reason": "Only a specifically identified on-device reasoning prompt can carry this scoped guarantee"
+    },
+    {
+      "id": "absolute-percent-local",
+      "pattern": "SkyTwin is 100% local",
+      "flags": "i",
+      "reason": "A percentage claim collapses distinct storage, inference, connector, update, and diagnostics boundaries"
+    },
+    {
+      "id": "oauth-encryption-present-tense",
+      "pattern": "OAuth (?:tokens|credentials) are (?:protected with |secured by )?(?:encryption|encrypted) at rest",
+      "flags": "i",
+      "reason": "OAuth token storage is mixed: callbacks use plaintext only before vault initialization; a matching unlocked API vault encrypts new and reconnected grants, while worker key handoff remains unavailable"
+    },
+    {
+      "id": "credential-save-encrypted",
+      "pattern": "Saved encrypted in your local SkyTwin database",
+      "flags": "i",
+      "reason": "The Google OAuth client-credential form stores its client secret without app-level encryption; OAuth token-secret storage is a separate vault-state-dependent path"
+    },
+    {
+      "id": "bundled-default-model",
+      "pattern": "(?:embedded llama\\.cpp (?:model|runtime|provider) is the default LLM|default (?:install|installation) uses (?:the )?embedded llama\\.cpp (?:model|runtime|provider))",
+      "flags": "i",
+      "reason": "The current desktop bundle does not ship a verified GGUF model"
+    },
+    {
+      "id": "stale-launch-ready",
+      "pattern": "launch-ready on the engineering side",
+      "flags": "i",
+      "reason": "The beta contract has unresolved code and evidence gates"
+    },
+    {
+      "id": "stale-all-code-shipped",
+      "pattern": "every code-writable launch criterion has shipped",
+      "flags": "i",
+      "reason": "The beta contract includes unresolved implementation work"
+    },
+    {
+      "id": "absolute-no-server-path",
+      "pattern": "no server anywhere in the path",
+      "flags": "i",
+      "reason": "Connected services and configured hosted providers are network participants"
+    },
+    {
+      "id": "packaged-sample-shipped",
+      "pattern": "packaged (?:builds?|installers?|artifacts?) (?:ship|include|offer)s? (?:an? |the )?(?:account-free |fully populated )?sample",
+      "flags": "i",
+      "reason": "Current source contains a guarded packaged sample path, but no published artifact or tagged clean-machine evidence proves that path"
+    },
+    {
+      "id": "supported-installer-available",
+      "pattern": "(?:(?:get|download) (?:the )?supported (?:public-?)?beta installer|supported public-beta installers? (?:(?:is|are) )?(?:available|shipping|published))",
+      "flags": "i",
+      "reason": "No platform can be advertised as supported until signing and clean-machine evidence pass"
+    },
+    {
+      "id": "desktop-beta-download",
+      "pattern": "Download desktop beta",
+      "flags": "i",
+      "reason": "Current release assets are technical previews, not supported beta artifacts"
+    },
+    {
+      "id": "packaged-sample-account-free",
+      "pattern": "No account or inbox needed[ —-]+explore with a sample profile",
+      "flags": "i",
+      "reason": "Published installers predate the guarded packaged sample path in current source, and tagged clean-machine evidence is absent"
+    },
+    {
+      "id": "unverified-self-update",
+      "pattern": "The app keeps itself current",
+      "flags": "i",
+      "reason": "The signed update path has not been verified end to end"
+    },
+    {
+      "id": "local-mode-availability",
+      "pattern": "Smart \\(free, on-device\\)",
+      "flags": "i",
+      "reason": "Selecting an embedded provider does not prove that its binary and model are installed"
+    },
+    {
+      "id": "offline-mode-availability",
+      "pattern": "No API costs, runs offline",
+      "flags": "i",
+      "reason": "Offline model-backed reasoning requires an installed and verified local runtime and model"
+    },
+    {
+      "id": "implicit-local-model",
+      "pattern": "Your twin runs on the local AI on this machine plus built-in rules",
+      "flags": "i",
+      "reason": "An empty provider list does not prove a usable local model is installed"
+    },
+    {
+      "id": "unverified-private-model-availability",
+      "pattern": "(?:your AI runs privately on (?:this|your) (?:computer|machine|device)|private on-device AI is included)",
+      "flags": "i",
+      "reason": "A model recommendation does not establish runtime/model availability or the boundary of every networked feature"
+    },
+    {
+      "id": "idle-miner-zero-egress",
+      "pattern": "never uploads your data",
+      "flags": "i",
+      "reason": "Later inference may send selected metadata to a hosted provider the user configured"
+    },
+    {
+      "id": "unproven-confidential-mode",
+      "pattern": "confidential (?:inference|reasoning|AI) (?:is |comes )?(?:available|supported|enabled|ready|verified)",
+      "flags": "i",
+      "reason": "Signed receipt primitives exist, but no production attestation-backed provider, pinned provider and recorder trust roots, provider-specific verification policy, or product receipt export path is wired"
+    },
+    {
+      "id": "unproven-universal-explanations",
+      "pattern": "(?:(?:every|each) (?:automated )?(?:path(?: through (?:this|the) loop)?|outcome|action|decision|call) (?:produces? (?:an? )?(?:explanation|explanation record|record)|has (?:an? )?explanation|is explained)|(?:explanation record generation|ExplanationRecord[^.!?]{0,40}persisted) for every (?:action|decision)|(?:filterable |running )?log of every (?:call|decision)(?: with reasoning)?)",
+      "flags": "i",
+      "reason": "Explanation types and supported-path records exist, but release-wide coverage has not been proven"
+    }
+  ],
+  "approvedStatements": [
+    {
+      "id": "readme-release-status",
+      "path": "README.md",
+      "exact": "SkyTwin is preparing a desktop-first `v0.7.0-beta`. It is **not release-ready**:"
+    },
+    {
+      "id": "privacy-storage-boundary",
+      "path": "docs/privacy.html",
+      "exact": "SkyTwin keeps its persistent application database on the device where you install it."
+    },
+    {
+      "id": "privacy-encryption-boundary",
+      "path": "docs/privacy.html",
+      "exact": "OAuth-token storage is mixed and depends on vault state, while your twin profile, preferences, memory, receipts, and search indexes remain unencrypted by SkyTwin."
+    },
+    {
+      "id": "onboarding-reasoning-boundary",
+      "path": "apps/web/public/js/pages/onboarding.js",
+      "exact": "Checking which maintained local model fits this computer…"
+    },
+    {
+      "id": "onboarding-idle-miner-boundary",
+      "path": "apps/web/public/js/pages/onboarding.js",
+      "exact": "later capability inference may send selected metadata to that provider."
+    },
+    {
+      "id": "settings-memory-boundary",
+      "path": "apps/web/public/js/pages/settings.js",
+      "exact": "Your twin's persistent memory is stored in SkyTwin's configured database;"
+    },
+    {
+      "id": "settings-model-availability-boundary",
+      "path": "apps/web/public/js/pages/settings.js",
+      "exact": "No model provider configured. Built-in rules remain available; on-device model reasoning requires a compatible local runtime and model."
+    },
+    {
+      "id": "gmail-credential-boundary",
+      "path": "apps/web/public/js/pages/connect-gmail.js",
+      "exact": "Stored without app-level encryption in SkyTwin's configured database"
+    },
+    {
+      "id": "dashboard-reasoning-boundary",
+      "path": "apps/web/public/js/pages/dashboard.js",
+      "exact": "keeps the reasoning prompt on this device"
+    },
+    {
+      "id": "landing-artifact-boundary",
+      "path": "docs/index.html",
+      "exact": "Download technical preview"
+    },
+    {
+      "id": "landing-sample-boundary",
+      "path": "docs/index.html",
+      "exact": "Published installers predate the guarded account-free sample now in source."
+    },
+    {
+      "id": "landing-update-boundary",
+      "path": "docs/index.html",
+      "exact": "signed-update installation is not yet verified"
+    },
+    {
+      "id": "artifact-signing-boundary",
+      "path": ".github/workflows/build.yml",
+      "exact": "CSC_IDENTITY_AUTO_DISCOVERY: 'false'"
+    },
+    {
+      "id": "all-release-tags-gated",
+      "path": ".github/workflows/build.yml",
+      "exact": "pnpm claims:check -- --require-ready --preflight --tag \"${GITHUB_REF_NAME}\" --commit \"${GITHUB_SHA}\" --repository \"${GITHUB_REPOSITORY}\" --run-id \"${GITHUB_RUN_ID}\" --ref \"${GITHUB_REF}\""
+    },
+    {
+      "id": "all-release-tag-condition",
+      "path": ".github/workflows/build.yml",
+      "exact": "if [[ \"${GITHUB_REF_TYPE}\" == \"tag\" && \"${GITHUB_REF_NAME}\" == v* ]]; then"
+    },
+    {
+      "id": "post-build-release-evidence-gate",
+      "path": ".github/workflows/build.yml",
+      "exact": "--evidence-manifest .release-evidence/manifest.json"
+    },
+    {
+      "id": "external-release-evidence-manifest",
+      "path": ".github/workflows/build.yml",
+      "exact": "node scripts/release-claims/generate-evidence-manifest.mjs"
+    }
+  ],
+  "claims": [
+    {
+      "id": "license.apache-2",
+      "category": "open-source",
+      "statement": "The repository source is available under Apache License 2.0.",
+      "scope": "Source in this repository at the audited revision; third-party components and model artifacts retain their own licenses.",
+      "owner": "maintainers",
+      "state": "proven",
+      "limitation": "",
+      "evidence": [
+        {
+          "path": "LICENSE",
+          "sha256": "2401e95050d741368209e195c5fdccbf378bde01192ebbad046dbaff5980f409",
+          "why": "Repository license text"
+        },
+        {
+          "path": "package.json",
+          "sha256": "b9451bd03536314121309f7204d2a84846da2268b35e49820a64a98d1d880405",
+          "why": "Root release metadata names Apache-2.0"
+        }
+      ],
+      "verification": [
+        {
+          "command": "rg -n -- '\"license\": \"Apache-2.0\"' package.json",
+          "expected": "Exit 0 and LICENSE remains the Apache 2.0 text"
+        }
+      ]
+    },
+    {
+      "id": "storage.desktop-crdb",
+      "category": "local-storage",
+      "statement": "The packaged desktop process stores its CockroachDB files under the OS user-data directory and binds the database listener to loopback by default.",
+      "scope": "SkyTwin's persistent application database in the desktop topology; this does not mean connectors or configured providers avoid network requests, and it does not assert application-level encryption.",
+      "owner": "desktop-runtime",
+      "state": "limited",
+      "limitation": "Source evidence exists, but the final tagged artifact still needs clean-machine filesystem and listener verification on each supported platform.",
+      "evidence": [
+        {
+          "path": "apps/desktop/src/cockroach-manager.ts",
+          "sha256": "2bec8ca9ee01e906194726c6c64de2d5eb0683ae0168be3eb13e10df571c7f41",
+          "why": "Defines userData/crdb-data and 127.0.0.1 listener defaults"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter skytwin-desktop test -- src/__tests__/cockroach-manager.test.ts",
+          "expected": "Desktop Cockroach manager path, lifecycle, and listener tests pass"
+        }
+      ]
+    },
+    {
+      "id": "encryption.oauth-default",
+      "category": "encryption",
+      "statement": "OAuth tokens are encrypted at rest by default in the shipping app.",
+      "scope": "New and existing Google/Microsoft OAuth token rows across API and worker processes.",
+      "owner": "security",
+      "state": "prohibited",
+      "limitation": "Storage depends on vault state: without an initialized vault, callbacks retain plaintext tokens; an unlocked matching API vault encrypts new grants and can migrate complete legacy pairs on authorized use; a locked or stale initialized vault refuses new writes instead of downgrading. Worker key delivery is still unavailable, so this blanket claim must not appear in release copy.",
+      "evidence": [
+        {
+          "path": "packages/db/src/repositories/oauth-repository.ts",
+          "sha256": "30c1c829cc81be9865a9c15998c9b6f4d86637258be6b5fb1cd10ef951b42658",
+          "why": "The production repository supports ciphertext plus legacy plaintext columns, with encryption selected by the API vault state"
+        },
+        {
+          "path": "apps/worker/src/index.ts",
+          "sha256": "8a70ae0d3136ad5132561ff30b607698e3840dd8ce56497c40fba757d84530c9",
+          "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter @skytwin/connectors test -- src/__tests__/db-token-store-vault.test.ts",
+          "expected": "Vault primitive and lazy-migration tests pass; this does not upgrade the prohibited release claim"
+        },
+        {
+          "command": "rg -n -- \"saveTokenForAccount|access_token, refresh_token\" apps/api/src/routes/oauth.ts packages/db/src/repositories/oauth-repository.ts",
+          "expected": "The release reviewer confirms the active grant path and updates this state only after encrypted writes are proven"
+        }
+      ]
+    },
+    {
+      "id": "encryption.twin-state-default",
+      "category": "encryption",
+      "statement": "Twin profiles, learned preferences, memory text, full-text indexes, and embeddings are encrypted at rest by SkyTwin.",
+      "scope": "The production database columns and searchable derivatives used by the default gbrain memory backend.",
+      "owner": "security",
+      "state": "prohibited",
+      "limitation": "Encryption columns/helpers exist, but the production preference key provider is unset and the profile/memory write paths remain plaintext; searchable derivatives also require an explicit design boundary.",
+      "evidence": [
+        {
+          "path": "packages/db/src/adapters/twin-repository-adapter.ts",
+          "sha256": "ef51d3318aa3a1a2951e6014e3f488ed454112a8341f536ba79d4c7ddad37066",
+          "why": "Preference encryption is conditional on a provider that production does not set"
+        },
+        {
+          "path": "packages/memory-gbrain-crdb-adapter/src/repository.ts",
+          "sha256": "10dd3cebf660656a8f22a6ff456f8e8a83252bd492fa997153a3adeffffca619",
+          "why": "Default memory repository writes searchable plaintext and vectors"
+        }
+      ],
+      "verification": [
+        {
+          "command": "rg -n -- \"setPreferenceVaultKeyProvider\" apps packages",
+          "expected": "No production composition-root caller exists until the encryption work changes this claim"
+        },
+        {
+          "command": "pnpm --filter @skytwin/db test -- src/__tests__/preferences-vault.test.ts",
+          "expected": "Conditional crypto tests pass; production activation remains a separate stop-ship requirement"
+        }
+      ]
+    },
+    {
+      "id": "inference.on-device-availability",
+      "category": "inference",
+      "statement": "SkyTwin can perform text inference on-device through llama.cpp when a compatible binary and GGUF model are present.",
+      "scope": "Persisted on-device mode for decision-event text inference: an available embedded backend or a canonical loopback Ollama endpoint. It does not cover model acquisition, connectors, updates, or other application network activity.",
+      "owner": "inference-runtime",
+      "state": "limited",
+      "limitation": "Embedded inference requires its binary and compatible model; Ollama requires a supported local runtime, a local-source-qualified model, loopback endpoint, no redirects, and runtime locality verification. Tagged packaged-machine evidence is still absent, so this is not a whole-app offline claim.",
+      "evidence": [
+        {
+          "path": "apps/api/src/lib/llm-client-factory.ts",
+          "sha256": "dfcb0fffe3037788866274dfe2b1be16d623bf5de9d89babfd36bd184b95965f",
+          "why": "Composes the persisted mode and admits embedded or locality-verified loopback Ollama only when their prerequisites pass"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter @skytwin/api test -- src/__tests__/llm-client-factory.test.ts",
+          "expected": "Availability gates and local/cloud ordering tests pass"
+        },
+        {
+          "command": "pnpm --filter @skytwin/embedded-llm test -- src/__tests__/runtime-detector.test.ts",
+          "expected": "Missing binary/model cases fail to the unavailable port"
+        }
+      ]
+    },
+    {
+      "id": "inference.confidential-verification",
+      "category": "inference",
+      "statement": "SkyTwin offers attestation-verified confidential inference with independently verifiable receipts.",
+      "scope": "Remote inference requests, endpoint/model identity, attestation freshness, request/response binding, persisted receipts, and fail-closed fallback behavior.",
+      "owner": "inference-security",
+      "state": "deferred",
+      "limitation": "Typed signed receipts, persistence, integrity verification, and atomic decision-event capture exist. Verified-private mode remains unavailable because no production attestation-backed provider adapter, pinned provider and recorder trust roots, provider-specific verification policy, or product receipt export path is wired.",
+      "evidence": [
+        {
+          "path": "packages/llm-client/src/index.ts",
+          "sha256": "850fe9f8f9c60901988326784ebfce6e805b78248d3154eb77cd774b26fcb420",
+          "why": "Exports provider modes and receipt emission primitives, while verified-private client construction remains unavailable"
+        },
+        {
+          "path": "packages/shared-types/src/index.ts",
+          "sha256": "a54d5e69a755a11479970eeb9b535447e219f3a8b22be7f122f41d3be11f17a4",
+          "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
+        }
+      ],
+      "verification": [
+        {
+          "command": "rg -n -- \"InferenceReceipt|attestation|confidential inference\" packages apps",
+          "expected": "Receipt primitives are present, while no production verified-private provider or attestation policy is admitted"
+        }
+      ]
+    },
+    {
+      "id": "network.explicit-boundaries",
+      "category": "network-use",
+      "statement": "SkyTwin is local-first, not network-free: connected services, hosted providers, configured execution adapters, paired federation peers, model/runtime downloads, release checks, and opt-in crash reporting may create outbound requests.",
+      "scope": "Desktop and its managed API/web/worker processes; bring-your-own-provider Ollama can be remote, execution adapters can receive action descriptions and parameters, and federation can exchange encrypted state deltas with configured peers. Only on-device Ollama is constrained to verified loopback/local execution. Exact destinations depend on enabled features and operator configuration.",
+      "owner": "privacy",
+      "state": "limited",
+      "limitation": "A release artifact still needs a measured network inventory and offline test tied to its SHA; local-first must never be shortened to no-cloud or no-network.",
+      "evidence": [
+        {
+          "path": "docs/privacy.html",
+          "sha256": "6dc6db88771542a5a733b713e5be5834334e5891b77cd4db8e6feb9f854f15a9",
+          "why": "Public disclosure names connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
+        },
+        {
+          "path": "apps/api/src/lib/llm-client-factory.ts",
+          "sha256": "dfcb0fffe3037788866274dfe2b1be16d623bf5de9d89babfd36bd184b95965f",
+          "why": "Provider factory permits hosted providers only when configured and defines local-first ordering"
+        },
+        {
+          "path": "packages/execution-router/src/openclaw-adapter.ts",
+          "sha256": "6817cc800806c6739729b50550161455307d953494ade7b071164e8735026171",
+          "why": "Configured HTTP execution sends action descriptions, parameters, and steps to the adapter endpoint"
+        },
+        {
+          "path": "packages/ironclaw-adapter/src/ironclaw-http-client.ts",
+          "sha256": "c504f5ab1203ed4891c478743ec54f205692d31388231d9600e10c6a563b968a",
+          "why": "Configured IronClaw HTTP calls and credential synchronization cross the process boundary"
+        },
+        {
+          "path": "apps/worker/src/jobs/federation-sync.ts",
+          "sha256": "51f1fe3cb78088a8d25ae7d82709df5f4e492a670b599ef1c14f474e4fa0d85b",
+          "why": "Federation sync encrypts state deltas and posts them to configured peer endpoints"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm claims:check",
+          "expected": "Absolute no-network/no-egress phrases are absent from release-facing surfaces"
+        }
+      ]
+    },
+    {
+      "id": "sample.packaged-account-free",
+      "category": "sample-mode",
+      "statement": "A packaged production build offers an account-free, isolated sample session without enabling the development authentication bypass.",
+      "scope": "Clean packaged desktop install, reserved sample identity, synthetic data, read/write simulation, reset, and cross-user isolation.",
+      "owner": "desktop-product",
+      "state": "limited",
+      "limitation": "The guarded packaged sample path and isolated reserved identity exist in source, but no tagged clean-machine evidence yet proves the complete sample loop on macOS, Windows, and Linux.",
+      "evidence": [
+        {
+          "path": "packages/db/src/seeds/demo-guard.ts",
+          "sha256": "dd405005c2587828444b7436b14958e70d830dfff57855a58f1380e53f5b68e2",
+          "why": "Defines the isolated synthetic sample identity and guarded fixture lifecycle"
+        },
+        {
+          "path": "apps/api/src/routes/demo.ts",
+          "sha256": "1a88bd8d454109d61b12a6f657f1d19644329a4737194d39497124f8d80a90ea",
+          "why": "Exposes packaged sample availability without enabling the development authentication bypass"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter @skytwin/db test -- src/__tests__/demo-guard.test.ts src/__tests__/demo-fixture.test.ts",
+          "expected": "Sample fixture identity, reset, and isolation behavior pass"
+        },
+        {
+          "command": "pnpm --filter @skytwin/api test -- src/__tests__/demo-routes.test.ts",
+          "expected": "Route tests prove the guarded packaged sample behavior"
+        }
+      ]
+    },
+    {
+      "id": "connectors.direct-provider-access",
+      "category": "connectors",
+      "statement": "Google and Microsoft connectors call the providers' APIs directly from the SkyTwin runtime using scopes authorized by the user.",
+      "scope": "Implemented Gmail, Google Calendar, Outlook Mail, and Outlook Calendar connectors; data still crosses the network to the applicable provider.",
+      "owner": "connectors",
+      "state": "limited",
+      "limitation": "OAuth configuration, provider availability, granted scopes, and external verification determine which connector operations work in a release artifact.",
+      "evidence": [
+        {
+          "path": "packages/connectors/src/oauth/google-oauth.ts",
+          "sha256": "73d3b2e892538e9c3cde5d4594571579203eb7db41c3e2695ef856cdc9746aa1",
+          "why": "Google OAuth endpoints and token exchange"
+        },
+        {
+          "path": "packages/connectors/src/oauth/microsoft-oauth.ts",
+          "sha256": "bd55b712035df68e9238b34cead93d87df338a7c98327feae501453aee6cb70e",
+          "why": "Microsoft OAuth endpoints and token exchange"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter @skytwin/connectors test",
+          "expected": "Connector OAuth, provider routing, token-store, and ingestion unit tests pass"
+        }
+      ]
+    },
+    {
+      "id": "models.verified-delivery",
+      "category": "model-delivery",
+      "statement": "The desktop can download a maintained, license-disclosed local model and verify it against a real published digest.",
+      "scope": "Every model recommended to a beta user, including source, digest, bytes, license, compatibility, interruption recovery, disk checks, and deletion/replacement.",
+      "owner": "desktop-inference",
+      "state": "limited",
+      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. Tagged clean-machine delivery and final artifact evidence are still absent.",
+      "evidence": [
+        {
+          "path": "packages/embedded-llm/src/model-registry.ts",
+          "sha256": "d6c45d4d75bd03110a9b141762a457db227bd541d924c522299371d846ae0b8d",
+          "why": "The maintained registry pins model source, digest, size, license, compatibility, and lifecycle metadata"
+        },
+        {
+          "path": "apps/desktop/scripts/build-single-binary.sh",
+          "sha256": "df9b6d0b7a55cc2feab93c9a6513e0c09e64f86ee26430bce07dc722e8133707",
+          "why": "Desktop bundling downloads and verifies CockroachDB, not a GGUF model"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter @skytwin/embedded-llm test -- src/__tests__/model-registry.test.ts",
+          "expected": "Registry integrity, compatibility, lifecycle, and real-digest tests pass"
+        },
+        {
+          "command": "pnpm --filter @skytwin/embedded-llm test -- src/__tests__/managed-model-store.test.ts src/__tests__/runtime-compatibility.test.ts",
+          "expected": "Managed download, deletion, and runtime compatibility controls pass"
+        }
+      ]
+    },
+    {
+      "id": "safety.policy-and-provenance",
+      "category": "action-safety",
+      "statement": "Candidate actions evaluated by the policy engine are subject to trust, spend, policy, and provenance gates; the execution router independently blocks unsafe untrusted-origin execution shapes.",
+      "scope": "Typed CandidateAction paths through PolicyEvaluator and ExecutionRouter. This does not prove that every API, worker, routine, or future adapter entry path is represented until the release-SHA eval inventory does so.",
+      "owner": "safety",
+      "state": "proven",
+      "limitation": "",
+      "evidence": [
+        {
+          "path": "packages/policy-engine/src/policy-evaluator.ts",
+          "sha256": "e18f9efb0a20bdc40a1d43344d76e4ea4cc94bdf8a08bf789e9a6243b3621dbb",
+          "why": "Primary policy, trust, spend, pause, and injection-guard evaluation"
+        },
+        {
+          "path": "packages/execution-router/src/execution-router.ts",
+          "sha256": "56668a9812feccfeb21092706351f6bcf0441bc765ba676d9036e525039ec356",
+          "why": "Independent provenance/severity backstop before adapter execution"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter @skytwin/policy-engine test",
+          "expected": "Policy, trust, spend, pause, and injection-guard tests pass"
+        },
+        {
+          "command": "pnpm --filter @skytwin/execution-router test -- src/__tests__/injection-guard-backstop.test.ts",
+          "expected": "Execution-router backstop tests pass"
+        }
+      ]
+    },
+    {
+      "id": "safety.explanation-coverage",
+      "category": "action-safety",
+      "statement": "Every consequential action and deliberate non-action in the beta workflow has a complete, persisted ExplanationRecord.",
+      "scope": "All release-supported API, worker, routine, connector, and adapter outcomes, including failures, blocks, and no-action decisions.",
+      "owner": "explanations",
+      "state": "limited",
+      "limitation": "Explanation types and generators exist, but a release-SHA-bound entry-path inventory and completeness evaluation have not yet proven universal coverage.",
+      "evidence": [
+        {
+          "path": "packages/explanations/src/index.ts",
+          "sha256": "42c87bd6034cc2400f4ab69895d1f3dd6873a360eab94d0eb6ebdbce396baa48",
+          "why": "Explanation generation package exports"
+        },
+        {
+          "path": "packages/shared-types/src/explanation.ts",
+          "sha256": "8a0bc0d37e5e68f89309ff357e1e6d4f56b4db81442d23f879ec77f545804de4",
+          "why": "Typed ExplanationRecord contract"
+        }
+      ],
+      "verification": [
+        {
+          "command": "pnpm --filter @skytwin/explanations test",
+          "expected": "Explanation generation tests pass; universal release coverage remains open"
+        }
+      ]
+    },
+    {
+      "id": "release.signing",
+      "category": "signing",
+      "statement": "Public beta installers are signed, macOS is notarized, and clean-machine OS trust checks pass.",
+      "scope": "Every artifact named in the beta platform support matrix, built from the release tag.",
+      "owner": "release-engineering",
+      "state": "deferred",
+      "limitation": "CI explicitly disables automatic signing and produces no notarization evidence; the gated tag workflow therefore refuses draft creation until digest-bound signing evidence proves every supported artifact.",
+      "evidence": [
+        {
+          "path": ".github/workflows/build.yml",
+          "sha256": "f0902b60299f008bfc0bdbc2f3cb8cf0d278f17a1b98beff19b45dbfdbd2fee1",
+          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
+        },
+        {
+          "path": "apps/desktop/package.json",
+          "sha256": "2213903341f081ccdce93f1ed497cbe89579ffced6691db287e40d97c834c21e",
+          "why": "Defines the current platform build targets and publishing metadata"
+        }
+      ],
+      "verification": [
+        {
+          "command": "rg -n -- \"CSC_IDENTITY_AUTO_DISCOVERY: 'false'|notar\" .github/workflows/build.yml apps/desktop/scripts/sign-and-notarize.ts",
+          "expected": "Release review continues to show unsigned CI artifacts until credentialed signing and notarization are wired"
+        }
+      ]
+    },
+    {
+      "id": "release.artifact-verification",
+      "category": "artifact-verification",
+      "statement": "Every public beta artifact ships with a SHA-256 checksum, SBOM, build provenance/attestation, and independent verification instructions.",
+      "scope": "Installers, archives, update manifests, bundled native dependencies, and source-to-artifact binding for the release tag.",
+      "owner": "release-engineering",
+      "state": "deferred",
+      "limitation": "CockroachDB dependency archives are hash-verified during packaging, but the release job does not generate installer checksums, SBOMs, or GitHub build attestations.",
+      "evidence": [
+        {
+          "path": "apps/desktop/scripts/build-single-binary.sh",
+          "sha256": "df9b6d0b7a55cc2feab93c9a6513e0c09e64f86ee26430bce07dc722e8133707",
+          "why": "Verifies the bundled CockroachDB archive against pinned digests"
+        },
+        {
+          "path": ".github/workflows/build.yml",
+          "sha256": "f0902b60299f008bfc0bdbc2f3cb8cf0d278f17a1b98beff19b45dbfdbd2fee1",
+          "why": "Current packaging jobs do not generate the verification sidecars and attestations that the guarded publisher now requires"
+        }
+      ],
+      "verification": [
+        {
+          "command": "rg -n -- \"attest-build-provenance|sbom|sha256sum|shasum\" .github/workflows/build.yml",
+          "expected": "No complete release-artifact evidence chain exists until this claim is re-audited"
+        }
+      ]
+    }
+  ]
+}

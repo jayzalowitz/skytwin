@@ -102,7 +102,7 @@ export class NoopUpdateBackend implements UpdateBackend {
     /* no events ever fire in the noop backend */
   }
   quitAndInstall(): void {
-    /* nothing to install */
+    /* the noop backend never has a pending update artifact */
   }
 }
 

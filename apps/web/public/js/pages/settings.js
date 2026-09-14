@@ -221,8 +221,10 @@ export async function renderSettings(container, userId) {
         <span class="card-title">Local brain</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 0.75rem;">
-        Your twin's memory runs locally by default — nothing leaves this computer.
-        Advanced users can switch the memory backend or see what's indexed.
+        Your twin's persistent memory is stored in SkyTwin's configured database; the
+        packaged desktop default keeps that database on this computer. It is not encrypted
+        by SkyTwin today, and connected providers may receive selected data.
+        Advanced users can switch the memory backend or inspect what's indexed.
       </div>
       <a class="btn btn-outline btn-sm" href="#/memory-settings">Manage local brain</a>
     </div>
@@ -277,7 +279,7 @@ export async function renderSettings(container, userId) {
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
         Connect your accounts so your twin can see your email and calendar.
-        Your twin only reads data — it never sends emails or accepts invites without your permission (based on your autonomy level above).
+        It can send mail, change Gmail labels, or manage calendar events only when you approve or when your configured autonomy and policies allow it. Actions are recorded with explanations.
       </div>
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">
         <div>
@@ -373,7 +375,7 @@ export async function renderSettings(container, userId) {
       <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-top: 0.5rem;">
         <div>
           <div style="font-weight: 500;">Send anonymous crash reports</div>
-          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, stack trace, app version) so we can fix it. No personal data, email, or twin content is ever included. Off by default.</div>
+          <div style="font-size: 0.85rem; color: var(--text-muted);">If the app crashes, send an anonymous report (error type, scrubbed message and stack trace, app version) so we can fix it. SkyTwin applies pattern-based scrubbing for recognized email addresses, credential patterns, and user-home paths before upload. The report has no dedicated account, message, calendar, memory, or twin-profile fields, but messages and stack traces may still contain incidental content or unknown secret formats. Off by default.</div>
         </div>
         <label class="toggle-switch">
           <input type="checkbox" id="crash-reports-toggle" data-action="toggle-crash-reports">
@@ -404,7 +406,7 @@ export async function renderSettings(container, userId) {
           ${renderProviderChain(aiProviders)}
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
-          <select class="form-input" id="add-provider-select" style="flex: 1;">
+          <select class="form-input" id="add-provider-select" data-action="ai-add-provider" style="flex: 1;">
             <option value="">+ Add a provider…</option>
             <option value="anthropic">Anthropic (Claude)</option>
             <option value="openai">OpenAI (GPT)</option>
@@ -461,17 +463,17 @@ export async function renderSettings(container, userId) {
 
     <div class="card">
       <div class="card-header">
-        <span class="card-title">Your data, your machine</span>
+        <span class="card-title">Data storage and network use</span>
       </div>
       <div class="card-subtitle" style="margin-bottom: 1rem;">
-        Everything your twin learns lives on this computer. Nothing is sent to a SkyTwin cloud, because there isn't one.
+        SkyTwin stores persistent application data in its configured CockroachDB database, without app-level encryption today. The packaged desktop default keeps that database on this computer; server and self-hosted configurations can point it elsewhere. Connectors contact their providers, and configured hosted-model features send selected content to those providers.
       </div>
       <div style="font-size: 0.85rem; color: var(--text-muted); line-height: 1.8;">
-        <strong>I keep on this device:</strong> the authorized email and calendar fields needed for your twin, learned preferences and patterns, and a log of decisions with their reasoning. Signal data is retained locally under the app’s retention policy.<br>
-        <strong>I don't keep:</strong> your account passwords. Access tokens and stored signal data remain on this device. A configured remote reasoning endpoint may receive prompt content under the boundary selected above; separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
+        <strong>Stored in SkyTwin's configured database:</strong> authorized email and calendar fields, selected source content, learned preferences and patterns, memory, and decision, explanation, and receipt records. Signal data is retained there under the app’s retention policy.<br>
+        <strong>Sent when enabled:</strong> OAuth and connector requests go to the connected service. When an IronClaw execution adapter is configured, stored service credentials are also registered with that configured server, which may be remote. In “My configured provider” mode, prompts and responses may travel to enabled providers in the chain. Separately, an administrator-configured OpenAI-compatible embedding key may send memory text for indexing and semantic-search query text to that endpoint.<br>
         <strong>Account access:</strong> ${googleConnected
-          ? 'I have a sign-in token from Google so I can read inbox and calendar. Disconnect above and that token is destroyed.'
-          : 'No accounts linked yet — I can\'t see anything until you connect one.'}<br>
+          ? 'A Google grant is stored in SkyTwin\'s configured database so SkyTwin can read authorized inbox and calendar data. Before vault initialization it is stored in plaintext. With the API vault initialized and unlocked, new or reconnected grants are encrypted and existing complete plaintext grants can migrate on authorized use; while that vault is locked, new or reconnected writes are refused. The background worker has a separate key cache and may report encrypted grants as unavailable.'
+          : 'No accounts linked yet — no inbox or calendar data is available until you connect one.'}<br>
       </div>
     </div>
 
@@ -905,6 +907,28 @@ function ensureSettingsListener() {
       if (chain) chain.innerHTML = renderProviderChain(_aiChain);
       return;
     }
+    if (action === 'ai-add-provider' && target instanceof HTMLSelectElement) {
+      const provider = target.value;
+      if (!provider) return;
+      target.value = '';
+
+      const models = PROVIDER_MODELS[provider] || [];
+      const defaultModel = models[0]?.id || '';
+      _aiChain.push({
+        provider,
+        model: defaultModel,
+        apiKey: '',
+        baseUrl: provider === 'ollama' ? 'http://localhost:11434' : undefined,
+        priority: _aiChain.length,
+        enabled: true,
+        hasApiKey: false,
+        apiKeyPreview: '',
+      });
+
+      const chain = document.getElementById('ai-provider-chain');
+      if (chain) chain.innerHTML = renderProviderChain(_aiChain);
+      return;
+    }
     if (action === 'toggle-email-attribution' && target instanceof HTMLInputElement) {
       window.toggleEmailAttribution(getCurrentUserId(), target);
       return;
@@ -1014,6 +1038,10 @@ function ensureSettingsListener() {
         return;
       case 'switch-to-smart':
         window.switchAIBrainMode(uid, 'smart');
+        return;
+      case 'switch-to-smart-boundary-blocked':
+        document.getElementById('ai-reasoning-mode')?.focus();
+        showErrorToast('Choose On this device and save it before selecting Smart.');
         return;
       case 'switch-to-smarter':
         window.switchAIBrainMode(uid, 'smarter');
@@ -1804,20 +1832,23 @@ function renderReasoningLocation(settingsAvailable = true) {
  *   - Switch-to-Smarter is disabled when no hosted/Ollama provider exists
  *     in the chain (we don't auto-add one because the user has to supply
  *     an API key).
- *   - Switch-to-Smart is always available — if no embedded entry exists
- *     yet, `applySmartMode` adds one with `model: 'auto'` so the runtime
- *     picks up the first GGUF in the detected model directory.
+ *   - Switch-to-Smart requires a saved on-device boundary. If no embedded
+ *     entry exists, `applySmartMode` adds one with `model: 'auto'` so the
+ *     runtime picks up the first GGUF in the detected model directory.
  */
 function renderModeToggle(providers) {
   const mode = detectAIMode(providers);
   const hasSmarterCandidate = providers.some((p) => SMARTER_PROVIDERS.has(p.provider));
+  const smartBoundaryReady = _reasoningMode === 'on_device'
+    && _persistedReasoningMode === 'on_device'
+    && !_reasoningModeRequiresConfirmation;
 
-  const pill = (label, isActive, action, helperText) => `
+  const pill = (label, isActive, action, helperText, isDisabled = false) => `
     <div style="flex: 1; min-width: 0;">
       <button class="btn ${isActive ? 'btn-primary' : 'btn-outline'} btn-sm"
               style="width: 100%; padding: 0.5rem 0.75rem; font-size: 0.85rem;"
               data-action="${action}"
-              ${isActive ? 'disabled' : ''}>
+              ${isActive || isDisabled ? 'disabled' : ''}>
         ${isActive ? '✓ ' : ''}${label}${isActive ? '' : ' →'}
       </button>
       ${helperText ? `<div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 0.25rem;">${helperText}</div>` : ''}
@@ -1827,12 +1858,15 @@ function renderModeToggle(providers) {
   return `
     <div style="display: flex; gap: 0.5rem; margin-bottom: 0.75rem;">
       ${pill(
-        'Smart (local first)',
+        'Smart (prefer on-device)',
         mode === 'smart',
-        'switch-to-smart',
+        smartBoundaryReady ? 'switch-to-smart' : 'switch-to-smart-boundary-blocked',
         mode === 'smart'
-          ? 'Embedded model is your top choice.'
-          : 'Puts the embedded runtime first.',
+          ? 'Embedded provider is first; runtime and model availability are checked separately.'
+          : !smartBoundaryReady
+            ? 'Choose On this device above and save that boundary before selecting Smart.'
+            : 'No hosted-provider fee; requires an installed local runtime and model.',
+        !smartBoundaryReady,
       )}
       ${pill(
         'Smarter (paid API or Ollama)',
@@ -1852,7 +1886,7 @@ function renderProviderChain(providers) {
   _aiChain = providers.map((p, i) => ({ ...p, priority: i }));
 
   if (_aiChain.length === 0) {
-    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No model provider is configured. Deterministic rules remain available.</div>';
+    return '<div style="font-size: 0.85rem; color: var(--text-muted); padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm);">No model provider configured. Built-in rules remain available; on-device model reasoning requires a compatible local runtime and model.</div>';
   }
 
   return _aiChain.map((p, idx) => `
@@ -2035,6 +2069,11 @@ window.switchAIBrainMode = async function(userId, target) {
       : 'Save where reasoning runs before changing provider priority.');
     return;
   }
+  if (target === 'smart' && _reasoningMode !== 'on_device') {
+    document.getElementById('ai-reasoning-mode')?.focus();
+    showErrorToast('Choose On this device and save it before selecting Smart.');
+    return;
+  }
   const next = target === 'smart'
     ? applySmartMode(_aiChain)
     : applySmarterMode(_aiChain);
@@ -2120,30 +2159,6 @@ window.saveAIProvidersHandler = async function(userId) {
     );
   }
 };
-
-// Handle the "Add provider" dropdown
-document.addEventListener('change', (e) => {
-  if (e.target?.id !== 'add-provider-select') return;
-  const provider = e.target.value;
-  if (!provider) return;
-  e.target.value = '';
-
-  const models = PROVIDER_MODELS[provider] || [];
-  const defaultModel = models[0]?.id || '';
-
-  _aiChain.push({
-    provider,
-    model: defaultModel,
-    apiKey: '',
-    baseUrl: provider === 'ollama' ? 'http://localhost:11434' : undefined,
-    priority: _aiChain.length,
-    enabled: true,
-    hasApiKey: false,
-    apiKeyPreview: '',
-  });
-
-  document.getElementById('ai-provider-chain').innerHTML = renderProviderChain(_aiChain);
-});
 
 window.signOut = function() {
   // Clear identity AND the bearer token. Without dropping the session

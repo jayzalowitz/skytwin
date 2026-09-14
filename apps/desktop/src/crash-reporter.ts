@@ -8,8 +8,8 @@
  * reports" setting (default OFF; see `desktop-preferences.ts`).
  *
  * Design constraints from the issue + repo conventions:
- *  - Default OFF. Honors the privacy promise — nothing is sent unless the
- *    user flips the toggle.
+ *  - Default OFF. This module does not transmit a crash report unless the
+ *    user flips the toggle; other networked features have separate controls.
  *  - No user data. We never include the message/stack verbatim without
  *    first running it through `redactPii`, and we never include cwd,
  *    env, userData paths, signal content, or any twin profile data.

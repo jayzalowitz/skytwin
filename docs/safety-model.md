@@ -383,7 +383,7 @@ When an action requires approval:
 
 ### What Must Be Logged
 
-Every decision in the pipeline produces an audit trail:
+The supported-path contract requires an audit trail with the following fields. Release-wide entry-path coverage remains under audit:
 
 1. **Raw event:** The original signal that triggered the decision
 2. **Interpreted situation:** How the system classified the event
@@ -429,7 +429,7 @@ A missing receipt therefore means “unavailable,” not “local,” “private
 
 The user can inspect:
 - Current twin profile (all preferences and inferences, with evidence)
-- Decision history (every decision, its outcome, and explanation)
+- Recorded decision history, including available outcome and explanation details for supported paths
 - Policy configuration (all active policies and their effects)
 - Approval history (past approval requests and responses)
 - Trust tier status (current tier, progression metrics, demotion history)
