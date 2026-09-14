@@ -832,6 +832,7 @@ async function runOwnedDownload(
           chunkOffset += bytesWritten;
           totalBytes += bytesWritten;
           bytesSinceFlush += bytesWritten;
+          diskReservations.consume(download.id, bytesWritten);
           if (bytesSinceFlush >= PROGRESS_FLUSH_BYTES) {
             bytesSinceFlush = 0;
             if (
@@ -943,7 +944,9 @@ async function runOwnedDownload(
     )
       return;
     phase = "installing";
-    await dependencies.activate(modelDir, partialPath, model);
+    await dependencies.activate(modelDir, partialPath, model, (bytesWritten) =>
+      diskReservations.consume(download.id, bytesWritten),
+    );
     // The manifest switch is now authoritative. Drop both the API's provider
     // chain and the embedded provider's automatic-port cache before reporting
     // completion so the next request discovers this exact active artifact.

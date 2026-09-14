@@ -102,6 +102,7 @@ export async function writeFileHandleFully(
   buffer: Buffer,
   length: number,
   position: number,
+  onBytesWritten: (bytes: number) => void = () => undefined,
 ): Promise<void> {
   let written = 0;
   while (written < length) {
@@ -120,6 +121,7 @@ export async function writeFileHandleFully(
       throw new Error("managed_artifact_write_made_no_progress");
     }
     written += result.bytesWritten;
+    onBytesWritten(result.bytesWritten);
   }
 }
 
@@ -425,9 +427,10 @@ export async function activateManagedModel(
   modelDir: string,
   stagedPath: string,
   model: ModelEntry,
+  onBytesPersisted: (bytes: number) => void = () => undefined,
 ): Promise<ManagedModelManifest> {
   return withModelDirMutationLock(modelDir, () =>
-    activateManagedModelUnlocked(modelDir, stagedPath, model),
+    activateManagedModelUnlocked(modelDir, stagedPath, model, onBytesPersisted),
   );
 }
 
@@ -435,6 +438,7 @@ async function activateManagedModelUnlocked(
   modelDir: string,
   stagedPath: string,
   model: ModelEntry,
+  onBytesPersisted: (bytes: number) => void,
 ): Promise<ManagedModelManifest> {
   mkdirSync(modelDir, { recursive: true });
   const target = managedArtifactPath(modelDir, model);
@@ -483,7 +487,13 @@ async function activateManagedModelUnlocked(
           offset,
         ));
         if (read > 0) {
-          await writeFileHandleFully(destination, buffer, read, offset);
+          await writeFileHandleFully(
+            destination,
+            buffer,
+            read,
+            offset,
+            onBytesPersisted,
+          );
           offset += read;
         }
       } while (read > 0);

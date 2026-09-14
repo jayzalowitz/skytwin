@@ -46,6 +46,26 @@ describe('artifact transfer validation', () => {
     expect(ledger.totalBytes).toBe(300);
   });
 
+  it('reserves only bytes that have not yet landed on disk', () => {
+    const exactBytes = 100;
+    const reservation = requiredAvailableBytes(exactBytes);
+    const initiallyAvailable = reservation * 2;
+    const ledger = new DiskReservationLedger();
+    ledger.reserve('first', reservation);
+
+    ledger.consume('first', 40);
+
+    expect(ledger.totalBytes).toBe(reservation - 40);
+    const physicallyAvailableAfterWrite = initiallyAvailable - 40;
+    expect(() => assertAvailableDisk(
+      physicallyAvailableAfterWrite - ledger.totalBytes,
+      exactBytes,
+    )).not.toThrow();
+    expect(() => ledger.consume('first', reservation)).toThrow(
+      ArtifactTransferError,
+    );
+  });
+
   it('follows only an approved redirect and validates exact response metadata', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(response(302, {

@@ -141,6 +141,19 @@ export class DiskReservationLedger {
     this.reservations.set(id, bytes);
   }
 
+  consume(id: string, bytes: number): void {
+    const reserved = this.reservations.get(id);
+    if (reserved === undefined) return;
+    if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > reserved)
+      throw new ArtifactTransferError(
+        "resume_state_mismatch",
+        "Invalid disk reservation consumption",
+      );
+    const remaining = reserved - bytes;
+    if (remaining === 0) this.reservations.delete(id);
+    else this.reservations.set(id, remaining);
+  }
+
   release(id: string): void {
     this.reservations.delete(id);
   }

@@ -60,12 +60,14 @@ describe("managed model activation", () => {
         buffer,
       }),
     );
+    const persisted = vi.fn();
 
     await writeFileHandleFully(
       { write } as unknown as Pick<FileHandle, "write">,
       Buffer.from("chunk"),
       5,
       11,
+      persisted,
     );
 
     expect(write.mock.calls.map((call) => call.slice(1))).toEqual([
@@ -73,6 +75,7 @@ describe("managed model activation", () => {
       [2, 3, 13],
       [4, 1, 15],
     ]);
+    expect(persisted.mock.calls.map(([bytes]) => bytes)).toEqual([2, 2, 1]);
   });
 
   it("rejects a zero-progress managed artifact write", async () => {
@@ -95,8 +98,15 @@ describe("managed model activation", () => {
     const bytes = Buffer.from("tiny verified gguf fixture");
     const model = tinyModel("tiny-one", bytes);
     const staged = join(dir, "download.partial");
+    const persisted = vi.fn();
     writeFileSync(staged, bytes);
-    await activateManagedModel(dir, staged, model);
+    await activateManagedModel(dir, staged, model, persisted);
+    expect(
+      persisted.mock.calls.reduce(
+        (total, [written]) => total + (written as number),
+        0,
+      ),
+    ).toBe(bytes.length);
     const result = inspectManagedActiveModel(dir, [model]);
     expect(result.state).toBe("verified");
     if (result.state === "verified")
