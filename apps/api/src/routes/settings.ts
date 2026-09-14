@@ -463,7 +463,7 @@ export function createSettingsRouter(): Router {
           provider: string;
           apiKey?: string;
           model: string;
-          baseUrl?: string;
+          baseUrl?: string | null;
           priority: number;
           enabled?: boolean;
         }[];
@@ -520,7 +520,7 @@ export function createSettingsRouter(): Router {
           name: provider.provider as AIProviderName,
           apiKey: provider.apiKey ?? '',
           model: provider.model,
-          baseUrl: provider.baseUrl,
+          baseUrl: provider.baseUrl ?? undefined,
         }));
       const policyError = modePolicyError(targetMode, enabledEntries);
       if (policyError) {
@@ -537,7 +537,7 @@ export function createSettingsRouter(): Router {
             provider: p.provider,
             apiKey: p.apiKey,
             model: p.model,
-            baseUrl: p.baseUrl,
+            baseUrl: p.baseUrl ?? undefined,
             priority: p.priority,
             enabled: p.enabled,
           })),
@@ -580,7 +580,7 @@ export function createSettingsRouter(): Router {
         provider: string;
         apiKey?: string;
         model: string;
-        baseUrl?: string;
+        baseUrl?: string | null;
         reasoningMode?: unknown;
       };
 
@@ -620,7 +620,7 @@ export function createSettingsRouter(): Router {
         name: provider as ProviderEntry['name'],
         apiKey: resolvedKey,
         model,
-        baseUrl,
+        baseUrl: baseUrl ?? undefined,
       };
 
       if (baseUrl) {
