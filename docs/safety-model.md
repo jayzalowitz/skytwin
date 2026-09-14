@@ -394,6 +394,27 @@ Every decision in the pipeline produces an audit trail:
 9. **User response:** If escalated, what the user decided
 10. **Feedback effect:** How the outcome affected the twin model
 
+### Inference Receipt Foundation
+
+The versioned [inference receipt contract](inference-receipts.md) is a separate,
+structured record for reasoning-path integrity with no dedicated prompt or
+response fields. Its free-form strings must not carry source content or secrets,
+and the local encryption inventory conservatively treats the JSON as potentially
+source-bearing because that caller obligation cannot be mechanically inferred.
+Its repository boundary can
+persist only a receipt that verifies against caller-supplied recorder trust
+roots; a confidential `verified` status additionally requires a pinned provider
+key and provider-specific attestation policy. Verification never authorizes an
+action or replaces the policy, provenance, trust-tier, spend, reversibility, or
+explanation gates above.
+
+This is a foundation, not universal workflow coverage. Current production
+composition does not configure recorder keys, create receipts, export the exact
+request/response bundle needed by the verifier, or show a receipt detail UI.
+The authenticated decision route can read or delete metadata rows that an
+integrator has persisted. A missing receipt therefore means “unavailable,” not
+“local,” “private,” or “verified.”
+
 ### What the User Can See
 
 The user can inspect:
@@ -411,6 +432,9 @@ The user can inspect:
 - Raw events: Retained for 90 days, then summarized (configurable)
 - Explanation records: Retained indefinitely
 - Feedback events: Retained indefinitely
+- Inference receipts: no automatic emission yet; any persisted metadata row is
+  retained with its decision, included in user backups, and deleted with that
+  decision or user
 
 ## Rollback Capabilities
 

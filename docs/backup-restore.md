@@ -100,6 +100,10 @@ The schema version is checked before any write: an archive produced by a newer
 build (higher `BACKUP_SCHEMA_VERSION`) is rejected with `unsupported_schema`
 rather than partially imported.
 
+Schema version 2 adds inference receipts. Current builds still accept receipt-free
+schema-version-1 archives, while older builds reject version 2 instead of
+silently restoring the rest of the archive without its receipts.
+
 ## Exit codes
 
 `skytwin-backup` exits `0` on success and non-zero on any failure (missing

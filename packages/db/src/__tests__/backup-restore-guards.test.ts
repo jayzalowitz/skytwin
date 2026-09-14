@@ -9,14 +9,21 @@
  * CRDB in the e2e suite; here we assert the guards fail closed.
  */
 
+import { generateKeyPairSync } from 'node:crypto';
+import {
+  sha256Hex,
+  signInferenceReceipt,
+  type InferenceReceiptV1,
+} from '@skytwin/shared-types';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 let userExists = false;
+const clientQuery = vi.fn(async (_sql?: unknown) => ({ rows: [], rowCount: 1 }));
 
 vi.mock('../connection.js', () => ({
   query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
   withTransaction: vi.fn(async (fn: (client: unknown) => Promise<unknown>) =>
-    fn({ query: vi.fn(async () => ({ rows: [], rowCount: 0 })) }),
+    fn({ query: clientQuery }),
   ),
 }));
 
@@ -32,8 +39,64 @@ vi.mock('../repositories/twin-repository.js', () => ({
 
 import { restoreBackup, validateBackupData, BACKUP_SCHEMA_VERSION } from '../backup/backup.js';
 
+const receiptKeys = generateKeyPairSync('ed25519');
+const receiptPublicKeyPem = receiptKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+const receiptPrivateKeyPem = receiptKeys.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
+const RECEIPT_ID = '11111111-1111-4111-8111-111111111111';
+const USER_ID = '22222222-2222-4222-8222-222222222222';
+const DECISION_ID = '33333333-3333-4333-8333-333333333333';
+const EXPLANATION_ID = '44444444-4444-4444-8444-444444444444';
+
+function signedReceipt(
+  overrides: Partial<Omit<InferenceReceiptV1, 'seal'>> = {},
+): InferenceReceiptV1 {
+  return signInferenceReceipt({
+    version: 1,
+    id: RECEIPT_ID,
+    userId: USER_ID,
+    decisionId: DECISION_ID,
+    explanationId: EXPLANATION_ID,
+    reasoningMode: 'on_device',
+    provider: 'embedded',
+    model: 'local',
+    endpointIdentity: 'local',
+    requestSha256: sha256Hex(Buffer.from('request')),
+    responseSha256: sha256Hex(Buffer.from('response')),
+    verifierVersion: '1',
+    cost: { basis: 'exact', currency: 'USD', amountMinor: 0 },
+    status: 'on_device',
+    createdAt: '2026-06-15T00:00:00.000Z',
+    ...overrides,
+  }, {
+    keyId: 'recorder',
+    privateKeyPem: receiptPrivateKeyPem,
+    publicKeyPem: receiptPublicKeyPem,
+  });
+}
+
+function decisionBundle(receipt = signedReceipt()): Record<string, unknown> {
+  return {
+    decision: { id: DECISION_ID, user_id: USER_ID },
+    candidateActions: [],
+    outcome: null,
+    explanations: [{ id: EXPLANATION_ID, decision_id: DECISION_ID }],
+    inferenceReceipts: [{
+      id: receipt.id,
+      version: receipt.version,
+      decision_id: receipt.decisionId,
+      explanation_id: receipt.explanationId,
+      status: receipt.status,
+      receipt,
+      trusted: false,
+      created_at: new Date(receipt.createdAt),
+    }],
+  };
+}
+
 beforeEach(() => {
   userExists = false;
+  clientQuery.mockClear();
+  clientQuery.mockImplementation(async () => ({ rows: [], rowCount: 1 }));
 });
 
 function validPayload(): Record<string, unknown> {
@@ -41,7 +104,7 @@ function validPayload(): Record<string, unknown> {
     schemaVersion: BACKUP_SCHEMA_VERSION,
     exportedAt: '2026-06-15T00:00:00.000Z',
     user: {
-      id: 'u1',
+      id: USER_ID,
       email: 'a@b.c',
       name: 'A',
       trust_tier: 'observer',
@@ -62,6 +125,92 @@ describe('validateBackupData', () => {
     expect(validateBackupData(validPayload())).toEqual([]);
   });
 
+  it('accepts an explicit receipt-free schema-v1 archive', () => {
+    const payload = validPayload();
+    payload['schemaVersion'] = 1;
+    payload['decisions'] = [{
+      decision: { id: DECISION_ID, user_id: USER_ID }, candidateActions: [], outcome: null,
+      explanations: [{ id: EXPLANATION_ID, decision_id: DECISION_ID }],
+    }];
+    expect(validateBackupData(payload)).toEqual([]);
+  });
+
+  it('requires receipt collections in v2 and rejects them in v1 archives', () => {
+    const current = validPayload();
+    current['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
+      explanations: [],
+    }];
+    expect(validateBackupData(current)).toContain(
+      `decisions[0].inferenceReceipts is required by schema version ${BACKUP_SCHEMA_VERSION}`,
+    );
+
+    const legacy = validPayload();
+    legacy['schemaVersion'] = 1;
+    legacy['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
+      explanations: [], inferenceReceipts: [],
+    }];
+    expect(validateBackupData(legacy)).toContain(
+      `decisions[0].inferenceReceipts requires schema version ${BACKUP_SCHEMA_VERSION}`,
+    );
+  });
+
+  it('accepts only sealed receipt snapshots with exact archive linkage', () => {
+    const payload = validPayload();
+    payload['decisions'] = [decisionBundle()];
+    expect(validateBackupData(payload)).toEqual([]);
+
+    const tampered = signedReceipt();
+    tampered.model = 'changed-after-signing';
+    payload['decisions'] = [decisionBundle(tampered)];
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts[0] has inconsistent linkage',
+    );
+  });
+
+  it('accepts UUID linkage when signed and stored values differ only by case', () => {
+    const userId = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA';
+    const decisionId = 'BBBBBBBB-BBBB-4BBB-8BBB-BBBBBBBBBBBB';
+    const explanationId = 'CCCCCCCC-CCCC-4CCC-8CCC-CCCCCCCCCCCC';
+    const receiptId = 'DDDDDDDD-DDDD-4DDD-8DDD-DDDDDDDDDDDD';
+    const receipt = signedReceipt({
+      id: receiptId,
+      userId,
+      decisionId,
+      explanationId,
+    });
+    const bundle = decisionBundle(receipt);
+    const decision = bundle['decision'] as Record<string, unknown>;
+    decision['id'] = decisionId.toLowerCase();
+    decision['user_id'] = userId.toLowerCase();
+    const explanation = (bundle['explanations'] as Array<Record<string, unknown>>)[0]!;
+    explanation['id'] = explanationId.toLowerCase();
+    explanation['decision_id'] = decisionId.toLowerCase();
+    const storedReceipt = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    storedReceipt['id'] = receiptId.toLowerCase();
+    storedReceipt['decision_id'] = decisionId.toLowerCase();
+    storedReceipt['explanation_id'] = explanationId.toLowerCase();
+
+    const payload = validPayload();
+    (payload['user'] as Record<string, unknown>)['id'] = userId.toLowerCase();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toEqual([]);
+  });
+
+  it('rejects more than one receipt for a decision before restore', () => {
+    const bundle = decisionBundle();
+    const receipt = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    bundle['inferenceReceipts'] = [receipt, { ...receipt }];
+    const payload = validPayload();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts must contain at most one receipt',
+    );
+  });
+
   it('rejects a non-object', () => {
     expect(validateBackupData('nope')).toContain('payload is not an object');
     expect(validateBackupData(null)).toContain('payload is not an object');
@@ -73,6 +222,65 @@ describe('validateBackupData', () => {
     expect(problems).toContain('preferences is not an array');
     expect(problems).toContain('decisions is not an array');
     expect(problems).toContain('twinProfileVersions is not an array');
+  });
+
+  it('rejects receipt metadata whose signed linkage disagrees with its decision bundle', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a' }, candidateActions: [], outcome: null,
+      explanations: [{ id: 'explanation-a' }],
+      inferenceReceipts: [{
+        id: 'receipt-a', decision_id: 'decision-a', explanation_id: 'explanation-a', status: 'verified',
+        receipt: { id: 'receipt-a', decisionId: 'decision-b', explanationId: 'explanation-a', status: 'verified' },
+      }],
+    }];
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts[0] has inconsistent linkage',
+    );
+  });
+
+  it('rejects an explanation linked to a different decision than its containing bundle', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a' }, candidateActions: [], outcome: null,
+      explanations: [{ id: 'explanation-a', decision_id: 'decision-b' }], inferenceReceipts: [],
+    }];
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].explanations[0] has inconsistent linkage',
+    );
+  });
+
+  it('rejects malformed nested collections without throwing', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'u1' },
+      candidateActions: {}, explanations: {}, inferenceReceipts: {},
+    }];
+    expect(() => validateBackupData(payload)).not.toThrow();
+    expect(validateBackupData(payload)).toEqual(expect.arrayContaining([
+      'decisions[0].candidateActions is not an array',
+      'decisions[0].explanations is not an array',
+      'decisions[0].inferenceReceipts is not an array',
+    ]));
+  });
+
+  it('rejects decisions and signed receipts attributed to another archive owner', () => {
+    const payload = validPayload();
+    payload['decisions'] = [{
+      decision: { id: 'decision-a', user_id: 'another-user' }, candidateActions: [], outcome: null,
+      explanations: [{ id: 'explanation-a', decision_id: 'decision-a' }],
+      inferenceReceipts: [{
+        id: 'receipt-a', decision_id: 'decision-a', explanation_id: 'explanation-a', status: 'on_device',
+        receipt: {
+          id: 'receipt-a', userId: 'another-user', decisionId: 'decision-a',
+          explanationId: 'explanation-a', status: 'on_device',
+        },
+      }],
+    }];
+    expect(validateBackupData(payload)).toEqual(expect.arrayContaining([
+      'decisions[0] has inconsistent owner',
+      'decisions[0].inferenceReceipts[0] has inconsistent linkage',
+    ]));
   });
 });
 
@@ -105,5 +313,21 @@ describe('restoreBackup guards', () => {
       expect(result.summary.counts.users).toBe(1);
       expect(result.summary.total).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  it('restores an explicit receipt-free schema-v1 archive', async () => {
+    const payload = validPayload();
+    payload['schemaVersion'] = 1;
+    const result = await restoreBackup(payload);
+    expect(result.success).toBe(true);
+  });
+
+  it('aborts instead of reporting a receipt whose linkage insert affected no row', async () => {
+    const payload = validPayload();
+    payload['decisions'] = [decisionBundle()];
+    clientQuery.mockImplementation(async (sql: unknown) => ({
+      rows: [], rowCount: typeof sql === 'string' && sql.includes('INSERT INTO inference_receipts') ? 0 : 1,
+    }));
+    await expect(restoreBackup(payload)).rejects.toThrow('could not be linked during restore');
   });
 });

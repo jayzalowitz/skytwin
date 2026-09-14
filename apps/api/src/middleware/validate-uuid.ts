@@ -36,11 +36,25 @@ export function isValidUserId(value: unknown): value is string {
  * for "you typed a non-UUID into the URL").
  */
 export function bindUserIdParamValidator(router: Router): void {
-  router.param('userId', (_req, res, next, userId) => {
-    if (!isValidUserId(userId)) {
+  bindUuidParamValidator(router, 'userId', 'invalid_user_id', 'User ID');
+}
+
+/**
+ * Register the same fail-fast UUID boundary for any named route parameter.
+ * Keep this shared so non-user UUIDs cannot accidentally reach a UUID-typed
+ * Cockroach query and turn malformed client input into a server error.
+ */
+export function bindUuidParamValidator(
+  router: Router,
+  paramName: string,
+  error: string,
+  label: string,
+): void {
+  router.param(paramName, (_req, res, next, value) => {
+    if (!isValidUserId(value)) {
       res.status(400).json({
-        error: 'invalid_user_id',
-        message: 'User ID must be a UUID.',
+        error,
+        message: `${label} must be a UUID.`,
       });
       return;
     }

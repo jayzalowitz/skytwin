@@ -44,6 +44,7 @@ decisions
   |-- 1:1 --→ decision_outcomes
   |-- 1:N --→ execution_plans
   |-- 1:1 --→ explanation_records
+  |-- 0:1 --→ inference_receipts
   |-- 0:1 --→ approval_requests
 
 execution_plans
@@ -87,6 +88,7 @@ memory_rooms
 | `watch_runs` | Canonical firing history for Watches, including matched signal refs and summary text | On each meaningful Watch firing | Briefing projection, Watches run history |
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
+| `inference_receipts` | Signed reasoning-path record; foundation-only, not emitted by production workflows | Integrator repository call only | Owner-scoped metadata read, backup, audit |
 | `feedback_events` | User responses (approve/reject/edit/undo) | On user interaction | Twin model updates, evals |
 | `memory_wings` | Top-level memory palace groupings by domain | On new domain encountered | Palace status, memory retrieval |
 | `memory_rooms` | Topics within a wing | On new topic encountered | Memory filing, tunnel detection |

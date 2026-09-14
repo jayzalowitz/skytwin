@@ -85,6 +85,7 @@ export type {
   ExecutionEventRow,
   MemoryActionOpportunityRow,
   ExplanationRecordRow,
+  InferenceReceiptRow,
   FeedbackEventRow,
   OAuthTokenRow,
   SignalRow,
@@ -126,6 +127,7 @@ export {
   decisionRepository,
   policyRepository,
   explanationRepository,
+  inferenceReceiptRepository,
   feedbackRepository,
 } from './repositories/index.js';
 export type {
@@ -138,6 +140,7 @@ export type {
   CreatePolicyInput,
   UpdatePolicyInput,
   CreateExplanationInput,
+  CreateInferenceReceiptInput,
   CreateFeedbackInput,
 } from './repositories/index.js';
 

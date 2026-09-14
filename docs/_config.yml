@@ -46,6 +46,7 @@ exclude:
   - dxt-transfer.md
   - evals.md
   - ironclaw-integration.md
+  - inference-receipts.md
   - launch-plan.md
   - launch-readiness-report.md
   - memory-swap.md

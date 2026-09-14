@@ -12,7 +12,8 @@
     }
   },
   "bin": {
-    "skytwin-backup": "./dist/bin/backup-cli.js"
+    "skytwin-backup": "./dist/bin/backup-cli.js",
+    "skytwin-verify-receipt": "./dist/bin/verify-inference-receipt.js"
   },
   "scripts": {
     "build": "tsc && node scripts/copy-sql.cjs",
