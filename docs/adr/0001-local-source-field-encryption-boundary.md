@@ -4,6 +4,7 @@
 - Date: 2026-09-10
 - Issue: [#634](https://github.com/jayzalowitz/skytwin/issues/634)
 - Inventory: [`docs/security/encryption-field-inventory.json`](../security/encryption-field-inventory.json)
+- Implementation status: [`docs/security/source-key-broker-implementation.md`](../security/source-key-broker-implementation.md)
 - Decision owners: security and desktop/runtime maintainers
 
 ## Context
@@ -23,12 +24,14 @@ provide a general at-rest source-field guarantee:
 | [`@skytwin/credential-vault`](../../packages/credential-vault/src/)                     | AES-256-GCM, scrypt derivation, and an in-process one-hour `KeyCache` exist. Cached buffers are not a cross-process key service.                                                                                                                                          |
 | [migration 032](../../packages/db/src/migrations/032-encrypted-oauth-tokens.sql)        | OAuth ciphertext columns and passphrase-verifier metadata exist beside nullable plaintext columns.                                                                                                                                                                        |
 | [migration 066](../../packages/db/src/migrations/066-encrypt-high-value-tables.sql)     | Ciphertext siblings exist for selected preference, profile, and `brain_pages` fields. Plaintext siblings remain.                                                                                                                                                          |
+| [migration 073](../../packages/db/src/migrations/073-source-key-registry.sql)           | The recovery-wrapper registry and content-free device-wrapper deletion intent exist. They establish custody metadata only; no production source field is encrypted.                                                                                                      |
 | [`DbTokenStore`](../../packages/connectors/src/oauth/db-token-store.ts)                 | It can decrypt or lazily migrate OAuth rows when its process has a key. The worker's cache is never populated by API unlock, and API OAuth callbacks still write plaintext through [`oauthRepository`](../../packages/db/src/repositories/oauth-repository.ts).           |
 | [`TwinRepositoryAdapter`](../../packages/db/src/adapters/twin-repository-adapter.ts)    | Preference encryption is opt-in through a process-global provider. No production composition root calls it, profile fields are still plaintext, and direct backup SQL bypasses it.                                                                                        |
 | [`brain_pages` repository](../../packages/memory-gbrain-crdb-adapter/src/repository.ts) | Source text, generated tsvector, vectors, and metadata are readable from the database. The migration's ciphertext columns are not used.                                                                                                                                   |
 | [`PassphraseVault`](../../apps/desktop/src/passphrase-vault.ts)                         | The desktop can persist a versioned `safeStorage` ciphertext tagged with the reviewed secure OS credential backend that wrote it; Linux `basic_text`, unknown, unavailable, legacy-untagged, and backend-mismatched records fail closed and are deleted. The renderer can request the plaintext passphrase, then sends it to the API over loopback HTTP. This is not the target broker design below. |
 | [`credential-vault` routes](../../apps/api/src/routes/credential-vault.ts)              | API-only init/unlock/lock works for the API cache. Rotation re-encrypts encrypted OAuth rows only; it does not rotate any preference, profile, or memory ciphertext.                                                                                                      |
-| [`ServiceManager`](../../apps/desktop/src/service-manager.ts)                           | Electron main currently forks separate API, web, and worker processes and supplies their runtime configuration through environment variables. There is no cryptographic broker or shared cross-process unlock state today.                                                |
+| [`DesktopKeyBroker`](../../apps/desktop/src/key-broker.ts)                              | The custody kernel implements recovery/device wrappers, purpose-separated keys, context-bound envelopes, child capabilities, and a lock barrier. Production composition still uses a temporary Electron-store adapter rather than the CockroachDB registry.               |
+| [`ServiceManager`](../../apps/desktop/src/service-manager.ts)                           | Electron main attaches the API and worker children to the broker, but deliberately gives both empty owner grants. No production source operation can request a key through this foundation.                                                                               |
 | [`skytwin-backup`](../backup-restore.md)                                                | The selected export is encrypted as a whole with a separate passphrase, but collection reads raw repository rows. It is not yet compatible with a completed source-field migration. Credentials are excluded.                                                             |
 | [User purge route](../../apps/api/src/routes/users.ts)                                  | The current API transaction purges user-owned database rows, and the dashboard clears its own `localStorage`. It does not coordinate deletion of the desktop's remembered-passphrase entry, so cross-store deletion is a target requirement rather than current behavior. |
 
@@ -38,9 +41,9 @@ environment maps, federation private keys, decision and explanation payloads,
 assistant messages, signals, histories, both memory backends, exports, and
 dead-letter context. Execution results and spend records are included as action
 receipts, not treated as harmless operational data. The machine-readable
-inventory classifies the entire live schema as of migration
-`071-worker-generation-authority.sql`; validation fails when a table or column
-is missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
+inventory classifies all 877 columns across the 94-table live schema as of
+`073-source-key-registry.sql`; validation fails when a table or column is
+missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
 sequence used by the production
 [`001-initial` migration runner](../../packages/db/src/migrations/001-initial.ts).
 That runner sends both its development and desktop-owned entry points through
@@ -48,6 +51,10 @@ one ordered migration flow. Migration 071's worker-generation table is an
 installation-scoped, ephemeral authorization boundary: it stores lifecycle
 metadata and a one-way verifier of a random process credential, not recoverable
 source, and is excluded from portable backup.
+Migration 073's recovery wrapper and KDF record are explicitly exposed
+cryptographic metadata: a copied wrapper permits offline passphrase guessing.
+Its deletion-intent table contains no key material and exists so future
+cross-store cleanup can retry after the user row and registry have been removed.
 
 Filesystem and process-local surfaces are separate from the SQL inventory:
 

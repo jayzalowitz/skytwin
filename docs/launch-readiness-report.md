@@ -47,7 +47,12 @@ Recorded launch blockers include:
 2. **External review** — Google OAuth restricted-scope / brand verification (#351, multi-week CASA review) and mobile app-store review (#369/#360, needs Apple/Play accounts).
 3. **Design assets** — real multi-resolution mobile icons/splash to replace the 1×1 placeholders (#409/#369).
 
-4. **Code and architecture** — #374 (encrypt user memory + preferences at rest) requires the #401 key-management decision. See [§ Encryption and key-management detail](#encryption-and-key-management-detail). Other partial code-side items remain tracked under #357 and in the inventory below.
+4. **Code and architecture** — the #401 key-management decision is now captured
+   by ADR 0001 and the first locked broker/custody slice exists, but #374 remains
+   incomplete: production grants, clients, the Cockroach-backed broker gateway,
+   source-field migration, packaged verification, and bake evidence are still
+   required. See [§ Encryption and key-management detail](#encryption-and-key-management-detail).
+   Other partial code-side items remain tracked under #357 and in the inventory below.
 5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems. The source-tree checks below do not substitute for this gate.
 
 ---
@@ -81,14 +86,33 @@ Recorded launch blockers include:
 
 ## Encryption and key-management detail
 
+> **Current addendum — 2026-09-14:** [ADR 0001](./adr/0001-local-source-field-encryption-boundary.md)
+> resolves the #401 design question for the desktop boundary. Migration 073 now
+> defines the recovery-wrapper registry and deletion intent, and Electron has a
+> locked, capability-scoped source-key broker with private API/worker child IPC.
+> Production deliberately supplies empty owner grants and still uses a temporary
+> Electron-store adapter, however. No production source field is encrypted. The
+> authenticated owner-grant clients, Cockroach-backed repository gateway, narrow
+> source consumers, plaintext migration, clean packaged-platform verification,
+> and bake period remain blockers. See the
+> [implementation status](./security/source-key-broker-implementation.md).
+
 **[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). Re-audited 2026-06-16 (full code-state findings on the issue). The encryption **infrastructure shipped** via #520 — but it is **dormant** in production and **partial**, and the memory half has an architectural conflict that makes it a design task, not a wiring task:
 
 - **Shipped (#520):** migration `066-encrypt-high-value-tables.sql` adds `_encrypted BYTES` columns to `preferences` / `twin_profiles` / `brain_pages`; `packages/db/src/lib/vault-helper.ts` (`encryptColumn`/`readColumn`/`resolveKey`, AES-256-GCM + scrypt); and encrypt-on-write / decrypt-on-read wiring in `twin-repository-adapter.ts` **for `preferences` only**.
-- **Dormant:** `setPreferenceVaultKeyProvider(...)` is called **only in tests** — no app composition root enables it, so `vaultKeyProvider` stays `null` and even preferences are written plaintext in the running app. Enabling it is the #401 key-management call.
+- **Dormant:** `setPreferenceVaultKeyProvider(...)` is called **only in tests** — no app composition root enables it, so `vaultKeyProvider` stays `null` and even preferences are written plaintext in the running app. ADR 0001 resolves the key-custody design, but the deliberately empty production grants and missing source-field clients keep this path inactive.
 - **Partial:** `twin_profiles`' 7 `_encrypted` columns are unused, and `brain_pages` (user memory) is written plaintext (`insertPage()` in `packages/memory-gbrain-crdb-adapter/src/repository.ts` ignores the `_encrypted` columns).
 - **The hard part:** `brain_pages` is the *searchable* store. RRF retrieval needs `content_tsv @@ plainto_tsquery` (full-text, server-side) and the row's `embedding` (vector — pulled out and scored with `cosineSimilarity` in application code, brute-force; not a CRDB `<=>` operator). Both are derived from plaintext content, and a `tsvector` stores the lexemes in the clear — so encrypting `content` while keeping `content_tsv` queryable leaks it anyway, while encrypting the index breaks search; the embedding likewise has to be read back out in the clear to score. So memory-at-rest encryption needs a design (scope to non-searched columns, index-time decrypt, or searchable encryption), not just an `encryptColumn` call.
 
-**Why it isn't auto-fixable:** enabling the provider with a wrong/ephemeral master key is worse than shipping none (lost key → unrecoverable memory) — that's exactly the #374↔#401 decision — and the memory search-conflict needs a design call. **Recommended sequence for this task:** decide #401 key management → enable the provider (makes the existing preference encryption live) → extend to `twin_profiles` (not searched, straightforward) → design `brain_pages` against the search conflict.
+**Why it still is not a wiring-only fix:** the custody design is accepted, but
+activating it before authenticated owner grants, durable Cockroach custody,
+source-specific clients, crash-safe plaintext migration, packaged-platform
+verification, and recovery testing would risk either exposing keys or losing
+data. The memory search conflict also still needs a deliberate boundary.
+**Recommended sequence:** compose the Cockroach gateway and authenticated child
+clients → migrate the narrow non-search fields with crash recovery → verify
+backup/delete/rotation and packaged lock behavior → resolve the readable search
+derivatives for `brain_pages` → complete the bake gate before making a claim.
 
 ## Issues closed this pass (shipped, verified in code)
 
@@ -124,17 +148,17 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#357](https://github.com/jayzalowitz/skytwin/issues/357) | 🟡 partial | **YES** | partly | Source capabilities passed the dated audit; fresh artifact validation and the external launch gates remain |
 | [#359](https://github.com/jayzalowitz/skytwin/issues/359) | ⛔ external | **YES** | — | Apple Developer + Windows EV cert purchase/enroll |
 | [#360](https://github.com/jayzalowitz/skytwin/issues/360) | 🟡 partial | **YES** | yes | Mobile: #369 store-readiness gate is the bulk |
-| [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — needs #401 key-mgmt decision) + #375 follow-ups (assistant block, number/name). |
+| [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — design resolved by #401/ADR 0001; production activation remains) + #375 follow-ups (assistant block, number/name). |
 | [#368](https://github.com/jayzalowitz/skytwin/issues/368) | ⛔ external | **YES** | — | Code-signing certs + notarization (external) |
 | [#369](https://github.com/jayzalowitz/skytwin/issues/369) | 🟡 partial | **YES** | partly | EAS config + CI rewrite (code) · real icons + store accounts (external) |
 | [#370](https://github.com/jayzalowitz/skytwin/issues/370) | ✅ closed | done | yes | Code complete + closed: manifests + curl-latest CI + the user-facing banner + "Check for Updates…" menu all shipped (#523). Only signed-build e2e remains, tracked under #368. |
-| [#374](https://github.com/jayzalowitz/skytwin/issues/374) | ⬜ not started | **YES** | yes | Encrypt ~14 sensitive tables at rest — **needs key-mgmt decision (#401)** |
+| [#374](https://github.com/jayzalowitz/skytwin/issues/374) | 🟡 partial | **YES** | yes | Accepted design + broker/custody foundation shipped; production grants, clients, migration, packaged verification, and bake remain |
 | [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Decision-pipeline redactor shipped (#524): `redactPromptPii` masks email addresses in `PromptBuilder` by default, ReDoS-hardened. Remaining: assistant memory-context block (needs provider-trust gating) + number/name masking. |
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | ✅ closed | done | yes | Shipped + closed: resumable chunked voice upload end-to-end — `voice-chunker.ts` + `transcribeChunked()` (per-chunk retry, progress, cancel) + server `/upload/session`/`/chunk`/finalize + 3 test files. Only the airplane-mode manual smoke is device-only. |
 | [#387](https://github.com/jayzalowitz/skytwin/issues/387) | 🟡 partial | — | yes | Deep-link routing slice shipped + wired (tap → specific approval, scrolled into view; `deep-link.ts` + `App.tsx` + `ApprovalsScreen.tsx`, tested). Remaining: native inline Approve/Reject actions (iOS NSE + Android actions + EAS dev build — gated on #360/#404). |
 | [#399](https://github.com/jayzalowitz/skytwin/issues/399) | ⬜ not started | — | yes | Opt-in crash reporting (P3) |
 | [#400](https://github.com/jayzalowitz/skytwin/issues/400) | ✅ closed | done | yes | Backup/restore CLI shipped with an encrypted authenticated archive and atomic fresh-user restore. |
-| [#401](https://github.com/jayzalowitz/skytwin/issues/401) | ⬜ not started | — | yes | OS-keychain for vault passphrase (P3) — pairs with #374 |
+| [#401](https://github.com/jayzalowitz/skytwin/issues/401) | ✅ design resolved | — | yes | ADR 0001 defines mandatory recovery wrapping plus opt-in reviewed OS protection; #374 runtime activation remains open |
 | [#402](https://github.com/jayzalowitz/skytwin/issues/402) | 🟡 partial | — | yes | axe-core CI on web routes is code-fixable; full manual a11y is post-launch |
 | [#403](https://github.com/jayzalowitz/skytwin/issues/403) | ⬜ not started | — | yes | PWA manifest + service worker (P3) |
 | [#404](https://github.com/jayzalowitz/skytwin/issues/404) | ⬜ not started | — | — | EAS TestFlight/Play internal (P3, needs accounts) |
@@ -162,7 +186,11 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 ## Recommended next actions (ordered)
 
 1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359). The certs alone aren't enough — `build.yml` currently skips signing (`CSC_IDENTITY_AUTO_DISCOVERY: 'false'`), so someone must also wire the cert secrets into its `package:*` steps (see launch-plan §1.3). Submit Google OAuth verification (#351) — multi-week.
-2. **Make the #374 ↔ #401 key-management decision**, then implement memory/preference encryption in a reviewed PR. The encryption schema + adapter already exist via #520; what remains is the default-on key-management policy decision.
+2. **Finish #374 without widening its claims:** compose authenticated broker
+   grants and clients against Cockroach custody, migrate only the reviewed source
+   fields, prove recovery/backup/delete/rotation in packaged builds, resolve the
+   searchable-memory boundary, and complete the bake gate. ADR 0001 has already
+   resolved the #401 custody decision.
 3. **Mobile cut-or-commit (#360):** decide whether mobile ships at launch. If yes: commission icon/splash assets (#409), land the EAS config + CI (#369/#404), then the native inline notification actions (#387's remaining half). If no: descope to a fast-follow.
 
 **Done since the 2026-06-14 audit (2026-06-16 update):** auto-update code half + user-facing banner/menu (#370, #523 — closed); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.

@@ -38,11 +38,11 @@ const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
   "38c0b78baaa27b6115a00491e22307ac5ea65989a343842911fcea3f44915f6c";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "98e650d8c856c73134fcc50d627d91f1799220c1e363d1b88729a26289442c48";
+  "797e91400d3df64dfe4aeb5c3eb3c71e163a6ee8f85814c6dc209f68ad8e0eb6";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "fcc6813a5c9152feec632c0b4bb1ac33c25a5c4d8bbe6f8daeffecef4cb4b59d";
+  "eac694748a39a4cb2ccd83b7dd56230a9a1d0bc921871341c09afc9b64e335ad";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -966,7 +966,7 @@ export function sqlTextCandidates(source) {
   const candidates = [];
   let hasQueryCall = false;
   const sqlStart =
-    /^\s*(?:SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|TRUNCATE|FROM|JOIN|INTO|REFERENCES)\b/i;
+    /^\s*(?:SELECT|INSERT|UPSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP|TRUNCATE|FROM|JOIN|INTO|REFERENCES)\b/i;
   function visit(node) {
     if (
       ts.isCallExpression(node) &&

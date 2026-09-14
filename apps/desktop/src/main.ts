@@ -27,8 +27,35 @@ import {
   setCrashReportsEnabled,
 } from './desktop-preferences.js';
 import { reportCrash } from './crash-reporter.js';
+import {
+  DesktopKeyBroker,
+  type DeviceWrapperStore,
+  PersistentWrappedKeyStore,
+  type WrappedKeyValueStore,
+  type WrappedUserKey,
+} from './key-broker.js';
+import { installVaultNavigationGuards } from './vault-renderer-security.js';
 
-const serviceManager = new ServiceManager();
+// This store contains passphrase-wrapped random root keys, never passphrases or
+// plaintext root keys. Source-field migration remains disabled until the
+// broker boundary has completed its packaged verification gate.
+const wrappedKeyStore = new PersistentWrappedKeyStore(new Store<Record<string, WrappedUserKey>>({
+  name: 'skytwin-wrapped-user-keys',
+}) as unknown as WrappedKeyValueStore);
+const electronDeviceKeyStore = new Store<Record<string, string>>({
+  name: 'skytwin-device-user-keys',
+});
+const deviceKeyStore: DeviceWrapperStore = {
+  get: (key) => electronDeviceKeyStore.get(key),
+  set: (key, value) => electronDeviceKeyStore.set(key, value),
+  delete: (key) => electronDeviceKeyStore.delete(key),
+  keys: () => Object.keys(electronDeviceKeyStore.store),
+};
+const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
+  deviceProtection: safeStorage,
+  deviceStore: deviceKeyStore,
+});
+const serviceManager = new ServiceManager(keyBroker);
 
 // Secure-device-backed "remember my vault passphrase" store (#401). Persists
 // safeStorage ciphertext only when a reviewed OS credential backend is active;
@@ -101,6 +128,10 @@ function createMainWindow(): BrowserWindow {
       contextIsolation: true,
     },
   });
+
+  // The preload carries privileged local APIs. Never retain it after a
+  // navigation away from the loopback dashboard.
+  installVaultNavigationGuards(win.webContents, destination => shell.openExternal(destination));
 
   // Restore maximized state
   if (saved.isMaximized) {
@@ -192,6 +223,10 @@ async function startApp(): Promise<void> {
   // Purge every legacy, unsupported, or backend-mismatched remembered secret
   // before the renderer can request one, including records for inactive users.
   passphraseVault.purgeUntrustedEntries();
+  const devicePurge = keyBroker.purgeUntrustedDeviceWrappers();
+  if (!devicePurge.success) {
+    console.warn('[desktop] Source-vault device-wrapper purge failed closed');
+  }
 
   // First-launch dependency check
   const depsOk = await runFirstLaunchChecks();

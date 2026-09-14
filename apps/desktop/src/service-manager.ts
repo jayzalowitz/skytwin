@@ -6,7 +6,12 @@ import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { CockroachManager, type CockroachStartResult } from './cockroach-manager.js';
 import { computeBundleMarker } from './bundle-marker.js';
-import { extractionDone, extractionProgress, type ExtractionProgress } from './extraction-progress.js';
+import { DesktopKeyBroker } from './key-broker.js';
+import {
+  extractionDone,
+  extractionProgress,
+  type ExtractionProgress,
+} from './extraction-progress.js';
 import { verifyServiceInstanceProof } from './service-instance-proof.js';
 
 export type ProcessState = 'running' | 'stopped' | 'starting' | 'error' | 'paused';
@@ -262,7 +267,7 @@ export class ServiceManager {
   private readonly terminatingProcesses = new WeakMap<ChildProcess, Promise<void>>();
   private readonly recoveringApiGenerations = new WeakSet<ApiGeneration>();
 
-  constructor() {
+  constructor(private readonly keyBroker: DesktopKeyBroker | null = null) {
     this.cockroach.setAuthorityLossHandler((generation) => {
       const startup = this.activeDatabaseStartup;
       if (startup?.ownership === 'managed-child' && startup.generation === generation) {
@@ -1504,6 +1509,9 @@ export class ServiceManager {
         controller: new AbortController(),
       };
       this.apiGeneration = generation;
+      // User grants are populated by the authenticated broker client in the
+      // source-migration slice. An empty set is deliberately fail closed.
+      this.keyBroker?.attachChild(apiProcess, 'api', new Set());
 
       apiProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
@@ -1906,6 +1914,7 @@ export class ServiceManager {
       });
       this.worker.process = workerProcess;
       this.workerApiGeneration = apiGeneration;
+      this.keyBroker?.attachChild(workerProcess, 'worker', new Set());
 
       workerProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);
