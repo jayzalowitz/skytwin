@@ -134,7 +134,7 @@ describe.skipIf(!E2E)('AI provider reasoning mutations on CockroachDB', () => {
       'SELECT base_url FROM ai_provider_settings WHERE user_id = $1',
       [userId],
     );
-    expect(stored.rows).toEqual([{ base_url: 'http://localhost:11434/' }]);
+    expect(stored.rows).toEqual([{ base_url: 'http://localhost:11434' }]);
   });
 
   it('binds an omitted Ollama credential to the literal runtime default', async () => {

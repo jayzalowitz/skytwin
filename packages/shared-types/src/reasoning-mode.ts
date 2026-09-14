@@ -108,6 +108,9 @@ export function canonicalizeProviderBaseUrl(
   if (parsed.hostname.endsWith('.')) {
     parsed.hostname = parsed.hostname.slice(0, -1);
   }
+  if (parsed.pathname === '/' && parsed.search.length === 0 && parsed.hash.length === 0) {
+    return parsed.origin;
+  }
   return parsed.toString();
 }
 

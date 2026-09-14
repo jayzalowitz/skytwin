@@ -6,6 +6,7 @@ import {
 import { generate as openaiGenerate } from '../providers/openai.js';
 import { generate as googleGenerate } from '../providers/google.js';
 import { generate as ollamaGenerate } from '../providers/ollama.js';
+import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
 
 // Issue #149 — verify each provider correctly translates `string |
 // ChatMessage[]` into its native chat-completion wire format. Tests
@@ -137,6 +138,15 @@ describe('OpenAI provider — multi-turn translation', () => {
     ]);
   });
 
+  it('appends one API path separator to a canonical origin-only base URL', async () => {
+    const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
+    vi.stubGlobal('fetch', spy);
+    await openaiGenerate('key', 'gpt-test', 'hello', {
+      baseUrl: canonicalizeProviderBaseUrl('https://93.184.216.34/'),
+    });
+    expect(captured[0]!.url).toBe('https://93.184.216.34/v1/chat/completions');
+  });
+
   it('passes a ChatMessage[] through unchanged', async () => {
     const { spy, captured } = captureFetch({ choices: [{ message: { content: 'ok' } }] });
     vi.stubGlobal('fetch', spy);
@@ -257,6 +267,15 @@ describe('Ollama provider — switched to /api/chat', () => {
     expect(captured[0]!.url).toContain('/api/chat');
     expect(captured[0]!.url).not.toContain('/api/generate');
     expect(captured[0]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+  });
+
+  it('appends one API path separator to a canonicalized loopback base URL', async () => {
+    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'llama-test', 'hello', {
+      baseUrl: canonicalizeProviderBaseUrl('http://127.1:11434/'),
+    });
+    expect(captured[0]!.url).toBe('http://127.0.0.1:11434/api/chat');
   });
 
   it('rejects redirects from the default loopback endpoint', async () => {

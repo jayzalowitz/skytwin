@@ -80,7 +80,7 @@ describe('atomic reasoning-mode provider replacement', () => {
     );
 
     expect(clientQueryMock.mock.calls[3]![1]).toEqual([
-      'user-1', 'ollama', '', 'qwen', 'http://127.0.0.1:11434/', 0, true,
+      'user-1', 'ollama', '', 'qwen', 'http://127.0.0.1:11434', 0, true,
     ]);
   });
 
