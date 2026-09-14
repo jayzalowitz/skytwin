@@ -380,20 +380,42 @@ describe('LlmClient', () => {
       expect(mockOpenaiGenerate).not.toHaveBeenCalled();
     });
 
-    it('may fall back to a priced local provider without invoking an unpriced remote one', async () => {
-      const { LlmClient } = await freshImport();
+    it('does not assume loopback Ollama is zero-priced in bring-your-own mode', async () => {
+      const { LlmClient, AllProvidersFailedError } = await freshImport();
       const local: ProviderEntry = { name: 'ollama', apiKey: '', model: 'qwen' };
       mockOpenaiGenerate.mockResolvedValue('must not run');
-      mockOllamaGenerate.mockResolvedValue('local result');
+      mockOllamaGenerate.mockResolvedValue('must not run');
       const client = LlmClient.forReasoningMode(
         'bring_your_own_provider', [openaiProvider, local], 'user-priced-fallback',
+      );
+      await expect(client.generate('background decision')).rejects.toBeInstanceOf(
+        AllProvidersFailedError,
+      );
+      await expect(client.generate('background decision')).rejects.toMatchObject({
+        attempted: ['openai(price-unavailable)', 'ollama(price-unavailable)'],
+      });
+      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
+      expect(mockOllamaGenerate).not.toHaveBeenCalled();
+    });
+
+    it('runs source-constrained Ollama unattended in on-device mode', async () => {
+      const { LlmClient } = await freshImport();
+      const local: ProviderEntry = { name: 'ollama', apiKey: '', model: 'qwen' };
+      mockOllamaGenerate.mockResolvedValue('local result');
+      const client = LlmClient.forReasoningMode(
+        'on_device', [local], 'user-local-unattended',
       );
       await expect(client.generate('background decision')).resolves.toMatchObject({
         provider: 'ollama',
         execution: { capabilities: { executionLocation: 'on_device' } },
       });
-      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
       expect(mockOllamaGenerate).toHaveBeenCalledOnce();
+      expect(mockOllamaGenerate).toHaveBeenCalledWith(
+        '',
+        'qwen',
+        'background decision',
+        expect.objectContaining({ reasoningMode: 'on_device' }),
+      );
     });
 
     it('fails closed when the only on-device runtime is unavailable', async () => {

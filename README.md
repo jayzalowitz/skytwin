@@ -204,6 +204,12 @@ The defaults start SkyTwin without any LLM API keys or Docker. Local inference s
 | `SKYTWIN_REASONING_MODE` | Pin the environment-driven chain to `on_device` or `bring_your_own_provider`. Mixed local/remote chains require this explicit choice; `verified_private_cloud` remains unavailable until a verified adapter ships. |
 | `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
 
+On-device Ollama requires Ollama 0.18 or newer. SkyTwin adds Ollama's
+request-scoped `:local` source selector to every on-device call and never
+retries the unqualified model name; this prevents a loopback daemon from
+relaying a remote-backed model alias. For defense in depth, disable Ollama
+Cloud globally with `OLLAMA_NO_CLOUD=1` or `disable_ollama_cloud: true`.
+
 ### Manual setup
 
 If you'd rather drive each step yourself:
@@ -436,7 +442,7 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - A fully populated development demo seed with mock approval actions, plus a separate guarded sample session for packaged desktop builds. Its database-backed surface is read-only; a dedicated simulation can approve, reject, or correct fixed proposals and demonstrate session-local learning without invoking real connectors, providers, credentials, or execution adapters. Current published installers predate this packaged sample path.
 - Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, persists memory-derived action opportunities, routes them through policy plus IronClaw/OpenClaw/Direct execution, reports queued/executed/blocked/learning-needed outcomes, and offers a "Power view" toggle for the technical detail behind each call
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
-- Mode-scoped model reasoning: on-device embedded/Ollama or an explicitly selected provider chain, with fallback contained inside the selected location boundary and deterministic rules when no eligible provider responds
+- Mode-scoped model reasoning: on-device embedded/Ollama or an explicitly selected provider chain, with fallback contained inside the selected location boundary, request-scoped local-only enforcement for Ollama, and deterministic rules when no eligible provider responds
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
 - Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).

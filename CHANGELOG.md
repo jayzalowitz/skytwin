@@ -108,6 +108,12 @@ All notable changes to SkyTwin will be documented in this file.
 - **Unattended inference fails closed when provider price is unknown, stale, invalid, or unbounded.** Interactive requests can use an explicitly selected provider; background decision and briefing work skips unpriced providers and stays inside the selected location boundary. Draft generation also evaluates every possible fallback rather than assuming the cheapest configured provider will answer.
 - **Provider-chain and reasoning-mode updates are atomic.** Both records are written in one CockroachDB transaction. CI executes the legacy migration twice against a real CockroachDB fixture matrix, and downloads the pinned test binary only after verifying its published SHA-256.
 
+### Fixed (post-/review)
+
+- **On-device Ollama can no longer relay a cloud-backed model through its loopback API.** Every on-device request now uses Ollama's request-scoped `:local` source selector, explicit cloud selectors are rejected before transport, remote response metadata fails closed, and there is no unqualified retry. Ollama in bring-your-own-provider mode is conservatively classified as remote and unknown-priced, so unattended inference cannot treat a potentially relayed request as free. The supported local boundary requires Ollama 0.18 or newer; daemon-wide cloud disablement remains recommended defense in depth.
+- **Provider transport and settings boundaries now fail closed under edge conditions found during review.** Default Ollama calls deny redirects, DNS resolution obeys request cancellation, early Anthropic stream termination aborts and cancels the body, provider priorities cannot implicitly select a reasoning location, null/default endpoints round-trip safely, and persisted custom endpoints are canonicalized without creating doubled API-path separators.
+- **Cost and migration decisions use the exact admitted state.** Draft-email pricing comes from the frozen provider chain used for dispatch, disabled offline endpoints remain recoverable without weakening validation when enabled or tested, credential reuse is authority-bound after URL canonicalization, and the legacy SQL migration leaves ambiguous URL spellings confirmation-required.
+
 ## [0.6.102.0] - 2026-08-27
 
 ### Added

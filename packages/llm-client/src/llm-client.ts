@@ -28,6 +28,7 @@ import {
   isPricingUsableForUnattended,
   providerPrivacyCapabilities,
   providersForReasoningMode,
+  ProviderModePolicyError,
 } from './provider-privacy.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
@@ -158,7 +159,7 @@ export class LlmClient {
     invocationId: string,
     executionPath: readonly ProviderExecutionAttempt[],
   ): ProviderExecutionMetadata {
-    const capabilities = providerPrivacyCapabilities(provider);
+    const capabilities = providerPrivacyCapabilities(provider, this.reasoningMode);
     return {
       reasoningMode: this.reasoningMode,
       provider: provider.name,
@@ -180,7 +181,7 @@ export class LlmClient {
 
   private canRunUnattended(provider: ProviderEntry, nowMs = Date.now()): boolean {
     return isPricingUsableForUnattended(
-      providerPrivacyCapabilities(provider).pricing,
+      providerPrivacyCapabilities(provider, this.reasoningMode).pricing,
       nowMs,
     );
   }
@@ -223,7 +224,11 @@ export class LlmClient {
           provider.apiKey,
           provider.model,
           prompt,
-          Object.freeze({ ...invocation, baseUrl: provider.baseUrl }),
+          Object.freeze({
+            ...invocation,
+            baseUrl: provider.baseUrl,
+            reasoningMode: this.reasoningMode,
+          }),
         );
         circuitBreaker.recordSuccess();
         executionPath.push({ provider: provider.name, outcome: 'succeeded' });
@@ -236,7 +241,9 @@ export class LlmClient {
           execution: this.executionMetadata(provider, invocationId, executionPath.slice()),
         };
       } catch (err) {
-        circuitBreaker.recordFailure();
+        if (!(err instanceof ProviderModePolicyError)) {
+          circuitBreaker.recordFailure();
+        }
         executionPath.push({ provider: provider.name, outcome: 'failed' });
         console.warn(
           `[llm] ${provider.name} failed (${Date.now() - start}ms): ${err instanceof Error ? err.message : String(err)}`,
@@ -301,7 +308,11 @@ export class LlmClient {
           provider.apiKey,
           provider.model,
           prompt,
-          Object.freeze({ ...invocation, baseUrl: provider.baseUrl }),
+          Object.freeze({
+            ...invocation,
+            baseUrl: provider.baseUrl,
+            reasoningMode: this.reasoningMode,
+          }),
         )) {
           if (chunk.length === 0) continue;
           firstChunkSeen = true;
@@ -320,7 +331,9 @@ export class LlmClient {
         };
         return;
       } catch (err) {
-        circuitBreaker.recordFailure();
+        if (!(err instanceof ProviderModePolicyError)) {
+          circuitBreaker.recordFailure();
+        }
         executionPath.push({ provider: provider.name, outcome: 'failed' });
         if (firstChunkSeen) {
           // Re-throw — caller already saw partial output, can't silently
@@ -357,7 +370,12 @@ export class LlmClient {
       admitted.apiKey,
       admitted.model,
       'Respond with exactly: OK',
-      { maxTokens: 10, temperature: 0, baseUrl: admitted.baseUrl },
+      {
+        maxTokens: 10,
+        temperature: 0,
+        baseUrl: admitted.baseUrl,
+        reasoningMode: scoped.mode,
+      },
     );
 
     return { latencyMs: Date.now() - start, model: admitted.model };
@@ -374,7 +392,7 @@ export class LlmClient {
   getProviderPricingSnapshot(): readonly Readonly<ProviderPricingSnapshot>[] {
     return Object.freeze(this.chain.map(({ provider }) => Object.freeze({
       provider: provider.name,
-      pricing: providerPrivacyCapabilities(provider).pricing,
+      pricing: providerPrivacyCapabilities(provider, this.reasoningMode).pricing,
     })));
   }
 }

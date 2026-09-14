@@ -423,6 +423,46 @@ describe('reasoning-mode provider mutations', () => {
     expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
   });
 
+  it('rejects an Ollama Cloud model before replacing an on-device chain', async () => {
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'on_device',
+      providers: [{
+        provider: 'ollama', model: 'gpt-oss:120b-cloud', priority: 0, enabled: true,
+      }],
+    });
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      error: 'Ollama Cloud models are not eligible for on-device reasoning',
+    });
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
+  });
+
+  it('discloses loopback Ollama conservatively in bring-your-own mode', async () => {
+    mockUserRepository.findById.mockResolvedValue({
+      id: userId, trust_tier: 'suggest', ironclaw_channel: 'skytwin', autonomy_settings: {},
+    });
+    mockDomainAutonomyRepository.getForUser.mockResolvedValue([]);
+    mockEscalationTriggerRepository.getForUser.mockResolvedValue([]);
+    mockAiProviderRepository.getReasoningSnapshotForUser.mockResolvedValue({
+      providers: [{
+        provider: 'ollama', api_key: '', model: 'qwen', base_url: null,
+        priority: 0, enabled: true,
+      }],
+      reasoningMode: { mode: 'bring_your_own_provider', requires_confirmation: false },
+    });
+
+    const response = await request(app, 'GET', `/api/settings/${userId}`);
+    expect(response.status).toBe(200);
+    expect(response.body).toMatchObject({
+      aiProviders: [{
+        privacy: {
+          executionLocation: 'remote_service',
+          pricing: { kind: 'unknown' },
+        },
+      }],
+    });
+  });
+
   it('ignores disabled remote entries when enforcing an on-device chain', async () => {
     const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
       reasoningMode: 'on_device',

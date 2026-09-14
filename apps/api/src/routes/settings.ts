@@ -124,7 +124,7 @@ export function createSettingsRouter(): Router {
             enabled: p.enabled,
             hasApiKey: p.api_key.length > 0,
             apiKeyPreview: p.api_key.length > 8 ? `${p.api_key.slice(0, 4)}${'•'.repeat(8)}${p.api_key.slice(-4)}` : (p.api_key.length > 0 ? '••••••••' : ''),
-            privacy: entry ? providerPrivacyCapabilities(entry) : null,
+            privacy: entry ? providerPrivacyCapabilities(entry, reasoningMode.mode) : null,
           };
         }),
         reasoningMode: {

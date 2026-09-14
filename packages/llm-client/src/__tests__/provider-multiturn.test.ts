@@ -263,9 +263,10 @@ describe('Ollama provider — switched to /api/chat', () => {
   it('hits /api/chat (not /api/generate) and sends a messages array', async () => {
     const { spy, captured } = captureFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
-    await ollamaGenerate('', 'llama-test', 'hello');
+    await ollamaGenerate('', 'llama-test', 'hello', { reasoningMode: 'on_device' });
     expect(captured[0]!.url).toContain('/api/chat');
     expect(captured[0]!.url).not.toContain('/api/generate');
+    expect(captured[0]!.body.model).toBe('llama-test:local');
     expect(captured[0]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
   });
 
@@ -274,6 +275,7 @@ describe('Ollama provider — switched to /api/chat', () => {
     vi.stubGlobal('fetch', spy);
     await ollamaGenerate('', 'llama-test', 'hello', {
       baseUrl: canonicalizeProviderBaseUrl('http://127.1:11434/'),
+      reasoningMode: 'on_device',
     });
     expect(captured[0]!.url).toBe('http://127.0.0.1:11434/api/chat');
   });
@@ -285,13 +287,63 @@ describe('Ollama provider — switched to /api/chat', () => {
     }));
     vi.stubGlobal('fetch', spy);
 
-    await expect(ollamaGenerate('', 'llama-test', 'private prompt')).rejects.toThrow(
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+    })).rejects.toThrow(
       'Redirects are not allowed',
     );
-    expect(spy).toHaveBeenCalledWith(
+    expect(spy).toHaveBeenLastCalledWith(
       'http://127.0.0.1:11434/api/chat',
       expect.objectContaining({ redirect: 'manual', dispatcher: expect.any(Object) }),
     );
+  });
+
+  it('source-qualifies arbitrary aliases for on-device execution', async () => {
+    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'private-alias', 'private prompt', {
+      reasoningMode: 'on_device',
+    });
+    expect(captured[0]!.body.model).toBe('private-alias:local');
+  });
+
+  it('does not add a second local source selector', async () => {
+    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'llama-test:LOCAL', 'private prompt', {
+      reasoningMode: 'on_device',
+    });
+    expect(captured[0]!.body.model).toBe('llama-test:local');
+  });
+
+  it('rejects explicit cloud selectors before making an on-device request', async () => {
+    const spy = vi.fn();
+    vi.stubGlobal('fetch', spy);
+    await expect(ollamaGenerate('', 'gpt-oss:120b-cloud', 'private prompt', {
+      reasoningMode: 'on_device',
+    })).rejects.toThrow('not eligible for on-device reasoning');
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('preserves the configured model for bring-your-own-provider requests', async () => {
+    const { spy, captured } = captureFetch({ message: { content: 'ok' } });
+    vi.stubGlobal('fetch', spy);
+    await ollamaGenerate('', 'qwen3:cloud', 'intentional remote prompt', {
+      reasoningMode: 'bring_your_own_provider',
+    });
+    expect(captured[0]!.body.model).toBe('qwen3:cloud');
+  });
+
+  it('rejects unexpected remote-execution metadata on an on-device response', async () => {
+    const { spy } = captureFetch({
+      message: { content: 'must not return' },
+      remote_host: 'https://ollama.com',
+      remote_model: 'remote-model',
+    });
+    vi.stubGlobal('fetch', spy);
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+    })).rejects.toThrow('reported remote inference');
   });
 
   it('passes a multi-turn ChatMessage[] through unchanged', async () => {

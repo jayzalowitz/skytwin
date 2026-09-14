@@ -408,7 +408,7 @@ export async function renderSettings(container, userId) {
             <option value="anthropic">Anthropic (Claude)</option>
             <option value="openai">OpenAI (GPT)</option>
             <option value="google">Google (Gemini)</option>
-            <option value="ollama">Local AI on this machine (Ollama)</option>
+            <option value="ollama">Ollama (local-only in On this device mode)</option>
             <option value="embedded">Embedded (llama.cpp, no install)</option>
           </select>
         </div>
@@ -1651,15 +1651,15 @@ const PROVIDER_LABELS = {
   anthropic: 'Anthropic (Claude)',
   openai: 'OpenAI (GPT)',
   google: 'Google (Gemini)',
-  ollama: 'Ollama (local)',
+  ollama: 'Ollama',
   embedded: 'Embedded (llama.cpp)',
 };
 
 // #187 AC#6: providers that count as "Smarter" — i.e. external paid APIs
 // the user is choosing to delegate the harder thinking to. `ollama` lives
-// on a third rail: it's local like `embedded` but the user installed it
-// themselves, so we treat it as Smarter too (the operator chose it
-// deliberately and may have a beefier model than the embedded default).
+// on a third rail: it is request-constrained to local execution in on-device
+// mode, but may relay remotely in bring-your-own-provider mode. Either way,
+// the operator chose it deliberately and it may be stronger than embedded.
 const SMARTER_PROVIDERS = new Set(['anthropic', 'openai', 'google', 'ollama']);
 
 /**
@@ -1762,9 +1762,9 @@ function renderReasoningLocation(settingsAvailable = true) {
     `;
   }
   const disclosure = _reasoningMode === 'on_device'
-    ? 'Prompts stay on this device. Only the embedded runtime and loopback Ollama endpoints are eligible.'
+    ? 'Prompts stay on this device. The embedded runtime is local; loopback Ollama requests are source-qualified as local so its daemon cannot relay them to a cloud model.'
     : _reasoningMode === 'bring_your_own_provider'
-      ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Local entries stay local; remote entries follow their operator’s terms. This mode makes no confidential-computing claim.'
+      ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Embedded inference stays local; Ollama may relay through its operator, so this mode treats it as potentially remote. This mode makes no confidential-computing claim.'
       : 'This mode requires a successfully verified confidential-computing adapter for every request. No eligible adapter is available in this build.';
   return `
     <div style="padding: 0.75rem; margin-bottom: 0.75rem; background: var(--bg); border: 1px solid ${_reasoningModeRequiresConfirmation ? 'var(--warning)' : 'var(--border)'}; border-radius: 8px;">

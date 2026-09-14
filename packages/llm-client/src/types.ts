@@ -2,6 +2,7 @@ import type {
   AIProviderName,
   ProviderExecutionMetadata,
   ProviderPricingCapability,
+  ReasoningMode,
 } from '@skytwin/shared-types';
 
 /**
@@ -73,7 +74,7 @@ export type ProviderGenerateFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
 ) => Promise<string>;
 
 /**
@@ -110,5 +111,5 @@ export type ProviderStreamFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
 ) => AsyncIterable<string>;
