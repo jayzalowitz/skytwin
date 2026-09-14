@@ -36,13 +36,13 @@ const EXPECTED_SOURCES = [
 const EXPECTED_MIGRATION_RUNNER = "packages/db/src/migrations/001-initial.ts";
 const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
-  "38c0b78baaa27b6115a00491e22307ac5ea65989a343842911fcea3f44915f6c";
+  "bcb1633cd79c01ec5356b8aad9a143f579b8f1877ced249bb109d2e45e0f3c18";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "c8ab65b82d4302366adafa4c7d05fa4ac5daa2335c1b6d5eeb96808cf1b80beb";
+  "d59cda2a961cb99874b6995ba47c351b84c30e3dc5d0ebe71dd484f40cd77a92";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "eac694748a39a4cb2ccd83b7dd56230a9a1d0bc921871341c09afc9b64e335ad";
+  "e7881ab78285446a44c0660425b17244887988699c1a98674cf56f9736c74dc1";
 
 const OWNER_KINDS = new Set([
   "user",

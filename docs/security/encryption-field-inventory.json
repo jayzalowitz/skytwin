@@ -116,6 +116,7 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/repositories/ai-provider-repository.ts",
+          "packages/db/src/repositories/reasoning-mode-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts"
         ]
       },
@@ -2948,6 +2949,35 @@
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
           "migrationStage": "disclosed-local-metadata",
           "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "reasoning_mode_settings",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/ai-provider-repository.ts",
+          "packages/db/src/repositories/reasoning-mode-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "mode",
+            "requires_confirmation",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Plaintext policy metadata in CockroachDB today.",
+          "targetProtection": "Remain locally readable so provider admission and fail-closed routing can be decided before any source-field key is released.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "The selected reasoning boundary and confirmation state are local policy controls required to reject ineligible providers while the source-field broker is locked."
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."

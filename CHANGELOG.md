@@ -8,8 +8,8 @@ All notable changes to SkyTwin will be documented in this file.
   0001 defines key custody, locked behavior, context-bound envelopes,
   crash-safe migration and rotation, backup/restore, deletion after key loss,
   the intentionally readable search-derivative boundary, and the supported
-  desktop-beta scope. A machine-readable inventory classifies all 877 columns
-  across the 94 live tables and ties each table to its currently discoverable
+  desktop-beta scope. A machine-readable inventory classifies all 882 columns
+  across the 95 live tables and ties each table to its currently discoverable
   SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
   classification drift, invalid ownership/boundary values, or weakened critical
   credential and dead-letter invariants. This is a reviewed design contract;
@@ -48,7 +48,7 @@ All notable changes to SkyTwin will be documented in this file.
   migration entry points cannot execute an unreviewed SQL path, and unsupported
   CockroachDB table DDL—including implicit-column forms—stops validation rather
   than producing an incomplete field list. Mutation tests bind the exact runner,
-  migration corpus, supported DDL, and 94-table/877-column inventory.
+  migration corpus, supported DDL, and 95-table/882-column inventory.
 
 - **Launch-facing documentation now matches the inactive runtime boundary.** The
   accepted ADR, private child-process IPC, empty production owner grants, and
@@ -94,7 +94,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed (post-/review)
 
 - **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
-- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 now describes the actual checkpoint and boot-reconciliation contract, and the reviewed SQL-corpus digest advances over the combined 94-table, 877-column schema after migration 073.
+- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 now describes the actual checkpoint and boot-reconciliation contract, and the reviewed SQL-corpus digest advances over the combined 95-table, 882-column schema after migration 073.
 
 ## [Unreleased] — Explicit reasoning boundaries
 

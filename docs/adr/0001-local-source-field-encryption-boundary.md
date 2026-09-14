@@ -41,7 +41,7 @@ environment maps, federation private keys, decision and explanation payloads,
 assistant messages, signals, histories, both memory backends, exports, and
 dead-letter context. Execution results and spend records are included as action
 receipts, not treated as harmless operational data. The machine-readable
-inventory classifies all 877 columns across the 94-table live schema as of
+inventory classifies all 882 columns across the 95-table live schema as of
 `073-source-key-registry.sql`; validation fails when a table or column is
 missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
 sequence used by the production
