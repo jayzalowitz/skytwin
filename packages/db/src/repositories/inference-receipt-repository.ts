@@ -8,6 +8,7 @@ import { query } from '../connection.js';
 import type { InferenceReceiptRow, PaginationOptions } from '../types.js';
 
 export interface CreateInferenceReceiptInput {
+  /** Free-form receipt strings must contain identifiers/reasons only, never source content or secrets. */
   bundle: InferenceReceiptExportV1;
   /** Trusted recorder keys come from server configuration, never the bundle. */
   trustedRecorderKeys: ReadonlyMap<string, string>;

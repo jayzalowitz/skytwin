@@ -1931,15 +1931,25 @@
             "decision_id",
             "explanation_id",
             "id",
-            "receipt",
             "status",
             "trusted",
             "version"
           ],
-          "currentProtection": "Locally readable identifiers and signed inference metadata in CockroachDB; the receipt JSON includes provider, model, endpoint identity, request/response hashes, cost and optional billing identity, verification metadata, fallback outcome, and public signatures, but not prompt or response bytes.",
-          "targetProtection": "Remain locally readable for ownership checks, independent integrity verification, audit, backup, and deletion; disclose that provider/model/endpoint/cost metadata can reveal inference activity even without prompt or response content.",
+          "currentProtection": "Locally readable receipt identifiers, status, trust marker, version, and timestamp in CockroachDB.",
+          "targetProtection": "Remain locally readable for ownership checks, lookup, retention, audit, and deletion; disclose that status and linkage reveal receipt activity.",
           "migrationStage": "disclosed-local-metadata",
-          "rationale": "Receipt integrity and display require the canonical signed metadata to remain available without treating it as encrypted source content; user ownership continues to resolve through the linked decision."
+          "rationale": "Receipt lookup and ownership require stable identifiers and status; user ownership continues to resolve through the linked decision."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "receipt"
+          ],
+          "currentProtection": "Locally readable canonical signed JSON in CockroachDB. It includes provider, model, endpoint identity, request/response hashes, cost and optional billing identity, verification metadata, fallback reason, and public signatures. There are no dedicated prompt or response fields, but arbitrary string fields cannot be proven free of source content or secrets.",
+          "targetProtection": "User-owned versioned authenticated encryption while preserving a narrowly defined readable lookup boundary; callers must still keep source content and secrets out of free-form receipt strings.",
+          "migrationStage": "caller-sanitization-and-encryption-required",
+          "rationale": "The signed record is readable today for verification, audit, backup, and deletion, but its free-form strings make a metadata-only classification unenforceable.",
+          "searchableDerivatives": []
         }
       ],
       "ownershipNotes": "User ownership resolves through the linked decision; repository and API access must preserve that join and scope."

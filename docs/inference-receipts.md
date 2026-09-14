@@ -1,10 +1,13 @@
 # Inference receipts
 
-SkyTwin's version-1 inference receipt is a signed, metadata-only record linked
-to one decision and its `ExplanationRecord`. It identifies the reasoning path,
+SkyTwin's version-1 inference receipt is a signed, structured record linked to
+one decision and its `ExplanationRecord`. It identifies the reasoning path,
 provider, model, endpoint, hashes of the exact request and response bytes,
-cost basis, and verification or fallback outcome. It does not store prompts,
-responses, credentials, chain-of-thought, or complete attestation documents.
+cost basis, and verification or fallback outcome. It has no dedicated fields
+for prompts, responses, credentials, chain-of-thought, or complete attestation
+documents. Several identifier and reason fields are free-form strings, however,
+so integrators must not place source content or secrets in them. The contract
+cannot determine whether an arbitrary string contains sensitive content.
 
 This first slice provides the contract, a repository create boundary that
 requires caller-supplied recorder trust roots, owner-scoped read/delete
@@ -21,7 +24,7 @@ reasoning selector.
 
 An export bundle contains the canonical signed receipt plus the exact request,
 response, and (for confidential verification) minimum evidence bytes. The
-product does not create or export this bundle in this slice: the metadata-only
+product does not create or export this bundle in this slice: the receipt
 receipt GET route cannot be used as verifier input. Integrators and developers
 can construct a bundle against the versioned library contract and run the
 verifier from a built source checkout without starting the API or web UI:
@@ -75,9 +78,12 @@ provider-specific verifier through the library API.
 
 Receipt rows contain identifiers and inference metadata, including provider,
 model, endpoint identity, hashes, cost and optional billing identity,
-verification metadata, and public signatures. They are not application-level
-encrypted; operators should use full-disk encryption, as documented in the
-privacy policy. They cascade-delete with their decision or user and can be
+verification metadata, and public signatures. Free-form receipt strings must
+not contain source content or secrets, but this requirement is not mechanically
+enforceable for arbitrary strings. The receipt JSON is therefore conservatively
+treated as potentially source-bearing and is not application-level encrypted;
+operators should use full-disk encryption, as documented in the privacy policy.
+Rows cascade-delete with their decision or user and can be
 explicitly deleted atomically through the authenticated
 `DELETE /api/decisions/:decisionId/receipt` route. User backups include the
 canonical receipt metadata; restore verifies its self-contained metadata seal

@@ -36,8 +36,9 @@ export interface ReceiptSignatureV1 {
 }
 
 /**
- * Metadata-only audit record. Request, response, credentials, chain-of-thought,
- * and full attestation evidence are deliberately excluded.
+ * Structured audit record with no dedicated request, response, credential,
+ * chain-of-thought, or full-attestation fields. Callers must not place that
+ * content in free-form identifiers or fallback reasons.
  */
 export interface InferenceReceiptV1 {
   version: 1;

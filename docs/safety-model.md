@@ -397,7 +397,11 @@ Every decision in the pipeline produces an audit trail:
 ### Inference Receipt Foundation
 
 The versioned [inference receipt contract](inference-receipts.md) is a separate,
-metadata-only record for reasoning-path integrity. Its repository boundary can
+structured record for reasoning-path integrity with no dedicated prompt or
+response fields. Its free-form strings must not carry source content or secrets,
+and the local encryption inventory conservatively treats the JSON as potentially
+source-bearing because that caller obligation cannot be mechanically inferred.
+Its repository boundary can
 persist only a receipt that verifies against caller-supplied recorder trust
 roots; a confidential `verified` status additionally requires a pinned provider
 key and provider-specific attestation policy. Verification never authorizes an

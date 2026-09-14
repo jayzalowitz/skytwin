@@ -5,7 +5,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Added
 
 - **A versioned inference-receipt foundation now separates integrity from
-  trust.** The metadata-only signed contract has a developer/library verifier
+  trust.** The structured signed contract has a developer/library verifier
   for exact externally supplied request, response, and evidence bytes; its
   repository create boundary requires caller-supplied recorder roots and, for a
   confidential result, a provider key plus provider-specific attestation
@@ -16,13 +16,14 @@ All notable changes to SkyTwin will be documented in this file.
   product claim. The source-checkout command and those limitations are
   documented in [`docs/inference-receipts.md`](docs/inference-receipts.md).
 
-- **The local encryption inventory now includes receipt metadata.** Migration
+- **The local encryption inventory now includes receipt storage.** Migration
   074 advances the reviewed SQL corpus to 95 tables and 885 columns. The signed
   receipt JSON—including provider, model, endpoint, hashes, cost or optional
-  billing identity, verification metadata, and public signatures—is classified
-  as locally readable, unencrypted metadata rather than source content. The
-  privacy policy discloses that leakage and the decision/user cascade-deletion
-  boundary.
+  billing identity, verification metadata, and public signatures—is locally
+  readable and unencrypted. Because its free-form strings cannot be proven free
+  of source content or secrets, the inventory conservatively classifies the
+  JSON column as deferred source data. The privacy policy discloses that risk
+  and the decision/user cascade-deletion boundary.
 
 ## [Unreleased] — Local encryption boundary
 
