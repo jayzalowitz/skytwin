@@ -30,7 +30,7 @@ These capabilities are present on `main`. Release support remains governed by th
 ### 1.1 Finish the evidence-gated release train
 **Dependency:** reviewed release consumer plus current-run evidence producers.
 
-The release consumer must remain fail-closed while the producer work lands. The remaining producer scope includes the `release-claims-ci` artifact, canonical claim/platform machine-verifier jobs and reports, signing/notarization proof, an SPDX 2.3 release SBOM, checksums and verification instructions, and source-bound provenance attestations. Each machine report must bind the exact successful producer job, reviewed verifier source digest, command, release artifact, tag run, and structured observations. The authoritative completion state is `docs/beta-claim-ledger.json`; none of its stop-ship conditions may be waived informally.
+The release consumer must remain fail-closed while the producer work lands. The native claim/platform matrix and exclusive evidence aggregator are scaffolded; remaining producer scope includes their reviewed verifier implementations and reports, the `release-claims-ci` artifact, signing/notarization proof, an SPDX 2.3 release SBOM, checksums and verification instructions, and source-bound provenance attestations. Each machine report must bind the exact successful native producer job, reviewed verifier source digest and command, release artifact, tag run, and structured observations. The authoritative completion state is `docs/beta-claim-ledger.json`; none of its stop-ship conditions may be waived informally.
 
 ### 1.2 Submit brand verification + Calendar sensitive-scope review
 **Dependency:** public policy pages reachable from `main`. **Owner:** SkyTwin team. **Time:** ~1–3 weeks of Google review.

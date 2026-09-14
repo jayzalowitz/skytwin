@@ -508,10 +508,11 @@ it("rejects missing or unexpected durable evidence paths", async () => {
 it("rejects a missing or digest-changed durable evidence release asset", async () => {
   const { manifestPath, manifestDigest } = fixture();
   for (const mutate of [
-    (assets) => assets.filter(({ name }) => name !== "release.signing.json"),
+    (assets) =>
+      assets.filter(({ name }) => name !== "release.signing.macos.json"),
     (assets) =>
       assets.map((asset) =>
-        asset.name === "release.signing.json"
+        asset.name === "release.signing.macos.json"
           ? { ...asset, digest: `sha256:${"e".repeat(64)}` }
           : asset,
       ),

@@ -57,7 +57,7 @@ Checklist:
 | OAuth consent screen Branding URLs | **done via browser agent** | App name "SkyTwin", homepage/privacy/ToS URLs, `jayzalowitz.github.io` in Authorized domains. |
 | App published (Testing → Production) | **done** (user clicked Publish) | Out of Testing-mode user cap; unverified-app warning still shows until app review clears. |
 | App logo uploaded | **todo** | 120×120 PNG. Required only when we submit for verification (Testing mode skips it). |
-| Submit for brand verification | **todo** | Click "Verify branding" on `https://console.cloud.google.com/auth/branding?project=skytwin-492700`. Cannot submit until GitHub Pages goes live (PR #350 must merge for `/docs` to actually serve). |
+| Submit for brand verification | **todo** | GitHub Pages is live. After the logo and review materials are ready, click "Verify branding" on `https://console.cloud.google.com/auth/branding?project=skytwin-492700`. |
 
 ## Sensitive-scope review for Calendar (cheap, manual)
 

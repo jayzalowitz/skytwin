@@ -19,9 +19,11 @@ import {
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
   SAMPLE_EVIDENCE_PLATFORMS,
+  machineEvidencePlatformFamily,
   machineProducerJobName,
   machineReportNamesForClaim,
   machineVerifierCommand,
@@ -35,8 +37,10 @@ export {
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  machineEvidencePlatformFamily,
   machineProducerJobName,
   machineReportNamesForClaim,
   machineVerifierCommand,
@@ -347,6 +351,53 @@ const SPDX_23_CHECKSUM_ALGORITHMS = new Set([
   "SHA3-512",
   "SHA384",
   "SHA512",
+]);
+const SPDX_23_RELATIONSHIP_TYPES = new Set([
+  "AMENDS",
+  "ANCESTOR_OF",
+  "BUILD_DEPENDENCY_OF",
+  "BUILD_TOOL_OF",
+  "CONTAINED_BY",
+  "CONTAINS",
+  "COPY_OF",
+  "DATA_FILE_OF",
+  "DEPENDENCY_MANIFEST_OF",
+  "DEPENDENCY_OF",
+  "DEPENDENT_OF",
+  "DESCENDANT_OF",
+  "DESCRIBED_BY",
+  "DESCRIBES",
+  "DEV_DEPENDENCY_OF",
+  "DEV_TOOL_OF",
+  "DISTRIBUTION_ARTIFACT",
+  "DOCUMENTATION_OF",
+  "DYNAMIC_LINK",
+  "EXAMPLE_OF",
+  "EXPANDED_FROM_ARCHIVE",
+  "FILE_ADDED",
+  "FILE_DELETED",
+  "FILE_MODIFIED",
+  "GENERATED_FROM",
+  "GENERATES",
+  "HAS_PREREQUISITE",
+  "METAFILE_OF",
+  "OPTIONAL_COMPONENT_OF",
+  "OPTIONAL_DEPENDENCY_OF",
+  "OTHER",
+  "PACKAGE_OF",
+  "PATCH_APPLIED",
+  "PATCH_FOR",
+  "PREREQUISITE_FOR",
+  "PROVIDED_DEPENDENCY_OF",
+  "REQUIREMENT_DESCRIPTION_FOR",
+  "RUNTIME_DEPENDENCY_OF",
+  "SPECIFICATION_FOR",
+  "STATIC_LINK",
+  "TEST_CASE_OF",
+  "TEST_DEPENDENCY_OF",
+  "TEST_OF",
+  "TEST_TOOL_OF",
+  "VARIANT_OF",
 ]);
 const RELEASE_EVIDENCE_WORKFLOW_PATH = ".github/workflows/build.yml";
 const CI_EVIDENCE_JOB_NAME = "release-claim-ci";
@@ -1318,10 +1369,12 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
         errors,
         `${prefix} must use explicit evidenceArtifact* and releaseArtifact* fields`,
       );
-    const expectedReportPath =
-      evidence.claimId === "sample.packaged-account-free"
-        ? `.release-evidence/reports/${evidence.claimId}.${evidence.platform}.json`
-        : `.release-evidence/reports/${evidence.claimId}.json`;
+    const expectedReportPath = [
+      "sample.packaged-account-free",
+      "release.signing",
+    ].includes(evidence.claimId)
+      ? `.release-evidence/reports/${evidence.claimId}.${evidence.platform}.json`
+      : `.release-evidence/reports/${evidence.claimId}.json`;
     if (evidence.reportPath !== expectedReportPath)
       addError(
         errors,
@@ -1701,9 +1754,17 @@ export function verifyCanonicalReleasePublisher(root) {
     if (!isRecord(workflow.jobs)) continue;
     for (const [jobName, job] of Object.entries(workflow.jobs)) {
       if (!isRecord(job)) continue;
+      const isCanonicalMachineProducerPermissions =
+        path === workflowPath &&
+        jobName === "release-machine-evidence" &&
+        isRecord(job.permissions) &&
+        Object.keys(job.permissions).length === 2 &&
+        job.permissions.contents === "read" &&
+        job.permissions.actions === "read";
       if (
         job.permissions !== undefined &&
-        (path !== workflowPath || jobName !== "release")
+        (path !== workflowPath || jobName !== "release") &&
+        !isCanonicalMachineProducerPermissions
       )
         addError(
           errors,
@@ -1818,6 +1879,165 @@ export function verifyCanonicalReleasePublisher(root) {
     return errors;
   }
   const releaseSteps = releaseJob.steps;
+  const hasExactKeys = (value, expectedKeys) =>
+    isRecord(value) &&
+    Object.keys(value).length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(value, key));
+  const machineProducerJob =
+    canonicalWorkflow.jobs?.["release-machine-evidence"];
+  const evidenceAggregatorJob =
+    canonicalWorkflow.jobs?.["aggregate-release-evidence"];
+  const expectedMachineMatrix = CANONICAL_MACHINE_EVIDENCE_MATRIX.map(
+    (entry) => ({ ...entry }),
+  );
+  const producerSteps = isRecord(machineProducerJob)
+    ? machineProducerJob.steps
+    : null;
+  if (
+    !isRecord(machineProducerJob) ||
+    !hasExactKeys(machineProducerJob, [
+      "name",
+      "if",
+      "needs",
+      "permissions",
+      "strategy",
+      "runs-on",
+      "steps",
+    ]) ||
+    machineProducerJob.name !==
+      "release-machine-evidence / ${{ matrix.claimId }} / ${{ matrix.platform }}" ||
+    machineProducerJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
+    machineProducerJob["runs-on"] !== "${{ matrix.runner }}" ||
+    !sameStringSet(machineProducerJob.needs, [
+      "desktop-mac",
+      "desktop-windows",
+      "desktop-linux",
+    ]) ||
+    !hasExactKeys(machineProducerJob.permissions, ["contents", "actions"]) ||
+    machineProducerJob.permissions.contents !== "read" ||
+    machineProducerJob.permissions.actions !== "read" ||
+    !isRecord(machineProducerJob.strategy) ||
+    !hasExactKeys(machineProducerJob.strategy, ["fail-fast", "matrix"]) ||
+    machineProducerJob.strategy["fail-fast"] !== false ||
+    !isRecord(machineProducerJob.strategy.matrix) ||
+    !hasExactKeys(machineProducerJob.strategy.matrix, ["include"]) ||
+    JSON.stringify(machineProducerJob.strategy.matrix.include) !==
+      JSON.stringify(expectedMachineMatrix) ||
+    !Array.isArray(producerSteps) ||
+    producerSteps.length !== 4 ||
+    !isRecord(producerSteps[0]) ||
+    !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
+    producerSteps[0].uses !==
+      "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1" ||
+    !hasExactKeys(producerSteps[0].with, ["persist-credentials"]) ||
+    producerSteps[0].with["persist-credentials"] !== false ||
+    !isRecord(producerSteps[1]) ||
+    !hasExactKeys(producerSteps[1], ["uses", "with"]) ||
+    producerSteps[1].uses !==
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
+    !hasExactKeys(producerSteps[1].with, ["path"]) ||
+    producerSteps[1].with.path !== "artifacts" ||
+    !isRecord(producerSteps[2]) ||
+    !hasExactKeys(producerSteps[2], ["name", "env", "run"]) ||
+    producerSteps[2].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    !hasExactKeys(producerSteps[2].env, ["GITHUB_TOKEN"]) ||
+    producerSteps[2].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[2].run !==
+      "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+    !isRecord(producerSteps[3]) ||
+    !hasExactKeys(producerSteps[3], ["name", "uses", "with"]) ||
+    producerSteps[3].name !== "Upload machine evidence report" ||
+    producerSteps[3].uses !==
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
+    !hasExactKeys(producerSteps[3].with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    producerSteps[3].with.name !==
+      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}" ||
+    producerSteps[3].with.path !==
+      ".release-evidence/reports/${{ matrix.reportName }}" ||
+    producerSteps[3].with["if-no-files-found"] !== "error" ||
+    producerSteps[3].with["compression-level"] !== 0
+  )
+    addError(
+      errors,
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+
+  const aggregatorSteps = isRecord(evidenceAggregatorJob)
+    ? evidenceAggregatorJob.steps
+    : null;
+  if (
+    !isRecord(evidenceAggregatorJob) ||
+    !hasExactKeys(evidenceAggregatorJob, [
+      "name",
+      "if",
+      "needs",
+      "runs-on",
+      "steps",
+    ]) ||
+    evidenceAggregatorJob.name !== "Aggregate release machine evidence" ||
+    evidenceAggregatorJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
+    evidenceAggregatorJob.needs !== "release-machine-evidence" ||
+    evidenceAggregatorJob["runs-on"] !== "ubuntu-24.04" ||
+    !Array.isArray(aggregatorSteps) ||
+    aggregatorSteps.length !== 2 ||
+    !isRecord(aggregatorSteps[0]) ||
+    !hasExactKeys(aggregatorSteps[0], ["name", "uses", "with"]) ||
+    aggregatorSteps[0].name !== "Download machine evidence reports" ||
+    aggregatorSteps[0].uses !==
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
+    !hasExactKeys(aggregatorSteps[0].with, [
+      "pattern",
+      "path",
+      "merge-multiple",
+    ]) ||
+    aggregatorSteps[0].with.pattern !== "release-machine-evidence-*" ||
+    aggregatorSteps[0].with.path !== ".release-evidence/reports" ||
+    aggregatorSteps[0].with["merge-multiple"] !== true ||
+    !isRecord(aggregatorSteps[1]) ||
+    !hasExactKeys(aggregatorSteps[1], ["name", "uses", "with"]) ||
+    aggregatorSteps[1].name !== "Upload aggregated release evidence" ||
+    aggregatorSteps[1].uses !==
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
+    !hasExactKeys(aggregatorSteps[1].with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    aggregatorSteps[1].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
+    aggregatorSteps[1].with.path !== ".release-evidence" ||
+    aggregatorSteps[1].with["if-no-files-found"] !== "error" ||
+    aggregatorSteps[1].with["compression-level"] !== 0
+  )
+    addError(
+      errors,
+      "machine evidence aggregation must be the exact producer-dependent immutable artifact graph",
+    );
+
+  const aggregateUploaders = Object.entries(
+    canonicalWorkflow.jobs ?? {},
+  ).flatMap(([jobName, job]) =>
+    isRecord(job) && Array.isArray(job.steps)
+      ? job.steps
+          .filter(
+            (step) =>
+              isRecord(step) &&
+              String(step.uses ?? "").startsWith("actions/upload-artifact@") &&
+              step.with?.name === MACHINE_EVIDENCE_ARTIFACT_NAME,
+          )
+          .map(() => jobName)
+      : [],
+  );
+  if (!sameStringSet(aggregateUploaders, ["aggregate-release-evidence"]))
+    addError(
+      errors,
+      "only the verified aggregator may upload the release-evidence artifact",
+    );
   const actionIndexes = releaseSteps
     .map((step, index) =>
       isRecord(step) &&
@@ -1951,10 +2171,6 @@ export function verifyCanonicalReleasePublisher(root) {
       "release workflow contains an alternate publisher outside the canonical gated action",
     );
   const installCheckerIndex = stepIndexByName("Install release claim checker");
-  const hasExactKeys = (value, expectedKeys) =>
-    isRecord(value) &&
-    Object.keys(value).length === expectedKeys.length &&
-    expectedKeys.every((key) => Object.hasOwn(value, key));
   const updateFeedStep = releaseSteps[0];
   const checkoutStep = releaseSteps[1];
   const setupNodeStep = releaseSteps[2];
@@ -2014,7 +2230,13 @@ export function verifyCanonicalReleasePublisher(root) {
     releaseJob["timeout-minutes"] !== 30 ||
     !Array.isArray(releaseJob.needs) ||
     releaseJob.needs.join("\n") !==
-      ["test", "desktop-mac", "desktop-windows", "desktop-linux"].join("\n")
+      [
+        "test",
+        "desktop-mac",
+        "desktop-windows",
+        "desktop-linux",
+        "aggregate-release-evidence",
+      ].join("\n")
   )
     addError(
       errors,
@@ -3447,10 +3669,19 @@ export function verifyMachineEvidenceApplicability(
       );
   }
   if (claimId === "release.signing") {
+    const reportPlatform = machineEvidencePlatformFamily(report?.platform);
     const expectedSubjects = asArray(releaseAssets)
       .filter((asset) =>
         ["desktop-installer", "desktop-archive"].includes(asset.kind),
       )
+      .filter((asset) => {
+        const name = String(asset.artifactName ?? "");
+        return (
+          (reportPlatform === "macos" && name.includes("macOS")) ||
+          (reportPlatform === "windows" && name.includes("Windows")) ||
+          (reportPlatform === "linux" && name.includes("Linux"))
+        );
+      })
       .flatMap((asset) =>
         asArray(asset.subjects).map(
           (subject) => `${subject.path}:${subject.sha256}`,
@@ -3463,9 +3694,10 @@ export function verifyMachineEvidenceApplicability(
       .sort();
     if (
       !sameStringSet(actualSubjects, expectedSubjects) ||
+      expectedSubjects.length === 0 ||
       coveredSubjects.some(
         (subject) =>
-          !isNonEmptyString(subject?.platform) ||
+          machineEvidencePlatformFamily(subject?.platform) !== reportPlatform ||
           subject?.signatureResult !== "pass" ||
           (subject.platform.startsWith("macos") &&
             subject.notarizationResult !== "pass"),
@@ -3616,7 +3848,7 @@ export function isValidSpdx23Document(sbom) {
       isNonEmptyString(entry.downloadLocation) &&
       isNonEmptyString(entry.name) &&
       isNonEmptyString(entry.versionInfo) &&
-      typeof entry.filesAnalyzed === "boolean",
+      entry.filesAnalyzed === true,
   );
   const filesValid = sbom.files.every(
     (entry) =>
@@ -3646,7 +3878,7 @@ export function isValidSpdx23Document(sbom) {
       isPlainRecord(relationship) &&
       elementIds.includes(relationship.spdxElementId) &&
       elementIds.includes(relationship.relatedSpdxElement) &&
-      isNonEmptyString(relationship.relationshipType),
+      SPDX_23_RELATIONSHIP_TYPES.has(relationship.relationshipType),
   );
   if (!relationshipsValid) return false;
   const describedPackages = new Set(
@@ -4050,10 +4282,16 @@ export async function verifyPublicationEvidence(
   const seenPairs = new Set();
   for (const [index, evidence] of asArray(manifest?.evidence).entries()) {
     const pair = `${evidence?.claimId}:${evidence?.kind}`;
-    const identity =
-      pair === "sample.packaged-account-free:machine"
-        ? `${pair}:${evidence?.platform ?? "missing"}`
-        : pair;
+    const canonicalMachinePlatforms =
+      evidence?.kind === "machine"
+        ? CANONICAL_MACHINE_EVIDENCE_MATRIX.filter(
+            (entry) => entry.claimId === evidence?.claimId,
+          ).map((entry) => entry.platform)
+        : [];
+    const usesPlatformIdentity = canonicalMachinePlatforms.length > 1;
+    const identity = usesPlatformIdentity
+      ? `${pair}:${evidence?.platform ?? "missing"}`
+      : pair;
     const prefix = `release evidence manifest entry ${index}`;
     if (!requiredPairs.has(pair)) {
       addError(
@@ -4063,12 +4301,12 @@ export async function verifyPublicationEvidence(
       continue;
     }
     if (
-      pair === "sample.packaged-account-free:machine" &&
-      !SAMPLE_EVIDENCE_PLATFORMS.has(evidence?.platform)
+      evidence?.kind === "machine" &&
+      !canonicalMachinePlatforms.includes(evidence?.platform)
     ) {
       addError(
         errors,
-        `${prefix} has unexpected sample evidence platform: ${evidence?.platform ?? "missing"}`,
+        `${prefix} has unexpected canonical machine evidence platform: ${evidence?.platform ?? "missing"}`,
       );
       continue;
     }
@@ -4081,8 +4319,15 @@ export async function verifyPublicationEvidence(
     evidenceEntries.push({ claimId: evidence.claimId, evidence });
   }
   for (const pair of requiredPairs) {
-    if (pair === "sample.packaged-account-free:machine") {
-      for (const platform of SAMPLE_EVIDENCE_PLATFORMS)
+    const [claimId, kind] = pair.split(":");
+    const canonicalMachinePlatforms =
+      kind === "machine"
+        ? CANONICAL_MACHINE_EVIDENCE_MATRIX.filter(
+            (entry) => entry.claimId === claimId,
+          ).map((entry) => entry.platform)
+        : [];
+    if (canonicalMachinePlatforms.length > 1) {
+      for (const platform of canonicalMachinePlatforms)
         if (!seenPairs.has(`${pair}:${platform}`))
           addError(
             errors,
@@ -4539,9 +4784,7 @@ export async function verifyPublicationEvidence(
       report.subjectName !== evidence.subjectName ||
       report.subjectPath !== evidence.subjectPath ||
       report.subjectSha256 !== evidence.subjectSha256 ||
-      report.producerJobId !== evidence.producerJobId ||
       report.producerJobName !== expectedProducerJobName ||
-      report.producerJobConclusion !== "success" ||
       report.verifierPath !== expectedVerifierPath ||
       report.verifierCommand !== expectedVerifierCommand ||
       report.verifierSha256 !== evidence.verifierSha256

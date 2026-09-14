@@ -593,6 +593,111 @@ jobs:
           path: apps/mobile/SkyTwin-iOS-simulator.zip
           if-no-files-found: warn
 
+  # The reviewed machine-verifier scripts land in the evidence-producing
+  # follow-up. Until they exist, tag builds stop here instead of accepting a
+  # hand-authored passing report.
+  release-machine-evidence:
+    name: release-machine-evidence / ${{ matrix.claimId }} / ${{ matrix.platform }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - desktop-mac
+      - desktop-windows
+      - desktop-linux
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - claimId: storage.desktop-crdb
+            platform: macos
+            runner: macos-15
+            reportName: storage.desktop-crdb.json
+          - claimId: inference.on-device-availability
+            platform: macos
+            runner: macos-15
+            reportName: inference.on-device-availability.json
+          - claimId: inference.confidential-verification
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: inference.confidential-verification.json
+          - claimId: network.explicit-boundaries
+            platform: macos
+            runner: macos-15
+            reportName: network.explicit-boundaries.json
+          - claimId: sample.packaged-account-free
+            platform: macos
+            runner: macos-15
+            reportName: sample.packaged-account-free.macos.json
+          - claimId: sample.packaged-account-free
+            platform: windows
+            runner: windows-2025
+            reportName: sample.packaged-account-free.windows.json
+          - claimId: sample.packaged-account-free
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: sample.packaged-account-free.linux.json
+          - claimId: models.verified-delivery
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: models.verified-delivery.json
+          - claimId: release.signing
+            platform: macos
+            runner: macos-15
+            reportName: release.signing.macos.json
+          - claimId: release.signing
+            platform: windows
+            runner: windows-2025
+            reportName: release.signing.windows.json
+          - claimId: release.signing
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: release.signing.linux.json
+          - claimId: release.artifact-verification
+            platform: linux
+            runner: ubuntu-24.04
+            reportName: release.artifact-verification.json
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: artifacts
+      - name: Run canonical machine verifier
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}
+      - name: Upload machine evidence report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}
+          path: .release-evidence/reports/${{ matrix.reportName }}
+          if-no-files-found: error
+          compression-level: 0
+
+  aggregate-release-evidence:
+    name: Aggregate release machine evidence
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-machine-evidence
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download machine evidence reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-machine-evidence-*
+          path: .release-evidence/reports
+          merge-multiple: true
+      - name: Upload aggregated release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-evidence
+          path: .release-evidence
+          if-no-files-found: error
+          compression-level: 0
+
   # ──────────────────────────────────────────────
   # Release — attach all artifacts to GitHub Release on tag push
   # ──────────────────────────────────────────────
@@ -615,6 +720,7 @@ jobs:
       - desktop-mac
       - desktop-windows
       - desktop-linux
+      - aggregate-release-evidence
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release-publication
@@ -732,7 +838,9 @@ jobs:
             .release-evidence/reports/sample.packaged-account-free.windows.json
             .release-evidence/reports/sample.packaged-account-free.linux.json
             .release-evidence/reports/models.verified-delivery.json
-            .release-evidence/reports/release.signing.json
+            .release-evidence/reports/release.signing.macos.json
+            .release-evidence/reports/release.signing.windows.json
+            .release-evidence/reports/release.signing.linux.json
             .release-evidence/reports/release.artifact-verification.json
             .release-evidence/artifact-verification/*
             .release-evidence/manifest.json

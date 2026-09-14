@@ -18,6 +18,7 @@ import {
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
+  CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
   machineProducerJobName,
@@ -89,6 +90,12 @@ function write(root, path, content) {
   const absolute = join(root, path);
   mkdirSync(join(absolute, ".."), { recursive: true });
   writeFileSync(absolute, content);
+}
+
+function replaceLast(content, needle, replacement) {
+  const index = content.lastIndexOf(needle);
+  if (index === -1) return content;
+  return `${content.slice(0, index)}${replacement}${content.slice(index + needle.length)}`;
 }
 
 function makeReleaseAssets(root, startId = 1000) {
@@ -411,6 +418,10 @@ function writeValidFixture(
   const evidenceLines = approvedWorkflowLines.filter(
     (line) => line !== identityLine,
   );
+  const machineMatrix = CANONICAL_MACHINE_EVIDENCE_MATRIX.map(
+    ({ claimId, platform, runner, reportName }) =>
+      `          - claimId: ${claimId}\n            platform: ${platform}\n            runner: ${runner}\n            reportName: ${reportName}`,
+  ).join("\n");
   const workflow = `env:
   ${identityLine}
 permissions:
@@ -419,10 +430,60 @@ concurrency:
   group: build-\${{ github.ref }}
   cancel-in-progress: \${{ !startsWith(github.ref, 'refs/tags/v') }}
 jobs:
+  release-machine-evidence:
+    name: release-machine-evidence / \${{ matrix.claimId }} / \${{ matrix.platform }}
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [desktop-mac, desktop-windows, desktop-linux]
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+${machineMatrix}
+    runs-on: \${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          path: artifacts
+      - name: Run canonical machine verifier
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+        run: node scripts/release-claims/verifiers/\${{ matrix.claimId }}.mjs --platform \${{ matrix.platform }} --output .release-evidence/reports/\${{ matrix.reportName }}
+      - name: Upload machine evidence report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-machine-evidence-\${{ matrix.claimId }}-\${{ matrix.platform }}
+          path: .release-evidence/reports/\${{ matrix.reportName }}
+          if-no-files-found: error
+          compression-level: 0
+  aggregate-release-evidence:
+    name: Aggregate release machine evidence
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-machine-evidence
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download machine evidence reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-machine-evidence-*
+          path: .release-evidence/reports
+          merge-multiple: true
+      - name: Upload aggregated release evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-evidence
+          path: .release-evidence
+          if-no-files-found: error
+          compression-level: 0
   release:
     name: Create GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, desktop-mac, desktop-windows, desktop-linux]
+    needs: [test, desktop-mac, desktop-windows, desktop-linux, aggregate-release-evidence]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release-publication
@@ -513,10 +574,37 @@ ${evidenceLines.map((line) => `          ${line}`).join("\n")}
 }
 
 describe("release claim ledger validation", () => {
+  it("documents tagging from the authoritative ledger target", () => {
+    const procedure = readFileSync(
+      new URL("../../docs/release-procedure.md", import.meta.url),
+      "utf8",
+    );
+    expect(procedure).toContain(
+      'require("./docs/beta-claim-ledger.json").release.targetVersion',
+    );
+    expect(procedure).not.toContain('git tag -a "v$(cat VERSION)"');
+  });
+
   it("accepts a complete blocked release contract", () => {
     const root = makeRoot();
     writeValidFixture(root);
     expect(runChecks({ root }).errors).toEqual([]);
+  });
+
+  it("rejects a no-op substituted for the canonical machine verifier", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "        run: node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}",
+        "        run: echo verifier skipped",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
   });
 
   it("requires every release-risk category and exact evidence command", () => {
@@ -728,7 +816,7 @@ describe("release claim ledger validation", () => {
     const path = join(root, ".github/workflows/build.yml");
     writeFileSync(
       path,
-      readFileSync(path, "utf8").replace(needle, replacement),
+      replaceLast(readFileSync(path, "utf8"), needle, replacement),
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "every action in the write-capable release job must match the canonical full-SHA allowlist",
@@ -749,7 +837,8 @@ describe("release claim ledger validation", () => {
               "        with:\n          persist-credentials: false\n      - uses: actions/setup-node",
               "      - uses: actions/setup-node",
             )
-          : source.replace(
+          : replaceLast(
+              source,
               "          persist-credentials: false",
               `          persist-credentials: ${persistCredentials}`,
             ),
@@ -791,8 +880,8 @@ describe("release claim ledger validation", () => {
     writeValidFixture(root);
     const path = join(root, ".github/workflows/build.yml");
     const workflow = readFileSync(path, "utf8").replace(
-      "jobs:\n  release:",
-      `jobs:
+      "  release:\n",
+      `  release:
   release:
     environment: release-publication
     concurrency:
@@ -809,7 +898,7 @@ describe("release claim ledger validation", () => {
     );
     writeFileSync(path, workflow);
     expect(verifyCanonicalReleasePublisher(root)).toContain(
-      "release workflow must contain exactly one canonical GitHub release publisher; found 0",
+      "exactly one job must have contents:write, and it must be build.yml jobs.release",
     );
   });
 
@@ -1044,7 +1133,8 @@ describe("release claim ledger validation", () => {
     const path = join(root, ".github/workflows/build.yml");
     writeFileSync(
       path,
-      readFileSync(path, "utf8").replace(
+      replaceLast(
+        readFileSync(path, "utf8"),
         "    if: startsWith(github.ref, 'refs/tags/v')\n",
         "    if: always()\n",
       ),
@@ -1227,10 +1317,12 @@ describe("release claim ledger validation", () => {
     const assets = [
       {
         kind: "desktop-installer",
+        artifactName: "SkyTwin-macOS-dmg",
         subjects: [{ path: "a.dmg", sha256: "a".repeat(64) }],
       },
       {
         kind: "desktop-archive",
+        artifactName: "SkyTwin-macOS-zip",
         subjects: [{ path: "a.zip", sha256: "b".repeat(64) }],
       },
       {
@@ -1239,6 +1331,7 @@ describe("release claim ledger validation", () => {
       },
     ];
     const report = {
+      platform: "macos",
       coveredSubjects: [
         {
           path: "a.dmg",
@@ -1262,6 +1355,30 @@ describe("release claim ledger validation", () => {
     expect(
       verifyMachineEvidenceApplicability("release.signing", report, assets),
     ).toEqual([]);
+  });
+
+  it("rejects signing evidence asserted by the wrong native platform", () => {
+    const assets = [
+      {
+        kind: "desktop-installer",
+        artifactName: "SkyTwin-Windows-installer",
+        subjects: [{ path: "SkyTwin.exe", sha256: "a".repeat(64) }],
+      },
+    ];
+    const report = {
+      platform: "linux",
+      coveredSubjects: [
+        {
+          path: "SkyTwin.exe",
+          sha256: "a".repeat(64),
+          platform: "windows",
+          signatureResult: "pass",
+        },
+      ],
+    };
+    expect(
+      verifyMachineEvidenceApplicability("release.signing", report, assets),
+    ).toHaveLength(1);
   });
 
   it("requires post-package verification evidence for every release subject", () => {
@@ -1622,8 +1739,17 @@ describe("release claim ledger validation", () => {
     ["document creationInfo", (sbom) => delete sbom.creationInfo],
     ["document namespace", (sbom) => delete sbom.documentNamespace],
     ["package analysis state", (sbom) => delete sbom.packages[0].filesAnalyzed],
+    [
+      "false package analysis state",
+      (sbom) => (sbom.packages[0].filesAnalyzed = false),
+    ],
     ["package version", (sbom) => delete sbom.packages[0].versionInfo],
     ["package/file relationships", (sbom) => delete sbom.relationships],
+    [
+      "unknown relationship type",
+      (sbom) =>
+        (sbom.relationships[0].relationshipType = "NOT_AN_SPDX_RELATIONSHIP"),
+    ],
     [
       "package downloadLocation",
       (sbom) => delete sbom.packages[0].downloadLocation,
@@ -1802,7 +1928,7 @@ describe("release claim ledger validation", () => {
     ).toEqual([]);
   });
 
-  it("consumes the three reports preserved under the downloaded artifact reports directory", () => {
+  it("requires native reports for sample mode and signing", () => {
     const root = makeRoot();
     const reportsDirectory = join(root, ".release-evidence", "reports");
     const names = machineReportNamesForClaim("sample.packaged-account-free");
@@ -1810,6 +1936,11 @@ describe("release claim ledger validation", () => {
       "sample.packaged-account-free.macos.json",
       "sample.packaged-account-free.windows.json",
       "sample.packaged-account-free.linux.json",
+    ]);
+    expect(machineReportNamesForClaim("release.signing")).toEqual([
+      "release.signing.macos.json",
+      "release.signing.windows.json",
+      "release.signing.linux.json",
     ]);
     for (const name of names)
       write(root, `.release-evidence/reports/${name}`, "{}\n");
@@ -2663,7 +2794,7 @@ describe("release claim ledger validation", () => {
             reportUri: "https://127.0.0.1/private-report.json",
             reportSha256: "b".repeat(64),
             sourceCommit: commit,
-            platform: "macos-arm64",
+            platform: "macos",
             releaseTag: "v0.7.0-beta",
             releaseArtifactKind: "desktop-installer",
             releaseArtifactId: 3,
@@ -2710,9 +2841,9 @@ describe("release claim ledger validation", () => {
     const subject = releaseAsset.subjects[0];
     const checkIds = CANONICAL_MACHINE_EVIDENCE_CHECKS.get(claimId);
     const producerJobId = 404;
-    const producerJobName = machineProducerJobName(claimId, "macos-arm64");
+    const producerJobName = machineProducerJobName(claimId, "macos");
     const verifierPath = machineVerifierPath(claimId);
-    const verifierCommand = machineVerifierCommand(claimId, "macos-arm64");
+    const verifierCommand = machineVerifierCommand(claimId, "macos");
     const verifierSource = "// reviewed fixture verifier\n";
     const verifierSha256 = createHash("sha256")
       .update(verifierSource)
@@ -2740,10 +2871,8 @@ describe("release claim ledger validation", () => {
       releaseTag: tag,
       ref,
       runId,
-      platform: "macos-arm64",
-      producerJobId,
+      platform: "macos",
       producerJobName,
-      producerJobConclusion: "success",
       verifierPath,
       verifierCommand,
       verifierSha256,

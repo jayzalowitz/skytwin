@@ -75,21 +75,42 @@ export const CANONICAL_ARTIFACT_VERIFICATION_ASSETS = Object.freeze([
 
 export const ARTIFACT_VERIFICATION_RELEASE_PATTERN = `${ARTIFACT_VERIFICATION_DIRECTORY}/*`;
 
+export const SAMPLE_EVIDENCE_PLATFORMS = new Set(["macos", "windows", "linux"]);
+
+export const CANONICAL_MACHINE_EVIDENCE_MATRIX = Object.freeze(
+  [
+    ["storage.desktop-crdb", "macos", "macos-15"],
+    ["inference.on-device-availability", "macos", "macos-15"],
+    ["inference.confidential-verification", "linux", "ubuntu-24.04"],
+    ["network.explicit-boundaries", "macos", "macos-15"],
+    ["sample.packaged-account-free", "macos", "macos-15"],
+    ["sample.packaged-account-free", "windows", "windows-2025"],
+    ["sample.packaged-account-free", "linux", "ubuntu-24.04"],
+    ["models.verified-delivery", "linux", "ubuntu-24.04"],
+    ["release.signing", "macos", "macos-15"],
+    ["release.signing", "windows", "windows-2025"],
+    ["release.signing", "linux", "ubuntu-24.04"],
+    ["release.artifact-verification", "linux", "ubuntu-24.04"],
+  ].map(([claimId, platform, runner]) =>
+    Object.freeze({
+      claimId,
+      platform,
+      runner,
+      reportName: ["sample.packaged-account-free", "release.signing"].includes(
+        claimId,
+      )
+        ? `${claimId}.${platform}.json`
+        : `${claimId}.json`,
+    }),
+  ),
+);
+
 export const CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS = Object.freeze([
   "artifacts/release-claims-ci/result.json",
-  ".release-evidence/reports/storage.desktop-crdb.json",
-  ".release-evidence/reports/inference.on-device-availability.json",
-  ".release-evidence/reports/inference.confidential-verification.json",
-  ".release-evidence/reports/network.explicit-boundaries.json",
-  ".release-evidence/reports/sample.packaged-account-free.macos.json",
-  ".release-evidence/reports/sample.packaged-account-free.windows.json",
-  ".release-evidence/reports/sample.packaged-account-free.linux.json",
-  ".release-evidence/reports/models.verified-delivery.json",
-  ".release-evidence/reports/release.signing.json",
-  ".release-evidence/reports/release.artifact-verification.json",
+  ...CANONICAL_MACHINE_EVIDENCE_MATRIX.map(
+    ({ reportName }) => `.release-evidence/reports/${reportName}`,
+  ),
 ]);
-
-export const SAMPLE_EVIDENCE_PLATFORMS = new Set(["macos", "windows", "linux"]);
 
 export const CANONICAL_MACHINE_VERIFIER_STEP = "Run canonical machine verifier";
 
@@ -102,7 +123,11 @@ export function machineEvidencePlatformFamily(platform) {
 
 export function machineProducerJobName(claimId, platform) {
   const family = machineEvidencePlatformFamily(platform);
-  return family ? `release-machine-evidence / ${claimId} / ${family}` : null;
+  return CANONICAL_MACHINE_EVIDENCE_MATRIX.some(
+    (entry) => entry.claimId === claimId && entry.platform === family,
+  )
+    ? `release-machine-evidence / ${claimId} / ${family}`
+    : null;
 }
 
 export function machineVerifierPath(claimId) {
@@ -114,13 +139,16 @@ export function machineVerifierPath(claimId) {
 export function machineVerifierCommand(claimId, platform) {
   const path = machineVerifierPath(claimId);
   const family = machineEvidencePlatformFamily(platform);
-  return path && family ? `node ${path} --platform ${family}` : null;
+  const reportName = CANONICAL_MACHINE_EVIDENCE_MATRIX.find(
+    (entry) => entry.claimId === claimId && entry.platform === family,
+  )?.reportName;
+  return path && family && reportName
+    ? `node ${path} --platform ${family} --output .release-evidence/reports/${reportName}`
+    : null;
 }
 
 export function machineReportNamesForClaim(claimId) {
-  return claimId === "sample.packaged-account-free"
-    ? [...SAMPLE_EVIDENCE_PLATFORMS].map(
-        (platform) => `${claimId}.${platform}.json`,
-      )
-    : [`${claimId}.json`];
+  return CANONICAL_MACHINE_EVIDENCE_MATRIX.filter(
+    (entry) => entry.claimId === claimId,
+  ).map((entry) => entry.reportName);
 }

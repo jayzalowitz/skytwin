@@ -19,7 +19,7 @@
 > are deliberately not committed to this ledger: doing so would change the SHA
 > they attest and create an impossible hash cycle. The release job now generates
 > the external manifest from current-run GitHub API metadata. Upstream packaging
-> jobs do not yet produce the required machine reports or verification sidecars,
+> jobs do not yet implement the required machine verifiers or CI result producer,
 > so the final gate still fails closed and the ledger remains blocked until that
 > proof pipeline ships.
 
@@ -27,7 +27,7 @@ The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The former
 requires a dedicated CI-result producer; it is not currently emitted by the
 `release-claim-ci` job. The latter
-contains one `reports/<claim-id>.json` result for every required machine claim
+contains the canonical `reports/<claim-id>[.<platform>].json` results for every required machine claim
 and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
 `release.spdx.json`, `VERIFY.md`, and digest-named provenance bundles.
 The CI artifact contains `result.json`, bound to the current run, source commit,
@@ -59,7 +59,7 @@ bundle, `build.yml` signer workflow, tag ref, source SHA, and SLSA provenance
 predicate. The checker then executes the same cryptographic verification for
 each subject. This lets proof be generated after packaging without changing
 the source SHA it attests.
-One CI result and ten machine reports — eleven durable report files total —
+One CI result and twelve machine reports — thirteen durable report files total —
 plus the checksum inventory, SPDX SBOM, verification guide, provenance bundles,
 and generated manifest are attached to the GitHub Release. Wildcards are used
 only for the manifest-validated verification directory and package outputs; the
@@ -84,9 +84,10 @@ Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public 
 ```bash
 # from an up-to-date main
 git checkout main && git pull
-# VERSION already holds the version you're releasing (bump it in a PR first if not)
-git tag -a "v$(cat VERSION)" -m "Release v$(cat VERSION)"
-git push origin "v$(cat VERSION)"
+# VERSION/package metadata normalize to the ledger target (bump in a PR first)
+RELEASE_TAG="$(node -p 'require("./docs/beta-claim-ledger.json").release.targetVersion')"
+git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+git push origin "$RELEASE_TAG"
 # build.yml builds, verifies an unpublished draft, and publishes it automatically.
 ```
 
@@ -105,7 +106,7 @@ a separate onboarding constraint.
 1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
-4. **`release`** (`needs:` `test` plus the three desktop jobs) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus ten machine reports (eleven durable report files total), checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public.
+4. **`release`** (`needs:` `test`, the three desktop jobs, and the verified evidence aggregator) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus twelve machine reports (thirteen durable report files total), checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public.
 
 Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
 
@@ -136,8 +137,9 @@ allowlist, and generate the sidecars above before the ledger can move to ready.
 Until that lands, the absence is a deliberate stop-ship rather than evidence
 that can be waived.
 
-The machine-evidence producers and the separate `release-claims-ci` artifact
-producer are also absent today. Future machine reports must come from the exact
+The native machine-evidence matrix and exclusive aggregator are scaffolded, but
+their verifier implementations and the separate `release-claims-ci` artifact
+producer are absent today. Future machine reports must come from the exact
 successful claim/platform job and canonical verifier step, carry the reviewed
 verifier path, command, and source digest, and provide structured observations;
 the release job independently checks those bindings against the current GitHub
@@ -175,7 +177,7 @@ Independent of the build: until Google's restricted-scope review clears, the bun
 
 ## Version bumps
 
-`VERSION` is the four-part scheme (e.g. `0.6.58.0`). Bump it **in a PR** (not directly on main) before tagging. The tag must match `v$(cat VERSION)`. CHANGELOG `[Unreleased]` entries roll into a dated `## [X.Y.Z.W]` section as part of (or just before) the release PR.
+`VERSION` is the four-part repository/package scheme (e.g. `0.7.0.0`). Bump it **in a PR** (not directly on main) before tagging. The tag must exactly equal the claim ledger's `release.targetVersion`; for this beta, `v0.7.0-beta` intentionally normalizes to repository version `0.7.0.0`. CHANGELOG `[Unreleased]` entries roll into a dated release section as part of (or just before) the release PR.
 
 ### How the desktop app version is derived
 
