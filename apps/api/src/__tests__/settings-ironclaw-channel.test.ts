@@ -439,6 +439,23 @@ describe('reasoning-mode provider mutations', () => {
     );
   });
 
+  it('accepts the null default endpoint returned by settings GET on save', async () => {
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'bring_your_own_provider',
+      providers: [{
+        provider: 'openai', apiKey: '', model: 'gpt', baseUrl: null,
+        priority: 0, enabled: true,
+      }],
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).toHaveBeenCalledWith(
+      userId,
+      'bring_your_own_provider',
+      [expect.objectContaining({ baseUrl: undefined })],
+    );
+  });
+
   it('requires the mode in the same request as a full provider replacement', async () => {
     const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
       providers: [{ provider: 'embedded', model: 'managed', priority: 0, enabled: true }],
@@ -492,6 +509,23 @@ describe('reasoning-mode provider mutations', () => {
     expect(mockValidateBaseUrlWithDns).toHaveBeenCalledWith(
       'http://localhost:11434',
       'ollama',
+    );
+  });
+
+  it('accepts the null default endpoint returned by settings GET on test', async () => {
+    mockReasoningModeRepository.getOrCreateForUser.mockResolvedValue({
+      mode: 'bring_your_own_provider', requires_confirmation: false,
+    });
+    mockTestProviderForReasoningMode.mockResolvedValue({ latencyMs: 2, model: 'gpt' });
+
+    const response = await request(app, 'POST', `/api/settings/${userId}/ai/test`, {
+      provider: 'openai', apiKey: 'secret', model: 'gpt', baseUrl: null,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockTestProviderForReasoningMode).toHaveBeenCalledWith(
+      'bring_your_own_provider',
+      expect.objectContaining({ baseUrl: undefined }),
     );
   });
 
