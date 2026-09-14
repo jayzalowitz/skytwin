@@ -4,6 +4,7 @@ import type {
   InferenceReceiptStatus,
   InferenceReasoningMode,
   ProviderExecutionMetadata,
+  ProviderPricingCapability,
   ReasoningMode,
   ReceiptSignatureV1,
 } from '@skytwin/shared-types';
@@ -75,6 +76,12 @@ export interface ProviderEntry {
 export interface LlmClientOptions {
   onInferenceTrace?: (trace: InferenceTrace) => void;
   now?: () => Date;
+}
+
+/** Credential-free pricing view of the exact frozen provider chain. */
+export interface ProviderPricingSnapshot {
+  provider: AIProviderName;
+  pricing: ProviderPricingCapability;
 }
 
 /**

@@ -40,12 +40,10 @@ import {
 } from '@skytwin/decision-engine';
 import {
   isPricingUsableForUnattended,
-  providerPrivacyCapabilities,
   type LlmClient,
-  type ProviderEntry,
 } from '@skytwin/llm-client';
-import type { AIProviderName, ProviderPricingCapability } from '@skytwin/shared-types';
-import { aiProviderRepository, twinRepository } from '@skytwin/db';
+import type { ProviderPricingCapability } from '@skytwin/shared-types';
+import { twinRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { getMemoryPortForUser } from './memory-setup.js';
 import { DbCostGate } from './cost-gate.js';
@@ -98,9 +96,6 @@ function buildAuthoredExamplesPort(userId: string): AuthoredExamplesPort {
   };
 }
 
-const PROVIDER_NAMES = new Set<AIProviderName>([
-  'anthropic', 'openai', 'google', 'ollama', 'embedded',
-]);
 const DRAFT_INPUT_TOKEN_BUDGET = 2_000;
 const DRAFT_OUTPUT_TOKEN_BUDGET = 1_000;
 const NANO_USD_PER_CENT = 10_000_000;
@@ -122,39 +117,29 @@ function upperBoundCostCents(pricing: ProviderPricingCapability, nowMs: number):
 /**
  * Resolve (a) whether the first provider in the user's chain is a
  * local / zero-cost provider, and (b) the conservative cost estimate
- * to pass to the cost gate. Wraps `aiProviderRepository.getEnabledForUser`
- * with a fail-safe-toward-restrictive default — if the query fails,
- * we assume the worst case (cloud provider, non-zero cost).
+ * to pass to the cost gate. Pricing comes from the LlmClient's exact frozen,
+ * mode-admitted chain so it cannot race a second provider-settings read.
  */
-async function resolveDraftCostShape(userId: string): Promise<{
+function resolveDraftCostShape(llmClient: LlmClient, userId: string): {
   firstProvider: string;
   estimatedCostCents: number;
-} | null> {
+} | null {
   try {
-    const rows = await aiProviderRepository.getEnabledForUser(userId);
-    if (rows.length === 0) {
+    const providers = llmClient.getProviderPricingSnapshot();
+    if (providers.length === 0) {
       return null;
     }
     let upperBound = 0;
-    for (const row of rows) {
-      if (!PROVIDER_NAMES.has(row.provider as AIProviderName)) return null;
-      const entry: ProviderEntry = {
-        name: row.provider as AIProviderName,
-        apiKey: row.api_key,
-        model: row.model,
-        baseUrl: row.base_url ?? undefined,
-      };
-      const estimate = upperBoundCostCents(
-        providerPrivacyCapabilities(entry).pricing,
-        Date.now(),
-      );
+    const nowMs = Date.now();
+    for (const provider of providers) {
+      const estimate = upperBoundCostCents(provider.pricing, nowMs);
       // Any provider in the fallback chain may serve the request. A
       // single unknown/stale/unbounded price therefore blocks unattended
       // generation instead of relying on which provider happens to answer.
       if (estimate === null) return null;
       upperBound = Math.max(upperBound, estimate);
     }
-    return { firstProvider: rows[0]!.provider, estimatedCostCents: upperBound };
+    return { firstProvider: providers[0]!.provider, estimatedCostCents: upperBound };
   } catch (err) {
     log.warn('Failed to establish AI-provider price; disabling unattended draft generation', {
       userId,
@@ -255,7 +240,7 @@ export async function buildDraftEmailGenerator(
   // Cost-gate wiring (#299). The optional override exists for tests;
   // production callers leave it undefined and get a `DbCostGate`.
   const gate = costGate ?? new DbCostGate();
-  const costShape = await resolveDraftCostShape(userId);
+  const costShape = resolveDraftCostShape(llmClient, userId);
   if (!costShape) return null;
   const { firstProvider, estimatedCostCents } = costShape;
   return new DraftEmailCandidateGenerator(llmClient, examples, {

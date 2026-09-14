@@ -10,6 +10,7 @@ export { parseSituationResponse, parseCandidateResponse } from './response-parse
 export { validateBaseUrl, validateBaseUrlWithDns } from './url-validation.js';
 export type {
   ProviderEntry,
+  ProviderPricingSnapshot,
   GenerateOptions,
   LlmResponse,
   LlmStreamEvent,

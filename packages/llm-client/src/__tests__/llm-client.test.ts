@@ -436,6 +436,22 @@ describe('LlmClient', () => {
       expect(mockOpenaiGenerate).not.toHaveBeenCalled();
     });
 
+    it('reports pricing from the same frozen chain used for dispatch', async () => {
+      const { LlmClient } = await freshImport();
+      const mutable: ProviderEntry = { name: 'ollama', apiKey: '', model: 'qwen' };
+      const client = LlmClient.forReasoningMode('on_device', [mutable], 'user-pricing-snapshot');
+      mutable.name = 'openai';
+
+      const pricing = client.getProviderPricingSnapshot();
+
+      expect(pricing).toEqual([{
+        provider: 'ollama',
+        pricing: { kind: 'zero', unit: 'nano_usd', source: 'local_runtime' },
+      }]);
+      expect(Object.isFrozen(pricing)).toBe(true);
+      expect(Object.isFrozen(pricing[0])).toBe(true);
+    });
+
     it('snapshots invocation scalars once before provider fallback awaits', async () => {
       const { LlmClient } = await freshImport();
       mockAnthropicGenerate.mockRejectedValue(new Error('first unavailable'));

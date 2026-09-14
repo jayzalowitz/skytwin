@@ -259,8 +259,9 @@ function assertResolvedAddressAllowed(address: string, hostname: string, provide
   throw new Error(`DNS for ${hostname} resolves to private address ${address}, not allowed for ${provider}`);
 }
 
-function isLoopbackHostname(hostname: string): boolean {
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+export function isLoopbackHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1';
 }
 
 function isPrivateHost(hostname: string): boolean {

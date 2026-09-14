@@ -17,6 +17,7 @@ import type {
   InferenceTrace,
   LlmClientOptions,
   ConfidentialVerificationResult,
+  ProviderPricingSnapshot,
 } from './types.js';
 import {
   generate as anthropicGenerate,
@@ -590,5 +591,13 @@ export class LlmClient {
    */
   get hasProviders(): boolean {
     return this.chain.length > 0;
+  }
+
+  /** Pricing for the exact admitted chain, without exposing credentials or endpoints. */
+  getProviderPricingSnapshot(): readonly Readonly<ProviderPricingSnapshot>[] {
+    return Object.freeze(this.chain.map(({ provider }) => Object.freeze({
+      provider: provider.name,
+      pricing: providerPrivacyCapabilities(provider).pricing,
+    })));
   }
 }

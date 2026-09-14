@@ -6,7 +6,7 @@ import type {
 } from '@skytwin/shared-types';
 import { parseReasoningMode } from '@skytwin/shared-types';
 import type { ProviderEntry } from './types.js';
-import { normalizeHostname } from './url-validation.js';
+import { isLoopbackHostname } from './url-validation.js';
 
 export type ProviderModePolicyErrorCode =
   | 'unknown_mode'
@@ -163,12 +163,6 @@ export function isPricingUsableForUnattended(
   if (pricing.expiresAt === null) return pricing.kind === 'fixed';
   const expiresAt = Date.parse(pricing.expiresAt);
   return Number.isFinite(expiresAt) && expiresAt > nowMs;
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  const normalized = normalizeHostname(hostname);
-  return normalized === 'localhost' || normalized === '127.0.0.1'
-    || normalized === '[::1]' || normalized === '::1';
 }
 
 function assertLocalProvider(provider: ProviderEntry): void {
