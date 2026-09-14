@@ -16,6 +16,7 @@ export type {
 } from './decision-repository.js';
 
 export { policyRepository } from './policy-repository.js';
+export { getPolicyAuthorityRevision } from './policy-repository.js';
 export type { CreatePolicyInput, UpdatePolicyInput } from './policy-repository.js';
 
 export { explanationRepository } from './explanation-repository.js';
@@ -26,7 +27,31 @@ export type { CreateInferenceReceiptInput } from './inference-receipt-repository
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
 
-export { oauthRepository } from './oauth-repository.js';
+export {
+  oauthRepository,
+  CredentialDispatchConflictError,
+  CredentialDisconnectInProgressError,
+  CredentialVaultLockedError,
+  CredentialConnectionAuthorityError,
+} from './oauth-repository.js';
+export type { BeginCredentialDisconnectResult } from './oauth-repository.js';
+export {
+  credentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository,
+  expireCredentialDispatchLeasesWithClient,
+  hasActiveCredentialDispatchWithClient,
+} from './credential-dispatch-lease-repository.js';
+export type {
+  CredentialDispatchGrant,
+  CredentialDispatchTerminalState,
+  ExecutionDispatchGrant,
+  StartExecutionDispatchInput,
+  StartExecutionDispatchResult,
+  BindCredentialDispatchInput,
+  BindCredentialDispatchResult,
+  StartCredentialDispatchInput,
+  StartCredentialDispatchResult,
+} from './credential-dispatch-lease-repository.js';
 export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
 export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';
@@ -36,7 +61,11 @@ export type {
   WorkerDeadLetterStatus,
   RecordDeadLetterInput,
 } from './worker-dead-letter-repository.js';
-export { userPurgeRepository } from './user-purge-repository.js';
+export {
+  userPurgeRepository,
+  ActiveExecutionAdmissionError,
+  assertNoActiveExecutionsWithClient,
+} from './user-purge-repository.js';
 export type { PurgeUserResult } from './user-purge-repository.js';
 export { accessLogRepository } from './access-log-repository.js';
 export type { AccessLogRow, RecordAccessInput } from './access-log-repository.js';
@@ -55,6 +84,7 @@ export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
   CreateExecutionEventInput,
+  FinalizeAdmittedExecutionInput,
   ExecutionPlanWithResult,
   RollbackTarget,
 } from './execution-repository.js';
@@ -114,6 +144,7 @@ export type { RegisterCredentialRequirementInput } from './credential-requiremen
 
 export { aiProviderRepository } from './ai-provider-repository.js';
 export type { UpsertAIProviderInput } from './ai-provider-repository.js';
+export { reasoningModeRepository } from './reasoning-mode-repository.js';
 
 export { ironClawToolRepository } from './ironclaw-tool-repository.js';
 export type { UpsertIronClawToolInput } from './ironclaw-tool-repository.js';
@@ -150,6 +181,19 @@ export type {
   MarkMemoryActionOpportunityInput,
   UpsertMemoryActionOpportunityInput,
 } from './memory-action-opportunity-repository.js';
+
+export { executionAdmissionRepository } from './execution-admission-repository.js';
+export type {
+  AdmitApprovalExecutionInput,
+  AdmitMemoryExecutionInput,
+  ExecutionAdmission,
+  ExecutionAdmissionRow,
+  ExecutionAdmissionScope,
+  ExecutionAdmissionStatus,
+  ExecutionPolicyDenialRecord,
+  ObserveExecutionInput,
+  RecordExecutionPolicyDenialInput,
+} from './execution-admission-repository.js';
 
 export { mcpServerRepository } from './mcp-server-repository.js';
 export type { McpServerRow } from './mcp-server-repository.js';

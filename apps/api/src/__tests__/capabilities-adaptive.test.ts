@@ -12,10 +12,14 @@ const { mockGetLlmClient } = vi.hoisted(() => ({
   mockGetLlmClient: vi.fn(),
 }));
 
-vi.mock('../lib/llm-client-factory.js', () => ({
-  getLlmClientFromConfig: mockGetLlmClient,
-  getLlmClientFromConfigFresh: vi.fn().mockReturnValue(null),
-  _resetLlmClientCache: vi.fn(),
+vi.mock('../lib/user-llm-client.js', () => ({
+  buildUserLlmClient: mockGetLlmClient,
+  resolveUserLlmClient: async (userId: string) => {
+    const client = await mockGetLlmClient(userId);
+    return client
+      ? { state: 'ready', client }
+      : { state: 'no_provider', client: null, reason: 'No enabled provider is configured' };
+  },
 }));
 
 // ── DB mocks ─────────────────────────────────────────────────────────────────

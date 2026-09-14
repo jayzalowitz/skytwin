@@ -7,6 +7,7 @@ import type {
   Preference,
   BehavioralPattern,
   CrossDomainTrait,
+  CandidateAction,
 } from '@skytwin/shared-types';
 import {
   ConfidenceLevel,
@@ -111,6 +112,38 @@ describe('DecisionMaker', () => {
   const CALENDAR_WRITE_SCOPES = ['https://www.googleapis.com/auth/calendar.events'];
 
   let decisionMaker: DecisionMaker;
+
+  it('fully re-evaluates prepared candidate semantics before persisting the replacement outcome', async () => {
+    const twinService = createMockTwinService();
+    const policyEvaluator = createMockPolicyEvaluator({ allowed: true, requiresApproval: true });
+    const decisionRepo = createMockDecisionRepository();
+    const dm = new DecisionMaker(twinService as never, policyEvaluator as never, decisionRepo as never);
+    const prepared: CandidateAction = {
+      id: 'action-prepared', decisionId: 'dec_test_001', actionType: 'send_reply',
+      description: 'Send reply', domain: 'email', parameters: { body: 'Prepared body' },
+      estimatedCostCents: 0, reversible: false, confidence: ConfidenceLevel.HIGH,
+      reasoning: 'Prepared execution semantics', provenance: 'user_originated',
+    };
+    const context = {
+      ...createContext(),
+      grantedScopes: ['https://www.googleapis.com/auth/gmail.send'],
+    };
+
+    const outcome = await dm.reevaluatePreparedCandidates(context, [prepared]);
+
+    expect(policyEvaluator.evaluate).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: 'send_reply', reversible: false }),
+      expect.anything(),
+      context.trustTier,
+      expect.objectContaining({ actionId: prepared.id }),
+      context.autonomySettings,
+    );
+    expect(decisionRepo.saveRiskAssessment).toHaveBeenCalledWith(
+      expect.objectContaining({ actionId: prepared.id }),
+    );
+    expect(outcome.selectedAction).toBe(prepared);
+    expect(outcome.requiresApproval).toBe(true);
+  });
 
   describe('risk-assessment persistence ordering (regression: risk_assessment_missing)', () => {
     it('persists candidate rows BEFORE their risk assessments so the UPDATE lands', async () => {

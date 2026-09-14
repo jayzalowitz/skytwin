@@ -13,6 +13,7 @@ export interface UserRow {
   name: string;
   trust_tier: string;
   autonomy_settings: Record<string, unknown>;
+  execution_authority_revision: string;
   ironclaw_channel: string | null;
   /** BCP-47-ish language tag from the connector identity (#486). Null until synced. */
   language: string | null;
@@ -194,6 +195,10 @@ export interface ApprovalRequestRow {
   /** One-time token issued on the first confirmation of a dual request;
    *  the second confirmation must present it. NULL until then. */
   confirmation_token: string | null;
+  /** Terminal current-policy refusal after the user's approval response. */
+  execution_denied_at: Date | null;
+  /** Explanation-first evidence linked to the terminal refusal. */
+  execution_denial_explanation_id: string | null;
 }
 
 // ============================================================================
@@ -206,6 +211,7 @@ export interface ExecutionPlanRow {
   action_id: string | null;
   status: string;
   steps: unknown[];
+  evidence_schema_version: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -217,6 +223,7 @@ export interface ExecutionResultRow {
   outputs: Record<string, unknown>;
   error: string | null;
   rollback_available: boolean;
+  evidence_schema_version: number;
   completed_at: Date;
 }
 
@@ -226,6 +233,7 @@ export interface ExecutionEventRow {
   step_id: string | null;
   event_type: string;
   payload: Record<string, unknown>;
+  evidence_schema_version: number;
   created_at: Date;
 }
 
@@ -258,6 +266,7 @@ export interface MemoryActionOpportunityRow {
   policy_reason: string | null;
   route_reason: string | null;
   next_step: string | null;
+  evidence_schema_version: number;
   created_at: Date;
   updated_at: Date;
 }
@@ -269,6 +278,8 @@ export interface MemoryActionOpportunityRow {
 export interface ExplanationRecordRow {
   id: string;
   decision_id: string;
+  /** Durable explanation classification; denial records must survive backup. */
+  type: string;
   what_happened: string;
   evidence_used: unknown[];
   preferences_invoked: string[];
@@ -290,6 +301,8 @@ export interface InferenceReceiptRow {
   version: number;
   decision_id: string;
   explanation_id: string;
+  /** Zero-based provider-call order within one atomic decision capture. */
+  capture_ordinal: number;
   status: string;
   receipt: unknown;
   trusted: boolean;
@@ -335,6 +348,11 @@ export interface OAuthTokenRow {
   scopes: string[];
   created_at: Date;
   updated_at: Date;
+  /** Exact OAuth grant revision; changes on every credential mutation. */
+  credential_revision: string;
+  /** Generation used to fence dispatch when disconnect begins. */
+  dispatch_generation: string;
+  dispatch_state: 'active' | 'disconnecting';
 }
 
 /**
@@ -350,6 +368,37 @@ export interface OAuthTokenRowWithEncrypted extends OAuthTokenRow {
   encryption_key_version: number;
 }
 
+export interface CredentialDispatchLeaseRow {
+  id: string;
+  user_id: string;
+  oauth_token_id: string | null;
+  provider: string | null;
+  account_email: string | null;
+  credential_revision: string | null;
+  credential_generation: string | null;
+  vault_generation: string | null;
+  adapter_name: string;
+  risk_snapshot: Record<string, unknown>;
+  execution_channel: string | null;
+  mcp_server_id: string | null;
+  mcp_tool_name: string | null;
+  execution_authority_revision: string;
+  policy_authority_revision: string;
+  action_id: string;
+  decision_id: string;
+  execution_plan_id: string;
+  authority_kind: 'admission' | 'receipt';
+  authority_id: string;
+  authority_updated_at: Date;
+  capability_hash: string;
+  lease_generation: string;
+  state: 'request_started' | 'completed' | 'failed' | 'ambiguous';
+  acquired_at: Date;
+  request_started_at: Date;
+  expires_at: Date;
+  terminal_at: Date | null;
+}
+
 // ============================================================================
 // Credential Vault Metadata
 // ============================================================================
@@ -359,6 +408,8 @@ export interface CredentialVaultMetaRow {
   passphrase_salt: Buffer;
   passphrase_hash: Buffer;
   current_key_version: number;
+  vault_state: 'locked' | 'unlocked';
+  vault_generation: string;
   created_at: Date;
   rotated_at: Date | null;
 }
@@ -744,6 +795,14 @@ export interface AIProviderSettingsRow {
   base_url: string | null;
   priority: number;
   enabled: boolean;
+  created_at: Date;
+  updated_at: Date;
+}
+
+export interface ReasoningModeSettingsRow {
+  user_id: string;
+  mode: import('@skytwin/shared-types').ReasoningMode | null;
+  requires_confirmation: boolean;
   created_at: Date;
   updated_at: Date;
 }

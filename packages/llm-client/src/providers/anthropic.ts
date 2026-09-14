@@ -1,6 +1,7 @@
+import { canonicalizeProviderBaseUrl } from '@skytwin/shared-types';
 import type { ChatMessage, GenerateOptions } from '../types.js';
 import { splitSystemAndConversation, toMessages } from '../messages.js';
-import { validateBaseUrl } from '../url-validation.js';
+import { fetchCustomProviderUrl, type SafeProviderFetch } from '../url-validation.js';
 
 const DEFAULT_URL = 'https://api.anthropic.com';
 
@@ -40,13 +41,14 @@ export async function generate(
   prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
-  const baseUrl = options.baseUrl || DEFAULT_URL;
-  if (options.baseUrl) validateBaseUrl(options.baseUrl, 'anthropic');
+  const baseUrl = canonicalizeProviderBaseUrl(options.baseUrl) ?? DEFAULT_URL;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
+  let customFetch: SafeProviderFetch | undefined;
 
   try {
-    const res = await fetch(`${baseUrl}/v1/messages`, {
+    const requestUrl = `${baseUrl}/v1/messages`;
+    const requestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -55,7 +57,11 @@ export async function generate(
       },
       body: JSON.stringify(buildAnthropicBody(model, prompt, options)),
       signal: controller.signal,
-    });
+    } satisfies RequestInit;
+    customFetch = options.baseUrl
+      ? await fetchCustomProviderUrl(requestUrl, 'anthropic', requestInit)
+      : undefined;
+    const res = customFetch?.response ?? await fetch(requestUrl, requestInit);
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -67,6 +73,7 @@ export async function generate(
     return textBlock?.text ?? '';
   } finally {
     clearTimeout(timeout);
+    await customFetch?.close();
   }
 }
 
@@ -90,16 +97,17 @@ export async function* streamGenerate(
   prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): AsyncIterable<string> {
-  const baseUrl = options.baseUrl || DEFAULT_URL;
-  if (options.baseUrl) validateBaseUrl(options.baseUrl, 'anthropic');
+  const baseUrl = canonicalizeProviderBaseUrl(options.baseUrl) ?? DEFAULT_URL;
   const controller = new AbortController();
   // Streaming requests can take longer than sync ones (the model is still
   // generating while we read), but a hung connection still needs to time
   // out — use 2x the sync default. Caller-provided timeoutMs wins.
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 60_000);
+  let customFetch: SafeProviderFetch | undefined;
 
   try {
-    const res = await fetch(`${baseUrl}/v1/messages`, {
+    const requestUrl = `${baseUrl}/v1/messages`;
+    const requestInit = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -109,7 +117,11 @@ export async function* streamGenerate(
       },
       body: JSON.stringify(buildAnthropicBody(model, prompt, options, { stream: true })),
       signal: controller.signal,
-    });
+    } satisfies RequestInit;
+    customFetch = options.baseUrl
+      ? await fetchCustomProviderUrl(requestUrl, 'anthropic', requestInit)
+      : undefined;
+    const res = customFetch?.response ?? await fetch(requestUrl, requestInit);
 
     if (!res.ok) {
       const body = await res.text().catch(() => '');
@@ -121,7 +133,13 @@ export async function* streamGenerate(
 
     yield* parseAnthropicSseStream(res.body);
   } finally {
+    // `AsyncIterator.return()` reaches this block when a downstream SSE client
+    // disconnects. Abort and cancel before closing the one-request dispatcher;
+    // otherwise `Agent.close()` can wait forever for an unread response body.
+    controller.abort();
     clearTimeout(timeout);
+    await customFetch?.response.body?.cancel().catch(() => undefined);
+    await customFetch?.close();
   }
 }
 

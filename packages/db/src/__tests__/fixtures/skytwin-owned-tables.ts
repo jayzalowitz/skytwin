@@ -1,0 +1,39 @@
+/**
+ * Independently reviewed rollback oracle. Keep this literal list in sync with
+ * intentional table additions/removals; the test compares it to both the DDL-
+ * derived runtime manifest and the live Cockroach schema.
+ */
+export const SKYTWIN_OWNED_TABLES = [
+  'access_log', 'accuracy_metrics', 'action_policies', 'ai_provider_settings',
+  'app_suggestions', 'approval_requests', 'assistant_messages', 'assistant_threads',
+  'behavioral_patterns', 'brain_embedding_jobs', 'brain_entities', 'brain_episodes',
+  'brain_pages', 'brain_settings', 'brain_signals', 'brain_triples', 'briefings',
+  'candidate_actions', 'capability_provenance_edges', 'capability_provenance_nodes',
+  'connected_accounts', 'connector_configs', 'connector_cursors', 'connector_health',
+  'credential_dispatch_leases', 'credential_requirements', 'cross_domain_traits',
+  'decision_ingest_guards',
+  'decision_outcomes', 'decisions', 'domain_autonomy_policies', 'draft_email_calls',
+  'draft_email_eval_runs', 'dxt_exports', 'dxt_imports', 'email_label_signals',
+  'entity_codes', 'episodic_memories', 'escalation_triggers', 'eval_runs',
+  'execution_admission_barriers', 'execution_events', 'execution_plans',
+  'execution_policy_authority', 'execution_results', 'explanation_records',
+  'external_agent_tokens',
+  'federation_pairing_codes', 'federation_peers', 'feedback_events',
+  'forwarded_signals', 'fs_file_index', 'fs_scan_roots',
+  'inference_receipt_completions', 'inference_receipts', 'ironclaw_tools',
+  'knowledge_entities', 'knowledge_triples', 'lifebooks', 'mcp_server_changelogs',
+  'mcp_server_metrics', 'mcp_server_skills', 'mcp_servers',
+  'memory_action_opportunities', 'memory_closets', 'memory_drawers', 'memory_rooms',
+  'memory_tunnels', 'memory_wings', 'model_downloads', 'oauth_account_connection_authority',
+  'oauth_connection_authority', 'oauth_new_user_authorizations',
+  'oauth_pending_signin', 'oauth_pkce_pending',
+  'oauth_tokens', 'pending_skill_opt_ins',
+  'preference_history', 'preference_proposals', 'preferences', 'proactive_scans',
+  'promotion_offers', 'reasoning_mode_settings', 'recovery_codes', 'service_credentials',
+  'sessions', 'signals', 'skill_gap_log', 'source_key_deletion_intents', 'spend_records',
+  'trust_tier_audit', 'twin_briefings',
+  'twin_exports', 'twin_profile_versions', 'twin_profiles',
+  'user_credential_vault_meta', 'user_onboarding_state', 'user_risk_profiles',
+  'user_source_key_registry', 'users', 'watch_runs', 'watches', 'worker_dead_letter',
+  'worker_generation_authority',
+] as const;

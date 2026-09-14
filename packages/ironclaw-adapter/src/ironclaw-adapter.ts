@@ -12,6 +12,42 @@ import type {
 } from '@skytwin/shared-types';
 
 /**
+ * A typed adapter refusal that proves no external request was started.
+ * Only adapter-owned preflight/build code may create this error; it is never
+ * accepted after an untrusted request boundary has been entered.
+ */
+export class PreRequestExecutionError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = 'PreRequestExecutionError';
+  }
+}
+
+export interface ExecutionPlanBuildContext {
+  /** True when the plan will be consumed through executeStreaming(). */
+  streaming?: boolean;
+}
+
+export interface ExecutionRequestPreparation {
+  /** Adapter-private proof produced before durable request-start authority is claimed. */
+  proof?: unknown;
+  /**
+   * Non-secret OAuth row identity prepared by the built-in Direct adapter.
+   * The router accepts this only from that reserved adapter and binds it in
+   * the same transaction as the final request-start authority check.
+   */
+  credentialBinding?: {
+    provider: string;
+    accountEmail?: string;
+    oauthTokenId: string;
+    credentialRevision: string;
+    vaultGeneration?: string;
+  };
+  /** Effective trusted outbound channel resolved by the built-in IronClaw adapter. */
+  executionChannel?: string;
+}
+
+/**
  * Interface for adapting SkyTwin's decision output to IronClaw's execution layer.
  *
  * IronClaw is the underlying execution engine that actually performs actions
@@ -22,12 +58,22 @@ export interface IronClawAdapter {
   /**
    * Build an execution plan from a candidate action.
    */
-  buildPlan(action: CandidateAction): Promise<ExecutionPlan>;
+  buildPlan(action: CandidateAction, context?: ExecutionPlanBuildContext): Promise<ExecutionPlan>;
+
+  /**
+   * Complete adapter-specific authorization reads before request-start is
+   * claimed. The returned proof is opaque to the router and single-use at the
+   * adapter boundary.
+   */
+  prepareRequestStart?(
+    plan: ExecutionPlan,
+    context?: ExecutionPlanBuildContext,
+  ): Promise<ExecutionRequestPreparation>;
 
   /**
    * Execute a plan and return the result.
    */
-  execute(plan: ExecutionPlan): Promise<ExecutionResult>;
+  execute(plan: ExecutionPlan, preparation?: ExecutionRequestPreparation): Promise<ExecutionResult>;
 
   /**
    * Get the current execution status for a plan.
@@ -52,7 +98,10 @@ export interface IronClawCredentialInfo {
 }
 
 export interface IronClawEnhancedAdapter extends IronClawAdapter {
-  executeStreaming(plan: ExecutionPlan): AsyncIterable<ExecutionEvent>;
+  executeStreaming(
+    plan: ExecutionPlan,
+    preparation?: ExecutionRequestPreparation,
+  ): AsyncIterable<ExecutionEvent>;
   registerCredential(name: string, value: string, opts?: { ttlSeconds?: number }): Promise<{ success: boolean }>;
   revokeCredential(name: string): Promise<{ success: boolean }>;
   listCredentials(): Promise<IronClawCredentialInfo[]>;

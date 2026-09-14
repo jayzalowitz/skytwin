@@ -1,5 +1,46 @@
 import { query, withTransaction } from '../connection.js';
+import {
+  normalizeAdapterOutput,
+  normalizeExecutionError,
+  normalizeExecutionEventPayload,
+  normalizeExecutionEventType,
+  normalizeExecutionIdentifier,
+  normalizeExecutionPlanSteps,
+  normalizeMemoryActionAdapterName,
+} from '@skytwin/shared-types';
 import type { ExecutionEventRow, ExecutionPlanRow, ExecutionResultRow } from '../types.js';
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, child]) => `${JSON.stringify(key)}:${canonicalJson(child)}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value) ?? 'undefined';
+}
+
+function normalizeResultRow(row: ExecutionResultRow): ExecutionResultRow {
+  return {
+    ...row,
+    outputs: normalizeAdapterOutput(row.outputs),
+    error: row.error ? normalizeExecutionError(row.error) : null,
+  };
+}
+
+function normalizeEventRow(row: ExecutionEventRow): ExecutionEventRow {
+  return {
+    ...row,
+    step_id: row.step_id ? normalizeExecutionIdentifier(row.step_id) : null,
+    event_type: normalizeExecutionEventType(row.event_type),
+    payload: normalizeExecutionEventPayload(row.payload),
+  };
+}
+
+function normalizePlanRow(row: ExecutionPlanRow): ExecutionPlanRow {
+  return { ...row, steps: normalizeExecutionPlanSteps(row.steps) };
+}
 
 /**
  * Input for creating an execution plan.
@@ -20,6 +61,13 @@ export interface CreateExecutionResultInput {
   outputs?: Record<string, unknown>;
   error?: string;
   rollbackAvailable?: boolean;
+}
+
+export interface FinalizeAdmittedExecutionInput extends CreateExecutionResultInput {
+  userId: string;
+  decisionId: string;
+  actionId: string;
+  status: 'completed' | 'failed';
 }
 
 export interface CreateExecutionEventInput {
@@ -83,17 +131,17 @@ export const executionRepository = {
   async createPlan(input: CreateExecutionPlanInput): Promise<ExecutionPlanRow> {
     return withTransaction(async (client) => {
       const insertResult = await client.query<ExecutionPlanRow>(
-        `INSERT INTO execution_plans (decision_id, action_id, status, steps)
-         VALUES ($1, $2, $3, $4)
+        `INSERT INTO execution_plans (decision_id, action_id, status, steps, evidence_schema_version)
+         VALUES ($1, $2, $3, $4, 1)
          RETURNING *`,
         [
           input.decisionId || null,
           input.actionId || null,
           input.status ?? 'pending',
-          JSON.stringify(input.steps ?? []),
+          JSON.stringify(normalizeExecutionPlanSteps(input.steps ?? [])),
         ],
       );
-      const plan = insertResult.rows[0]!;
+      const plan = normalizePlanRow(insertResult.rows[0]!);
 
       if (input.decisionId) {
         // Link the matching outcome to this plan. "Latest plan wins" —
@@ -145,19 +193,94 @@ export const executionRepository = {
   async createResult(
     input: CreateExecutionResultInput,
   ): Promise<ExecutionResultRow> {
+    const outputs = normalizeAdapterOutput(input.outputs ?? {});
+    const error = input.error ? normalizeExecutionError(input.error) : null;
     const result = await query<ExecutionResultRow>(
-      `INSERT INTO execution_results (plan_id, success, outputs, error, rollback_available, completed_at)
-       VALUES ($1, $2, $3, $4, $5, now())
+      `INSERT INTO execution_results (plan_id, success, outputs, error, rollback_available, completed_at,
+                                      evidence_schema_version)
+       VALUES ($1, $2, $3, $4, $5, now(), 1)
        RETURNING *`,
       [
         input.planId,
         input.success,
-        JSON.stringify(input.outputs ?? {}),
-        input.error ?? null,
+        JSON.stringify(outputs),
+        error,
         input.rollbackAvailable ?? false,
       ],
     );
     return result.rows[0]!;
+  },
+
+  /**
+   * Materialize the secondary execution ledger for a plan that was durably
+   * admitted before dispatch. This operation is idempotent for the exact same
+   * terminal result, which lets callers reconcile a lost commit response
+   * without inventing a second plan or changing terminal truth.
+   */
+  async finalizeAdmittedPlan(input: FinalizeAdmittedExecutionInput): Promise<ExecutionPlanRow> {
+    return withTransaction(async (client) => {
+      const outputs = normalizeAdapterOutput(input.outputs ?? {});
+      const error = input.error ? normalizeExecutionError(input.error) : null;
+      const locked = await client.query<ExecutionPlanRow>(
+        `SELECT ep.* FROM execution_plans ep
+         JOIN decisions d ON d.id = ep.decision_id AND d.user_id = $1
+         JOIN execution_admission_barriers b
+           ON b.execution_plan_id = ep.id AND b.user_id = d.user_id
+          AND b.decision_id = ep.decision_id AND b.action_id = ep.action_id
+         WHERE ep.id = $2 AND ep.decision_id = $3 AND ep.action_id = $4
+           AND b.status IN ('in_progress', $5)
+         FOR UPDATE OF ep, d, b`,
+        [input.userId, input.planId, input.decisionId, input.actionId, input.status],
+      );
+      const plan = locked.rows[0];
+      if (!plan || (plan.status !== 'running' && plan.status !== input.status)) {
+        throw new Error('Admitted execution plan authority is unavailable.');
+      }
+
+      await client.query(
+        `INSERT INTO execution_results
+          (plan_id, success, outputs, error, rollback_available, completed_at,
+           evidence_schema_version)
+         VALUES ($1, $2, $3::JSONB, $4, $5, now(), 1)
+         ON CONFLICT (plan_id) DO NOTHING`,
+        [input.planId, input.success, JSON.stringify(outputs),
+          error, input.rollbackAvailable ?? false],
+      );
+      const persistedResult = await client.query<ExecutionResultRow>(
+        `SELECT * FROM execution_results WHERE plan_id = $1`,
+        [input.planId],
+      );
+      const result = persistedResult.rows[0];
+      if (!result || result.success !== input.success ||
+          canonicalJson(result.outputs) !== canonicalJson(outputs) ||
+          (result.error ?? null) !== error ||
+          result.rollback_available !== (input.rollbackAvailable ?? false)) {
+        throw new Error('Admitted execution result conflicts with persisted terminal truth.');
+      }
+
+      const terminal = await client.query<ExecutionPlanRow>(
+        `UPDATE execution_plans ep
+         SET status = $2, updated_at = now()
+         WHERE ep.id = $1 AND ep.status IN ('running', $2)
+           AND EXISTS (
+             SELECT 1 FROM execution_results er
+             WHERE er.plan_id = ep.id AND er.success = ($2 = 'completed')
+           )
+         RETURNING ep.*`,
+        [input.planId, input.status],
+      );
+      if (!terminal.rows[0]) throw new Error('Admitted execution plan could not be terminalized.');
+      await client.query(
+        `UPDATE decision_outcomes o
+         SET execution_plan_id = $1
+         WHERE o.decision_id = $2 AND o.selected_action_id = $3
+           AND EXISTS (
+             SELECT 1 FROM decisions d WHERE d.id = o.decision_id AND d.user_id = $4
+           )`,
+        [input.planId, input.decisionId, input.actionId, input.userId],
+      );
+      return terminal.rows[0];
+    });
   },
 
   /**
@@ -172,7 +295,7 @@ export const executionRepository = {
       [decisionId],
     );
 
-    const plan = planResult.rows[0];
+    const plan = planResult.rows[0] ? normalizePlanRow(planResult.rows[0]) : undefined;
     if (!plan) return null;
 
     const resultResult = await query<ExecutionResultRow>(
@@ -182,7 +305,7 @@ export const executionRepository = {
 
     return {
       plan,
-      result: resultResult.rows[0] ?? null,
+      result: resultResult.rows[0] ? normalizeResultRow(resultResult.rows[0]) : null,
     };
   },
 
@@ -243,7 +366,7 @@ export const executionRepository = {
       payload: row.payload,
       occurredAt: row.occurred_at,
       executionPlanId: row.execution_plan_id,
-      adapterUsed: row.adapter_used,
+      adapterUsed: normalizeMemoryActionAdapterName(row.adapter_used),
     }));
   },
 
@@ -258,19 +381,25 @@ export const executionRepository = {
       'SELECT * FROM execution_results WHERE plan_id = $1 ORDER BY completed_at DESC LIMIT 1',
       [planId],
     );
-    return result.rows[0] ?? null;
+    return result.rows[0] ? normalizeResultRow(result.rows[0]) : null;
   },
 
   async createEvent(input: CreateExecutionEventInput): Promise<ExecutionEventRow> {
+    const payload = normalizeExecutionEventPayload(input.payload ?? {});
+    const eventType = normalizeExecutionEventType(input.eventType);
+    const stepId = input.stepId === undefined ? null : normalizeExecutionIdentifier(input.stepId);
+    if (eventType === 'unknown' || (input.stepId !== undefined && !stepId)) {
+      throw new Error('Execution event identity is malformed.');
+    }
     const result = await query<ExecutionEventRow>(
-      `INSERT INTO execution_events (plan_id, step_id, event_type, payload)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO execution_events (plan_id, step_id, event_type, payload, evidence_schema_version)
+       VALUES ($1, $2, $3, $4, 1)
        RETURNING *`,
       [
         input.planId,
-        input.stepId ?? null,
-        input.eventType,
-        JSON.stringify(input.payload ?? {}),
+        stepId,
+        eventType,
+        JSON.stringify(payload),
       ],
     );
     return result.rows[0]!;
@@ -281,6 +410,6 @@ export const executionRepository = {
       'SELECT * FROM execution_events WHERE plan_id = $1 ORDER BY created_at ASC',
       [planId],
     );
-    return result.rows;
+    return result.rows.map(normalizeEventRow);
   },
 };

@@ -99,7 +99,7 @@ async function maybeOfferRemember(userId, passphrase) {
   const yes = window.confirm(
     'Remember this passphrase on this device?\n\n'
     + 'A protected copy will be stored using this device\'s secure OS credential '
-    + 'storage so the preparatory vault key state can unlock next time. Unlocking '
+    + 'storage so the OAuth credential vault can unlock next time. Unlocking '
     + 'passes it through the desktop UI to SkyTwin\'s local API process.',
   );
   if (!yes) return;
@@ -268,11 +268,12 @@ export async function renderCredentialVault(container, userId) {
   const keyVersion = status?.keyVersion ?? null;
   const lastRotated = status?.lastRotated ?? null;
 
-  // Desktop auto-unlock (#401): if the preparatory key state is initialized +
+  // Desktop auto-unlock (#401): if the OAuth vault is initialized +
   // locked and the user opted to remember the passphrase on this device,
-  // restore it from secure desktop storage and unlock silently. This does not
-  // migrate or decrypt plaintext OAuth rows. A corrupt/wrong remembered
-  // passphrase falls through to the manual unlock form below.
+  // restore it from secure desktop storage and unlock silently. Existing
+  // plaintext rows migrate only when an authorized credential path uses them;
+  // unlock alone does not rewrite rows. A corrupt/wrong remembered passphrase
+  // falls through to the manual unlock form below.
   const remembered = await hasRememberedPassphrase(userId);
   if (initialized && !unlocked && remembered) {
     const passphrase = await getRememberedPassphrase(userId);
@@ -316,10 +317,12 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Initialize vault</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:1rem;">
-        Create preparatory API-local vault key state. This does not encrypt current OAuth token
-        rows or new OAuth grants. The API stores a passphrase verifier; the desktop stores a
-        protected passphrase copy only if you separately choose Remember on this device and a
-        secure OS credential backend is available.
+        Create the per-user OAuth credential vault. New and reconnected grants are encrypted
+        when this API process holds the matching unlocked key; a locked initialized vault refuses
+        those writes instead of storing them in plaintext. Existing complete plaintext grants can
+        migrate when an authorized credential path uses them. The desktop stores a protected
+        passphrase copy only if you separately choose Remember on this device and a secure OS
+        credential backend is available.
       </div>
       <div class="form-group">
         <label for="vault-init-passphrase">Passphrase (min 12 characters)</label>
@@ -341,8 +344,10 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Unlock vault</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:1rem;">
-        Unlock the preparatory API-local key cache for this session. This does not decrypt or
-        migrate OAuth tokens written by current production paths.
+        Unlock this API process's key cache for the session. New and reconnected OAuth grants are
+        then encrypted, and existing complete plaintext grants can migrate when an authorized
+        credential path uses them. The background worker has a separate key cache and may report
+        encrypted credentials as unavailable until cross-process key delivery is implemented.
       </div>
       <div class="form-group">
         <label for="vault-unlock-passphrase">Passphrase</label>
@@ -366,9 +371,9 @@ export async function renderCredentialVault(container, userId) {
       </div>
       <div class="card-subtitle" style="margin-bottom:1rem;">
         Change the key used by OAuth rows that are already encrypted, if any. Plaintext OAuth
-        rows are not encrypted by this operation, and new grants still use the current plaintext
-        write path. If rotation fails, the original passphrase continues to work for the
-        preparatory key state.
+        rows are not migrated by rotation; they migrate only on authorized credential use while
+        the vault is unlocked. New and reconnected grants use the current unlocked key. If
+        rotation fails, the original passphrase continues to work.
       </div>
       <div class="form-group">
         <label for="vault-rotate-current">Current passphrase</label>
@@ -393,10 +398,23 @@ export async function renderCredentialVault(container, userId) {
   const rememberedNow = initialized ? await hasRememberedPassphrase(userId) : false;
   const rememberSection = rememberedNow ? `
     <div style="margin-top:0.5rem;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
-      <span style="color:var(--muted)">Preparatory vault passphrase protected by this device's secure credential storage.</span>
+      <span style="color:var(--muted)">Vault passphrase protected by this device's secure credential storage.</span>
       <button class="btn btn-outline btn-sm" data-action="vault-forget-passphrase">Forget on this device</button>
     </div>
   ` : '';
+
+  const boundaryNotice = !initialized
+    ? `<strong style="color:var(--danger)">OAuth token vault is not initialized.</strong>
+        New OAuth grants are stored in plaintext until you initialize the vault. Existing
+        plaintext grants are not changed merely by opening this page.`
+    : unlocked
+      ? `<strong style="color:var(--success)">OAuth token vault is unlocked for API connections.</strong>
+          New and reconnected grants are encrypted with the current vault generation. Existing
+          complete plaintext grants can migrate on authorized use. The background worker does
+          not receive this API process's key and may report encrypted credentials as unavailable.`
+      : `<strong style="color:var(--warning)">OAuth token vault is locked.</strong>
+          New and reconnected grants fail closed until you unlock it; encrypted rows are not
+          downgraded to plaintext. The background worker does not receive the API process's key.`;
 
   container.innerHTML = `
     <div class="card">
@@ -404,13 +422,13 @@ export async function renderCredentialVault(container, userId) {
         <span class="card-title">Credential Vault</span>
       </div>
       <div class="card-subtitle" style="margin-bottom:0.5rem;">
-        <strong style="color:var(--danger)">OAuth token encryption is not active in this build.</strong>
-        Current production OAuth write paths store access and refresh tokens in plaintext.
-        These controls manage preparatory API-local key state only. Protect the database with
-        full-disk encryption until the production token path is migrated and verified.
+        ${boundaryNotice}
+        This vault does not encrypt account identifiers, scopes, preferences, twin profiles,
+        memory pages, receipt rows, or searchable indexes. Use full-disk encryption for the
+        database as a whole.
       </div>
       <div style="display:flex;flex-direction:column;gap:0.25rem;">
-        <div>Preparatory key state: ${statusBadge} ${lockBadge}</div>
+        <div>Vault state: ${statusBadge} ${lockBadge}</div>
         ${keyVersionDisplay}
         ${lastRotatedDisplay}
       </div>

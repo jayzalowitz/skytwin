@@ -129,6 +129,32 @@ export type {
   ExecutionRuntimeVersionSummary,
 } from './execution-runtime-versions.js';
 
+export {
+  REASONING_MODES,
+  canonicalizeProviderBaseUrl,
+  hasSameProviderCredentialEndpoint,
+  parseReasoningMode,
+  providerCredentialEndpointAuthority,
+} from './reasoning-mode.js';
+export type {
+  ProviderAttestationPolicy,
+  ProviderConfidentiality,
+  ProviderExecutionLocation,
+  ProviderExecutionMetadata,
+  ProviderExecutionAttempt,
+  ProviderCostBasis,
+  ProviderModality,
+  ProviderNetworkScope,
+  ProviderPriceKind,
+  ProviderPricingCapability,
+  ProviderPrivacyCapabilities,
+  ProviderRequestIdentity,
+  ProviderRetentionClass,
+  ProviderRetentionDisclosure,
+  ProviderVerificationStatus,
+  ReasoningMode,
+} from './reasoning-mode.js';
+
 export type {
   ActionPolicy,
   PolicyRule,
@@ -262,6 +288,25 @@ export type {
   DemoRecipeDomain,
 } from './demo-recipes.js';
 export { DEMO_RECIPES, findDemoRecipe } from './demo-recipes.js';
+
+export {
+  normalizeAdapterOutput,
+  normalizeExecutionError,
+  normalizeExecutionEventPayload,
+  normalizeExecutionEventType,
+  normalizeExecutionPlanSteps,
+  normalizeExecutionIdentifier,
+  normalizeExecutionObservation,
+  normalizeMemoryActionAdapterName,
+  normalizeMemoryActionIdentifier,
+  normalizeMemoryActionReference,
+  normalizeMemoryActionReport,
+  normalizeMemoryActionText,
+} from './execution-evidence.js';
+export type {
+  NormalizedAdapterOutput,
+  NormalizeExecutionEvidenceOptions,
+} from './execution-evidence.js';
 
 export type {
   FsScanRoot,

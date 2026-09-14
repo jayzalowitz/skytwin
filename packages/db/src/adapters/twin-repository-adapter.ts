@@ -24,10 +24,10 @@ import {
  *
  * Null by default: when unset, the preferences read/write paths operate on
  * plaintext columns exactly as before (backward compatible for vault-not-yet-
- * enabled deployments and unit tests). The API/worker calls
- * `setPreferenceVaultKeyProvider(keyCache)` at composition time once the
- * credential vault is enabled; the master key derives from the existing
- * credential-vault passphrase mechanism (OS-keychain integration: #401).
+ * enabled deployments and unit tests). No production composition root calls
+ * `setPreferenceVaultKeyProvider` today, so preference reads and writes remain
+ * plaintext. Activating the broader owner-bound source-key broker is tracked by
+ * #374.
  */
 let vaultKeyProvider: VaultKeyProvider | null = null;
 

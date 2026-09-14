@@ -2,11 +2,17 @@ import { Router } from 'express';
 import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { createLogger } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
-import { withTransaction } from '@skytwin/db';
+import { encryptColumn, readColumn, withTransaction } from '@skytwin/db';
+import type { OAuthTokenRowWithEncrypted } from '@skytwin/db';
 
 const log = createLogger('api:oauth');
 import {
   oauthRepository,
+  CredentialDispatchConflictError,
+  CredentialDisconnectInProgressError,
+  CredentialVaultLockedError,
+  CredentialConnectionAuthorityError,
+  credentialVaultMetaRepository,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   serviceCredentialRepository,
@@ -25,6 +31,7 @@ import {
 import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connectors';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { requireOwnership } from '../middleware/require-ownership.js';
+import { sharedKeyCache } from './credential-vault.js';
 
 /**
  * Secret used to HMAC-sign OAuth state. Reuses SESSION_SECRET (same secret
@@ -247,6 +254,10 @@ interface ParsedState {
    * non-desktop flow.
    */
   pendingKey: string | null;
+  /** Durable provider epoch captured before leaving for the OAuth provider. */
+  connectionGeneration: string | null;
+  /** One-shot DB-issued authority for an account-unknown sign-in flow. */
+  newUserAuthorizationId: string | null;
 }
 
 /**
@@ -329,6 +340,8 @@ function parseSignedState(state: string): ParsedState {
   // table column is TEXT for portability; the constraint lives in
   // application code).
   let pendingKey: string | null = null;
+  let connectionGeneration: string | null = null;
+  let newUserAuthorizationId: string | null = null;
   for (const t of rawTags) {
     if (t.startsWith('next=')) {
       const candidate = t.slice('next='.length);
@@ -340,6 +353,12 @@ function parseSignedState(state: string): ParsedState {
       if (isValidPendingKey(candidate)) {
         pendingKey = candidate;
       }
+    } else if (t.startsWith('cg=')) {
+      const candidate = t.slice('cg='.length);
+      if (UUID_V4_RE.test(candidate)) connectionGeneration = candidate;
+    } else if (t.startsWith('ng=')) {
+      const candidate = t.slice('ng='.length);
+      if (UUID_V4_RE.test(candidate)) newUserAuthorizationId = candidate;
     }
   }
   return {
@@ -348,6 +367,8 @@ function parseSignedState(state: string): ParsedState {
     newAccount: tags.has('new'),
     nextHash,
     pendingKey,
+    connectionGeneration,
+    newUserAuthorizationId,
   };
 }
 
@@ -511,6 +532,126 @@ async function resolveMicrosoftConfig(): Promise<ResolvedMicrosoftConfig> {
  */
 export function providerSupportsRevoke(provider: string): boolean {
   return provider === 'google';
+}
+
+export type DisconnectTokenResult =
+  | { success: true; token: string | null }
+  | { success: false; error: 'credential_vault_locked' | 'credential_decrypt_failed' };
+
+/** Materialize the exact fenced token without treating ciphertext as a token. */
+export function resolveDisconnectToken(
+  row: OAuthTokenRowWithEncrypted,
+  key: Buffer | null,
+): DisconnectTokenResult {
+  // Once either encrypted representation exists, the row is vault-owned as
+  // a whole. Never fall back to a leftover plaintext sibling: it may be an
+  // older grant whose invalidation says nothing about the encrypted grant.
+  const vaultOwned = Boolean(row.encrypted_refresh_token || row.encrypted_access_token);
+  const refresh = readColumn(
+    row.encrypted_refresh_token,
+    vaultOwned ? null : row.refresh_token,
+    key,
+  );
+  if (!refresh.success) {
+    return {
+      success: false,
+      error: refresh.error === 'vault_locked'
+        ? 'credential_vault_locked'
+        : 'credential_decrypt_failed',
+    };
+  }
+  if (refresh.value) return { success: true, token: refresh.value };
+
+  const access = readColumn(
+    row.encrypted_access_token,
+    vaultOwned ? null : row.access_token,
+    key,
+  );
+  if (!access.success) {
+    return {
+      success: false,
+      error: access.error === 'vault_locked'
+        ? 'credential_vault_locked'
+        : 'credential_decrypt_failed',
+    };
+  }
+  return { success: true, token: access.value || null };
+}
+
+async function resolveDisconnectTokenForUser(
+  userId: string,
+  row: OAuthTokenRowWithEncrypted,
+): Promise<DisconnectTokenResult> {
+  const vaultOwned = Boolean(row.encrypted_refresh_token || row.encrypted_access_token);
+  if (!vaultOwned) return resolveDisconnectToken(row, null);
+  const meta = await credentialVaultMetaRepository.getForUser(userId);
+  const key = sharedKeyCache.get(userId);
+  if (!meta || meta.vault_state !== 'unlocked' || !key ||
+      sharedKeyCache.getGeneration(userId) !== meta.vault_generation) {
+    return { success: false, error: 'credential_vault_locked' };
+  }
+  return resolveDisconnectToken(row, key);
+}
+
+async function saveConnectedToken(input: {
+  userId: string;
+  provider: string;
+  accountEmail: string;
+  accountProviderId: string | null;
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: Date;
+  scopes: string[];
+  expectedConnectionGeneration?: string;
+  newUserAuthorization?: { id: string; claimGeneration: string };
+}): Promise<void> {
+  const meta = await credentialVaultMetaRepository.getForUser(input.userId);
+  if (!meta) {
+    await oauthRepository.saveTokenForAccount({ ...input, credentialStorage: { mode: 'plaintext' } });
+    return;
+  }
+  const key = sharedKeyCache.get(input.userId);
+  const cachedGeneration = sharedKeyCache.getGeneration(input.userId);
+  if (!key || meta.vault_state !== 'unlocked' || cachedGeneration !== meta.vault_generation) {
+    throw new CredentialVaultLockedError();
+  }
+  await oauthRepository.saveTokenForAccount({
+    ...input,
+    credentialStorage: {
+      mode: 'encrypted',
+      encryptedAccessToken: encryptColumn(input.accessToken, key),
+      encryptedRefreshToken: encryptColumn(input.refreshToken, key),
+      keyVersion: meta.current_key_version,
+      vaultGeneration: cachedGeneration,
+    },
+  });
+}
+
+function handleCredentialSaveConflict(
+  error: unknown,
+  res: { status(code: number): { json(body: unknown): unknown } },
+): boolean {
+  if (error instanceof CredentialDispatchConflictError) {
+    res.status(409).json({
+      error: error.message,
+      code: error.code,
+      retryAfter: error.retryAfter?.toISOString() ?? null,
+    });
+    return true;
+  }
+  if (error instanceof CredentialDisconnectInProgressError) {
+    res.status(409).json({ error: error.message, code: error.code });
+    return true;
+  }
+  if (error instanceof CredentialVaultLockedError) {
+    res.status(423).json({ error: error.message, code: error.code });
+    return true;
+  }
+  if (error instanceof CredentialConnectionAuthorityError) {
+    res.status(409).json({ error: error.message, code: error.code });
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -789,14 +930,26 @@ export function createOAuthRouter(): Router {
         stateHead = userId;
       }
 
+      const expiresAtMs = Date.now() + STATE_TTL_MS;
       const tags: string[] = [];
+      if (stateHead === 'new') {
+        const authorizationId = await oauthRepository.issueNewUserAuthorization(
+          'google', new Date(expiresAtMs),
+        );
+        tags.push(`ng=${authorizationId}`);
+      } else {
+        const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(
+          stateHead, 'google',
+        );
+        tags.push(`cg=${connectionGeneration}`);
+      }
       if (desktop) tags.push('desktop');
       if (newAccount) tags.push('new');
       if (nextTagValue) tags.push(`next=${nextTagValue}`);
       if (pendingKey) tags.push(`key=${pendingKey}`);
 
       const payload = [stateHead, ...tags].join('|');
-      const state = signStatePayload(payload, Date.now() + STATE_TTL_MS);
+      const state = signStatePayload(payload, expiresAtMs);
 
       // PKCE mode when no client_secret. Generate verifier+challenge,
       // stash verifier server-side keyed on the signed state token, send
@@ -812,6 +965,14 @@ export function createOAuthRouter(): Router {
       const url = generateAuthUrl(googleConfig, scopes, state, codeChallenge);
       res.json({ url });
     } catch (error) {
+      if (error instanceof CredentialDispatchConflictError) {
+        res.status(409).json({
+          error: error.message,
+          code: error.code,
+          retryAfter: error.retryAfter?.toISOString() ?? null,
+        });
+        return;
+      }
       next(error);
     }
   });
@@ -845,6 +1006,20 @@ export function createOAuthRouter(): Router {
         });
         return;
       }
+      if (parsed.userId && !parsed.connectionGeneration) {
+        res.status(409).json({
+          error: 'This OAuth authorization flow predates the current connection authority. Start again.',
+          code: 'credential_connection_stale',
+        });
+        return;
+      }
+      if (!parsed.userId && !parsed.newUserAuthorizationId) {
+        res.status(409).json({
+          error: 'This sign-in flow predates the current connection authority. Start again.',
+          code: 'credential_connection_stale',
+        });
+        return;
+      }
 
       const googleConfig = await resolveGoogleConfig();
       // Recover the PKCE verifier stashed at /authorize. Consume-on-read
@@ -868,7 +1043,9 @@ export function createOAuthRouter(): Router {
       // the actual account email (rather than guessing from state) and
       // optionally materialize a user.
       const userInfo = await fetchGoogleUserInfo(tokenSet.accessToken);
-      const accountEmail = typeof userInfo.email === 'string' ? userInfo.email.trim() : '';
+      const accountEmail = typeof userInfo.email === 'string'
+        ? userInfo.email.trim().toLowerCase()
+        : '';
       const accountProviderId = userInfo.id;
 
       if (!accountEmail) {
@@ -894,40 +1071,32 @@ export function createOAuthRouter(): Router {
       const NEW_USER_TIER = 'observer';
 
       let userId = parsed.userId;
+      let newUserAuthorization: { id: string; claimGeneration: string } | undefined;
       if (!userId) {
-        // Auto-create or attach to a user keyed on the verified Google email.
-        const existing = await userRepository.findByEmail(accountEmail);
-        if (existing) {
-          userId = existing.id;
-        } else {
-          const created = await userRepository.create({
-            email: accountEmail,
-            name: userInfo.name ?? accountEmail,
-            trustTier: NEW_USER_TIER,
-          });
-          userId = created.id;
-        }
+        // Claim, tombstone-check, and create/lock the verified owner as one
+        // serializable DB operation. A purge that wins first makes this
+        // pre-purge authorization stale without affecting other accounts.
+        const claimed = await oauthRepository.claimNewUserAuthorization({
+          authorizationId: parsed.newUserAuthorizationId!,
+          provider: 'google',
+          accountEmail,
+          userName: userInfo.name ?? accountEmail,
+          trustTier: NEW_USER_TIER,
+        });
+        userId = claimed.userId;
+        newUserAuthorization = {
+          id: parsed.newUserAuthorizationId!, claimGeneration: claimed.claimGeneration,
+        };
       } else {
-        // Validate that the userId in state actually exists; if not, fall
-        // back to auto-create so we don't leave an orphaned token row.
+        // A known-owner state is never authority to recreate a deleted user.
         const existing = await userRepository.findById(userId);
         if (!existing) {
-          const byEmail = await userRepository.findByEmail(accountEmail);
-          if (byEmail) {
-            userId = byEmail.id;
-          } else {
-            const created = await userRepository.create({
-              email: accountEmail,
-              name: userInfo.name ?? accountEmail,
-              trustTier: NEW_USER_TIER,
-            });
-            userId = created.id;
-          }
+          throw new CredentialConnectionAuthorityError();
         }
       }
 
       // Persist tokens keyed on (user, provider, account_email).
-      await oauthRepository.saveTokenForAccount({
+      await saveConnectedToken({
         userId,
         provider: 'google',
         accountEmail,
@@ -936,6 +1105,10 @@ export function createOAuthRouter(): Router {
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
+        ...(parsed.connectionGeneration
+          ? { expectedConnectionGeneration: parsed.connectionGeneration }
+          : {}),
+        ...(newUserAuthorization ? { newUserAuthorization } : {}),
       });
 
       // Profile sync (#486): capture the user's language (Google locale) and
@@ -1049,6 +1222,7 @@ export function createOAuthRouter(): Router {
       // The dashboard hash router reads the bit before `?` as the route.
       res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
     } catch (error) {
+      if (handleCredentialSaveConflict(error, res)) return;
       next(error);
     }
   });
@@ -1091,7 +1265,13 @@ export function createOAuthRouter(): Router {
       // State carries only the userId — connect-for-existing-user, no tags.
       // Reuses the same HMAC signing as the Google flow so /microsoft/callback
       // can't be spoofed into attaching an account to another user.
-      const state = signStatePayload(userId, Date.now() + STATE_TTL_MS);
+      const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(
+        userId, 'microsoft',
+      );
+      const state = signStatePayload(
+        `${userId}|cg=${connectionGeneration}`,
+        Date.now() + STATE_TTL_MS,
+      );
 
       let codeChallenge: string | undefined;
       if (!config.clientSecret) {
@@ -1141,6 +1321,13 @@ export function createOAuthRouter(): Router {
         res.status(400).json({ error: 'Microsoft connect requires an existing user in the signed state.' });
         return;
       }
+      if (!parsed.connectionGeneration) {
+        res.status(409).json({
+          error: 'This OAuth authorization flow predates the current connection authority. Start again.',
+          code: 'credential_connection_stale',
+        });
+        return;
+      }
 
       const config = await resolveMicrosoftConfig();
       // Consume-on-read so a replayed callback can't redeem the same code.
@@ -1170,7 +1357,7 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      await oauthRepository.saveTokenForAccount({
+      await saveConnectedToken({
         userId,
         provider: 'microsoft',
         accountEmail,
@@ -1179,6 +1366,9 @@ export function createOAuthRouter(): Router {
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
+        ...(parsed.connectionGeneration
+          ? { expectedConnectionGeneration: parsed.connectionGeneration }
+          : {}),
       });
 
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
@@ -1186,6 +1376,7 @@ export function createOAuthRouter(): Router {
       const hashQuery = new URLSearchParams({ connected: 'microsoft', account: accountEmail }).toString();
       res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
     } catch (error) {
+      if (handleCredentialSaveConflict(error, res)) return;
       next(error);
     }
   });
@@ -1394,11 +1585,20 @@ export function createOAuthRouter(): Router {
       }
 
       const decodedEmail = decodeURIComponent(accountEmail);
-      const token = await oauthRepository.getTokenByAccount(userId, provider, decodedEmail);
-      if (!token) {
+      const begun = await oauthRepository.beginDisconnect(userId, provider, decodedEmail);
+      if (begun.status === 'not_found') {
         res.status(404).json({ error: 'Account not connected.' });
         return;
       }
+      if (begun.status === 'pending') {
+        res.status(409).json({
+          error: 'Credential disconnect is pending an active request.',
+          code: 'credential_dispatch_pending',
+          retryAfter: begun.retryAfter?.toISOString() ?? null,
+        });
+        return;
+      }
+      const token = begun.accounts[0]!;
 
       // Google docs: revoking the refresh_token invalidates the entire
       // grant; revoking only the access_token still leaves the long-lived
@@ -1407,15 +1607,41 @@ export function createOAuthRouter(): Router {
       // ONLY revoke for providers with a revoke endpoint — see
       // providerSupportsRevoke; for Microsoft, deleting the row is the
       // disconnect (revoking there would leak the token to Google).
-      const tokenToRevoke = token.refresh_token ?? token.access_token;
-      if (providerSupportsRevoke(provider) && tokenToRevoke) {
-        try {
-          await revokeToken(tokenToRevoke);
-        } catch {
-          // Already revoked / expired — proceed with local cleanup.
+      if (providerSupportsRevoke(provider)) {
+        const resolved = await resolveDisconnectTokenForUser(userId, token);
+        if (!resolved.success) {
+          res.status(resolved.error === 'credential_vault_locked' ? 423 : 500).json({
+            error: resolved.error === 'credential_vault_locked'
+              ? 'Unlock the credential vault before disconnecting this account.'
+              : 'The stored credential could not be decrypted for revocation.',
+            code: resolved.error,
+          });
+          return;
+        }
+        if (resolved.token) {
+          try {
+            await revokeToken(resolved.token);
+          } catch {
+            // The row remains durably fenced. A later retry can converge only
+            // after the provider proves the old credential is unusable.
+            res.status(502).json({
+              error: 'Provider revocation could not be confirmed; disconnect remains pending.',
+              code: 'credential_revoke_pending',
+            });
+            return;
+          }
         }
       }
-      const removed = await oauthRepository.deleteAccount(userId, provider, decodedEmail);
+      const removed = (await oauthRepository.completeDisconnect(
+        userId, provider, begun.accounts,
+      )) > 0;
+      if (!removed) {
+        res.status(409).json({
+          error: 'Credential changed while disconnect was in progress.',
+          code: 'credential_dispatch_conflict',
+        });
+        return;
+      }
       res.json({ status: removed ? 'disconnected' : 'not_found', provider, accountEmail: decodedEmail });
     } catch (error) {
       next(error);
@@ -1445,7 +1671,16 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      const accounts = await oauthRepository.listAccountsForUser(userId, provider);
+      const begun = await oauthRepository.beginDisconnect(userId, provider);
+      if (begun.status === 'pending') {
+        res.status(409).json({
+          error: 'Credential disconnect is pending an active request.',
+          code: 'credential_dispatch_pending',
+          retryAfter: begun.retryAfter?.toISOString() ?? null,
+        });
+        return;
+      }
+      const accounts = begun.status === 'ready' ? begun.accounts : [];
       // Google supports server-side token revocation; Microsoft Entra has no
       // equivalent token-revoke endpoint, so for Microsoft we just drop the
       // stored rows (deleting the token is the disconnect).
@@ -1453,25 +1688,55 @@ export function createOAuthRouter(): Router {
         // Revoke each connected account in turn, then drop all rows. Prefer
         // refresh_token (invalidates the full grant); access_token alone
         // leaves the grant active per Google's revocation semantics.
+        const resolvedTokens: string[] = [];
         for (const acct of accounts) {
-          const tokenToRevoke = acct.refresh_token ?? acct.access_token;
-          if (!tokenToRevoke) continue;
+          const resolved = await resolveDisconnectTokenForUser(userId, acct);
+          if (!resolved.success) {
+            res.status(resolved.error === 'credential_vault_locked' ? 423 : 500).json({
+              error: resolved.error === 'credential_vault_locked'
+                ? 'Unlock the credential vault before disconnecting this provider.'
+                : 'A stored credential could not be decrypted for revocation.',
+              code: resolved.error,
+            });
+            return;
+          }
+          if (resolved.token) resolvedTokens.push(resolved.token);
+        }
+        for (const tokenToRevoke of resolvedTokens) {
           try {
             await revokeToken(tokenToRevoke);
           } catch {
-            // Revocation can fail if a token is already expired — continue.
+            res.status(502).json({
+              error: 'Provider revocation could not be confirmed; disconnect remains pending.',
+              code: 'credential_revoke_pending',
+            });
+            return;
           }
         }
       }
-      await oauthRepository.deleteAllForProvider(userId, provider);
+      const deleted = begun.status === 'ready'
+        ? await oauthRepository.completeDisconnect(userId, provider, begun.accounts)
+        : 0;
+      if (begun.status === 'ready' && deleted !== accounts.length) {
+        res.status(409).json({
+          error: 'Credential changed while disconnect was in progress.',
+          code: 'credential_dispatch_conflict',
+        });
+        return;
+      }
 
       res.json({
         status: 'disconnected',
         provider,
         // Microsoft has no revoke endpoint, so for it `revoked` is always 0;
         // `deleted` reflects the rows dropped for either provider.
-        revoked: providerSupportsRevoke(provider) ? accounts.length : 0,
-        deleted: accounts.length,
+        revoked: providerSupportsRevoke(provider)
+          ? accounts.filter((account) => Boolean(
+            account.encrypted_refresh_token || account.refresh_token ||
+            account.encrypted_access_token || account.access_token,
+          )).length
+          : 0,
+        deleted,
       });
     } catch (error) {
       next(error);

@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "074-inference-receipts.sql",
+  "asOfMigration": "079-inference-receipt-capture-order.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -83,6 +83,7 @@
         "auditedCallsites": [
           "packages/db/src/adapters/policy-repository-adapter.ts",
           "packages/db/src/repositories/policy-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/seed.ts"
         ]
@@ -116,6 +117,7 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/repositories/ai-provider-repository.ts",
+          "packages/db/src/repositories/reasoning-mode-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts"
         ]
       },
@@ -203,8 +205,11 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/repositories/approval-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts",
           "packages/db/src/seeds/seed.ts"
         ]
       },
@@ -215,6 +220,8 @@
             "batch_id",
             "confirmation_level",
             "decision_id",
+            "execution_denial_explanation_id",
+            "execution_denied_at",
             "expires_at",
             "first_confirmed_at",
             "id",
@@ -684,9 +691,12 @@
           "packages/db/src/adapters/decision-repository-adapter.ts",
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts",
           "packages/db/src/seeds/seed.ts"
         ]
       },
@@ -932,6 +942,83 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "credential_dispatch_leases",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/oauth-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": ["account_email"],
+          "currentProtection": "Plaintext credential account identity in CockroachDB today.",
+          "targetProtection": "Per-user, credentials-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "The credential account identity is private provider-originated source data even though the lease is short-lived.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "acquired_at",
+            "action_id",
+            "adapter_name",
+            "authority_id",
+            "authority_kind",
+            "authority_updated_at",
+            "credential_generation",
+            "credential_revision",
+            "decision_id",
+            "execution_authority_revision",
+            "execution_channel",
+            "execution_plan_id",
+            "expires_at",
+            "id",
+            "lease_generation",
+            "mcp_server_id",
+            "oauth_token_id",
+            "policy_authority_revision",
+            "provider",
+            "request_started_at",
+            "state",
+            "terminal_at",
+            "user_id",
+            "vault_generation"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "one_way_secret",
+          "columns": ["capability_hash"],
+          "currentProtection": "One-way SHA-256 verifier of a random dispatch capability; the bearer capability is not stored.",
+          "targetProtection": "Retain the one-way verifier with comparison safety; never persist the recoverable bearer capability.",
+          "migrationStage": "retain-one-way",
+          "rationale": "Dispatch authorization compares a process-supplied random capability and never needs to recover it."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": ["mcp_tool_name", "risk_snapshot"],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "Tool identity and the exact risk snapshot can reveal private capabilities and action content.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id; lease rows are deliberately excluded from portable backup."
+    },
+    {
       "table": "credential_requirements",
       "owner": "installation",
       "boundary": {
@@ -1011,21 +1098,81 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "decision_ingest_guards",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "confirmation_level",
+            "continuation_kind",
+            "created_at",
+            "decision_id",
+            "dispatch_adapter_name",
+            "effect_state",
+            "outcome_auto_execute",
+            "outcome_id",
+            "outcome_requires_approval",
+            "receipt_explanation_id",
+            "selected_action_id",
+            "source_effect_state",
+            "source_execution_plan_id",
+            "source_execution_status",
+            "updated_at"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "continuation_snapshot",
+            "dispatch_policy_snapshot",
+            "dispatch_risk_snapshot",
+            "policy_snapshot",
+            "risk_snapshot"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "Durable continuation, policy, and risk snapshots can reproduce private action and decision context.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through the linked decision; repository access must preserve that join and scope."
+    },
+    {
       "table": "decision_outcomes",
       "owner": "user_child",
       "boundary": {
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "apps/api/src/routes/approvals.ts",
           "apps/api/src/routes/capabilities.ts",
           "apps/api/src/services/live-digest.ts",
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts",
           "packages/db/src/seeds/seed.ts"
         ]
       },
@@ -1069,12 +1216,16 @@
           "apps/api/src/routes/capabilities.ts",
           "apps/api/src/services/live-digest.ts",
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts",
           "packages/db/src/seeds/seed.ts"
         ]
       },
@@ -1325,7 +1476,8 @@
         "current": "repository_sql",
         "target": "locally_exposed_or_excluded",
         "auditedCallsites": [
-          "packages/db/src/repositories/mempalace-repository.ts"
+          "packages/db/src/repositories/mempalace-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
         ]
       },
       "groups": [
@@ -1357,7 +1509,7 @@
         "auditedCallsites": [
           "apps/api/src/routes/onboarding.ts",
           "packages/db/src/repositories/mempalace-repository.ts",
-          "packages/db/src/seeds/seed.ts"
+          "packages/db/src/seeds/legacy-decision-cleanup.ts"
         ]
       },
       "groups": [
@@ -1470,6 +1622,64 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "execution_admission_barriers",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/user-repository.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action_id",
+            "adapter_name",
+            "created_at",
+            "decision_id",
+            "evidence_schema_version",
+            "execution_plan_id",
+            "explanation_id",
+            "id",
+            "idempotency_key",
+            "outcome_id",
+            "scope",
+            "status",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "action_snapshot",
+            "observed_result",
+            "outcome_snapshot",
+            "policy_snapshot",
+            "risk_snapshot"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "Admission and result snapshots are execution evidence that can contain private action, policy, and outcome content.",
+          "searchableDerivatives": []
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id, with graph constraints binding the decision, action, outcome, plan, and explanation."
+    },
+    {
       "table": "execution_events",
       "owner": "user_child",
       "boundary": {
@@ -1479,13 +1689,20 @@
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
-          "packages/db/src/seeds/seed.ts"
+          "packages/db/src/seeds/legacy-decision-cleanup.ts"
         ]
       },
       "groups": [
         {
           "classification": "locally_exposed_metadata",
-          "columns": ["created_at", "event_type", "id", "plan_id", "step_id"],
+          "columns": [
+            "created_at",
+            "event_type",
+            "evidence_schema_version",
+            "id",
+            "plan_id",
+            "step_id"
+          ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
           "migrationStage": "disclosed-local-metadata",
@@ -1510,11 +1727,13 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "apps/api/src/routes/approvals.ts",
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
-          "packages/db/src/seeds/seed.ts"
+          "packages/db/src/seeds/legacy-decision-cleanup.ts"
         ]
       },
       "groups": [
@@ -1524,6 +1743,7 @@
             "action_id",
             "created_at",
             "decision_id",
+            "evidence_schema_version",
             "id",
             "status",
             "updated_at"
@@ -1546,17 +1766,41 @@
       "ownershipNotes": "User ownership resolves through a parent record; repository access must preserve that join and scope."
     },
     {
+      "table": "execution_policy_authority",
+      "owner": "system_global",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "content_free_global",
+        "auditedCallsites": [
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/policy-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["revision", "singleton", "updated_at"],
+          "currentProtection": "Locally readable global policy revision and lifecycle metadata.",
+          "targetProtection": "Remain content-free, locally readable authority metadata.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "The singleton revision invalidates stale execution authority and contains no user content."
+        }
+      ],
+      "ownershipNotes": "System-global singleton containing only execution-policy invalidation metadata; user content is prohibited."
+    },
+    {
       "table": "execution_results",
       "owner": "user_child",
       "boundary": {
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "apps/api/src/routes/approvals.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
-          "packages/db/src/seeds/seed.ts"
+          "packages/db/src/seeds/legacy-decision-cleanup.ts"
         ]
       },
       "groups": [
@@ -1565,6 +1809,7 @@
           "columns": [
             "adapter_used",
             "completed_at",
+            "evidence_schema_version",
             "id",
             "plan_id",
             "rollback_available",
@@ -1596,11 +1841,13 @@
         "auditedCallsites": [
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts",
           "packages/db/src/seeds/seed.ts"
         ]
       },
@@ -1780,6 +2027,7 @@
           "packages/db/src/repositories/feedback-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
+          "packages/db/src/seeds/legacy-decision-cleanup.ts",
           "packages/db/src/seeds/seed.ts"
         ]
       },
@@ -1913,6 +2161,29 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "inference_receipt_completions",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["completed_at", "decision_id", "explanation_id"],
+          "currentProtection": "Locally readable completion timestamp and decision/explanation linkage.",
+          "targetProtection": "Remain locally readable to distinguish finalized zero-or-more receipt capture from interrupted persistence.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Receipt admission needs a content-free durable completion marker even when no provider call completed."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through the linked decision and explanation; repository and backup access must preserve that scope."
+    },
+    {
       "table": "inference_receipts",
       "owner": "user_child",
       "boundary": {
@@ -1927,6 +2198,7 @@
         {
           "classification": "locally_exposed_metadata",
           "columns": [
+            "capture_ordinal",
             "created_at",
             "decision_id",
             "explanation_id",
@@ -1935,16 +2207,14 @@
             "trusted",
             "version"
           ],
-          "currentProtection": "Locally readable receipt identifiers, status, trust marker, version, and timestamp in CockroachDB.",
+          "currentProtection": "Locally readable receipt identifiers, capture order, status, trust marker, version, and timestamp in CockroachDB.",
           "targetProtection": "Remain locally readable for ownership checks, lookup, retention, audit, and deletion; disclose that status and linkage reveal receipt activity.",
           "migrationStage": "disclosed-local-metadata",
-          "rationale": "Receipt lookup and ownership require stable identifiers and status; user ownership continues to resolve through the linked decision."
+          "rationale": "Receipt lookup and ownership require stable identifiers, durable capture-completion order, and status; user ownership continues to resolve through the linked decision."
         },
         {
           "classification": "deferred_source",
-          "columns": [
-            "receipt"
-          ],
+          "columns": ["receipt"],
           "currentProtection": "Locally readable canonical signed JSON in CockroachDB. It includes provider, model, endpoint identity, request/response hashes, cost and optional billing identity, verification metadata, fallback reason, and public signatures. There are no dedicated prompt or response fields, but arbitrary string fields cannot be proven free of source content or secrets.",
           "targetProtection": "User-owned versioned authenticated encryption while preserving a narrowly defined readable lookup boundary; callers must still keep source content and secrets out of free-form receipt strings.",
           "migrationStage": "caller-sanitization-and-encryption-required",
@@ -2248,6 +2518,7 @@
           "apps/api/src/routes/dxt.ts",
           "apps/worker/src/jobs/briefing-generator.ts",
           "apps/worker/src/jobs/domain-extraction.ts",
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/mcp-server-changelog-repository.ts",
           "packages/db/src/repositories/mcp-server-repository.ts",
           "packages/db/src/repositories/promotion-offers-repository.ts",
@@ -2305,6 +2576,7 @@
         "current": "repository_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
+          "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/memory-action-opportunity-repository.ts"
         ]
       },
@@ -2340,6 +2612,7 @@
             "confidence",
             "created_at",
             "decision_id",
+            "evidence_schema_version",
             "execution_plan_id",
             "fingerprint",
             "id",
@@ -2590,6 +2863,95 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "oauth_account_connection_authority",
+      "owner": "installation",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "installation_broker_gateway",
+        "auditedCallsites": ["packages/db/src/repositories/oauth-repository.ts"]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["account_key"],
+          "currentProtection": "Installation-secret-keyed HMAC of normalized provider account identity.",
+          "targetProtection": "Retain only as a versioned, purpose-bound installation lookup derivative; never replace it with plaintext or an unkeyed digest.",
+          "migrationStage": "version-and-domain-separate-lookup",
+          "rationale": "Pre-identity disconnect fencing requires exact account equality without persisting the account identity."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "expires_at",
+            "generation",
+            "invalidated_at",
+            "provider",
+            "updated_at"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Installation-scoped pre-identity authority keyed by an opaque account derivative; TTL bounds retention."
+    },
+    {
+      "table": "oauth_connection_authority",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": ["packages/db/src/repositories/oauth-repository.ts"]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["generation", "provider", "updated_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id; the generation fences stale OAuth callbacks and credential writes."
+    },
+    {
+      "table": "oauth_new_user_authorizations",
+      "owner": "installation",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "installation_broker_gateway",
+        "auditedCallsites": ["packages/db/src/repositories/oauth-repository.ts"]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": ["claimed_account_key", "claimed_owner_key"],
+          "currentProtection": "Installation-secret-keyed HMAC derivatives of resolved account and owner identities.",
+          "targetProtection": "Retain only as versioned, purpose-bound installation lookup derivatives; never replace them with plaintext or unkeyed digests.",
+          "migrationStage": "version-and-domain-separate-lookup",
+          "rationale": "The transient claim must bind an OAuth redirect to exact identities without storing those source identifiers."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "claim_generation",
+            "claimed_owner_generation",
+            "expires_at",
+            "id",
+            "issued_at",
+            "provider"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        }
+      ],
+      "ownershipNotes": "Installation-scoped, single-use pre-identity authorization; TTL bounds retention before a user owner is established."
+    },
+    {
       "table": "oauth_pending_signin",
       "owner": "user",
       "boundary": {
@@ -2665,8 +3027,8 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "apps/api/src/routes/capabilities.ts",
           "apps/api/src/services/live-digest.ts",
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/oauth-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
           "packages/db/src/seeds/seed.ts"
@@ -2681,7 +3043,7 @@
             "encrypted_refresh_token",
             "refresh_token"
           ],
-          "currentProtection": "Plaintext-compatible schema with optional AES-256-GCM sibling columns; production key delivery and complete migration are not wired.",
+          "currentProtection": "Mixed storage: without an initialized vault, API callbacks write plaintext; with the matching API vault generation unlocked, new or reconnected grants use AES-256-GCM ciphertext and null plaintext, while a locked initialized vault refuses the write. Complete legacy plaintext grants can migrate on authorized use. The worker still lacks cross-process key delivery, and migration is not complete.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-1-secrets-and-portable-config",
           "rationale": "Credential, identity, configuration, or highest-value source data selected for the first applicable migration slice.",
@@ -2700,6 +3062,9 @@
           "classification": "locally_exposed_metadata",
           "columns": [
             "created_at",
+            "credential_revision",
+            "dispatch_generation",
+            "dispatch_state",
             "encryption_iv",
             "encryption_key_version",
             "encryption_tag",
@@ -2725,6 +3090,7 @@
         "current": "repository_sql",
         "target": "locally_exposed_or_excluded",
         "auditedCallsites": [
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/mcp-server-changelog-repository.ts"
         ]
       },
@@ -2967,6 +3333,35 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "reasoning_mode_settings",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/ai-provider-repository.ts",
+          "packages/db/src/repositories/reasoning-mode-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "mode",
+            "requires_confirmation",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Plaintext policy metadata in CockroachDB today.",
+          "targetProtection": "Remain locally readable so provider admission and fail-closed routing can be decided before any source-field key is released.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "The selected reasoning boundary and confirmation state are local policy controls required to reject ineligible providers while the source-field broker is locked."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
       "table": "recovery_codes",
       "owner": "user",
       "boundary": {
@@ -3121,28 +3516,6 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
-      "table": "source_key_deletion_intents",
-      "owner": "user",
-      "boundary": {
-        "current": "repository_sql",
-        "target": "locally_exposed_or_excluded",
-        "auditedCallsites": [
-          "packages/db/src/repositories/source-key-registry-repository.ts"
-        ]
-      },
-      "groups": [
-        {
-          "classification": "locally_exposed_metadata",
-          "columns": ["device_wrapper_deleted_at", "requested_at", "user_id"],
-          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
-          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
-          "migrationStage": "disclosed-local-metadata",
-          "rationale": "A content-free retry marker is required to remove device-local wrappers after database deletion without storing key material."
-        }
-      ],
-      "ownershipNotes": "The UUID names the deleted owner. It intentionally survives deletion of the users row so device cleanup remains retryable."
-    },
-    {
       "table": "skill_gap_log",
       "owner": "user",
       "boundary": {
@@ -3150,7 +3523,7 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/repositories/skill-gap-repository.ts",
-          "packages/db/src/seeds/seed.ts"
+          "packages/db/src/seeds/legacy-decision-cleanup.ts"
         ]
       },
       "groups": [
@@ -3183,6 +3556,28 @@
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "source_key_deletion_intents",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/source-key-registry-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": ["device_wrapper_deleted_at", "requested_at", "user_id"],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "A content-free retry marker is required to remove device-local wrappers after database deletion without storing key material."
+        }
+      ],
+      "ownershipNotes": "The UUID names the deleted owner. It intentionally survives deletion of the users row so device cleanup remains retryable."
     },
     {
       "table": "spend_records",
@@ -3430,7 +3825,9 @@
         "current": "repository_sql",
         "target": "locally_exposed_or_excluded",
         "auditedCallsites": [
-          "packages/db/src/repositories/credential-vault-meta-repository.ts"
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/credential-vault-meta-repository.ts",
+          "packages/db/src/repositories/oauth-repository.ts"
         ]
       },
       "groups": [
@@ -3441,7 +3838,9 @@
             "current_key_version",
             "passphrase_salt",
             "rotated_at",
-            "user_id"
+            "user_id",
+            "vault_generation",
+            "vault_state"
           ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
@@ -3535,14 +3934,52 @@
       "ownershipNotes": "Direct user ownership through user_id."
     },
     {
+      "table": "user_source_key_registry",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/source-key-registry-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "algorithm",
+            "created_at",
+            "kdf_record",
+            "key_version",
+            "recovery_wrapper",
+            "retired_at",
+            "user_id",
+            "wrapper_version"
+          ],
+          "currentProtection": "The root key is passphrase-wrapped, but its wrapper ciphertext, KDF parameters, identifiers, versions, and lifecycle timestamps are locally readable cryptographic metadata.",
+          "targetProtection": "Remain locally readable only through the owner-bound broker gateway; disclose that copying the recovery wrapper permits offline passphrase guessing.",
+          "migrationStage": "source-key-custody-kernel",
+          "rationale": "Recovery requires a database backup plus the user's passphrase. Treating wrapper and KDF records as encrypted source would overstate protection."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id; deletion cascades with the user. Multiple active wrappers are corruption until an explicit rotation lifecycle exists."
+    },
+    {
       "table": "users",
       "owner": "user",
       "boundary": {
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
+          "apps/api/src/routes/credential-vault.ts",
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/mcp-server-changelog-repository.ts",
           "packages/db/src/repositories/oauth-repository.ts",
+          "packages/db/src/repositories/policy-repository.ts",
+          "packages/db/src/repositories/spend-repository.ts",
           "packages/db/src/repositories/trust-tier-audit-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
@@ -3576,6 +4013,7 @@
           "classification": "locally_exposed_metadata",
           "columns": [
             "created_at",
+            "execution_authority_revision",
             "id",
             "is_demo",
             "trust_tier",
@@ -3589,37 +4027,6 @@
         }
       ],
       "ownershipNotes": "Root user row; id is the owner identifier."
-    },
-    {
-      "table": "user_source_key_registry",
-      "owner": "user",
-      "boundary": {
-        "current": "repository_sql",
-        "target": "user_broker_gateway",
-        "auditedCallsites": [
-          "packages/db/src/repositories/source-key-registry-repository.ts"
-        ]
-      },
-      "groups": [
-        {
-          "classification": "locally_exposed_metadata",
-          "columns": [
-            "algorithm",
-            "created_at",
-            "kdf_record",
-            "key_version",
-            "recovery_wrapper",
-            "retired_at",
-            "user_id",
-            "wrapper_version"
-          ],
-          "currentProtection": "The root key is passphrase-wrapped, but its wrapper ciphertext, KDF parameters, identifiers, versions, and lifecycle timestamps are locally readable cryptographic metadata.",
-          "targetProtection": "Remain locally readable only through the owner-bound broker gateway; disclose that copying the recovery wrapper permits offline passphrase guessing.",
-          "migrationStage": "source-key-custody-kernel",
-          "rationale": "Recovery requires a database backup plus the user's passphrase. Treating wrapper and KDF records as encrypted source would overstate protection."
-        }
-      ],
-      "ownershipNotes": "Direct user ownership through user_id; deletion cascades with the user. Multiple active wrappers are corruption until an explicit rotation lifecycle exists."
     },
     {
       "table": "watch_runs",

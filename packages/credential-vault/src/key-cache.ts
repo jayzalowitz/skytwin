@@ -17,6 +17,7 @@ export interface KeyCacheOptions {
 
 interface CacheEntry {
   key: Buffer;
+  generation: string | null;
   expiresAt: number;
   timeoutHandle: ReturnType<typeof setTimeout>;
 }
@@ -40,7 +41,7 @@ export class KeyCache {
    * Store a derived key for the given userId.
    * Any existing entry is evicted first (its timeout is cleared).
    */
-  set(userId: string, key: Buffer): void {
+  set(userId: string, key: Buffer, generation: string | null = null): void {
     this.evict(userId);
 
     const expiresAt = Date.now() + this.ttlMs;
@@ -53,7 +54,7 @@ export class KeyCache {
       timeoutHandle.unref();
     }
 
-    this.cache.set(userId, { key, expiresAt, timeoutHandle });
+    this.cache.set(userId, { key, generation, expiresAt, timeoutHandle });
   }
 
   /**
@@ -67,6 +68,13 @@ export class KeyCache {
       return null;
     }
     return entry.key;
+  }
+
+  /** Durable vault generation this key session was created under. */
+  getGeneration(userId: string): string | null {
+    const entry = this.cache.get(userId);
+    if (!entry || this.get(userId) === null) return null;
+    return entry.generation;
   }
 
   /**

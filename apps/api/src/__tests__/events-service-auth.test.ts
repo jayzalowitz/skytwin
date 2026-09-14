@@ -93,6 +93,12 @@ vi.mock('@skytwin/explanations', () => ({
 
 vi.mock('@skytwin/llm-client', () => ({ LlmClient: vi.fn() }));
 
+vi.mock('../lib/user-llm-client.js', () => ({
+  resolveUserLlmClient: vi.fn().mockResolvedValue({
+    state: 'no_provider', client: null, reason: 'No provider in test',
+  }),
+}));
+
 vi.mock('@skytwin/db', () => ({
   // sessionAuth
   sessionRepository: {
@@ -121,6 +127,15 @@ vi.mock('@skytwin/db', () => ({
       .mockResolvedValue({ id: TEST_USER_ID, trust_tier: 'observer', ironclaw_channel: 'skytwin' }),
   },
   aiProviderRepository: { getEnabledForUser: vi.fn().mockResolvedValue([]) },
+  inferenceReceiptRepository: {
+    isCompleteForDecision: vi.fn().mockResolvedValue(false),
+    createManyForUser: vi.fn().mockImplementation(async (_u, inputs, completion) => ({ receipts: inputs, continuation: completion.continuation })),
+    getContinuationForDecision: vi.fn().mockResolvedValue(null),
+    claimExecutionForDecision: vi.fn().mockResolvedValue({ id: 'plan-1', dispatchAuthorityUpdatedAt: new Date() }),
+    isExecutionDispatchableForDecision: vi.fn().mockResolvedValue(true),
+    markExecutionTerminalForDecision: vi.fn().mockResolvedValue(true),
+    markNonEffectForDecision: vi.fn().mockResolvedValue(true),
+  },
   emailLabelRepository: {
     topLabelsForSender: vi.fn().mockResolvedValue([]),
     topLabelsForListId: vi.fn().mockResolvedValue([]),

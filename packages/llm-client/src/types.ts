@@ -1,4 +1,62 @@
-import type { AIProviderName } from '@skytwin/shared-types';
+import type {
+  AIProviderName,
+  InferenceFallbackV1,
+  InferenceReceiptStatus,
+  ProviderExecutionMetadata,
+  ProviderPricingCapability,
+  ReasoningMode,
+  ReceiptSignatureV1,
+} from '@skytwin/shared-types';
+
+export interface TrustedConfidentialVerification {
+  readonly outcome: 'verified';
+  readonly inferenceId?: string;
+  readonly attestationPolicyVersion: string;
+  readonly verifierVersion: string;
+  readonly evidence: Readonly<Uint8Array>;
+  readonly measurementIdentity: string;
+  readonly responseSignature: ReceiptSignatureV1;
+  readonly verifiedAt: string;
+  readonly freshUntil: string;
+}
+
+export interface RejectedConfidentialVerification {
+  outcome: 'verification_failed' | 'verification_unavailable' | 'verification_stale';
+  verifierVersion: string;
+  reason: string;
+}
+
+export type ConfidentialVerificationResult =
+  | TrustedConfidentialVerification
+  | RejectedConfidentialVerification;
+
+export interface ConfidentialInferenceVerifier {
+  verify(input: {
+    provider: AIProviderName;
+    model: string;
+    endpointIdentity: string;
+    request: Uint8Array;
+    response: Uint8Array;
+  }): Promise<ConfidentialVerificationResult>;
+}
+
+/** Canonical logical input/output bytes and provider facts captured by one client instance. */
+export interface InferenceTrace {
+  readonly id: string;
+  readonly status: InferenceReceiptStatus;
+  /** Selected mode plus adapter-derived runtime facts for this exact call. */
+  readonly execution: ProviderExecutionMetadata;
+  readonly endpointIdentity: string;
+  readonly request: Readonly<Uint8Array>;
+  readonly response: Readonly<Uint8Array>;
+  readonly cost: { readonly basis: 'exact'; readonly currency: string; readonly amountMinor: number }
+    | { readonly basis: 'unknown' };
+  readonly createdAt: string;
+  readonly verifierVersion: string;
+  readonly fallback?: InferenceFallbackV1;
+  readonly verification?: TrustedConfidentialVerification;
+  readonly verificationFailureReason?: string;
+}
 
 /**
  * Configuration for a single provider in the chain.
@@ -10,6 +68,17 @@ export interface ProviderEntry {
   baseUrl?: string;
 }
 
+export interface LlmClientOptions {
+  onInferenceTrace?: (trace: InferenceTrace) => void;
+  now?: () => Date;
+}
+
+/** Credential-free pricing view of the exact frozen provider chain. */
+export interface ProviderPricingSnapshot {
+  provider: AIProviderName;
+  pricing: ProviderPricingCapability;
+}
+
 /**
  * Options for a generate call.
  */
@@ -18,6 +87,8 @@ export interface GenerateOptions {
   maxTokens?: number;
   systemPrompt?: string;
   timeoutMs?: number;
+  /** User-present calls may use explicitly selected providers with unknown price. */
+  invocationKind?: 'interactive' | 'unattended';
 }
 
 /**
@@ -28,6 +99,8 @@ export interface LlmResponse {
   provider: AIProviderName;
   model: string;
   latencyMs: number;
+  /** Additive provenance for routing, spend and future receipt persistence. */
+  execution: ProviderExecutionMetadata;
 }
 
 /**
@@ -59,7 +132,7 @@ export type ProviderGenerateFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
 ) => Promise<string>;
 
 /**
@@ -73,7 +146,14 @@ export type ProviderGenerateFn = (
  */
 export type LlmStreamEvent =
   | { type: 'chunk'; content: string }
-  | { type: 'done'; content: string; provider: AIProviderName; model: string; latencyMs: number };
+  | {
+    type: 'done';
+    content: string;
+    provider: AIProviderName;
+    model: string;
+    latencyMs: number;
+    execution: ProviderExecutionMetadata;
+  };
 
 /**
  * Provider-level streaming function signature. Returns an async iterable
@@ -89,5 +169,5 @@ export type ProviderStreamFn = (
   apiKey: string,
   model: string,
   prompt: string | ChatMessage[],
-  options: GenerateOptions & { baseUrl?: string },
+  options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
 ) => AsyncIterable<string>;

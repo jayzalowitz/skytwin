@@ -18,7 +18,12 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
     actionType: 'archive_email',
     description: 'Archive an email',
     domain: 'email',
-    parameters: {},
+    parameters: {
+      credentialAuthorityRevision: 'authority-revision-1',
+      credentialPolicyAuthorityRevision: 'policy-revision-1',
+      dispatchAuthorityId: 'admission-1',
+      dispatchAuthorityUpdatedAt: '2026-09-13T10:00:00.000Z',
+    },
     estimatedCostCents: 0,
     reversible: true,
     confidence: ConfidenceLevel.HIGH,
@@ -54,7 +59,10 @@ function okAdapter(name: string): IronClawAdapter {
         id: `${name}_plan`,
         decisionId: action.decisionId,
         action,
-        steps: [],
+        steps: [{
+          id: `${name}_step`, order: 1, type: action.actionType,
+          description: action.description, parameters: action.parameters, timeout: 30_000,
+        }],
         rollbackSteps: [],
         createdAt: new Date(),
       };
@@ -68,6 +76,17 @@ function okAdapter(name: string): IronClawAdapter {
         output: { adapter_used: name },
       };
     },
+    ...(name === 'direct' ? {
+      async prepareRequestStart() {
+        return {
+          credentialBinding: {
+            provider: 'google',
+            oauthTokenId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+            credentialRevision: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          },
+        };
+      },
+    } : {}),
     async getStatus() {
       return 'completed' as const;
     },
@@ -87,7 +106,15 @@ describe('ExecutionRouter — injection-guard backstop', () => {
   beforeEach(() => {
     registry = new AdapterRegistry();
     registry.register('direct', okAdapter('direct'), DIRECT_TRUST_PROFILE);
-    router = new ExecutionRouter(registry);
+    router = new ExecutionRouter(registry, {
+      async start() {
+        return {
+          success: true as const,
+          grant: { capability: 'cap', leaseGeneration: 'gen', expiresAt: new Date() },
+        };
+      },
+      async terminalize() { return true; },
+    });
   });
 
   it('executes a benign action on the auto-execute path (no context)', async () => {

@@ -1,10 +1,26 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const mockQuery = vi.fn();
+const mockTransactionQuery = vi.fn((sql: string, params?: unknown[]) => {
+  if (sql.includes('SELECT revision FROM execution_policy_authority')) {
+    return Promise.resolve({ rows: [{ revision: 'policy-revision-1' }], rowCount: 1 });
+  }
+  if (sql.includes('SELECT user_id FROM action_policies')) {
+    return Promise.resolve({
+      rows: params?.[0] === 'ghost' ? [] : [{ user_id: 'u-001' }],
+      rowCount: params?.[0] === 'ghost' ? 0 : 1,
+    });
+  }
+  if (sql.includes('SELECT id FROM users')) {
+    return Promise.resolve({ rows: [{ id: 'u-001' }], rowCount: 1 });
+  }
+  return mockQuery(sql, params);
+});
 
 vi.mock('../connection.js', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
-  withTransaction: vi.fn(),
+  withTransaction: (fn: (client: { query: typeof mockTransactionQuery }) => Promise<unknown>) =>
+    fn({ query: mockTransactionQuery }),
 }));
 
 const { policyRepository } = await import('../repositories/policy-repository.js');
@@ -151,7 +167,8 @@ describe('policyRepository', () => {
 
       expect(result).toEqual(row);
 
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      const [sql, params] = mockQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('INSERT INTO action_policies'))!;
       expect(sql).toContain('INSERT INTO action_policies');
       expect(sql).toContain('RETURNING *');
       expect(params).toEqual([
@@ -173,7 +190,8 @@ describe('policyRepository', () => {
         domain: 'general',
       });
 
-      const [_sql, params] = mockQuery.mock.calls[0]!;
+      const [_sql, params] = mockQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('INSERT INTO action_policies'))!;
       expect(params).toEqual([
         'u-001',
         'Basic policy',
@@ -198,7 +216,8 @@ describe('policyRepository', () => {
 
       expect(result).toEqual(row);
 
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      const [sql, params] = mockQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('UPDATE action_policies SET'))!;
       expect(sql).toContain('UPDATE action_policies SET');
       expect(sql).toContain('name = $1');
       expect(sql).toContain('WHERE id = $2');
@@ -225,7 +244,8 @@ describe('policyRepository', () => {
         isActive: false,
       });
 
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      const [sql, params] = mockQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('UPDATE action_policies SET'))!;
       expect(sql).toContain('name = $1');
       expect(sql).toContain('domain = $2');
       expect(sql).toContain('rules = $3');
@@ -267,7 +287,8 @@ describe('policyRepository', () => {
 
       await policyRepository.updatePolicy('pol-001', { rules });
 
-      const [_sql, params] = mockQuery.mock.calls[0]!;
+      const [_sql, params] = mockQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('UPDATE action_policies SET'))!;
       expect(params![0]).toBe(JSON.stringify(rules));
     });
   });
@@ -284,7 +305,8 @@ describe('policyRepository', () => {
 
       expect(result).toBe(true);
 
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      const [sql, params] = mockQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('UPDATE action_policies SET'))!;
       expect(sql).toContain('UPDATE action_policies');
       expect(sql).toContain('SET is_active = false');
       expect(sql).toContain('WHERE id = $1');
@@ -318,7 +340,8 @@ describe('policyRepository', () => {
 
       expect(result).toBe(true);
 
-      const [sql, params] = mockQuery.mock.calls[0]!;
+      const [sql, params] = mockQuery.mock.calls.find(([candidate]) =>
+        String(candidate).includes('DELETE FROM action_policies'))!;
       expect(sql).toContain('DELETE FROM action_policies');
       expect(sql).toContain('WHERE id = $1');
       expect(params).toEqual(['pol-001']);

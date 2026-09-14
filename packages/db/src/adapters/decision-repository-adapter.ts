@@ -126,6 +126,11 @@ function outcomeRowToDomain(
  * logic to the concrete decisionRepository backed by CockroachDB.
  */
 export const decisionRepositoryAdapter: DecisionRepositoryPort = {
+  async findBySignalId(userId: string, signalId: string): Promise<DecisionObject | null> {
+    const rows = await decisionRepository.findByUser(userId, { signalId, limit: 1 });
+    return rows[0] ? decisionRowToDomain(rows[0]) : null;
+  },
+
   async saveDecision(decision: DecisionObject): Promise<{ decision: DecisionObject; created: boolean }> {
     const userId =
       (decision.rawData['userId'] as string | undefined) ?? '';
@@ -257,11 +262,9 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
       assessedAt: assessment.assessedAt.toISOString(),
     };
 
-    await query(
-      `UPDATE candidate_actions
-       SET risk_assessment = $1
-       WHERE id = $2`,
-      [JSON.stringify(serialised), assessment.actionId],
+    await decisionRepository.updateCandidateRiskAssessment(
+      assessment.actionId,
+      serialised,
     );
 
     return assessment;

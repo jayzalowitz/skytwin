@@ -264,7 +264,14 @@ describe('Golden Path E2E Integration', () => {
     const mockOpenClaw = new OpenClawAdapter();
     registry.register('ironclaw', mockIronClaw, IRONCLAW_TRUST_PROFILE);
     registry.register('openclaw', mockOpenClaw, OPENCLAW_TRUST_PROFILE);
-    const executionRouter = new ExecutionRouter(registry);
+    const executionRouter = new ExecutionRouter(registry, {
+      async start() {
+        return { success: true as const, grant: {
+          capability: 'test-capability', leaseGeneration: 'test-generation', expiresAt: new Date(),
+        } };
+      },
+      async terminalize() { return true; },
+    });
 
     // Create a user profile with some preferences
     const userId = 'user_golden_path';
@@ -446,7 +453,14 @@ describe('Golden Path E2E Integration', () => {
     const mockOpenClaw = new OpenClawAdapter();
     // Only register OpenClaw — forces it to be selected
     registry.register('openclaw', mockOpenClaw, OPENCLAW_TRUST_PROFILE);
-    const router = new ExecutionRouter(registry);
+    const router = new ExecutionRouter(registry, {
+      async start() {
+        return { success: true as const, grant: {
+          capability: 'test-capability', leaseGeneration: 'test-generation', expiresAt: new Date(),
+        } };
+      },
+      async terminalize() { return true; },
+    });
 
     const action: CandidateAction = {
       id: 'act_test',

@@ -14,6 +14,10 @@
 
 import { pathToFileURL } from 'node:url';
 import { getPool, withTransaction, closePool } from '../connection.js';
+import {
+  assertNoActiveExecutionsWithClient,
+  userPurgeRepository,
+} from '../repositories/user-purge-repository.js';
 import { seedUpsert } from './upsert.js';
 import {
   assertDemoSafe,
@@ -23,6 +27,11 @@ import {
 } from './demo-guard.js';
 import { DEMO_SIGNALS } from './demo-fixtures/signals.js';
 import { triggerDemoBriefing } from './demo-briefing.js';
+
+/** Delete complete graphs for every explicitly marked demo user. */
+export async function resetDemoUsers(): Promise<number> {
+  return userPurgeRepository.purgeDemoUsers();
+}
 
 async function main(): Promise<void> {
   const argv = process.argv.slice(2);
@@ -48,10 +57,9 @@ async function main(): Promise<void> {
   getPool();
 
   if (reset) {
-    // Gate 3 by predicate: only is_demo rows are touched. Owned rows cascade.
-    await withTransaction(async (client) => {
-      await client.query(`DELETE FROM users WHERE is_demo = true`);
-    });
+    // Gate 3 by predicate: resolve only is_demo users, then use the production
+    // dependency-ordered purge for each complete candidate/execution graph.
+    await resetDemoUsers();
     console.log('[demo:fixture] reset complete — removed is_demo users only.');
     await closePool();
     return;
@@ -73,6 +81,7 @@ async function main(): Promise<void> {
       conflict: ['id'],
       update: 'all',
     });
+    await assertNoActiveExecutionsWithClient(client, DEMO_USER_ID);
     await seedUpsert(client, {
       table: 'twin_profiles',
       row: { user_id: DEMO_USER_ID, version: 1 },

@@ -6,6 +6,8 @@ export interface CredentialVaultMetaRow {
   passphrase_salt: Buffer;
   passphrase_hash: Buffer;
   current_key_version: number;
+  vault_state: 'locked' | 'unlocked';
+  vault_generation: string;
   created_at: Date;
   rotated_at: Date | null;
 }
@@ -26,6 +28,7 @@ export const credentialVaultMetaRepository = {
   async getForUser(userId: string): Promise<CredentialVaultMetaRow | null> {
     const result = await query<CredentialVaultMetaRow>(
       `SELECT user_id, passphrase_salt, passphrase_hash, current_key_version,
+              vault_state, vault_generation,
               created_at, rotated_at
        FROM user_credential_vault_meta
        WHERE user_id = $1`,
@@ -46,9 +49,11 @@ export const credentialVaultMetaRepository = {
   ): Promise<CredentialVaultMetaRow> {
     const result = await query<CredentialVaultMetaRow>(
       `INSERT INTO user_credential_vault_meta
-         (user_id, passphrase_salt, passphrase_hash, current_key_version)
-       VALUES ($1, $2, $3, 1)
+         (user_id, passphrase_salt, passphrase_hash, current_key_version,
+          vault_state, vault_generation)
+       VALUES ($1, $2, $3, 1, 'unlocked', gen_random_uuid())
        RETURNING user_id, passphrase_salt, passphrase_hash, current_key_version,
+                 vault_state, vault_generation,
                  created_at, rotated_at`,
       [userId, passphraseSalt, passphraseHash],
     );
@@ -68,10 +73,23 @@ export const credentialVaultMetaRepository = {
            rotated_at = now()
        WHERE user_id = $1
        RETURNING user_id, passphrase_salt, passphrase_hash, current_key_version,
+                 vault_state, vault_generation,
                  created_at, rotated_at`,
       [userId],
     );
     return result.rows[0] ?? null;
+  },
+
+  /** Start a new cross-process unlock session only from the observed generation. */
+  async unlockIfCurrent(userId: string, expectedGeneration: string): Promise<string | null> {
+    const result = await query<{ vault_generation: string }>(
+      `UPDATE user_credential_vault_meta
+          SET vault_state = 'unlocked', vault_generation = gen_random_uuid()
+        WHERE user_id = $1 AND vault_generation = $2
+        RETURNING vault_generation`,
+      [userId, expectedGeneration],
+    );
+    return result.rows[0]?.vault_generation ?? null;
   },
 
   /**
@@ -85,20 +103,23 @@ export const credentialVaultMetaRepository = {
     userId: string,
     input: { newSalt: Buffer; newPassphraseHash: Buffer },
     client?: PoolClient,
-  ): Promise<number | null> {
+  ): Promise<{ keyVersion: number; vaultGeneration: string } | null> {
     const sql = `UPDATE user_credential_vault_meta
        SET passphrase_salt    = $1,
            passphrase_hash    = $2,
            current_key_version = current_key_version + 1,
+           vault_state = 'unlocked',
+           vault_generation = gen_random_uuid(),
            rotated_at         = now()
        WHERE user_id = $3
-       RETURNING current_key_version`;
+       RETURNING current_key_version, vault_generation`;
     const params = [input.newSalt, input.newPassphraseHash, userId];
 
     const result = client
-      ? await client.query<{ current_key_version: number }>(sql, params)
-      : await query<{ current_key_version: number }>(sql, params);
+      ? await client.query<{ current_key_version: number; vault_generation: string }>(sql, params)
+      : await query<{ current_key_version: number; vault_generation: string }>(sql, params);
 
-    return result.rows[0]?.current_key_version ?? null;
+    const row = result.rows[0];
+    return row ? { keyVersion: row.current_key_version, vaultGeneration: row.vault_generation } : null;
   },
 };

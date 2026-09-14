@@ -99,7 +99,7 @@ describe('IronClawHttpClient', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('retries on 5xx server errors', async () => {
+    it('does not retry an effect-bearing webhook after a 5xx response', async () => {
       const client = makeClient({ maxRetries: 2 });
 
       fetchMock
@@ -111,12 +111,11 @@ describe('IronClawHttpClient', () => {
           }),
         );
 
-      const result = await client.sendMessage(makeMessage());
-      expect(result.content).toBe('ok');
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      await expect(client.sendMessage(makeMessage())).rejects.toThrow('500');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('uses a fresh timeout signal for each retry attempt', async () => {
+    it('still retries a read-only status webhook with a fresh timeout signal', async () => {
       const client = makeClient({ maxRetries: 2 });
 
       fetchMock
@@ -128,7 +127,7 @@ describe('IronClawHttpClient', () => {
           }),
         );
 
-      await client.sendMessage(makeMessage());
+      await client.sendMessage(makeMessage({ metadata: { message_type: 'status' } }));
 
       const firstSignal = getFetchCall(fetchMock, 0)[1].signal;
       const secondSignal = getFetchCall(fetchMock, 1)[1].signal;
@@ -140,7 +139,7 @@ describe('IronClawHttpClient', () => {
       expect(thirdSignal).not.toBe(secondSignal);
     });
 
-    it('retries on 429 rate limit', async () => {
+    it('does not retry an effect-bearing webhook after rate limiting', async () => {
       const client = makeClient({ maxRetries: 1 });
 
       fetchMock
@@ -151,9 +150,8 @@ describe('IronClawHttpClient', () => {
           }),
         );
 
-      const result = await client.sendMessage(makeMessage());
-      expect(result.content).toBe('ok');
-      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await expect(client.sendMessage(makeMessage())).rejects.toThrow('429');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -264,22 +262,30 @@ describe('IronClawHttpClient', () => {
       expect(result.error).toBe('Permission denied');
     });
 
-    it('infers status from content when metadata has no status', () => {
+    it('rejects malformed error fields instead of treating them as terminal truth', () => {
+      const client = makeClient();
+      for (const status of ['completed', 'failed'] as const) {
+        expect(() => client.parseExecutionResult('plan_1', {
+          content: 'untrusted prose',
+          attachments: [],
+          metadata: { status, error: { message: 'malformed' } },
+        }, new Date())).toThrow('error field is not a string');
+      }
+    });
+
+    it('rejects free-text execution responses without explicit terminal status', () => {
       const client = makeClient();
 
-      const successResult = client.parseExecutionResult('plan_1', {
+      expect(() => client.parseExecutionResult('plan_1', {
         content: 'All good',
         attachments: [],
         metadata: {},
-      }, new Date());
-      expect(successResult.status).toBe('completed');
-
-      const failResult = client.parseExecutionResult('plan_2', {
+      }, new Date())).toThrow('omitted explicit execution status');
+      expect(() => client.parseExecutionResult('plan_2', {
         content: 'Error occurred during processing',
         attachments: [],
         metadata: {},
-      }, new Date());
-      expect(failResult.status).toBe('failed');
+      }, new Date())).toThrow('omitted explicit execution status');
     });
   });
 
@@ -308,6 +314,13 @@ describe('IronClawHttpClient', () => {
 
       expect(result.success).toBe(false);
       expect(result.message).toBe('Irreversible action');
+    });
+
+    it('rejects rollback prose without explicit terminal status', () => {
+      const client = makeClient();
+      expect(() => client.parseRollbackResult({
+        content: 'Rollback completed', attachments: [], metadata: {},
+      })).toThrow('omitted explicit execution status');
     });
   });
 
@@ -624,7 +637,7 @@ describe('IronClawHttpClient', () => {
         content: 'Email archived successfully',
         model: 'openclaw/default',
         usage: { promptTokens: 100, completionTokens: 25 },
-        metadata: { taskId: 'task_42' },
+        metadata: { status: 'completed', taskId: 'task_42' },
       }, startedAt);
 
       expect(result.planId).toBe('plan_1');
@@ -645,6 +658,7 @@ describe('IronClawHttpClient', () => {
         content: 'Error: unable to send the message',
         model: 'openclaw/default',
         usage: { promptTokens: 50, completionTokens: 10 },
+        metadata: { status: 'failed' },
       }, new Date());
 
       expect(result.status).toBe('failed');
@@ -683,34 +697,50 @@ describe('IronClawHttpClient', () => {
       expect(client.parseExecutionStatus({ content: '', attachments: [], metadata: { status: 'running' } })).toBe('running');
     });
 
-    it('infers pending from content when no metadata status', () => {
+    it('rejects content-only pending text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Task is pending approval', attachments: [], metadata: {} })).toBe('pending');
+      expect(() => client.parseExecutionStatus({ content: 'Task is pending approval', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers running from content when no metadata status', () => {
+    it('rejects content-only running text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Task is running now', attachments: [], metadata: {} })).toBe('running');
+      expect(() => client.parseExecutionStatus({ content: 'Task is running now', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers running from "in progress" content', () => {
+    it('rejects content-only in-progress text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Operation in progress', attachments: [], metadata: {} })).toBe('running');
+      expect(() => client.parseExecutionStatus({ content: 'Operation in progress', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers failed from content containing "error"', () => {
+    it('rejects content-only error text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'An error occurred', attachments: [], metadata: {} })).toBe('failed');
+      expect(() => client.parseExecutionStatus({ content: 'An error occurred', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('infers failed from content containing "unable"', () => {
+    it('rejects content-only unable text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'Unable to process request', attachments: [], metadata: {} })).toBe('failed');
+      expect(() => client.parseExecutionStatus({ content: 'Unable to process request', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
     });
 
-    it('defaults to completed when content has no failure signals', () => {
+    it('rejects content-only completion text', () => {
       const client = makeClient();
-      expect(client.parseExecutionStatus({ content: 'All done', attachments: [], metadata: {} })).toBe('completed');
+      expect(() => client.parseExecutionStatus({ content: 'All done', attachments: [], metadata: {} }))
+        .toThrow('omitted explicit execution status');
+    });
+
+    it('rejects conflicting structured status fields', () => {
+      const client = makeClient();
+      expect(() => client.parseExecutionStatus({
+        content: '', attachments: [], metadata: { status: 'completed', success: false },
+      })).toThrow('conflicting execution status fields');
+      expect(() => client.parseExecutionStatus({
+        content: '', attachments: [], metadata: { status: 'completed', error: 'late error' },
+      })).toThrow('also contained an error');
     });
   });
 });

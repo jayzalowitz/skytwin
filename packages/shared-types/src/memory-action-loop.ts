@@ -9,6 +9,7 @@ export type MemoryActionOpportunityStatus =
   | 'blocked_by_policy'
   | 'learning_needed'
   | 'execution_failed'
+  | 'execution_ambiguous'
   | 'noted_awareness'
   | 'skipped';
 

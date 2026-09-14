@@ -18,7 +18,7 @@ The backup is scoped to the data that *is* your twin:
 | Account | `users` |
 | Twin profile + its full version history | `twin_profiles`, `twin_profile_versions` |
 | Learned preferences | `preferences` |
-| Decisions (with candidate actions, outcomes, and explanations) | `decisions`, `candidate_actions`, `decision_outcomes`, `explanation_records` |
+| Decisions (with candidate actions, outcomes, explanations, inference receipts, and portable non-replay state) | `decisions`, `candidate_actions`, `decision_outcomes`, `explanation_records`, `inference_receipts`, `inference_receipt_completions`, `decision_ingest_guards` |
 
 ### What it deliberately does **not** contain
 
@@ -28,6 +28,14 @@ The backup is scoped to the data that *is* your twin:
   and exporting them in the clear would be a credential-leak hazard. Connectors
   (Gmail, Calendar, …) **re-authorize on the restored install** — the same one
   re-auth you do on any new device.
+- **Execution dispatch leases.** These machine-local request-start fences bind
+  every adapter to exact execution authority; credential-backed direct actions
+  additionally bind the exact OAuth row and revision. They are never restored
+  or resumed; restored effect continuations remain non-replay tombstones.
+- **OAuth callback fences.** Account-unknown sign-in rows and account-revocation
+  tombstones are machine-local, TTL-managed authority records and are never
+  exported. They store only keyed digests of resolved account/owner identity,
+  not an email address, provider token, or OAuth grant.
 - **Sessions, recovery codes, device-pairing state.** These are machine-local,
   not "your data."
 
@@ -96,13 +104,25 @@ To restore over an existing install, delete the user first (the
 delete-then-restore pairing is intentional and mirrors the GDPR data-management
 story.
 
+Deletion removes the user's raw account identifiers. A keyed, non-reversible
+OAuth authority digest may remain briefly in CockroachDB's TTL queue (15-minute
+expiry) solely to reject a callback that was issued before deletion; it cannot
+restore the account and contains neither the email nor an OAuth grant.
+
 The schema version is checked before any write: an archive produced by a newer
 build (higher `BACKUP_SCHEMA_VERSION`) is rejected with `unsupported_schema`
 rather than partially imported.
 
-Schema version 2 adds inference receipts. Current builds still accept receipt-free
-schema-version-1 archives, while older builds reject version 2 instead of
-silently restoring the rest of the archive without its receipts.
+Schema version 2 adds inference receipts. Schema version 3 adds receipt-completion
+authority plus the autonomous-effect classification and any known terminal plan
+reference. Restored decisions are historical data, not queued work: every
+restored decision receives a `restored_non_replay` guard. Current builds still
+accept schema-version-1 and -2 archives and apply the same fail-safe tombstone;
+older builds reject newer schemas instead of silently dropping safety state.
+Current schema-version-3 exports order multi-call receipt batches with a durable
+capture ordinal. Earlier schema-version-3 archives that omit it remain valid and
+derive the ordinal from array order; duplicate receipt IDs or ordinals are
+rejected before the restore transaction begins.
 
 ## Exit codes
 

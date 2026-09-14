@@ -4,6 +4,7 @@ import {
   generatePkcePair,
   exchangeCode,
   refreshAccessToken,
+  revokeToken,
 } from '../oauth/google-oauth.js';
 import type { GoogleOAuthConfig } from '../oauth/google-oauth.js';
 import { createHash } from 'node:crypto';
@@ -137,6 +138,23 @@ describe('google-oauth PKCE support', () => {
       );
       const body = (fetchSpy.mock.calls[0]![1] as RequestInit).body as URLSearchParams;
       expect(body.get('client_secret')).toBe('keep');
+    });
+  });
+
+  describe('revokeToken', () => {
+    afterEach(() => vi.restoreAllMocks());
+
+    it('treats Google invalid_token as converged revocation for crash recovery', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+        JSON.stringify({ error: 'invalid_token' }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      ));
+      await expect(revokeToken('already-revoked')).resolves.toBeUndefined();
+    });
+
+    it('does not claim revocation for an arbitrary provider failure', async () => {
+      vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('unavailable', { status: 503 }));
+      await expect(revokeToken('still-unknown')).rejects.toThrow('revocation failed: 503');
     });
   });
 });

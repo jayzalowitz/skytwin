@@ -36,7 +36,10 @@ function createMockRepo(overrides: Record<string, unknown> = {}) {
     saveToken: vi.fn().mockResolvedValue({}),
     deleteToken: vi.fn().mockResolvedValue(true),
     updateAccessToken: vi.fn().mockResolvedValue({}),
-    updateEncrypted: vi.fn().mockResolvedValue(undefined),
+    validateVaultSession: vi.fn().mockResolvedValue(true),
+    getVaultAuthorityState: vi.fn().mockResolvedValue({
+      state: 'unlocked', generation: 'vault-generation-1', keyVersion: 1,
+    }),
     ...overrides,
   };
 }
@@ -46,6 +49,7 @@ function createMockKeyCache(key: Buffer | null = null, forUser = 'user-1') {
   if (key !== null) stored.set(forUser, key);
   return {
     get: vi.fn((u: string) => stored.get(u) ?? null),
+    getGeneration: vi.fn((u: string) => stored.has(u) ? 'vault-generation-1' : null),
     has: vi.fn((u: string) => stored.has(u)),
     set: vi.fn(),
   };
@@ -103,6 +107,9 @@ describe('DbTokenStore — audit log (#393)', () => {
 
   it('does NOT emit on the plaintext-fallback path (vault not unlocked)', async () => {
     // No setKeyCache call — vault locked
+    repo.getVaultAuthorityState.mockResolvedValueOnce({
+      state: 'absent', generation: null, keyVersion: null,
+    });
     store.setAuditLog(auditPort, 'worker');
     repo.getToken.mockResolvedValueOnce({
       id: 'row-id-200',

@@ -36,13 +36,13 @@ const EXPECTED_SOURCES = [
 const EXPECTED_MIGRATION_RUNNER = "packages/db/src/migrations/001-initial.ts";
 const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
-  "38c0b78baaa27b6115a00491e22307ac5ea65989a343842911fcea3f44915f6c";
+  "78be83cc8197f4a07fc7e1498996bf33ce56ebefa81357430a8b7443f9f2764f";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "3e585e1373359523a7b50c178063d89df5fd0d82dabe16ce8ba916c6ab9ca47b";
+  "5713f08788e82319cde02a384550c6e5f7a7be22c4048a0b1ed5b8f37870b76f";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "3115e6060000bffa55c842f639baeae0677b4f8426314db6a2227f4435214b7b";
+  "bbbd589f076af06d3c882c23b0fbe74961999bd9662b41206ce27346e0f86fb5";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -280,10 +280,17 @@ export function applySchemaSql(schema, rawSql) {
     ) {
       const creates = tableBodies(statement);
       const create = creates[0];
+      const createSuffix = create
+        ? statement.slice(create.endIndex + 1).trim()
+        : "";
+      const supportedTtlSuffix =
+        /^WITH\s*\(\s*ttl_expiration_expression\s*=\s*'expires_at'\s*\)$/i.test(
+          createSuffix,
+        );
       if (
         creates.length !== 1 ||
         !create ||
-        statement.slice(create.endIndex + 1).trim() !== ""
+        (createSuffix !== "" && !supportedTtlSuffix)
       ) {
         throw new Error(`unsupported schema-mutating DDL: ${statement}`);
       }

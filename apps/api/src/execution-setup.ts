@@ -30,9 +30,10 @@ import {
 import { McpHost } from '@skytwin/mcp-host';
 import { sharedMetricsCollector } from '@skytwin/observability';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
-import { credentialRequirementRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository } from '@skytwin/db';
+import { accessLogRepository, credentialRequirementRepository, executionDispatchLeaseRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { sseManager } from './sse.js';
+import { sharedKeyCache } from './routes/credential-vault.js';
 
 const log = createLogger('api:execution');
 
@@ -84,7 +85,11 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
 
   // Direct — local handler dispatch, always available
   const handlerRegistry = new ActionHandlerRegistry();
-  const credentialProvider = new DbCredentialProvider();
+  const credentialProvider = new DbCredentialProvider(
+    sharedKeyCache,
+    { recordAccess: (input) => accessLogRepository.record(input) },
+    'api',
+  );
   handlerRegistry.register(new EmailActionHandler(credentialProvider));
   handlerRegistry.register(new CalendarActionHandler(credentialProvider));
   handlerRegistry.register(new FinanceActionHandler());
@@ -179,7 +184,7 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
     log.info(`Discovered ${discovered.length} plugin adapter(s) from ${config.adapterPluginDir}`);
   }
 
-  return new ExecutionRouter(registry);
+  return new ExecutionRouter(registry, executionDispatchLeaseRepository);
 }
 
 async function getStoredCredentials(service: string): Promise<Record<string, string>> {

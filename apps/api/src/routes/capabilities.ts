@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, executionRepository, query } from '@skytwin/db';
+import { mcpServerRepository, appSuggestionRepository, provenanceRepository, mcpServerMetricsRepository, mcpServerChangelogRepository, executionRepository, oauthRepository, CredentialDispatchConflictError, query } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { Request } from 'express';
 import { createLogger } from '@skytwin/core';
@@ -8,7 +8,7 @@ import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
 import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
-import { getLlmClientFromConfig } from '../lib/llm-client-factory.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 import { getExecutionRouter } from '../execution-setup.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
@@ -529,12 +529,17 @@ export function createCapabilitiesRouter(): Router {
           // Delete the oauth_tokens row — this removes the credential from the
           // SkyTwin DB. Best-effort provider-side revocation is a TODO for the
           // connector layer (#178 follow-up).
-          await query(
-            'DELETE FROM oauth_tokens WHERE id = $1',
-            [server.oauth_token_id],
-          );
+          await oauthRepository.deleteById(userId, server.oauth_token_id);
           log.info('Revoked OAuth token for MCP server', { serverId: id, tokenId: server.oauth_token_id });
         } catch (err) {
+          if (err instanceof CredentialDispatchConflictError) {
+            res.status(409).json({
+              error: err.message,
+              code: err.code,
+              retryAfter: err.retryAfter?.toISOString() ?? null,
+            });
+            return;
+          }
           // OAuth revocation failure should not block the uninstall
           log.warn('Failed to revoke OAuth token during uninstall', {
             serverId: id,
@@ -659,8 +664,11 @@ export function createCapabilitiesRouter(): Router {
         try {
           router = await getExecutionRouter();
         } catch (err) {
-          routerError = err instanceof Error ? err.message : String(err);
-          log.warn('Execution router unavailable for regret rollback', { serverId: id, error: routerError });
+          routerError = 'Execution router unavailable';
+          log.warn('Execution router unavailable for regret rollback', {
+            serverId: id,
+            error: err instanceof Error ? err.name : 'unknown_error',
+          });
         }
       }
 
@@ -696,21 +704,24 @@ export function createCapabilitiesRouter(): Router {
             planId: target.executionPlanId,
             adapterUsed: target.adapterUsed,
             result: 'rollback_failed',
-            message: routerError
-              ? `Execution router unavailable: ${routerError}`
-              : 'Execution router unavailable',
+            message: routerError ?? 'Execution router unavailable',
           });
           continue;
         }
 
         const rollback = await router.rollback(target.executionPlanId, target.adapterUsed);
+        const rollbackMessage = rollback.result.success
+          ? 'The recorded adapter confirmed rollback completion.'
+          : rollback.noAdapter
+            ? 'The recorded execution adapter is unavailable for rollback.'
+            : 'The recorded adapter could not confirm rollback completion.';
 
         undone.push({
           actionId: target.actionId,
           planId: target.executionPlanId,
           adapterUsed: rollback.adapterUsed,
           result: rollback.result.success ? 'rolled_back' : 'rollback_failed',
-          message: rollback.result.message,
+          message: rollbackMessage,
         });
 
         // Audit trail (Safety Invariant #2): record every rollback attempt as
@@ -729,7 +740,7 @@ export function createCapabilitiesRouter(): Router {
               actionId: target.actionId,
               adapterUsed: rollback.adapterUsed,
               success: rollback.result.success,
-              message: rollback.result.message,
+              message: rollbackMessage,
               withinHours,
             },
           });
@@ -1114,7 +1125,8 @@ export function createCapabilitiesRouter(): Router {
       }
 
       // Adaptive path: ask the LLM for personalised recipe recommendations.
-      const llmClient = getLlmClientFromConfig();
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llmClient = llmResolution.client;
       if (llmClient) {
         try {
           // Build a lightweight registry summary so the prompt has context.
@@ -1145,6 +1157,7 @@ export function createCapabilitiesRouter(): Router {
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic && Array.isArray(result.output) && result.output.length > 0) {
@@ -1207,7 +1220,8 @@ export function createCapabilitiesRouter(): Router {
         ? (body.installedRegistryIds as unknown[]).filter((x): x is string => typeof x === 'string')
         : [];
 
-      const llmClient = getLlmClientFromConfig();
+      const llmResolution = await resolveUserLlmClient(userId);
+      const llmClient = llmResolution.client;
       if (llmClient) {
         try {
           // Template expects {{user_message}}, {{installed_capabilities}},
@@ -1225,21 +1239,39 @@ export function createCapabilitiesRouter(): Router {
             },
             user: { userId },
             llmClient,
+            invocationKind: 'interactive',
           });
 
           if (!result.fellBackToDeterministic) {
             return res.json(result.output);
           }
+          return res.json({
+            action: 'unknown',
+            candidate_capabilities: [],
+            confidence: 0,
+            reason: 'provider_unavailable',
+          });
         } catch (err) {
           log.warn('reverse-capability-intent prompt failed, using deterministic fallback', {
             error: err instanceof Error ? err.message : String(err),
+          });
+          return res.json({
+            action: 'unknown',
+            candidate_capabilities: [],
+            confidence: 0,
+            reason: 'prompt_failed',
           });
         }
       }
 
       // Deterministic fallback: heuristic match against installed registry.
       // v1: no heuristic — return unknown. The LLM path is the value add here.
-      res.json({ action: 'unknown', candidate_capabilities: [], confidence: 0 });
+      res.json({
+        action: 'unknown',
+        candidate_capabilities: [],
+        confidence: 0,
+        reason: llmResolution.state,
+      });
     } catch (err) {
       next(err);
     }

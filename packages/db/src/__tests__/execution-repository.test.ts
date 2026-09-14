@@ -176,4 +176,101 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(targets[0]!.adapterUsed).toBeNull();
     expect(targets[0]!.payload).toEqual({ reversible: false, irreversibleReason: 'sent' });
   });
+
+  it('preserves a bounded dynamic adapter name but redacts credential-shaped text', async () => {
+    const occurredAt = new Date();
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ref_id: 'action-plugin', payload: {}, occurred_at: occurredAt,
+        execution_plan_id: 'plan-plugin', adapter_used: 'local-plugin-v2' }], rowCount: 1,
+    });
+    await expect(executionRepository.getRollbackTargetsByServer({
+      serverId: 'server-1', userId: 'user-1', since: new Date(),
+    })).resolves.toMatchObject([{ adapterUsed: 'local-plugin-v2' }]);
+
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ ref_id: 'action-secret', payload: {}, occurred_at: occurredAt,
+        execution_plan_id: 'plan-secret', adapter_used: 'ya29.adapter-secret' }], rowCount: 1,
+    });
+    await expect(executionRepository.getRollbackTargetsByServer({
+      serverId: 'server-1', userId: 'user-1', since: new Date(),
+    })).resolves.toMatchObject([{ adapterUsed: '[redacted:credential]' }]);
+  });
+});
+
+describe('executionRepository.finalizeAdmittedPlan', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('persists exact result truth before terminalizing the admitted plan', async () => {
+    const output = { adapter_plan_id: 'remote-plan', adapter_used: 'direct' };
+    mockClientQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'plan-1', status: 'running' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        plan_id: 'plan-1', success: true, outputs: output, error: null,
+        rollback_available: true,
+      }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'plan-1', status: 'completed' }] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    await expect(executionRepository.finalizeAdmittedPlan({
+      userId: 'user-1', decisionId: 'decision-1', actionId: 'action-1',
+      planId: 'plan-1', status: 'completed', success: true, outputs: output,
+      rollbackAvailable: true,
+    })).resolves.toMatchObject({ id: 'plan-1', status: 'completed' });
+
+    expect(mockClientQuery.mock.calls[1]![0]).toContain('ON CONFLICT (plan_id) DO NOTHING');
+    expect(mockClientQuery.mock.calls[3]![0]).toContain('execution_results');
+    expect(mockClientQuery.mock.calls[0]![0]).toContain('execution_admission_barriers');
+    expect(mockClientQuery.mock.calls[4]![0]).toContain('UPDATE decision_outcomes');
+  });
+
+  it('rejects a stale terminal result instead of changing plan truth', async () => {
+    mockClientQuery
+      .mockResolvedValueOnce({ rows: [{ id: 'plan-1', status: 'completed' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{
+        plan_id: 'plan-1', success: true, outputs: {}, error: null,
+        rollback_available: false,
+      }] });
+
+    await expect(executionRepository.finalizeAdmittedPlan({
+      userId: 'user-1', decisionId: 'decision-1', actionId: 'action-1',
+      planId: 'plan-1', status: 'failed', success: false, outputs: {},
+      error: 'failed', rollbackAvailable: false,
+    })).rejects.toThrow('authority is unavailable');
+    expect(mockClientQuery).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('executionRepository execution evidence boundary', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('normalizes adapter outputs and errors before the execution result insert', async () => {
+    const secret = 'db-result-token';
+    mockQuery.mockResolvedValueOnce({ rows: [{ plan_id: 'plan-1' }] });
+
+    await executionRepository.createResult({
+      planId: 'plan-1',
+      success: false,
+      outputs: {
+        adapter_used: 'direct',
+        access_token: secret,
+        responseUrl: `https://adapter.test/result?access_token=${secret}`,
+        body: { echoed: secret },
+      },
+      error: `remote echoed ${secret}`,
+    });
+
+    const params = mockQuery.mock.calls[0]![1] as unknown[];
+    const persisted = JSON.stringify(params);
+    expect(persisted).not.toContain(secret);
+    expect(persisted).not.toContain('?access_token=');
+    expect(persisted).not.toContain('echoed');
+    expect(persisted).toContain('[redacted:unapproved-evidence]');
+    expect(persisted).toContain('[redacted:execution-error]');
+  });
 });

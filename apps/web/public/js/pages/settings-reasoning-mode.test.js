@@ -1,0 +1,44 @@
+import { readFileSync } from 'node:fs';
+import { describe, expect, it } from 'vitest';
+
+const source = readFileSync(new URL('./settings.js', import.meta.url), 'utf8');
+const apiSource = readFileSync(new URL('../api-client.js', import.meta.url), 'utf8');
+
+describe('reasoning-location settings boundary', () => {
+  it('renders local, explicit-provider, unavailable-private, confirmation, and error states', () => {
+    expect(source).toContain('Where reasoning runs');
+    expect(source).toContain('On this device');
+    expect(source).toContain('My configured provider');
+    expect(source).toContain('Verified private cloud — unavailable');
+    expect(source).toContain('Your earlier provider chain was ambiguous');
+    expect(source).toContain('Could not load the reasoning-location boundary');
+    expect(source).toContain('Draft only — this selection is not active until you press Save');
+  });
+
+  it('invalidates server-derived privacy metadata when its mode or model changes', () => {
+    expect(source).toContain('_aiChain.forEach((provider) => { provider.privacy = null; })');
+    expect(source).toContain("field !== 'baseUrl' && field !== 'model'");
+  });
+
+  it('sends the explicit mode with provider saves and connection tests', () => {
+    expect(apiSource).toMatch(/JSON\.stringify\(\{ providers, reasoningMode \}\)/);
+    expect(source).toMatch(/reasoningMode: _reasoningMode/);
+    expect(source).toMatch(/\}\)\), _reasoningMode\)/);
+  });
+
+  it('does not activate a draft mode through tests or priority autosaves', () => {
+    expect(source).toContain(
+      '_reasoningModeRequiresConfirmation || _reasoningMode !== _persistedReasoningMode',
+    );
+    expect(source).toContain('Save where reasoning runs before testing a provider.');
+    expect(source).toContain('Save where reasoning runs before changing provider priority.');
+  });
+
+  it('uses delegated actions rather than inline event handlers', () => {
+    const start = source.indexOf('function renderReasoningLocation');
+    const end = source.indexOf('function renderModeToggle');
+    const locationRenderer = source.slice(start, end);
+    expect(locationRenderer).toContain('data-action="ai-reasoning-mode"');
+    expect(locationRenderer).not.toMatch(/on(?:click|change|input|keydown)\s*=/i);
+  });
+});

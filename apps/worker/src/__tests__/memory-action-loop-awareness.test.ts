@@ -13,7 +13,25 @@ import type { PolicyDecision } from '@skytwin/policy-engine';
 import type { ExecutionRouter } from '@skytwin/execution-router';
 import type { ActionProvenance, MemoryActionOpportunitySnapshot } from '@skytwin/shared-types';
 
-type RouterStub = Pick<ExecutionRouter, 'route' | 'executeWithRouting'>;
+type RouterStub = Pick<ExecutionRouter, 'prepareExecution' | 'executePrepared'>;
+
+function asPreparedRouter(router: {
+  route: (...args: never[]) => unknown;
+  executeWithRouting: (...args: never[]) => unknown;
+}): RouterStub {
+  return {
+    prepareExecution: vi.fn(async (...args: unknown[]) => {
+      const routing = await (router.route as (...values: unknown[]) => unknown)(...args) as Record<string, unknown>;
+      return {
+        handle: {}, adapterName: routing['selectedAdapter'] as string,
+        planId: 'plan-1', riskAssessment: args[1] as never,
+        streaming: false, fallbacksAttempted: 0, routingDecision: routing as never,
+      };
+    }),
+    executePrepared: vi.fn(async (_prepared: unknown, ...args: unknown[]) =>
+      (router.executeWithRouting as (...values: unknown[]) => unknown)(...args)) as RouterStub['executePrepared'],
+  };
+}
 
 // ── Mocks ─────────────────────────────────────────────────────────────────
 
@@ -33,6 +51,20 @@ const {
     getEnabledPolicies: vi.fn(async () => []),
     createPlan: vi.fn(),
     createResult: vi.fn(),
+    finalizeAdmittedPlan: vi.fn(async () => ({})),
+    admitMemoryExecution: vi.fn(async () => ({
+      created: true,
+      barrier: {
+        id: 'barrier-1',
+        status: 'in_progress',
+        updated_at: new Date('2026-09-13T00:00:00.000Z'),
+      },
+      plan: { id: 'plan-1' },
+    })),
+    isDispatchable: vi.fn(async () => true),
+    findByScope: vi.fn(async () => null),
+    observeTerminal: vi.fn(async () => ({})),
+    failBeforeDispatch: vi.fn(async () => ({ status: 'failed' })),
   };
   return {
     mockApprovalRepository: { create: vi.fn(async () => ({ row: { id: 'approval-1' } })) },
@@ -55,6 +87,7 @@ const {
         trust_tier: 'observer',
         autonomy_settings: {},
         ironclaw_channel: null,
+        execution_authority_revision: 'authority-revision-1',
       })),
     },
     noop,
@@ -67,12 +100,14 @@ vi.mock('@skytwin/db', () => ({
   decisionRepository: mockDecisionRepository,
   decisionRepositoryAdapter: mockDecisionRepositoryAdapter,
   executionRepository: noop,
+  executionAdmissionRepository: noop,
   explanationRepository: mockExplanationRepository,
   memoryActionOpportunityRepository: mockMemoryActionOpportunityRepository,
   policyRepositoryAdapter: noop,
   serviceCredentialRepository: noop,
   skillGapRepository: noop,
   userRepository: mockUserRepository,
+  getPolicyAuthorityRevision: vi.fn(async () => 'policy-authority-revision-1'),
 }));
 
 // ── Import after mocks ──────────────────────────────────────────────────────
@@ -148,7 +183,7 @@ function runWith(policyDecision: PolicyDecision) {
     fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
     policyEvaluator: { evaluate: vi.fn(async () => policyDecision) },
     loadPolicies: async () => [],
-    getExecutionRouter: async () => ({ route: vi.fn(), executeWithRouting: vi.fn() }),
+    getExecutionRouter: async () => asPreparedRouter({ route: vi.fn(), executeWithRouting: vi.fn() }),
   });
 }
 
@@ -275,10 +310,10 @@ describe('runMemoryActionLoopJob — awareness disposition', () => {
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator: { evaluate: vi.fn(async () => ({ allowed: true, requiresApproval: false, reason: 'tier allows auto' })) },
       loadPolicies: async () => [],
-      getExecutionRouter: async () => ({
+      getExecutionRouter: async () => asPreparedRouter({
         route: vi.fn(async () => ({ selectedAdapter: 'direct', reasoning: 'direct ok' })),
         executeWithRouting: vi.fn(async () => ({ status: 'completed', output: {}, planId: 'p1' })),
-      }) as unknown as RouterStub,
+      }),
     });
 
     expect(summary.notedAwareness).toBe(0);

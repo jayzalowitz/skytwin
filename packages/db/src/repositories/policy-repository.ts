@@ -1,4 +1,4 @@
-import { query } from '../connection.js';
+import { query, withTransaction } from '../connection.js';
 import type { ActionPolicyRow } from '../types.js';
 
 function normalizePolicyRow(row: ActionPolicyRow): ActionPolicyRow {
@@ -6,6 +6,48 @@ function normalizePolicyRow(row: ActionPolicyRow): ActionPolicyRow {
     ...row,
     priority: Number(row.priority),
   };
+}
+
+export async function lockPolicyAuthorityWithClient(client: import('pg').PoolClient): Promise<void> {
+  const locked = await client.query(
+    'SELECT revision FROM execution_policy_authority WHERE singleton = true FOR UPDATE',
+  );
+  if (!locked.rows[0]) throw new Error('Execution policy authority is unavailable.');
+}
+
+export async function bumpPolicyAuthorityWithClient(client: import('pg').PoolClient): Promise<void> {
+  await client.query(
+    `UPDATE execution_policy_authority
+        SET revision = gen_random_uuid(), updated_at = now()
+      WHERE singleton = true`,
+  );
+}
+
+export async function getPolicyAuthorityRevision(): Promise<string> {
+  const result = await query<{ revision: string }>(
+    'SELECT revision FROM execution_policy_authority WHERE singleton = true',
+  );
+  const revision = result.rows[0]?.revision;
+  if (!revision) throw new Error('Execution policy authority is unavailable.');
+  return revision;
+}
+
+async function lockPolicyOwner(
+  client: import('pg').PoolClient,
+  userId: string,
+): Promise<boolean> {
+  const owner = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [userId]);
+  return Boolean(owner.rows[0]);
+}
+
+async function findPolicyOwner(
+  client: import('pg').PoolClient,
+  policyId: string,
+): Promise<string | null> {
+  const result = await client.query<{ user_id: string }>(
+    'SELECT user_id FROM action_policies WHERE id = $1', [policyId],
+  );
+  return result.rows[0]?.user_id ?? null;
 }
 
 /**
@@ -78,20 +120,26 @@ export const policyRepository = {
    * Create a new policy.
    */
   async createPolicy(input: CreatePolicyInput): Promise<ActionPolicyRow> {
-    const result = await query<ActionPolicyRow>(
-      `INSERT INTO action_policies (user_id, name, domain, rules, priority, is_active)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING *`,
-      [
+    return withTransaction(async (client) => {
+      if (!await lockPolicyOwner(client, input.userId)) {
+        throw new Error('Policy owner does not exist.');
+      }
+      await lockPolicyAuthorityWithClient(client);
+      const result = await client.query<ActionPolicyRow>(
+        `INSERT INTO action_policies (user_id, name, domain, rules, priority, is_active)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         RETURNING *`, [
         input.userId,
         input.name,
         input.domain,
         JSON.stringify(input.rules ?? []),
         input.priority ?? 0,
         input.isActive ?? true,
-      ],
-    );
-    return normalizePolicyRow(result.rows[0]!);
+        ],
+      );
+      await bumpPolicyAuthorityWithClient(client);
+      return normalizePolicyRow(result.rows[0]!);
+    });
   },
 
   /**
@@ -141,33 +189,51 @@ export const policyRepository = {
 
     values.push(id);
 
-    const result = await query<ActionPolicyRow>(
-      `UPDATE action_policies SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
-      values,
-    );
-    const row = result.rows[0];
-    return row ? normalizePolicyRow(row) : null;
+    return withTransaction(async (client) => {
+      const userId = await findPolicyOwner(client, id);
+      if (!userId || !await lockPolicyOwner(client, userId)) return null;
+      await lockPolicyAuthorityWithClient(client);
+      const result = await client.query<ActionPolicyRow>(
+        `UPDATE action_policies SET ${setClauses.join(', ')} WHERE id = $${paramIndex} RETURNING *`,
+        values,
+      );
+      const row = result.rows[0];
+      if (row) await bumpPolicyAuthorityWithClient(client);
+      return row ? normalizePolicyRow(row) : null;
+    });
   },
 
   /**
    * Soft-delete a policy by marking it inactive.
    */
   async deletePolicy(id: string): Promise<boolean> {
-    const result = await query(
-      'UPDATE action_policies SET is_active = false WHERE id = $1',
-      [id],
-    );
-    return (result.rowCount ?? 0) > 0;
+    return withTransaction(async (client) => {
+      const userId = await findPolicyOwner(client, id);
+      if (!userId || !await lockPolicyOwner(client, userId)) return false;
+      await lockPolicyAuthorityWithClient(client);
+      const result = await client.query(
+        'UPDATE action_policies SET is_active = false WHERE id = $1', [id],
+      );
+      if ((result.rowCount ?? 0) > 0) {
+        await bumpPolicyAuthorityWithClient(client);
+      }
+      return (result.rowCount ?? 0) > 0;
+    });
   },
 
   /**
    * Hard-delete a policy from the database.
    */
   async hardDeletePolicy(id: string): Promise<boolean> {
-    const result = await query(
-      'DELETE FROM action_policies WHERE id = $1',
-      [id],
-    );
-    return (result.rowCount ?? 0) > 0;
+    return withTransaction(async (client) => {
+      const userId = await findPolicyOwner(client, id);
+      if (!userId || !await lockPolicyOwner(client, userId)) return false;
+      await lockPolicyAuthorityWithClient(client);
+      const result = await client.query('DELETE FROM action_policies WHERE id = $1', [id]);
+      if ((result.rowCount ?? 0) > 0) {
+        await bumpPolicyAuthorityWithClient(client);
+      }
+      return (result.rowCount ?? 0) > 0;
+    });
   },
 };

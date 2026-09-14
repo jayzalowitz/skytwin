@@ -106,6 +106,8 @@ describe('mcpServerChangelogRepository.addPendingOptIn', () => {
     const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain('ON CONFLICT');
     expect(sql).toContain('DO NOTHING');
+    expect(sql).toContain('FOR UPDATE');
+    expect(sql).not.toContain('credential_dispatch_leases');
     expect(params[0]).toBe(SERVER_ID);
     expect(params[1]).toBe('create_database');
     expect(params[2]).toBe('1.4.0');
@@ -201,6 +203,9 @@ describe('mcpServerChangelogRepository.hasPendingOptIn', () => {
     mockRows.push({ id: OPT_IN_ID });
     const result = await mcpServerChangelogRepository.hasPendingOptIn(SERVER_ID, 'create_database');
     expect(result).toBe(true);
+    const [sql] = mockQuery.mock.calls[0] as [string, unknown[]];
+    expect(sql).toContain('accepted_at IS NULL');
+    expect(sql).not.toContain('rejected_at IS NULL');
   });
 
   it('returns false when no pending row exists', async () => {

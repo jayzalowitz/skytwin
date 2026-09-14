@@ -9,6 +9,78 @@ const __dirname = dirname(__filename);
 
 const SCHEMA_PATH = join(__dirname, '..', 'schemas', 'schema.sql');
 
+export interface MigrationSqlSource {
+  name: string;
+  sql: string;
+}
+
+function migrationSqlSources(): MigrationSqlSource[] {
+  return [
+    { name: 'schema.sql', sql: readFileSync(SCHEMA_PATH, 'utf-8') },
+    ...readdirSync(__dirname)
+      .filter((file) => file.endsWith('.sql'))
+      .sort()
+      .map((file) => ({ name: file, sql: readFileSync(join(__dirname, file), 'utf-8') })),
+  ];
+}
+
+function unquoteSqlIdentifier(identifier: string): string {
+  return identifier.startsWith('"')
+    ? identifier.slice(1, -1).replaceAll('""', '"')
+    : identifier;
+}
+
+/**
+ * Derive the SkyTwin-owned table boundary from checked-in DDL, never from the
+ * database namespace. `all` includes tables later removed by a migration so a
+ * rollback can also clean an interrupted/older install; `current` applies the
+ * checked-in DROP TABLE statements and is the expected post-up manifest.
+ */
+export function deriveOwnedTableManifest(sources: readonly MigrationSqlSource[]): {
+  all: string[];
+  current: string[];
+} {
+  const all = new Set<string>();
+  const current = new Set<string>();
+  const identifier = '(?:"(?:[^"]|"")+"|[A-Za-z_][A-Za-z0-9_$]*)';
+  const createPattern = new RegExp(
+    `\\bCREATE\\s+TABLE\\s+(?:IF\\s+NOT\\s+EXISTS\\s+)?(?:(?:public|"public")\\.)?(${identifier})(?![A-Za-z0-9_$"]|\\s*\\.)`,
+    'gi',
+  );
+  const dropPattern = new RegExp(
+    `\\bDROP\\s+TABLE\\s+(?:IF\\s+EXISTS\\s+)?(?:(?:public|"public")\\.)?(${identifier})(?![A-Za-z0-9_$"]|\\s*\\.)`,
+    'gi',
+  );
+
+  for (const source of sources) {
+    // Ownership is a property of executable DDL, not prose in a migration
+    // comment. The migration runner has the same line-comment limitation.
+    const ddl = source.sql.replace(/--[^\n]*/g, '');
+    const createStatements = ddl.match(/\bCREATE\s+TABLE\b/gi) ?? [];
+    const created = [...ddl.matchAll(createPattern)];
+    if (created.length !== createStatements.length) {
+      throw new Error(`[migration] Cannot derive every owned table from ${source.name}`);
+    }
+    for (const match of created) {
+      const name = unquoteSqlIdentifier(match[1]!);
+      all.add(name);
+      current.add(name);
+    }
+    for (const match of ddl.matchAll(dropPattern)) {
+      current.delete(unquoteSqlIdentifier(match[1]!));
+    }
+  }
+
+  return {
+    all: [...all].sort(),
+    current: [...current].sort(),
+  };
+}
+
+export function getSkyTwinOwnedTableManifest(): { all: string[]; current: string[] } {
+  return deriveOwnedTableManifest(migrationSqlSources());
+}
+
 /**
  * SQLSTATE codes that mean "this DDL object already exists" — re-running
  * a migration that hits one of these is a no-op, not a failure. Checking
@@ -288,70 +360,106 @@ export async function upOwned(options: OwnedMigrationOptions): Promise<void> {
   }
 }
 
-/**
- * Roll back the initial migration: drop all tables in reverse dependency order.
- */
+interface PublicTableRow {
+  table_name: string;
+}
+
+interface ForeignDependencyRow {
+  dependency_kind: string;
+  dependency_name: string;
+  owned_table_name: string;
+}
+
+const OWNED_PUBLIC_BASE_TABLES_SQL = `
+  SELECT table_name
+    FROM information_schema.tables
+   WHERE table_schema = 'public'
+     AND table_type = 'BASE TABLE'
+     AND table_name = ANY($1::STRING[])
+   ORDER BY table_name
+`;
+
+const FOREIGN_OWNED_DEPENDENCIES_SQL = `
+  SELECT 'foreign_key' AS dependency_kind,
+         tc.table_schema || '.' || tc.table_name || '.' || tc.constraint_name AS dependency_name,
+         ccu.table_name AS owned_table_name
+    FROM information_schema.table_constraints tc
+    JOIN information_schema.referential_constraints rc
+      ON rc.constraint_catalog = tc.constraint_catalog
+     AND rc.constraint_schema = tc.constraint_schema
+     AND rc.constraint_name = tc.constraint_name
+    JOIN information_schema.constraint_column_usage ccu
+      ON ccu.constraint_catalog = rc.unique_constraint_catalog
+     AND ccu.constraint_schema = rc.unique_constraint_schema
+     AND ccu.constraint_name = rc.unique_constraint_name
+   WHERE tc.constraint_type = 'FOREIGN KEY'
+     AND ccu.table_schema = 'public' AND ccu.table_name = ANY($1::STRING[])
+     AND NOT (tc.table_schema = 'public' AND tc.table_name = ANY($1::STRING[]))
+  UNION ALL
+  SELECT 'view' AS dependency_kind,
+         vtu.view_schema || '.' || vtu.view_name AS dependency_name,
+         vtu.table_name AS owned_table_name
+    FROM information_schema.view_table_usage vtu
+   WHERE vtu.table_schema = 'public' AND vtu.table_name = ANY($1::STRING[])
+     AND NOT (vtu.view_schema = 'public' AND vtu.view_name = ANY($1::STRING[]))
+  ORDER BY dependency_kind, dependency_name, owned_table_name
+`;
+
+/** Quote a database-sourced identifier without treating it as SQL text. */
+export function quoteSqlIdentifier(identifier: string): string {
+  if (identifier.length === 0 || identifier.includes('\0')) {
+    throw new Error('[migration] Refusing to quote an empty or NUL-containing SQL identifier');
+  }
+  return `"${identifier.replaceAll('"', '""')}"`;
+}
+
 export async function down(): Promise<void> {
   const pool = getPool();
+  // A retired name is no longer proof of current ownership. If an operator
+  // reuses it after an upgrade, rollback must preserve their replacement.
+  const owned = getSkyTwinOwnedTableManifest().current;
 
-  const dropOrder = [
-    // Added by migration 012 (mempalace)
-    'entity_codes',
-    'episodic_memories',
-    'knowledge_triples',
-    'knowledge_entities',
-    'memory_tunnels',
-    'memory_closets',
-    'memory_drawers',
-    'memory_rooms',
-    'memory_wings',
-    // Added by migrations 002–011 (reverse dependency order)
-    'sessions',
-    'ironclaw_tools',
-    'preference_history',
-    'escalation_triggers',
-    'domain_autonomy_policies',
-    'spend_records',
-    'trust_tier_audit',
-    'briefings',
-    'proactive_scans',
-    'skill_gap_log',
-    'twin_exports',
-    'preference_proposals',
-    'signals',
-    'accuracy_metrics',
-    'eval_runs',
-    'cross_domain_traits',
-    'behavioral_patterns',
-    'connector_configs',
-    'oauth_tokens',
-    // Base schema tables
-    'execution_events',
-    'feedback_events',
-    'explanation_records',
-    'execution_results',
-    'execution_plans',
-    'approval_requests',
-    'decision_outcomes',
-    'candidate_actions',
-    'decisions',
-    'action_policies',
-    'preferences',
-    'twin_profile_versions',
-    'twin_profiles',
-    'connected_accounts',
-    'users',
-  ];
-
-  for (const table of dropOrder) {
-    try {
-      await pool.query(`DROP TABLE IF EXISTS ${table} CASCADE`);
-    } catch (error) {
-      console.error(`[migration] Failed to drop table ${table}:`, error);
-    }
+  const dependencies = await pool.query<ForeignDependencyRow>(
+    FOREIGN_OWNED_DEPENDENCIES_SQL,
+    [owned],
+  );
+  if (dependencies.rows.length > 0) {
+    const details = dependencies.rows.map((row) =>
+      `${row.dependency_kind} ${row.dependency_name} -> public.${row.owned_table_name}`
+    ).join(', ');
+    throw new Error(
+      `[migration] Refusing rollback: operator-owned objects depend on SkyTwin tables: ${details}`,
+    );
   }
 
-  console.log('[migration] 001-initial: All tables dropped.');
+  // The manifest follows checked-in CREATE/DROP TABLE DDL, including tables
+  // removed by later migrations. Never infer ownership from everything in the
+  // shared `public` namespace: operators may colocate unrelated tables there.
+  const existing = await pool.query<PublicTableRow>(OWNED_PUBLIC_BASE_TABLES_SQL, [owned]);
+  if (existing.rows.length > 0) {
+    const qualifiedTables = existing.rows
+      .map(({ table_name: tableName }) =>
+        `${quoteSqlIdentifier('public')}.${quoteSqlIdentifier(tableName)}`)
+      .join(', ');
+    // One schema change avoids scheduling a separate CockroachDB job for
+    // every table while retaining all-or-error behavior for the enumerated
+    // set.
+    // Listing the complete owned graph lets Cockroach remove its internal FKs
+    // without CASCADE. Any unrecognised external dependency makes the whole
+    // statement fail rather than silently mutating an operator-owned object.
+    await pool.query(`DROP TABLE ${qualifiedTables}`);
+  }
+
+  const survivors = await pool.query<PublicTableRow>(OWNED_PUBLIC_BASE_TABLES_SQL, [owned]);
+  if (survivors.rows.length > 0) {
+    throw new Error(
+      `[migration] 001-initial: rollback left SkyTwin-owned tables behind: ${
+        survivors.rows.map(({ table_name: tableName }) => tableName).join(', ')
+      }`,
+    );
+  }
+
+  console.log('[migration] 001-initial: All SkyTwin-owned tables dropped.');
 }
 
 /**

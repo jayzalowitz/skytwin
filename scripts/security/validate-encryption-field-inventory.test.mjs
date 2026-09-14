@@ -35,7 +35,7 @@ const migrationRunnerPath = new URL(
   import.meta.url,
 );
 const seedPath = new URL(
-  "../../packages/db/src/seeds/seed.ts",
+  "../../packages/db/src/seeds/legacy-decision-cleanup.ts",
   import.meta.url,
 );
 const seedUpsertPath = new URL(
@@ -146,6 +146,14 @@ test("schema reconstruction applies column and table DDL in statement order", ()
     "id",
     "secret",
   ]);
+
+  const ttlTable = new Map();
+  applySchemaSql(
+    ttlTable,
+    "CREATE TABLE expiring (id UUID PRIMARY KEY, expires_at TIMESTAMPTZ) " +
+      "WITH (ttl_expiration_expression = 'expires_at');",
+  );
+  assert.deepEqual([...ttlTable.get("expiring")].sort(), ["expires_at", "id"]);
 });
 
 test("schema reconstruction rejects table DDL it cannot fully consume", () => {
@@ -475,7 +483,7 @@ test("SQL callsites exclude prose matches and include annotated dynamic writers"
   assert.ok(
     audit.callsites
       .get("episodic_memories")
-      .includes("packages/db/src/seeds/seed.ts"),
+      .includes("packages/db/src/seeds/legacy-decision-cleanup.ts"),
   );
 });
 
@@ -501,7 +509,7 @@ test("discovered SQL callsites use repository paths on Windows", () => {
   assert.ok(
     audit.callsites
       .get("episodic_memories")
-      .includes("packages/db/src/seeds/seed.ts"),
+      .includes("packages/db/src/seeds/legacy-decision-cleanup.ts"),
   );
   assert.equal(
     [...audit.callsites.values()].flat().some((path) => path.includes("\\")),
@@ -564,7 +572,11 @@ test("dynamic SQL annotations must match their literal table declarations", () =
   const schema = extractSchemaColumns();
   const seed = readFileSync(seedPath, "utf8");
   assert.deepEqual(
-    auditDynamicSqlFile("packages/db/src/seeds/seed.ts", seed, schema).errors,
+    auditDynamicSqlFile(
+      "packages/db/src/seeds/legacy-decision-cleanup.ts",
+      seed,
+      schema,
+    ).errors,
     [],
   );
 
@@ -574,19 +586,19 @@ test("dynamic SQL annotations must match their literal table declarations", () =
   );
   assert.ok(
     auditDynamicSqlFile(
-      "packages/db/src/seeds/seed.ts",
+      "packages/db/src/seeds/legacy-decision-cleanup.ts",
       missingAnnotation,
       schema,
     ).errors.some((error) => error.includes("must declare")),
   );
 
   const staleAnnotation = seed.replace(
-    "skill_gap_log,episodic_memories",
-    "skill_gap_log",
+    "approval_requests,candidate_actions",
+    "approval_requests",
   );
   assert.ok(
     auditDynamicSqlFile(
-      "packages/db/src/seeds/seed.ts",
+      "packages/db/src/seeds/legacy-decision-cleanup.ts",
       staleAnnotation,
       schema,
     ).errors.some((error) => error.includes("literal loop table set")),

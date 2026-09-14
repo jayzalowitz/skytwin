@@ -20,7 +20,9 @@
   "dependencies": {
     "@skytwin/core": "workspace:*",
     "@skytwin/embedded-llm": "workspace:*",
-    "@skytwin/shared-types": "workspace:*"
+    "@skytwin/shared-types": "workspace:*",
+    "ipaddr.js": "^2.5.0",
+    "undici": "^6.21.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",

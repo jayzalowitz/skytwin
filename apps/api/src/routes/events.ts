@@ -17,10 +17,8 @@ import { PolicyEvaluator } from '@skytwin/policy-engine';
 import { ExplanationGenerator } from '@skytwin/explanations';
 import {
   approvalRepository,
-  oauthRepository,
   executionRepository,
   userRepository,
-  aiProviderRepository,
   emailLabelRepository,
   mempalaceRepository,
   TwinRepositoryAdapter,
@@ -28,13 +26,32 @@ import {
   decisionRepositoryAdapter,
   explanationRepositoryAdapter,
   policyRepositoryAdapter,
+  getPolicyAuthorityRevision,
+  inferenceReceiptRepository,
+  executionAdmissionRepository,
 } from '@skytwin/db';
-import type { DecisionContext, ExecutionEvent, RiskAssessment, EpisodicMemory } from '@skytwin/shared-types';
-import { parseAutonomySettings, SituationType, TrustTier } from '@skytwin/shared-types';
-import type { AIProviderName } from '@skytwin/shared-types';
-import { LlmClient } from '@skytwin/llm-client';
-import type { ProviderEntry } from '@skytwin/llm-client';
+import type {
+  DecisionContext,
+  DecisionOutcome,
+  CandidateAction,
+  ExecutionEvent,
+  ExplanationRecord,
+  RiskAssessment,
+  EpisodicMemory,
+} from '@skytwin/shared-types';
+import {
+  normalizeExecutionEventPayload,
+  normalizeExecutionEventType,
+  normalizeExecutionError,
+  parseAutonomySettings,
+  SituationType,
+  TrustTier,
+} from '@skytwin/shared-types';
+import { emitInferenceReceipt, snapshotInferenceTrace } from '@skytwin/llm-client';
+import type { InferenceTrace, ReceiptSigningKey } from '@skytwin/llm-client';
 import { createLogger } from '@skytwin/core';
+import { NoRequestExecutionError } from '@skytwin/execution-router';
+import { generateKeyPairSync } from 'node:crypto';
 
 const log = createLogger('api:events');
 import { WorkflowHandlerRegistry } from '../workflows/registry.js';
@@ -59,6 +76,7 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
+import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 
 /**
  * Best-effort: write an inbound raw event into the user's MemoryPort as a
@@ -96,18 +114,32 @@ async function recordSignalToMemory(
  * Build an LlmClient from the user's enabled AI provider settings.
  * Returns null if the user has no enabled providers.
  */
-async function buildLlmClientForUser(userId: string): Promise<LlmClient | null> {
-  const rows = await aiProviderRepository.getEnabledForUser(userId);
-  if (rows.length === 0) return null;
+let receiptSigningKey: ReceiptSigningKey | undefined;
 
-  const providers: ProviderEntry[] = rows.map((r: { provider: string; api_key: string; model: string; base_url: string | null }) => ({
-    name: r.provider as AIProviderName,
-    apiKey: r.api_key,
-    model: r.model,
-    baseUrl: r.base_url ?? undefined,
-  }));
-
-  return new LlmClient(providers, userId);
+function getReceiptSigningKey(): ReceiptSigningKey {
+  if (receiptSigningKey) return receiptSigningKey;
+  const encodedPrivate = process.env['SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64'];
+  const encodedPublic = process.env['SKYTWIN_RECEIPT_PUBLIC_KEY_BASE64'];
+  const configuredKeyId = process.env['SKYTWIN_RECEIPT_KEY_ID'];
+  if ((encodedPrivate || encodedPublic || configuredKeyId) &&
+      !(encodedPrivate && encodedPublic && configuredKeyId)) {
+    throw new Error('Receipt signing configuration requires key ID, public key, and private key together');
+  }
+  if (encodedPrivate && encodedPublic && configuredKeyId) {
+    receiptSigningKey = {
+      keyId: configuredKeyId,
+      privateKeyPem: Buffer.from(encodedPrivate, 'base64').toString('utf8'),
+      publicKeyPem: Buffer.from(encodedPublic, 'base64').toString('utf8'),
+    };
+    return receiptSigningKey;
+  }
+  const pair = generateKeyPairSync('ed25519');
+  receiptSigningKey = {
+    keyId: `ephemeral-${crypto.randomUUID()}`,
+    privateKeyPem: pair.privateKey.export({ type: 'pkcs8', format: 'pem' }).toString(),
+    publicKeyPem: pair.publicKey.export({ type: 'spki', format: 'pem' }).toString(),
+  };
+  return receiptSigningKey;
 }
 
 export function createEventsRouter(): Router {
@@ -203,8 +235,55 @@ export function createEventsRouter(): Router {
       const rawEvent = validation.event;
       const userId = validation.userId;
 
-      // 0. Build per-user LLM client and strategies (or fall back to rule-based)
-      const llmClient = await buildLlmClientForUser(userId);
+      // Resolve every known duplicate before interpretation. A finalized row
+      // can resume only its durable continuation; an incomplete row cannot be
+      // reconstructed from request-local traces and therefore fails closed.
+      const signalId = typeof rawEvent['signalId'] === 'string' &&
+        rawEvent['signalId'].trim().length > 0
+        ? rawEvent['signalId']
+        : null;
+      let preExistingDecision: _DecisionObject | null = null;
+      let preExistingIngestState: Awaited<ReturnType<
+        typeof inferenceReceiptRepository.getContinuationForDecision
+      >> = null;
+      if (signalId && decisionRepositoryAdapter.findBySignalId) {
+        const existing = await decisionRepositoryAdapter.findBySignalId(userId, signalId);
+        if (existing) {
+          preExistingDecision = existing;
+          preExistingIngestState = await inferenceReceiptRepository.getContinuationForDecision(
+            userId,
+            existing.id,
+          );
+          // Completed inference traces exist only in request memory until the
+          // atomic finalization transaction. If that attempt stopped after the
+          // decision row was written, a retry cannot reconstruct the complete
+          // causative batch and must not invent a new one from partial history.
+          if (!preExistingIngestState?.receiptCaptureComplete) {
+            res.status(409).json({
+              code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+              error: 'Decision receipt capture is incomplete; recovery is required',
+              decisionId: existing.id,
+            });
+            return;
+          }
+        }
+      }
+
+      // 0. The persisted mode and provider snapshot are resolved atomically by
+      // the sole per-user composition root. Its trace callback observes every
+      // completed call made by interpretation, candidate generation, or drafts.
+      const traces: InferenceTrace[] = [];
+      const llmResolution = preExistingDecision
+        ? null
+        : await resolveUserLlmClient(userId, {
+            // Take ownership immediately. Returned response provenance and a
+            // callback-visible trace must never share mutable receipt input.
+            onInferenceTrace: (trace) => traces.push(snapshotInferenceTrace(trace)),
+          });
+      const receiptAwareLlm = llmResolution?.state === 'ready'
+        ? { client: llmResolution.client, traces, mode: llmResolution.mode }
+        : null;
+      const llmClient = receiptAwareLlm?.client ?? null;
 
       let interpreter: SituationInterpreter;
       let decisionMaker: DecisionMaker;
@@ -267,14 +346,52 @@ export function createEventsRouter(): Router {
         }
       }
 
-      // 1. Interpret the raw event
-      const decision = await interpreter.interpret(rawEvent);
+      let decision: _DecisionObject;
+      let decisionCreated: boolean;
+      if (preExistingDecision) {
+        decision = preExistingDecision;
+        decisionCreated = false;
+      } else {
+        // 1. Interpret the raw event
+        decision = await interpreter.interpret(rawEvent);
 
-      // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work.
-      // `decisionCreated` is false when the row was already persisted for this
-      // (user_id, signal_id) — a re-ingestion. Callers gate side-effects on it
-      // so duplicate ingests don't re-fire UI notifications etc.
-      const { created: decisionCreated } = await decisionRepositoryAdapter.saveDecision(decision);
+        // 1b. Persist the decision to DB so foreign keys (outcomes, candidates) work.
+        // `decisionCreated` is false when the row was already persisted for this
+        // (user_id, signal_id) — a re-ingestion. Callers gate side-effects on it
+        // so duplicate ingests don't re-fire UI notifications etc.
+        const saved = await decisionRepositoryAdapter.saveDecision(decision);
+        decision = saved.decision;
+        decisionCreated = saved.created;
+
+        // A concurrent request can win between the preflight and INSERT. The
+        // interpretation just completed against an unpersisted request-local
+        // object, so it must not be attached to the winner's canonical row.
+        // A finalized winner can follow the normal resume/suppress path; an
+        // incomplete winner cannot be reconstructed from this loser's traces
+        // and therefore requires the same explicit recovery as preflight.
+        if (!decisionCreated) {
+          const racedState = await inferenceReceiptRepository.getContinuationForDecision(
+            userId,
+            decision.id,
+          );
+          if (!racedState?.receiptCaptureComplete) {
+            res.status(409).json({
+              code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+              error: 'Decision receipt capture is incomplete; recovery is required',
+              decisionId: decision.id,
+            });
+            return;
+          }
+          preExistingIngestState = racedState;
+        }
+      }
+
+      const canonicalRawEvent = decision.rawData ?? rawEvent;
+
+      let resumedAfterReceiptCapture: {
+        outcome: DecisionOutcome;
+        explanation: ExplanationRecord;
+      } | null = null;
 
       // 1c. Re-ingestion short-circuit. When `decisionCreated` is false the
       // (user_id, signal_id) was already evaluated on a prior ingest — the
@@ -291,64 +408,93 @@ export function createEventsRouter(): Router {
       //     that auto-execute; observer/suggest are already gated by the
       //     approval-row idempotency from #289).
       //
-      // Three completeness checks decide whether the previous attempt is
-      // recoverable enough to short-circuit:
-      //
-      //   1. Was an outcome row saved at all? (saveOutcome runs inside
-      //      decisionMaker.evaluate.) If null, the first ingest crashed
-      //      before even recording the verdict — fall through.
-      //   2. Was the outcome an auto-execute one? If yes, also require a
-      //      terminal `execution_result` row. The outcome is saved BEFORE
-      //      the action runs (decision-maker → recordOutcome → events.ts
-      //      → createPlan → execute → createResult), so a saved outcome
-      //      with no execution_result means the action hung mid-flight
-      //      or the process died between saveOutcome and createResult.
-      //      Fall through so the re-ingestion finishes the work — short-
-      //      circuiting here would leave the user thinking the email was
-      //      sent when it wasn't.
-      //   3. If `requiresApproval` is true, the approval row's existence
-      //      is the durable record of completion — `approvalRepository.create`
-      //      is idempotent and re-running it on a re-ingest would be a
-      //      no-op anyway, so this case is always safe to short-circuit
-      //      regardless of approval-row state.
+      // Only a finalized continuation can reach this branch. From it, resume
+      // idempotent approval/informational work or a one-time ready→running
+      // execution claim; never reconstruct a missing receipt batch.
       if (!decisionCreated) {
-        const previousOutcome = await decisionRepositoryAdapter.getOutcome(decision.id);
-        let recoverable = previousOutcome !== null;
-        let executionTerminal: { status: 'completed' | 'failed'; planId: string } | null = null;
-        if (previousOutcome && previousOutcome.autoExecute) {
-          const previousExec = await executionRepository.getByDecisionId(decision.id);
-          if (!previousExec || !previousExec.result) {
-            // Auto-execute outcome with no terminal execution_result — the
-            // first attempt didn't finish (hung HTTP call, crashed worker,
-            // killed process between createPlan and createResult). Fall
-            // through and let this ingest complete the action.
-            recoverable = false;
-          } else {
-            executionTerminal = {
-              status: previousExec.result.success ? 'completed' : 'failed',
-              planId: previousExec.plan.id,
-            };
-          }
-        }
+        const ingestState = preExistingDecision || preExistingIngestState
+          ? preExistingIngestState
+          : await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
+        // Outcome and explanation come only from the atomically persisted,
+        // self-consistent continuation snapshot. Never combine guard authority
+        // with mutable rows fetched independently after finalization.
+        const previousOutcome = ingestState?.continuation?.outcome ?? null;
+        const previousExplanation = ingestState?.continuation?.explanation ?? null;
+        // An approval created by a fail-closed auto-execution escalation also
+        // blocks a later ready-state resume, even though the stored outcome
+        // itself still says autoExecute.
+        const previousApproval = previousOutcome
+          ? await approvalRepository.findByDecisionId(decision.id, userId)
+          : null;
+        const persistedDisposition = previousOutcome?.selectedAction
+          ? await executionAdmissionRepository.findReceiptExecutionDisposition(
+              userId,
+              decision.id,
+              previousOutcome.selectedAction.id,
+            )
+          : null;
+        // Terminal truth comes only from the guard transition bound to the
+        // exact owner/decision/action plan. A standalone execution_result may
+        // have committed while terminalization's response was false or lost.
+        const executionTerminal = persistedDisposition
+          ? {
+              status: persistedDisposition.status,
+              planId: ingestState?.sourceExecutionPlanId ?? null,
+              error: persistedDisposition.reason,
+              explanationId: persistedDisposition.explanationId,
+            }
+          : ingestState?.sourceExecutionStatus && (
+          ingestState.effectState === 'completed' ||
+          ingestState.effectState === 'failed' ||
+          ingestState.effectState === 'restored_non_replay'
+        )
+          ? { status: ingestState.sourceExecutionStatus, planId: ingestState.sourceExecutionPlanId }
+          : ingestState?.effectState === 'running' || ingestState?.effectState === 'restored_non_replay'
+            ? { status: 'ambiguous' as const, planId: ingestState.sourceExecutionPlanId }
+            : null;
+        const captured = ingestState?.receiptCaptureComplete === true;
+        const resumeApproval = captured && previousOutcome?.requiresApproval &&
+          previousApproval === null && previousExplanation !== null &&
+          ingestState.continuationKind === 'approval' && ingestState.effectState === 'non_effect';
+        const resumeExecution = captured && previousOutcome?.autoExecute &&
+          previousApproval === null && previousExplanation !== null &&
+          ingestState.continuationKind === 'auto_execute' &&
+          ingestState.effectState === 'ready';
+        const resumeNonEffect = captured && previousOutcome !== null &&
+          !previousOutcome.requiresApproval && !previousOutcome.autoExecute &&
+          previousExplanation !== null && ingestState.continuationKind === 'non_effect' &&
+          ingestState.effectState === 'non_effect';
 
-        if (recoverable && previousOutcome) {
-          const [previousApproval, previousExplanation] = await Promise.all([
-            previousOutcome.requiresApproval
-              ? approvalRepository.findByDecisionId(decision.id, userId)
-              : Promise.resolve(null),
-            // Refetch the persisted explanation so the short-circuit
-            // response carries the same `{ summary, riskTier, confidence }`
-            // shape the first-time response did, instead of a null that
-            // would make the endpoint's contract branch-dependent.
-            explanationRepositoryAdapter.getByDecisionId(decision.id),
-          ]);
+        if (resumeApproval || resumeExecution || resumeNonEffect) {
+          resumedAfterReceiptCapture = {
+            outcome: {
+              ...previousOutcome,
+              ...(resumeApproval
+                ? { confirmationLevel: ingestState.confirmationLevel ?? 'dual' }
+                : {}),
+            },
+            explanation: previousExplanation,
+          };
+          log.info('Resuming post-receipt work for re-ingested signal', {
+            userId,
+            decisionId: decision.id,
+            effectState: ingestState.effectState,
+            operation: resumeApproval ? 'approval' : resumeExecution ? 'execution_claim' : 'non_effect',
+          });
+        } else if (ingestState && (
+          ingestState.effectState === 'restored_non_replay' ||
+          ingestState.effectState === 'running' ||
+          ingestState.effectState === 'completed' ||
+          ingestState.effectState === 'failed' || captured
+        )) {
           log.info('Suppressed pipeline for re-ingested signal', {
             userId,
             decisionId: decision.id,
             hadApproval: previousApproval !== null,
             hadExplanation: previousExplanation !== null,
-            requiredApproval: previousOutcome.requiresApproval,
-            autoExecuted: previousOutcome.autoExecute,
+            requiredApproval: previousOutcome?.requiresApproval ?? null,
+            autoExecuted: previousOutcome?.autoExecute ?? null,
+            effectState: ingestState.effectState,
             executionStatus: executionTerminal?.status ?? null,
           });
           res.json({
@@ -359,7 +505,7 @@ export function createEventsRouter(): Router {
               urgency: decision.urgency,
               summary: decision.summary,
             },
-            outcome: {
+            outcome: previousOutcome ? {
               selectedAction: previousOutcome.selectedAction
                 ? {
                     actionType: previousOutcome.selectedAction.actionType,
@@ -368,12 +514,12 @@ export function createEventsRouter(): Router {
                 : null,
               autoExecute: previousOutcome.autoExecute,
               requiresApproval: previousOutcome.requiresApproval,
-              reasoning: previousOutcome.reasoning,
-            },
+              reasoning: persistedDisposition?.reason ?? previousOutcome.reasoning,
+            } : null,
             explanation: previousExplanation
               ? {
-                  summary: previousExplanation.summary,
-                  riskTier: previousExplanation.riskTier,
+                  summary: persistedDisposition?.summary ?? previousExplanation.summary,
+                  riskTier: persistedDisposition?.riskTier ?? previousExplanation.riskTier,
                   confidence: previousExplanation.overallConfidence,
                 }
               : null,
@@ -385,19 +531,36 @@ export function createEventsRouter(): Router {
               ? { id: previousApproval.id, status: previousApproval.status }
               : null,
             reIngested: true,
+            replaySuppressed: ingestState.effectState === 'restored_non_replay' ||
+              ingestState.effectState === 'running' || persistedDisposition !== null,
+          });
+          return;
+        } else {
+          log.warn('Stopped re-ingestion without durable receipt completion', {
+            userId,
+            decisionId: decision.id,
+            previousOutcomePresent: previousOutcome !== null,
+            previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
+            ingestState: ingestState?.effectState ?? null,
+          });
+          res.status(409).json({
+            code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+            error: 'Decision receipt capture is incomplete; recovery is required',
+            decisionId: decision.id,
           });
           return;
         }
-        log.info('Re-ingestion with incomplete previous attempt; running pipeline to completion', {
-          userId,
-          decisionId: decision.id,
-          previousOutcomePresent: previousOutcome !== null,
-          previousOutcomeAutoExecute: previousOutcome?.autoExecute ?? null,
-        });
       }
 
       // 2. Get user record (trust tier must come from DB, never from caller)
       const user = await userRepository.findById(userId);
+
+      let outcome: DecisionOutcome;
+      let explanation: ExplanationRecord;
+      if (resumedAfterReceiptCapture) {
+        outcome = resumedAfterReceiptCapture.outcome;
+        explanation = resumedAfterReceiptCapture.explanation;
+      } else {
 
       // 3. Get the twin profile (used internally for preferences)
       await twinService.getOrCreateProfile(userId);
@@ -478,14 +641,14 @@ export function createEventsRouter(): Router {
       // This is the production path for the "twin remembers what happened"
       // promise. Failures are swallowed so a memory-layer hiccup never
       // blocks the decision pipeline.
-      void recordSignalToMemory(userId, decision, rawEvent)
+      void recordSignalToMemory(userId, decision, canonicalRawEvent)
         .then(() => {
           // Tell the dashboard a page was indexed so it refreshes the
           // counts + recent-episodes block without polling.
           sseManager.emit(userId, 'memory:page-indexed', {
             decisionId: decision.id,
-            source: rawEvent['source'] ?? 'unknown',
-            type: rawEvent['type'] ?? decision.situationType,
+            source: canonicalRawEvent['source'] ?? 'unknown',
+            type: canonicalRawEvent['type'] ?? decision.situationType,
           });
         })
         .catch((err) => {
@@ -497,28 +660,92 @@ export function createEventsRouter(): Router {
         });
 
       // 7. Evaluate through decision maker
-      const outcome = await decisionMaker.evaluate(context);
+      outcome = await decisionMaker.evaluate(context);
+
+      // Execution-time email semantics are materially different from a draft:
+      // sending is irreversible, changes the action type, and appends visible
+      // attribution. Prepare every possible outbound candidate and run the
+      // complete risk/policy/ranking pass again before outcome persistence,
+      // explanation generation, and receipt capture. Credentials are excluded
+      // here and materialized inside the built-in handler only after the final
+      // one-shot dispatch claim.
+      if (outcome.autoExecute && outcome.selectedAction &&
+          isOutboundEmailAction(outcome.selectedAction.actionType)) {
+        for (const candidate of outcome.allCandidates) {
+          if (isOutboundEmailAction(candidate.actionType)) {
+            prepareEmailActionForExecution(candidate, user);
+          }
+        }
+        outcome = await decisionMaker.reevaluatePreparedCandidates(
+          context,
+          outcome.allCandidates,
+        );
+      }
 
       // 8. Generate explanation
-      const explanation = await explanationGenerator.generate(
+      explanation = await explanationGenerator.generate(
         decision,
         outcome,
         context,
       );
 
-      // 8b. Persist candidate actions so alternatives are available for approval UI
-      if (outcome.allCandidates.length > 0) {
-        try {
-          await decisionRepositoryAdapter.saveCandidates(outcome.allCandidates);
-        } catch (err: unknown) {
-          // Duplicate key (PG 23505) is expected from prior runs or the engine itself.
-          // Log anything else so real failures aren't silently swallowed.
-          const code = (err as { code?: string }).code;
-          if (code !== '23505') {
-            const msg = err instanceof Error ? err.message : String(err);
-            log.error('Failed to persist candidate actions', { error: msg });
+      const awarenessOnly = outcome.requiresApproval && !!outcome.selectedAction &&
+        isAwarenessOnly(decision, outcome);
+      if (awarenessOnly) {
+        log.info('Awareness-disposition candidate', {
+          decisionId: decision.id,
+          situationType: decision.situationType,
+          actionType: outcome.selectedAction?.actionType,
+          gateEnabled: awarenessDispositionGateEnabled(),
+        });
+      }
+      if (awarenessOnly && awarenessDispositionGateEnabled()) {
+        outcome.requiresApproval = false;
+        await decisionRepositoryAdapter.saveOutcome(outcome);
+      }
+
+      // An LLM-backed decision cannot proceed to approval or execution until
+      // every completed inference has a receipt linked to its real explanation.
+      // The repository inserts the batch atomically and derives ownership from
+      // the decision. Raw bytes remain in transient request memory until their
+      // references are released; the repository never persists them.
+      {
+        const signingKey = getReceiptSigningKey();
+        const inputs = (receiptAwareLlm?.traces ?? []).map((trace) => {
+          // Decision-event provider settings currently expose only conventional
+          // cloud and local runtimes. Confidential mode must arrive through a
+          // separately configured verifier + pinned trust-root integration;
+          // never bootstrap trust from fields returned by the verifier itself.
+          if (trace.execution.reasoningMode === 'verified_private_cloud' || trace.verification) {
+            throw new Error('Confidential receipt emission is not configured for decision events');
           }
+          const bundle = emitInferenceReceipt(trace, {
+            userId,
+            decisionId: decision.id,
+            explanationId: explanation.id,
+          }, signingKey);
+          return {
+            bundle,
+            trustedRecorderKeys: new Map([[signingKey.keyId, signingKey.publicKeyPem]]),
+          };
+        });
+        const persisted = await inferenceReceiptRepository.createManyForUser(userId, inputs, {
+          decisionId: decision.id,
+          explanationId: explanation.id,
+          continuationKind: outcome.requiresApproval && outcome.selectedAction
+            ? 'approval'
+            : outcome.autoExecute && outcome.selectedAction ? 'auto_execute' : 'non_effect',
+          confirmationLevel: outcome.requiresApproval && outcome.selectedAction
+            ? outcome.confirmationLevel === 'dual' ? 'dual' : 'single'
+            : null,
+          continuation: { outcome, explanation },
+        });
+        if (!persisted || persisted.receipts.length !== inputs.length) {
+          throw new Error('Inference receipts could not be persisted; decision execution stopped');
         }
+        outcome = persisted.continuation.outcome;
+        explanation = persisted.continuation.explanation;
+      }
       }
 
       // 9. Handle outcome
@@ -542,27 +769,6 @@ export function createEventsRouter(): Router {
       // under FYI, not To-dos. Never gates an injection-guard escalation (see
       // isAwarenessOnly). Phase 0 logs the candidate with no behaviour change;
       // Phase 1 (AWARENESS_DISPOSITION_GATE=on, default off) does the suppression.
-      const awarenessOnly =
-        outcome.requiresApproval &&
-        !!outcome.selectedAction &&
-        isAwarenessOnly(decision, outcome);
-      if (awarenessOnly) {
-        log.info('Awareness-disposition candidate', {
-          decisionId: decision.id,
-          situationType: decision.situationType,
-          actionType: outcome.selectedAction?.actionType,
-          gateEnabled: awarenessDispositionGateEnabled(),
-        });
-      }
-      if (awarenessOnly && awarenessDispositionGateEnabled()) {
-        // Phase 1: flip the PERSISTED outcome so the approval branch below is
-        // skipped (no row, no approval:new SSE) and needsYou() buckets it as FYI.
-        // selectedAction stays non-null, so decision:blocked-by-policy stays
-        // silent. saveOutcome upserts the existing row (ON CONFLICT DO UPDATE).
-        outcome.requiresApproval = false;
-        await decisionRepositoryAdapter.saveOutcome(outcome);
-      }
-
       if (outcome.requiresApproval && outcome.selectedAction) {
         // Create an approval request so the user can review it. We include
         // `parameters` here so the dashboard can render *what specifically*
@@ -598,12 +804,6 @@ export function createEventsRouter(): Router {
         approvalRequest = approvalResult.row;
         approvalNewlyCreated = approvalResult.created;
       } else if (outcome.autoExecute && outcome.selectedAction) {
-        // Inject OAuth token if available for real execution
-        const tokenRow = await oauthRepository.getToken(userId, 'google');
-        if (tokenRow) {
-          outcome.selectedAction.parameters['accessToken'] = tokenRow.access_token;
-        }
-
         // Risk assessment for routing must be the one the decision-maker
         // actually computed (#371) — never a fresh synthetic one derived
         // from `explanation.riskTier`. The flat enum collapses every
@@ -635,133 +835,416 @@ export function createEventsRouter(): Router {
           const approvalVisibleParametersEsc = isOutboundEmailAction(outcome.selectedAction.actionType)
             ? annotateEmailAttributionPreview(visibleParametersEsc, user)
             : visibleParametersEsc;
-          const escalationResult = await approvalRepository.create({
+          const escalationResult = await inferenceReceiptRepository.escalateExecutionToApproval({
             userId,
             decisionId: decision.id,
+            continuation: { outcome, explanation },
             candidateAction: serializeApprovalCandidate(outcome.selectedAction, approvalVisibleParametersEsc),
             reason: 'Auto-execute path could not verify a persisted risk assessment for this candidate. Escalated to manual approval to fail closed (#371).',
             urgency: decision.urgency,
             confirmationLevel: 'single',
           });
-          approvalRequest = escalationResult.row;
-          approvalNewlyCreated = escalationResult.created;
-        } else {
-          prepareEmailActionForExecution(outcome.selectedAction, user);
-
-          // Persist the DB execution plan before routing so streaming events can
-          // reference it via execution_events.plan_id.
-          const savedPlan = await executionRepository.createPlan({
-            decisionId: decision.id,
-            actionId: outcome.selectedAction.id,
-            status: 'running',
-            steps: [{ type: outcome.selectedAction.actionType, status: 'pending' }],
-          });
-          outcome.selectedAction.parameters['executionPlanId'] = savedPlan.id;
-          if (user?.ironclaw_channel) {
-            outcome.selectedAction.parameters['ironclawChannel'] = user.ironclaw_channel;
+          if (escalationResult) {
+            approvalRequest = escalationResult.row;
+            approvalNewlyCreated = escalationResult.created;
+          } else {
+            const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
+            executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
           }
-
-          // Execute via the trust-ranked execution router (IronClaw > Direct > OpenClaw)
+        } else {
           const executionRouter = await getRouter();
-          let terminalEvent: ExecutionEvent | null = null;
-          let terminalStatus: 'completed' | 'failed' = 'failed';
-          const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
-          let terminalPayload: Record<string, unknown> = {};
-
+          let prepared: Awaited<ReturnType<typeof executionRouter.prepareExecution>> | null = null;
           try {
-            for await (const event of executionRouter.executeWithRoutingStreaming(
+            prepared = await executionRouter.prepareExecution(
               outcome.selectedAction,
               riskAssessment,
               userId,
+              { streaming: true, ironclawChannel: user?.ironclaw_channel ?? undefined },
+            );
+          } catch (error) {
+            const provenNoRequest = error instanceof NoRequestExecutionError;
+            const disposition = await executionAdmissionRepository.recordReceiptPreparationDisposition({
+              userId,
+              decisionId: decision.id,
+              actionId: outcome.selectedAction.id,
+              ambiguous: !provenNoRequest,
+              reason: provenNoRequest
+                ? normalizeExecutionError(error)
+                : 'Adapter preparation outcome could not be classified before dispatch.',
+            });
+            if (disposition) {
+              executionResult = {
+                status: disposition.status,
+                planId: null,
+                error: disposition.reason,
+              };
+            } else {
+              const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
+              executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
+            }
+          }
+          if (prepared) {
+          const executionRisk = prepared.riskAssessment;
+          let currentAuthorityRevision: string | null = null;
+          let currentPolicyAuthorityRevision: string | null = null;
+          let currentIronclawChannel: string | null = null;
+          const evaluateCurrentExecutionPolicy = async () => {
+            currentAuthorityRevision = null;
+            currentPolicyAuthorityRevision = null;
+            currentIronclawChannel = null;
+            const currentUser = await userRepository.findById(userId);
+            if (!currentUser) return {
+              allowed: false,
+              requiresApproval: true,
+              reason: 'Execution owner no longer exists.',
+            };
+            currentAuthorityRevision = currentUser.execution_authority_revision;
+            currentIronclawChannel = currentUser.ironclaw_channel;
+            currentPolicyAuthorityRevision = await getPolicyAuthorityRevision();
+            const currentPolicies = await policyRepositoryAdapter.getAllPolicies();
+            return new PolicyEvaluator(policyRepositoryAdapter).evaluate(
+              outcome.selectedAction!,
+              currentPolicies,
+              currentUser.trust_tier as TrustTier,
+              executionRisk,
+              parseAutonomySettings(currentUser.autonomy_settings),
+            );
+          };
+
+          // Receipt capture proves what policy said then; it is not a lease on
+          // future authority. Re-evaluate current user/operator pause and all
+          // current policies immediately before consuming ready authority.
+          const claimPolicy = await evaluateCurrentExecutionPolicy();
+          let preparedRiskSettledWithoutEffect = false;
+          if (!claimPolicy.allowed) {
+            const {
+              accessToken: _omitDeniedToken,
+              rawData: _omitDeniedRawData,
+              ...deniedVisibleParameters
+            } = outcome.selectedAction.parameters as Record<string, unknown>;
+            const denial = await executionAdmissionRepository.recordPolicyDenial({
+              scope: 'receipt',
+              userId,
+              decisionId: decision.id,
+              actionId: outcome.selectedAction.id,
+              adapterName: prepared.adapterName,
+              actionSnapshot: {
+                decisionId: decision.id,
+                ...serializeApprovalCandidate(outcome.selectedAction, deniedVisibleParameters),
+              },
+              riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+              policySnapshot: claimPolicy as unknown as Record<string, unknown>,
+              reason: claimPolicy.reason,
+            });
+            if (!denial) {
+              throw new Error('Prepared execution denial evidence could not be persisted');
+            }
+            executionResult = {
+              status: 'blocked',
+              planId: null,
+              error: typeof denial.evidence['reason'] === 'string'
+                ? denial.evidence['reason']
+                : 'The prepared execution path was blocked by current policy.',
+            };
+            preparedRiskSettledWithoutEffect = true;
+          } else if (claimPolicy.requiresApproval) {
+            const {
+              accessToken: _omitPreparedToken,
+              rawData: _omitPreparedRawData,
+              ...preparedVisibleParameters
+            } = outcome.selectedAction.parameters as Record<string, unknown>;
+            const visibleParameters = isOutboundEmailAction(outcome.selectedAction.actionType)
+              ? annotateEmailAttributionPreview(preparedVisibleParameters, user)
+              : preparedVisibleParameters;
+            const escalation = await inferenceReceiptRepository.escalateExecutionToApproval({
+              userId,
+              decisionId: decision.id,
+              continuation: { outcome, explanation },
+              candidateAction: serializeApprovalCandidate(outcome.selectedAction, visibleParameters),
+              reason: `The prepared ${prepared.adapterName} execution path requires approval: ${claimPolicy.reason}`,
+              urgency: decision.urgency,
+              confirmationLevel: claimPolicy.confirmationLevel ?? 'single',
+              dispatch: {
+                adapterName: prepared.adapterName,
+                riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+                policySnapshot: claimPolicy as unknown as Record<string, unknown>,
+              },
+            });
+            if (escalation) {
+              approvalRequest = escalation.row;
+              approvalNewlyCreated = escalation.created;
+              preparedRiskSettledWithoutEffect = true;
+            }
+          }
+          // This compare-and-set is the only autonomous dispatch authority.
+          // A lost commit response leaves `running`, which retries never replay.
+          let savedPlan: { id: string; dispatchAuthorityUpdatedAt: Date } | null = null;
+          const executionSteps = [{ type: outcome.selectedAction.actionType, status: 'pending' }];
+          if (claimPolicy.allowed && !claimPolicy.requiresApproval) try {
+            savedPlan = await inferenceReceiptRepository.claimExecutionForDecision(
+              userId,
+              decision.id,
+              { outcome, explanation },
+              executionSteps,
+              claimPolicy as unknown as Record<string, unknown>,
+              {
+                executionPlanId: prepared.planId,
+                adapterName: prepared.adapterName,
+                riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+              },
+            );
+          } catch (error) {
+            // A commit may have succeeded even when its response was lost.
+            // Treat the claim as consumed until the persisted guard proves
+            // otherwise; never dispatch on an exception.
+            log.warn('Execution claim response was ambiguous', {
+              userId,
+              decisionId: decision.id,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+          if (!savedPlan && !preparedRiskSettledWithoutEffect) {
+            const state = await inferenceReceiptRepository.getContinuationForDecision(userId, decision.id);
+            executionResult = { status: 'ambiguous', planId: state?.sourceExecutionPlanId ?? null };
+          } else if (savedPlan) {
+
+          // The claim transaction created and bound this exact DB plan before
+          // dispatch, so every streamed event and terminal result has one
+          // immutable execution identity.
+          const executionAction: CandidateAction = {
+            ...outcome.selectedAction,
+            parameters: {
+              ...outcome.selectedAction.parameters,
+              executionPlanId: savedPlan.id,
+              credentialAuthorityRevision: currentAuthorityRevision,
+              credentialPolicyAuthorityRevision: currentPolicyAuthorityRevision,
+              dispatchAuthorityId: decision.id,
+              dispatchAuthorityUpdatedAt: savedPlan.dispatchAuthorityUpdatedAt.toISOString(),
+            },
+          };
+          let terminalEvent: ExecutionEvent | null = null;
+          let terminalStatus: 'completed' | 'failed' | null = null;
+          let preDispatchClosed = false;
+          const stepOutputs: Array<{ stepId?: string; eventType: string; payload: Record<string, unknown> }> = [];
+          const admittedStepIds = executionSteps.map((_step, index) => `step-${index + 1}`);
+          let nextAdmittedStepIndex = 0;
+          let activeAdmittedStepId: string | null = null;
+          let terminalPayload: Record<string, unknown> = {};
+
+          let preDispatchFailure: string | null = null;
+          try {
+            const dispatchPolicy = await evaluateCurrentExecutionPolicy();
+            if (!dispatchPolicy.allowed || dispatchPolicy.requiresApproval) {
+              preDispatchFailure = `Current policy no longer permits automatic dispatch: ${dispatchPolicy.reason}`;
+            } else if (!await inferenceReceiptRepository.isExecutionDispatchableForDecision(
+              userId,
+              decision.id,
+              savedPlan.id,
+              { outcome, explanation },
+              executionSteps,
+              dispatchPolicy as unknown as Record<string, unknown>,
+              {
+                executionPlanId: prepared.planId,
+                adapterName: prepared.adapterName,
+                riskSnapshot: executionRisk as unknown as Record<string, unknown>,
+              },
             )) {
-              if (event.payload && Object.keys(event.payload).length > 0) {
-                stepOutputs.push({ stepId: event.stepId, eventType: event.eventType, payload: event.payload });
+              preDispatchFailure = 'Execution owner or receipt authority was revoked before dispatch';
+            }
+          } catch (error) {
+            preDispatchFailure = error instanceof Error ? error.message : String(error);
+          }
+
+          if (preDispatchFailure) {
+            try {
+              const recorded = await inferenceReceiptRepository
+                .markExecutionFailedBeforeDispatchForDecision(
+                  userId, decision.id, savedPlan.id, preDispatchFailure,
+                );
+              executionResult = recorded
+                ? { status: 'failed', planId: savedPlan.id }
+                : { status: 'ambiguous', planId: savedPlan.id };
+            } catch {
+              executionResult = { status: 'ambiguous', planId: savedPlan.id };
+            }
+            preDispatchClosed = true;
+          } else try {
+            for await (const event of executionRouter.executePreparedStreaming(
+              prepared,
+              executionAction,
+              executionRisk,
+              userId,
+              { ironclawChannel: currentIronclawChannel ?? undefined },
+            )) {
+              if (event.planId !== savedPlan.id) {
+                throw new Error('Execution event did not match the claimed plan');
               }
-              terminalPayload = event.payload ?? terminalPayload;
+              const safeEventType = normalizeExecutionEventType(event.eventType);
+              let safeStepId: string | undefined;
+              if (safeEventType === 'step_started' || safeEventType === 'step_completed' ||
+                  safeEventType === 'step_failed') {
+                const expectedStepId = admittedStepIds[nextAdmittedStepIndex];
+                if (!expectedStepId || event.stepId !== expectedStepId) {
+                  throw new Error('Execution adapter emitted an unbound step identity');
+                }
+                safeStepId = expectedStepId;
+                if (safeEventType === 'step_started') {
+                  if (activeAdmittedStepId !== null) {
+                    throw new Error('Execution adapter emitted overlapping step starts');
+                  }
+                  activeAdmittedStepId = expectedStepId;
+                } else {
+                  if (activeAdmittedStepId !== null && activeAdmittedStepId !== expectedStepId) {
+                    throw new Error('Execution adapter emitted a result for another active step');
+                  }
+                  activeAdmittedStepId = null;
+                  nextAdmittedStepIndex += 1;
+                }
+              } else if (event.stepId !== undefined) {
+                throw new Error('Execution adapter attached a step identity to a plan event');
+              }
+              if (safeEventType === 'unknown' ||
+                  !(event.timestamp instanceof Date) || Number.isNaN(event.timestamp.getTime())) {
+                throw new Error('Execution adapter emitted malformed event identity');
+              }
+              if (terminalEvent) {
+                throw new Error(`Execution stream emitted an event after ${terminalEvent.eventType}`);
+              }
+              const safePayload = normalizeExecutionEventPayload(event.payload ?? {});
+              if (Object.keys(safePayload).length > 0) {
+                stepOutputs.push({ stepId: safeStepId, eventType: safeEventType, payload: safePayload });
+              }
+              terminalPayload = safePayload;
               await executionRepository.createEvent({
                 planId: savedPlan.id,
-                stepId: event.stepId,
-                eventType: event.eventType,
-                payload: event.payload ?? {},
+                stepId: safeStepId,
+                eventType: safeEventType,
+                payload: safePayload,
               });
               sseManager.emit(userId, 'decision:step', {
                 decisionId: decision.id,
                 actionType: outcome.selectedAction.actionType,
                 description: outcome.selectedAction.description,
-                ...event,
+                planId: event.planId,
+                stepId: safeStepId,
+                eventType: safeEventType,
+                timestamp: event.timestamp,
+                payload: safePayload,
               });
 
-              if (event.eventType === 'plan_completed' || event.eventType === 'plan_failed') {
-                terminalEvent = event;
-                terminalStatus = event.eventType === 'plan_completed' ? 'completed' : 'failed';
+              if (safeEventType === 'plan_completed' || safeEventType === 'plan_failed') {
+                terminalEvent = { ...event, stepId: safeStepId, eventType: safeEventType };
+                terminalStatus = safeEventType === 'plan_completed' ? 'completed' : 'failed';
               }
             }
           } catch (error) {
-            terminalStatus = 'failed';
+            terminalStatus = null;
+            terminalEvent = null;
             terminalPayload = {
-              error: error instanceof Error ? error.message : String(error),
+              error: normalizeExecutionError(error),
             };
-            terminalEvent = {
-              planId: savedPlan.id,
-              eventType: 'plan_failed',
-              timestamp: new Date(),
-              payload: terminalPayload,
-            };
-            stepOutputs.push({ eventType: 'plan_failed', payload: terminalPayload });
-            await executionRepository.createEvent({
-              planId: savedPlan.id,
-              eventType: 'plan_failed',
-              payload: terminalPayload,
-            });
-            sseManager.emit(userId, 'decision:step', {
-              decisionId: decision.id,
-              actionType: outcome.selectedAction.actionType,
-              description: outcome.selectedAction.description,
-              ...terminalEvent,
-            });
+            if (error instanceof NoRequestExecutionError) {
+              try {
+                const recorded = await inferenceReceiptRepository
+                  .markExecutionFailedBeforeDispatchForDecision(
+                    userId,
+                    decision.id,
+                    savedPlan.id,
+                    terminalPayload['error'] as string,
+                  );
+                executionResult = recorded
+                  ? { status: 'failed', planId: savedPlan.id }
+                  : { status: 'ambiguous', planId: savedPlan.id };
+              } catch {
+                executionResult = { status: 'ambiguous', planId: savedPlan.id };
+              }
+              preDispatchClosed = true;
+            }
+            // The router's exported error classes are also available to
+            // adapters, so an exception's type cannot prove it happened before
+            // an effect. Leave the plan and guard running for reconciliation.
+            if (!preDispatchClosed) {
+              log.warn('Execution stream became ambiguous; reconciliation required', {
+                userId,
+                decisionId: decision.id,
+                planId: savedPlan.id,
+                error: terminalPayload['error'],
+              });
+            }
           }
 
-          await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
-          const fullOutputs: Record<string, unknown> = {
-            ...terminalPayload,
-            steps: stepOutputs,
-          };
-          await executionRepository.createResult({
-            planId: savedPlan.id,
-            success: terminalStatus === 'completed',
-            outputs: fullOutputs,
-            error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
-            rollbackAvailable: outcome.selectedAction.reversible,
-          });
-
-          executionResult = {
-            status: terminalStatus,
-            planId: savedPlan.id,
-            adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
-          };
-
-          // Record post-execution spend tagged with the action's registry
-          // source (#323 AC#3). Only on success — a failed execution
-          // shouldn't charge the user's per-app budget. Best-effort: the
-          // helper swallows its own errors so a ledger write can't break
-          // the auto-execute response. The spend cap was already enforced
-          // upstream by the policy engine before this action ran.
-          if (terminalStatus === 'completed') {
-            await recordMcpActionSpend({
-              userId,
-              decisionId: decision.id,
-              action: outcome.selectedAction,
+          if (preDispatchClosed) {
+            // The exact no-effect terminalization above owns the result.
+          } else if (!terminalStatus) {
+            executionResult = { status: 'ambiguous', planId: savedPlan.id };
+          } else {
+            await executionRepository.updatePlanStatus(savedPlan.id, terminalStatus);
+            const fullOutputs: Record<string, unknown> = {
+              ...terminalPayload,
+              steps: stepOutputs,
+            };
+            await executionRepository.createResult({
+              planId: savedPlan.id,
+              success: terminalStatus === 'completed',
+              outputs: fullOutputs,
+              error: typeof terminalPayload['error'] === 'string' ? terminalPayload['error'] : undefined,
+              rollbackAvailable: typeof terminalPayload['rollback_available'] === 'boolean'
+                ? terminalPayload['rollback_available']
+                : outcome.selectedAction.reversible,
             });
-          }
 
-          // Notify via SSE
-          sseManager.emit(userId, 'decision:executed', {
-            decisionId: decision.id,
-            actionType: outcome.selectedAction.actionType,
-            description: outcome.selectedAction.description,
-            status: terminalStatus,
-            eventType: terminalEvent?.eventType,
-          });
+            let terminalGuardCommitted = false;
+            try {
+              terminalGuardCommitted = await inferenceReceiptRepository.markExecutionTerminalForDecision(
+                userId,
+                decision.id,
+                terminalStatus,
+                savedPlan.id,
+              );
+            } catch (error) {
+              log.warn('Execution terminal guard response was ambiguous', {
+                userId,
+                decisionId: decision.id,
+                planId: savedPlan.id,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+
+            if (!terminalGuardCommitted) {
+              executionResult = { status: 'ambiguous', planId: savedPlan.id };
+            } else {
+              executionResult = {
+                status: terminalStatus,
+                planId: savedPlan.id,
+                adapterUsed: terminalPayload['adapter_used'] ?? 'unknown',
+              };
+
+              // Record post-execution spend tagged with the action's registry
+              // source (#323 AC#3). Only on success — a failed execution
+              // shouldn't charge the user's per-app budget. Best-effort: the
+              // helper swallows its own errors so a ledger write can't break
+              // the auto-execute response. The spend cap was already enforced
+              // upstream by the policy engine before this action ran.
+              if (terminalStatus === 'completed') {
+                await recordMcpActionSpend({
+                  userId,
+                  decisionId: decision.id,
+                  action: outcome.selectedAction,
+                });
+              }
+
+              // Notify via SSE only after terminal guard authority is known.
+              sseManager.emit(userId, 'decision:executed', {
+                decisionId: decision.id,
+                actionType: outcome.selectedAction.actionType,
+                description: outcome.selectedAction.description,
+                status: terminalStatus,
+                eventType: terminalEvent?.eventType,
+              });
+            }
+          }
+          }
+          }
         } // end if (riskAssessment) — escalation branch above handles null
       }
 
@@ -808,10 +1291,13 @@ export function createEventsRouter(): Router {
       // before reaching this code, and if it doesn't (the first attempt
       // crashed before saving outcome), we WANT the SSE to fire because the
       // user never saw it the first time.
-      if (!outcome.selectedAction && !approvalRequest && !executionResult) {
+      if ((!outcome.selectedAction && !approvalRequest && !executionResult) ||
+          executionResult?.status === 'blocked') {
         sseManager.emit(userId, 'decision:blocked-by-policy', {
           decisionId: decision.id,
-          reason: outcome.reasoning,
+          reason: executionResult?.status === 'blocked'
+            ? executionResult.error
+            : outcome.reasoning,
           domain: decision.domain,
           situationType: decision.situationType,
           urgency: decision.urgency,

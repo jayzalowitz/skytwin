@@ -204,6 +204,18 @@ export async function revokeToken(token: string): Promise<void> {
 
   if (!response.ok) {
     const errorText = await response.text();
+    // Google's invalid_token response proves this exact token can no longer
+    // authorize a request. Treat that as converged revocation so a crash
+    // between remote success and local deletion does not strand the durable
+    // disconnect fence forever.
+    if (response.status === 400) {
+      try {
+        const parsed = JSON.parse(errorText) as { error?: unknown };
+        if (parsed.error === 'invalid_token') return;
+      } catch {
+        // Preserve the provider failure below for malformed responses.
+      }
+    }
     throw new Error(`Google OAuth token revocation failed: ${response.status} ${errorText}`);
   }
 }

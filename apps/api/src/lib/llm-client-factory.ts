@@ -7,8 +7,7 @@
  * the adaptive layer must handle null by falling back to its deterministic
  * path.
  *
- * Provider priority (#375 — applies to the SINGLETON FACTORY ONLY;
- * see scope note below):
+ * Provider priority (#375 — applies within the environment-driven chain):
  *
  *   Default — LOCAL-FIRST: EMBEDDED → OLLAMA → ANTHROPIC → OPENAI → GOOGLE.
  *     This matches the "your data stays local" promise from the privacy
@@ -32,26 +31,24 @@
  * model is discoverable — that's the path grandma uses without ever
  * signing up for an API key.
  *
- * SCOPE OF THIS REORDER (#375 partial):
- *   - `getLlmClientFromConfig()` (this module): YES, affected.
- *   - Callers that read `aiProviderRepository.getEnabledForUser` and
- *     construct their own LlmClient instance (events.ts decision
- *     pipeline, assistant.ts, lifebooks.ts, draft-email-setup.ts): NOT
- *     affected. Those paths order providers by the per-user
- *     `ai_provider_settings.priority` column.
- *   - The user-facing per-user toggle UI that would unify both
- *     ordering paths is tracked as a #375 follow-up. This PR fixes
- *     the env-driven singleton, which is what `capabilities.ts`
- *     and similar callers use.
+ * SKYTWIN_REASONING_MODE scopes the result. A mixed local/remote chain
+ * without that explicit setting is rejected. User-scoped request paths
+ * do not use this singleton; they share `resolveUserLlmClient`, which
+ * reads the persisted per-user mode and provider priority atomically.
  */
 
-import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import { execSync } from "node:child_process";
-import { clearEmbeddedPortCache, LlmClient } from "@skytwin/llm-client";
-import type { ProviderEntry } from "@skytwin/llm-client";
-import { ACTIVE_MODEL_MANIFEST } from "@skytwin/embedded-llm";
+import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { execSync } from 'node:child_process';
+import { clearEmbeddedPortCache, LlmClient } from '@skytwin/llm-client';
+import type { ProviderEntry } from '@skytwin/llm-client';
+import { ACTIVE_MODEL_MANIFEST } from '@skytwin/embedded-llm';
+import {
+  canonicalizeProviderBaseUrl,
+  parseReasoningMode,
+  type ReasoningMode,
+} from '@skytwin/shared-types';
 
 /** Module-level singleton so we construct the client once per process */
 let _cached: LlmClient | null | undefined;
@@ -85,7 +82,7 @@ export function buildProviderChain(
       name: "ollama",
       apiKey: "",
       model: env["OLLAMA_MODEL"] ?? "llama3.2",
-      baseUrl: ollamaUrl,
+      baseUrl: canonicalizeProviderBaseUrl(ollamaUrl),
     });
   }
 
@@ -116,21 +113,47 @@ export function buildProviderChain(
     });
   }
 
-  // Order (#375). Default is local-first so the "your data stays
-  // local" promise holds for users who configured a cloud key for
-  // fallback-quality but didn't intend cloud as the primary path.
-  // Set SKYTWIN_LLM_PRIORITY=cloud-first to restore the legacy
-  // hosted-providers-first ordering — required for users on
-  // hardware that can't run a local model and depend on cloud
-  // for everything.
+  // Order providers only after the separate reasoning-mode gate authorizes
+  // the chain. A mixed local/remote chain requires SKYTWIN_REASONING_MODE;
+  // priority alone never grants permission to cross an execution boundary.
+  // Within an explicitly admitted chain, cloud-first restores the legacy
+  // hosted-provider preference for users who deliberately chose it.
   const priority = (env["SKYTWIN_LLM_PRIORITY"] ?? "local-first").toLowerCase();
   if (priority === "cloud-first") {
     return [...cloud, ...local];
   }
-  // Default: local-first. Unknown values fall back to local-first
-  // (privacy-preserving default — a typo must not turn into a
-  // silent escalation to cloud).
+  // Default: local-first. Unknown values preserve that ordering, while the
+  // mode resolver below independently rejects an ambiguous mixed chain.
   return [...local, ...cloud];
+}
+
+export function resolveEnvironmentReasoningMode(
+  env: Record<string, string | undefined>,
+  providers: readonly ProviderEntry[],
+): ReasoningMode | null {
+  const configured = env['SKYTWIN_REASONING_MODE'];
+  if (configured !== undefined) return parseReasoningMode(configured);
+  const hasLocal = providers.some((provider) => provider.name === 'embedded' || provider.name === 'ollama');
+  const hasRemote = providers.some((provider) => provider.name !== 'embedded' && provider.name !== 'ollama');
+  if (hasLocal && !hasRemote) return 'on_device';
+  if (hasRemote && !hasLocal) return 'bring_your_own_provider';
+  // A legacy mixed chain crossed the network when local inference failed.
+  // Require an explicit mode before preserving that behavior.
+  return null;
+}
+
+function buildModeScopedClient(
+  env: Record<string, string | undefined>,
+): LlmClient | null {
+  try {
+    const providers = buildProviderChain(env);
+    if (providers.length === 0) return null;
+    const mode = resolveEnvironmentReasoningMode(env, providers);
+    if (!mode) return null;
+    return LlmClient.forReasoningMode(mode, providers, 'system');
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -210,13 +233,13 @@ export function getLlmClientFromConfig(
 ): LlmClient | null {
   if (_cached !== undefined) return _cached;
 
-  const providers = buildProviderChain(env);
-  if (providers.length === 0) {
+  const client = buildModeScopedClient(env);
+  if (!client) {
     _cached = null;
     return null;
   }
 
-  _cached = new LlmClient(providers, "system");
+  _cached = client;
   return _cached;
 }
 
@@ -227,9 +250,7 @@ export function getLlmClientFromConfig(
 export function getLlmClientFromConfigFresh(
   env: Record<string, string | undefined> = process.env,
 ): LlmClient | null {
-  const providers = buildProviderChain(env);
-  if (providers.length === 0) return null;
-  return new LlmClient(providers, "system");
+  return buildModeScopedClient(env);
 }
 
 /**

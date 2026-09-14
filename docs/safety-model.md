@@ -55,7 +55,9 @@ The system exposes private information or accesses data it shouldn't.
 
 **Why it matters:** Privacy violations can't be undone. Once information is exposed, it's exposed.
 
-**Mitigation — LLM prompt redaction (#375):** the decision pipeline reasons over inbound signals (email, calendar) using an LLM that may be a cloud provider. Before a prompt is assembled, the user-derived parts — the raw signal dump and episodic-memory summaries — pass through `redactPromptPii` (`packages/llm-client/src/redact.ts`), which masks email addresses to `[redacted:email]`. This is on by default in `PromptBuilder` (`buildCandidatePrompt` / `buildSituationPrompt`), so a contact's address never leaves the machine to a third-party model just because the twin reasoned about their message. It's safe because an action's recipient is resolved from the structured signal record, not parsed from the prompt. (Scope today: email addresses only; number/name masking and the interactive assistant's memory block are tracked follow-ups on #375.)
+**Mitigation — LLM prompt redaction (#375):** the decision pipeline reasons over inbound signals (email, calendar) using an LLM that may be a cloud provider. The raw signal dump and episodic-memory summaries pass through `redactPromptPii` (`packages/llm-client/src/redact.ts`), which masks email addresses to `[redacted:email]`. This is on by default in `PromptBuilder` (`buildCandidatePrompt` / `buildSituationPrompt`). It does not scan the situation summary, preferences, behavioral patterns, traits, chat, briefing prose, draft-email generation, or capability inference. Masking these two fragments is safe because an action's recipient is resolved from the structured signal record, not parsed from the prompt. (Scope today: email addresses only; broader prompt coverage, number/name masking, and the interactive assistant's memory block are tracked follow-ups on #375.)
+
+**Mitigation — explicit reasoning boundaries (#639):** provider routing reads a persisted `ReasoningMode` before constructing a chain. `on_device` accepts only the embedded adapter and loopback Ollama; it cannot fall through to a remote service. A loopback socket alone does not prove local inference because Ollama supports daemon-side cloud relay, so every on-device Ollama call uses its request-scoped `:local` source selector (Ollama 0.18+) and never retries the unqualified model. Explicit cloud selectors are rejected before transport; other aliases are sent as `:local`, which makes supported Ollama runtimes reject remote-backed manifests before dispatch, and response metadata is checked as a backstop. `bring_your_own_provider` is an explicit selection and discloses the external-network and retention boundary; Ollama in that mode is conservatively remote and unknown-priced. `verified_private_cloud` is represented but rejects every current adapter until a verifier-owned transport can prove each request. Unattended calls skip providers whose price is unknown, stale, invalid, or unbounded. The source of truth is [`packages/shared-types/src/reasoning-mode.ts`](../packages/shared-types/src/reasoning-mode.ts), with enforcement in [`packages/llm-client/src/provider-privacy.ts`](../packages/llm-client/src/provider-privacy.ts), [`packages/llm-client/src/providers/ollama.ts`](../packages/llm-client/src/providers/ollama.ts), and [`packages/llm-client/src/llm-client.ts`](../packages/llm-client/src/llm-client.ts).
 
 ### 4. Social Damage
 
@@ -394,7 +396,7 @@ Every decision in the pipeline produces an audit trail:
 9. **User response:** If escalated, what the user decided
 10. **Feedback effect:** How the outcome affected the twin model
 
-### Inference Receipt Foundation
+### Inference Receipt Coverage
 
 The versioned [inference receipt contract](inference-receipts.md) is a separate,
 structured record for reasoning-path integrity with no dedicated prompt or
@@ -408,12 +410,20 @@ key and provider-specific attestation policy. Verification never authorizes an
 action or replaces the policy, provenance, trust-tier, spend, reversibility, or
 explanation gates above.
 
-This is a foundation, not universal workflow coverage. Current production
-composition does not configure recorder keys, create receipts, export the exact
-request/response bundle needed by the verifier, or show a receipt detail UI.
-The authenticated decision route can read or delete metadata rows that an
-integrator has persisted. A missing receipt therefore means “unavailable,” not
-“local,” “private,” or “verified.”
+This is decision-event coverage, not universal workflow coverage. Within a
+successfully finalized attempt, decision-event ingestion captures each completed
+call made through its receipt-aware client and atomically persists the batch
+before approval creation or external execution. It uses either the configured
+three-part recorder identity or an ephemeral process-local identity. If the
+attempt stops after its decision row is durable but before finalization, a retry
+returns recovery-required before client construction, inference, memory writes,
+approval, or execution. It does not claim a new batch is complete; preserving
+availability here requires a future durable provisional trace journal or
+atomic-restart design. Other application clients are not covered, and the
+product does not export the canonical verification bundle or show a receipt
+detail UI. The authenticated decision route can read or delete receipt metadata.
+A missing receipt therefore means “unavailable,” not “local,” “private,” or
+“verified.”
 
 ### What the User Can See
 
@@ -432,9 +442,10 @@ The user can inspect:
 - Raw events: Retained for 90 days, then summarized (configurable)
 - Explanation records: Retained indefinitely
 - Feedback events: Retained indefinitely
-- Inference receipts: no automatic emission yet; any persisted metadata row is
-  retained with its decision, included in user backups, and deleted with that
-  decision or user
+- Inference receipts: completed calls from successfully finalized decision-event
+  attempts are captured; metadata rows are retained with their decision,
+  included in user backups, and deleted with that decision or user. Interrupted
+  pre-finalization decisions remain recovery-required and do not proceed.
 
 ## Rollback Capabilities
 

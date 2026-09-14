@@ -9,11 +9,12 @@ All notable changes to SkyTwin will be documented in this file.
   for exact externally supplied request, response, and evidence bytes; its
   repository create boundary requires caller-supplied recorder roots and, for a
   confidential result, a provider key plus provider-specific attestation
-  policy. Owner-scoped metadata read/delete routes and schema-v2 backup/restore
-  coverage ship, with restored rows explicitly untrusted. Production does not
-  yet configure recorder keys, call the create boundary, emit receipts, export
-  verifier bundles, or show a receipt UI, so this adds no verified-confidential
-  product claim. The source-checkout command and those limitations are
+  policy. Owner-scoped metadata read/delete routes and schema-v3 backup/restore
+  coverage ship, with restored rows explicitly untrusted. Decision-event
+  ingestion calls the create boundary with an ephemeral process key or an
+  explicitly configured recorder key. Product verifier-bundle export, receipt
+  detail UI, and confidential-provider attestation remain unavailable, so this
+  adds no verified-confidential product claim. The source-checkout command and those limitations are
   documented in [`docs/inference-receipts.md`](docs/inference-receipts.md).
 
 - **The local encryption inventory now includes receipt storage.** Migration
@@ -30,9 +31,21 @@ All notable changes to SkyTwin will be documented in this file.
 - **Receipt verification now enforces its declared cryptographic and storage
   contract.** Recorder and provider keys must parse as Ed25519, recorder key
   pairs must match, invalid clocks or freshness-policy values fail closed, and
-  all database-bound identities must be UUIDs before trust evaluation. The
-  schema now permits at most one receipt per decision, matching the singular
-  owner-scoped API.
+  all database-bound identities must be UUIDs before trust evaluation. Receipt
+  batches persist an explicit durable capture ordinal; the singular compatibility
+  read returns the last captured call deterministically while backup retains all
+  rows and rejects duplicate identities before restore.
+
+- **Successfully finalized decision-event inference produces durable receipt
+  batches before approval or action execution.** Interpretation,
+  candidate-generation, and draft calls within that attempt share a
+  receipt-aware client; canonical logical request/response hashes and
+  runtime-location metadata are linked to the durable explanation. An existing
+  decision without receipt completion fails closed before new inference or side
+  effects; availability-preserving recovery still needs a durable provisional
+  trace journal or atomic-restart design. Hosted cost remains unknown without
+  exact provider billing facts, and the confidential verifier remains
+  deliberately unwired.
 
 ## [Unreleased] — Local encryption boundary
 
@@ -42,8 +55,8 @@ All notable changes to SkyTwin will be documented in this file.
   0001 defines key custody, locked behavior, context-bound envelopes,
   crash-safe migration and rotation, backup/restore, deletion after key loss,
   the intentionally readable search-derivative boundary, and the supported
-  desktop-beta scope. A machine-readable inventory classifies all 885 columns
-  across the 95 live tables and ties each table to its currently discoverable
+  desktop-beta scope. A machine-readable inventory classifies all 994 columns
+  across the 104 live tables and ties each table to its currently discoverable
   SQL callsites. `pnpm check:encryption-inventory` fails on schema drift,
   classification drift, invalid ownership/boundary values, or weakened critical
   credential and dead-letter invariants. This is a reviewed design contract;
@@ -69,6 +82,15 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-/review)
 
+- **OAuth grant storage now follows live vault authority without a plaintext
+  downgrade.** API callbacks store plaintext only when no vault exists. Once a
+  vault is initialized, a matching unlocked generation encrypts new and
+  reconnected token secrets while a locked or stale generation refuses the
+  write. Complete legacy plaintext pairs can migrate on authorized credential
+  use. The worker still has a separate, unpopulated key cache, so cross-process
+  use of encrypted grants remains unavailable and is disclosed in Settings and
+  the privacy documentation.
+
 - **Remembered vault passphrases now retain verifiable storage provenance.**
   New desktop records carry a format version and the exact secure OS backend
   that encrypted them. Startup deletes every legacy untagged, unsupported, or
@@ -82,7 +104,7 @@ All notable changes to SkyTwin will be documented in this file.
   migration entry points cannot execute an unreviewed SQL path, and unsupported
   CockroachDB table DDL—including implicit-column forms—stops validation rather
   than producing an incomplete field list. Mutation tests bind the exact runner,
-  migration corpus, supported DDL, and 95-table/885-column inventory.
+  migration corpus, supported DDL, and 104-table/994-column inventory.
 
 - **Launch-facing documentation now matches the inactive runtime boundary.** The
   accepted ADR, private child-process IPC, empty production owner grants, and
@@ -128,7 +150,102 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed (post-/review)
 
 - **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
-- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 describes the actual checkpoint and boot-reconciliation contract; the reviewed SQL-corpus digest now covers the combined 95-table, 885-column schema through migration 074, including the locally readable inference-receipt metadata boundary.
+- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 describes the actual checkpoint and boot-reconciliation contract; the reviewed SQL-corpus digest now covers the combined 104-table, 994-column schema through migration 079, including the locally readable inference-receipt metadata and reasoning-mode boundaries.
+
+### Fixed
+
+- Migration rollback now removes only an independently checked, DDL-derived
+  manifest of SkyTwin-owned tables and preserves unrelated objects colocated in
+  `public`. Retired SkyTwin names are no longer treated as current ownership,
+  and rollback refuses before mutation when an operator-owned table or view
+  depends on the owned graph. CI verifies a fresh disposable Cockroach down/up
+  cycle across owned tables, normalized columns/defaults/generated expressions,
+  constraints, and secondary/partial index definitions; locality and partition
+  equivalence are intentionally outside that claim.
+- Effect admission now binds the exact owner, decision, action, plan, outcome,
+  ExplanationRecord, risk snapshot, current policy snapshot, canonical action
+  parameters, and outcome snapshot before dispatch. Edited draft approvals are
+  converted to the exact irreversible send action before risk and policy are
+  recomputed; the original persisted risk remains source-integrity evidence, not
+  execution authority. Memory auto-execution persists its pre-effect outcome and
+  explanation atomically with the one-shot barrier; terminal adapter observations
+  remain separate.
+- Account purge, demo reset, and legacy seed cleanup now refuse active or
+  ambiguous execution graphs. Admission and purge share an owner-first
+  serializable lock order, and every effect path rechecks owner/graph authority,
+  current policy, and user/operator pause immediately before invoking an adapter.
+  Recovered ready work renews policy authority at its one-shot claim and cannot
+  use a receipt-era allow verdict after policy or pause state changes.
+- Final dispatch gates now compare the live persisted receipt/admission risk,
+  receipt-era policy, refreshed dispatch policy, canonical action/outcome, and
+  execution-plan steps with the exact expected snapshots. A tampered field can
+  no longer ride an otherwise valid owner/plan linkage into an adapter call.
+- Durable adapter evidence now uses typed, per-context schemas rather than a
+  recursive key-name allowlist. Only enumerated routing and terminal facts
+  survive; primitive or nested content under generic result containers becomes
+  one bounded marker. Memory report and direct scalar columns are separately
+  bounded and normalized, and DB and SSE views use the same safe event payload.
+- Direct Gmail and Calendar dispatch now obtains its OAuth credential through a
+  durable request-start lease after routing and plan construction. The lease
+  binds the exact owner, account row and revision, action, decision, plan, and
+  admission/receipt authority while persisting no token or bearer capability.
+  Disconnect, reconnect, refresh, and rotation serialize on the credential row
+  and provider: whichever wins first fences the other, while unrelated
+  non-credential dispatches do not block OAuth updates. Active or ambiguous
+  requests produce a typed pending response instead of a false completed
+  disconnect. Plan replay is refused and API admission snapshots never carry
+  raw OAuth credentials.
+  Once request-start is committed, elapsed
+  time changes an overdue lease to durable ambiguity; it never authorizes a
+  retry or lets credential mutation treat a possibly-started request as absent.
+  Once a vault exists, direct execution migrates a complete legacy plaintext
+  grant under the exact live vault generation and key version before returning
+  or refreshing it. Vault initialization also fences provider responses that
+  began before initialization from writing a late plaintext token.
+- Every adapter now consumes a durable one-shot request-start authority after
+  routing and plan construction. The claim rechecks the exact owner, current
+  policy, admission/receipt revision, action, decision, plan, and adapter; a
+  completed, failed, expired, or ambiguous claim cannot be replayed. Adapter
+  plans must preserve the admitted effect type, parameters, target, timeout,
+  and rollback shape before the claim is issued. Changing the trusted IronClaw
+  channel rotates the same owner authority revision, and an adapter-private
+  single-use preflight proof prevents a second endpoint-readiness await after
+  the request-start claim. Buffered streaming evidence has fixed event and byte
+  ceilings, including terminal payloads. MCP tool calls are attempted
+  once because the protocol does not provide a universal mutability or
+  idempotency contract; response loss remains durable ambiguity and cannot
+  trigger fallback execution. An action with an explicit MCP server or tool
+  target is pinned to the built-in MCP host, with exact server/tool authority
+  and no fallback to Direct, IronClaw, OpenClaw, or a discovered plugin.
+  IronClaw receives only the trusted execution envelope plus recursively
+  normalized action parameters; nested router-control fields and
+  credential-shaped values are stripped before the HTTP boundary.
+- Account-unknown Google callbacks now use a one-shot, DB-timestamped pending
+  authority. After verified identity resolution, the claim is bound to the
+  exact owner generation and a provider/account tombstone before token storage.
+  Disconnect and deletion therefore fence callbacks paused before persistence
+  without a provider-global switch that could disrupt other users. Tombstones
+  contain only keyed digests and both pending rows and tombstones are managed by
+  short CockroachDB TTLs; user purge leaves no raw email in fence records.
+
+## [Unreleased] — Explicit reasoning boundaries
+
+### Added
+
+- **Reasoning location is now a persisted policy, not an inference from a provider name.** Each user chooses `on_device` or `bring_your_own_provider`; the `verified_private_cloud` state exists but remains unavailable until a verifier-owned confidential adapter ships. Provider saves, tests, fallback, and every user-scoped API composition path enforce the same boundary. Legacy local, hosted, mixed, disabled, custom-endpoint, and empty chains are classified deterministically; ambiguous chains require confirmation.
+- **Every normalized model result carries privacy and execution provenance.** Metadata records execution/network/confidentiality/retention capabilities, pricing source and freshness, a SkyTwin invocation ID, verification state, receipt linkage, and a sanitized ordered fallback path. Custom endpoints never inherit an official provider's terms or a confidential-computing label.
+
+### Changed
+
+- **Unattended inference fails closed when provider price is unknown, stale, invalid, or unbounded.** Interactive requests can use an explicitly selected provider; background decision and briefing work skips unpriced providers and stays inside the selected location boundary. Draft generation also evaluates every possible fallback rather than assuming the cheapest configured provider will answer.
+- **Provider-chain and reasoning-mode updates are atomic.** Both records are written in one CockroachDB transaction. CI executes the legacy migration twice against a real CockroachDB fixture matrix, and downloads the pinned test binary only after verifying its published SHA-256.
+
+### Fixed (post-/review)
+
+- **On-device Ollama can no longer relay a cloud-backed model through its loopback API.** Before any prompt is sent, SkyTwin verifies that the daemon reports Ollama 0.18 or newer; every on-device request then uses Ollama's request-scoped `:local` source selector, explicit cloud selectors are rejected before transport, remote response metadata fails closed, and there is no unqualified retry. Ollama in bring-your-own-provider mode is conservatively classified as remote and unknown-priced, so unattended inference cannot treat a potentially relayed request as free. Daemon-wide cloud disablement remains recommended defense in depth.
+- **Provider transport and settings boundaries now fail closed under edge conditions found during review.** Default Ollama calls deny redirects, DNS resolution obeys request cancellation, early Anthropic stream termination aborts and cancels the body, provider priorities cannot implicitly select a reasoning location, and null/default endpoints round-trip safely. Custom endpoints are canonicalized at environment, API-validation, persistence, and adapter boundaries; query strings, fragments, embedded credentials, and non-global benchmark/site-local addresses are rejected before a prompt or stored key is considered. The separately configured embedding path now uses the same DNS-pinned, redirect-denying transport before sending memory text. Unsaved reasoning-location changes are visibly marked as drafts and cannot be activated through connection tests or priority autosaves; model/location edits invalidate stale provider-boundary labels until the server validates and saves them.
+- **Cost and migration decisions use the exact admitted state.** Draft-email pricing comes from the frozen provider chain used for dispatch, disabled offline endpoints remain recoverable without weakening validation when enabled or tested, credential reuse is authority-bound after URL canonicalization, and the legacy SQL migration leaves ambiguous URL spellings confirmation-required.
+- **Launch-facing disclosures now enumerate the actual remote-AI paths and masking scope.** The privacy policy and Settings distinguish mode-scoped reasoning from the separately environment-configured OpenAI-compatible embedding path, which can send memory text for indexing and semantic-search query text. Public and engineering docs now state that email masking covers only raw-event and episodic-memory fragments in two decision prompts. Stale full-page Settings imagery containing an obsolete storage claim has been removed from the README, public demo, and deck privacy section pending a fresh live capture, and the deck's dependency/source metrics are recomputed from this tree.
 
 ## [0.6.102.0] - 2026-08-27
 
@@ -582,7 +699,7 @@ The Pages site was the project's public face and two of its load-bearing claims 
 
 ### Security (redact email addresses from LLM prompts — #375, decision pipeline)
 
-- **The decision pipeline no longer ships contacts' email addresses to a cloud LLM.** `PromptBuilder.buildCandidatePrompt` / `buildSituationPrompt` dumped the raw signal (`decision.rawData` / the raw event) and episodic-memory summaries straight into the prompt — for inbound email that's the sender + recipient addresses, and for memory it's whatever a prior signal quoted. When the provider chain resolves to Anthropic / OpenAI / Google, all of that left the machine. New pure `redactPromptPii()` (`packages/llm-client/src/redact.ts`) masks email addresses to `[redacted:email]`, and both prompt builders apply it by default (opt out per-call with `{ redactPii: false }` for a fully-local provider). Masking is safe for the decision path: an action's recipient is resolved from the structured signal record, never parsed from the prompt, so the model only loses an identifier it didn't need to reason about the content (dates, deadlines, prose are untouched — the redactor is email-only on purpose, since a digit-run matcher would eat ISO dates). Scope note: number/name redaction and the interactive assistant's memory-context block are deliberate follow-ups (numbers need date-aware exclusions; the assistant answers the user's questions about *their own* data, where blanket masking would break legitimate "what's X's email" answers — that path needs provider-trust gating, not a blunt redactor). Tests: the `redactPromptPii` unit (emails single/multiple/embedded-JSON/subdomain/plus-addressing, prose+dates+numbers untouched, idempotence, bare `a@b` ignored) + prompt-builder redaction-by-default and `redactPii: false` passthrough for both builders.
+- **The decision pipeline masks email addresses in its raw-event and episodic-memory prompt fragments.** `PromptBuilder.buildCandidatePrompt` / `buildSituationPrompt` dumped the raw signal (`decision.rawData` / the raw event) and episodic-memory summaries straight into the prompt — for inbound email that's the sender + recipient addresses, and for memory it's whatever a prior signal quoted. When the provider chain resolves to Anthropic / OpenAI / Google, all of that left the machine. New pure `redactPromptPii()` (`packages/llm-client/src/redact.ts`) masks email addresses to `[redacted:email]`, and both prompt builders apply it to those fragments by default (opt out per-call with `{ redactPii: false }` for a fully-local provider). The situation summary, preferences, patterns, traits, and other feature-specific prompts are not scanned by this redactor. Masking the covered fragments is safe for the decision path: an action's recipient is resolved from the structured signal record, never parsed from the prompt, so the model only loses an identifier it didn't need to reason about the content (dates, deadlines, prose are untouched — the redactor is email-only on purpose, since a digit-run matcher would eat ISO dates). Scope note: broader prompt coverage, number/name redaction, and the interactive assistant's memory-context block are deliberate follow-ups (numbers need date-aware exclusions; the assistant answers the user's questions about *their own* data, where blanket masking would break legitimate "what's X's email" answers — that path needs provider-trust gating, not a blunt redactor). Tests: the `redactPromptPii` unit (emails single/multiple/embedded-JSON/subdomain/plus-addressing, prose+dates+numbers untouched, idempotence, bare `a@b` ignored) + prompt-builder redaction-by-default and `redactPii: false` passthrough for both builders.
 
 ### Added (desktop auto-update — user-facing layer, #370 follow-up)
 

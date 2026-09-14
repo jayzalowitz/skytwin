@@ -2,32 +2,54 @@
 
 SkyTwin's version-1 inference receipt is a signed, structured record linked to
 one decision and its `ExplanationRecord`. It identifies the reasoning path,
-provider, model, endpoint, hashes of the exact request and response bytes,
+provider, model, endpoint, hashes of the canonical logical request and
+provider-neutral response bytes,
 cost basis, and verification or fallback outcome. It has no dedicated fields
 for prompts, responses, credentials, chain-of-thought, or complete attestation
 documents. Several identifier and reason fields are free-form strings, however,
 so integrators must not place source content or secrets in them. The contract
 cannot determine whether an arbitrary string contains sensitive content.
 
-This first slice provides the contract, a repository create boundary that
-requires caller-supplied recorder trust roots, owner-scoped read/delete
-repository and API paths, backup/restore support, and a developer/library
-verifier. No production composition root configures recorder keys or calls the
-create boundary yet. Automatic receipt creation, a product export route, and
-the receipt detail UI remain gated on the strict confidential-provider
-integration. Until those land, absence of a receipt must be displayed as
-unavailable and must never be inferred as a privacy outcome. The receipt enum
-names are contract vocabulary, not a currently wired mapping from the Settings
-reasoning selector.
+Within one successfully finalized decision-event attempt, the ingest path
+captures each completed call made through its receipt-aware `LlmClient` and
+persists the resulting batch after the real `ExplanationRecord` exists but
+before approval creation or action execution. A decision may have multiple
+receipts because interpretation, candidate generation, and drafting can be
+separate calls. The metadata API returns the latest receipt; the repository and
+backup format retain the complete set. If an attempt stops after the decision
+row is durable but before receipt finalization, re-ingestion fails closed with a
+recovery-required response before constructing a client, running inference, or
+starting side effects. It does not synthesize a complete batch from a later
+attempt's partial causative history. Availability-preserving recovery requires a
+future durable provisional trace journal or an atomic-restart design.
+Other application LLM clients, the receipt detail UI, and a product export route
+remain future work. Absence of a receipt must be displayed as unavailable and
+must never be inferred as a privacy outcome.
+
+On-device and conventional calls are classified from their configured runtime
+mode. Hosted costs remain `unknown` until provider usage or billing identifiers
+are available; local runtime cost is exactly zero. The decision-event path does
+not configure a confidential verifier, so it cannot emit or display a trusted
+`verified_confidential` result. That result requires caller-pinned recorder and
+provider roots plus a provider-specific attestation verifier.
+
+For a stable recorder identity, configure `SKYTWIN_RECEIPT_KEY_ID`,
+`SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64`, and
+`SKYTWIN_RECEIPT_PUBLIC_KEY_BASE64` together. With none configured, the API
+creates a process-local Ed25519 identity. Its receipts remain
+integrity-checkable using the embedded key, but the recorder identity is not
+stable across restarts and must not be presented as release-pinned.
 
 ## Independent verification
 
-An export bundle contains the canonical signed receipt plus the exact request,
-response, and (for confidential verification) minimum evidence bytes. The
-product does not create or export this bundle in this slice: the receipt GET
-route cannot be used as verifier input. Integrators and developers
-can construct a bundle against the versioned library contract and run the
-verifier from a built source checkout without starting the API or web UI:
+An export bundle contains the canonical signed receipt plus the canonical
+logical request, response, and (for confidential verification) minimum evidence
+bytes. These are provider-neutral application-boundary values, not HTTP
+payloads, headers, raw response bodies, or transport transcripts. The product
+does not export this bundle in this slice: the receipt GET route cannot be used
+as verifier input. Integrators and developers can construct a bundle against
+the versioned library contract and run the verifier from a built source checkout
+without starting the API or web UI:
 
 ```bash
 pnpm --filter @skytwin/db... build
@@ -66,8 +88,9 @@ detectable, but an attacker can replace both data and embedded keys. Identity
 trust still requires comparing its key ID and public key with a trusted release
 or provider key published out of band. The repository create boundary requires
 its caller to supply trusted recorder keys; it never accepts the bundle's key
-as its own authority. There is no production caller or recorder-key
-configuration in this slice. A `verified` confidential receipt additionally
+as its own authority. Decision-event ingestion is the production caller and
+uses either the three-part recorder-key configuration described above or a
+process-local ephemeral key. A `verified` confidential receipt additionally
 requires a caller-configured provider key and a provider-specific
 attestation-policy verifier. Hashing opaque evidence is not attestation
 verification, so this generic CLI deliberately cannot return `PASS` for a
@@ -87,13 +110,34 @@ Rows cascade-delete with their decision or user and can be
 explicitly deleted atomically through the authenticated
 `DELETE /api/decisions/:decisionId/receipt` route. User backups include the
 canonical receipt metadata; restore verifies its self-contained metadata seal
-and exact linkage before writing it. Because an embedded key is not an identity
+and exact linkage before writing it. Durable capture-completion order is
+persisted as a zero-based ordinal, so multiple calls with one transaction
+timestamp still have a deterministic latest row. Older schema-v3 archives without the
+ordinal remain accepted and derive it from array order; duplicate receipt IDs
+are rejected before database writes. Because an embedded key is not an identity
 trust root, restored rows are marked `imported_unverified`. This slice has no
 trust-aware promotion workflow, so they remain untrusted after restore.
+Canonical logical input/output and verification-evidence bytes live in
+transient request memory while an uninterrupted route validates and inserts
+receipt metadata, and may remain until JavaScript references are released and
+garbage collection runs. They are never written to the receipt or ingest-guard
+tables, which is why an interrupted pre-finalization attempt cannot be safely
+completed by retry today.
 Standalone verification bundles are more sensitive because they contain the
-exact supplied request and response bytes. The product does not emit those
-bundles yet; integrators who create them should protect or delete the files
-according to their own retention needs.
+supplied request and response bytes. The product does not export those bundles
+yet; integrators who create them should protect or delete the files according
+to their own retention needs.
+
+Receipt completion and continuation authority are finalized in one transaction.
+The continuation guard binds the owner-scoped persisted outcome flags, selected
+action, risk and policy snapshot, and exact explanation. Re-ingestion consumes
+that single snapshot; it never joins guard authority to later-mutated outcome or
+explanation rows. An execution stream exception remains `running`/ambiguous for
+reconciliation and is never recorded as a terminal failure merely because the
+response stream broke. The ready-to-running
+claim creates and binds its execution plan in the same transaction; terminal
+state is accepted only when that exact plan has a matching persisted plan status
+and execution result.
 
 ## Security boundary
 

@@ -25,12 +25,9 @@ function normalizedText(element) {
   return element.textContent.replace(/\s+/g, ' ').trim();
 }
 
-function expectInactiveBoundary(text) {
-  expect(text).toContain('OAuth token encryption is not active in this build.');
-  expect(text).toContain(
-    'Current production OAuth write paths store access and refresh tokens in plaintext.',
-  );
-  expect(text).toContain('These controls manage preparatory API-local key state only.');
+function expectSharedLimitations(text) {
+  expect(text).toContain('This vault does not encrypt account identifiers, scopes, preferences');
+  expect(text).toContain('Use full-disk encryption for the database as a whole.');
 }
 
 describe('credential vault truth boundary', () => {
@@ -48,26 +45,27 @@ describe('credential vault truth boundary', () => {
     ['unlock decrypts OAuth', /decrypt\s+your OAuth tokens for this session/i],
     ['passphrase is never stored', /passphrase is never stored/i],
     ['unqualified OS keychain', /stored in your operating system keychain/i],
-  ])('does not make the inactive production claim: %s', (_label, claimPattern) => {
+  ])('does not make an unqualified protection claim: %s', (_label, claimPattern) => {
     expect(source).not.toMatch(claimPattern);
   });
 
-  it('renders the plaintext production boundary before initialization', async () => {
+  it('renders the plaintext boundary before initialization', async () => {
     mocks.fetchJSON.mockResolvedValueOnce({ initialized: false });
     const container = document.getElementById('page');
 
     await renderCredentialVault(container, 'user-1');
     const text = normalizedText(container);
 
-    expectInactiveBoundary(text);
+    expectSharedLimitations(text);
     expect(container.querySelector('strong')?.style.color).toBe('var(--danger)');
     expect(text).toContain(
-      'This does not encrypt current OAuth token rows or new OAuth grants.',
+      'New OAuth grants are stored in plaintext until you initialize the vault.',
     );
-    expect(text).toContain('Preparatory key state: Not initialized');
+    expect(text).toContain('Existing plaintext grants are not changed merely by opening this page.');
+    expect(text).toContain('Vault state: Not initialized');
   });
 
-  it('renders unlock as API-local state rather than OAuth decryption', async () => {
+  it('renders locked vault writes as fail-closed', async () => {
     mocks.fetchJSON.mockResolvedValueOnce({
       initialized: true,
       unlocked: false,
@@ -78,17 +76,17 @@ describe('credential vault truth boundary', () => {
     await renderCredentialVault(container, 'user-1');
     const text = normalizedText(container);
 
-    expectInactiveBoundary(text);
+    expectSharedLimitations(text);
     expect(text).toContain(
-      'Unlock the preparatory API-local key cache for this session.',
+      'New and reconnected grants fail closed until you unlock it;',
     );
     expect(text).toContain(
-      'This does not decrypt or migrate OAuth tokens written by current production paths.',
+      "The background worker does not receive the API process's key.",
     );
-    expect(text).toContain('Preparatory key state: Initialized Locked');
+    expect(text).toContain('Vault state: Initialized Locked');
   });
 
-  it('limits rotation claims to OAuth rows that are already encrypted', async () => {
+  it('renders the encrypted API path and bounded legacy migration', async () => {
     mocks.fetchJSON.mockResolvedValueOnce({
       initialized: true,
       unlocked: true,
@@ -99,13 +97,17 @@ describe('credential vault truth boundary', () => {
     await renderCredentialVault(container, 'user-1');
     const text = normalizedText(container);
 
-    expectInactiveBoundary(text);
+    expectSharedLimitations(text);
     expect(text).toContain(
-      'Change the key used by OAuth rows that are already encrypted, if any.',
+      'New and reconnected grants are encrypted with the current vault generation.',
     );
     expect(text).toContain(
-      'new grants still use the current plaintext write path.',
+      'Existing complete plaintext grants can migrate on authorized use.',
     );
-    expect(text).toContain('Preparatory key state: Initialized Unlocked');
+    expect(text).toContain(
+      "The background worker does not receive this API process's key",
+    );
+    expect(text).toContain('Plaintext OAuth rows are not migrated by rotation;');
+    expect(text).toContain('Vault state: Initialized Unlocked');
   });
 });

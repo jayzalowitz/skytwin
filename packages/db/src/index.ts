@@ -88,6 +88,7 @@ export type {
   InferenceReceiptRow,
   FeedbackEventRow,
   OAuthTokenRow,
+  CredentialDispatchLeaseRow,
   SignalRow,
   PreferenceProposalRow,
   TwinExportRow,
@@ -116,6 +117,7 @@ export type {
   CredentialRequirementRow,
   IronClawToolRow,
   AIProviderSettingsRow,
+  ReasoningModeSettingsRow,
   OauthPkcePendingRow,
   OauthPendingSigninRow,
 } from './types.js';
@@ -126,6 +128,7 @@ export {
   twinRepository,
   decisionRepository,
   policyRepository,
+  getPolicyAuthorityRevision,
   explanationRepository,
   inferenceReceiptRepository,
   feedbackRepository,
@@ -146,6 +149,12 @@ export type {
 
 export {
   oauthRepository,
+  credentialDispatchLeaseRepository,
+  executionDispatchLeaseRepository,
+  CredentialDispatchConflictError,
+  CredentialDisconnectInProgressError,
+  CredentialVaultLockedError,
+  CredentialConnectionAuthorityError,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   approvalRepository,
@@ -154,9 +163,22 @@ export {
   connectorHealthRepository,
   workerDeadLetterRepository,
   userPurgeRepository,
+  ActiveExecutionAdmissionError,
   accessLogRepository,
   watchRepository,
   watchRunRepository,
+  executionAdmissionRepository,
+} from './repositories/index.js';
+export type {
+  CredentialDispatchGrant,
+  CredentialDispatchTerminalState,
+  ExecutionDispatchGrant,
+  StartExecutionDispatchInput,
+  StartExecutionDispatchResult,
+  BindCredentialDispatchInput,
+  BindCredentialDispatchResult,
+  StartCredentialDispatchInput,
+  StartCredentialDispatchResult,
 } from './repositories/index.js';
 export type {
   ConnectorHealthRow,
@@ -179,13 +201,22 @@ export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,
   CreateExecutionEventInput,
+  FinalizeAdmittedExecutionInput,
   ExecutionPlanWithResult,
   RollbackTarget,
+  AdmitApprovalExecutionInput,
+  AdmitMemoryExecutionInput,
+  ExecutionAdmission,
+  ExecutionAdmissionRow,
+  ExecutionAdmissionScope,
+  ExecutionAdmissionStatus,
+  ObserveExecutionInput,
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
 
 export { trustTierAuditRepository, spendRepository, domainAutonomyRepository, escalationTriggerRepository, preferenceHistoryRepository, sessionRepository, mempalaceRepository, serviceCredentialRepository, credentialRequirementRepository, aiProviderRepository, ironClawToolRepository, forwardedSignalsRepository, connectorCursorRepository, emailLabelRepository, assistantRepository, deriveThreadTitle, appSuggestionRepository, memoryActionOpportunityRepository, mcpServerRepository, riskProfileRepository, provenanceRepository, briefingRepository } from './repositories/index.js';
+export { reasoningModeRepository } from './repositories/index.js';
 export type { AppSuggestionRow, UpsertPendingSuggestionInput } from './repositories/index.js';
 export type {
   ClaimDueOptions,

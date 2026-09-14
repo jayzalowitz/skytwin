@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { CircuitBreaker } from '@skytwin/core';
 import { ConfidenceLevel } from '@skytwin/shared-types';
 import { McpHost } from '../mcp-host.js';
@@ -112,6 +112,8 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
     reasoning: 'unit test',
     ...rest,
     parameters: {
+      mcpServerId: 'test-server',
+      mcpToolName: 'send_email',
       to: 'alice@example.com',
       subject: 'Hello',
       body: 'World',
@@ -190,24 +192,28 @@ describe('McpHost', () => {
 
   // ── buildPlan ────────────────────────────────────────────────────────────
 
-  it('buildPlan selects the running server and encodes _mcpServerId/_mcpToolName', async () => {
-    const plan = await host.buildPlan(makeAction());
-
-    expect(plan.id).toMatch(/^mcp_plan_/);
-    expect(plan.steps).toHaveLength(1);
-    const step = plan.steps[0]!;
-    expect(step.parameters['_mcpServerId']).toBe('test-server');
-    expect(step.parameters['_mcpToolName']).toBe('send_email');
+  it('buildPlan refuses to select an MCP server that was not admitted', async () => {
+    const action = makeAction({ parameters: { mcpServerId: undefined } });
+    await expect(host.buildPlan(action)).rejects.toThrow('explicitly admitted mcpServerId');
   });
 
-  it('buildPlan respects mcpServerId/mcpToolName from action.parameters', async () => {
+  it('buildPlan rejects a tool alias that differs from the policy-assessed action type', async () => {
     const action = makeAction({
-      parameters: { mcpServerId: 'custom-server', mcpToolName: 'my_tool' },
+      parameters: { mcpServerId: 'test-server', mcpToolName: 'my_tool' },
     });
-    const plan = await host.buildPlan(action);
-    const step = plan.steps[0]!;
-    expect(step.parameters['_mcpServerId']).toBe('custom-server');
-    expect(step.parameters['_mcpToolName']).toBe('my_tool');
+    await expect(host.buildPlan(action)).rejects.toThrow(
+      'exactly match the policy-assessed actionType',
+    );
+  });
+
+  it('rejects malformed and destructive MCP aliases before any tool request', async () => {
+    await expect(host.buildPlan(makeAction({
+      actionType: 'search',
+      parameters: { mcpServerId: 'test-server', mcpToolName: 'delete_account' },
+    }))).rejects.toThrow('policy-assessed actionType');
+    await expect(host.buildPlan(makeAction({
+      parameters: { mcpServerId: 'test-server', mcpToolName: 42 },
+    }))).rejects.toThrow('non-empty string');
   });
 
   it('buildPlan includes rollback step for reversible actions', async () => {
@@ -233,17 +239,100 @@ describe('McpHost', () => {
     expect(fakeClient._calls[0]?.name).toBe('send_email');
   });
 
-  it('execute strips _mcp* internal keys from tool arguments', async () => {
-    const plan = await host.buildPlan(makeAction());
+  it('execute strips MCP routing keys from tool arguments', async () => {
+    const plan = await host.buildPlan(makeAction({
+      parameters: {
+        userId: 'internal-user',
+        executionPlanId: 'internal-plan',
+        credentialActionId: 'internal-action',
+        credentialDecisionId: 'internal-decision',
+        credentialExecutionPlanId: 'internal-plan',
+        credentialAuthorityRevision: 'owner-revision',
+        credentialPolicyAuthorityRevision: 'policy-revision',
+        dispatchAuthorityId: 'admission-id',
+        dispatchAuthorityUpdatedAt: '2026-09-13T00:00:00.000Z',
+      },
+    }));
     await host.execute(plan);
 
     const args = fakeClient._calls[0]?.args ?? {};
     const keys = Object.keys(args);
     expect(keys.some((k) => k.startsWith('_mcp'))).toBe(false);
+    expect(args).not.toHaveProperty('mcpServerId');
+    expect(args).not.toHaveProperty('mcpToolName');
+    expect(args).not.toHaveProperty('userId');
+    expect(args).not.toHaveProperty('credentialActionId');
+    expect(args).not.toHaveProperty('credentialDecisionId');
+    expect(args).not.toHaveProperty('credentialExecutionPlanId');
+    expect(args).not.toHaveProperty('credentialAuthorityRevision');
+    expect(args).not.toHaveProperty('credentialPolicyAuthorityRevision');
+    expect(args).not.toHaveProperty('dispatchAuthorityId');
+    expect(args).not.toHaveProperty('dispatchAuthorityUpdatedAt');
+    expect(args).toMatchObject({
+      to: 'alice@example.com', subject: 'Hello', body: 'World',
+    });
   });
 
-  it('execute returns failed when the tool throws', async () => {
-    const failClient = makeFakeClient({ callToolResult: new Error('tool exploded') });
+  it('keeps an MCP isError result ambiguous after one request', async () => {
+    const errorClient = makeFakeClient({
+      callToolResult: { isError: true, content: [{ type: 'text', text: 'failed' }] },
+    });
+    injectFakeServer(host, {
+      id: 'error-server', transport: 'stdio', command: 'node',
+    }, errorClient);
+    const plan = await host.buildPlan(makeAction({
+      parameters: { mcpServerId: 'error-server', mcpToolName: 'send_email' },
+    }));
+
+    await expect(host.execute(plan)).resolves.toMatchObject({
+      status: 'running',
+      error: 'MCP tool outcome is ambiguous and requires reconciliation.',
+    });
+    expect(errorClient._calls).toHaveLength(1);
+  });
+
+  it('rechecks destructive opt-in before a cached plan can call the tool', async () => {
+    let pending = false;
+    const guardedHost = new McpHost({
+      checkPendingOptIn: async () => pending,
+    });
+    const guardedClient = makeFakeClient();
+    injectFakeServer(guardedHost, {
+      id: 'guarded-server', transport: 'stdio', command: 'node',
+    }, guardedClient);
+    const plan = await guardedHost.buildPlan(makeAction({
+      parameters: { mcpServerId: 'guarded-server', mcpToolName: 'send_email' },
+    }));
+    pending = true;
+
+    await expect(guardedHost.execute(plan)).rejects.toThrow('requires explicit opt-in');
+    expect(guardedClient._calls).toHaveLength(0);
+  });
+
+  it('consumes a single-use pre-lease opt-in proof without a post-lease lookup', async () => {
+    const checkPendingOptIn = vi.fn(async () => false);
+    const guardedHost = new McpHost({ checkPendingOptIn });
+    const guardedClient = makeFakeClient();
+    injectFakeServer(guardedHost, {
+      id: 'guarded-server', transport: 'stdio', command: 'node',
+    }, guardedClient);
+    const plan = await guardedHost.buildPlan(makeAction({
+      parameters: { mcpServerId: 'guarded-server', mcpToolName: 'send_email' },
+    }));
+    const preparation = await guardedHost.prepareRequestStart(plan);
+
+    await expect(guardedHost.execute(plan, preparation)).resolves.toMatchObject({
+      status: 'completed',
+    });
+    expect(checkPendingOptIn).toHaveBeenCalledTimes(2);
+    expect(guardedClient._calls).toHaveLength(1);
+  });
+
+  it.each([
+    new Error('tool response timeout'),
+    new Error('transport closed after request'),
+  ])('executes an effect-bearing tool once and retains an ambiguous result on %s', async (failure) => {
+    const failClient = makeFakeClient({ callToolResult: failure });
     const cfg: McpServerConfig = { id: 'fail-server', transport: 'stdio', command: 'node' };
     injectFakeServer(host, cfg, failClient);
 
@@ -253,8 +342,17 @@ describe('McpHost', () => {
     const plan = await host.buildPlan(action);
     const result = await host.execute(plan);
 
-    expect(result.status).toBe('failed');
-    expect(result.error).toContain('tool exploded');
+    expect(result).toMatchObject({
+      status: 'running',
+      error: 'MCP tool outcome is ambiguous and requires reconciliation.',
+    });
+    expect(result.completedAt).toBeUndefined();
+    expect(failClient._calls).toHaveLength(1);
+    await expect(host.getStatus(plan.id)).resolves.toBe('running');
+
+    const replay = await host.execute(plan);
+    expect(replay.status).toBe('running');
+    expect(failClient._calls).toHaveLength(1);
   });
 
   it('execute returns failed for missing _mcpServerId (plan not via buildPlan)', async () => {
@@ -387,18 +485,18 @@ describe('McpHost', () => {
         parameters: { mcpServerId: 'cb-server', mcpToolName: 'send_email' },
       });
 
-    // Three failures open the circuit (failureThreshold = 3)
+    // Three single requests open the circuit (failureThreshold = 3). Each
+    // response loss remains ambiguous and is never replayed.
     for (let i = 0; i < 3; i++) {
       const plan = await host.buildPlan(makeFailAction());
       const r = await host.execute(plan);
-      expect(r.status).toBe('failed');
+      expect(r.status).toBe('running');
     }
+    expect(alwaysFailClient._calls).toHaveLength(3);
 
-    // 4th call: circuit is open → immediate fail with CircuitOpenError message
-    const plan4 = await host.buildPlan(makeFailAction());
-    const result4 = await host.execute(plan4);
-    expect(result4.status).toBe('failed');
-    expect(result4.error).toMatch(/[Cc]ircuit/);
+    // 4th call: circuit refusal is proven during pre-request plan preparation.
+    await expect(host.buildPlan(makeFailAction())).rejects.toThrow(/[Cc]ircuit/);
+    expect(alwaysFailClient._calls).toHaveLength(3);
   });
 
   // ── healthCheck ──────────────────────────────────────────────────────────

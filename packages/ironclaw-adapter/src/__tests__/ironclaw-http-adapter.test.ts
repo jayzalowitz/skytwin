@@ -19,12 +19,13 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   };
 }
 
-function makeAdapter(): RealIronClawAdapter {
+function makeAdapter(overrides: { maxRetries?: number; preferChatCompletions?: boolean } = {}): RealIronClawAdapter {
   return new RealIronClawAdapter({
     apiUrl: 'http://localhost:4000',
     webhookSecret: 'test-secret-key',
     ownerId: 'test-owner',
-    maxRetries: 0, // No retries in tests for speed
+    maxRetries: overrides.maxRetries ?? 0, // No retries in tests for speed
+    preferChatCompletions: overrides.preferChatCompletions,
   });
 }
 
@@ -141,30 +142,26 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(result.error).toBe('Gmail API returned 403');
     });
 
-    it('returns failed result on HTTP error', async () => {
-      const adapter = makeAdapter();
+    it('leaves an HTTP error after dispatch ambiguous without retrying the POST', async () => {
+      const adapter = makeAdapter({ maxRetries: 2 });
 
       fetchMock.mockResolvedValue(
         new Response('Internal Server Error', { status: 500 }),
       );
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
-
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('500');
+      await expect(adapter.execute(plan)).rejects.toThrow('500');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
-    it('returns failed result on network error', async () => {
-      const adapter = makeAdapter();
+    it('leaves network response loss after dispatch ambiguous without retrying the POST', async () => {
+      const adapter = makeAdapter({ maxRetries: 2 });
 
       fetchMock.mockRejectedValue(new Error('ECONNREFUSED'));
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
-
-      expect(result.status).toBe('failed');
-      expect(result.error).toContain('ECONNREFUSED');
+      await expect(adapter.execute(plan)).rejects.toThrow('ECONNREFUSED');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
 
     it('sanitizes sensitive parameters in the message', async () => {
@@ -228,7 +225,7 @@ describe('RealIronClawAdapter (HTTP)', () => {
       expect(threadBody.thread_id).toBe(plan.id);
     });
 
-    it('infers completed status when metadata has no explicit status', async () => {
+    it('rejects completion prose when metadata has no explicit status', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockResolvedValueOnce(
@@ -243,12 +240,11 @@ describe('RealIronClawAdapter (HTTP)', () => {
       );
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
-
-      expect(result.status).toBe('completed');
+      await expect(adapter.execute(plan)).rejects.toThrow('omitted explicit execution status');
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
     });
 
-    it('infers failed status from error content when no metadata status', async () => {
+    it('rejects failure prose when metadata has no explicit status', async () => {
       const adapter = makeAdapter();
 
       fetchMock.mockResolvedValueOnce(
@@ -263,9 +259,164 @@ describe('RealIronClawAdapter (HTTP)', () => {
       );
 
       const plan = await adapter.buildPlan(makeAction());
-      const result = await adapter.execute(plan);
+      await expect(adapter.execute(plan)).rejects.toThrow('omitted explicit execution status');
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    });
 
-      expect(result.status).toBe('failed');
+    it.each([
+      { status: 'completed', success: false },
+      { status: 'failed', success: true },
+      { status: 'completed', error: 'conflicting error' },
+      { status: 'failed', error: { message: 'malformed' } },
+      { status: 'completed', error: { message: 'malformed' } },
+      { status: 'running' },
+    ])('rejects inconsistent or non-terminal webhook metadata %#', async (metadata) => {
+      const adapter = makeAdapter();
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        content: 'untrusted prose', attachments: [], metadata,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+
+      const plan = await adapter.buildPlan(makeAction());
+      await expect(adapter.execute(plan)).rejects.toThrow();
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    });
+
+    it.each([
+      ['HTTP 500', () => Promise.resolve(new Response('lost', { status: 500 }))],
+      ['response loss', () => Promise.reject(new Error('response lost after commit'))],
+    ] as const)('does not retry an effect-bearing chat POST after %s', async (_label, reply) => {
+      const adapter = makeAdapter({ maxRetries: 2, preferChatCompletions: true });
+      fetchMock.mockImplementationOnce(reply);
+
+      const plan = await adapter.buildPlan(makeAction());
+      await expect(adapter.execute(plan)).rejects.toThrow();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await expect(adapter.getStatus(plan.id)).resolves.toBe('running');
+    });
+
+    it('binds router-authored owner and channel in chat execution payloads', async () => {
+      const adapter = makeAdapter({ preferChatCompletions: true });
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({
+        choices: [{ message: { content: 'done' } }],
+        metadata: { status: 'completed', success: true },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      const plan = await adapter.buildPlan(makeAction({
+        parameters: {
+          userId: 'candidate-owner',
+          ironclawChannel: 'candidate-channel',
+          nested: { userId: 'nested-owner', ironclawChannel: 'nested-channel' },
+        },
+      }));
+      plan.executionOwnerId = 'trusted-user';
+      plan.executionChannel = 'trusted-channel';
+
+      await adapter.execute(plan);
+
+      const [, options] = getFetchCall(fetchMock, 0);
+      const body = JSON.parse(options.body as string) as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const envelope = JSON.parse(body.messages[1]!.content) as Record<string, unknown>;
+      expect(envelope['trustedExecution']).toEqual({
+        userId: 'trusted-user', ownerId: 'test-owner', channel: 'trusted-channel',
+      });
+      const serialized = JSON.stringify(envelope);
+      expect(serialized).not.toMatch(/candidate-owner|candidate-channel|nested-owner|nested-channel/);
+    });
+  });
+
+  describe('executeStreaming terminal authority', () => {
+    async function consume(adapter: RealIronClawAdapter, action = makeAction()): Promise<string[]> {
+      const plan = await adapter.buildPlan(action);
+      const events: string[] = [];
+      for await (const event of adapter.executeStreaming(plan)) events.push(event.eventType);
+      return events;
+    }
+
+    it('treats clean EOF without an explicit terminal event as ambiguous', async () => {
+      fetchMock.mockResolvedValueOnce(new Response(
+        'data: {"eventType":"plan_started"}\n\n',
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      ));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('without an explicit terminal event');
+    });
+
+    it('rejects conflicting terminal events instead of choosing one', async () => {
+      fetchMock.mockResolvedValueOnce(new Response(
+        'data: {"eventType":"plan_completed"}\n\n' +
+          'data: {"eventType":"plan_failed"}\n\n',
+        { status: 200, headers: { 'Content-Type': 'text/event-stream' } },
+      ));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('event after terminal plan_completed');
+    });
+
+    it('does not publish a buffered terminal event when the stream is lost afterward', async () => {
+      const encoder = new TextEncoder();
+      let sent = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (!sent) {
+            sent = true;
+            controller.enqueue(encoder.encode('data: {"eventType":"plan_completed"}\n\n'));
+          } else {
+            controller.error(new Error('stream response lost'));
+          }
+        },
+      });
+      fetchMock.mockResolvedValueOnce(new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('stream response lost');
+    });
+
+    it('cancels an oversized delimiter-free SSE record before unbounded accumulation', async () => {
+      const encoder = new TextEncoder();
+      let chunks = 0;
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          chunks += 1;
+          controller.enqueue(encoder.encode('x'.repeat(64 * 1024)));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      fetchMock.mockResolvedValueOnce(new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }));
+
+      await expect(consume(makeAdapter())).rejects.toThrow('record-size limit');
+      // Fetch streams may schedule one pull ahead of the consumer, but the
+      // parser cancels as soon as its bounded buffered record crosses the cap.
+      expect(chunks).toBeLessThanOrEqual(6);
+      expect(cancelled).toBe(true);
+    });
+
+    it('decodes a valid multibyte SSE record split inside a code point', async () => {
+      const bytes = new TextEncoder().encode(
+        'data: {"eventType":"plan_completed","payload":{"label":"done 🚀"}}\n\n',
+      );
+      const emojiStart = bytes.indexOf(0xf0);
+      const chunks = [bytes.slice(0, emojiStart + 2), bytes.slice(emojiStart + 2)];
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          const chunk = chunks.shift();
+          if (chunk) controller.enqueue(chunk);
+          else controller.close();
+        },
+      });
+      fetchMock.mockResolvedValueOnce(new Response(body, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }));
+
+      await expect(consume(makeAdapter())).resolves.toEqual(['plan_completed']);
     });
   });
 

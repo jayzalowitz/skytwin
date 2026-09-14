@@ -18,7 +18,7 @@ import {
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 let userExists = false;
-const clientQuery = vi.fn(async (_sql?: unknown) => ({ rows: [], rowCount: 1 }));
+const clientQuery = vi.fn(async (_sql?: unknown, _args?: unknown[]) => ({ rows: [], rowCount: 1 }));
 
 vi.mock('../connection.js', () => ({
   query: vi.fn(async () => ({ rows: [], rowCount: 0 })),
@@ -90,6 +90,18 @@ function decisionBundle(receipt = signedReceipt()): Record<string, unknown> {
       trusted: false,
       created_at: new Date(receipt.createdAt),
     }],
+    ingestState: {
+      decisionId: DECISION_ID,
+      receiptCaptureComplete: true,
+      receiptExplanationId: EXPLANATION_ID,
+      continuationKind: 'non_effect',
+      confirmationLevel: null,
+      effectState: 'non_effect',
+      sourceEffectState: null,
+      sourceExecutionStatus: null,
+      sourceExecutionPlanId: null,
+      completedAt: new Date(receipt.createdAt),
+    },
   };
 }
 
@@ -125,6 +137,21 @@ describe('validateBackupData', () => {
     expect(validateBackupData(validPayload())).toEqual([]);
   });
 
+  it('rejects a hostile non-UUID restored execution plan before any write', async () => {
+    const payload = validPayload();
+    const bundle = decisionBundle();
+    (bundle['ingestState'] as Record<string, unknown>)['sourceExecutionPlanId'] =
+      "x'); DROP TABLE users; --";
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].ingestState has inconsistent linkage or classification',
+    );
+    const result = await restoreBackup(payload);
+    expect(result).toMatchObject({ success: false, reason: 'invalid_data' });
+    expect(clientQuery).not.toHaveBeenCalled();
+  });
+
   it('accepts an explicit receipt-free schema-v1 archive', () => {
     const payload = validPayload();
     payload['schemaVersion'] = 1;
@@ -135,10 +162,10 @@ describe('validateBackupData', () => {
     expect(validateBackupData(payload)).toEqual([]);
   });
 
-  it('requires receipt collections in v2 and rejects them in v1 archives', () => {
+  it('keeps schema-v1/v2/v3 fields explicit and fail-safe', () => {
     const current = validPayload();
     current['decisions'] = [{
-      decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
+      decision: { id: DECISION_ID, user_id: USER_ID }, candidateActions: [], outcome: null,
       explanations: [],
     }];
     expect(validateBackupData(current)).toContain(
@@ -148,11 +175,28 @@ describe('validateBackupData', () => {
     const legacy = validPayload();
     legacy['schemaVersion'] = 1;
     legacy['decisions'] = [{
-      decision: { id: 'decision-a', user_id: 'u1' }, candidateActions: [], outcome: null,
+      decision: { id: DECISION_ID, user_id: USER_ID }, candidateActions: [], outcome: null,
       explanations: [], inferenceReceipts: [],
     }];
     expect(validateBackupData(legacy)).toContain(
-      `decisions[0].inferenceReceipts requires schema version ${BACKUP_SCHEMA_VERSION}`,
+      'decisions[0].inferenceReceipts requires schema version 2',
+    );
+
+    const v2 = validPayload();
+    v2['schemaVersion'] = 2;
+    v2['decisions'] = [{
+      decision: { id: DECISION_ID, user_id: USER_ID }, candidateActions: [], outcome: null,
+      explanations: [], inferenceReceipts: [],
+    }];
+    expect(validateBackupData(v2)).toEqual([]);
+
+    const v3WithoutState = validPayload();
+    v3WithoutState['decisions'] = [{
+      decision: { id: DECISION_ID, user_id: USER_ID }, candidateActions: [], outcome: null,
+      explanations: [], inferenceReceipts: [],
+    }];
+    expect(validateBackupData(v3WithoutState)).toContain(
+      `decisions[0].ingestState is required by schema version ${BACKUP_SCHEMA_VERSION}`,
     );
   });
 
@@ -191,6 +235,9 @@ describe('validateBackupData', () => {
     storedReceipt['id'] = receiptId.toLowerCase();
     storedReceipt['decision_id'] = decisionId.toLowerCase();
     storedReceipt['explanation_id'] = explanationId.toLowerCase();
+    const ingestState = bundle['ingestState'] as Record<string, unknown>;
+    ingestState['decisionId'] = decisionId;
+    ingestState['receiptExplanationId'] = explanationId;
 
     const payload = validPayload();
     (payload['user'] as Record<string, unknown>)['id'] = userId.toLowerCase();
@@ -204,11 +251,64 @@ describe('validateBackupData', () => {
     const receipt = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
     bundle['inferenceReceipts'] = [receipt, { ...receipt }];
     const payload = validPayload();
+    payload['schemaVersion'] = 2;
+    delete bundle['ingestState'];
     payload['decisions'] = [bundle];
 
     expect(validateBackupData(payload)).toContain(
       'decisions[0].inferenceReceipts must contain at most one receipt',
     );
+  });
+
+  it('rejects duplicate schema-v3 receipt IDs case-insensitively before restore', async () => {
+    const bundle = decisionBundle();
+    const receipt = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    bundle['inferenceReceipts'] = [receipt, { ...receipt, id: RECEIPT_ID.toUpperCase() }];
+    const payload = validPayload();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts[1] duplicates a receipt id',
+    );
+    await expect(restoreBackup(payload)).resolves.toMatchObject({
+      success: false,
+      reason: 'invalid_data',
+    });
+    expect(clientQuery).not.toHaveBeenCalled();
+  });
+
+  it('rejects duplicate schema-v3 capture ordinals before restore', () => {
+    const bundle = decisionBundle();
+    const first = (bundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!;
+    first['capture_ordinal'] = 0;
+    const secondReceipt = signedReceipt({ id: '55555555-5555-4555-8555-555555555555' });
+    const second = {
+      ...first,
+      id: secondReceipt.id,
+      receipt: secondReceipt,
+      capture_ordinal: 0,
+    };
+    bundle['inferenceReceipts'] = [first, second];
+    const payload = validPayload();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toContain(
+      'decisions[0].inferenceReceipts[1] duplicates a capture ordinal',
+    );
+  });
+
+  it('accepts plural receipts in a schema-v3 decision bundle', () => {
+    const bundle = decisionBundle();
+    const secondBundle = decisionBundle(signedReceipt({
+      id: '55555555-5555-4555-8555-555555555555',
+    }));
+    (bundle['inferenceReceipts'] as Array<Record<string, unknown>>).push(
+      (secondBundle['inferenceReceipts'] as Array<Record<string, unknown>>)[0]!,
+    );
+    const payload = validPayload();
+    payload['decisions'] = [bundle];
+
+    expect(validateBackupData(payload)).toEqual([]);
   });
 
   it('rejects a non-object', () => {
@@ -320,6 +420,52 @@ describe('restoreBackup guards', () => {
     payload['schemaVersion'] = 1;
     const result = await restoreBackup(payload);
     expect(result.success).toBe(true);
+  });
+
+  it('restores legacy decisions with a non-replay tombstone', async () => {
+    const payload = validPayload();
+    payload['schemaVersion'] = 2;
+    payload['decisions'] = [{
+      decision: {
+        id: DECISION_ID, user_id: USER_ID, situation_type: 'test', raw_event: {},
+        interpreted_situation: {}, domain: 'test', urgency: 'normal', metadata: {},
+        signal_id: null, created_at: new Date('2026-06-15T00:00:00.000Z'),
+      },
+      candidateActions: [], outcome: null, explanations: [], inferenceReceipts: [],
+    }];
+
+    await expect(restoreBackup(payload)).resolves.toMatchObject({ success: true });
+    const guardCall = clientQuery.mock.calls.find(([sql]) =>
+      typeof sql === 'string' && sql.includes('INSERT INTO decision_ingest_guards'));
+    expect(guardCall?.[1]).toEqual([
+      DECISION_ID, null, 'non_effect', null, null, 'ambiguous', null,
+      new Date('2026-06-15T00:00:00.000Z'),
+    ]);
+  });
+
+  it('preserves execution-policy-denial explanation types during restore', async () => {
+    const payload = validPayload();
+    const bundle = decisionBundle();
+    bundle['explanations'] = [{
+      id: EXPLANATION_ID,
+      decision_id: DECISION_ID,
+      type: 'execution_policy_denial',
+      what_happened: 'Execution was blocked before dispatch.',
+      evidence_used: [],
+      preferences_invoked: [],
+      confidence_reasoning: 'Policy denied the exact prepared risk.',
+      action_rationale: 'No action was taken.',
+      escalation_rationale: null,
+      correction_guidance: 'Review the policy.',
+      capability_provenance_node_id: null,
+      created_at: new Date('2026-06-15T00:00:00.000Z'),
+    }];
+    payload['decisions'] = [bundle];
+
+    await expect(restoreBackup(payload)).resolves.toMatchObject({ success: true });
+    const explanationInsert = clientQuery.mock.calls.find(([sql]) =>
+      typeof sql === 'string' && sql.includes('INSERT INTO explanation_records'));
+    expect(explanationInsert?.[1]?.[2]).toBe('execution_policy_denial');
   });
 
   it('aborts instead of reporting a receipt whose linkage insert affected no row', async () => {

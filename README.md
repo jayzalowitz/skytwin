@@ -93,8 +93,8 @@ Every path produces an explanation. Every outcome feeds back into the twin. The 
 <img src="docs/screenshots/setup.png" alt="Setup — execution engines, Google OAuth walkthrough, credential management">
 </td>
 <td width="50%">
-<p align="center"><strong>Settings</strong></p>
-<img src="docs/screenshots/settings.png" alt="Settings — autonomy level, spend limits, connected accounts, privacy controls">
+<p align="center"><strong>Settings — fresh capture pending</strong></p>
+<p>The current source adds an explicit saved reasoning-location boundary and accurate local-storage and remote-processing disclosures. The older full-page image was removed because it predates those controls.</p>
 </td>
 </tr>
 <tr>
@@ -201,7 +201,14 @@ The defaults start SkyTwin without any LLM API keys or Docker. Local inference s
 | `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). Without this opt-in, local inference requires a separately installed `llama.cpp` binary and compatible model. |
 | `SKYTWIN_DISABLE_EMBEDDED=1` | Skip the embedded LLM provider in the API's provider chain. Pair with hosted-only keys (e.g. `ANTHROPIC_API_KEY`) for reproducible evaluation runs. |
 | `SKYTWIN_LLAMA_MODEL=/path/model.gguf` | Opt into a user-managed model path. This explicit override bypasses the managed-model manifest and registry checks; the user is responsible for the artifact's provenance and compatibility. |
+| `SKYTWIN_REASONING_MODE` | Pin the environment-driven chain to `on_device` or `bring_your_own_provider`. Mixed local/remote chains require this explicit choice; `verified_private_cloud` remains unavailable until a verified adapter ships. |
 | `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
+
+On-device Ollama requires Ollama 0.18 or newer. SkyTwin adds Ollama's
+request-scoped `:local` source selector to every on-device call and never
+retries the unqualified model name; this prevents a loopback daemon from
+relaying a remote-backed model alias. For defense in depth, disable Ollama
+Cloud globally with `OLLAMA_NO_CLOUD=1` or `disable_ollama_cloud: true`.
 
 ### Manual setup
 
@@ -327,7 +334,7 @@ packages/
 | Mobile | React Native + Expo |
 | Testing | Vitest (4,800+ tests) |
 | CI/CD | GitHub Actions |
-| Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and a Direct fallback — trust-ranked with automatic failover |
+| Execution | [IronClaw](https://github.com/nearai/ironclaw/), OpenClaw (via local bridge), and Direct execution — trust-ranked selection with ambiguous attempts held for reconciliation |
 
 ## Deployment
 
@@ -415,7 +422,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Product Spec](./docs/product-spec.md) | Vision, target user, operating principles, example workflows |
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
-| [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, developer verifier, trust boundary, and current foundation-only limitations |
+| [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, decision-event capture, developer verifier, trust boundary, and current UI/export limitations |
 | [Decision Engine](./docs/decision-engine.md) | Situation interpretation, risk assessment, confidence scoring |
 | [IronClaw Integration](./docs/ironclaw-integration.md) | Execution adapter, HMAC auth, failure handling |
 | [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design (18+ tables), query patterns, versioning |
@@ -436,7 +443,7 @@ SkyTwin is in **Tier 1 launch polish** (see [`docs/launch-plan.md`](./docs/launc
 - A fully populated development demo seed with mock approval actions, plus a separate guarded sample session for packaged desktop builds. Its database-backed surface is read-only; a dedicated simulation can approve, reject, or correct fixed proposals and demonstrate session-local learning without invoking real connectors, providers, credentials, or execution adapters. Current published installers predate this packaged sample path.
 - Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, persists memory-derived action opportunities, routes them through policy plus IronClaw/OpenClaw/Direct execution, reports queued/executed/blocked/learning-needed outcomes, and offers a "Power view" toggle for the technical detail behind each call
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
-- LLM-powered decisions via configurable provider chain (Claude, GPT, Gemini, Ollama) with automatic fallback to built-in rules
+- Mode-scoped model reasoning: on-device embedded/Ollama or an explicitly selected provider chain, with fallback contained inside the selected location boundary, request-scoped local-only enforcement for Ollama, and deterministic rules when no eligible provider responds
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
 - Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).

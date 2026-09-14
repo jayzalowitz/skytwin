@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import {
-  splitSqlStatements,
+  deriveOwnedTableManifest,
+  getSkyTwinOwnedTableManifest,
   isIdempotentError,
+  quoteSqlIdentifier,
+  splitSqlStatements,
   upOwned,
   type OwnedMigrationClient,
 } from '../migrations/001-initial.js';
@@ -84,6 +89,88 @@ describe('owned desktop migration connection', () => {
     expect(target.query).toHaveBeenCalledOnce();
     expect(String(target.query.mock.calls[0]?.[0])).toContain('CREATE TABLE IF NOT EXISTS users');
     expect(target.end).toHaveBeenCalledOnce();
+  });
+});
+
+describe('SkyTwin-owned table manifest', () => {
+  it('derives current and historical ownership from executable checked-in DDL', () => {
+    expect(deriveOwnedTableManifest([{ name: 'fixture.sql', sql: `
+      -- CREATE TABLE foreign_comment (id INT);
+      CREATE TABLE IF NOT EXISTS public.alpha (id INT);
+      CREATE TABLE "odd""name" (id INT);
+      DROP TABLE IF EXISTS alpha;
+    ` }])).toEqual({ all: ['alpha', 'odd"name'], current: ['odd"name'] });
+  });
+
+  it('fails closed when a CREATE TABLE shape cannot be assigned to public ownership', () => {
+    expect(() => deriveOwnedTableManifest([{
+      name: 'unsupported.sql',
+      sql: 'CREATE TABLE private.operator_data (id INT);',
+    }])).toThrow(/Cannot derive every owned table/);
+  });
+
+  it('covers the checked-in schema and remembers intentionally retired tables', () => {
+    const manifest = getSkyTwinOwnedTableManifest();
+    expect(manifest.current).toContain('users');
+    expect(manifest.current).toContain('execution_admission_barriers');
+    expect(manifest.current).toContain('credential_dispatch_leases');
+    expect(manifest.current).not.toContain('capability_recipes');
+    expect(manifest.all).toContain('capability_recipes');
+    expect(new Set(manifest.current).size).toBe(manifest.current.length);
+  });
+});
+
+describe('typed execution evidence migration', () => {
+  const migration = readFileSync(fileURLToPath(new URL(
+    '../migrations/078-execution-admission-barriers.sql', import.meta.url,
+  )), 'utf8');
+  const schema = readFileSync(fileURLToPath(new URL('../schemas/schema.sql', import.meta.url)), 'utf8');
+  const evidenceTables = [
+    'execution_plans',
+    'execution_results',
+    'execution_events',
+    'memory_action_opportunities',
+    'execution_admission_barriers',
+  ];
+
+  it('stamps fresh schema rows as typed and adds legacy columns as untrusted', () => {
+    for (const table of evidenceTables) {
+      const definition = schema.match(new RegExp(
+        `CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`,
+      ))?.[0];
+      expect(definition, `missing schema definition for ${table}`).toBeDefined();
+      expect(definition).toContain('evidence_schema_version INT NOT NULL DEFAULT 1');
+      expect(migration).toContain(
+        `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS evidence_schema_version INT NOT NULL DEFAULT 0;`,
+      );
+      expect(migration).toContain(
+        `ALTER TABLE ${table} ALTER COLUMN evidence_schema_version SET DEFAULT 1;`,
+      );
+    }
+  });
+
+  it('scrubs only legacy evidence so rerunning cannot destroy typed rows', () => {
+    for (const table of evidenceTables) {
+      const update = migration.match(new RegExp(
+        `UPDATE ${table}[\\s\\S]*?WHERE evidence_schema_version < 1;`,
+      ))?.[0];
+      expect(update, `missing guarded scrub for ${table}`).toBeDefined();
+      expect(update).toContain('evidence_schema_version = 1');
+    }
+  });
+});
+
+describe('quoteSqlIdentifier', () => {
+  it('quotes ordinary and embedded-quote identifiers', () => {
+    expect(quoteSqlIdentifier('memory_action_opportunities'))
+      .toBe('"memory_action_opportunities"');
+    expect(quoteSqlIdentifier('table"; DROP DATABASE skytwin; --'))
+      .toBe('"table""; DROP DATABASE skytwin; --"');
+  });
+
+  it('rejects identifiers that cannot be represented safely', () => {
+    expect(() => quoteSqlIdentifier('')).toThrow(/Refusing to quote/);
+    expect(() => quoteSqlIdentifier('table\0name')).toThrow(/Refusing to quote/);
   });
 });
 

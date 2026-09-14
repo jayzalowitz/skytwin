@@ -19,6 +19,7 @@ function createMockRepo() {
     saveToken: vi.fn(),
     deleteToken: vi.fn(),
     updateAccessToken: vi.fn(),
+    updateAccessTokenIfCurrent: vi.fn().mockResolvedValue(true),
   };
 }
 
@@ -26,7 +27,7 @@ const googleConfig = { clientId: 'g', clientSecret: 'gs', redirectUri: 'http://l
 const microsoftConfig = { clientId: 'm', clientSecret: 'ms', redirectUri: 'http://localhost/ms', tenant: 'common' };
 
 function expiredRow() {
-  return { access_token: 'old-at', refresh_token: 'rt', expires_at: new Date(Date.now() - 60_000), scopes: ['s'] };
+  return { id: 'token-row', credential_revision: 'revision-1', access_token: 'old-at', refresh_token: 'rt', expires_at: new Date(Date.now() - 60_000), scopes: ['s'] };
 }
 function freshSet(provider: 'google' | 'microsoft', accessToken: string) {
   return { accessToken, refreshToken: 'rt', expiresAt: new Date(Date.now() + 3_600_000), scopes: ['s'], provider };

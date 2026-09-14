@@ -34,6 +34,7 @@ function makeBackupData(): BackupData {
       name: 'Me',
       trust_tier: 'observer',
       autonomy_settings: {},
+      execution_authority_revision: 'authority-revision-1',
       ironclaw_channel: null,
       language: null,
       timezone: null,

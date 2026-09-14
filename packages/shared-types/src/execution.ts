@@ -6,6 +6,10 @@ import { CandidateAction } from './decision.js';
 export interface ExecutionPlan {
   id: string;
   decisionId: string;
+  /** Router-authored execution owner. Never accepted from adapter plan output. */
+  executionOwnerId?: string;
+  /** Router-authored remote channel. Never accepted from candidate parameters. */
+  executionChannel?: string;
   action: CandidateAction;
   steps: ExecutionStep[];
   rollbackSteps: ExecutionStep[];
@@ -66,6 +70,8 @@ export interface RollbackResult {
 export interface ActionHandler {
   readonly actionType: string;
   readonly domain: string;
+  /** False when this runtime cannot safely undo an executed action. */
+  readonly supportsRollback?: boolean;
   canHandle(actionType: string): boolean;
   execute(step: ExecutionStep): Promise<StepResult>;
   rollback(step: ExecutionStep): Promise<StepResult>;
