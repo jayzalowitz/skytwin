@@ -15,6 +15,7 @@ interface ApiError {
   success: false;
   error: string;
   statusCode?: number;
+  code?: string;
 }
 
 type ApiResult<T> = ApiSuccess<T> | ApiError;
@@ -49,6 +50,14 @@ export function resolveAssistantRequestIdentity(
     content,
     threadId: normalizedThreadId,
   };
+}
+
+export function shouldRetireAssistantRequestIdentity(
+  statusCode?: number,
+  code?: string,
+): boolean {
+  if (statusCode !== undefined && statusCode >= 400 && statusCode < 500) return true;
+  return code === 'assistant_providers_failed' || code === 'assistant_generation_failed';
 }
 
 // -- Response types matching the API routes --
@@ -538,6 +547,7 @@ export class SkyTwinApiClient {
         success: false,
         error: 'That request is still processing. Try again shortly.',
         statusCode: 202,
+        code: 'assistant_request_in_progress',
       };
     }
     return result as ApiResult<AssistantSendResponse>;
@@ -583,7 +593,14 @@ export class SkyTwinApiClient {
           typeof data === 'object' && data !== null && 'error' in data
             ? String((data as Record<string, unknown>)['error'])
             : `HTTP ${response.status}`;
-        return { success: false, error: errorMsg, statusCode: response.status };
+        const code =
+          typeof data === 'object' &&
+          data !== null &&
+          'code' in data &&
+          typeof (data as Record<string, unknown>)['code'] === 'string'
+            ? String((data as Record<string, unknown>)['code'])
+            : undefined;
+        return { success: false, error: errorMsg, statusCode: response.status, code };
       }
 
       return { success: true, data: data as T };

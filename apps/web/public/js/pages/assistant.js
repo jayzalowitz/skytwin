@@ -4,6 +4,7 @@ import {
   deleteAssistantThread,
   sendAssistantMessageStream,
   resolveAssistantRequestIdentity,
+  shouldRetireAssistantRequestIdentity,
   searchCapabilityRegistry,
   installCapability,
   requestInstallSuggestion,
@@ -1159,11 +1160,15 @@ async function handleSend() {
             },
           ]);
         }
+        const friendlyStreamError = {
+          assistant_stream_failed: 'The reply stopped unexpectedly.',
+          assistant_providers_failed: 'Every configured AI provider failed. Try again shortly.',
+        }[message] ?? 'The reply stopped unexpectedly.';
         _state.messages = _state.messages.concat([
           {
             id: `error-${Date.now()}`,
             role: 'assistant',
-            content: `Couldn't finish the reply — ${message}`,
+            content: friendlyStreamError,
             createdAt: new Date().toISOString(),
           },
         ]);
@@ -1190,9 +1195,6 @@ async function handleSend() {
     // reconcile if so. No error toast / no error bubble — this was
     // intentional, not a failure.
     if (err?.name === 'AbortError') {
-      if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
-        _state.pendingRequest = null;
-      }
       const idx = _state.messages.findIndex((m) => m.id === streamingAssistantId);
       if (idx >= 0) {
         _state.messages[idx] = {
@@ -1201,6 +1203,7 @@ async function handleSend() {
           content: streamingContent || '(stopped)',
         };
       }
+      if (input) input.value = content;
       return;
     }
     if (err?.code === 'assistant_request_in_progress' && err?.threadId) {
@@ -1208,9 +1211,9 @@ async function handleSend() {
       if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
         _state.pendingRequest.threadId = err.threadId;
       }
-    } else if (typeof err?.status === 'number' && err.status > 0) {
-      // An HTTP response is terminal. Only transport ambiguity retains the
-      // identity; a subsequent attempt after a definite rejection is new.
+    } else if (shouldRetireAssistantRequestIdentity(err?.status, err?.code)) {
+      // Retire only definite pre-admission/client rejections or typed terminal
+      // generation failures. Generic 5xx can follow a durable side effect.
       if (_state.pendingRequest?.requestId === requestIdentity.requestId) {
         _state.pendingRequest = null;
       }

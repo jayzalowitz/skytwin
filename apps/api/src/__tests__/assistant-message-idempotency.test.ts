@@ -225,6 +225,20 @@ describe('POST /api/assistant/messages idempotency', () => {
     ]);
   });
 
+  it('returns a typed ambiguous failure when an approval bubble cannot be reconciled', async () => {
+    mocks.appendAssistant.mockRejectedValueOnce(new Error('append response unknown'));
+    mocks.findAssistant.mockRejectedValueOnce(new Error('reconciliation read unavailable'));
+
+    const response = await post(buildApp());
+
+    expect(response.status).toBe(503);
+    expect(response.body).toMatchObject({
+      code: 'assistant_response_reconciliation_required',
+      approvalRequestId: 'approval-1',
+    });
+    expect(mocks.routeIntent).toHaveBeenCalledTimes(1);
+  });
+
   it('returns typed 202 for a concurrent duplicate while the owner request is in progress', async () => {
     let releaseOwner!: () => void;
     let ownerEntered!: () => void;

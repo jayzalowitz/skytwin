@@ -11,6 +11,7 @@ import {
   endSampleSimulation,
   fetchJSON,
   resolveAssistantRequestIdentity,
+  shouldRetireAssistantRequestIdentity,
   sendAssistantMessage,
   sendAssistantMessageStream,
   sendSampleSimulationCommand,
@@ -56,6 +57,18 @@ describe('api client', () => {
     expect(first.requestId).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     );
+  });
+
+  it('retires assistant request identities only after definite failures', () => {
+    expect(shouldRetireAssistantRequestIdentity(400, '')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(409, 'assistant_request_id_conflict')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(502, 'assistant_providers_failed')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(502, 'assistant_generation_failed')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(503, '')).toBe(false);
+    expect(
+      shouldRetireAssistantRequestIdentity(503, 'assistant_response_reconciliation_required'),
+    ).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity(0, '')).toBe(false);
   });
 
   it('sends the caller-supplied requestId on JSON assistant requests', async () => {

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createClientRequestId,
   resolveAssistantRequestIdentity,
+  shouldRetireAssistantRequestIdentity,
   SkyTwinApiClient,
 } from '../services/api-client';
 
@@ -316,6 +317,42 @@ describe('API client request construction', () => {
       success: false,
       error: 'That request is still processing. Try again shortly.',
       statusCode: 202,
+      code: 'assistant_request_in_progress',
+    });
+  });
+
+  it('retains assistant request identity across ambiguous failures', () => {
+    expect(shouldRetireAssistantRequestIdentity(400)).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(409, 'assistant_request_id_conflict')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(502, 'assistant_providers_failed')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(502, 'assistant_generation_failed')).toBe(true);
+    expect(shouldRetireAssistantRequestIdentity(503)).toBe(false);
+    expect(
+      shouldRetireAssistantRequestIdentity(503, 'assistant_response_reconciliation_required'),
+    ).toBe(false);
+    expect(shouldRetireAssistantRequestIdentity()).toBe(false);
+  });
+
+  it('preserves structured error codes from assistant failures', async () => {
+    mockFetch.mockResolvedValue({
+      ok: false,
+      status: 503,
+      json: async () => ({
+        error: 'Approval response needs reconciliation',
+        code: 'assistant_response_reconciliation_required',
+      }),
+    });
+
+    const actualClient = new SkyTwinApiClient('http://192.168.1.50:3100', 'test-token');
+    const result = await actualClient.sendAssistantMessage(
+      'user-1', 'retry me', undefined, ASSISTANT_REQUEST_ID,
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Approval response needs reconciliation',
+      statusCode: 503,
+      code: 'assistant_response_reconciliation_required',
     });
   });
 

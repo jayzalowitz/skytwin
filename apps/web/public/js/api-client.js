@@ -44,6 +44,17 @@ export function resolveAssistantRequestIdentity(pending, content, threadId = nul
   };
 }
 
+/**
+ * A request identity is retired only when the response proves the logical
+ * turn did not remain ambiguously in flight. Generic 5xx and transport
+ * failures may arrive after durable side effects, so they must be retried
+ * with the same key.
+ */
+export function shouldRetireAssistantRequestIdentity(status = 0, code = '') {
+  if (status >= 400 && status < 500) return true;
+  return code === 'assistant_providers_failed' || code === 'assistant_generation_failed';
+}
+
 /** Invalidate every in-flight sample start before disposal begins. */
 export function beginDemoSessionExit() {
   demoSessionGeneration += 1;

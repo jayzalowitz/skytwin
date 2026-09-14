@@ -13,6 +13,7 @@ import {
 import {
   SkyTwinApiClient,
   resolveAssistantRequestIdentity,
+  shouldRetireAssistantRequestIdentity,
   type AssistantRequestIdentity,
   type AssistantMessage,
 } from '../services/api-client';
@@ -102,6 +103,7 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
     try {
       const session = await getSession();
       if (!session) {
+        pendingRequestRef.current = null;
         fail('Your session expired — pair with your SkyTwin again.');
         return;
       }
@@ -113,7 +115,7 @@ export function ChatScreen({ initialText, onInitialTextConsumed }: ChatScreenPro
         requestIdentity.requestId,
       );
       if (!result.success) {
-        if (result.statusCode !== undefined && result.statusCode !== 202) {
+        if (shouldRetireAssistantRequestIdentity(result.statusCode, result.code)) {
           pendingRequestRef.current = null;
         }
         fail(result.error);

@@ -13,7 +13,7 @@ import {
 } from '@skytwin/assistant';
 import { AllProvidersFailedError } from '@skytwin/llm-client';
 import { serializeApprovalCandidate } from './approval-candidate.js';
-import type { DecisionContext, DecisionObject } from '@skytwin/shared-types';
+import type { DecisionContext, DecisionObject, DecisionOutcome } from '@skytwin/shared-types';
 import { SituationType, TrustTier } from '@skytwin/shared-types';
 import { TwinService } from '@skytwin/twin-model';
 import { DecisionMaker } from '@skytwin/decision-engine';
@@ -254,6 +254,29 @@ function renderOutcomeHint(outcome: Record<string, unknown>): string {
 }
 
 /**
+ * Chat never executes directly. Normalize the engine result before its first
+ * durable outcome write so both the audit row and explanation describe the
+ * approval that will actually be created, including when ordinary policy
+ * evaluation would otherwise allow automatic execution.
+ */
+export function normalizeAssistantOutcomeForApproval(outcome: DecisionOutcome): DecisionOutcome {
+  if (!outcome.selectedAction) return outcome;
+  const wasAlreadyApproval = outcome.requiresApproval && !outcome.autoExecute;
+  return {
+    ...outcome,
+    autoExecute: false,
+    requiresApproval: true,
+    reasoning: wasAlreadyApproval
+      ? outcome.reasoning
+      : `${outcome.reasoning} Assistant actions require explicit approval.`,
+    policyVerdicts: {
+      ...(outcome.policyVerdicts ?? {}),
+      [outcome.selectedAction.id]: 'requires-approval',
+    },
+  };
+}
+
+/**
  * Build the per-process `ActionRouter` that the assistant uses to route
  * chat-detected action intents through the existing decision pipeline.
  * Issue #148 v1.
@@ -297,10 +320,19 @@ export function buildActionRouter(): ActionRouter {
     },
   };
 
+  const assistantDecisionRepository = {
+    ...decisionRepositoryAdapter,
+    async saveOutcome(outcome: DecisionOutcome): Promise<DecisionOutcome> {
+      const normalized = normalizeAssistantOutcomeForApproval(outcome);
+      Object.assign(outcome, normalized);
+      return decisionRepositoryAdapter.saveOutcome(normalized);
+    },
+  };
+
   const decisionMaker = new DecisionMaker(
     twinService,
     policyEvaluator,
-    decisionRepositoryAdapter,
+    assistantDecisionRepository,
     undefined,
     labelInferencePort,
   );
@@ -494,8 +526,8 @@ export function buildActionRouter(): ActionRouter {
 /**
  * Persist the assistant bubble after a durable approval is known to exist.
  * If the write response is lost, reconcile by the request key. If both the
- * write and read are unavailable, return an explicitly synthetic bubble that
- * still preserves the known approval identity instead of claiming no action.
+ * write and read are unavailable, fail ambiguously: the caller must retain the
+ * request key because only a durable assistant row is safe to report as done.
  */
 export async function appendKnownApprovalMessage(
   userId: string,
@@ -529,21 +561,7 @@ export async function appendKnownApprovalMessage(
       approvalId: approvalRequestId,
       errorCode: 'assistant_message_persistence_unknown',
     });
-    return {
-      id: `reconciliation:${approvalRequestId}`,
-      threadId,
-      role: 'assistant',
-      content,
-      createdAt: new Date(),
-      metadata: {
-        ...metadata,
-        persistence: {
-          status: 'reconciliation_required',
-          errorCode: 'assistant_message_persistence_unknown',
-        },
-      },
-      clientRequestId: requestId,
-    };
+    throw new Error('assistant_message_persistence_unknown');
   }
 }
 
@@ -730,7 +748,7 @@ async function streamAssistantReply(args: {
         // Mid-stream failure with partial content already on screen.
         send('error', {
           message: 'assistant_stream_failed',
-          partialContent: '',
+          partialContent: event.partialContent,
         });
         res.end();
         return;
@@ -777,7 +795,7 @@ export function createAssistantRouter(): Router {
   /**
    * POST /api/assistant/messages
    *
-   * Body: { userId, content, threadId? }
+   * Body: { userId, content, requestId, threadId? }
    *
    * If `threadId` is omitted, a new thread is created and `content` becomes
    * the first user message. The response includes the thread (so the
@@ -1009,23 +1027,35 @@ export function createAssistantRouter(): Router {
               : {}),
           },
         };
-        const assistantMessage =
-          intentRoute.outcome.kind === 'requires-approval'
-            ? await appendKnownApprovalMessage(
-                userId,
-                threadId,
-                intentRoute.outcome.approvalRequestId,
-                bubbleContent,
-                actionMetadata,
-                requestId,
-              )
-            : await assistantRepository.appendOrGetAssistantMessage(
-                userId,
-                threadId,
-                bubbleContent,
-                requestId,
-                actionMetadata,
-              );
+        let assistantMessage: AssistantMessage;
+        if (intentRoute.outcome.kind === 'requires-approval') {
+          try {
+            assistantMessage = await appendKnownApprovalMessage(
+              userId,
+              threadId,
+              intentRoute.outcome.approvalRequestId,
+              bubbleContent,
+              actionMetadata,
+              requestId,
+            );
+          } catch {
+            res.status(503).json({
+              error:
+                'The approval is queued, but its chat response needs reconciliation. Check Approvals before retrying.',
+              code: 'assistant_response_reconciliation_required',
+              approvalRequestId: intentRoute.outcome.approvalRequestId,
+            });
+            return;
+          }
+        } else {
+          assistantMessage = await assistantRepository.appendOrGetAssistantMessage(
+            userId,
+            threadId,
+            bubbleContent,
+            requestId,
+            actionMetadata,
+          );
+        }
 
         // Both sync + SSE paths land here; for SSE we still send the
         // wire shape clients expect (thread + user + done with the

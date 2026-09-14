@@ -71,7 +71,11 @@ vi.mock('@skytwin/core', () => ({
 }));
 vi.mock('../sse.js', () => ({ sseManager: { emit: mocks.emit } }));
 
-import { appendKnownApprovalMessage, buildActionRouter } from '../routes/assistant.js';
+import {
+  appendKnownApprovalMessage,
+  buildActionRouter,
+  normalizeAssistantOutcomeForApproval,
+} from '../routes/assistant.js';
 
 const candidate = {
   id: '22222222-2222-2222-2222-222222222222',
@@ -133,6 +137,31 @@ describe('assistant action explanation boundary', () => {
       metadata: null,
     });
     mocks.findAssistantMessage.mockResolvedValue(null);
+  });
+
+  it('normalizes an auto-execute engine result to the approval-only chat contract', () => {
+    const original = {
+      id: '33333333-3333-3333-3333-333333333333',
+      decisionId: candidate.decisionId,
+      selectedAction: candidate,
+      allCandidates: [candidate],
+      riskAssessment: null,
+      autoExecute: true,
+      requiresApproval: false,
+      reasoning: 'Policy allowed automatic execution.',
+      decidedAt: new Date(),
+      policyVerdicts: { [candidate.id]: 'allowed' as const },
+    };
+
+    const normalized = normalizeAssistantOutcomeForApproval(original);
+
+    expect(normalized).toMatchObject({
+      autoExecute: false,
+      requiresApproval: true,
+      reasoning: expect.stringContaining('explicit approval'),
+      policyVerdicts: { [candidate.id]: 'requires-approval' },
+    });
+    expect(original.autoExecute).toBe(true);
   });
 
   it('creates no approval or SSE when explanation persistence fails', async () => {
@@ -293,26 +322,20 @@ describe('assistant action explanation boundary', () => {
     expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain('SECRET_MARKER');
   });
 
-  it('returns an explicit reconciliation bubble when approval-message persistence is unknown', async () => {
+  it('does not report terminal success when approval-message persistence is unknown', async () => {
     mocks.appendAssistantMessage.mockRejectedValueOnce(new Error('SECRET_MARKER append failed'));
     mocks.findAssistantMessage.mockRejectedValueOnce(new Error('SECRET_MARKER read failed'));
 
-    const result = await appendKnownApprovalMessage(
-      'user-1',
-      'thread-1',
-      'approval-1',
-      'Approval queued.',
-      { intentRoute: { approvalRequestId: 'approval-1' } },
-      '11111111-1111-4111-8111-111111111111',
-    );
-
-    expect(result.metadata).toMatchObject({
-      persistence: {
-        status: 'reconciliation_required',
-        errorCode: 'assistant_message_persistence_unknown',
-      },
-    });
-    expect(JSON.stringify(result)).not.toContain('SECRET_MARKER');
+    await expect(
+      appendKnownApprovalMessage(
+        'user-1',
+        'thread-1',
+        'approval-1',
+        'Approval queued.',
+        { intentRoute: { approvalRequestId: 'approval-1' } },
+        '11111111-1111-4111-8111-111111111111',
+      ),
+    ).rejects.toThrow('assistant_message_persistence_unknown');
     expect(JSON.stringify(mocks.logError.mock.calls)).not.toContain('SECRET_MARKER');
   });
 
