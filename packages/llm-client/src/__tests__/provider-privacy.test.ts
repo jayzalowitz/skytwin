@@ -30,6 +30,18 @@ describe('provider privacy capabilities', () => {
     });
   });
 
+  it('uses transport hostname normalization for loopback disclosure', () => {
+    const trailingDotLocalhost = { ...ollama, baseUrl: 'http://localhost.:11434' };
+    expect(providerPrivacyCapabilities(trailingDotLocalhost)).toMatchObject({
+      executionLocation: 'on_device',
+      networkScope: 'loopback',
+      confidentiality: 'device_local',
+    });
+    expect(providersForReasoningMode('on_device', [trailingDotLocalhost])).toEqual({
+      mode: 'on_device', providers: [trailingDotLocalhost],
+    });
+  });
+
   it('does not infer confidential computing or zero cost from a custom URL', () => {
     const custom = { ...openai, baseUrl: 'https://private.example/v1' };
     expect(providerPrivacyCapabilities(custom)).toMatchObject({

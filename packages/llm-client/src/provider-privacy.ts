@@ -6,6 +6,7 @@ import type {
 } from '@skytwin/shared-types';
 import { parseReasoningMode } from '@skytwin/shared-types';
 import type { ProviderEntry } from './types.js';
+import { normalizeHostname } from './url-validation.js';
 
 export type ProviderModePolicyErrorCode =
   | 'unknown_mode'
@@ -165,7 +166,7 @@ export function isPricingUsableForUnattended(
 }
 
 function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase();
+  const normalized = normalizeHostname(hostname);
   return normalized === 'localhost' || normalized === '127.0.0.1'
     || normalized === '[::1]' || normalized === '::1';
 }
