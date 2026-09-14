@@ -94,7 +94,7 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed (post-/review)
 
 - **The interface no longer treats a verified model artifact as proof of a working local runtime.** Onboarding recommends the artifact without claiming local inference is ready, while Settings labels download completion as artifact verification and states that a compatible llama.cpp runtime remains separate.
-- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 now describes the actual checkpoint and boot-reconciliation contract, and the reviewed SQL-corpus digest advances without changing the 92-table, 866-column classification baseline.
+- **The encryption inventory remains fail-closed after the migration documentation update.** Migration 039 now describes the actual checkpoint and boot-reconciliation contract, and the reviewed SQL-corpus digest advances over the combined 94-table, 877-column schema after migration 073.
 
 ## [0.6.102.0] - 2026-08-27
 
