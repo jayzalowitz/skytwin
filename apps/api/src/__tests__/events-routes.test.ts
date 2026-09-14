@@ -941,7 +941,9 @@ describe('Events API routes', () => {
     expect(first.status).toBe(200);
     expect(second.status).toBe(409);
     expect(second.body).toEqual({
-      error: 'Decision ingestion is already in progress; retry the signal',
+      code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+      error: 'Decision receipt capture is incomplete; recovery is required',
+      decisionId: 'decision-1',
     });
     expect(mockInterpret).toHaveBeenCalledTimes(2);
     expect(mockEvaluate).toHaveBeenCalledTimes(1);

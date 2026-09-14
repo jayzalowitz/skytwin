@@ -367,7 +367,8 @@ export function createEventsRouter(): Router {
         // interpretation just completed against an unpersisted request-local
         // object, so it must not be attached to the winner's canonical row.
         // A finalized winner can follow the normal resume/suppress path; an
-        // incomplete winner requires a fresh retry that starts at preflight.
+        // incomplete winner cannot be reconstructed from this loser's traces
+        // and therefore requires the same explicit recovery as preflight.
         if (!decisionCreated) {
           const racedState = await inferenceReceiptRepository.getContinuationForDecision(
             userId,
@@ -375,7 +376,9 @@ export function createEventsRouter(): Router {
           );
           if (!racedState?.receiptCaptureComplete) {
             res.status(409).json({
-              error: 'Decision ingestion is already in progress; retry the signal',
+              code: 'INFERENCE_RECEIPT_RECOVERY_REQUIRED',
+              error: 'Decision receipt capture is incomplete; recovery is required',
+              decisionId: decision.id,
             });
             return;
           }
