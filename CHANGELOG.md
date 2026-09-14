@@ -75,6 +75,10 @@ All notable changes to SkyTwin will be documented in this file.
   adapter-registration HTTP surface is disabled; installation credentials
   remain installation-scoped for the single-owner beta, not user-portable.
 
+- **Android CI no longer requests a retired SDK package.** The mobile packaging
+  job installs `platform-tools` explicitly instead of inheriting the setup
+  action's obsolete `tools platform-tools` default.
+
 ## [Unreleased] — Verifiable desktop release artifacts
 
 ### Added

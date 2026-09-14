@@ -1160,7 +1160,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "3d7a0f4058dc4d26127d90f72ea8de0faff8a8aa19c4b0c61d0189dbc3776d4c",
+          "sha256": "35afeaafe7270a10742e0d650bca9043f0c539f690cc2b82f9250f30ae4c682b",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
@@ -1192,7 +1192,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "3d7a0f4058dc4d26127d90f72ea8de0faff8a8aa19c4b0c61d0189dbc3776d4c",
+          "sha256": "35afeaafe7270a10742e0d650bca9043f0c539f690cc2b82f9250f30ae4c682b",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
