@@ -15,19 +15,26 @@ import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import { AdapterRegistry, DIRECT_TRUST_PROFILE } from '../adapter-registry.js';
 import { ExecutionRouter, InvariantViolationError } from '../execution-router.js';
 
+const mappedScenario = {
+  runtimeEntryPath: 'execution_router.pre_dispatch_guard',
+  adapter: 'direct',
+  criticalShape: 'shell',
+  action: { actionType: 'shell_exec', reversible: false, parameters: {} },
+  origin: { kind: 'web', source: 'web_page' },
+  provenance: 'untrusted_external',
+} as const;
+
 function action(): CandidateAction {
   return {
     id: 'action-2',
     decisionId: 'decision-1',
-    actionType: 'shell_exec',
+    ...mappedScenario.action,
     description: 'Run a shell command from web content',
     domain: 'system',
-    parameters: {},
     estimatedCostCents: 0,
-    reversible: false,
     confidence: ConfidenceLevel.HIGH,
     reasoning: 'Adversarial source-checkout regression',
-    provenance: resolveActionProvenance('web_page'),
+    provenance: resolveActionProvenance(mappedScenario.origin.source),
   };
 }
 
@@ -71,13 +78,20 @@ function directAdapter(execute: IronClawAdapter['execute']): IronClawAdapter {
 it('adv-v1-router-direct-shell blocks before dispatch with dual confirmation', async () => {
   const execute = vi.fn<IronClawAdapter['execute']>();
   const candidate = action();
-  expect(candidate).toMatchObject({
-    actionType: 'shell_exec',
-    reversible: false,
-    provenance: 'untrusted_external',
-  });
+  expect({
+    runtimeEntryPath: mappedScenario.runtimeEntryPath,
+    adapter: mappedScenario.adapter,
+    criticalShape: mappedScenario.criticalShape,
+    action: {
+      actionType: candidate.actionType,
+      reversible: candidate.reversible,
+      parameters: candidate.parameters,
+    },
+    origin: mappedScenario.origin,
+    provenance: candidate.provenance,
+  }).toEqual(mappedScenario);
   const registry = new AdapterRegistry();
-  registry.register('direct', directAdapter(execute), DIRECT_TRUST_PROFILE);
+  registry.register(mappedScenario.adapter, directAdapter(execute), DIRECT_TRUST_PROFILE);
   const router = new ExecutionRouter(registry, {
     async start() {
       return {

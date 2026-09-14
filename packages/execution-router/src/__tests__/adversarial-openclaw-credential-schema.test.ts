@@ -3,6 +3,15 @@ import { ConfidenceLevel, resolveActionProvenance } from '@skytwin/shared-types'
 import type { CandidateAction } from '@skytwin/shared-types';
 import { OpenClawAdapter } from '../openclaw-adapter.js';
 
+const mappedScenario = {
+  runtimeEntryPath: 'execution_router.openclaw_response',
+  adapter: 'openclaw',
+  criticalShape: 'credential',
+  action: { actionType: 'revoke_token', reversible: false, parameters: { userId: 'user-1' } },
+  origin: { kind: 'mcp', source: 'mcp_tool' },
+  provenance: 'untrusted_external',
+} as const;
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -11,15 +20,13 @@ function action(): CandidateAction {
   return {
     id: 'action-1',
     decisionId: 'decision-1',
-    actionType: 'revoke_token',
+    ...mappedScenario.action,
     description: 'Revoke a credential from an MCP-origin request',
     domain: 'credentials',
-    parameters: { userId: 'user-1' },
     estimatedCostCents: 0,
-    reversible: false,
     confidence: ConfidenceLevel.HIGH,
     reasoning: 'Adversarial source-checkout regression',
-    provenance: resolveActionProvenance('mcp_tool'),
+    provenance: resolveActionProvenance(mappedScenario.origin.source),
   };
 }
 
@@ -41,11 +48,18 @@ it('adv-v1-openclaw-credential-schema rejects malicious metadata', async () => {
   // trusted context here so this regression reaches credential metadata
   // validation instead of failing earlier at the owner boundary.
   plan.executionOwnerId = 'user-1';
-  expect(plan.action).toMatchObject({
-    actionType: 'revoke_token',
-    reversible: false,
-    provenance: 'untrusted_external',
-  });
+  expect({
+    runtimeEntryPath: mappedScenario.runtimeEntryPath,
+    adapter: mappedScenario.adapter,
+    criticalShape: mappedScenario.criticalShape,
+    action: {
+      actionType: plan.action.actionType,
+      reversible: plan.action.reversible,
+      parameters: plan.action.parameters,
+    },
+    origin: mappedScenario.origin,
+    provenance: plan.action.provenance,
+  }).toEqual(mappedScenario);
 
   const error = await adapter.execute(plan).catch((caught) => caught);
 

@@ -74,8 +74,6 @@ jobs:
           TRUSTED_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           pnpm --filter @skytwin/evals eval:adversarial
-          trusted_baseline_args=()
-          baseline_path="scripts/release-evidence/adversarial-source-checkout-baseline.json"
           fixture_path="packages/evals/fixtures/v1/adversarial-scenarios.json"
           if [[ ! "$TRUSTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::Trusted baseline commit is missing or malformed"
@@ -85,27 +83,11 @@ jobs:
             echo "::error::Trusted baseline commit is unavailable in the checkout"
             exit 1
           fi
-          if git cat-file -e "${TRUSTED_COMMIT}:${baseline_path}" 2>/dev/null; then
-            git show "${TRUSTED_COMMIT}:${baseline_path}" \
-              > "${RUNNER_TEMP}/trusted-adversarial-baseline.json"
-            if ! git cat-file -e "${TRUSTED_COMMIT}:${fixture_path}" 2>/dev/null; then
-              echo "::error::Trusted baseline exists without its bound fixture"
-              exit 1
-            fi
-            git show "${TRUSTED_COMMIT}:${fixture_path}" \
-              > "${RUNNER_TEMP}/trusted-adversarial-fixture.json"
-            trusted_baseline_args=(
-              --trusted-baseline "${RUNNER_TEMP}/trusted-adversarial-baseline.json"
-              --trusted-fixture "${RUNNER_TEMP}/trusted-adversarial-fixture.json"
-            )
-          else
-            echo "Resolved prior commit has no adversarial baseline; using initial-bootstrap verification."
-          fi
           node scripts/release-evidence/verify-adversarial-evidence.mjs \
             artifacts/adversarial-evidence.json \
             --fixture "$fixture_path" \
             --expected-commit "$EXPECTED_COMMIT" \
-            "${trusted_baseline_args[@]}" \
+            --trusted-commit "$TRUSTED_COMMIT" \
             --require-clean
 
       - name: Upload adversarial source-checkout evidence

@@ -182,7 +182,7 @@
       "evidenceMode": "mapped_regression",
       "executableTestId": "@skytwin/execution-router::src/__tests__/adversarial-router-direct-shell.test.ts::adv-v1-router-direct-shell blocks before dispatch with dual confirmation",
       "assertionFile": "packages/execution-router/src/__tests__/adversarial-router-direct-shell.test.ts",
-      "assertionSha256": "4c935e16a8af86964d908732e27a6ca28bc0f0763afeaf93afb9f7a053d50419"
+      "assertionSha256": "ea02c4d21522809e6780dc5d2d7d357ee848bf55e2a0769ad10f307ea3bcb35a"
     },
     {
       "id": "adv-v1-events-no-replay-ambiguous",
@@ -198,7 +198,7 @@
       "evidenceMode": "mapped_regression",
       "executableTestId": "@skytwin/api::src/__tests__/adversarial-events-no-replay.test.ts::adv-v1-events-no-replay-ambiguous never redispatches an uncertain prior execution",
       "assertionFile": "apps/api/src/__tests__/adversarial-events-no-replay.test.ts",
-      "assertionSha256": "e73526ef94ec4a58454b16b9b1e5df9a9ba76527809d0b3a41668423e77f60fb"
+      "assertionSha256": "335d90c2e5f2984baccc3829b5f3304dc7176a23e2ddec8fd540b7db968bdf84"
     },
     {
       "id": "adv-v1-ironclaw-transport-ambiguous",
@@ -214,7 +214,7 @@
       "evidenceMode": "mapped_regression",
       "executableTestId": "@skytwin/ironclaw-adapter::src/__tests__/adversarial-transport-ambiguity.test.ts::adv-v1-ironclaw-transport-ambiguous never retries an uncertain send",
       "assertionFile": "packages/ironclaw-adapter/src/__tests__/adversarial-transport-ambiguity.test.ts",
-      "assertionSha256": "26cf515d822f74e51e369304fc7b7f4cb35cdc0478f5d8c19604b96a2fa811a9"
+      "assertionSha256": "8bb76e27a13de0e9f85200da173679093b62f16e4ba7415467ce71da8aa4f0a7"
     },
     {
       "id": "adv-v1-openclaw-credential-schema",
@@ -230,7 +230,7 @@
       "evidenceMode": "mapped_regression",
       "executableTestId": "@skytwin/execution-router::src/__tests__/adversarial-openclaw-credential-schema.test.ts::adv-v1-openclaw-credential-schema rejects malicious metadata",
       "assertionFile": "packages/execution-router/src/__tests__/adversarial-openclaw-credential-schema.test.ts",
-      "assertionSha256": "4211707493896b11c42d99fbcd2641958a556400a255c10cb60ecdabeed9bda6"
+      "assertionSha256": "9ce0c4f749f571facdb2bcf4f83fe026aeecd8919c65a78107c4896dad141c34"
     },
     {
       "id": "adv-v1-capability-regret-no-dispatch",
@@ -246,7 +246,7 @@
       "evidenceMode": "mapped_regression",
       "executableTestId": "@skytwin/api::src/__tests__/adversarial-capability-regret.test.ts::adv-v1-capability-regret-no-dispatch reports unavailable without rollback side effects",
       "assertionFile": "apps/api/src/__tests__/adversarial-capability-regret.test.ts",
-      "assertionSha256": "c788f6ecd46d5f0456c6e4da0e57b3ec5f21760b6d3f65c02d9402f36b5ed54d"
+      "assertionSha256": "0b4ea3ff180108e12e3d2067e5f425c1e30c2c84260bdc925084e58a5e99faa9"
     }
   ]
 }

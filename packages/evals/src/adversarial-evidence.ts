@@ -173,13 +173,15 @@ export const ADVERSARIAL_MITIGATIONS = [
   'untrusted or missing provenance is evaluated by the injection guard',
   'destructive shapes require explicit confirmation',
   'extreme shapes require dual confirmation',
-  'retained scenario semantics and mapped assertion source digests are append-only',
-  'application dispatch entry points are checked against a source inventory',
+  'retained scenario semantics and mapped assertion source digests are append-only after bootstrap',
+  'recognized API and worker dispatch terminal method names are checked against a source inventory',
 ] as const;
 export const ADVERSARIAL_LIMITATIONS = [
   'This evidence describes a source checkout, not a packaged release artifact.',
   'Release subject identity and attestation are intentionally absent.',
   'This development foundation does not yet enumerate every API, worker, assistant, memory, and routine entry path required for a release gate.',
+  'The v1 baseline has no pre-introduction trusted history; append-only comparison begins with the first main commit containing both evidence inputs.',
+  'Source inventory scanning recognizes a fixed set of terminal method names in API and worker TypeScript; aliases, computed or dynamic dispatch, new method names, and direct provider effects are outside this check.',
   'Network access is not sandbox-enforced for mapped Vitest processes; tests are expected to use their declared mocks.',
   'The mapped Vitest process clock is not controlled by this evidence runner.',
   'Mapped Vitest results prove only that an exact assertion passed or failed; semantic actual fields remain null until a structured runtime observation channel exists.',

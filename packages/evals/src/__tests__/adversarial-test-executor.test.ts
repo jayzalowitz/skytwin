@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -118,6 +118,17 @@ describe('exact mapped adversarial test execution', () => {
         status: 'passed',
       }]),
     )).toThrow('mapped assertion source digest does not match');
+  });
+
+  it.skipIf(process.platform === 'win32')('rejects a symlinked mapped assertion', () => {
+    const { root, catalog } = fixture();
+    const assertionPath = join(root, 'packages', 'fake', 'src', '__tests__', 'mapped.test.ts');
+    const targetPath = join(root, 'outside-assertion.test.ts');
+    writeFileSync(targetPath, '// imports, setup, helpers, and exactly one test\n');
+    rmSync(assertionPath);
+    symlinkSync(targetPath, assertionPath);
+    expect(() => executeMappedAdversarialTests(catalog, root, runner([])))
+      .toThrow('contains a symbolic-link component');
   });
 
   it('rejects a mapped assertion file with more than one executable test', () => {

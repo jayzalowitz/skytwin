@@ -582,7 +582,10 @@ Integration tests run against the Docker CockroachDB instance from `docker-compo
 
 ### Eval Tests
 
-Scenario-based tests that evaluate decision quality. See [evals.md](./evals.md). These are not pass/fail unit tests -- they produce metrics that are tracked over time:
+`EvalRunner` scenarios evaluate decision quality and produce metrics that are
+tracked over time. Separately, the current eval CLI runs a pass/fail adversarial
+source-checkout catalog; its structural counts mean cataloged scenario presence,
+not release readiness or typed runtime observations. See [evals.md](./evals.md).
 
 - Interruption rate across scenario sets
 - False autonomy rate
@@ -605,8 +608,8 @@ pnpm --filter @skytwin/twin-model test -- --watch
 # Run integration tests (requires running CockroachDB)
 pnpm test:integration
 
-# Run eval suite
-pnpm --filter @skytwin/evals run evals
+# Generate adversarial source-checkout evidence
+pnpm eval:adversarial
 ```
 
 ## Local Development Setup

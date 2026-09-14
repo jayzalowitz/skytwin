@@ -1,6 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
+import { resolveActionProvenance } from '@skytwin/shared-types';
 
 const {
   mcpServers,
@@ -82,6 +83,18 @@ const serverId = 'aaaaaaaa-bbbb-cccc-dddd-000000000001';
 const userId = 'ffffffff-eeee-dddd-cccc-000000000001';
 const planId = '22222222-2222-4222-8222-222222222222';
 const barrierId = '11111111-1111-4111-8111-111111111111';
+const mappedScenario = {
+  runtimeEntryPath: 'api.capability_regret',
+  adapter: 'none',
+  criticalShape: 'delete',
+  action: {
+    actionType: 'rollback_execution',
+    reversible: false,
+    parameters: { adapterUsed: 'ironclaw', executionPlanId: planId },
+  },
+  origin: { kind: 'user', source: 'user_request' },
+  provenance: 'user_originated',
+} as const;
 
 function app(): Express {
   const instance = express();
@@ -133,8 +146,8 @@ beforeEach(() => {
     actionId: 'action-ccc',
     payload: { reversible: true },
     occurredAt: new Date('2026-01-01T00:00:00.000Z'),
-    executionPlanId: planId,
-    adapterUsed: 'ironclaw',
+    executionPlanId: mappedScenario.action.parameters.executionPlanId,
+    adapterUsed: mappedScenario.action.parameters.adapterUsed,
   }]);
   users.findById.mockResolvedValue({
     id: userId,
@@ -190,6 +203,10 @@ beforeEach(() => {
 });
 
 it('adv-v1-capability-regret-no-dispatch reports unavailable without rollback side effects', async () => {
+  expect({
+    ...mappedScenario,
+    provenance: resolveActionProvenance(mappedScenario.origin.source),
+  }).toEqual(mappedScenario);
   const response = await post(app());
 
   expect(response).toEqual({

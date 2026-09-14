@@ -1,7 +1,7 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { existsSync, readdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { readStableRegularFile } from '../../../scripts/release-artifacts/file-integrity.mjs';
 import type {
   AdversarialCatalog,
 } from './adversarial-evidence.js';
@@ -57,7 +57,9 @@ function workspacePackages(repoRoot: string): Map<string, string> {
       const packagePath = join(parentPath, child.name);
       const manifestPath = join(packagePath, 'package.json');
       if (!existsSync(manifestPath)) continue;
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as { name?: unknown };
+      const manifest = JSON.parse(
+        readStableRegularFile(repoRoot, manifestPath, { maxBytes: 64 * 1024 }).bytes.toString('utf8'),
+      ) as { name?: unknown };
       if (typeof manifest.name === 'string') packages.set(manifest.name, packagePath);
     }
   }
@@ -97,7 +99,9 @@ export function executeMappedAdversarialTests(
       if (!assertionPath.startsWith(`${repoRoot}${sep}`) || assertionPath !== testPath) {
         throw new Error(`mapped assertion file does not match executable test ID: ${item.id}`);
       }
-      const digest = createHash('sha256').update(readFileSync(assertionPath)).digest('hex');
+      const digest = readStableRegularFile(repoRoot, assertionPath, {
+        maxBytes: 1024 * 1024,
+      }).sha256;
       if (digest !== item.assertionSha256) {
         throw new Error(`mapped assertion source digest does not match: ${item.id}`);
       }

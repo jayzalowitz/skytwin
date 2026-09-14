@@ -1,15 +1,21 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { readFileSync, readdirSync } from 'node:fs';
+import { readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
+import { readStableRegularFile } from '../release-artifacts/file-integrity.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../..');
 const DEFAULT_BASELINE = join(HERE, 'adversarial-source-checkout-baseline.json');
 const DEFAULT_FIXTURE = join(REPO_ROOT, 'packages/evals/fixtures/v1/adversarial-scenarios.json');
+const BASELINE_REPO_PATH = 'scripts/release-evidence/adversarial-source-checkout-baseline.json';
+const FIXTURE_REPO_PATH = 'packages/evals/fixtures/v1/adversarial-scenarios.json';
+const MAX_JSON_BYTES = 1024 * 1024;
+const MAX_SOURCE_BYTES = 4 * 1024 * 1024;
+const MAX_CHECKSUM_BYTES = 256;
 const DISPOSITIONS = new Set([
   'requires_confirmation', 'blocked_before_dispatch', 'terminal_unknown',
   'dispatch_ambiguous', 'response_rejected', 'normal_policy_flow',
@@ -95,6 +101,27 @@ function canonicalJson(value) {
     `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(',')}}`;
 }
 
+function decodeUtf8(bytes, label) {
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`${label} is not valid UTF-8`);
+  }
+}
+
+function filesystemPath(path) {
+  return path instanceof URL ? fileURLToPath(path) : resolve(path);
+}
+
+function readStableInput(path, label, maxBytes = MAX_JSON_BYTES, root) {
+  const absolutePath = filesystemPath(path);
+  try {
+    return readStableRegularFile(root ?? dirname(absolutePath), absolutePath, { maxBytes });
+  } catch (error) {
+    throw new Error(`${label} could not be read safely: ${error instanceof Error ? error.message : 'unknown error'}`);
+  }
+}
+
 /**
  * JSON.parse keeps only the final value for a duplicate object key. Evidence
  * inputs must reject that ambiguity before schema or digest checks interpret
@@ -102,7 +129,9 @@ function canonicalJson(value) {
  * required to use the report's canonical one-line encoding.
  */
 function parseJsonWithoutDuplicateKeys(bytes, label) {
-  const source = Buffer.isBuffer(bytes) ? bytes.toString('utf8') : String(bytes);
+  const source = Buffer.isBuffer(bytes) || bytes instanceof Uint8Array
+    ? decodeUtf8(bytes, label)
+    : String(bytes);
   const parsed = JSON.parse(source);
   let offset = 0;
 
@@ -265,13 +294,22 @@ function validateMappedTestBinding(scenario, index) {
 }
 
 export function validateSourceInventory(sourceRoot, entries) {
+  const absoluteSourceRoot = resolve(sourceRoot);
   const declared = new Map(entries.map((entry) =>
     [`${entry.sourceFile}::${entry.dispatchCall}`, entry]));
   const observed = new Map();
   for (const scanRoot of INVENTORY_SCAN_ROOTS) {
-    for (const absolutePath of walkTypeScriptFiles(join(sourceRoot, scanRoot))) {
-      const sourceFile = relative(sourceRoot, absolutePath).split(sep).join('/');
-      const source = readFileSync(absolutePath, 'utf8');
+    for (const absolutePath of walkTypeScriptFiles(join(absoluteSourceRoot, scanRoot))) {
+      const sourceFile = relative(absoluteSourceRoot, absolutePath).split(sep).join('/');
+      const source = decodeUtf8(
+        readStableInput(
+          absolutePath,
+          `runtime dispatch source ${sourceFile}`,
+          MAX_SOURCE_BYTES,
+          absoluteSourceRoot,
+        ).bytes,
+        `runtime dispatch source ${sourceFile}`,
+      );
       for (const dispatchCall of collectDispatchCalls(sourceFile, source)) {
         const key = `${sourceFile}::${dispatchCall}`;
         observed.set(key, (observed.get(key) ?? 0) + 1);
@@ -318,14 +356,77 @@ function liveGitIdentity(repoRoot) {
   return { commit: head.stdout.trim(), cleanTree: status.stdout === '' };
 }
 
-function loadFixture(
-  fixturePath,
+function gitBytes(repoRoot, args, label, maxBytes) {
+  const result = spawnSync('git', args, {
+    cwd: repoRoot,
+    encoding: null,
+    env: { ...process.env, GIT_NO_REPLACE_OBJECTS: '1' },
+    maxBuffer: maxBytes + 64 * 1024,
+  });
+  if (result.error || result.status !== 0 || !Buffer.isBuffer(result.stdout)) {
+    throw new Error(`${label} could not be read from the trusted commit`);
+  }
+  if (result.stdout.length > maxBytes) throw new Error(`${label} exceeds its byte limit`);
+  return result.stdout;
+}
+
+function trustedInputsFromCommit(repoRoot, commit) {
+  if (!/^[0-9a-f]{40}$/.test(commit)) {
+    throw new Error('trusted commit must be a full lowercase commit SHA');
+  }
+  const type = decodeUtf8(
+    gitBytes(repoRoot, ['cat-file', '-t', commit], 'trusted commit', 32),
+    'trusted commit type',
+  ).trim();
+  if (type !== 'commit') throw new Error('trusted commit does not identify a commit');
+
+  const inventoryBytes = gitBytes(
+    repoRoot,
+    ['ls-tree', '-z', commit, '--', BASELINE_REPO_PATH, FIXTURE_REPO_PATH],
+    'trusted evidence inventory',
+    4096,
+  );
+  const inventory = decodeUtf8(inventoryBytes, 'trusted evidence inventory')
+    .split('\0')
+    .filter(Boolean);
+  const paths = new Set();
+  for (const entry of inventory) {
+    const match = /^(\d{6}) blob [0-9a-f]{40}\t(.+)$/u.exec(entry);
+    if (!match || match[1] !== '100644' ||
+        ![BASELINE_REPO_PATH, FIXTURE_REPO_PATH].includes(match[2])) {
+      throw new Error('trusted evidence input is not a regular checked-in blob');
+    }
+    paths.add(match[2]);
+  }
+  const hasBaseline = paths.has(BASELINE_REPO_PATH);
+  const hasFixture = paths.has(FIXTURE_REPO_PATH);
+  if (hasBaseline !== hasFixture) {
+    throw new Error('trusted commit must contain both adversarial baseline and fixture or neither');
+  }
+  if (!hasBaseline) return null;
+  return {
+    baselineBytes: gitBytes(
+      repoRoot,
+      ['cat-file', 'blob', `${commit}:${BASELINE_REPO_PATH}`],
+      'trusted baseline',
+      MAX_JSON_BYTES,
+    ),
+    fixtureBytes: gitBytes(
+      repoRoot,
+      ['cat-file', 'blob', `${commit}:${FIXTURE_REPO_PATH}`],
+      'trusted fixture',
+      MAX_JSON_BYTES,
+    ),
+  };
+}
+
+function loadFixtureBytes(
+  bytes,
   baseline,
   sourceRoot,
   verifyLiveSources = true,
   label = 'fixture',
 ) {
-  const bytes = readFileSync(fixturePath);
   const fixture = parseJsonWithoutDuplicateKeys(bytes, label);
   exactKeys(fixture, [
     'schemaVersion', 'fixturesVersion', 'coverageTargets', 'sourceInventory', 'scenarios',
@@ -397,9 +498,15 @@ function loadFixture(
       }
       validateMappedTestBinding(scenario, index);
       if (verifyLiveSources) {
-        const assertionPath = resolve(sourceRoot, scenario.assertionFile);
-        if (!assertionPath.startsWith(`${sourceRoot}${sep}`) ||
-            sha256(readFileSync(assertionPath)) !== scenario.assertionSha256) {
+        const absoluteSourceRoot = resolve(sourceRoot);
+        const assertionPath = resolve(absoluteSourceRoot, scenario.assertionFile);
+        if (!assertionPath.startsWith(`${absoluteSourceRoot}${sep}`) ||
+            readStableInput(
+              assertionPath,
+              `fixture scenario ${scenario.id} assertion source`,
+              MAX_SOURCE_BYTES,
+              absoluteSourceRoot,
+            ).sha256 !== scenario.assertionSha256) {
           throw new Error(`fixture scenario ${scenario.id} assertion source digest does not match`);
         }
       }
@@ -439,6 +546,22 @@ function loadFixture(
   return { fixture, scenarios: sortedScenarios, ids, digest, fingerprints };
 }
 
+function loadFixture(
+  fixturePath,
+  baseline,
+  sourceRoot,
+  verifyLiveSources = true,
+  label = 'fixture',
+) {
+  return loadFixtureBytes(
+    readStableInput(fixturePath, label).bytes,
+    baseline,
+    sourceRoot,
+    verifyLiveSources,
+    label,
+  );
+}
+
 function expectedDimension(scenarios, targets, field) {
   const values = new Set(scenarios.map((scenario) =>
     field === 'origin' ? scenario.origin.kind : scenario[field]));
@@ -446,12 +569,13 @@ function expectedDimension(scenarios, targets, field) {
 }
 
 export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BASELINE, options = {}) {
-  const reportBytes = readFileSync(reportPath);
+  const reportBytes = readStableInput(reportPath, 'report').bytes;
   const report = parseJsonWithoutDuplicateKeys(reportBytes, 'report');
-  if (reportBytes.toString('utf8') !== `${canonicalJson(report)}\n`) {
+  if (decodeUtf8(reportBytes, 'report') !== `${canonicalJson(report)}\n`) {
     throw new Error('report bytes are not canonical JSON (duplicate keys are forbidden)');
   }
-  const baseline = parseJsonWithoutDuplicateKeys(readFileSync(baselinePath), 'baseline');
+  const baselineBytes = readStableInput(baselinePath, 'baseline').bytes;
+  const baseline = parseJsonWithoutDuplicateKeys(baselineBytes, 'baseline');
   exactKeys(baseline, [
     'schemaVersion', 'evidenceClass', 'fixturesVersion', 'fixtureSha256', 'exactIds',
     'coverageTargets', 'sourceInventory', 'scenarioFingerprints', 'mitigations', 'limitations',
@@ -460,11 +584,26 @@ export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BAS
   semanticVersion(baseline.schemaVersion, 'baseline.schemaVersion');
   fixtureVersion(baseline.fixturesVersion, 'baseline.fixturesVersion');
   const baselineIds = exactStringArray(baseline.exactIds, 'baseline.exactIds');
-  if (options.trustedBaselinePath !== undefined) {
-    const trusted = parseJsonWithoutDuplicateKeys(
-      readFileSync(options.trustedBaselinePath),
-      'trusted baseline',
+  let trustedInputs = null;
+  if (options.trustedCommit !== undefined) {
+    if (options.trustedBaselinePath !== undefined || options.trustedFixturePath !== undefined) {
+      throw new Error('trusted commit cannot be combined with trusted filesystem paths');
+    }
+    trustedInputs = trustedInputsFromCommit(
+      options.repoRoot ?? REPO_ROOT,
+      options.trustedCommit,
     );
+  } else if (options.trustedBaselinePath !== undefined) {
+    if (options.trustedFixturePath === undefined) {
+      throw new Error('trusted fixture is required with a trusted baseline');
+    }
+    trustedInputs = {
+      baselineBytes: readStableInput(options.trustedBaselinePath, 'trusted baseline').bytes,
+      fixtureBytes: readStableInput(options.trustedFixturePath, 'trusted fixture').bytes,
+    };
+  }
+  if (trustedInputs !== null) {
+    const trusted = parseJsonWithoutDuplicateKeys(trustedInputs.baselineBytes, 'trusted baseline');
     exactKeys(trusted, [
       'schemaVersion', 'evidenceClass', 'fixturesVersion', 'fixtureSha256', 'exactIds',
       'coverageTargets', 'sourceInventory', 'scenarioFingerprints', 'mitigations', 'limitations',
@@ -489,15 +628,12 @@ export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BAS
         `exactIds shrank relative to the trusted baseline: ${removedIds.join(', ')}`,
       );
     }
-    if (options.trustedFixturePath === undefined) {
-      throw new Error('trusted fixture is required with a trusted baseline');
-    }
-    const trustedFixtureBytes = readFileSync(options.trustedFixturePath);
+    const trustedFixtureBytes = trustedInputs.fixtureBytes;
     if (sha256(trustedFixtureBytes) !== trusted.fixtureSha256) {
       throw new Error('trusted fixture SHA-256 does not match the trusted baseline');
     }
-    loadFixture(
-      options.trustedFixturePath,
+    loadFixtureBytes(
+      trustedFixtureBytes,
       trusted,
       options.sourceRoot ?? REPO_ROOT,
       false,
@@ -717,7 +853,12 @@ export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BAS
   }
   const expectedDigest = sha256(reportBytes);
   const expectedChecksum = `${expectedDigest}  ${basename(reportPath)}\n`;
-  if (readFileSync(`${reportPath}.sha256`, 'utf8') !== expectedChecksum) {
+  const checksumBytes = readStableInput(
+    `${filesystemPath(reportPath)}.sha256`,
+    'report checksum',
+    MAX_CHECKSUM_BYTES,
+  ).bytes;
+  if (!checksumBytes.equals(Buffer.from(expectedChecksum, 'utf8'))) {
     throw new Error('companion SHA-256 does not match the report bytes');
   }
   return { scenarioCount: reportIds.length, uncovered: counts.uncovered, digest: expectedDigest };
@@ -725,7 +866,7 @@ export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BAS
 
 function parseArgs(args) {
   const reportPath = args.shift();
-  if (!reportPath) throw new Error('usage: verify-adversarial-evidence <report.json> [--baseline path] [--trusted-baseline path] [--trusted-fixture path] [--fixture path] [--expected-commit sha] [--require-clean]');
+  if (!reportPath) throw new Error('usage: verify-adversarial-evidence <report.json> [--baseline path] [--trusted-commit sha] [--fixture path] [--expected-commit sha] [--require-clean]');
   let baselinePath = DEFAULT_BASELINE;
   const options = {};
   while (args.length > 0) {
@@ -734,14 +875,16 @@ function parseArgs(args) {
     const value = args.shift();
     if (!value) throw new Error(`${flag} requires a value`);
     if (flag === '--baseline') baselinePath = resolve(value);
-    else if (flag === '--trusted-baseline') options.trustedBaselinePath = resolve(value);
-    else if (flag === '--trusted-fixture') options.trustedFixturePath = resolve(value);
+    else if (flag === '--trusted-commit') options.trustedCommit = value;
     else if (flag === '--fixture') options.fixturePath = resolve(value);
     else if (flag === '--expected-commit') options.expectedCommit = value;
     else throw new Error(`unsupported option ${flag}`);
   }
   if (options.expectedCommit !== undefined && !/^[0-9a-f]{40}$/.test(options.expectedCommit)) {
     throw new Error('--expected-commit must be a full lowercase commit SHA');
+  }
+  if (options.trustedCommit !== undefined && !/^[0-9a-f]{40}$/.test(options.trustedCommit)) {
+    throw new Error('--trusted-commit must be a full lowercase commit SHA');
   }
   return { reportPath: resolve(reportPath), baselinePath, options };
 }

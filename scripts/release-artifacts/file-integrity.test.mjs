@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   appendFileSync,
   chmodSync,
+  mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,4 +50,31 @@ describe("stable regular-file reads", () => {
       }),
     ).toThrow("changed while reading");
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a symbolic-link input without following it",
+    () => {
+      const value = fixture();
+      const alias = join(value.root, "alias.bin");
+      symlinkSync(value.path, alias);
+      expect(() => readStableRegularFile(value.root, alias)).toThrow(
+        "contains a symbolic-link component",
+      );
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a symbolic-link directory component inside the root",
+    () => {
+      const value = fixture();
+      const target = join(value.root, "target");
+      const alias = join(value.root, "alias");
+      mkdirSync(target);
+      writeFileSync(join(target, "subject.bin"), "subject");
+      symlinkSync(target, alias);
+      expect(() =>
+        readStableRegularFile(value.root, join(alias, "subject.bin")),
+      ).toThrow("contains a symbolic-link component");
+    },
+  );
 });

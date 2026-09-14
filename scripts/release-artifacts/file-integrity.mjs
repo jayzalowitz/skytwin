@@ -42,6 +42,20 @@ function openStableRegularFile(root, path) {
   if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
     throw new Error(`${root} is not a real directory`);
   const realRoot = realpathSync(absoluteRoot);
+  const pathWithinRoot = relative(absoluteRoot, absolutePath);
+  if (
+    pathWithinRoot === "" ||
+    pathWithinRoot === ".." ||
+    pathWithinRoot.startsWith(`..${sep}`) ||
+    isAbsolute(pathWithinRoot)
+  )
+    throw new Error(`${path} escapes artifact root`);
+  let componentPath = absoluteRoot;
+  for (const component of pathWithinRoot.split(sep)) {
+    componentPath = join(componentPath, component);
+    if (lstatSync(componentPath).isSymbolicLink())
+      throw new Error(`${path} contains a symbolic-link component`);
+  }
   const parent = dirname(absolutePath);
   const parentStat = lstatSync(parent, { bigint: true });
   if (!parentStat.isDirectory() || parentStat.isSymbolicLink())

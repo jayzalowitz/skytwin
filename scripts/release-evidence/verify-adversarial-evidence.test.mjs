@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import {
   validateSourceInventory,
@@ -135,12 +136,93 @@ function withRepository(run) {
   }
 }
 
+function commitTrustedEvidence(directory, { includeBaseline = true, includeFixture = true } = {}) {
+  if (includeBaseline) {
+    const trustedBaselinePath = join(
+      directory,
+      'scripts/release-evidence/adversarial-source-checkout-baseline.json',
+    );
+    mkdirSync(join(directory, 'scripts/release-evidence'), { recursive: true });
+    writeFileSync(trustedBaselinePath, readFileSync(baselinePath));
+  }
+  if (includeFixture) {
+    const trustedFixturePath = join(
+      directory,
+      'packages/evals/fixtures/v1/adversarial-scenarios.json',
+    );
+    mkdirSync(join(directory, 'packages/evals/fixtures/v1'), { recursive: true });
+    writeFileSync(trustedFixturePath, readFileSync(fixturePath));
+  }
+  execFileSync('git', ['add', '.'], { cwd: directory });
+  execFileSync('git', ['commit', '--quiet', '-m', 'trusted evidence'], { cwd: directory });
+  return execFileSync('git', ['rev-parse', 'HEAD'], {
+    cwd: directory,
+    encoding: 'utf8',
+  }).trim();
+}
+
+function immutableTrustOptions(context, trustedCommit, expectedCommit = trustedCommit) {
+  const { trustedFixturePath: _unused, ...options } = context.options;
+  return { ...options, trustedCommit, expectedCommit };
+}
+
 test('accepts canonical fixture-bound evidence matching the live checkout', () => withRepository((context) => {
   const verified = verifyAdversarialEvidence(
     writeEvidence(context.directory, validReport(context.commit)), baselinePath, context.options,
   );
   assert.equal(verified.scenarioCount, baseline.exactIds.length);
 }));
+
+test('reads the trusted baseline and fixture directly from an immutable commit', () =>
+  withRepository((context) => {
+    const trustedCommit = commitTrustedEvidence(context.directory);
+    const verified = verifyAdversarialEvidence(
+      writeEvidence(context.directory, validReport(trustedCommit)),
+      baselinePath,
+      immutableTrustOptions(context, trustedCommit),
+    );
+    assert.equal(verified.scenarioCount, baseline.exactIds.length);
+  }));
+
+test('allows immutable-trust bootstrap only when both trusted inputs are absent', () =>
+  withRepository((context) => {
+    const verified = verifyAdversarialEvidence(
+      writeEvidence(context.directory, validReport(context.commit)),
+      baselinePath,
+      immutableTrustOptions(context, context.commit),
+    );
+    assert.equal(verified.scenarioCount, baseline.exactIds.length);
+  }));
+
+test('rejects an immutable trusted commit containing only one evidence input', () =>
+  withRepository((context) => {
+    const trustedCommit = commitTrustedEvidence(context.directory, { includeFixture: false });
+    assert.throws(
+      () => verifyAdversarialEvidence(
+        writeEvidence(context.directory, validReport(trustedCommit)),
+        baselinePath,
+        immutableTrustOptions(context, trustedCommit),
+      ),
+      /must contain both adversarial baseline and fixture or neither/,
+    );
+  }));
+
+test('rejects mutable trusted paths combined with an immutable trusted commit', () =>
+  withRepository((context) => {
+    const trustedCommit = commitTrustedEvidence(context.directory);
+    assert.throws(
+      () => verifyAdversarialEvidence(
+        writeEvidence(context.directory, validReport(trustedCommit)),
+        baselinePath,
+        {
+          ...immutableTrustOptions(context, trustedCommit),
+          trustedBaselinePath: baselinePath,
+          trustedFixturePath: fixturePath,
+        },
+      ),
+      /cannot be combined with trusted filesystem paths/,
+    );
+  }));
 
 test('source inventory rejects renamed and newly introduced execution dispatch callsites', () => {
   const directory = mkdtempSync(join(tmpdir(), 'skytwin-source-inventory-'));
@@ -690,6 +772,57 @@ test('rejects duplicate keys in current and trusted fixture/baseline inputs', ()
     });
   }
 });
+
+test('rejects nested duplicate keys whose spellings use equivalent JSON escapes', () =>
+  withRepository((context) => {
+    const changedBaselinePath = join(context.directory, 'baseline.json');
+    const duplicate = readFileSync(baselinePath, 'utf8').replace(
+      '"runtimeEntryPaths": [',
+      '"runtimeEntryPaths": [],\n    "\\u0072untimeEntryPaths": [',
+    );
+    writeFileSync(changedBaselinePath, duplicate);
+    assert.throws(
+      () => verifyAdversarialEvidence(
+        writeEvidence(context.directory, validReport(context.commit)),
+        changedBaselinePath,
+        context.options,
+      ),
+      /baseline contains duplicate JSON key "runtimeEntryPaths"/,
+    );
+  }));
+
+test('rejects malformed UTF-8 before interpreting baseline JSON', () =>
+  withRepository((context) => {
+    const changedBaselinePath = join(context.directory, 'baseline.json');
+    const bytes = Buffer.from(readFileSync(baselinePath));
+    const index = bytes.indexOf(Buffer.from('source_checkout'));
+    assert.notEqual(index, -1);
+    bytes[index] = 0xff;
+    writeFileSync(changedBaselinePath, bytes);
+    assert.throws(
+      () => verifyAdversarialEvidence(
+        writeEvidence(context.directory, validReport(context.commit)),
+        changedBaselinePath,
+        context.options,
+      ),
+      /baseline is not valid UTF-8/,
+    );
+  }));
+
+test('rejects symlinked evidence inputs before parsing them', {
+  skip: process.platform === 'win32',
+}, () => withRepository((context) => {
+  const linkedFixture = join(context.directory, 'linked-fixture.json');
+  symlinkSync(fileURLToPath(fixturePath), linkedFixture);
+  assert.throws(
+    () => verifyAdversarialEvidence(
+      writeEvidence(context.directory, validReport(context.commit)),
+      baselinePath,
+      { ...context.options, fixturePath: linkedFixture },
+    ),
+    /fixture could not be read safely.*symbolic-link component/,
+  );
+}));
 
 test('rejects invalid actual enums and contradictory mapped semantics', () => withRepository((context) => {
   const invalid = validReport(context.commit);

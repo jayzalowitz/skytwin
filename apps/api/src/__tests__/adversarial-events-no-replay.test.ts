@@ -276,6 +276,15 @@ function buildApp(): Express {
   return app;
 }
 
+const mappedScenario = {
+  runtimeEntryPath: 'api.events_ingest',
+  adapter: 'none',
+  criticalShape: 'send',
+  action: { actionType: 'send_email', reversible: false, parameters: {} },
+  origin: { kind: 'email', source: 'gmail', authoringTier: 'inbox_automated' },
+  provenance: 'untrusted_external',
+} as const;
+
 function ingestState(
   effectState: 'non_effect' | 'ready' | 'running' | 'completed' | 'failed' | 'restored_non_replay',
   continuationKind: 'auto_execute' | 'approval' | 'non_effect' =
@@ -284,9 +293,10 @@ function ingestState(
       : 'non_effect',
 ) {
   const selectedAction = continuationKind === 'non_effect' ? null : {
-    id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
-    description: 'Create calendar event', domain: 'calendar', parameters: {},
-    reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+    id: 'action-1', decisionId: 'decision-1', ...mappedScenario.action,
+    description: 'Send email', domain: 'email',
+    provenance: mappedScenario.provenance,
+    estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
   };
   return {
     receiptCaptureComplete: true,
@@ -352,13 +362,28 @@ it('adv-v1-events-no-replay-ambiguous never redispatches an uncertain prior exec
     rawData: {},
     interpretedAt: new Date('2026-01-01T00:00:00.000Z'),
   });
-  mockGetIngestState.mockResolvedValue(ingestState('running'));
+  const priorIngestState = ingestState('running');
+  const priorAction = priorIngestState.continuation.outcome.selectedAction;
+  expect({
+    runtimeEntryPath: mappedScenario.runtimeEntryPath,
+    adapter: mappedScenario.adapter,
+    criticalShape: mappedScenario.criticalShape,
+    action: {
+      actionType: priorAction?.actionType,
+      reversible: priorAction?.reversible,
+      parameters: priorAction?.parameters,
+    },
+    origin: mappedScenario.origin,
+    provenance: priorAction?.provenance,
+  }).toEqual(mappedScenario);
+  mockGetIngestState.mockResolvedValue(priorIngestState);
 
   const response = await request(buildApp(), 'POST', '/api/events/ingest', {
     userId,
     signalId: 'signal-1',
-    source: 'gmail',
-    type: 'email',
+    source: mappedScenario.origin.source,
+    type: mappedScenario.origin.kind,
+    data: { authoringTier: mappedScenario.origin.authoringTier },
   });
 
   expect(response.status).toBe(200);
