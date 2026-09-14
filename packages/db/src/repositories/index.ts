@@ -21,6 +21,11 @@ export type { CreatePolicyInput, UpdatePolicyInput } from './policy-repository.j
 
 export { explanationRepository } from './explanation-repository.js';
 export type { CreateExplanationInput } from './explanation-repository.js';
+export { routineNonActionRepository } from './routine-non-action-repository.js';
+export type {
+  RecordRoutineNonActionInput,
+  RecordRoutineNonActionResult,
+} from './routine-non-action-repository.js';
 export { inferenceReceiptRepository } from './inference-receipt-repository.js';
 export type { CreateInferenceReceiptInput } from './inference-receipt-repository.js';
 

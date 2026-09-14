@@ -12,9 +12,8 @@ import { ConfidenceLevel, SituationType, TrustTier } from '@skytwin/shared-types
 import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
 import { RiskAssessor } from '@skytwin/decision-engine';
 import {
-  decisionRepositoryAdapter,
-  explanationRepositoryAdapter,
   policyRepositoryAdapter,
+  routineNonActionRepository,
   userRepository,
 } from '@skytwin/db';
 import { getIronClawEnhancedAdapter } from '../execution-setup.js';
@@ -26,6 +25,7 @@ import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 const CRON_REGEX = /^[0-9*/,-]+( [0-9*/,-]+){4,5}$/;
 const MAX_CRON_LENGTH = 128;
 const MAX_ROUTINE_ID_LENGTH = 256;
+const MAX_ACTION_TYPE_LENGTH = 128;
 
 // If routine registration is re-enabled after per-run admission exists, it may
 // only schedule a known free + reversible action type. Cost, reversibility,
@@ -88,7 +88,8 @@ export function createRoutinesRouter(): Router {
         return;
       }
 
-      if (!plan.action || !plan.action.actionType) {
+      const actionType = normalizeActionType(plan.action?.actionType);
+      if (!plan.action || actionType === null) {
         res.status(400).json({ error: 'Plan must include an action with an actionType.' });
         return;
       }
@@ -103,7 +104,8 @@ export function createRoutinesRouter(): Router {
         userId,
         schedule,
         plan.action,
-        routineRegistrationIdempotencyKey(req.get('idempotency-key'), schedule, plan.action),
+        actionType,
+        routineRegistrationIdempotencyKey(req.get('idempotency-key'), schedule, actionType, plan.action),
       );
       const policies = await policyRepositoryAdapter.getAllPolicies();
       const policy = await policyEvaluator.evaluate(
@@ -270,33 +272,29 @@ async function persistRoutineNonAction(
   outcome: DecisionOutcome,
   explanation: ExplanationRecord,
 ): Promise<boolean> {
-  const { created } = await decisionRepositoryAdapter.saveDecision(artifacts.decision);
-  if (!created) return false;
-
-  artifacts.action.decisionId = artifacts.decision.id;
-  artifacts.risk.actionId = artifacts.action.id;
-  outcome.decisionId = artifacts.decision.id;
-  explanation.decisionId = artifacts.decision.id;
-
-  await decisionRepositoryAdapter.saveCandidates([artifacts.action]);
-  await decisionRepositoryAdapter.saveRiskAssessment(artifacts.risk);
-  await decisionRepositoryAdapter.saveOutcome(outcome);
-  await explanationRepositoryAdapter.save(explanation);
-  return true;
+  const result = await routineNonActionRepository.record({
+    decision: artifacts.decision,
+    action: artifacts.action,
+    risk: artifacts.risk,
+    outcome,
+    explanation,
+  });
+  return result.created;
 }
 
 function buildRegistrationArtifacts(
   userId: string,
   schedule: string,
   rawAction: ExecutionPlan['action'],
+  actionType: string,
   idempotencyKey: string,
 ): RoutineArtifacts {
   const decisionId = randomUUID();
-  const knownSafe = FREE_ROUTINE_ACTION_TYPES.has(rawAction.actionType);
+  const knownSafe = FREE_ROUTINE_ACTION_TYPES.has(actionType);
   const action: CandidateAction = {
     id: randomUUID(),
     decisionId,
-    actionType: rawAction.actionType,
+    actionType,
     description: typeof rawAction.description === 'string' ? rawAction.description : '',
     domain: typeof rawAction.domain === 'string' ? rawAction.domain : 'general',
     parameters: rawAction.parameters && typeof rawAction.parameters === 'object'
@@ -375,9 +373,9 @@ function buildRoutineOutcome(
   return {
     id: randomUUID(),
     decisionId: artifacts.decision.id,
-    selectedAction: artifacts.action,
+    selectedAction: null,
     allCandidates: [artifacts.action],
-    riskAssessment: artifacts.risk,
+    riskAssessment: null,
     allRiskAssessments: [artifacts.risk],
     autoExecute: false,
     requiresApproval: disposition === 'requires-approval',
@@ -466,15 +464,29 @@ function buildExplanation(
 function routineRegistrationIdempotencyKey(
   suppliedKey: string | undefined,
   schedule: string,
+  actionType: string,
   action: ExecutionPlan['action'],
 ): string {
   const material = suppliedKey?.trim() || stableJson({
     schedule,
-    actionType: action.actionType,
+    actionType,
     domain: action.domain,
     parameters: action.parameters,
   });
   return createHash('sha256').update(material).digest('hex');
+}
+
+function normalizeActionType(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (
+    normalized.length === 0 ||
+    normalized.length > MAX_ACTION_TYPE_LENGTH ||
+    /[\u0000-\u001f\u007f]/u.test(normalized)
+  ) {
+    return null;
+  }
+  return normalized;
 }
 
 function stableJson(value: unknown): string {

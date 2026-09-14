@@ -6,24 +6,14 @@ const mocks = vi.hoisted(() => ({
   findUser: vi.fn(),
   getPolicies: vi.fn(),
   evaluatePolicy: vi.fn(),
-  saveDecision: vi.fn(),
-  saveCandidates: vi.fn(),
-  saveRisk: vi.fn(),
-  saveOutcome: vi.fn(),
-  saveExplanation: vi.fn(),
+  recordNonAction: vi.fn(),
   getAdapter: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
   userRepository: { findById: mocks.findUser },
   policyRepositoryAdapter: { getAllPolicies: mocks.getPolicies },
-  decisionRepositoryAdapter: {
-    saveDecision: mocks.saveDecision,
-    saveCandidates: mocks.saveCandidates,
-    saveRiskAssessment: mocks.saveRisk,
-    saveOutcome: mocks.saveOutcome,
-  },
-  explanationRepositoryAdapter: { save: mocks.saveExplanation },
+  routineNonActionRepository: { record: mocks.recordNonAction },
 }));
 
 vi.mock('@skytwin/policy-engine', () => ({
@@ -114,11 +104,7 @@ describe('Routines API routes', () => {
       requiresApproval: false,
       reason: 'Allowed by current policy.',
     });
-    mocks.saveDecision.mockResolvedValue({ created: true });
-    mocks.saveCandidates.mockResolvedValue([]);
-    mocks.saveRisk.mockImplementation(async (risk) => risk);
-    mocks.saveOutcome.mockImplementation(async (outcome) => outcome);
-    mocks.saveExplanation.mockImplementation(async (explanation) => explanation);
+    mocks.recordNonAction.mockResolvedValue({ created: true, decisionId: 'decision-1' });
     mocks.getAdapter.mockResolvedValue(adapter);
     adapter.createRoutine.mockResolvedValue({ routineId: 'routine-1' });
     adapter.listRoutines.mockResolvedValue([
@@ -138,17 +124,20 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(503);
-      expect(mocks.saveDecision).toHaveBeenCalledOnce();
-      expect(mocks.saveCandidates).toHaveBeenCalledOnce();
-      expect(mocks.saveRisk).toHaveBeenCalledOnce();
-      expect(mocks.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({
-        autoExecute: false,
-        requiresApproval: false,
-        reasoning: expect.stringContaining('runtime policy and explanation admission'),
-      }));
-      expect(mocks.saveExplanation).toHaveBeenCalledWith(expect.objectContaining({
-        summary: 'The routine was not registered.',
-        escalationRationale: expect.stringContaining('runtime policy and explanation admission'),
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: expect.objectContaining({
+          selectedAction: null,
+          riskAssessment: null,
+          allCandidates: [expect.any(Object)],
+          allRiskAssessments: [expect.any(Object)],
+          autoExecute: false,
+          requiresApproval: false,
+          reasoning: expect.stringContaining('runtime policy and explanation admission'),
+        }),
+        explanation: expect.objectContaining({
+          summary: 'The routine was not registered.',
+          escalationRationale: expect.stringContaining('runtime policy and explanation admission'),
+        }),
       }));
       expect(mocks.getAdapter).not.toHaveBeenCalled();
       expect(adapter.createRoutine).not.toHaveBeenCalled();
@@ -171,7 +160,7 @@ describe('Routines API routes', () => {
         },
       });
 
-      const candidate = mocks.saveCandidates.mock.calls[0]![0][0];
+      const candidate = mocks.recordNonAction.mock.calls[0]![0].action;
       expect(candidate).toMatchObject({
         actionType: 'send_email',
         costZeroIntent: 'unknown',
@@ -191,8 +180,8 @@ describe('Routines API routes', () => {
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
-    it('fails closed with no adapter access when explanation persistence fails', async () => {
-      mocks.saveExplanation.mockRejectedValueOnce(new Error('audit store unavailable'));
+    it('fails closed with no adapter access when the atomic audit write fails', async () => {
+      mocks.recordNonAction.mockRejectedValueOnce(new Error('audit transaction rolled back'));
 
       const response = await request(app, 'POST', '/api/routines', {
         userId: USER_ID,
@@ -201,7 +190,7 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(500);
-      expect(response.body).toEqual({ error: 'audit store unavailable' });
+      expect(response.body).toEqual({ error: 'audit transaction rolled back' });
       expect(mocks.getAdapter).not.toHaveBeenCalled();
       expect(adapter.createRoutine).not.toHaveBeenCalled();
     });
@@ -220,17 +209,19 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(403);
-      expect(mocks.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({
-        autoExecute: false,
-        requiresApproval: false,
-        reasoning: 'Spend limit exceeded.',
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: expect.objectContaining({
+          selectedAction: null,
+          riskAssessment: null,
+          reasoning: 'Spend limit exceeded.',
+        }),
+        explanation: expect.any(Object),
       }));
-      expect(mocks.saveExplanation).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
     it('suppresses a replay before writing child artifacts or resolving the adapter', async () => {
-      mocks.saveDecision.mockResolvedValueOnce({ created: false });
+      mocks.recordNonAction.mockResolvedValueOnce({ created: false, decisionId: 'existing' });
 
       const response = await request(app, 'POST', '/api/routines', {
         userId: USER_ID,
@@ -239,9 +230,7 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(409);
-      expect(mocks.saveCandidates).not.toHaveBeenCalled();
-      expect(mocks.saveOutcome).not.toHaveBeenCalled();
-      expect(mocks.saveExplanation).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
@@ -262,7 +251,41 @@ describe('Routines API routes', () => {
       });
 
       expect([missing.status, invalidSchedule.status, missingAction.status]).toEqual([400, 400, 400]);
-      expect(mocks.saveDecision).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['', 'empty'],
+      ['   ', 'whitespace'],
+      ['x'.repeat(129), 'overlong'],
+      ['send_email\nignored', 'control-character'],
+      [42, 'non-string'],
+    ])('rejects %s action types before typed artifacts are built (%s)', async (actionType, _label) => {
+      const response = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
+        schedule: '0 9 * * *',
+        plan: { action: { actionType } },
+      });
+
+      expect(response.status).toBe(400);
+      expect(mocks.evaluatePolicy).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+    });
+
+    it('can retry after an atomic audit failure without touching the adapter', async () => {
+      mocks.recordNonAction
+        .mockRejectedValueOnce(new Error('audit transaction rolled back'))
+        .mockResolvedValueOnce({ created: true, decisionId: 'decision-1' });
+      const requestBody = { userId: USER_ID, schedule: '0 9 * * *', plan: validPlan };
+
+      const first = await request(app, 'POST', '/api/routines', requestBody);
+      const retry = await request(app, 'POST', '/api/routines', requestBody);
+
+      expect(first.status).toBe(500);
+      expect(retry.status).toBe(503);
+      expect(mocks.recordNonAction).toHaveBeenCalledTimes(2);
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
   });
@@ -291,20 +314,20 @@ describe('Routines API routes', () => {
 
       expect(response.status).toBe(503);
       expect(response.body).toMatchObject({ routineId: 'routine-1', deleted: false });
-      expect(mocks.saveCandidates).toHaveBeenCalledWith([
-        expect.objectContaining({
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        action: expect.objectContaining({
           actionType: 'delete_routine',
           reversible: false,
           parameters: { userId: USER_ID, routineId: 'routine-1' },
         }),
-      ]);
-      expect(mocks.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({
-        autoExecute: false,
-        requiresApproval: false,
-        reasoning: expect.stringContaining('durable admission and reconciliation'),
-      }));
-      expect(mocks.saveExplanation).toHaveBeenCalledWith(expect.objectContaining({
-        summary: 'The routine was not deleted.',
+        outcome: expect.objectContaining({
+          selectedAction: null,
+          riskAssessment: null,
+          autoExecute: false,
+          requiresApproval: false,
+          reasoning: expect.stringContaining('durable admission and reconciliation'),
+        }),
+        explanation: expect.objectContaining({ summary: 'The routine was not deleted.' }),
       }));
       expect(mocks.getAdapter).not.toHaveBeenCalled();
       expect(adapter.listRoutines).not.toHaveBeenCalled();
@@ -321,15 +344,15 @@ describe('Routines API routes', () => {
       const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
       expect(response.status).toBe(403);
-      expect(mocks.saveOutcome).toHaveBeenCalledWith(expect.objectContaining({
-        reasoning: 'Routine changes are disabled by policy.',
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
+        outcome: expect.objectContaining({ reasoning: 'Routine changes are disabled by policy.' }),
+        explanation: expect.any(Object),
       }));
-      expect(mocks.saveExplanation).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
-    it('fails closed with no remote calls when deletion explanation persistence fails', async () => {
-      mocks.saveExplanation.mockRejectedValueOnce(new Error('audit store unavailable'));
+    it('fails closed with no remote calls when the deletion audit transaction fails', async () => {
+      mocks.recordNonAction.mockRejectedValueOnce(new Error('audit transaction rolled back'));
 
       const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
@@ -340,14 +363,12 @@ describe('Routines API routes', () => {
     });
 
     it('suppresses deletion replay before child records or remote access', async () => {
-      mocks.saveDecision.mockResolvedValueOnce({ created: false });
+      mocks.recordNonAction.mockResolvedValueOnce({ created: false, decisionId: 'existing' });
 
       const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
 
       expect(response.status).toBe(409);
-      expect(mocks.saveCandidates).not.toHaveBeenCalled();
-      expect(mocks.saveOutcome).not.toHaveBeenCalled();
-      expect(mocks.saveExplanation).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
@@ -358,7 +379,7 @@ describe('Routines API routes', () => {
 
       expect(response.status).toBe(403);
       expect(mocks.findUser).not.toHaveBeenCalled();
-      expect(mocks.saveDecision).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
@@ -367,7 +388,7 @@ describe('Routines API routes', () => {
       const malformedId = await request(app, 'DELETE', `/api/routines/${'x'.repeat(257)}`, { userId: USER_ID });
 
       expect([missingOwner.status, malformedId.status]).toEqual([400, 400]);
-      expect(mocks.saveDecision).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
   });
