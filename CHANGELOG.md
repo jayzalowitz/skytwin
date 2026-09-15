@@ -19,7 +19,10 @@ All notable changes to SkyTwin will be documented in this file.
   attestation-materialization, and tamper-rejection suite before any platform
   package job can start. The symlink-bundle regression now asserts the exact
   earlier fail-closed rejection emitted by the shared stable-file reader, and
-  the release-workflow checker prevents this gate from being removed silently.
+  the gate invokes the three reviewed test files directly through the
+  hash-verified captured Node runtime in a clean environment. The
+  release-workflow checker prevents command, environment, ordering, or failure
+  tolerance changes from weakening it silently.
 
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,

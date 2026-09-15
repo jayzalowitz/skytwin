@@ -551,7 +551,22 @@ jobs:
         run: node scripts/release-claims/capture-release-claim-ci-runtime.mjs
       - run: pnpm install --frozen-lockfile
       - name: Test release artifact construction and verification
-        run: pnpm test:release-artifacts
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: \${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: \${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run \\
+            scripts/release-artifacts/file-integrity.test.mjs \\
+            scripts/release-artifacts/generate-release-manifest.test.mjs \\
+            scripts/release-artifacts/materialize-attestation-bundles.test.mjs
       - name: Produce release claim CI result
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 15
@@ -1895,15 +1910,93 @@ ${step}`,
     );
   });
 
-  it("requires release artifact adversarial tests in the CI gate", () => {
+  const artifactTestStep = `      - name: Test release artifact construction and verification
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: \${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: \${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run \\
+            scripts/release-artifacts/file-integrity.test.mjs \\
+            scripts/release-artifacts/generate-release-manifest.test.mjs \\
+            scripts/release-artifacts/materialize-attestation-bundles.test.mjs
+`;
+
+  it.each([
+    ["removal", (workflow) => workflow.replace(artifactTestStep, "")],
+    [
+      "duplication",
+      (workflow) =>
+        workflow.replace(artifactTestStep, artifactTestStep.repeat(2)),
+    ],
+    [
+      "renaming",
+      (workflow) =>
+        workflow.replace(
+          "Test release artifact construction and verification",
+          "Optional release artifact tests",
+        ),
+    ],
+    [
+      "command substitution",
+      (workflow) =>
+        workflow.replace(
+          "node_modules/vitest/vitest.mjs run \\",
+          "node_modules/vitest/vitest.mjs --help \\",
+        ),
+    ],
+    [
+      "conditional execution",
+      (workflow) =>
+        workflow.replace(
+          "      - name: Test release artifact construction and verification\n",
+          "      - name: Test release artifact construction and verification\n        if: github.event_name == 'push'\n",
+        ),
+    ],
+    [
+      "environment rebinding",
+      (workflow) =>
+        workflow.replace(
+          artifactTestStep,
+          artifactTestStep.replace("BASH_ENV: ''", "BASH_ENV: attacker.sh"),
+        ),
+    ],
+    [
+      "execution after evidence production",
+      (workflow) =>
+        workflow
+          .replace(artifactTestStep, "")
+          .replace(
+            "      - name: Upload release claim CI result\n",
+            `${artifactTestStep}      - name: Upload release claim CI result\n`,
+          ),
+    ],
+  ])("rejects release artifact gate %s", (_name, mutate) => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(path, mutate(readFileSync(path, "utf8")));
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it("rejects failure tolerance on the release-claim CI job", () => {
     const root = makeRoot();
     writeValidFixture(root);
     const path = join(root, ".github/workflows/build.yml");
     writeFileSync(
       path,
       readFileSync(path, "utf8").replace(
-        "      - name: Test release artifact construction and verification\n        run: pnpm test:release-artifacts\n",
-        "",
+        "    runs-on: ubuntu-latest\n",
+        "    runs-on: ubuntu-latest\n    continue-on-error: true\n",
       ),
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
