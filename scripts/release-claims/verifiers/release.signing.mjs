@@ -58,7 +58,8 @@ const MACOS_NATIVE_TOOLS = Object.freeze({
 const MACOS_VERIFICATION_METHODS = Object.freeze({
   "SkyTwin-macOS-dmg":
     "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign",
-  "SkyTwin-macOS-zip": "ditto-contained-app+codesign+gatekeeper+stapler",
+  "SkyTwin-macOS-zip":
+    "bounded-volume+ditto-contained-app+codesign+gatekeeper+stapler",
 });
 const WINDOWS_VERIFICATION_METHOD =
   "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate";
@@ -68,6 +69,10 @@ const WINDOWS_NSIS_PAYLOAD = "$PLUGINSDIR/app-64.7z";
 const WINDOWS_EXECUTABLE_MEMBER = "SkyTwin.exe";
 const MAX_MAC_ZIP_MEMBERS = 100_000;
 const MAX_MAC_ZIP_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;
+// HFS+ partition metadata consumes part of the image. This leaves the full
+// 4 GiB declared-content ceiling available while still enforcing a hard,
+// host-independent upper bound on bytes ditto can materialize.
+const MAC_ZIP_EXTRACTION_VOLUME_SIZE = "4608m";
 const MAX_MAC_ZIP_SYMLINK_BYTES = 4096;
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
@@ -1115,8 +1120,43 @@ export function verifyMacSubjects(
           ),
           "macOS ZIP",
         );
+        const extractionImage = join(extractionRoot, "zip-quota.sparseimage");
+        checkedCommand(
+          execute,
+          MACOS_NATIVE_TOOLS.hdiutil,
+          [
+            "create",
+            "-size",
+            MAC_ZIP_EXTRACTION_VOLUME_SIZE,
+            "-fs",
+            "HFS+",
+            "-volname",
+            "SkyTwinVerification",
+            "-type",
+            "SPARSE",
+            "-quiet",
+            extractionImage,
+          ],
+          { env: commandEnv },
+          "macOS ZIP bounded extraction volume creation",
+        );
         const extracted = join(extractionRoot, "unzipped");
         mkdirSync(extracted);
+        checkedCommand(
+          execute,
+          MACOS_NATIVE_TOOLS.hdiutil,
+          [
+            "attach",
+            "-nobrowse",
+            "-noautoopen",
+            "-mountpoint",
+            extracted,
+            extractionImage,
+          ],
+          { env: commandEnv },
+          "macOS ZIP bounded extraction volume mount",
+        );
+        detachMount = extracted;
         checkedCommand(
           execute,
           MACOS_NATIVE_TOOLS.ditto,
@@ -1223,7 +1263,7 @@ export function verifyMacSubjects(
             MACOS_NATIVE_TOOLS.hdiutil,
             ["detach", detachMount],
             { env: commandEnv },
-            "macOS DMG detach",
+            "macOS verification volume detach",
           );
       } finally {
         rmSync(extractionRoot, { recursive: true, force: true });

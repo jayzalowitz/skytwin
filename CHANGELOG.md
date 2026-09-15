@@ -205,8 +205,10 @@ All notable changes to SkyTwin will be documented in this file.
   then requires the exact contained-app bundle identifier, CDHash, release
   marketing and build versions, arm64 architecture, hardened-runtime,
   Gatekeeper, and notarization observations for both DMG and ZIP. ZIP members,
-  expanded size, and extracted link containment are checked before the signed
-  app is trusted. Windows reports bind both installer and contained executable
+  declared expanded size, and extracted link containment are checked before the
+  signed app is trusted; ZIP extraction also runs on a fixed-capacity sparse
+  volume so dishonest archive size metadata cannot exhaust the runner disk.
+  Windows reports bind both installer and contained executable
   version metadata alongside the exact Authenticode method, pinned signer
   fingerprint, code-signing EKU, and timestamp-certificate observation. Report
   construction and the independent publisher reject omitted, altered, stale,

@@ -207,7 +207,7 @@ function macReportObservation(artifactName, overrides = {}) {
     verificationMethod:
       artifactName === "SkyTwin-macOS-dmg"
         ? "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign"
-        : "ditto-contained-app+codesign+gatekeeper+stapler",
+        : "bounded-volume+ditto-contained-app+codesign+gatekeeper+stapler",
     signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
     signerTeamId: teamId,
     signedIdentifier: "com.skytwin.desktop",
@@ -259,8 +259,12 @@ function macZipListing(records = null) {
 function macExecutor(overrides = {}) {
   let appIndex = 0;
   return vi.fn((file, args) => {
+    if (file === "/usr/bin/hdiutil" && args[0] === "create") {
+      return { exitCode: 0, signal: null, stdout: "created", stderr: "" };
+    }
     if (file === "/usr/bin/hdiutil" && args[0] === "attach") {
-      createMacApp(args[args.indexOf("-mountpoint") + 1]);
+      if (args.includes("-readonly"))
+        createMacApp(args[args.indexOf("-mountpoint") + 1]);
       return { exitCode: 0, signal: null, stdout: "attached", stderr: "" };
     }
     if (file === "/usr/bin/ditto") {
@@ -760,6 +764,37 @@ describe("release.signing canonical verifier", () => {
     ]);
     expect(
       execute.mock.calls.some(
+        ([file, args]) =>
+          file === "/usr/bin/hdiutil" &&
+          args[0] === "create" &&
+          args.includes("4608m") &&
+          args.includes("HFS+") &&
+          args.includes("SPARSE") &&
+          args.at(-1).endsWith("zip-quota.sparseimage"),
+      ),
+    ).toBe(true);
+    const volumeCreateIndex = execute.mock.calls.findIndex(
+      ([file, args]) => file === "/usr/bin/hdiutil" && args[0] === "create",
+    );
+    const volumeAttachIndex = execute.mock.calls.findIndex(
+      ([file, args]) =>
+        file === "/usr/bin/hdiutil" &&
+        args[0] === "attach" &&
+        !args.includes("-readonly"),
+    );
+    const zipExtractIndex = execute.mock.calls.findIndex(
+      ([file]) => file === "/usr/bin/ditto",
+    );
+    expect(volumeCreateIndex).toBeGreaterThan(-1);
+    expect(volumeAttachIndex).toBeGreaterThan(volumeCreateIndex);
+    expect(zipExtractIndex).toBeGreaterThan(volumeAttachIndex);
+    expect(execute.mock.calls[zipExtractIndex][1].at(-1)).toBe(
+      execute.mock.calls[volumeAttachIndex][1][
+        execute.mock.calls[volumeAttachIndex][1].indexOf("-mountpoint") + 1
+      ],
+    );
+    expect(
+      execute.mock.calls.some(
         ([file, args]) => file === "/usr/bin/hdiutil" && args[0] === "attach",
       ),
     ).toBe(true);
@@ -1005,6 +1040,54 @@ describe("release.signing canonical verifier", () => {
     expect(() => parseMacZipListing(zipBomb, "macOS ZIP")).toThrow(
       "expanded size is outside",
     );
+  });
+
+  it("fails closed when actual ZIP expansion exhausts the bounded volume", () => {
+    const root = makeRoot();
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+    const defaultExecute = macExecutor();
+    const execute = vi.fn((file, args, options) => {
+      if (file === "/usr/bin/ditto")
+        return {
+          exitCode: 1,
+          signal: null,
+          stdout: "",
+          stderr: "No space left on device",
+        };
+      return defaultExecute(file, args, options);
+    });
+
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute,
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("macOS ZIP extraction failed");
+    const writableAttach = execute.mock.calls.find(
+      ([file, args]) =>
+        file === "/usr/bin/hdiutil" &&
+        args[0] === "attach" &&
+        !args.includes("-readonly"),
+    );
+    expect(writableAttach).toBeDefined();
+    expect(
+      execute.mock.calls.some(
+        ([file, args]) =>
+          file === "/usr/bin/hdiutil" &&
+          args[0] === "detach" &&
+          args[1] ===
+            writableAttach[1][writableAttach[1].indexOf("-mountpoint") + 1],
+      ),
+    ).toBe(true);
   });
 
   it("rejects a packaged macOS executable changed during native verification", () => {

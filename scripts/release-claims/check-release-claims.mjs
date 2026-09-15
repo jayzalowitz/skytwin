@@ -785,7 +785,10 @@ const MACOS_SIGNING_METHODS = new Map([
     "SkyTwin-macOS-dmg",
     "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign",
   ],
-  ["SkyTwin-macOS-zip", "ditto-contained-app+codesign+gatekeeper+stapler"],
+  [
+    "SkyTwin-macOS-zip",
+    "bounded-volume+ditto-contained-app+codesign+gatekeeper+stapler",
+  ],
 ]);
 const WINDOWS_SIGNING_METHOD =
   "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate";
