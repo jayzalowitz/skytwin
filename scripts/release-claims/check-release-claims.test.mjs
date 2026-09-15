@@ -2673,14 +2673,90 @@ ${step}`,
       verifyMachineEvidenceApplicability("models.verified-delivery", {}, []),
     ).toHaveLength(1);
     const report = {
+      releaseTag: "v0.7.0-beta",
+      runId: 123,
+      runAttempt: 2,
+      repository: "owner/repository",
+      ref: "refs/tags/v0.7.0-beta",
+      releaseArtifactKind: "desktop-installer",
+      releaseArtifactId: 456,
+      releaseArtifactName: "SkyTwin-Linux-AppImage",
+      releaseArtifactSha256: "a".repeat(64),
+      subjectName: "SkyTwin-0.7.0.AppImage",
+      subjectPath: "artifacts/SkyTwin-Linux-AppImage/SkyTwin-0.7.0.AppImage",
+      subjectSha256: "b".repeat(64),
+      producerJobName: "release-claim-models-verified-delivery-linux",
+      verifierPath:
+        "scripts/release-claims/verifiers/models.verified-delivery.mjs",
+      verifierCommand:
+        "node scripts/release-claims/verifiers/models.verified-delivery.mjs --platform linux --output .release-evidence/reports/models.verified-delivery.json",
+      verifierSha256: "c".repeat(64),
+      schemaVersion: 1,
+      generatedBy: "release-machine-verifier",
+      claimId: "models.verified-delivery",
+      result: "pass",
+      sourceCommit: "d".repeat(40),
+      platform: "linux",
+      runnerPlatform: "linux-x64",
       modelArtifacts: [
         {
-          name: "model.gguf",
-          source: "https://models.example/model.gguf",
+          id: "qwen2.5-1.5b-instruct-q4-k-m",
+          name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          source:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          deliveryHost: "us.aws.cdn.hf.co",
+          sourceRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          sourceRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadata:
+            "https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/revision/91cad51170dc346986eccefdc2dd33a9da36ead9?blobs=true",
           license: "Apache-2.0",
-          sha256: "d".repeat(64),
+          licenseName: "Apache License 2.0",
+          licenseUrl:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          exactBytes: 1_117_320_736,
+          sha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
           digestVerificationResult: "pass",
+          stableFileIdentityResult: "pass",
           deletionResult: "pass",
+        },
+      ],
+      checks: [
+        {
+          id: "models.delivery-digest",
+          testId: "models.delivery-digest",
+          result: "pass",
+          observed: {
+            assertion:
+              "The delivered model bytes match the reviewed immutable source pin",
+            measurement:
+              "qwen2.5-1.5b-instruct-q4_k_m.gguf 1117320736 bytes sha256:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-license",
+          testId: "models.delivery-license",
+          result: "pass",
+          observed: {
+            assertion:
+              "The model license is tied to the same immutable source revision",
+            measurement:
+              "Apache-2.0 at https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-delete",
+          testId: "models.delivery-delete",
+          result: "pass",
+          observed: {
+            assertion:
+              "The verified candidate was removed from the isolated verifier workspace",
+            measurement:
+              "stable inode quarantined and deleted after verification",
+            exitCode: 0,
+          },
         },
       ],
     };
@@ -2691,6 +2767,46 @@ ${step}`,
         [],
       ),
     ).toEqual([]);
+
+    for (const field of Object.keys(report.modelArtifacts[0])) {
+      const changed = structuredClone(report);
+      changed.modelArtifacts[0][field] =
+        `${String(changed.modelArtifacts[0][field])}-changed`;
+      expect(
+        verifyMachineEvidenceApplicability(
+          "models.verified-delivery",
+          changed,
+          [],
+        ),
+      ).toHaveLength(1);
+    }
+    const unexpectedModelField = structuredClone(report);
+    unexpectedModelField.modelArtifacts[0].redirectUrl =
+      "https://unreviewed.example/model.gguf";
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        unexpectedModelField,
+        [],
+      ),
+    ).toHaveLength(1);
+    const unexpectedReportField = { ...report, unboundOutput: "secret" };
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        unexpectedReportField,
+        [],
+      ),
+    ).toHaveLength(1);
+    const changedCheck = structuredClone(report);
+    changedCheck.checks[0].observed.measurement = "unbound measurement";
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        changedCheck,
+        [],
+      ),
+    ).toHaveLength(1);
   });
 
   it("requires stable unpacked executable identity for packaged sample evidence", () => {

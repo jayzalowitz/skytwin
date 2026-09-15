@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -12,6 +12,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  readlinkSync,
   readSync,
   realpathSync,
   readdirSync,
@@ -75,6 +76,37 @@ const COMMIT = /^[0-9a-f]{40}$/u;
 const REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u;
 const TAG =
   /^v(?:0|[1-9][0-9]{0,8})(?:\.(?:0|[1-9][0-9]{0,8})){2}(?:(?:\.(?:0|[1-9][0-9]{0,8}))|-beta(?:\.[1-9][0-9]{0,8})?)$/u;
+const GIT = "/usr/bin/git";
+const NULL_DEVICE = "/dev/null";
+const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024;
+const CANONICAL_BLOB_MODES = new Set(["100644", "100755", "120000"]);
+const SOURCE_CHECK_ENV = Object.freeze({
+  PATH: "/usr/bin:/bin",
+  LANG: "C.UTF-8",
+  LC_ALL: "C.UTF-8",
+  TZ: "UTC",
+  GIT_ATTR_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: NULL_DEVICE,
+  GIT_CONFIG_SYSTEM: NULL_DEVICE,
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_TERMINAL_PROMPT: "0",
+});
+const SOURCE_CHECK_GIT_ARGS = Object.freeze([
+  "--no-pager",
+  "--literal-pathspecs",
+  "-c",
+  `core.attributesFile=${NULL_DEVICE}`,
+  "-c",
+  `core.excludesFile=${NULL_DEVICE}`,
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  `core.hooksPath=${NULL_DEVICE}`,
+  "-c",
+  "core.untrackedCache=false",
+]);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -91,7 +123,7 @@ function within(root, candidate) {
 }
 
 function sameFileIdentity(left, right) {
-  return ["dev", "ino", "size", "mtimeNs", "ctimeNs", "nlink"].every(
+  return ["dev", "ino", "size", "mtimeNs", "ctimeNs", "mode", "nlink"].every(
     (field) => left[field] === right[field],
   );
 }
@@ -378,28 +410,317 @@ export async function resolveReleaseArtifact(
   };
 }
 
-function executeGit(args, cwd) {
-  return execFileSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
+function gitResult(root, args, description, { encoding = "utf8", input } = {}) {
+  const result = spawnSync(GIT, [...SOURCE_CHECK_GIT_ARGS, ...args], {
+    cwd: root,
+    env: SOURCE_CHECK_ENV,
+    shell: false,
+    encoding,
+    input,
+    maxBuffer: MAX_GIT_OUTPUT_BYTES,
+  });
+  if (result.error || result.status !== 0)
+    throw new Error(
+      `${description} failed${result.error ? `: ${result.error.message}` : ""}`,
+    );
+  return result.stdout;
+}
+
+function gitOutput(root, args, description) {
+  return gitResult(root, args, description);
+}
+
+function gitBytes(root, args, description, input) {
+  return gitResult(root, args, description, { encoding: null, input });
+}
+
+function decodeGitPath(bytes, description) {
+  const path = bytes.toString("utf8");
+  if (
+    path.length === 0 ||
+    !Buffer.from(path, "utf8").equals(bytes) ||
+    isAbsolute(path) ||
+    path
+      .split("/")
+      .some(
+        (component) =>
+          component.length === 0 || component === "." || component === "..",
+      )
+  )
+    throw new Error(`${description} contains an unsafe path`);
+  return path;
+}
+
+function nullTerminatedRecords(bytes, description) {
+  const records = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    const end = bytes.indexOf(0, offset);
+    if (end < 0) throw new Error(`${description} is not NUL terminated`);
+    records.push(bytes.subarray(offset, end));
+    offset = end + 1;
+  }
+  return records;
+}
+
+function expectedBlobDigests(root, entries) {
+  const output = gitBytes(
+    root,
+    ["cat-file", "--batch"],
+    "model verifier source object read",
+    `${entries.map((entry) => entry.object).join("\n")}\n`,
+  );
+  let offset = 0;
+  for (const entry of entries) {
+    const headerEnd = output.indexOf(10, offset);
+    if (headerEnd < 0)
+      throw new Error("model verifier source object output is incomplete");
+    const header = output.subarray(offset, headerEnd).toString("ascii");
+    const match = header.match(/^([a-f0-9]{40}) blob ([0-9]+)$/u);
+    if (!match || match[1] !== entry.object)
+      throw new Error("model verifier source object identity is invalid");
+    const size = Number(match[2]);
+    if (!Number.isSafeInteger(size) || size < 0)
+      throw new Error("model verifier source object size is invalid");
+    const bodyStart = headerEnd + 1;
+    const bodyEnd = bodyStart + size;
+    if (bodyEnd >= output.length || output[bodyEnd] !== 10)
+      throw new Error("model verifier source object body is incomplete");
+    const bytes = output.subarray(bodyStart, bodyEnd);
+    const objectIdentity = createHash("sha1")
+      .update(`blob ${size}\0`)
+      .update(bytes)
+      .digest("hex");
+    if (objectIdentity !== entry.object)
+      throw new Error("model verifier source object content is invalid");
+    entry.size = size;
+    entry.sha256 = createHash("sha256").update(bytes).digest("hex");
+    offset = bodyEnd + 1;
+  }
+  if (offset !== output.length)
+    throw new Error("model verifier source object output has trailing bytes");
+}
+
+function captureSourceSnapshot(root, sourceCommit) {
+  const head = gitOutput(
+    root,
+    ["rev-parse", "--verify", "HEAD^{commit}"],
+    "model verifier source identity check",
+  ).trim();
+  if (head !== sourceCommit)
+    throw new Error("GITHUB_SHA does not match checked-out HEAD");
+
+  const tree = gitBytes(
+    root,
+    ["ls-tree", "-rz", "--full-tree", sourceCommit],
+    "model verifier source tree inventory",
+  );
+  const entries = nullTerminatedRecords(
+    tree,
+    "model verifier source tree inventory",
+  ).map((record) => {
+    const tab = record.indexOf(9);
+    const header = tab < 0 ? "" : record.subarray(0, tab).toString("ascii");
+    const match = header.match(/^([0-7]{6}) ([a-z]+) ([a-f0-9]{40})$/u);
+    if (
+      !match ||
+      match[2] !== "blob" ||
+      !CANONICAL_BLOB_MODES.has(match[1]) ||
+      !COMMIT.test(match[3])
+    )
+      throw new Error(
+        "model verifier source tree contains an unsupported entry",
+      );
+    return {
+      mode: match[1],
+      object: match[3],
+      path: decodeGitPath(
+        record.subarray(tab + 1),
+        "model verifier source tree",
+      ),
+    };
+  });
+  if (
+    entries.length === 0 ||
+    new Set(entries.map((entry) => entry.path)).size !== entries.length
+  )
+    throw new Error(
+      "model verifier source tree inventory is empty or ambiguous",
+    );
+  expectedBlobDigests(root, entries);
+  return Object.freeze({
+    sourceCommit,
+    entries: Object.freeze(entries.map((entry) => Object.freeze(entry))),
   });
 }
 
-export function assertSourceCheckout(root, identity, git = executeGit) {
-  const head = git(["rev-parse", "HEAD"], root).trim();
-  assert(
-    head === identity.sourceCommit,
-    "GITHUB_SHA does not match checked-out HEAD",
+function assertNoSymlinkParents(root, absolute, description) {
+  const path = relative(root, absolute);
+  let current = root;
+  for (const component of path.split(sep).slice(0, -1)) {
+    current = resolve(current, component);
+    const stat = lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error(`${description} traverses a symlink or non-directory`);
+  }
+}
+
+function observeRegularFile(root, absolute, description) {
+  assertNoSymlinkParents(root, absolute, description);
+  const beforePath = lstatSync(absolute, { bigint: true });
+  if (
+    !beforePath.isFile() ||
+    beforePath.isSymbolicLink() ||
+    beforePath.nlink !== 1n
+  )
+    throw new Error(`${description} is not a single-link regular file`);
+  const descriptor = openSync(
+    absolute,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
   );
-  const status = git(
-    ["status", "--porcelain=v1", "--untracked-files=no"],
-    root,
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || !sameFileIdentity(before, beforePath))
+      throw new Error(`${description} changed before inspection`);
+    const digest = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    for (;;) {
+      const count = readSync(descriptor, buffer, 0, buffer.length, position);
+      if (count === 0) break;
+      position += count;
+      digest.update(buffer.subarray(0, count));
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const afterPath = lstatSync(absolute, { bigint: true });
+    if (
+      !sameFileIdentity(before, after) ||
+      !sameFileIdentity(after, afterPath) ||
+      BigInt(position) !== after.size
+    )
+      throw new Error(`${description} changed during inspection`);
+    return {
+      size: position,
+      sha256: digest.digest("hex"),
+      executable: (after.mode & 0o111n) !== 0n,
+    };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function observeSymlink(root, absolute, description) {
+  assertNoSymlinkParents(root, absolute, description);
+  const before = lstatSync(absolute, { bigint: true });
+  if (!before.isSymbolicLink() || before.nlink !== 1n)
+    throw new Error(`${description} is not a single-link symbolic link`);
+  const target = readlinkSync(absolute, { encoding: "buffer" });
+  const after = lstatSync(absolute, { bigint: true });
+  if (!sameFileIdentity(before, after))
+    throw new Error(`${description} changed during inspection`);
+  return {
+    size: target.length,
+    sha256: createHash("sha256").update(target).digest("hex"),
+    executable: false,
+  };
+}
+
+function parseIndexEntries(bytes) {
+  return nullTerminatedRecords(bytes, "model verifier index inventory").map(
+    (record) => {
+      const tab = record.indexOf(9);
+      const header = tab < 0 ? "" : record.subarray(0, tab).toString("ascii");
+      const match = header.match(/^([0-7]{6}) ([a-f0-9]{40}) ([0-3])$/u);
+      if (!match)
+        throw new Error("model verifier index inventory is malformed");
+      return {
+        mode: match[1],
+        object: match[2],
+        stage: match[3],
+        path: decodeGitPath(record.subarray(tab + 1), "model verifier index"),
+      };
+    },
   );
-  assert(
-    status === "",
-    "model verifier requires an unmodified tracked checkout",
+}
+
+function assertCanonicalIndex(root, snapshot) {
+  const indexEntries = parseIndexEntries(
+    gitBytes(
+      root,
+      ["ls-files", "--stage", "-z"],
+      "model verifier index inventory",
+    ),
   );
+  const expected = snapshot.entries.map(({ mode, object, path }) => ({
+    mode,
+    object,
+    stage: "0",
+    path,
+  }));
+  if (JSON.stringify(indexEntries) !== JSON.stringify(expected))
+    throw new Error("model verifier index differs from the triggering commit");
+
+  const flags = nullTerminatedRecords(
+    gitBytes(root, ["ls-files", "-v", "-z"], "model verifier index flags"),
+    "model verifier index flags",
+  );
+  if (flags.length !== snapshot.entries.length)
+    throw new Error("model verifier index flags are incomplete");
+  for (let index = 0; index < flags.length; index += 1) {
+    const record = flags[index];
+    if (record.length < 3 || record[1] !== 32)
+      throw new Error("model verifier index flags are malformed");
+    const flag = String.fromCharCode(record[0]);
+    const path = decodeGitPath(
+      record.subarray(2),
+      "model verifier index flags",
+    );
+    if (
+      path !== snapshot.entries[index].path ||
+      flag === "S" ||
+      flag.toLowerCase() === flag
+    )
+      throw new Error(
+        "model verifier index uses skip-worktree or assume-unchanged state",
+      );
+  }
+}
+
+export function assertSourceCheckout(rootPath, identity) {
+  const root = realpathSync(resolve(rootPath));
+  const snapshot = captureSourceSnapshot(root, identity.sourceCommit);
+  assertCanonicalIndex(root, snapshot);
+  for (const entry of snapshot.entries) {
+    const absolute = resolve(root, entry.path);
+    const path = relative(root, absolute);
+    if (path === "" || path === ".." || path.startsWith(`..${sep}`))
+      throw new Error("model verifier source path escapes the repository");
+    let observed;
+    try {
+      observed =
+        entry.mode === "120000"
+          ? observeSymlink(
+              root,
+              absolute,
+              `model verifier source ${entry.path}`,
+            )
+          : observeRegularFile(
+              root,
+              absolute,
+              `model verifier source ${entry.path}`,
+            );
+    } catch (error) {
+      if (error && typeof error === "object" && error.code === "ENOENT")
+        throw new Error("model verifier source tree changed during inspection");
+      throw error;
+    }
+    if (
+      observed.size !== entry.size ||
+      observed.sha256 !== entry.sha256 ||
+      observed.executable !== (entry.mode === "100755")
+    )
+      throw new Error("model verifier source tree changed during inspection");
+  }
 }
 
 export function inspectReleaseSubject(root, releaseTag, artifact) {

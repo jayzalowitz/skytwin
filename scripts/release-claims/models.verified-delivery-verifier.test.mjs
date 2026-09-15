@@ -1,5 +1,8 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
+  existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
@@ -8,6 +11,7 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +21,7 @@ import { MODEL_REGISTRY } from "../../packages/embedded-llm/src/model-registry.t
 import {
   CANONICAL_MODEL,
   CHECK_IDS,
+  assertSourceCheckout,
   buildReport,
   downloadAndVerifyModel,
   inspectReleaseSubject,
@@ -65,6 +70,26 @@ function testModel(bytes = Buffer.from("immutable model bytes")) {
   };
 }
 
+function canonicalModelArtifact() {
+  return {
+    id: CANONICAL_MODEL.id,
+    name: CANONICAL_MODEL.name,
+    source: CANONICAL_MODEL.source,
+    deliveryHost: CANONICAL_MODEL.allowedRedirectHosts[0],
+    sourceRepository: CANONICAL_MODEL.repository,
+    sourceRevision: CANONICAL_MODEL.revision,
+    metadata: CANONICAL_MODEL.metadata,
+    license: CANONICAL_MODEL.license.spdxId,
+    licenseName: CANONICAL_MODEL.license.name,
+    licenseUrl: CANONICAL_MODEL.license.url,
+    exactBytes: CANONICAL_MODEL.exactBytes,
+    sha256: CANONICAL_MODEL.sha256,
+    digestVerificationResult: "pass",
+    stableFileIdentityResult: "pass",
+    deletionResult: "pass",
+  };
+}
+
 function bytesResponse(bytes, overrides = {}) {
   return new Response(bytes, {
     status: overrides.status ?? 200,
@@ -85,6 +110,48 @@ function identity(overrides = {}) {
     runAttempt: 2,
     token: "token-that-is-long-enough",
     ...overrides,
+  };
+}
+
+function git(root, args, env = {}) {
+  const result = spawnSync("/usr/bin/git", args, {
+    cwd: root,
+    env: {
+      PATH: "/usr/bin:/bin",
+      LANG: "C.UTF-8",
+      LC_ALL: "C.UTF-8",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_SYSTEM: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      ...env,
+    },
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0)
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function sourceCheckout() {
+  const root = temporaryRoot("model-source-checkout-");
+  writeFileSync(join(root, "tracked.txt"), "reviewed source\n");
+  writeFileSync(join(root, "target.txt"), "reviewed target\n");
+  symlinkSync("target.txt", join(root, "tracked-link"));
+  git(root, ["init", "--quiet"]);
+  git(root, ["add", "--all"]);
+  git(root, [
+    "-c",
+    "user.name=Verifier Test",
+    "-c",
+    "user.email=verifier@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "fixture",
+  ]);
+  return {
+    root,
+    identity: identity({ sourceCommit: git(root, ["rev-parse", "HEAD"]) }),
   };
 }
 
@@ -111,6 +178,87 @@ describe("reviewed model pin", () => {
       sha256: registry.sha256,
       license: { ...registry.license },
     });
+  });
+});
+
+describe("source checkout identity", () => {
+  it.each(["--skip-worktree", "--assume-unchanged"])(
+    "rejects a hidden tracked modification marked %s",
+    (flag) => {
+      const fixture = sourceCheckout();
+      git(fixture.root, ["update-index", flag, "tracked.txt"]);
+      writeFileSync(join(fixture.root, "tracked.txt"), "unreviewed source\n");
+      expect(
+        git(fixture.root, ["status", "--porcelain=v1", "--untracked-files=no"]),
+      ).toBe("");
+      expect(() =>
+        assertSourceCheckout(fixture.root, fixture.identity),
+      ).toThrow(/skip-worktree|assume-unchanged/);
+    },
+  );
+
+  it("uses the absolute Git binary and ignores inherited config, index, and fsmonitor authority", () => {
+    const fixture = sourceCheckout();
+    const attacker = temporaryRoot("model-git-attacker-");
+    const pathMarker = join(attacker, "path-git-ran");
+    const monitorMarker = join(attacker, "fsmonitor-ran");
+    const fakeGit = join(attacker, "git");
+    const fakeMonitor = join(attacker, "fsmonitor");
+    writeFileSync(fakeGit, `#!/bin/sh\n: > '${pathMarker}'\nexit 1\n`);
+    writeFileSync(fakeMonitor, `#!/bin/sh\n: > '${monitorMarker}'\nexit 1\n`);
+    chmodSync(fakeGit, 0o755);
+    chmodSync(fakeMonitor, 0o755);
+    git(fixture.root, ["config", "core.fsmonitor", fakeMonitor]);
+
+    const names = [
+      "PATH",
+      "GIT_INDEX_FILE",
+      "GIT_CONFIG_COUNT",
+      "GIT_CONFIG_KEY_0",
+      "GIT_CONFIG_VALUE_0",
+    ];
+    const previous = Object.fromEntries(
+      names.map((name) => [name, process.env[name]]),
+    );
+    try {
+      process.env.PATH = attacker;
+      process.env.GIT_INDEX_FILE = join(attacker, "alternate-index");
+      process.env.GIT_CONFIG_COUNT = "1";
+      process.env.GIT_CONFIG_KEY_0 = "core.fsmonitor";
+      process.env.GIT_CONFIG_VALUE_0 = fakeMonitor;
+      expect(() =>
+        assertSourceCheckout(fixture.root, fixture.identity),
+      ).not.toThrow();
+      expect(existsSync(pathMarker)).toBe(false);
+      expect(existsSync(monitorMarker)).toBe(false);
+    } finally {
+      for (const name of names) {
+        if (previous[name] === undefined) delete process.env[name];
+        else process.env[name] = previous[name];
+      }
+    }
+  });
+
+  it("rejects executable-mode, symlink-type, and hard-link changes", () => {
+    const executable = sourceCheckout();
+    chmodSync(join(executable.root, "tracked.txt"), 0o755);
+    expect(() =>
+      assertSourceCheckout(executable.root, executable.identity),
+    ).toThrow(/source tree changed/);
+
+    const symlink = sourceCheckout();
+    unlinkSync(join(symlink.root, "tracked-link"));
+    writeFileSync(join(symlink.root, "tracked-link"), "target.txt");
+    expect(() => assertSourceCheckout(symlink.root, symlink.identity)).toThrow(
+      /symbolic link/,
+    );
+
+    const hardlink = sourceCheckout();
+    const linked = join(hardlink.root, "linked-copy");
+    linkSync(join(hardlink.root, "tracked.txt"), linked);
+    expect(() =>
+      assertSourceCheckout(hardlink.root, hardlink.identity),
+    ).toThrow(/single-link/);
   });
 });
 
@@ -449,14 +597,7 @@ describe("machine report", () => {
           "artifacts/SkyTwin-Linux-AppImage/SkyTwin-0.6.10200.AppImage",
         sha256: "c".repeat(64),
       },
-      modelArtifact: {
-        ...testModel(),
-        source: testModel().source,
-        license: "Apache-2.0",
-        licenseUrl: testModel().license.url,
-        digestVerificationResult: "pass",
-        deletionResult: "pass",
-      },
+      modelArtifact: canonicalModelArtifact(),
       runtime: { platform: "linux", arch: "x64" },
     });
     expect(report).toMatchObject({

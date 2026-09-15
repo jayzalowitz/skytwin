@@ -133,6 +133,91 @@ export const CANONICAL_CLAIM_CATEGORIES = new Map([
   ["release.artifact-verification", "artifact-verification"],
 ]);
 
+const CANONICAL_MODEL_DELIVERY_ARTIFACT = Object.freeze({
+  id: "qwen2.5-1.5b-instruct-q4-k-m",
+  name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  source:
+    "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  deliveryHost: "us.aws.cdn.hf.co",
+  sourceRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+  sourceRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+  metadata:
+    "https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/revision/91cad51170dc346986eccefdc2dd33a9da36ead9?blobs=true",
+  license: "Apache-2.0",
+  licenseName: "Apache License 2.0",
+  licenseUrl:
+    "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+  exactBytes: 1_117_320_736,
+  sha256: "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+  digestVerificationResult: "pass",
+  stableFileIdentityResult: "pass",
+  deletionResult: "pass",
+});
+const CANONICAL_MODEL_DELIVERY_CHECKS = Object.freeze([
+  Object.freeze({
+    id: "models.delivery-digest",
+    testId: "models.delivery-digest",
+    result: "pass",
+    observed: Object.freeze({
+      assertion:
+        "The delivered model bytes match the reviewed immutable source pin",
+      measurement:
+        "qwen2.5-1.5b-instruct-q4_k_m.gguf 1117320736 bytes sha256:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+      exitCode: 0,
+    }),
+  }),
+  Object.freeze({
+    id: "models.delivery-license",
+    testId: "models.delivery-license",
+    result: "pass",
+    observed: Object.freeze({
+      assertion:
+        "The model license is tied to the same immutable source revision",
+      measurement:
+        "Apache-2.0 at https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+      exitCode: 0,
+    }),
+  }),
+  Object.freeze({
+    id: "models.delivery-delete",
+    testId: "models.delivery-delete",
+    result: "pass",
+    observed: Object.freeze({
+      assertion:
+        "The verified candidate was removed from the isolated verifier workspace",
+      measurement: "stable inode quarantined and deleted after verification",
+      exitCode: 0,
+    }),
+  }),
+]);
+const MODEL_DELIVERY_REPORT_FIELDS = Object.freeze([
+  "releaseTag",
+  "runId",
+  "runAttempt",
+  "repository",
+  "ref",
+  "releaseArtifactKind",
+  "releaseArtifactId",
+  "releaseArtifactName",
+  "releaseArtifactSha256",
+  "subjectName",
+  "subjectPath",
+  "subjectSha256",
+  "producerJobName",
+  "verifierPath",
+  "verifierCommand",
+  "verifierSha256",
+  "schemaVersion",
+  "generatedBy",
+  "claimId",
+  "result",
+  "sourceCommit",
+  "platform",
+  "runnerPlatform",
+  "modelArtifacts",
+  "checks",
+]);
+
 const CANONICAL_READINESS_CLAIM_DIGESTS = new Map([
   [
     "storage.desktop-crdb",
@@ -4801,20 +4886,25 @@ export function verifyMachineEvidenceApplicability(
   }
   if (claimId === "models.verified-delivery") {
     const modelArtifacts = asArray(report?.modelArtifacts);
+    const model = modelArtifacts[0];
+    const expectedFields = Object.keys(CANONICAL_MODEL_DELIVERY_ARTIFACT);
     if (
-      modelArtifacts.length === 0 ||
-      modelArtifacts.some(
-        (model) =>
-          !isNonEmptyString(model?.name) ||
-          !isNonEmptyString(model?.source) ||
-          !isNonEmptyString(model?.license) ||
-          !SOURCE_DIGEST.test(model?.sha256 ?? "") ||
-          model?.digestVerificationResult !== "pass" ||
-          model?.deletionResult !== "pass",
-      )
+      !isPlainRecord(report) ||
+      !sameStringSet(Object.keys(report), MODEL_DELIVERY_REPORT_FIELDS) ||
+      !Number.isSafeInteger(report.runAttempt) ||
+      report.runAttempt <= 0 ||
+      report.runnerPlatform !== "linux-x64" ||
+      modelArtifacts.length !== 1 ||
+      !isPlainRecord(model) ||
+      !sameStringSet(Object.keys(model), expectedFields) ||
+      Object.entries(CANONICAL_MODEL_DELIVERY_ARTIFACT).some(
+        ([field, value]) => model[field] !== value,
+      ) ||
+      JSON.stringify(report.checks) !==
+        JSON.stringify(CANONICAL_MODEL_DELIVERY_CHECKS)
     )
       errors.push(
-        "models.verified-delivery machine evidence must identify every recommended model artifact with source, license, digest, verified delivery, and deletion proof",
+        "models.verified-delivery machine evidence must exactly match the canonical model inventory and complete verifier report contract",
       );
   }
   return errors;
@@ -6303,6 +6393,8 @@ export async function verifyPublicationEvidence(
       report.sourceCommit !== releaseCommit ||
       report.releaseTag !== tag ||
       report.runId !== runId ||
+      (claimId === "models.verified-delivery" &&
+        report.runAttempt !== currentRun.run_attempt) ||
       report.repository !== repository ||
       report.ref !== triggerRef ||
       report.platform !== evidence.platform ||

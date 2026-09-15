@@ -21,6 +21,16 @@ All notable changes to SkyTwin will be documented in this file.
   installed-graph contract tests also protect the deliberate parser and
   glob-version boundaries.
 
+- **The model-delivery evidence lane now has a fail-closed Linux verifier in
+  source.** It binds the sole maintained model recommendation to its immutable
+  repository revision, filename, byte count, SHA-256 digest, disclosed license,
+  and allowlisted delivery host; re-hashes a private stable file, proves its
+  deletion, and binds the report to the exact tag, workflow run and attempt,
+  release artifact, source tree, and reviewed verifier. The final consumer
+  independently requires that exact inventory and complete report schema.
+  This implementation has not yet produced evidence from a tagged release and
+  does not advance the limited model-delivery claim.
+
 - **The supported preview is account-free sample only; connected-account access
   is fail-closed.** The packaged desktop carries no provider client authority
   and pins its managed API and worker children to disabled account mode. Google

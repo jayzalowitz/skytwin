@@ -1081,7 +1081,7 @@
       "scope": "Every model recommended to a beta user, including source, digest, bytes, license, compatibility, interruption recovery, disk checks, and deletion/replacement.",
       "owner": "desktop-inference",
       "state": "limited",
-      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. Tagged clean-machine delivery and final artifact evidence are still absent.",
+      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. A fail-closed Linux verifier is present in source, but tagged clean-machine delivery and final artifact evidence are still absent.",
       "evidence": [
         {
           "path": "packages/embedded-llm/src/model-registry.ts",
@@ -1092,6 +1092,11 @@
           "path": "apps/desktop/scripts/build-single-binary.sh",
           "sha256": "df9b6d0b7a55cc2feab93c9a6513e0c09e64f86ee26430bce07dc722e8133707",
           "why": "Desktop bundling downloads and verifies CockroachDB, not a GGUF model"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/models.verified-delivery.mjs",
+          "sha256": "d51799edc785d679058e4cc053dd41b7f8d56f42541d2d7b163b15aec97e7fbf",
+          "why": "The tagged Linux verifier binds the canonical model inventory to current-run delivery, stable bytes, license metadata, and deletion proof"
         }
       ],
       "verification": [
@@ -1102,6 +1107,10 @@
         {
           "command": "pnpm --filter @skytwin/embedded-llm test -- src/__tests__/managed-model-store.test.ts src/__tests__/runtime-compatibility.test.ts",
           "expected": "Managed download, deletion, and runtime compatibility controls pass"
+        },
+        {
+          "command": "pnpm claims:test",
+          "expected": "The verifier's source, delivery, stable-file, deletion, and report-consumer contracts pass within the adversarial release-claims suite"
         }
       ]
     },

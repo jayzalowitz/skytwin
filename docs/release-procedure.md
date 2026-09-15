@@ -27,9 +27,14 @@
 > into the native matrix and has macOS and Windows verifier source, but the
 > package jobs are not credentialed, protected signer pins are not configured,
 > no passing tagged-run evidence exists, and Linux signing remains deliberately
-> blocked pending package-specific trust methods. Five other verifier sources (five reports) and
-> the CI result producer are still absent. The final gate therefore fails closed
-> and the ledger remains blocked until the complete proof pipeline ships.
+> blocked pending package-specific trust methods. The model-delivery lane has
+> a Linux verifier in source that independently pins the maintained model
+> inventory and validates delivery, license, stable file identity, and deletion,
+> but it likewise has no tagged release evidence. The other five
+> machine reports (including Linux signing) and the CI result producer are still
+> absent.
+> The final gate therefore fails closed and the ledger remains blocked until the
+> complete proof pipeline ships.
 
 The supported beta topology is one non-demo human owner per installation.
 Installation credentials are shared configuration, so multi-owner local installs
