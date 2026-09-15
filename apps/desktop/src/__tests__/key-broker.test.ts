@@ -170,7 +170,7 @@ const OWNER_B = '00000000-0000-0000-0000-000000000002';
 const TOKEN_HASH = 'a'.repeat(64);
 
 describe('DesktopKeyBroker', () => {
-  it('keeps the first exact grant stable and rejects same-session replacement', async () => {
+  it('keeps exact grants stable and permits only monotonic same-session renewal', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore());
     const child = new FakeChild();
     await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
@@ -194,10 +194,22 @@ describe('DesktopKeyBroker', () => {
     expect(second.grantId).toBe(first.grantId);
 
     child.emit('message', {
-      ...base, requestId: '3'.repeat(32), ownerId: OWNER_B,
+      ...base, requestId: '3'.repeat(32), expiresAtMs: expiresAtMs + 60_000,
     });
     await tick();
-    expect(child.sent.at(-1)).toMatchObject({ requestId: '3'.repeat(32), success: false });
+    const renewed = child.sent.at(-1) as { requestId: string; success: boolean; grantId: string };
+    expect(renewed).toMatchObject({ requestId: '3'.repeat(32), success: true });
+    expect(renewed.grantId).not.toBe(first.grantId);
+
+    child.emit('message', { ...base, requestId: '4'.repeat(32) });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '4'.repeat(32), success: false });
+    child.emit('message', {
+      ...base, requestId: '5'.repeat(32), ownerId: OWNER_B,
+      expiresAtMs: expiresAtMs + 120_000,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '5'.repeat(32), success: false });
   });
 
   it('denies transient revalidation failure without revoking a live grant', async () => {
@@ -233,6 +245,41 @@ describe('DesktopKeyBroker', () => {
     expect(child.sent.at(-1)).toMatchObject({
       requestId: '6'.repeat(32), result: { success: true },
     });
+  });
+
+  it('retires a superseded lease without tombstoning its session renewal', async () => {
+    const verifySession = vi.fn()
+      .mockResolvedValueOnce({ status: 'active' })
+      .mockResolvedValueOnce({ status: 'superseded' })
+      .mockResolvedValueOnce({ status: 'active' });
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), { verifySession });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    const grantMessage = {
+      type: 'skytwin:vault:owner-grant-request' as const, protocolVersion: 1 as const,
+      capability, role: 'api' as const, ownerKind: 'user' as const,
+      ownerId: context.userId, sessionId: SESSION_A, tokenHash: TOKEN_HASH,
+    };
+    child.emit('message', { ...grantMessage, requestId: '7'.repeat(32), expiresAtMs });
+    await tick();
+    const oldGrantId = (child.sent.at(-1) as { grantId: string }).grantId;
+    child.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: '8'.repeat(32), capability, role: 'api', generation: 1,
+      operation: 'state', context: wireContext(),
+      authority: { kind: 'api_session', sessionId: SESSION_A, grantId: oldGrantId },
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '8'.repeat(32), result: { success: false } });
+
+    child.emit('message', {
+      ...grantMessage, requestId: '9'.repeat(32), expiresAtMs: expiresAtMs + 60_000,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '9'.repeat(32), success: true });
   });
 
   it('starts empty and grants only an exact DB-revalidated API session', async () => {

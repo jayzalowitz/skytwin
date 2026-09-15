@@ -33,8 +33,11 @@ refuses ambiguous existing rows instead of choosing an owner and verifies that
 an `IF NOT EXISTS` namesake is actually the expected global unique index. API
 authentication, last-active maintenance, and conditional expiry refresh happen
 in one CockroachDB statement and use its returned canonical expiry. Concurrent
-exact grant requests share the first admission; a conflicting tuple cannot
-replace it. Electron treats a definitive inactive result as revocation, but a
+exact grant requests share the first admission. Only an independently
+revalidated, strictly later expiry for the same session, owner, and token can
+rotate it; substitutions and non-increasing leases cannot replace it. Electron
+treats a definitive inactive result as revocation and a newer canonical expiry
+as supersession without a tombstone, while a
 transient database failure denies only that operation and preserves the grant
 for a later independently revalidated retry.
 

@@ -27,8 +27,10 @@ All notable changes to SkyTwin will be documented in this file.
   database check for every cryptographic request. Pending responses remain
   bound to that exact live grant. Session-token hashes are globally unique;
   ambiguous legacy rows stop migration, and authentication plus lease refresh
-  is one atomic database statement. Concurrent identical grants coalesce and
-  cannot replace the first grant. A transient database outage denies the
+  is one atomic database statement. Concurrent identical grants coalesce;
+  only an independently revalidated, strictly later expiry for the same
+  session, owner, and token can rotate a grant. Substitutions and stale leases
+  cannot replace it. A transient database outage denies the
   current cryptographic request without turning it into a durable revocation,
   while definitive inactivity removes the grant. Revoke wins delayed-grant races through
   bounded tombstones; expiry, lock admission, malformed authority

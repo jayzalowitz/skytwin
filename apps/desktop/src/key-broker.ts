@@ -218,6 +218,7 @@ export type SessionAuthorityVerifier = (input: {
 
 export type SessionAuthorityVerificationResult =
   | Readonly<{ status: 'active' }>
+  | Readonly<{ status: 'superseded' }>
   | Readonly<{ status: 'inactive' }>
   | Readonly<{ status: 'unavailable' }>;
 
@@ -1197,12 +1198,12 @@ export class DesktopKeyBroker {
       if (
         existing.ownerId !== message.ownerId ||
         existing.tokenHash !== message.tokenHash ||
-        existing.expiresAtMs !== message.expiresAtMs
+        existing.expiresAtMs > message.expiresAtMs
       ) {
         deny();
         return;
       }
-      this.safeSend(child, {
+      if (existing.expiresAtMs === message.expiresAtMs) this.safeSend(child, {
         type: 'skytwin:vault:owner-grant-result',
         protocolVersion: 1,
         requestId: message.requestId,
@@ -1210,7 +1211,7 @@ export class DesktopKeyBroker {
         sessionId: message.sessionId, expiresAtMs: message.expiresAtMs,
         success: true, grantId: existing.grantId, generation: generationAtAdmission,
       } as SourceKeyBrokerOwnerGrantResult);
-      return;
+      if (existing.expiresAtMs === message.expiresAtMs) return;
     }
     if (
       !binding.sessions.has(message.sessionId) &&
@@ -1220,6 +1221,7 @@ export class DesktopKeyBroker {
       deny();
       return;
     }
+    if (existing) this.removeSessionGrant(binding, message.sessionId);
     const grantId = randomBytes(16).toString('hex');
     const timer = setTimeout(() => {
       this.removeSessionGrant(binding, message.sessionId);
@@ -1271,6 +1273,10 @@ export class DesktopKeyBroker {
     }
     if (verification.status === 'inactive') {
       this.tombstoneSession(binding, request.authority.sessionId, grant.expiresAtMs);
+      this.removeSessionGrant(binding, request.authority.sessionId);
+      return false;
+    }
+    if (verification.status === 'superseded') {
       this.removeSessionGrant(binding, request.authority.sessionId);
       return false;
     }

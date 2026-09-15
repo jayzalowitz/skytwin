@@ -82,24 +82,32 @@ describe('sourceKeyRegistryRepository', () => {
       expiresAtMs: 1_800_000_000_000,
     };
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: authority.sessionId }], rowCount: 1,
+      rows: [{ id: authority.sessionId, expires_at: new Date(authority.expiresAtMs) }], rowCount: 1,
     });
     await expect(
       sourceKeyRegistryRepository.revalidateSessionAuthority(authority),
     ).resolves.toEqual({ status: 'active' });
     expect(mockQuery.mock.calls[0]![0]).toContain('token_hash = $3');
     expect(mockQuery.mock.calls[0]![0]).toContain('revoked = false');
-    expect(mockQuery.mock.calls[0]![0]).toContain('expires_at = $4');
     expect(mockQuery.mock.calls[0]![0]).toContain('expires_at > now()');
     expect(mockQuery.mock.calls[0]![1]).toEqual([
       authority.sessionId,
       authority.ownerId,
       authority.tokenHash,
-      new Date(authority.expiresAtMs),
     ]);
 
     mockQuery.mockResolvedValueOnce({
-      rows: [{ id: authority.sessionId }, { id: authority.sessionId }], rowCount: 2,
+      rows: [{ id: authority.sessionId, expires_at: new Date(authority.expiresAtMs + 1) }],
+      rowCount: 1,
+    });
+    await expect(sourceKeyRegistryRepository.revalidateSessionAuthority(authority))
+      .resolves.toEqual({ status: 'superseded' });
+
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        { id: authority.sessionId, expires_at: new Date(authority.expiresAtMs) },
+        { id: authority.sessionId, expires_at: new Date(authority.expiresAtMs) },
+      ], rowCount: 2,
     });
     await expect(
       sourceKeyRegistryRepository.revalidateSessionAuthority(authority),

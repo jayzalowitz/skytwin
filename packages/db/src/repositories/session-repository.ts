@@ -20,6 +20,7 @@ export interface SourceKeySessionAuthorityInput {
 
 export type SessionAuthorityVerificationResult =
   | Readonly<{ status: 'active' }>
+  | Readonly<{ status: 'superseded' }>
   | Readonly<{ status: 'inactive' }>
   | Readonly<{ status: 'unavailable' }>;
 
@@ -41,26 +42,30 @@ export async function revalidateSourceKeySessionAuthority(
     !Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= 0
   ) return Object.freeze({ status: 'inactive' });
   try {
-    const result = await query<{ id: string }>(
-      `SELECT id FROM sessions
+    const result = await query<{ id: string; expires_at: Date }>(
+      `SELECT id, expires_at FROM sessions
         WHERE id = $1
           AND user_id = $2
           AND token_hash = $3
           AND revoked = false
-          AND expires_at = $4
           AND expires_at > now()
         LIMIT 2`,
       [
         input.sessionId,
         input.ownerId,
         input.tokenHash,
-        new Date(input.expiresAtMs),
       ],
     );
+    const row = result.rows.length === 1 ? result.rows[0] : undefined;
+    const persistedExpiry = row === undefined
+      ? Number.NaN
+      : new Date(row.expires_at).getTime();
     return Object.freeze({
-      status: result.rows.length === 1 && result.rows[0]?.id === input.sessionId
+      status: row?.id === input.sessionId && persistedExpiry === input.expiresAtMs
         ? 'active' as const
-        : 'inactive' as const,
+        : row?.id === input.sessionId && persistedExpiry > input.expiresAtMs
+          ? 'superseded' as const
+          : 'inactive' as const,
     });
   } catch {
     return Object.freeze({ status: 'unavailable' });

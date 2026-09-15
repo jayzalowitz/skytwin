@@ -111,8 +111,9 @@ items in this historical inventory are explicitly non-blocking and deferred.
 > Every production child binding starts with empty owner authority. Exact live
 > human API sessions can now receive session-bound authority after independent
 > API and Electron database revalidation. Token hashes are globally unique,
-> lease refresh is atomic, and concurrent exact grants cannot replace one
-> another. Transient database loss denies the current source-key operation
+> lease refresh is atomic. Concurrent exact grants coalesce, and only a
+> revalidated strictly later expiry for the same session/owner/token rotates
+> one. Transient database loss denies the current source-key operation
 > without manufacturing a revocation. Worker, demo, development-bypass,
 > service, and unauthenticated paths remain unable to grant. Recovery wrappers now use
 > the narrow CockroachDB registry adapter with no Electron-store or plaintext

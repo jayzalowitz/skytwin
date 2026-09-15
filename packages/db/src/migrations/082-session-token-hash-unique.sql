@@ -23,4 +23,15 @@ SELECT 1 / 0 AS migration_082_index_shape_assertion
         WHERE seq_in_index = 1 AND column_name = 'token_hash'
           AND NOT storing AND NOT implicit
       ) = 1
+      AND EXISTS (
+        SELECT 1
+          FROM pg_catalog.pg_index AS catalog_index
+          JOIN pg_catalog.pg_class AS index_class
+            ON index_class.oid = catalog_index.indexrelid
+          JOIN pg_catalog.pg_class AS table_class
+            ON table_class.oid = catalog_index.indrelid
+         WHERE index_class.relname = 'sessions_token_hash_unique_idx'
+           AND table_class.relname = 'sessions'
+           AND catalog_index.indpred IS NULL
+      )
  );

@@ -165,6 +165,7 @@ export async function loadSourceKeyRegistryPort(
       if (
         !hasExactDataKeys(result, ["status"]) ||
         (ownData(result, "status") !== "active" &&
+          ownData(result, "status") !== "superseded" &&
           ownData(result, "status") !== "inactive" &&
           ownData(result, "status") !== "unavailable")
       ) {

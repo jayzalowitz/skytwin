@@ -45,4 +45,10 @@ describe.runIf(cockroachAvailable)('session token authority migration on Cockroa
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/division by zero/i);
   }, 30_000);
+
+  it('refuses a partial unique index that occupies the authority index name', () => {
+    const result = run(`${schema}\nCREATE UNIQUE INDEX sessions_token_hash_unique_idx ON sessions (token_hash) WHERE revoked = false;\n${migration}`);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/division by zero/i);
+  }, 30_000);
 });

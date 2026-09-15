@@ -323,7 +323,11 @@ export class SourceKeyBrokerClient {
         authority: existing.authority,
       }));
     }
-    if (existing) return Promise.resolve(unavailable);
+    if (existing && (
+      existing.ownerId !== input.ownerId ||
+      existing.tokenHash !== input.tokenHash ||
+      existing.expiresAtMs >= input.expiresAtMs
+    )) return Promise.resolve(unavailable);
     for (const pending of this.pendingGrants.values()) {
       if (pending.input.sessionId !== input.sessionId) continue;
       if (
@@ -678,6 +682,10 @@ export class SourceKeyBrokerClient {
       sessionId: result.sessionId,
       grantId: result.grantId,
     });
+    const existing = this.sessionGrants.get(result.sessionId);
+    if (existing && existing.authority.grantId !== authority.grantId) {
+      this.settleSession(result.sessionId, 'vault_broker_unavailable');
+    }
     this.sessionGrants.set(result.sessionId, Object.freeze({
       ownerId: result.ownerId,
       tokenHash: pending.input.tokenHash,

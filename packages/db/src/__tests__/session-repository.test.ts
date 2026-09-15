@@ -62,6 +62,7 @@ describe('migration 082', () => {
     expect(sql).toContain('ON sessions (token_hash)');
     expect(sql).toContain('migration_082_index_shape_assertion');
     expect(sql).toContain("index_name = 'sessions_token_hash_unique_idx'");
+    expect(sql).toContain('catalog_index.indpred IS NULL');
     expect(sql).not.toMatch(/WHERE\s+revoked\s*=\s*false/i);
   });
 });

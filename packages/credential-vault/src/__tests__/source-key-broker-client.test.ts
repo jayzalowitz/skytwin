@@ -182,6 +182,21 @@ describe('SourceKeyBrokerClient', () => {
     await expect(client.grantSession({ ...input, tokenHash: 'b'.repeat(64) }))
       .resolves.toEqual({ success: false, error: 'vault_broker_unavailable' });
     expect(grantRequests(transport)).toHaveLength(1);
+
+    const later = client.grantSession({ ...input, expiresAtMs: input.expiresAtMs + 60_000 });
+    const replacement = grantRequests(transport)[1]!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: replacement.requestId, role: 'api', ownerKind: 'user',
+      ownerId: input.ownerId, sessionId: input.sessionId,
+      expiresAtMs: input.expiresAtMs + 60_000, success: true,
+      grantId: 'd'.repeat(32), generation: 1,
+    });
+    await expect(later).resolves.toMatchObject({
+      success: true, authority: { grantId: 'd'.repeat(32) },
+    });
+    await expect(client.grantSession({ ...input, expiresAtMs: input.expiresAtMs - 1 }))
+      .resolves.toEqual({ success: false, error: 'vault_broker_unavailable' });
   });
 
   it('uses only an exact granted API session on every crypto request', async () => {
@@ -243,6 +258,34 @@ describe('SourceKeyBrokerClient', () => {
       success: false, error: 'vault_broker_unavailable',
     });
     expect(requests(transport)).toHaveLength(1);
+  });
+
+  it('settles old-authority work when a monotonic lease replacement lands', async () => {
+    const transport = new RecordingTransport();
+    let authority: { kind: 'api_session'; sessionId: string; grantId: string } | undefined;
+    const client = new SourceKeyBrokerClient({
+      role: 'api', transport, requestIdFactory: idFactory(),
+      sessionAuthorityProvider: () => authority,
+    });
+    authorize(client);
+    const input = { ownerId: OWNER_A, sessionId: SESSION_A, expiresAtMs: Date.now() + 60_000 };
+    authority = await grantApiSession(client, transport, input, 'c'.repeat(32));
+    const oldWork = client.state(contextA);
+    const renewal = client.grantSession({
+      ...input, tokenHash: TOKEN_HASH, expiresAtMs: input.expiresAtMs + 60_000,
+    });
+    const request = grantRequests(transport).at(-1)!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: request.requestId, role: 'api', ownerKind: 'user',
+      ownerId: input.ownerId, sessionId: input.sessionId,
+      expiresAtMs: input.expiresAtMs + 60_000, success: true,
+      grantId: 'd'.repeat(32), generation: 1,
+    });
+    await expect(oldWork).resolves.toEqual({
+      success: false, operation: 'state', error: 'vault_broker_unavailable',
+    });
+    await expect(renewal).resolves.toMatchObject({ success: true });
   });
 
   it('rejects substituted and replayed grant results', async () => {
