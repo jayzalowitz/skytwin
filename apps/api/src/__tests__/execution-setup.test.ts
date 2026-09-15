@@ -689,6 +689,21 @@ describe('execution-setup', () => {
         'me.events.list', 'me.drive.root.children', 'users.list',
         'groups.events.list', 'groups.calendar.get', 'groups.threads.list',
         'groups.conversations.list', 'group.members.list',
+        'users.byUserId.messages.list', 'users/123/messages/list',
+        'groups.byGroupId.events.list', 'groups/123/threads/list', 'groups.list',
+        'me.sendMail', 'users.sendMail', 'me.contacts.list', 'me.people.list',
+        'me.todo.lists', 'me.memberOf', 'me.photo.get', 'me.mailboxSettings.get',
+        'get_me_messages', 'list_users_messages', 'me__messages_list',
+        'get_me', 'list_users', 'users/123', 'users.byUserId.get',
+        'groups/123', 'groups.byGroupId.get', 'users.delta', 'groups.delta',
+        'me.manager.get', 'me.presence.get', 'me.planner.tasks.list',
+        'me.authentication.methods.list', 'me.onenote.notebooks.list',
+        'users.byUserId.authentication.methods.list', 'users.byUserId.manager.get',
+        'groups.byGroupId.owners.list',
+        'send_user_mail', 'sendUserMail', 'add_group_member', 'addGroupMember',
+        'invite_user', 'assign_user_license', 'revoke_user_sessions', 'export_users',
+        'user_preferences_update', 'users_export', 'me_profile_update',
+        'group_project_create', 'user', 'group',
       ]) {
         await expect(guard?.({ actionType }, 'owner-1'))
           .resolves.toMatchObject({ allowed: false });

@@ -55,14 +55,19 @@ function actionContainsIntegrationToken(normalizedAction, tokens) {
   return false;
 }
 
-function isGoogleAccountActionType(value) {
-  const normalized = String(value ?? '')
+function normalizeActionType(value) {
+  return String(value ?? '')
     .trim()
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
-    .replace(/[.\-:/\s]+/g, '_');
+    .replace(/[._\-:/\s]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function isGoogleAccountActionType(value) {
+  const normalized = normalizeActionType(value);
   if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
-  if (/^(?:users?|me|groups?)(?:_|$)/.test(normalized)) return true;
+  if (/(?:^|_)(?:users?|me|groups?)(?:_|$)/.test(normalized)) return true;
   if (actionContainsIntegrationToken(normalized, GOOGLE_INTEGRATION_TOKENS)) return true;
   if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|gmail|google_email|google_mail|message|messages)$/.test(normalized)) return true;
   if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:(?:google_)?calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) return true;
@@ -74,11 +79,7 @@ function isGoogleAccountActionType(value) {
 
 function isAccountBackedActionType(value) {
   if (isGoogleAccountActionType(value)) return true;
-  const normalized = String(value ?? '')
-    .trim()
-    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
-    .toLowerCase()
-    .replace(/[.\-:/\s]+/g, '_');
+  const normalized = normalizeActionType(value);
   return actionContainsIntegrationToken(normalized, MICROSOFT_INTEGRATION_TOKENS);
 }
 

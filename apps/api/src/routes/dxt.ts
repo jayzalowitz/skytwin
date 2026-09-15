@@ -209,19 +209,38 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
       // Metadata-only — never load full blobs into memory just to render the list.
       const rows = await dxtExportRepository.listMetadataForUser(userId);
       const visibleRows: DxtExportMetadataRow[] = [];
-      for (const row of rows) {
-        const server = await mcpServerRepository.getById(row.server_id);
-        // A real export retains its source server through a foreign key. Treat
-        // missing or cross-user metadata as unverifiable and keep it out of
-        // the outbound response.
-        if (!server || server.user_id !== userId || !server.registry_id) continue;
-        const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
-        if (await isBlockedAccountDxtCapability(
-          server.registry_id,
-          skills,
-          server.oauth_provider,
-        )) continue;
-        visibleRows.push(row);
+      const visibilityByServerId = new Map<string, Promise<boolean>>();
+      const isVisible = (serverId: string): Promise<boolean> => {
+        const existing = visibilityByServerId.get(serverId);
+        if (existing) return existing;
+        const pending = (async () => {
+          const server = await mcpServerRepository.getById(serverId);
+          // A real export retains its source server through a foreign key.
+          // Treat missing or cross-user metadata as unverifiable and keep it
+          // out of the outbound response.
+          if (!server || server.user_id !== userId || !server.registry_id) return false;
+          const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+          return !(await isBlockedAccountDxtCapability(
+            server.registry_id,
+            skills,
+            server.oauth_provider,
+          ));
+        })();
+        visibilityByServerId.set(serverId, pending);
+        return pending;
+      };
+
+      // A user can export the same server repeatedly. Classify each source
+      // server once per request and use small batches so long histories do not
+      // turn into a fully sequential query chain or an unbounded DB fan-out.
+      const classificationBatchSize = 8;
+      for (let start = 0; start < rows.length; start += classificationBatchSize) {
+        const batch = rows.slice(start, start + classificationBatchSize);
+        const visibility = await Promise.all(batch.map((row) => isVisible(row.server_id)));
+        for (let index = 0; index < batch.length; index += 1) {
+          const row = batch[index];
+          if (row && visibility[index]) visibleRows.push(row);
+        }
       }
       const exports = visibleRows.map((r: DxtExportMetadataRow) => ({
         id: r.id,

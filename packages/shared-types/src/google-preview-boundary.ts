@@ -128,7 +128,8 @@ function normalizeActionType(value: string): string {
     .trim()
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
-    .replace(/[.\-:/\s]+/g, '_');
+    .replace(/[._\-:/\s]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function actionContainsIntegrationToken(normalizedAction: string, tokens: ReadonlySet<string>): boolean {
@@ -165,11 +166,13 @@ export function isGoogleAccountActionType(actionType: string): boolean {
   // than SkyTwin's verb-first action vocabulary. Deny the stable Gmail /
   // Microsoft Graph mailbox roots and explicit Google Drive namespace before
   // an adapter can treat them as generic remote actions.
-  // Microsoft Graph exposes mailbox, calendar, conversation, and group data
-  // beneath account-bearing `me`, `user(s)`, and `group(s)` resource roots.
-  // Without a provider-bound server identity, treat the whole namespace as
-  // unavailable rather than trying to maintain a partial method allowlist.
-  if (/^(?:users?|me|groups?)(?:_|$)/.test(normalized)) {
+  // Microsoft Graph exposes an open-ended resource surface beneath account-
+  // bearing `me`, `user(s)`, and `group(s)` roots. Treat any delimited use of
+  // those identity roots, including verb-leading SDK aliases, as unavailable. This is
+  // intentionally conservative: an unbound local tool using one of these
+  // roots must choose a non-account action namespace for the account-free
+  // preview rather than creating a Graph-shaped bypass.
+  if (/(?:^|_)(?:users?|me|groups?)(?:_|$)/.test(normalized)) {
     return true;
   }
   if (actionContainsIntegrationToken(normalized, GOOGLE_INTEGRATION_TOKENS)) {

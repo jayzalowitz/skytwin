@@ -72,6 +72,11 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **DXT export history avoids redundant sequential classification.** Repeated
+  exports from the same capability reuse one owner/inventory classification
+  per request, and distinct classifications run in bounded batches while
+  preserving the repository's response order and fail-closed behavior.
+
 - **Ambiguous assistant failures retain their request identity.** Generic
   server/transport failures and approval-response reconciliation failures no
   longer mint a fresh logical turn on retry. The API does not report a

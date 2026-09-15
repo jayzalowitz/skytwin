@@ -13,7 +13,7 @@ const {
   mockMcpServerRepo: {
     getById: vi.fn(),
     getByUserAndRegistry: vi.fn(),
-    listSkillNamesForServer: vi.fn(async () => [] as string[]),
+    listSkillNamesForServer: vi.fn(async (_serverId?: string) => [] as string[]),
   },
   mockDxtExportRepo: {
     create: vi.fn(),
@@ -357,6 +357,50 @@ describe('GET /api/dxt/exports', () => {
     expect((result.body as { exports: unknown[] }).exports).toEqual([]);
     expect(mockDxtExportRepo.listForUser).not.toHaveBeenCalled();
     expect(mockDxtExportRepo.findById).not.toHaveBeenCalled();
+  });
+
+  it('bounds parallel classification, preserves order, and memoizes across batches', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const serverIds = Array.from({ length: 10 }, (_, index) => `server-${index}`);
+    const orderedServerIds = [...serverIds.slice(0, 8), ...serverIds.slice(8), serverIds[0]!];
+    const rows = orderedServerIds.map((serverId, index) => ({
+      id: `export-${index}`,
+      user_id: USER_ID,
+      server_id: serverId,
+      exported_at: new Date(Date.UTC(2026, 4, 20 - index)),
+      artifact_sha256: Buffer.alloc(32, index),
+      blob_bytes: 100 + index,
+    }));
+    mockDxtExportRepo.listMetadataForUser.mockResolvedValueOnce(rows);
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mockMcpServerRepo.getById.mockImplementation(async (serverId: string) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return makeMcpServerRow({ id: serverId });
+    });
+    mockMcpServerRepo.listSkillNamesForServer.mockImplementation(async (serverId?: string) => {
+      if (!serverId) throw new Error('serverId is required');
+      const index = serverIds.indexOf(serverId);
+      await new Promise((resolve) => setTimeout(resolve, (10 - index) % 4));
+      inFlight -= 1;
+      return ['notion.search'];
+    });
+
+    const result = await req(buildApp(), 'GET', '/api/dxt/exports');
+
+    expect(result.status).toBe(200);
+    expect((result.body as { exports: Array<{ id: string }> }).exports.map((row) => row.id))
+      .toEqual(rows.map((row) => row.id));
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+    expect(mockMcpServerRepo.getById).toHaveBeenCalledTimes(serverIds.length);
+    expect(mockMcpServerRepo.listSkillNamesForServer).toHaveBeenCalledTimes(serverIds.length);
+    for (const serverId of serverIds) {
+      expect(mockMcpServerRepo.getById).toHaveBeenCalledWith(serverId);
+      expect(mockMcpServerRepo.listSkillNamesForServer).toHaveBeenCalledWith(serverId);
+    }
   });
 });
 

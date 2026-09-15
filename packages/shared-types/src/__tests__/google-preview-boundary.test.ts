@@ -88,9 +88,23 @@ describe('Google preview boundary', () => {
     'google.drive.files.list', 'google/drive/permissions.create',
     'gdrive.files.list', 'youtube.videos.upload', 'gcp.compute.instances.list',
     'google.youtube.videos.list',
-    'me.events.list', 'me.drive.root.children', 'users.list',
+    'me.events.list', 'me.drive.root.children', 'me.mail.read',
+    'me.calendar.get', 'users.list',
     'groups.events.list', 'groups.calendar.get', 'groups.threads.list',
     'groups.conversations.list', 'group.members.list',
+    'users.byUserId.messages.list', 'users/123/messages/list',
+    'groups.byGroupId.events.list', 'groups/123/threads/list', 'groups.list',
+    'me.sendMail', 'users.sendMail', 'me.contacts.list', 'me.people.list',
+    'me.todo.lists', 'me.memberOf', 'me.photo.get', 'me.mailboxSettings.get',
+    'get_me_messages', 'list_users_messages', 'me__messages_list',
+    'get_me', 'list_users', 'users/123', 'users.byUserId.get',
+    'groups/123', 'groups.byGroupId.get', 'users.delta', 'groups.delta',
+    'me.manager.get', 'me.presence.get', 'me.planner.tasks.list',
+    'me.authentication.methods.list', 'me.onenote.notebooks.list',
+    'users.byUserId.authentication.methods.list', 'users.byUserId.manager.get',
+    'groups.byGroupId.owners.list',
+    'send_user_mail', 'sendUserMail', 'add_group_member', 'addGroupMember',
+    'invite_user', 'assign_user_license', 'revoke_user_sessions', 'export_users',
   ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);
@@ -100,6 +114,13 @@ describe('Google preview boundary', () => {
     ('keeps the local action %s outside the account boundary', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(false);
     });
+
+  it.each([
+    'user_preferences_update', 'users_export', 'me_profile_update',
+    'group_project_create', 'user', 'group',
+  ])('conservatively treats the unbound identity-rooted action %s as unavailable', (actionType) => {
+    expect(isAccountBackedActionType(actionType)).toBe(true);
+  });
 
   it.each([
     'outlook.send_mail', 'read_outlook_mail', 'microsoft_graph.list_events',
