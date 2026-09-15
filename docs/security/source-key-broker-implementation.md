@@ -27,8 +27,11 @@ only when Electron reports an exact reviewed OS protection backend; stored
 wrappers bind that backend, and corrupt, legacy, or backend-mismatched wrappers
 are purged while the mandatory recovery wrapper is retained. The desktop
 now composes its injected `WrappedKeyStore` through the narrow
-`@skytwin/db/source-key-registry` subpath. Recovery wrappers are stored in
-CockroachDB; the legacy Electron recovery-wrapper file is neither read nor
+`@skytwin/db/source-key-registry` subpath. Packaged builds resolve that leaf
+from the already-contained API deployment rather than shipping the DB package's
+unrelated runtime graph twice; build-time and runtime checks fail closed if the
+exact leaf is absent or escapes that deployment. Recovery wrappers are stored
+in CockroachDB; the legacy Electron recovery-wrapper file is neither read nor
 deleted, and database or module failure has no fallback. Device wrappers remain
 local. The API and worker child bindings still have immutable empty owner grants
 and therefore fail closed. An authenticated owner-grant authority,

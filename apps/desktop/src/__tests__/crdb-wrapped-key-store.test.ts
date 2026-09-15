@@ -70,21 +70,23 @@ describe("CockroachWrappedKeyStore", () => {
     const importModule = vi.fn(async () => ({
       sourceKeyRegistryRepository: repository,
     }));
-    const port = await loadSourceKeyRegistryPort(importModule);
+    const moduleSpecifier = "file:///verified/source-key-registry.js";
+    const port = await loadSourceKeyRegistryPort(
+      moduleSpecifier,
+      importModule,
+    );
     expect(port).toEqual({
       getCurrent: expect.any(Function),
       createInitial: expect.any(Function),
       deleteInitialIfMatch: expect.any(Function),
     });
-    expect(importModule).toHaveBeenCalledWith(
-      "@skytwin/db/source-key-registry",
-    );
+    expect(importModule).toHaveBeenCalledWith(moduleSpecifier);
   });
 
   it("rejects an invalid registry module and non-boolean mutation results", async () => {
-    await expect(loadSourceKeyRegistryPort(async () => ({}))).rejects.toThrow(
-      "source-key registry module is invalid",
-    );
+    await expect(
+      loadSourceKeyRegistryPort("file:///invalid.js", async () => ({})),
+    ).rejects.toThrow("source-key registry module is invalid");
 
     const repository = registry();
     vi.mocked(repository.createInitial).mockResolvedValue(
@@ -93,9 +95,10 @@ describe("CockroachWrappedKeyStore", () => {
     vi.mocked(repository.deleteInitialIfMatch).mockResolvedValue(
       1 as unknown as boolean,
     );
-    const port = await loadSourceKeyRegistryPort(async () => ({
-      sourceKeyRegistryRepository: repository,
-    }));
+    const port = await loadSourceKeyRegistryPort(
+      "file:///invalid-results.js",
+      async () => ({ sourceKeyRegistryRepository: repository }),
+    );
     await expect(port.createInitial(row())).rejects.toThrow(
       "source-key registry create result is invalid",
     );

@@ -36,12 +36,18 @@ import { installVaultNavigationGuards } from './vault-renderer-security.js';
 import { collectPackagedSampleRendererProof } from './release-evidence-renderer.js';
 
 // Recovery wrappers are held in CockroachDB through a narrow, lazily loaded
-// repository leaf. Database/load failure leaves the broker unavailable; there
-// is no fallback to the legacy Electron store or plaintext. Production owner
-// grants and source-field consumers remain disabled.
-const wrappedKeyStore = new CockroachWrappedKeyStore(
-  loadSourceKeyRegistryPort,
-);
+// repository leaf. Packaged builds reuse the DB module already present in the
+// embedded API closure instead of shipping that broad closure twice. A
+// database/load failure leaves the broker unavailable; there is no fallback to
+// the legacy Electron store or plaintext. Production owner grants and
+// source-field consumers remain disabled.
+let serviceManager: ServiceManager;
+const wrappedKeyStore: CockroachWrappedKeyStore =
+  new CockroachWrappedKeyStore(async () =>
+    loadSourceKeyRegistryPort(
+      await serviceManager.sourceKeyRegistryModuleSpecifier(),
+    ),
+  );
 const electronDeviceKeyStore = new Store<Record<string, string>>({
   name: 'skytwin-device-user-keys',
 });
@@ -51,11 +57,11 @@ const deviceKeyStore: DeviceWrapperStore = {
   delete: (key) => electronDeviceKeyStore.delete(key),
   keys: () => Object.keys(electronDeviceKeyStore.store),
 };
-const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
+const keyBroker: DesktopKeyBroker = new DesktopKeyBroker(wrappedKeyStore, {
   deviceProtection: safeStorage,
   deviceStore: deviceKeyStore,
 });
-const serviceManager = new ServiceManager(keyBroker);
+serviceManager = new ServiceManager(keyBroker);
 
 // Secure-device-backed "remember my vault passphrase" store (#401). Persists
 // safeStorage ciphertext only when a reviewed OS credential backend is active;

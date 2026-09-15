@@ -1,7 +1,7 @@
 import { fork, spawn, execSync, type ChildProcess } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
 import { randomBytes, randomUUID } from 'crypto';
-import { join } from 'path';
+import { isAbsolute, join, relative, sep } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { CockroachManager, type CockroachStartResult } from './cockroach-manager.js';
@@ -446,8 +446,24 @@ export class ServiceManager {
    * old `join(getResourcePath(), 'embedded', ...)` constructions.
    */
   private extractedEmbeddedRoot: string | null = null;
+  private embeddedRootPromise: Promise<string> | null = null;
 
   private async ensureEmbeddedRoot(): Promise<string> {
+    if (this.extractedEmbeddedRoot) return this.extractedEmbeddedRoot;
+    if (this.embeddedRootPromise) return this.embeddedRootPromise;
+
+    const pending = this.extractEmbeddedRoot();
+    this.embeddedRootPromise = pending;
+    try {
+      return await pending;
+    } finally {
+      if (this.embeddedRootPromise === pending) {
+        this.embeddedRootPromise = null;
+      }
+    }
+  }
+
+  private async extractEmbeddedRoot(): Promise<string> {
     if (this.extractedEmbeddedRoot) return this.extractedEmbeddedRoot;
 
     if (!app.isPackaged) {
@@ -851,6 +867,54 @@ export class ServiceManager {
       throw new Error('Worker generation authority module has an invalid contract');
     }
     return loaded as WorkerGenerationAuthorityModule;
+  }
+
+  /**
+   * Resolve the narrow DB leaf used by Electron's recovery-wrapper store.
+   *
+   * Packaged builds already carry a complete, self-contained API deployment;
+   * loading the reviewed DB leaf from that deployment avoids copying the
+   * package's unrelated runtime graph into app.asar a second time. Dev builds
+   * use the workspace dist directly. In both modes, resolve the real regular
+   * file before returning a URL so a missing or dangling package fails closed.
+   */
+  async sourceKeyRegistryModuleSpecifier(): Promise<string> {
+    const base = app.isPackaged ? null : this.getResourcePath();
+    const embeddedRoot = app.isPackaged
+      ? await this.ensureEmbeddedRoot()
+      : null;
+    const modulePath = app.isPackaged
+      ? join(
+          embeddedRoot!,
+          'api',
+          'node_modules',
+          '@skytwin',
+          'db',
+          'dist',
+          'source-key-registry.js',
+        )
+      : join(base!, 'packages', 'db', 'dist', 'source-key-registry.js');
+    if (!existsSync(modulePath)) {
+      throw new Error(`Source-key registry module is missing: ${modulePath}`);
+    }
+    const realPath = realpathSync(modulePath);
+    const expectedRoot = realpathSync(
+      app.isPackaged
+        ? join(embeddedRoot!, 'api')
+        : base!,
+    );
+    const relativePath = relative(expectedRoot, realPath);
+    if (
+      relativePath === '' ||
+      relativePath.startsWith(`..${sep}`) ||
+      isAbsolute(relativePath) ||
+      !statSync(realPath).isFile()
+    ) {
+      throw new Error(
+        `Source-key registry module escaped its package: ${modulePath}`,
+      );
+    }
+    return pathToFileURL(realPath).href;
   }
 
   private async registerWorkerGenerationAuthority(

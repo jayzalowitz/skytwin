@@ -104,9 +104,10 @@ function registryRecord(
 
 /** Load the ESM-only DB leaf without TypeScript rewriting import() to require(). */
 export async function loadSourceKeyRegistryPort(
+  moduleSpecifier: string,
   importModule: DynamicImport = dynamicImport,
 ): Promise<SourceKeyRegistryPort> {
-  const imported = await importModule("@skytwin/db/source-key-registry");
+  const imported = await importModule(moduleSpecifier);
   const repository = ownData(imported, "sourceKeyRegistryRepository");
   const getCurrent = ownData(repository, "getCurrent");
   const createInitial = ownData(repository, "createInitial");

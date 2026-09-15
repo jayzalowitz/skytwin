@@ -27,11 +27,12 @@ All notable changes to SkyTwin will be documented in this file.
   changes cannot weaken the gate silently.
 
 - **Recovery wrappers now use the existing CockroachDB custody registry.** The
-  desktop loads that repository only through a narrow package subpath and has
-  no fallback to the legacy Electron recovery-wrapper file or plaintext when
-  the database or module is unavailable. Device wrappers remain local; API and
-  worker grants remain empty, no source repository consumes the broker, and no
-  encryption claim advances.
+  desktop loads that repository only through its narrow package subpath in the
+  already-contained API deployment, avoiding a duplicate broad dependency
+  closure. It has no fallback to the legacy Electron recovery-wrapper file or
+  plaintext when the database or module is unavailable. Device wrappers remain
+  local; API and worker grants remain empty, no source repository consumes the
+  broker, and no encryption claim advances.
 
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,

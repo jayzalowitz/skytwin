@@ -4,7 +4,18 @@ import type {
   spawn as spawnType,
 } from "node:child_process";
 import { EventEmitter } from "node:events";
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const processState = vi.hoisted(() => ({
@@ -57,6 +68,8 @@ interface TestApiGeneration {
 }
 
 interface ManagerInternals {
+  extractedEmbeddedRoot: string | null;
+  embeddedRootPromise: Promise<string> | null;
   activeDatabaseStartup: TestStartup | null;
   api: {
     process: ChildProcess | null;
@@ -84,6 +97,7 @@ interface ManagerInternals {
   cockroachStatus: string;
   getResourcePath(): string;
   ensureEmbeddedRoot(): Promise<string>;
+  extractEmbeddedRoot(): Promise<string>;
   startWorker(
     startup: TestStartup,
     generation: TestApiGeneration,
@@ -177,6 +191,101 @@ describe("ServiceManager worker start serialization", () => {
       delete process.env["SESSION_SECRET"];
     } else {
       process.env["SESSION_SECRET"] = previousSessionSecret;
+    }
+  });
+
+  it("coalesces concurrent embedded deployment discovery", async () => {
+    const manager = new ServiceManager() as InstanceType<
+      typeof ServiceManager
+    > &
+      ManagerInternals;
+    let finish: ((root: string) => void) | undefined;
+    manager.extractedEmbeddedRoot = null;
+    manager.embeddedRootPromise = null;
+    manager.extractEmbeddedRoot = vi.fn(
+      () =>
+        new Promise<string>((resolve) => {
+          finish = resolve;
+        }),
+    );
+
+    const first = manager.ensureEmbeddedRoot();
+    const second = manager.ensureEmbeddedRoot();
+    expect(manager.extractEmbeddedRoot).toHaveBeenCalledOnce();
+    finish?.("/verified/embedded");
+
+    await expect(first).resolves.toBe("/verified/embedded");
+    await expect(second).resolves.toBe("/verified/embedded");
+    expect(manager.embeddedRootPromise).toBeNull();
+  });
+
+  it("allows a failed embedded deployment discovery to be retried", async () => {
+    const manager = new ServiceManager() as InstanceType<
+      typeof ServiceManager
+    > &
+      ManagerInternals;
+    manager.extractedEmbeddedRoot = null;
+    manager.embeddedRootPromise = null;
+    manager.extractEmbeddedRoot = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("extract failed"))
+      .mockResolvedValueOnce("/verified/embedded");
+
+    await expect(manager.ensureEmbeddedRoot()).rejects.toThrow("extract failed");
+    expect(manager.embeddedRootPromise).toBeNull();
+    await expect(manager.ensureEmbeddedRoot()).resolves.toBe(
+      "/verified/embedded",
+    );
+    expect(manager.extractEmbeddedRoot).toHaveBeenCalledTimes(2);
+  });
+
+  it("resolves only the packaged registry leaf inside the API deployment", async () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-registry-module-"));
+    const outside = mkdtempSync(join(tmpdir(), "skytwin-registry-outside-"));
+    const modulePath = join(
+      root,
+      "api",
+      "node_modules",
+      "@skytwin",
+      "db",
+      "dist",
+      "source-key-registry.js",
+    );
+    const outsideModule = join(outside, "source-key-registry.js");
+    mkdirSync(join(modulePath, ".."), { recursive: true });
+    writeFileSync(modulePath, "export {};\n");
+    writeFileSync(outsideModule, "export {};\n");
+
+    try {
+      const manager = new ServiceManager() as InstanceType<
+        typeof ServiceManager
+      > &
+        ManagerInternals;
+      manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue(root);
+
+      await expect(manager.sourceKeyRegistryModuleSpecifier()).resolves.toBe(
+        pathToFileURL(realpathSync(modulePath)).href,
+      );
+
+      rmSync(modulePath);
+      symlinkSync(outsideModule, modulePath);
+      await expect(
+        manager.sourceKeyRegistryModuleSpecifier(),
+      ).rejects.toThrow("escaped its package");
+
+      rmSync(modulePath);
+      mkdirSync(modulePath);
+      await expect(
+        manager.sourceKeyRegistryModuleSpecifier(),
+      ).rejects.toThrow("escaped its package");
+
+      rmSync(modulePath, { recursive: true });
+      await expect(
+        manager.sourceKeyRegistryModuleSpecifier(),
+      ).rejects.toThrow("module is missing");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
     }
   });
 
