@@ -60,15 +60,25 @@ export const CANONICAL_MODEL = Object.freeze({
   sha256: "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
   license: Object.freeze({
     spdxId: "Apache-2.0",
+    cardId: "apache-2.0",
     name: "Apache License 2.0",
     url: "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+    source:
+      "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+    exactBytes: 11_343,
+    sha256: "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+    blobId: "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
   }),
 });
 
 const WORKFLOW_PATH = ".github/workflows/build.yml";
 const RELEASE_ARTIFACT_NAME = "SkyTwin-Linux-AppImage";
 const RELEASE_ARTIFACT_KIND = "desktop-installer";
+const RELEASE_ARTIFACT_PRODUCER_JOB = "Desktop — Linux (AppImage + deb + rpm)";
+const RELEASE_ARTIFACT_UPLOAD_STEP = "Upload Linux AppImage";
+const RELEASE_ARTIFACT_PACKAGE_STEP = "Package Linux desktop app";
 const MAX_API_BYTES = 4 * 1024 * 1024;
+const MAX_LICENSE_BYTES = 256 * 1024;
 const MAX_RELEASE_SUBJECT_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_REDIRECTS = 4;
 const SHA256 = /^[0-9a-f]{64}$/u;
@@ -276,6 +286,15 @@ export function readRunIdentity(env = process.env) {
   const runId = positiveInteger(env, "GITHUB_RUN_ID");
   const runAttempt = positiveInteger(env, "GITHUB_RUN_ATTEMPT");
   const token = requiredEnvironment(env, "GITHUB_TOKEN", /^.{20,}$/u);
+  const releaseArtifactId = positiveInteger(
+    env,
+    "SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID",
+  );
+  const releaseArtifactSha256 = requiredEnvironment(
+    env,
+    "SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST",
+    /^(?:sha256:)?[0-9a-f]{64}$/u,
+  ).replace(/^sha256:/u, "");
   return {
     sourceCommit,
     repository,
@@ -284,6 +303,8 @@ export function readRunIdentity(env = process.env) {
     runId,
     runAttempt,
     token,
+    releaseArtifactId,
+    releaseArtifactSha256,
   };
 }
 
@@ -353,8 +374,134 @@ export async function resolveCurrentRun(
   return run;
 }
 
+function parseTimestamp(value, description) {
+  assert(
+    typeof value === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value),
+    `${description} timestamp is invalid`,
+  );
+  const timestamp = Date.parse(value);
+  assert(
+    Number.isSafeInteger(timestamp),
+    `${description} timestamp is invalid`,
+  );
+  return timestamp;
+}
+
+function exactJob(jobs, name, description) {
+  const matches = jobs.filter((job) => job?.name === name);
+  assert(matches.length === 1, `${description} job identity is ambiguous`);
+  return matches[0];
+}
+
+function exactSuccessfulStep(job, name, description) {
+  const matches = Array.isArray(job.steps)
+    ? job.steps.filter((step) => step?.name === name)
+    : [];
+  assert(
+    matches.length === 1 && matches[0].conclusion === "success",
+    `${description} step did not succeed exactly once`,
+  );
+  return matches[0];
+}
+
+export async function resolveAttemptProvenance(
+  identity,
+  fetchImpl = globalThis.fetch,
+) {
+  const page = await githubJson(
+    identity,
+    `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}/jobs?per_page=100&page=1`,
+    fetchImpl,
+  );
+  assert(
+    Array.isArray(page?.jobs) && Number.isSafeInteger(page.total_count),
+    "exact-attempt GitHub job inventory is malformed",
+  );
+  assert(
+    page.total_count <= 100 && page.jobs.length === page.total_count,
+    "exact-attempt GitHub job inventory is incomplete",
+  );
+  const producer = exactJob(
+    page.jobs,
+    RELEASE_ARTIFACT_PRODUCER_JOB,
+    "Linux AppImage producer",
+  );
+  assert(
+    Number.isSafeInteger(producer.id) &&
+      producer.id > 0 &&
+      producer.run_id === identity.runId &&
+      producer.run_attempt === identity.runAttempt &&
+      producer.head_sha === identity.sourceCommit &&
+      producer.status === "completed" &&
+      producer.conclusion === "success",
+    "Linux AppImage producer is not successful in the exact workflow attempt",
+  );
+  exactSuccessfulStep(
+    producer,
+    RELEASE_ARTIFACT_PACKAGE_STEP,
+    "Linux AppImage package",
+  );
+  const uploadStep = exactSuccessfulStep(
+    producer,
+    RELEASE_ARTIFACT_UPLOAD_STEP,
+    "Linux AppImage upload",
+  );
+  const uploadStartedAt = parseTimestamp(
+    uploadStep.started_at,
+    "Linux AppImage upload start",
+  );
+  const uploadCompletedAt = parseTimestamp(
+    uploadStep.completed_at,
+    "Linux AppImage upload completion",
+  );
+  assert(
+    uploadStartedAt <= uploadCompletedAt,
+    "Linux AppImage upload timestamps are inverted",
+  );
+
+  const verifierName = machineProducerJobName(CLAIM_ID, "linux");
+  const verifier = exactJob(page.jobs, verifierName, "model delivery verifier");
+  assert(
+    Number.isSafeInteger(verifier.id) &&
+      verifier.id > 0 &&
+      verifier.run_id === identity.runId &&
+      verifier.run_attempt === identity.runAttempt &&
+      verifier.head_sha === identity.sourceCommit &&
+      verifier.status === "in_progress" &&
+      verifier.conclusion === null,
+    "model delivery verifier is not running in the exact workflow attempt",
+  );
+  const verifierSteps = Array.isArray(verifier.steps) ? verifier.steps : [];
+  const currentVerifierSteps = verifierSteps.filter(
+    (step) =>
+      step?.name === "Run canonical machine verifier" &&
+      ["queued", "in_progress"].includes(step?.status) &&
+      step?.conclusion === null,
+  );
+  assert(
+    currentVerifierSteps.length === 1,
+    "canonical model delivery verifier step is not active",
+  );
+  return {
+    producerJobId: producer.id,
+    producerJobName: producer.name,
+    producerJobRunAttempt: producer.run_attempt,
+    producerJobConclusion: producer.conclusion,
+    uploadStartedAt: uploadStep.started_at,
+    uploadCompletedAt: uploadStep.completed_at,
+    uploadStartedTimestamp: uploadStartedAt,
+    uploadCompletedTimestamp: uploadCompletedAt,
+    verifierJobId: verifier.id,
+    verifierJobName: verifier.name,
+    verifierJobRunAttempt: verifier.run_attempt,
+    verifierJobStatus: verifier.status,
+  };
+}
+
 export async function resolveReleaseArtifact(
   identity,
+  attemptProvenance,
   fetchImpl = globalThis.fetch,
 ) {
   const page = await githubJson(
@@ -371,19 +518,22 @@ export async function resolveReleaseArtifact(
     "GitHub artifact inventory is incomplete",
   );
   const matches = page.artifacts.filter(
-    (artifact) => artifact?.name === RELEASE_ARTIFACT_NAME,
+    (artifact) => artifact?.id === identity.releaseArtifactId,
   );
   assert(
     matches.length === 1,
-    "expected one current-run Linux AppImage artifact",
+    "current-attempt workflow output does not identify one Linux AppImage artifact",
   );
   const artifact = matches[0];
   const digest = String(artifact.digest ?? "").replace(/^sha256:/u, "");
   assert(
     Number.isSafeInteger(artifact.id) &&
       artifact.id > 0 &&
+      artifact.id === identity.releaseArtifactId &&
+      artifact.name === RELEASE_ARTIFACT_NAME &&
       artifact.expired === false &&
       SHA256.test(digest) &&
+      digest === identity.releaseArtifactSha256 &&
       artifact.workflow_run?.id === identity.runId &&
       artifact.workflow_run?.head_sha === identity.sourceCommit,
     "Linux AppImage artifact identity is invalid",
@@ -402,10 +552,25 @@ export async function resolveReleaseArtifact(
       detail.workflow_run?.head_sha === identity.sourceCommit,
     "Linux AppImage artifact detail disagrees with its inventory identity",
   );
+  assert(
+    detail.created_at === artifact.created_at,
+    "Linux AppImage artifact creation timestamp is inconsistent",
+  );
+  const artifactCreatedTimestamp = parseTimestamp(
+    artifact.created_at,
+    "Linux AppImage artifact creation",
+  );
+  assert(
+    artifactCreatedTimestamp >= attemptProvenance.uploadStartedTimestamp &&
+      artifactCreatedTimestamp <= attemptProvenance.uploadCompletedTimestamp,
+    "Linux AppImage artifact was not created by the exact-attempt upload step",
+  );
   return {
     artifactId: artifact.id,
     artifactName: RELEASE_ARTIFACT_NAME,
     artifactSha256: digest,
+    artifactCreatedAt: artifact.created_at,
+    attemptBindingResult: "workflow-output-and-upload-step-window-pass",
     kind: RELEASE_ARTIFACT_KIND,
   };
 }
@@ -813,6 +978,19 @@ function validatePinnedSource(model) {
       source.hash === "",
     "model source is not the canonical immutable HTTPS location",
   );
+  const metadata = new URL(model.metadata);
+  assert(
+    metadata.username === "" &&
+      metadata.password === "" &&
+      metadata.protocol === "https:" &&
+      metadata.hostname === "huggingface.co" &&
+      metadata.port === "" &&
+      metadata.pathname ===
+        `/api/models/${model.repository}/revision/${model.revision}` &&
+      metadata.search === "?blobs=true" &&
+      metadata.hash === "",
+    "model metadata is not the canonical immutable HTTPS endpoint",
+  );
   assert(
     Array.isArray(model.allowedRedirectHosts) &&
       model.allowedRedirectHosts.length > 0 &&
@@ -827,10 +1005,186 @@ function validatePinnedSource(model) {
   );
   assert(
     model.license.spdxId.length > 0 &&
+      model.license.cardId.length > 0 &&
       model.license.url ===
-        `https://huggingface.co/${model.repository}/blob/${model.revision}/LICENSE`,
+        `https://huggingface.co/${model.repository}/blob/${model.revision}/LICENSE` &&
+      model.license.source ===
+        `https://huggingface.co/${model.repository}/resolve/${model.revision}/LICENSE` &&
+      Number.isSafeInteger(model.license.exactBytes) &&
+      model.license.exactBytes > 0 &&
+      model.license.exactBytes <= MAX_LICENSE_BYTES &&
+      SHA256.test(model.license.sha256) &&
+      COMMIT.test(model.license.blobId),
     "model license is not pinned to the immutable source revision",
   );
+}
+
+export async function observePinnedMetadata(
+  model = CANONICAL_MODEL,
+  fetchImpl = globalThis.fetch,
+) {
+  validatePinnedSource(model);
+  const response = await fetchImpl(model.metadata, {
+    headers: {
+      Accept: "application/json",
+      "Accept-Encoding": "identity",
+    },
+    redirect: "manual",
+    signal: AbortSignal.timeout(15_000),
+  });
+  const metadata = await responseJson(response, "immutable model metadata");
+  assert(
+    metadata?.id === model.repository && metadata?.sha === model.revision,
+    "model metadata repository or revision does not match the immutable pin",
+  );
+  assert(
+    metadata?.cardData?.license === model.license.cardId,
+    "model metadata card license does not match the reviewed disclosure",
+  );
+  const siblings = Array.isArray(metadata.siblings) ? metadata.siblings : [];
+  const modelSiblings = siblings.filter(
+    (sibling) => sibling?.rfilename === model.name,
+  );
+  assert(
+    modelSiblings.length === 1 &&
+      modelSiblings[0]?.size === model.exactBytes &&
+      modelSiblings[0]?.lfs?.size === model.exactBytes &&
+      modelSiblings[0]?.lfs?.sha256 === model.sha256,
+    "model metadata does not contain the exact reviewed LFS sibling",
+  );
+  const licenseSiblings = siblings.filter(
+    (sibling) => sibling?.rfilename === "LICENSE",
+  );
+  assert(
+    licenseSiblings.length === 1 &&
+      licenseSiblings[0]?.size === model.license.exactBytes &&
+      licenseSiblings[0]?.blobId === model.license.blobId,
+    "model metadata does not contain the exact reviewed license sibling",
+  );
+  return {
+    repository: metadata.id,
+    revision: metadata.sha,
+    cardLicense: metadata.cardData.license,
+    modelSiblingName: modelSiblings[0].rfilename,
+    modelSiblingExactBytes: modelSiblings[0].lfs.size,
+    modelSiblingSha256: modelSiblings[0].lfs.sha256,
+    licenseSiblingName: licenseSiblings[0].rfilename,
+    licenseSiblingExactBytes: licenseSiblings[0].size,
+    licenseSiblingBlobId: licenseSiblings[0].blobId,
+    verificationResult: "pass",
+  };
+}
+
+function assertCanonicalLicenseRedirect(model, currentUrl, nextUrl) {
+  const next = new URL(nextUrl, currentUrl);
+  const canonicalCachePath = `/api/resolve-cache/models/${model.repository}/${model.revision}/LICENSE`;
+  const canonicalResolveKey = `/${model.repository}/resolve/${model.revision}/LICENSE`;
+  const entries = [...next.searchParams.entries()];
+  assert(
+    next.protocol === "https:" &&
+      next.hostname === "huggingface.co" &&
+      next.port === "" &&
+      next.username === "" &&
+      next.password === "" &&
+      next.hash === "" &&
+      next.pathname === canonicalCachePath &&
+      entries.length === 2 &&
+      entries.some(
+        ([key, value]) => key === canonicalResolveKey && value === "",
+      ) &&
+      entries.some(
+        ([key, value]) =>
+          key === "etag" && value === `\"${model.license.blobId}\"`,
+      ),
+    "license download redirected outside the immutable Hugging Face cache identity",
+  );
+  return next;
+}
+
+async function readBoundedBytes(response, maximum, description) {
+  assert(
+    response?.status === 200 && response.body,
+    `${description} returned HTTP ${response?.status ?? "unknown"}`,
+  );
+  assert(
+    response.headers.get("content-encoding") === null ||
+      response.headers.get("content-encoding") === "identity",
+    `${description} used a content encoding`,
+  );
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > maximum) {
+      await reader.cancel();
+      throw new Error(`${description} exceeded its byte bound`);
+    }
+    chunks.push(value);
+  }
+  assert(size > 0, `${description} returned an empty response`);
+  return Buffer.concat(chunks, size);
+}
+
+export async function observePinnedLicense(
+  model = CANONICAL_MODEL,
+  fetchImpl = globalThis.fetch,
+) {
+  validatePinnedSource(model);
+  let url = model.license.source;
+  for (let redirect = 0; redirect <= 1; redirect += 1) {
+    const response = await fetchImpl(url, {
+      headers: {
+        Accept: "application/octet-stream",
+        "Accept-Encoding": "identity",
+      },
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if ([301, 302, 303, 307, 308].includes(response.status)) {
+      assert(redirect === 0, "license download exceeded redirect bound");
+      const location = response.headers.get("location");
+      assert(location, "license download redirect omitted Location");
+      const next = assertCanonicalLicenseRedirect(model, url, location);
+      await response.body?.cancel();
+      url = next.href;
+      continue;
+    }
+    assert(
+      response.headers.get("content-length") ===
+        String(model.license.exactBytes),
+      "license download Content-Length does not match the immutable size",
+    );
+    const bytes = await readBoundedBytes(
+      response,
+      model.license.exactBytes,
+      "license download",
+    );
+    assert(
+      bytes.length === model.license.exactBytes &&
+        createHash("sha256").update(bytes).digest("hex") ===
+          model.license.sha256,
+      "license bytes do not match the immutable digest pin",
+    );
+    const blobId = createHash("sha1")
+      .update(`blob ${bytes.length}\0`)
+      .update(bytes)
+      .digest("hex");
+    assert(
+      blobId === model.license.blobId,
+      "license bytes do not match the observed repository blob",
+    );
+    return {
+      source: model.license.source,
+      exactBytes: bytes.length,
+      sha256: model.license.sha256,
+      blobId,
+      verificationResult: "pass",
+    };
+  }
+  throw new Error("license download exceeded redirect bound");
 }
 
 async function fetchPinnedResponse(model, fetchImpl) {
@@ -948,6 +1302,8 @@ export async function downloadAndVerifyModel(
   chmodSync(temporaryRoot, 0o700);
   const path = join(temporaryRoot, model.name);
   try {
+    const metadataObservation = await observePinnedMetadata(model, fetchImpl);
+    const licenseObservation = await observePinnedLicense(model, fetchImpl);
     const { response, finalUrl } = await fetchPinnedResponse(model, fetchImpl);
     const handle = await openFile(
       path,
@@ -1007,9 +1363,25 @@ export async function downloadAndVerifyModel(
       sourceRepository: model.repository,
       sourceRevision: model.revision,
       metadata: model.metadata,
+      metadataRepository: metadataObservation.repository,
+      metadataRevision: metadataObservation.revision,
+      metadataCardLicense: metadataObservation.cardLicense,
+      metadataSiblingName: metadataObservation.modelSiblingName,
+      metadataSiblingExactBytes: metadataObservation.modelSiblingExactBytes,
+      metadataSiblingSha256: metadataObservation.modelSiblingSha256,
+      metadataLicenseSiblingName: metadataObservation.licenseSiblingName,
+      metadataLicenseSiblingExactBytes:
+        metadataObservation.licenseSiblingExactBytes,
+      metadataLicenseSiblingBlobId: metadataObservation.licenseSiblingBlobId,
+      metadataVerificationResult: metadataObservation.verificationResult,
       license: model.license.spdxId,
       licenseName: model.license.name,
       licenseUrl: model.license.url,
+      licenseSource: licenseObservation.source,
+      licenseExactBytes: licenseObservation.exactBytes,
+      licenseSha256: licenseObservation.sha256,
+      licenseBlobId: licenseObservation.blobId,
+      licenseVerificationResult: licenseObservation.verificationResult,
       exactBytes: stable.sizeBytes,
       sha256: stable.sha256,
       digestVerificationResult: "pass",
@@ -1034,6 +1406,7 @@ export function buildReport({
   root,
   identity,
   artifact,
+  attemptProvenance,
   releaseSubject,
   modelArtifact,
   runtime = process,
@@ -1055,10 +1428,22 @@ export function buildReport({
     releaseArtifactId: artifact.artifactId,
     releaseArtifactName: artifact.artifactName,
     releaseArtifactSha256: artifact.artifactSha256,
+    releaseArtifactCreatedAt: artifact.artifactCreatedAt,
+    releaseArtifactAttemptBindingResult: artifact.attemptBindingResult,
     subjectName: releaseSubject.name,
     subjectPath: releaseSubject.relativePath,
     subjectSha256: releaseSubject.sha256,
     producerJobName: machineProducerJobName(CLAIM_ID, "linux"),
+    desktopProducerJobId: attemptProvenance.producerJobId,
+    desktopProducerJobName: attemptProvenance.producerJobName,
+    desktopProducerJobRunAttempt: attemptProvenance.producerJobRunAttempt,
+    desktopProducerJobConclusion: attemptProvenance.producerJobConclusion,
+    desktopUploadStartedAt: attemptProvenance.uploadStartedAt,
+    desktopUploadCompletedAt: attemptProvenance.uploadCompletedAt,
+    verifierJobId: attemptProvenance.verifierJobId,
+    verifierJobName: attemptProvenance.verifierJobName,
+    verifierJobRunAttempt: attemptProvenance.verifierJobRunAttempt,
+    verifierJobStatus: attemptProvenance.verifierJobStatus,
     verifierPath,
     verifierCommand,
     verifierSha256: createHash("sha256").update(verifierBytes).digest("hex"),
@@ -1078,8 +1463,8 @@ export function buildReport({
       ),
       passingCheck(
         CHECK_IDS[1],
-        "The model license is tied to the same immutable source revision",
-        `${modelArtifact.license} at ${modelArtifact.licenseUrl}`,
+        "The model metadata and license bytes are observed at the same immutable source revision",
+        `${modelArtifact.metadataRepository}@${modelArtifact.metadataRevision} card=${modelArtifact.metadataCardLicense}; LICENSE ${modelArtifact.licenseExactBytes} bytes sha256:${modelArtifact.licenseSha256}`,
       ),
       passingCheck(
         CHECK_IDS[2],
@@ -1152,7 +1537,12 @@ export async function main({
   const identity = readRunIdentity(env);
   assertSourceCheckout(root, identity);
   await resolveCurrentRun(identity, fetchImpl);
-  const artifact = await resolveReleaseArtifact(identity, fetchImpl);
+  const attemptProvenance = await resolveAttemptProvenance(identity, fetchImpl);
+  const artifact = await resolveReleaseArtifact(
+    identity,
+    attemptProvenance,
+    fetchImpl,
+  );
   const releaseSubject = inspectReleaseSubject(
     root,
     identity.releaseTag,
@@ -1165,6 +1555,7 @@ export async function main({
     root,
     identity,
     artifact,
+    attemptProvenance,
     releaseSubject,
     modelArtifact,
   });

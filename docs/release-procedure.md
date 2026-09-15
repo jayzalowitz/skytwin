@@ -28,11 +28,13 @@
 > package jobs are not credentialed, protected signer pins are not configured,
 > no passing tagged-run evidence exists, and Linux signing remains deliberately
 > blocked pending package-specific trust methods. The model-delivery lane has
-> a Linux verifier in source that independently pins the maintained model
-> inventory and validates delivery, license, stable file identity, and deletion,
-> but it likewise has no tagged release evidence. The other five
-> machine reports (including Linux signing) and the CI result producer are still
-> absent.
+> a Linux verifier in source that independently observes the immutable model
+> repository metadata, exact LFS sibling, card license, revision-pinned LICENSE
+> bytes, delivery, stable file identity, and deletion. It also binds the
+> AppImage artifact to the exact workflow attempt through the upload action's
+> ID/digest outputs and the exact-attempt producer/upload-step time window, but
+> it likewise has no tagged release evidence. The other five machine reports
+> (including Linux signing) and the CI result producer are still absent.
 > The final gate therefore fails closed and the ledger remains blocked until the
 > complete proof pipeline ships.
 
@@ -56,8 +58,17 @@ artifact kind, subject filename, and subject SHA-256. Reports use schema version
 1, identify `release-machine-verifier` as their generator, bind the canonical
 successful claim/platform job and reviewed verifier path/command/source digest,
 and contain the exact uniquely named passing checks with structured assertion,
-measurement, and exit-code observations. A later aggregation step
-uploads those reports as the separate `release-evidence` artifact. After
+measurement, and exit-code observations. For model delivery, the report also
+records the exact workflow attempt, successful AppImage producer job and upload
+step, active verifier job, and artifact creation time. GitHub's artifact API
+exposes the run but not the producing job or attempt; the upload action's
+current-attempt output ID/digest plus creation inside that exact attempt's
+upload-step time window are therefore all required, and prior-attempt evidence
+is rejected. The license check reads the immutable Hugging Face metadata
+endpoint, validates repository/revision, card license and exact LFS sibling,
+then hashes the revision-pinned LICENSE bytes into the report. A later
+aggregation step uploads those reports as the separate `release-evidence`
+artifact. After
 downloading artifacts, the final job runs
 `scripts/release-claims/generate-evidence-manifest.mjs`, which queries the
 current run's jobs and artifacts through GitHub's API and writes

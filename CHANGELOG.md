@@ -23,11 +23,16 @@ All notable changes to SkyTwin will be documented in this file.
 
 - **The model-delivery evidence lane now has a fail-closed Linux verifier in
   source.** It binds the sole maintained model recommendation to its immutable
-  repository revision, filename, byte count, SHA-256 digest, disclosed license,
-  and allowlisted delivery host; re-hashes a private stable file, proves its
-  deletion, and binds the report to the exact tag, workflow run and attempt,
-  release artifact, source tree, and reviewed verifier. The final consumer
-  independently requires that exact inventory and complete report schema.
+  repository revision, observed metadata identity, exact LFS sibling, card
+  license, revision-pinned LICENSE bytes, filename, byte count, SHA-256 digest,
+  and allowlisted delivery host; re-hashes a private stable file and proves its
+  deletion. The exact-attempt job inventory, upload action artifact ID/digest
+  outputs, and upload-step time window bind the report to the actual AppImage
+  producer and active verifier attempt. GitHub's artifact API does not expose a
+  producer job or attempt directly, so the verifier and final consumer retain
+  and enforce all three available bindings rather than inferring an attempt from
+  run ID alone. The final consumer independently requires that exact inventory
+  and complete report schema.
   This implementation has not yet produced evidence from a tagged release and
   does not advance the limited model-delivery claim.
 

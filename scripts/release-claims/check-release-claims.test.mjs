@@ -542,6 +542,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Linux-AppImage
+          path: apps/desktop/dist-electron/*.AppImage
       - name: Upload Linux deb
         id: upload-linux-deb
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -639,6 +640,8 @@ ${machineMatrix}
           GITHUB_TOKEN: \${{ github.token }}
           SKYTWIN_RELEASE_ARTIFACT_IDS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}
           SKYTWIN_RELEASE_ARTIFACT_DIGESTS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}
+          SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID: \${{ needs.desktop-linux.outputs.appimage-artifact-id }}
+          SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST: \${{ needs.desktop-linux.outputs.appimage-artifact-digest }}
         run: node scripts/release-claims/verifiers/\${{ matrix.claimId }}.mjs --platform \${{ matrix.platform }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Upload machine evidence report
         id: upload-machine-evidence
@@ -2682,10 +2685,25 @@ ${step}`,
       releaseArtifactId: 456,
       releaseArtifactName: "SkyTwin-Linux-AppImage",
       releaseArtifactSha256: "a".repeat(64),
+      releaseArtifactCreatedAt: "2026-09-15T01:02:04Z",
+      releaseArtifactAttemptBindingResult:
+        "workflow-output-and-upload-step-window-pass",
       subjectName: "SkyTwin-0.7.0.AppImage",
       subjectPath: "artifacts/SkyTwin-Linux-AppImage/SkyTwin-0.7.0.AppImage",
       subjectSha256: "b".repeat(64),
-      producerJobName: "release-claim-models-verified-delivery-linux",
+      producerJobName:
+        "release-machine-evidence / models.verified-delivery / linux",
+      desktopProducerJobId: 41,
+      desktopProducerJobName: "Desktop — Linux (AppImage + deb + rpm)",
+      desktopProducerJobRunAttempt: 2,
+      desktopProducerJobConclusion: "success",
+      desktopUploadStartedAt: "2026-09-15T01:02:03Z",
+      desktopUploadCompletedAt: "2026-09-15T01:02:05Z",
+      verifierJobId: 42,
+      verifierJobName:
+        "release-machine-evidence / models.verified-delivery / linux",
+      verifierJobRunAttempt: 2,
+      verifierJobStatus: "in_progress",
       verifierPath:
         "scripts/release-claims/verifiers/models.verified-delivery.mjs",
       verifierCommand:
@@ -2709,10 +2727,29 @@ ${step}`,
           sourceRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
           metadata:
             "https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/revision/91cad51170dc346986eccefdc2dd33a9da36ead9?blobs=true",
+          metadataRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          metadataRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadataCardLicense: "apache-2.0",
+          metadataSiblingName: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          metadataSiblingExactBytes: 1_117_320_736,
+          metadataSiblingSha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+          metadataLicenseSiblingName: "LICENSE",
+          metadataLicenseSiblingExactBytes: 11_343,
+          metadataLicenseSiblingBlobId:
+            "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          metadataVerificationResult: "pass",
           license: "Apache-2.0",
           licenseName: "Apache License 2.0",
           licenseUrl:
             "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseSource:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseExactBytes: 11_343,
+          licenseSha256:
+            "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+          licenseBlobId: "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          licenseVerificationResult: "pass",
           exactBytes: 1_117_320_736,
           sha256:
             "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
@@ -2740,9 +2777,9 @@ ${step}`,
           result: "pass",
           observed: {
             assertion:
-              "The model license is tied to the same immutable source revision",
+              "The model metadata and license bytes are observed at the same immutable source revision",
             measurement:
-              "Apache-2.0 at https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+              "Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 card=apache-2.0; LICENSE 11343 bytes sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
             exitCode: 0,
           },
         },
@@ -2798,6 +2835,19 @@ ${step}`,
         [],
       ),
     ).toHaveLength(1);
+    for (const changed of [
+      { ...report, runAttempt: 1 },
+      { ...report, desktopProducerJobRunAttempt: 1 },
+      { ...report, verifierJobRunAttempt: 1 },
+      { ...report, releaseArtifactCreatedAt: "2026-09-14T01:02:04Z" },
+    ])
+      expect(
+        verifyMachineEvidenceApplicability(
+          "models.verified-delivery",
+          changed,
+          [],
+        ),
+      ).toHaveLength(1);
     const changedCheck = structuredClone(report);
     changedCheck.checks[0].observed.measurement = "unbound measurement";
     expect(

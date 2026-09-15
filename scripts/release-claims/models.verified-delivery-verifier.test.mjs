@@ -26,15 +26,19 @@ import {
   downloadAndVerifyModel,
   inspectReleaseSubject,
   inspectStableRegularFile,
+  observePinnedLicense,
+  observePinnedMetadata,
   parseCanonicalArgs,
   readRunIdentity,
   resolveCurrentRun,
+  resolveAttemptProvenance,
   resolveReleaseArtifact,
   writeReport,
 } from "./verifiers/models.verified-delivery.mjs";
 import { verifyMachineEvidenceApplicability } from "./check-release-claims.mjs";
 
 const roots = [];
+const FIXTURE_LICENSE_BYTES = Buffer.from("fixture Apache license bytes\n");
 
 afterEach(() => {
   for (const root of roots.splice(0))
@@ -52,6 +56,10 @@ function digest(bytes) {
 }
 
 function testModel(bytes = Buffer.from("immutable model bytes")) {
+  const licenseBlobId = createHash("sha1")
+    .update(`blob ${FIXTURE_LICENSE_BYTES.length}\0`)
+    .update(FIXTURE_LICENSE_BYTES)
+    .digest("hex");
   return {
     id: "fixture-model",
     name: "fixture-model.gguf",
@@ -64,8 +72,13 @@ function testModel(bytes = Buffer.from("immutable model bytes")) {
     sha256: digest(bytes),
     license: {
       spdxId: "Apache-2.0",
+      cardId: "apache-2.0",
       name: "Apache License 2.0",
       url: `https://huggingface.co/owner/model/blob/${"a".repeat(40)}/LICENSE`,
+      source: `https://huggingface.co/owner/model/resolve/${"a".repeat(40)}/LICENSE`,
+      exactBytes: FIXTURE_LICENSE_BYTES.length,
+      sha256: digest(FIXTURE_LICENSE_BYTES),
+      blobId: licenseBlobId,
     },
   };
 }
@@ -79,9 +92,24 @@ function canonicalModelArtifact() {
     sourceRepository: CANONICAL_MODEL.repository,
     sourceRevision: CANONICAL_MODEL.revision,
     metadata: CANONICAL_MODEL.metadata,
+    metadataRepository: CANONICAL_MODEL.repository,
+    metadataRevision: CANONICAL_MODEL.revision,
+    metadataCardLicense: CANONICAL_MODEL.license.cardId,
+    metadataSiblingName: CANONICAL_MODEL.name,
+    metadataSiblingExactBytes: CANONICAL_MODEL.exactBytes,
+    metadataSiblingSha256: CANONICAL_MODEL.sha256,
+    metadataLicenseSiblingName: "LICENSE",
+    metadataLicenseSiblingExactBytes: CANONICAL_MODEL.license.exactBytes,
+    metadataLicenseSiblingBlobId: CANONICAL_MODEL.license.blobId,
+    metadataVerificationResult: "pass",
     license: CANONICAL_MODEL.license.spdxId,
     licenseName: CANONICAL_MODEL.license.name,
     licenseUrl: CANONICAL_MODEL.license.url,
+    licenseSource: CANONICAL_MODEL.license.source,
+    licenseExactBytes: CANONICAL_MODEL.license.exactBytes,
+    licenseSha256: CANONICAL_MODEL.license.sha256,
+    licenseBlobId: CANONICAL_MODEL.license.blobId,
+    licenseVerificationResult: "pass",
     exactBytes: CANONICAL_MODEL.exactBytes,
     sha256: CANONICAL_MODEL.sha256,
     digestVerificationResult: "pass",
@@ -109,6 +137,27 @@ function identity(overrides = {}) {
     runId: 123,
     runAttempt: 2,
     token: "token-that-is-long-enough",
+    releaseArtifactId: 456,
+    releaseArtifactSha256: "b".repeat(64),
+    ...overrides,
+  };
+}
+
+function attemptProvenance(overrides = {}) {
+  return {
+    producerJobId: 41,
+    producerJobName: "Desktop — Linux (AppImage + deb + rpm)",
+    producerJobRunAttempt: 2,
+    producerJobConclusion: "success",
+    uploadStartedAt: "2026-09-15T01:02:03Z",
+    uploadCompletedAt: "2026-09-15T01:02:05Z",
+    uploadStartedTimestamp: Date.parse("2026-09-15T01:02:03Z"),
+    uploadCompletedTimestamp: Date.parse("2026-09-15T01:02:05Z"),
+    verifierJobId: 42,
+    verifierJobName:
+      "release-machine-evidence / models.verified-delivery / linux",
+    verifierJobRunAttempt: 2,
+    verifierJobStatus: "in_progress",
     ...overrides,
   };
 }
@@ -160,6 +209,36 @@ function jsonResponse(value) {
     status: 200,
     headers: { "content-type": "application/json" },
   });
+}
+
+function modelMetadata(model, overrides = {}) {
+  return {
+    id: model.repository,
+    sha: model.revision,
+    cardData: { license: model.license.cardId },
+    siblings: [
+      {
+        rfilename: model.name,
+        size: model.exactBytes,
+        lfs: { size: model.exactBytes, sha256: model.sha256 },
+      },
+      {
+        rfilename: "LICENSE",
+        size: model.license.exactBytes,
+        blobId: model.license.blobId,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+function deliveryFetch(model, modelResponder) {
+  return async (url, options) => {
+    if (url === model.metadata) return jsonResponse(modelMetadata(model));
+    if (url === model.license.source)
+      return bytesResponse(FIXTURE_LICENSE_BYTES);
+    return modelResponder(url, options);
+  };
 }
 
 describe("reviewed model pin", () => {
@@ -295,6 +374,8 @@ describe("canonical invocation and run identity", () => {
       GITHUB_RUN_ID: "123",
       GITHUB_RUN_ATTEMPT: "2",
       GITHUB_TOKEN: "token-that-is-long-enough",
+      SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID: "456",
+      SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST: `sha256:${"b".repeat(64)}`,
     };
     expect(readRunIdentity(env)).toEqual(identity());
     expect(() =>
@@ -340,6 +421,59 @@ describe("canonical invocation and run identity", () => {
 });
 
 describe("current-run release artifact identity", () => {
+  it("binds producer and active verifier jobs to the exact workflow attempt", async () => {
+    const jobs = [
+      {
+        id: 41,
+        run_id: 123,
+        run_attempt: 2,
+        head_sha: "a".repeat(40),
+        name: "Desktop — Linux (AppImage + deb + rpm)",
+        status: "completed",
+        conclusion: "success",
+        steps: [
+          { name: "Package Linux desktop app", conclusion: "success" },
+          {
+            name: "Upload Linux AppImage",
+            conclusion: "success",
+            started_at: "2026-09-15T01:02:03Z",
+            completed_at: "2026-09-15T01:02:05Z",
+          },
+        ],
+      },
+      {
+        id: 42,
+        run_id: 123,
+        run_attempt: 2,
+        head_sha: "a".repeat(40),
+        name: "release-machine-evidence / models.verified-delivery / linux",
+        status: "in_progress",
+        conclusion: null,
+        steps: [
+          {
+            name: "Run canonical machine verifier",
+            status: "in_progress",
+            conclusion: null,
+          },
+        ],
+      },
+    ];
+    const fetchImpl = async (url) => {
+      expect(url).toContain("/runs/123/attempts/2/jobs?");
+      return jsonResponse({ total_count: jobs.length, jobs });
+    };
+    await expect(
+      resolveAttemptProvenance(identity(), fetchImpl),
+    ).resolves.toMatchObject(attemptProvenance());
+
+    const staleJobs = jobs.map((job) => ({ ...job, run_attempt: 1 }));
+    await expect(
+      resolveAttemptProvenance(identity(), async () =>
+        jsonResponse({ total_count: staleJobs.length, jobs: staleJobs }),
+      ),
+    ).rejects.toThrow(/exact workflow attempt/);
+  });
+
   it("requires exactly one unexpired digest-bound AppImage artifact and matching detail", async () => {
     const expected = identity();
     const artifact = {
@@ -347,33 +481,41 @@ describe("current-run release artifact identity", () => {
       name: "SkyTwin-Linux-AppImage",
       digest: `sha256:${"b".repeat(64)}`,
       expired: false,
+      created_at: "2026-09-15T01:02:04Z",
       workflow_run: { id: 123, head_sha: "a".repeat(40) },
     };
     const fetchImpl = async (url) =>
       url.endsWith("/actions/artifacts/456")
         ? jsonResponse(artifact)
         : jsonResponse({ total_count: 1, artifacts: [artifact] });
-    await expect(resolveReleaseArtifact(expected, fetchImpl)).resolves.toEqual({
+    await expect(
+      resolveReleaseArtifact(expected, attemptProvenance(), fetchImpl),
+    ).resolves.toEqual({
       artifactId: 456,
       artifactName: "SkyTwin-Linux-AppImage",
       artifactSha256: "b".repeat(64),
+      artifactCreatedAt: "2026-09-15T01:02:04Z",
+      attemptBindingResult: "workflow-output-and-upload-step-window-pass",
       kind: "desktop-installer",
     });
   });
 
-  it.each([
-    { total_count: 0, artifacts: [] },
-    {
-      total_count: 2,
-      artifacts: [
-        { id: 1, name: "SkyTwin-Linux-AppImage" },
-        { id: 2, name: "SkyTwin-Linux-AppImage" },
-      ],
-    },
-  ])("rejects missing or duplicate release artifacts", async (inventory) => {
+  it("rejects a same-run artifact retained from a prior attempt", async () => {
+    const stale = {
+      id: 456,
+      name: "SkyTwin-Linux-AppImage",
+      digest: `sha256:${"b".repeat(64)}`,
+      expired: false,
+      created_at: "2026-09-14T01:02:04Z",
+      workflow_run: { id: 123, head_sha: "a".repeat(40) },
+    };
     await expect(
-      resolveReleaseArtifact(identity(), async () => jsonResponse(inventory)),
-    ).rejects.toThrow(/one current-run/);
+      resolveReleaseArtifact(identity(), attemptProvenance(), async (url) =>
+        url.endsWith("/actions/artifacts/456")
+          ? jsonResponse(stale)
+          : jsonResponse({ total_count: 1, artifacts: [stale] }),
+      ),
+    ).rejects.toThrow(/exact-attempt/);
   });
 
   it("accepts only the exact derived-version AppImage subject", () => {
@@ -406,17 +548,92 @@ describe("current-run release artifact identity", () => {
 });
 
 describe("pinned model delivery", () => {
+  it("observes immutable repository metadata, LFS identity, and LICENSE bytes", async () => {
+    const model = testModel();
+    await expect(
+      observePinnedMetadata(model, async (url, options) => {
+        expect(url).toBe(model.metadata);
+        expect(options.redirect).toBe("manual");
+        return jsonResponse(modelMetadata(model));
+      }),
+    ).resolves.toMatchObject({
+      repository: model.repository,
+      revision: model.revision,
+      cardLicense: model.license.cardId,
+      modelSiblingExactBytes: model.exactBytes,
+      modelSiblingSha256: model.sha256,
+      verificationResult: "pass",
+    });
+    for (const metadata of [
+      modelMetadata(model, { id: "attacker/model" }),
+      modelMetadata(model, { sha: "b".repeat(40) }),
+      modelMetadata(model, { cardData: { license: "other" } }),
+      modelMetadata(model, {
+        siblings: modelMetadata(model).siblings.map((sibling) =>
+          sibling.rfilename === model.name
+            ? { ...sibling, lfs: { ...sibling.lfs, sha256: "f".repeat(64) } }
+            : sibling,
+        ),
+      }),
+    ])
+      await expect(
+        observePinnedMetadata(model, async () => jsonResponse(metadata)),
+      ).rejects.toThrow(/metadata/);
+
+    await expect(
+      observePinnedLicense(model, async (url, options) => {
+        expect(url).toBe(model.license.source);
+        expect(options.redirect).toBe("manual");
+        return bytesResponse(FIXTURE_LICENSE_BYTES);
+      }),
+    ).resolves.toMatchObject({
+      source: model.license.source,
+      exactBytes: model.license.exactBytes,
+      sha256: model.license.sha256,
+      blobId: model.license.blobId,
+      verificationResult: "pass",
+    });
+    const resolveKey = `/${model.repository}/resolve/${model.revision}/LICENSE`;
+    const cacheLocation =
+      `https://huggingface.co/api/resolve-cache/models/${model.repository}/${model.revision}/LICENSE` +
+      `?${encodeURIComponent(resolveKey)}=&etag=${encodeURIComponent(`\"${model.license.blobId}\"`)}`;
+    let licenseCalls = 0;
+    const redirected = await observePinnedLicense(model, async () => {
+      licenseCalls += 1;
+      return licenseCalls === 1
+        ? bytesResponse(Buffer.alloc(0), {
+            status: 307,
+            headers: { location: cacheLocation },
+          })
+        : bytesResponse(FIXTURE_LICENSE_BYTES);
+    });
+    expect(licenseCalls).toBe(2);
+    expect(JSON.stringify(redirected)).not.toContain("resolve-cache");
+    expect(JSON.stringify(redirected)).not.toContain("etag");
+    await expect(
+      observePinnedLicense(model, async () =>
+        bytesResponse(Buffer.alloc(0), {
+          status: 302,
+          headers: {
+            location:
+              "https://huggingface.co/api/resolve-cache/models/attacker/model?token=secret",
+          },
+        }),
+      ),
+    ).rejects.toThrow(/immutable Hugging Face/);
+  });
+
   it("accepts exact bytes from the reviewed source and deletes its isolated candidate", async () => {
     const bytes = Buffer.from("immutable model bytes");
     const model = testModel(bytes);
     const parent = temporaryRoot();
     const observed = await downloadAndVerifyModel(model, {
       temporaryParent: parent,
-      fetchImpl: async (url, options) => {
+      fetchImpl: deliveryFetch(model, async (url, options) => {
         expect(url).toBe(model.source);
         expect(options.redirect).toBe("manual");
         return bytesResponse(bytes);
-      },
+      }),
     });
     expect(observed).toMatchObject({
       id: model.id,
@@ -424,6 +641,14 @@ describe("pinned model delivery", () => {
       source: model.source,
       exactBytes: bytes.length,
       sha256: model.sha256,
+      metadataRepository: model.repository,
+      metadataRevision: model.revision,
+      metadataSiblingSha256: model.sha256,
+      metadataVerificationResult: "pass",
+      licenseExactBytes: model.license.exactBytes,
+      licenseSha256: model.license.sha256,
+      licenseBlobId: model.license.blobId,
+      licenseVerificationResult: "pass",
       digestVerificationResult: "pass",
       stableFileIdentityResult: "pass",
       deletionResult: "pass",
@@ -437,7 +662,7 @@ describe("pinned model delivery", () => {
     let calls = 0;
     const observed = await downloadAndVerifyModel(model, {
       temporaryParent: temporaryRoot(),
-      fetchImpl: async () => {
+      fetchImpl: deliveryFetch(model, async () => {
         calls += 1;
         return calls === 1
           ? bytesResponse(Buffer.alloc(0), {
@@ -448,7 +673,7 @@ describe("pinned model delivery", () => {
               },
             })
           : bytesResponse(bytes);
-      },
+      }),
     });
     expect(observed.deliveryHost).toBe("cdn.example.test");
     expect(JSON.stringify(observed)).not.toContain("pinned-object");
@@ -456,11 +681,12 @@ describe("pinned model delivery", () => {
     await expect(
       downloadAndVerifyModel(model, {
         temporaryParent: temporaryRoot(),
-        fetchImpl: async () =>
+        fetchImpl: deliveryFetch(model, async () =>
           bytesResponse(Buffer.alloc(0), {
             status: 302,
             headers: { location: "https://attacker.example/model" },
           }),
+        ),
       }),
     ).rejects.toThrow(/allowlist/);
   });
@@ -471,25 +697,30 @@ describe("pinned model delivery", () => {
     await expect(
       downloadAndVerifyModel(model, {
         temporaryParent: temporaryRoot(),
-        fetchImpl: async () => new Response(null, { status: 404 }),
+        fetchImpl: deliveryFetch(
+          model,
+          async () => new Response(null, { status: 404 }),
+        ),
       }),
     ).rejects.toThrow(/HTTP 404/);
     await expect(
       downloadAndVerifyModel(model, {
         temporaryParent: temporaryRoot(),
-        fetchImpl: async () =>
+        fetchImpl: deliveryFetch(model, async () =>
           bytesResponse(bytes.subarray(0, bytes.length - 1), {
             headers: { "content-length": String(model.exactBytes) },
           }),
+        ),
       }),
     ).rejects.toThrow(/incomplete/);
     await expect(
       downloadAndVerifyModel(model, {
         temporaryParent: temporaryRoot(),
-        fetchImpl: async () =>
+        fetchImpl: deliveryFetch(model, async () =>
           bytesResponse(Buffer.concat([bytes, Buffer.from("x")]), {
             headers: { "content-length": String(model.exactBytes) },
           }),
+        ),
       }),
     ).rejects.toThrow(/exceeded/);
     const wrong = Buffer.from(bytes);
@@ -497,7 +728,7 @@ describe("pinned model delivery", () => {
     await expect(
       downloadAndVerifyModel(model, {
         temporaryParent: temporaryRoot(),
-        fetchImpl: async () => bytesResponse(wrong),
+        fetchImpl: deliveryFetch(model, async () => bytesResponse(wrong)),
       }),
     ).rejects.toThrow(/digest/);
   });
@@ -589,8 +820,11 @@ describe("machine report", () => {
         artifactId: 456,
         artifactName: "SkyTwin-Linux-AppImage",
         artifactSha256: "b".repeat(64),
+        artifactCreatedAt: "2026-09-15T01:02:04Z",
+        attemptBindingResult: "workflow-output-and-upload-step-window-pass",
         kind: "desktop-installer",
       },
+      attemptProvenance: attemptProvenance(),
       releaseSubject: {
         name: "SkyTwin-0.6.10200.AppImage",
         relativePath:
@@ -608,6 +842,11 @@ describe("machine report", () => {
       sourceCommit: "a".repeat(40),
       runId: 123,
       runAttempt: 2,
+      releaseArtifactCreatedAt: "2026-09-15T01:02:04Z",
+      desktopProducerJobId: 41,
+      desktopProducerJobRunAttempt: 2,
+      verifierJobId: 42,
+      verifierJobRunAttempt: 2,
       subjectSha256: "c".repeat(64),
       verifierSha256: digest(Buffer.from("reviewed verifier\n")),
     });

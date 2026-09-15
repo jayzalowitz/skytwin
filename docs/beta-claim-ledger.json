@@ -1081,7 +1081,7 @@
       "scope": "Every model recommended to a beta user, including source, digest, bytes, license, compatibility, interruption recovery, disk checks, and deletion/replacement.",
       "owner": "desktop-inference",
       "state": "limited",
-      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. A fail-closed Linux verifier is present in source, but tagged clean-machine delivery and final artifact evidence are still absent.",
+      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. A fail-closed Linux verifier now observes immutable upstream metadata and LICENSE bytes and binds the AppImage to exact-attempt job and upload evidence, but tagged clean-machine delivery and final artifact evidence are still absent.",
       "evidence": [
         {
           "path": "packages/embedded-llm/src/model-registry.ts",
@@ -1095,8 +1095,8 @@
         },
         {
           "path": "scripts/release-claims/verifiers/models.verified-delivery.mjs",
-          "sha256": "d51799edc785d679058e4cc053dd41b7f8d56f42541d2d7b163b15aec97e7fbf",
-          "why": "The tagged Linux verifier binds the canonical model inventory to current-run delivery, stable bytes, license metadata, and deletion proof"
+          "sha256": "8b636729ac56893db4c5f738b188cbab7be89dc6c7d918bf2f2846e2afd22669",
+          "why": "The tagged Linux verifier binds the canonical model inventory to observed immutable metadata and LICENSE bytes, exact-attempt AppImage provenance, stable delivered bytes, and deletion proof"
         }
       ],
       "verification": [
