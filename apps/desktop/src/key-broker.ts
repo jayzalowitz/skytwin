@@ -182,6 +182,8 @@ interface Binding {
   users: ReadonlySet<string>;
   inFlight: Map<string, number>;
   lockAcks: Map<string, PendingLockAck>;
+  onMessage: (message: unknown) => void;
+  onExit: () => void;
 }
 
 interface StoredDeviceWrapper {
@@ -436,7 +438,7 @@ export class DesktopKeyBroker {
   private readonly platform: NodeJS.Platform;
   private readonly deviceProtection?: DeviceProtectionPort;
   private readonly deviceStore?: DeviceWrapperStore;
-  private readonly protocolValidators?: SourceKeyProtocolValidators;
+  private readonly protocolValidators?: SourceKeyProtocolValidators | Promise<SourceKeyProtocolValidators>;
 
   constructor(
     private readonly store: WrappedKeyStore,
@@ -448,7 +450,7 @@ export class DesktopKeyBroker {
       platform?: NodeJS.Platform;
       deviceProtection?: DeviceProtectionPort;
       deviceStore?: DeviceWrapperStore;
-      protocolValidators?: SourceKeyProtocolValidators;
+      protocolValidators?: SourceKeyProtocolValidators | Promise<SourceKeyProtocolValidators>;
     } = {},
   ) {
     this.now = options.now ?? Date.now;
@@ -850,32 +852,49 @@ export class DesktopKeyBroker {
     role: BrokerRole,
     authorizedUsers: ReadonlySet<string>,
   ): Promise<boolean> {
-    if (this.children.has(child)) return false;
-    let protocol: SourceKeyProtocolValidators;
-    try {
-      protocol = this.protocolValidators ?? await loadSourceKeyProtocolValidators();
-    } catch {
-      return false;
-    }
-    if (this.children.has(child)) return false;
+    if (
+      this.children.has(child)
+      || child.connected === false
+      || this.childHasExited(child)
+    ) return false;
     const capability = randomBytes(KEY_BYTES);
     const users = new Set([...authorizedUsers].filter(isValidVaultUserId));
-    const binding: Binding = {
+    let protocol: SourceKeyProtocolValidators | null = null;
+    let binding!: Binding;
+    const onMessage = (message: unknown): void => {
+      if (!protocol) return;
+      void this.handle(child, message, protocol).catch(() => undefined);
+    };
+    const onExit = (): void => this.releaseChild(child, binding);
+    binding = {
       role,
       capability,
       users,
       inFlight: new Map(),
       lockAcks: new Map(),
+      onMessage,
+      onExit,
     };
     this.children.set(child, binding);
+    child.on('message', onMessage);
+    child.once('exit', onExit);
+    try {
+      protocol = await (this.protocolValidators ?? loadSourceKeyProtocolValidators());
+    } catch {
+      this.releaseChild(child, binding);
+      return false;
+    }
+    if (!this.attachmentIsLive(child, binding)) {
+      this.releaseChild(child, binding);
+      return false;
+    }
     if (!await this.sendForAttachment(child, {
       type: 'skytwin:vault:capability',
       protocolVersion: 1,
       capability: capability.toString('base64'),
       role,
-    })) {
-      capability.fill(0);
-      this.children.delete(child);
+    }) || !this.attachmentIsLive(child, binding)) {
+      this.releaseChild(child, binding);
       return false;
     }
     for (const userId of users) {
@@ -885,16 +904,11 @@ export class DesktopKeyBroker {
         ownerKind: 'user',
         ownerId: userId,
         generation: this.generation(userId),
-      })) {
-        capability.fill(0);
-        this.children.delete(child);
+      }) || !this.attachmentIsLive(child, binding)) {
+        this.releaseChild(child, binding);
         return false;
       }
     }
-    child.on('message', message => {
-      void this.handle(child, message, protocol).catch(() => undefined);
-    });
-    child.once('exit', () => this.releaseChild(child, binding));
     return true;
   }
 
@@ -1274,9 +1288,17 @@ export class DesktopKeyBroker {
       || (child.signalCode !== null && child.signalCode !== undefined);
   }
 
+  private attachmentIsLive(child: ChildProcess, expected: Binding): boolean {
+    return this.children.get(child) === expected
+      && child.connected !== false
+      && !this.childHasExited(child);
+  }
+
   private releaseChild(child: ChildProcess, expected: Binding): void {
     if (this.children.get(child) !== expected) return;
     this.children.delete(child);
+    child.removeListener('message', expected.onMessage);
+    child.removeListener('exit', expected.onExit);
     expected.capability.fill(0);
     for (const ack of [...expected.lockAcks.values()]) ack.finish();
   }

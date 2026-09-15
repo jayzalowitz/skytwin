@@ -92,10 +92,13 @@ class FakeChild extends EventEmitter {
   sent: unknown[] = [];
   killSignals: NodeJS.Signals[] = [];
   connected = true;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
   killed = false;
   autoAck = true;
   backpressure = false;
   asyncSendError: Error | null = null;
+  afterSuccessfulSend: (() => void) | null = null;
   onKill: ((signal: NodeJS.Signals) => void) | null = null;
   send(value: unknown, callback?: (error: Error | null) => void) {
     this.sent.push(value);
@@ -120,7 +123,10 @@ class FakeChild extends EventEmitter {
         if (callback) callback(error);
         else this.emit('error', error);
       });
-    } else if (callback) queueMicrotask(() => callback(null));
+    } else if (callback) queueMicrotask(() => {
+      callback(null);
+      this.afterSuccessfulSend?.();
+    });
     return !this.backpressure;
   }
   kill(signal: NodeJS.Signals = 'SIGTERM') {
@@ -761,6 +767,53 @@ describe('DesktopKeyBroker', () => {
       new Set([context.userId]),
     )).toBe(false);
     expect(child.killSignals).toEqual([]);
+  });
+
+  it('rejects and cleans up a child that exits while protocol validators load', async () => {
+    let resolveValidators!: (validators: typeof protocolValidators) => void;
+    const validators = new Promise<typeof protocolValidators>(resolve => {
+      resolveValidators = resolve;
+    });
+    const broker = new ProductionDesktopKeyBroker(new MemoryStore(), {
+      protocolValidators: validators,
+    });
+    const child = new FakeChild();
+
+    const attaching = broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId]),
+    );
+    expect(child.listenerCount('message')).toBe(1);
+    expect(child.listenerCount('exit')).toBe(1);
+    child.exitCode = 1;
+    child.connected = false;
+    child.emit('exit', 1);
+    resolveValidators(protocolValidators);
+
+    expect(await attaching).toBe(false);
+    expect(child.sent).toEqual([]);
+    expect(child.listenerCount('message')).toBe(0);
+    expect(child.listenerCount('exit')).toBe(0);
+  });
+
+  it('rejects an exit between a successful delivery callback and await continuation', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    const child = new FakeChild();
+    child.afterSuccessfulSend = () => {
+      child.afterSuccessfulSend = null;
+      child.exitCode = 1;
+      child.connected = false;
+      child.emit('exit', 1);
+    };
+
+    expect(await broker.attachChild(
+      child as unknown as ChildProcess,
+      'worker',
+      new Set(),
+    )).toBe(false);
+    expect(child.listenerCount('message')).toBe(0);
+    expect(child.listenerCount('exit')).toBe(0);
   });
 
   it('accepts initial IPC backpressure when delivery callbacks succeed', async () => {

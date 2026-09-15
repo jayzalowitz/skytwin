@@ -1509,13 +1509,6 @@ export class ServiceManager {
         controller: new AbortController(),
       };
       this.apiGeneration = generation;
-      // User grants are populated by the authenticated broker client in the
-      // source-migration slice. An empty set is deliberately fail closed.
-      if (this.keyBroker && !await this.keyBroker.attachChild(apiProcess, 'api', new Set())) {
-        await this.stopProcess(this.api, 'api');
-        throw new Error('API source-key broker attachment failed');
-      }
-
       apiProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
       });
@@ -1527,7 +1520,7 @@ export class ServiceManager {
         if (this.api.process !== apiProcess) return;
         if (this.terminatingProcesses.has(apiProcess)) return;
         if (!generation || !this.claimApiGenerationRecovery(generation)) return;
-        if (generation) this.revokeApiGeneration(generation);
+        this.revokeApiGeneration(generation);
         this.api.process = null;
         this.api.status = 'stopped';
         this.emitStatus();
@@ -1544,6 +1537,20 @@ export class ServiceManager {
         console.log(`[api] Process exited with code ${code}`);
         handleApiExit(`process exited with code ${code}`);
       });
+
+      // User grants are populated by the authenticated broker client in the
+      // source-migration slice. An empty set is deliberately fail closed.
+      const brokerAttached = !this.keyBroker
+        || await this.keyBroker.attachChild(apiProcess, 'api', new Set());
+      if (
+        !brokerAttached
+        || childHasExited(apiProcess)
+        || this.api.process !== apiProcess
+        || !this.isApiGenerationCurrent(generation)
+      ) {
+        if (this.api.process === apiProcess) await this.stopProcess(this.api, 'api');
+        throw new Error('API source-key broker attachment failed');
+      }
 
       this.api.status = 'running';
       this.emitStatus();
@@ -1917,11 +1924,6 @@ export class ServiceManager {
       });
       this.worker.process = workerProcess;
       this.workerApiGeneration = apiGeneration;
-      if (this.keyBroker && !await this.keyBroker.attachChild(workerProcess, 'worker', new Set())) {
-        await this.stopProcess(this.worker, 'worker');
-        throw new Error('Worker source-key broker attachment failed');
-      }
-
       workerProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);
       });
@@ -1964,6 +1966,18 @@ export class ServiceManager {
           }
         }
       });
+
+      const brokerAttached = !this.keyBroker
+        || await this.keyBroker.attachChild(workerProcess, 'worker', new Set());
+      if (
+        !brokerAttached
+        || childHasExited(workerProcess)
+        || this.worker.process !== workerProcess
+        || this.workerApiGeneration !== apiGeneration
+      ) {
+        if (this.worker.process === workerProcess) await this.stopProcess(this.worker, 'worker');
+        throw new Error('Worker source-key broker attachment failed');
+      }
 
       this.worker.status = 'running';
       this.emitStatus();

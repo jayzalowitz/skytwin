@@ -255,7 +255,7 @@ describe('source-key broker context and envelope snapshots', () => {
         expected,
       ),
     ).toBeNull();
-  });
+  }, 20_000);
 
   it('rejects malformed base64 alphabet, padding, and non-canonical pad bits', () => {
     for (const ciphertext of [

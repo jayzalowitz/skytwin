@@ -299,6 +299,35 @@ describe("ServiceManager API error lifecycle", () => {
     expect(manager.apiGeneration).toBeNull();
   });
 
+  it("observes an API exit that races a successful broker attachment", async () => {
+    const broker = {
+      attachChild: vi.fn().mockImplementation(async (child: ChildProcess) => {
+        child.exitCode = 1;
+        child.emit("exit", 1);
+        return true;
+      }),
+    };
+    const manager = new ServiceManager(
+      broker as unknown as ConstructorParameters<typeof ServiceManager>[0],
+    ) as InstanceType<typeof ServiceManager> & ManagerInternals;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.detectExternalApi = vi.fn().mockResolvedValue(false);
+    manager.scheduleApiRestart = vi.fn();
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+
+    expect(await manager.startApi(startup)).toBeNull();
+    expect(manager.scheduleApiRestart).toHaveBeenCalledOnce();
+    expect(manager.api.process).toBeNull();
+    expect(manager.apiGeneration).toBeNull();
+    expect(manager.api.status).toBe("error");
+  });
+
   it("contains sibling services and durable worker authority when the API restart budget is exhausted", async () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const manager = new ServiceManager() as InstanceType<
