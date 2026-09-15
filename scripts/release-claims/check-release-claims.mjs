@@ -9,7 +9,7 @@ import {
   readdirSync,
   realpathSync,
 } from "node:fs";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import {
@@ -807,6 +807,14 @@ function isPlainRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function hasExactRecordKeys(value, expectedKeys) {
+  return (
+    isPlainRecord(value) &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify([...expectedKeys].sort())
+  );
+}
+
 function addError(errors, message) {
   errors.push(message);
 }
@@ -1360,6 +1368,8 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
     addError(errors, `${prefix}.repository must be an owner/repository name`);
   if (!Number.isSafeInteger(evidence.runId) || evidence.runId <= 0)
     addError(errors, `${prefix}.runId must be a positive integer`);
+  if (!Number.isSafeInteger(evidence.runAttempt) || evidence.runAttempt <= 0)
+    addError(errors, `${prefix}.runAttempt must be a positive integer`);
   if (!isNonEmptyString(evidence.ref))
     addError(errors, `${prefix}.ref is required`);
   const expectedCheckIds = canonicalEvidenceChecks(
@@ -1469,6 +1479,40 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
       if (!Number.isSafeInteger(evidence[field]) || evidence[field] <= 0)
         addError(errors, `${prefix}.${field} must be a positive integer`);
     }
+    const sourceReportFields = [
+      "sourceReportArtifactId",
+      "sourceReportArtifactName",
+      "sourceReportArtifactSha256",
+    ];
+    if (evidence.claimId === "release.signing") {
+      if (
+        !Number.isSafeInteger(evidence.sourceReportArtifactId) ||
+        evidence.sourceReportArtifactId <= 0
+      )
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactId must be a positive integer`,
+        );
+      if (
+        evidence.sourceReportArtifactName !==
+        `release-signing-report-${evidence.platform}-attempt-${evidence.runAttempt}`
+      )
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactName must bind the platform and run attempt`,
+        );
+      if (!SOURCE_DIGEST.test(evidence.sourceReportArtifactSha256 ?? ""))
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactSha256 must be the Actions archive SHA-256 digest`,
+        );
+    } else if (
+      sourceReportFields.some((field) => evidence[field] !== undefined)
+    )
+      addError(
+        errors,
+        `${prefix} may carry source report artifact fields only for release.signing`,
+      );
     if (
       !Number.isSafeInteger(evidence.producerJobId) ||
       evidence.producerJobId <= 0
@@ -2162,7 +2206,7 @@ export function verifyCanonicalReleasePublisher(root) {
     JSON.stringify(machineProducerJob.strategy.matrix.include) !==
       JSON.stringify(expectedMachineMatrix) ||
     !Array.isArray(producerSteps) ||
-    producerSteps.length !== 9 ||
+    producerSteps.length !== 10 ||
     !isRecord(producerSteps[0]) ||
     !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
     producerSteps[0].uses !==
@@ -2232,7 +2276,7 @@ export function verifyCanonicalReleasePublisher(root) {
       "compression-level",
     ]) ||
     producerSteps[6].with.name !==
-      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}" ||
+      "${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}" ||
     producerSteps[6].with.path !==
       ".release-evidence/reports/${{ matrix.reportName }}" ||
     producerSteps[6].with["if-no-files-found"] !== "error" ||
@@ -2259,16 +2303,37 @@ export function verifyCanonicalReleasePublisher(root) {
     !hasExactKeys(producerSteps[8].env, [
       "SKYTWIN_EXPECTED_REPORT_SHA256",
       "SKYTWIN_UPLOADED_ARTIFACT_ID",
+      "SKYTWIN_UPLOADED_ARTIFACT_NAME",
       "SKYTWIN_UPLOADED_ARTIFACT_SHA256",
     ]) ||
     producerSteps[8].env.SKYTWIN_EXPECTED_REPORT_SHA256 !==
       "${{ steps.machine-verifier.outputs.report_sha256 }}" ||
     producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_ID !==
       "${{ steps.upload-machine-evidence.outputs.artifact-id }}" ||
+    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_NAME !==
+      "release-signing-report-${{ matrix.platform }}-attempt-${{ github.run_attempt }}" ||
     producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_SHA256 !==
       "${{ steps.upload-machine-evidence.outputs.artifact-digest }}" ||
     producerSteps[8].run !==
-      "node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }}"
+      "node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }} --binding .release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json" ||
+    !isRecord(producerSteps[9]) ||
+    !hasExactKeys(producerSteps[9], ["name", "if", "uses", "with"]) ||
+    producerSteps[9].name !== "Upload signing report source binding" ||
+    producerSteps[9].if !== "matrix.claimId == 'release.signing'" ||
+    producerSteps[9].uses !==
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
+    !hasExactKeys(producerSteps[9].with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    producerSteps[9].with.name !==
+      "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}" ||
+    producerSteps[9].with.path !==
+      ".release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json" ||
+    producerSteps[9].with["if-no-files-found"] !== "error" ||
+    producerSteps[9].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -2296,44 +2361,93 @@ export function verifyCanonicalReleasePublisher(root) {
       ]) ||
     evidenceAggregatorJob["runs-on"] !== "ubuntu-24.04" ||
     !Array.isArray(aggregatorSteps) ||
-    aggregatorSteps.length !== 3 ||
+    aggregatorSteps.length !== 8 ||
     !isRecord(aggregatorSteps[0]) ||
-    !hasExactKeys(aggregatorSteps[0], ["name", "uses", "with"]) ||
-    aggregatorSteps[0].name !== "Download machine evidence reports" ||
-    aggregatorSteps[0].uses !==
-      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
-    !hasExactKeys(aggregatorSteps[0].with, [
+    !hasExactKeys(aggregatorSteps[0], ["uses", "with"]) ||
+    aggregatorSteps[0].uses !== PINNED_RELEASE_WORKFLOW_ACTIONS.checkout ||
+    !hasExactKeys(aggregatorSteps[0].with, ["persist-credentials"]) ||
+    aggregatorSteps[0].with["persist-credentials"] !== false ||
+    !isRecord(aggregatorSteps[1]) ||
+    !hasExactKeys(aggregatorSteps[1], ["name", "uses", "with"]) ||
+    aggregatorSteps[1].name !==
+      "Download signing report source bindings for this run attempt" ||
+    aggregatorSteps[1].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(aggregatorSteps[1].with, [
       "pattern",
       "path",
       "merge-multiple",
     ]) ||
-    aggregatorSteps[0].with.pattern !== "release-machine-evidence-*" ||
-    aggregatorSteps[0].with.path !== ".release-evidence/reports" ||
-    aggregatorSteps[0].with["merge-multiple"] !== true ||
-    !isRecord(aggregatorSteps[1]) ||
-    !hasExactKeys(aggregatorSteps[1], ["name", "uses", "with"]) ||
-    aggregatorSteps[1].name !==
-      "Download release artifact verification materials" ||
-    aggregatorSteps[1].uses !==
-      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
-    !hasExactKeys(aggregatorSteps[1].with, ["name", "path"]) ||
-    aggregatorSteps[1].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
-    aggregatorSteps[1].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
+    aggregatorSteps[1].with.pattern !==
+      "release-signing-binding-*-attempt-${{ github.run_attempt }}" ||
+    aggregatorSteps[1].with.path !== ".release-evidence/upload-bindings" ||
+    aggregatorSteps[1].with["merge-multiple"] !== true ||
     !isRecord(aggregatorSteps[2]) ||
-    !hasExactKeys(aggregatorSteps[2], ["name", "uses", "with"]) ||
-    aggregatorSteps[2].name !== "Upload aggregated release evidence" ||
-    aggregatorSteps[2].uses !==
+    !hasExactKeys(aggregatorSteps[2], ["name", "id", "run"]) ||
+    aggregatorSteps[2].name !==
+      "Resolve exact source signing report artifact IDs" ||
+    aggregatorSteps[2].id !== "signing-report-bindings" ||
+    aggregatorSteps[2].run !==
+      "node scripts/release-claims/verifiers/release.signing.mjs --resolve-upload-bindings --bindings .release-evidence/upload-bindings" ||
+    !isRecord(aggregatorSteps[3]) ||
+    !hasExactKeys(aggregatorSteps[3], ["name", "uses", "with"]) ||
+    aggregatorSteps[3].name !== "Download exact source signing reports" ||
+    aggregatorSteps[3].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(aggregatorSteps[3].with, [
+      "artifact-ids",
+      "path",
+      "merge-multiple",
+    ]) ||
+    aggregatorSteps[3].with["artifact-ids"] !==
+      "${{ steps.signing-report-bindings.outputs.artifact_ids }}" ||
+    aggregatorSteps[3].with.path !== ".release-evidence/reports" ||
+    aggregatorSteps[3].with["merge-multiple"] !== true ||
+    !isRecord(aggregatorSteps[4]) ||
+    !hasExactKeys(aggregatorSteps[4], ["name", "run"]) ||
+    aggregatorSteps[4].name !==
+      "Verify aggregated source signing report bindings" ||
+    aggregatorSteps[4].run !==
+      "node scripts/release-claims/verifiers/release.signing.mjs --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports" ||
+    !isRecord(aggregatorSteps[5]) ||
+    !hasExactKeys(aggregatorSteps[5], ["name", "uses", "with"]) ||
+    aggregatorSteps[5].name !==
+      "Download non-signing machine evidence reports for this run attempt" ||
+    aggregatorSteps[5].uses !==
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
+    !hasExactKeys(aggregatorSteps[5].with, [
+      "pattern",
+      "path",
+      "merge-multiple",
+    ]) ||
+    aggregatorSteps[5].with.pattern !==
+      "release-machine-evidence-*-attempt-${{ github.run_attempt }}" ||
+    aggregatorSteps[5].with.path !== ".release-evidence/reports" ||
+    aggregatorSteps[5].with["merge-multiple"] !== true ||
+    !isRecord(aggregatorSteps[6]) ||
+    !hasExactKeys(aggregatorSteps[6], ["name", "uses", "with"]) ||
+    aggregatorSteps[6].name !==
+      "Download release artifact verification materials" ||
+    aggregatorSteps[6].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(aggregatorSteps[6].with, ["name", "path"]) ||
+    aggregatorSteps[6].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
+    aggregatorSteps[6].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
+    !isRecord(aggregatorSteps[7]) ||
+    !hasExactKeys(aggregatorSteps[7], ["name", "uses", "with"]) ||
+    aggregatorSteps[7].name !== "Upload aggregated release evidence" ||
+    aggregatorSteps[7].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
-    !hasExactKeys(aggregatorSteps[2].with, [
+    !hasExactKeys(aggregatorSteps[7].with, [
       "name",
       "path",
       "if-no-files-found",
       "compression-level",
     ]) ||
-    aggregatorSteps[2].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
-    aggregatorSteps[2].with.path !== ".release-evidence" ||
-    aggregatorSteps[2].with["if-no-files-found"] !== "error" ||
-    aggregatorSteps[2].with["compression-level"] !== 0
+    aggregatorSteps[7].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
+    aggregatorSteps[7].with.path !== ".release-evidence" ||
+    aggregatorSteps[7].with["if-no-files-found"] !== "error" ||
+    aggregatorSteps[7].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -2416,6 +2530,10 @@ export function verifyCanonicalReleasePublisher(root) {
     );
   const machineInputUploaders = [];
   const dynamicArtifactUploaders = [];
+  const canonicalMachineReportUploadName =
+    "${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}";
+  const canonicalSigningBindingUploadName =
+    "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}";
   for (const [jobName, job] of Object.entries(canonicalWorkflow.jobs ?? {})) {
     if (!isRecord(job)) continue;
     for (const [stepIndex, step] of asArray(job.steps).entries()) {
@@ -2431,28 +2549,40 @@ export function verifyCanonicalReleasePublisher(root) {
         dynamicArtifactUploaders.push(location);
         continue;
       }
-      if (artifactName.startsWith("release-machine-evidence-"))
+      if (
+        artifactName.includes("release-machine-evidence-") ||
+        artifactName.includes("release-signing-report-") ||
+        artifactName.includes("release-signing-binding-")
+      )
         machineInputUploaders.push({ jobName, artifactName, location });
       if (
         artifactName.includes("${{") &&
         !(
           jobName === "release-machine-evidence" &&
-          artifactName ===
-            "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+          [
+            canonicalMachineReportUploadName,
+            canonicalSigningBindingUploadName,
+          ].includes(artifactName)
         )
       )
         dynamicArtifactUploaders.push(location);
     }
   }
   if (
-    machineInputUploaders.length !== 1 ||
-    machineInputUploaders[0]?.jobName !== "release-machine-evidence" ||
-    machineInputUploaders[0]?.artifactName !==
-      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+    machineInputUploaders.length !== 2 ||
+    machineInputUploaders.some(
+      ({ jobName }) => jobName !== "release-machine-evidence",
+    ) ||
+    !machineInputUploaders.some(
+      ({ artifactName }) => artifactName === canonicalMachineReportUploadName,
+    ) ||
+    !machineInputUploaders.some(
+      ({ artifactName }) => artifactName === canonicalSigningBindingUploadName,
+    )
   )
     addError(
       errors,
-      "only the canonical machine producer may upload artifacts matching the release-machine-evidence prefix",
+      "only the canonical machine producer may upload attempt-bound machine reports and signing bindings",
     );
   if (dynamicArtifactUploaders.length > 0)
     addError(
@@ -4992,6 +5122,63 @@ export function hasCanonicalSuccessfulMachineSteps(claimId, producerJob) {
   );
 }
 
+export function isValidSigningSourceReportArtifact(
+  artifact,
+  evidence,
+  runId,
+  releaseCommit,
+) {
+  return (
+    artifact?.id === evidence?.sourceReportArtifactId &&
+    artifact?.name === evidence?.sourceReportArtifactName &&
+    artifact?.expired === false &&
+    artifact?.digest === `sha256:${evidence?.sourceReportArtifactSha256}` &&
+    artifact?.workflow_run?.id === runId &&
+    artifact?.workflow_run?.head_sha === releaseCommit
+  );
+}
+
+export function isValidSigningUploadBinding(
+  binding,
+  evidence,
+  { repository, releaseCommit, tag, triggerRef, runId, runAttempt },
+) {
+  return (
+    hasExactRecordKeys(binding, [
+      "schemaVersion",
+      "generatedBy",
+      "claimId",
+      "platform",
+      "repository",
+      "sourceCommit",
+      "releaseTag",
+      "ref",
+      "runId",
+      "runAttempt",
+      "reportName",
+      "reportSha256",
+      "sourceArtifactId",
+      "sourceArtifactName",
+      "sourceArtifactSha256",
+    ]) &&
+    binding.schemaVersion === 1 &&
+    binding.generatedBy === "release-signing-upload-verifier" &&
+    binding.claimId === evidence.claimId &&
+    binding.platform === evidence.platform &&
+    binding.repository === repository &&
+    binding.sourceCommit === releaseCommit &&
+    binding.releaseTag === tag &&
+    binding.ref === triggerRef &&
+    binding.runId === runId &&
+    binding.runAttempt === runAttempt &&
+    binding.reportName === basename(evidence.reportPath) &&
+    binding.reportSha256 === evidence.reportSha256 &&
+    binding.sourceArtifactId === evidence.sourceReportArtifactId &&
+    binding.sourceArtifactName === evidence.sourceReportArtifactName &&
+    binding.sourceArtifactSha256 === evidence.sourceReportArtifactSha256
+  );
+}
+
 export async function verifyPublicationEvidence(
   ledger,
   manifest,
@@ -5051,6 +5238,11 @@ export async function verifyPublicationEvidence(
     addError(
       errors,
       "release evidence manifest runId does not match the current workflow run",
+    );
+  if (!Number.isSafeInteger(manifest?.runAttempt) || manifest.runAttempt <= 0)
+    addError(
+      errors,
+      "release evidence manifest runAttempt must be a positive integer",
     );
   if (manifest?.ref !== triggerRef)
     addError(
@@ -5145,6 +5337,11 @@ export async function verifyPublicationEvidence(
         errors,
         `${claimId} ${evidence.kind} evidence is not from the current workflow run`,
       );
+    if (evidence.runAttempt !== manifest.runAttempt)
+      addError(
+        errors,
+        `${claimId} ${evidence.kind} evidence is not from the current workflow run attempt`,
+      );
     if (evidence.ref !== triggerRef)
       addError(
         errors,
@@ -5183,7 +5380,8 @@ export async function verifyPublicationEvidence(
     currentRun.event !== "push" ||
     currentRun.head_branch !== tag ||
     currentRun.path !== RELEASE_EVIDENCE_WORKFLOW_PATH ||
-    currentRun.repository?.full_name !== repository
+    currentRun.repository?.full_name !== repository ||
+    currentRun.run_attempt !== manifest.runAttempt
   ) {
     addError(
       errors,
@@ -5434,21 +5632,35 @@ export async function verifyPublicationEvidence(
       `${prefix} release artifact`,
       errors,
     );
+    const sourceReportArtifactResponse =
+      claimId === "release.signing"
+        ? await fetchChecked(
+            fetchImpl,
+            `${apiRoot}/artifacts/${evidence.sourceReportArtifactId}`,
+            { headers },
+            `${prefix} source report artifact`,
+            errors,
+          )
+        : null;
     if (
       !producerJobResponse ||
       !evidenceArtifactResponse ||
-      !releaseArtifactResponse
+      !releaseArtifactResponse ||
+      (claimId === "release.signing" && !sourceReportArtifactResponse)
     )
       continue;
     let producerJob;
     let evidenceArtifact;
     let releaseArtifact;
+    let sourceReportArtifact;
     try {
-      [producerJob, evidenceArtifact, releaseArtifact] = await Promise.all([
-        producerJobResponse.json(),
-        evidenceArtifactResponse.json(),
-        releaseArtifactResponse.json(),
-      ]);
+      [producerJob, evidenceArtifact, releaseArtifact, sourceReportArtifact] =
+        await Promise.all([
+          producerJobResponse.json(),
+          evidenceArtifactResponse.json(),
+          releaseArtifactResponse.json(),
+          sourceReportArtifactResponse?.json(),
+        ]);
     } catch {
       addError(errors, `${prefix} API response was not valid JSON`);
       continue;
@@ -5498,6 +5710,19 @@ export async function verifyPublicationEvidence(
         `${prefix} release artifact is not the unexpired ID/name/digest-bound artifact from the current run`,
       );
     }
+    if (
+      claimId === "release.signing" &&
+      !isValidSigningSourceReportArtifact(
+        sourceReportArtifact,
+        evidence,
+        runId,
+        releaseCommit,
+      )
+    )
+      addError(
+        errors,
+        `${prefix} source report artifact is not the unexpired attempt-bound ID/name/archive-digest artifact from the current run`,
+      );
     const subjectPath = resolveContainedRegularFile(root, evidence.subjectPath);
     if (!subjectPath) {
       addError(
@@ -5527,6 +5752,38 @@ export async function verifyPublicationEvidence(
     if (sha256(bytes) !== evidence.reportSha256) {
       addError(errors, `${prefix} report digest does not match reportSha256`);
       continue;
+    }
+    if (claimId === "release.signing") {
+      const bindingRelativePath = `.release-evidence/upload-bindings/${basename(
+        evidence.reportPath,
+      )}.binding.json`;
+      const bindingPath = resolveContainedRegularFile(
+        root,
+        bindingRelativePath,
+      );
+      let binding;
+      try {
+        binding = JSON.parse(readFileSync(bindingPath, "utf8"));
+      } catch {
+        addError(errors, `${prefix} upload binding is missing or invalid JSON`);
+        continue;
+      }
+      if (
+        !isValidSigningUploadBinding(binding, evidence, {
+          repository,
+          releaseCommit,
+          tag,
+          triggerRef,
+          runId,
+          runAttempt: manifest.runAttempt,
+        })
+      ) {
+        addError(
+          errors,
+          `${prefix} upload binding does not bind the source report bytes, artifact, run, and attempt`,
+        );
+        continue;
+      }
     }
     let report;
     try {

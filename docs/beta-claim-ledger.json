@@ -1174,8 +1174,8 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "946135f60b7075c4d81a830b9724bbc1c913039c1cd7859f5e9e1d31fe0d089f",
-          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
+          "sha256": "946d1a53a792c884de944ce985c59eff71b85107a1716b3936ab9e8a9176e8bb",
+          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher requires attempt-bound source report artifacts and digest-bound signing evidence"
         },
         {
           "path": "apps/desktop/package.json",
@@ -1184,8 +1184,8 @@
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "1b541d5005eba3510af2bbe87b7d8b0953bb5d6bec8c298f2a2cf9f169b63677",
-          "why": "Defines contained report writes, fail-closed native macOS DMG and contained-app signature observations, and Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
+          "sha256": "76916b36a5420ebd14629f3f77d2bba17b6c53aff40e39e7f1e464a9372de1d2",
+          "why": "Defines contained report writes and upload bindings, fail-closed native macOS observations, and capacity-bounded Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
         }
       ],
       "verification": [
@@ -1215,7 +1215,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "946135f60b7075c4d81a830b9724bbc1c913039c1cd7859f5e9e1d31fe0d089f",
+          "sha256": "946d1a53a792c884de944ce985c59eff71b85107a1716b3936ab9e8a9176e8bb",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
@@ -1255,8 +1255,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "aed43a8fb24cb1c939d2d23936984d1152e7c472aa9e69a4a67bdc63fbc03349",
-          "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
+          "sha256": "cadab0a23f8aa260d441492463770213da5f0ef9f4dd99a874df1cdb74ddc259",
+          "why": "Structurally locks the sole materials producer and exact-ID signing report aggregator and re-verifies every release material and source report binding at publication"
         }
       ],
       "verification": [

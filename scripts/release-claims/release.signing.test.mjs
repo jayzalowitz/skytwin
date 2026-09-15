@@ -28,10 +28,12 @@ import {
   parseWindowsSignature,
   readRunIdentity,
   readTrustPolicy,
+  resolveUploadedReportBindings,
   resolveCurrentRunArtifacts,
   runCanonicalVerifier,
   verifyLinuxSubjects,
   verifyMacSubjects,
+  verifyAggregatedUploadedReports,
   verifyUploadedReport,
   verifyWindowsSubjects,
 } from "./verifiers/release.signing.mjs";
@@ -378,6 +380,19 @@ function windowsExecutor(overrides = {}) {
   const diskpartScripts = [];
   const execute = vi.fn((file, args, options) => {
     if (file.endsWith("powershell.exe")) {
+      if (options.env.SKYTWIN_EXTRACTION_VOLUME)
+        return {
+          exitCode: 0,
+          signal: null,
+          stdout:
+            overrides.volumeInspection ??
+            JSON.stringify({
+              fileSystemType: "NTFS",
+              allocationUnitSize: 4096,
+              sizeBytes: 5 * 1024 * 1024 * 1024,
+            }),
+          stderr: "",
+        };
       const subjectPath = options.env.SKYTWIN_SIGNATURE_SUBJECT;
       const isInner = subjectPath.endsWith("SkyTwin.exe");
       const signature = isInner
@@ -453,8 +468,8 @@ function windowsExecutor(overrides = {}) {
   execute.inspectFilesystem = (path) =>
     path.endsWith("extraction-volume")
       ? {
-          blocks: (17n * 1024n * 1024n * 1024n) / 4096n,
-          bavail: (16n * 1024n * 1024n * 1024n) / 4096n,
+          blocks: (5n * 1024n * 1024n * 1024n) / 4096n,
+          bavail: (4n * 1024n * 1024n * 1024n) / 4096n,
           bsize: 4096n,
         }
       : {
@@ -1777,7 +1792,8 @@ describe("release.signing canonical verifier", () => {
       ),
     ).toThrow("Windows NSIS payload extraction failed");
     const scripts = execute.diskpartScripts;
-    expect(scripts[0]).toContain("maximum=17799 type=fixed");
+    expect(scripts[0]).toContain("maximum=5511 type=fixed");
+    expect(scripts[0]).toContain("format fs=ntfs unit=4096");
     expect(scripts[0]).toContain("assign mount=");
     expect(scripts.at(-1)).toContain("detach vdisk");
     expect(
@@ -1789,6 +1805,53 @@ describe("release.signing canonical verifier", () => {
             .every((arg) => arg.includes("extraction-volume")),
         ),
     ).toBe(true);
+  });
+
+  it("fails closed unless the attached Windows volume reports 4 KiB NTFS allocation units", () => {
+    const root = makeRoot();
+    populateSubjects(root, "windows");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "windows",
+      identity.appVersion,
+    );
+    const execute = windowsExecutor({
+      volumeInspection: JSON.stringify({
+        fileSystemType: "NTFS",
+        allocationUnitSize: 8192,
+        sizeBytes: 5 * 1024 * 1024 * 1024,
+      }),
+    });
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        windowsOptions(execute),
+      ),
+    ).toThrow("not a distinct capacity-enforced filesystem");
+    expect(execute.diskpartScripts.at(-1)).toContain("detach vdisk");
+  });
+
+  it("rejects nested Windows listings whose combined content exceeds 4 GiB", () => {
+    const root = makeRoot();
+    populateSubjects(root, "windows");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "windows",
+      identity.appVersion,
+    );
+    const execute = windowsExecutor({
+      nsisListing: `Path = installer.exe\nType = Nsis\n\nPath = $PLUGINSDIR/app-64.7z\nSize = ${3 * 1024 * 1024 * 1024}\n`,
+      payloadListing: `Path = app-64.7z\nType = 7z\n\nPath = SkyTwin.exe\nSize = ${2 * 1024 * 1024 * 1024}\n`,
+    });
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        windowsOptions(execute),
+      ),
+    ).toThrow("nested expanded content exceeds");
+    expect(execute.diskpartScripts.at(-1)).toContain("detach vdisk");
   });
 
   it("rejects ambiguous or non-canonical Windows native-tool roots", () => {
@@ -2088,6 +2151,20 @@ describe("release.signing canonical verifier", () => {
       "release.signing.macos.json",
     );
     writeFileSync(confirmationPath, readFileSync(join(root, output)));
+    const bindingPath =
+      ".release-evidence/upload-bindings/release.signing.macos.json.binding.json";
+    const uploadEnv = {
+      GITHUB_REPOSITORY: identity.repository,
+      GITHUB_SHA: identity.sourceCommit,
+      GITHUB_REF_NAME: identity.releaseTag,
+      GITHUB_REF: identity.ref,
+      GITHUB_RUN_ID: String(identity.runId),
+      GITHUB_RUN_ATTEMPT: "2",
+      SKYTWIN_EXPECTED_REPORT_SHA256: reportSha256,
+      SKYTWIN_UPLOADED_ARTIFACT_ID: "321",
+      SKYTWIN_UPLOADED_ARTIFACT_NAME: "release-signing-report-macos-attempt-2",
+      SKYTWIN_UPLOADED_ARTIFACT_SHA256: "d".repeat(64),
+    };
     expect(
       verifyUploadedReport(
         [
@@ -2095,20 +2172,39 @@ describe("release.signing canonical verifier", () => {
           "macos",
           "--report",
           ".release-evidence/upload-confirmation/release.signing.macos.json",
+          "--binding",
+          bindingPath,
         ],
         {
           root,
-          env: {
-            SKYTWIN_EXPECTED_REPORT_SHA256: reportSha256,
-            SKYTWIN_UPLOADED_ARTIFACT_ID: "321",
-            SKYTWIN_UPLOADED_ARTIFACT_SHA256: "d".repeat(64),
-          },
+          env: uploadEnv,
         },
       ),
     ).toEqual({
-      artifactId: 321,
-      artifactSha256: "d".repeat(64),
+      schemaVersion: 1,
+      generatedBy: "release-signing-upload-verifier",
+      claimId: "release.signing",
+      platform: "macos",
+      repository: identity.repository,
+      sourceCommit: identity.sourceCommit,
+      releaseTag: identity.releaseTag,
+      ref: identity.ref,
+      runId: identity.runId,
+      runAttempt: 2,
+      reportName: "release.signing.macos.json",
       reportSha256,
+      sourceArtifactId: 321,
+      sourceArtifactName: "release-signing-report-macos-attempt-2",
+      sourceArtifactSha256: "d".repeat(64),
+    });
+    expect(
+      JSON.parse(readFileSync(join(root, bindingPath), "utf8")),
+    ).toMatchObject({
+      runId: identity.runId,
+      runAttempt: 2,
+      reportSha256,
+      sourceArtifactId: 321,
+      sourceArtifactSha256: "d".repeat(64),
     });
     writeFileSync(confirmationPath, "swapped during upload");
     expect(() =>
@@ -2118,14 +2214,12 @@ describe("release.signing canonical verifier", () => {
           "macos",
           "--report",
           ".release-evidence/upload-confirmation/release.signing.macos.json",
+          "--binding",
+          bindingPath,
         ],
         {
           root,
-          env: {
-            SKYTWIN_EXPECTED_REPORT_SHA256: reportSha256,
-            SKYTWIN_UPLOADED_ARTIFACT_ID: "321",
-            SKYTWIN_UPLOADED_ARTIFACT_SHA256: "d".repeat(64),
-          },
+          env: uploadEnv,
         },
       ),
     ).toThrow("does not match verifier output");
@@ -2179,6 +2273,88 @@ describe("release.signing canonical verifier", () => {
       expect(readdirSync(outside)).toEqual([]);
     },
   );
+
+  it("resolves attempt-bound source artifact IDs and rechecks exact downloaded report bytes", () => {
+    const root = makeRoot();
+    const bindingsDirectory = join(
+      root,
+      ".release-evidence",
+      "upload-bindings",
+    );
+    const reportsDirectory = join(root, ".release-evidence", "reports");
+    mkdirSync(bindingsDirectory, { recursive: true });
+    mkdirSync(reportsDirectory, { recursive: true });
+    const env = {
+      GITHUB_REPOSITORY: identity.repository,
+      GITHUB_SHA: identity.sourceCommit,
+      GITHUB_REF_NAME: identity.releaseTag,
+      GITHUB_REF: identity.ref,
+      GITHUB_RUN_ID: String(identity.runId),
+      GITHUB_RUN_ATTEMPT: "3",
+      GITHUB_OUTPUT: join(root, "aggregate-output.txt"),
+    };
+    writeFileSync(env.GITHUB_OUTPUT, "");
+    for (const [index, platform] of ["macos", "windows", "linux"].entries()) {
+      const reportName = `release.signing.${platform}.json`;
+      const reportBytes = Buffer.from(`report bytes for ${platform}\n`);
+      writeFileSync(join(reportsDirectory, reportName), reportBytes);
+      writeFileSync(
+        join(bindingsDirectory, `${reportName}.binding.json`),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          generatedBy: "release-signing-upload-verifier",
+          claimId: "release.signing",
+          platform,
+          repository: identity.repository,
+          sourceCommit: identity.sourceCommit,
+          releaseTag: identity.releaseTag,
+          ref: identity.ref,
+          runId: identity.runId,
+          runAttempt: 3,
+          reportName,
+          reportSha256: sha256(reportBytes),
+          sourceArtifactId: 700 + index,
+          sourceArtifactName: `release-signing-report-${platform}-attempt-3`,
+          sourceArtifactSha256: String(index + 1).repeat(64),
+        })}\n`,
+      );
+    }
+    expect(
+      resolveUploadedReportBindings(
+        ["--bindings", ".release-evidence/upload-bindings"],
+        { root, env },
+      ).map(({ sourceArtifactId }) => sourceArtifactId),
+    ).toEqual([700, 701, 702]);
+    expect(readFileSync(env.GITHUB_OUTPUT, "utf8")).toBe(
+      "artifact_ids=700,701,702\n",
+    );
+    expect(
+      verifyAggregatedUploadedReports(
+        [
+          "--bindings",
+          ".release-evidence/upload-bindings",
+          "--reports",
+          ".release-evidence/reports",
+        ],
+        { root, env },
+      ),
+    ).toHaveLength(3);
+    writeFileSync(
+      join(reportsDirectory, "release.signing.windows.json"),
+      "wrong attempt bytes",
+    );
+    expect(() =>
+      verifyAggregatedUploadedReports(
+        [
+          "--bindings",
+          ".release-evidence/upload-bindings",
+          "--reports",
+          ".release-evidence/reports",
+        ],
+        { root, env },
+      ),
+    ).toThrow("does not match its source report digest");
+  });
 
   it("does not write evidence when a release subject changes during native verification", async () => {
     const root = makeRoot();

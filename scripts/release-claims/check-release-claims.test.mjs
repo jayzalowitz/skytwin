@@ -39,6 +39,8 @@ import {
   REQUIRED_SURFACE_CLASSES,
   buildCanonicalVerificationInstructions,
   hasCanonicalSuccessfulMachineSteps,
+  isValidSigningSourceReportArtifact,
+  isValidSigningUploadBinding,
   isAllowlistedVerificationCommand,
   isValidSpdx23Document,
   normalizeReleaseTagToRepositoryVersion,
@@ -566,7 +568,7 @@ ${machineMatrix}
         id: upload-machine-evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: release-machine-evidence-\${{ matrix.claimId }}-\${{ matrix.platform }}
+          name: \${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}
           path: .release-evidence/reports/\${{ matrix.reportName }}
           if-no-files-found: error
           compression-level: 0
@@ -582,18 +584,47 @@ ${machineMatrix}
         env:
           SKYTWIN_EXPECTED_REPORT_SHA256: \${{ steps.machine-verifier.outputs.report_sha256 }}
           SKYTWIN_UPLOADED_ARTIFACT_ID: \${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          SKYTWIN_UPLOADED_ARTIFACT_NAME: release-signing-report-\${{ matrix.platform }}-attempt-\${{ github.run_attempt }}
           SKYTWIN_UPLOADED_ARTIFACT_SHA256: \${{ steps.upload-machine-evidence.outputs.artifact-digest }}
-        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform \${{ matrix.platform }} --report .release-evidence/upload-confirmation/\${{ matrix.reportName }}
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform \${{ matrix.platform }} --report .release-evidence/upload-confirmation/\${{ matrix.reportName }} --binding .release-evidence/upload-bindings/\${{ matrix.reportName }}.binding.json
+      - name: Upload signing report source binding
+        if: matrix.claimId == 'release.signing'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-signing-binding-\${{ matrix.platform }}-attempt-\${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings/\${{ matrix.reportName }}.binding.json
+          if-no-files-found: error
+          compression-level: 0
   aggregate-release-evidence:
     name: Aggregate release machine evidence
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [release-machine-evidence, release-artifact-materials]
     runs-on: ubuntu-24.04
     steps:
-      - name: Download machine evidence reports
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download signing report source bindings for this run attempt
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: release-machine-evidence-*
+          pattern: release-signing-binding-*-attempt-\${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings
+          merge-multiple: true
+      - name: Resolve exact source signing report artifact IDs
+        id: signing-report-bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --resolve-upload-bindings --bindings .release-evidence/upload-bindings
+      - name: Download exact source signing reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: \${{ steps.signing-report-bindings.outputs.artifact_ids }}
+          path: .release-evidence/reports
+          merge-multiple: true
+      - name: Verify aggregated source signing report bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports
+      - name: Download non-signing machine evidence reports for this run attempt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-machine-evidence-*-attempt-\${{ github.run_attempt }}
           path: .release-evidence/reports
           merge-multiple: true
       - name: Download release artifact verification materials
@@ -1167,6 +1198,33 @@ ${step}`,
     ).toBe(true);
   });
 
+  it("requires attempt-specific signing bindings and exact-ID aggregation", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    const workflow = readFileSync(path, "utf8");
+    writeFileSync(
+      path,
+      workflow.replace(
+        "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}",
+        "release-signing-binding-${{ matrix.platform }}",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+    writeFileSync(
+      path,
+      workflow.replace(
+        "artifact-ids: ${{ steps.signing-report-bindings.outputs.artifact_ids }}",
+        "pattern: release-signing-report-*",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence aggregation must be the exact producer-dependent immutable artifact graph",
+    );
+  });
+
   it("requires machine verification to depend on the materials producer", () => {
     const root = makeRoot();
     writeValidFixture(root);
@@ -1221,7 +1279,7 @@ ${step}`,
       ),
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
-      "only the canonical machine producer may upload artifacts matching the release-machine-evidence prefix",
+      "only the canonical machine producer may upload attempt-bound machine reports and signing bindings",
     );
   });
 
@@ -3372,6 +3430,7 @@ ${step}`,
       tag: "v0.7.0-beta",
       ref: "refs/tags/v0.7.0-beta",
       runId: 111,
+      runAttempt: 1,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [],
@@ -3387,6 +3446,7 @@ ${step}`,
                 checkIds: CANONICAL_CI_EVIDENCE_CHECKS.get(readiness.claimId),
                 repository: "owner/repository",
                 runId: 111,
+                runAttempt: 1,
                 ref: "refs/tags/v0.7.0-beta",
                 jobId: 222,
                 jobName: "release-claim-ci",
@@ -3407,6 +3467,7 @@ ${step}`,
                 ),
                 repository: "owner/repository",
                 runId: 111,
+                runAttempt: 1,
                 ref: "refs/tags/v0.7.0-beta",
                 evidenceArtifactId: 333,
                 evidenceArtifactName: "release-evidence",
@@ -3476,6 +3537,7 @@ ${step}`,
         tag: "v0.7.0-beta",
         ref: "refs/tags/v0.7.0-beta",
         runId: 1,
+        runAttempt: 1,
         releaseAssets,
         verificationAssets: makeVerificationAssets(root, releaseAssets),
         evidence: [
@@ -3487,6 +3549,7 @@ ${step}`,
             ),
             repository: "owner/repository",
             runId: 1,
+            runAttempt: 1,
             ref: "refs/tags/v0.7.0-beta",
             evidenceArtifactId: 2,
             evidenceArtifactName: "release-evidence",
@@ -3593,6 +3656,7 @@ ${step}`,
       tag,
       ref,
       runId,
+      runAttempt: 1,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [
@@ -3602,6 +3666,7 @@ ${step}`,
           checkIds,
           repository: "owner/repository",
           runId,
+          runAttempt: 1,
           ref,
           evidenceArtifactId: 202,
           evidenceArtifactName: "release-evidence",
@@ -3644,6 +3709,7 @@ ${step}`,
       if (String(url).includes("/runs/")) {
         body = {
           id: runId,
+          run_attempt: 1,
           event: runEvent,
           head_branch: tag,
           head_sha: commit,
@@ -3750,6 +3816,329 @@ ${step}`,
     ).toBe(true);
   });
 
+  it("binds signing publication to the source report artifact and run attempt", async () => {
+    const root = makeRoot();
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const tag = "v0.7.0-beta";
+    const ref = `refs/tags/${tag}`;
+    const runId = 801;
+    const runAttempt = 2;
+    const releaseAssets = makeReleaseAssets(root, 900);
+    const releaseAsset = releaseAssets.find(
+      ({ artifactName }) => artifactName === "SkyTwin-Windows-installer",
+    );
+    const subject = releaseAsset.subjects[0];
+    const producerJobId = 850;
+    const verifierPath = machineVerifierPath("release.signing");
+    const verifierCommand = machineVerifierCommand(
+      "release.signing",
+      "windows",
+    );
+    const verifierSource = "// signing verifier fixture\n";
+    const verifierSha256 = createHash("sha256")
+      .update(verifierSource)
+      .digest("hex");
+    write(root, verifierPath, verifierSource);
+    const signature = {
+      signatureResult: "pass",
+      verificationMethod:
+        "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+      authenticodeStatus: "Valid",
+      authenticodeSignatureType: "Authenticode",
+      signer: "CN=SkyTwin Publisher",
+      signerIssuer: "CN=Public Code Signing CA",
+      signerCertificateSha256: "b".repeat(64),
+      signerCertificatePinned: true,
+      codeSigningEku: true,
+      timestampCertificatePresent: true,
+      timestampSignerCertificateSha256: "d".repeat(64),
+      timestampCertificateValidation:
+        "presence-and-fingerprint-recorded-not-independently-validated",
+    };
+    const report = {
+      schemaVersion: 1,
+      generatedBy: "release-machine-verifier",
+      result: "pass",
+      checks: [
+        {
+          id: "release.platform-signature-validation",
+          testId: "release.platform-signature-validation",
+          result: "pass",
+          observed: { assertion: "signed", measurement: "one", exitCode: 0 },
+        },
+      ],
+      claimId: "release.signing",
+      repository: "owner/repository",
+      sourceCommit: commit,
+      releaseTag: tag,
+      ref,
+      runId,
+      platform: "windows",
+      runnerPlatform: "win32-x64",
+      producerJobName: machineProducerJobName("release.signing", "windows"),
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      coveredSubjects: [
+        {
+          artifactId: releaseAsset.artifactId,
+          artifactName: releaseAsset.artifactName,
+          artifactSha256: releaseAsset.artifactSha256,
+          kind: releaseAsset.kind,
+          path: subject.path,
+          name: subject.name,
+          sha256: subject.sha256,
+          sizeBytes: subject.sizeBytes,
+          platform: "windows-x64",
+          ...signature,
+          productVersion: "0.7.0",
+          fileVersionMajor: 0,
+          fileVersionMinor: 7,
+          fileVersionBuild: 0,
+          fileVersionPrivate: 0,
+          containedExecutable: {
+            derivationMethod: "nsis-7zip",
+            derivationPath: "app-64.7z!/SkyTwin.exe",
+            name: "SkyTwin.exe",
+            sha256: "e".repeat(64),
+            sizeBytes: 128,
+            architecture: "AMD64",
+            productVersion: "0.7.0",
+            fileVersionMajor: 0,
+            fileVersionMinor: 7,
+            fileVersionBuild: 0,
+            fileVersionPrivate: 0,
+            ...signature,
+          },
+        },
+      ],
+    };
+    const reportPath = ".release-evidence/reports/release.signing.windows.json";
+    const reportBytes = `${JSON.stringify(report)}\n`;
+    const reportSha256 = createHash("sha256").update(reportBytes).digest("hex");
+    write(root, reportPath, reportBytes);
+    const sourceReportArtifactId = 880;
+    const sourceReportArtifactName = "release-signing-report-windows-attempt-2";
+    const sourceReportArtifactSha256 = "f".repeat(64);
+    write(
+      root,
+      ".release-evidence/upload-bindings/release.signing.windows.json.binding.json",
+      `${JSON.stringify({
+        schemaVersion: 1,
+        generatedBy: "release-signing-upload-verifier",
+        claimId: "release.signing",
+        platform: "windows",
+        repository: "owner/repository",
+        sourceCommit: commit,
+        releaseTag: tag,
+        ref,
+        runId,
+        runAttempt,
+        reportName: "release.signing.windows.json",
+        reportSha256,
+        sourceArtifactId: sourceReportArtifactId,
+        sourceArtifactName: sourceReportArtifactName,
+        sourceArtifactSha256: sourceReportArtifactSha256,
+      })}\n`,
+    );
+    const evidence = {
+      claimId: "release.signing",
+      kind: "machine",
+      checkIds: ["release.platform-signature-validation"],
+      repository: "owner/repository",
+      runId,
+      runAttempt,
+      ref,
+      evidenceArtifactId: 870,
+      evidenceArtifactName: "release-evidence",
+      evidenceArtifactSha256: "c".repeat(64),
+      reportPath,
+      reportSha256,
+      sourceReportArtifactId,
+      sourceReportArtifactName,
+      sourceReportArtifactSha256,
+      sourceCommit: commit,
+      releaseTag: tag,
+      platform: "windows",
+      producerJobId,
+      producerJobName: report.producerJobName,
+      producerJobConclusion: "success",
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      why: "fixture",
+    };
+    const manifest = {
+      schemaVersion: 1,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      ref,
+      runId,
+      runAttempt,
+      releaseAssets,
+      verificationAssets: makeVerificationAssets(root, releaseAssets),
+      evidence: [evidence],
+    };
+    const fetchImpl = async (url) => {
+      const text = String(url);
+      const id = Number(text.split("/").at(-1));
+      let body;
+      if (text.includes("/runs/"))
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text.includes("/jobs/"))
+        body = {
+          id: producerJobId,
+          name: report.producerJobName,
+          conclusion: "success",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
+            {
+              name: "Verify exact uploaded signing report binding",
+              conclusion: "success",
+            },
+          ],
+        };
+      else if (id === 870)
+        body = {
+          id,
+          name: "release-evidence",
+          expired: false,
+          digest: `sha256:${"c".repeat(64)}`,
+          workflow_run: { id: runId, head_sha: commit },
+        };
+      else if (id === sourceReportArtifactId)
+        body = {
+          id,
+          name: sourceReportArtifactName,
+          expired: false,
+          digest: `sha256:${sourceReportArtifactSha256}`,
+          workflow_run: { id: runId, head_sha: commit },
+        };
+      else
+        body = releaseAssetApiBody(
+          releaseAssets.find(({ artifactId }) => artifactId === id),
+          runId,
+          commit,
+        );
+      return { ok: true, json: async () => body };
+    };
+    const options = {
+      root,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      runId,
+      triggerRef: ref,
+      githubToken: "token",
+      fetchImpl,
+    };
+    const binding = JSON.parse(
+      readFileSync(
+        join(
+          root,
+          ".release-evidence/upload-bindings/release.signing.windows.json.binding.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(
+      isValidSigningUploadBinding(binding, evidence, {
+        repository: "owner/repository",
+        releaseCommit: commit,
+        tag,
+        triggerRef: ref,
+        runId,
+        runAttempt,
+      }),
+    ).toBe(true);
+    expect(
+      isValidSigningUploadBinding(
+        { ...binding, runAttempt: runAttempt - 1 },
+        evidence,
+        {
+          repository: "owner/repository",
+          releaseCommit: commit,
+          tag,
+          triggerRef: ref,
+          runId,
+          runAttempt,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      isValidSigningSourceReportArtifact(
+        {
+          id: sourceReportArtifactId,
+          name: sourceReportArtifactName,
+          expired: false,
+          digest: `sha256:${sourceReportArtifactSha256}`,
+          workflow_run: { id: runId, head_sha: commit },
+        },
+        evidence,
+        runId,
+        commit,
+      ),
+    ).toBe(true);
+    expect(
+      isValidSigningSourceReportArtifact(
+        {
+          id: sourceReportArtifactId,
+          name: sourceReportArtifactName,
+          expired: false,
+          digest: `sha256:${"0".repeat(64)}`,
+          workflow_run: { id: runId, head_sha: commit },
+        },
+        evidence,
+        runId,
+        commit,
+      ),
+    ).toBe(false);
+    expect(
+      await verifyPublicationEvidence(
+        {
+          release: {
+            readinessClaims: [
+              {
+                claimId: "release.signing",
+                requiredEvidenceKinds: ["machine"],
+              },
+            ],
+          },
+        },
+        manifest,
+        options,
+      ),
+    ).toEqual([
+      "release evidence manifest is missing required evidence: release.signing:machine:macos",
+      "release evidence manifest is missing required evidence: release.signing:machine:linux",
+    ]);
+  });
+
   it("requires CI job/run URL and artifact proof from the current run", async () => {
     const root = makeRoot();
     const commit = "0123456789abcdef0123456789abcdef01234567";
@@ -3781,6 +4170,7 @@ ${step}`,
       checkIds: CANONICAL_CI_EVIDENCE_CHECKS.get("encryption.oauth-default"),
       repository: "owner/repository",
       runId,
+      runAttempt: 1,
       ref,
       jobId: 902,
       jobName: "release-claim-ci",
@@ -3810,6 +4200,7 @@ ${step}`,
       tag,
       ref,
       runId,
+      runAttempt: 1,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [evidence],
@@ -3820,6 +4211,7 @@ ${step}`,
       if (String(url).includes("/runs/")) {
         body = {
           id: runId,
+          run_attempt: 1,
           event: "push",
           head_branch: tag,
           head_sha: commit,

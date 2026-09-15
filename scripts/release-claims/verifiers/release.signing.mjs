@@ -33,6 +33,7 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  machineReportNamesForClaim,
   machineProducerJobName,
   machineVerifierCommand,
   machineVerifierPath,
@@ -79,6 +80,7 @@ const MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MAC_ZIP_SYMLINK_BYTES = 4096;
 const WINDOWS_QUOTA_MEMBER_LIMIT = 100_000;
 const WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES = 4096;
+const MAX_WINDOWS_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;
 const WINDOWS_QUOTA_FILESYSTEM_HEADROOM_BYTES = 1024 * 1024 * 1024;
 const WINDOWS_QUOTA_HOST_FREE_SPACE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024;
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
@@ -195,7 +197,7 @@ const MAC_ZIP_EXTRACTION_VOLUME_BYTES = macZipExtractionVolumeBytes();
 const MAC_ZIP_MINIMUM_HOST_FREE_BYTES =
   MAC_ZIP_EXTRACTION_VOLUME_BYTES + MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES;
 const WINDOWS_EXTRACTION_VOLUME_BYTES =
-  MAX_SUBJECT_BYTES * 2 +
+  MAX_WINDOWS_EXPANDED_BYTES +
   WINDOWS_QUOTA_MEMBER_LIMIT * WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES +
   WINDOWS_QUOTA_FILESYSTEM_HEADROOM_BYTES;
 const WINDOWS_EXTRACTION_VOLUME_MIB = Math.ceil(
@@ -1578,6 +1580,7 @@ export function parseSevenZipListing(output, archivePath, description) {
       `${description} expanded size exceeds the release bound`,
     );
     record.normalizedPath = normalizedPath;
+    record.sizeBytes = size;
   }
   return records;
 }
@@ -1657,6 +1660,7 @@ function diskpartPathLiteral(path) {
 function createWindowsQuotaVolume({
   extractionRoot,
   diskpart,
+  powershell,
   execute,
   commandEnv,
   inspectFilesystem,
@@ -1672,7 +1676,7 @@ function createWindowsQuotaVolume({
     `select vdisk file=${diskpartPathLiteral(imagePath)}`,
     "attach vdisk",
     "create partition primary",
-    'format fs=ntfs label="SkyTwinVerification" quick',
+    `format fs=ntfs unit=${WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES} label="SkyTwinVerification" quick`,
     `assign mount=${diskpartPathLiteral(volumeRoot)}`,
     "exit",
   ]);
@@ -1690,11 +1694,53 @@ function createWindowsQuotaVolume({
     "blocks",
     "Windows extraction volume capacity",
   );
+  const volumeInspection = checkedCommand(
+    execute,
+    powershell,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      WINDOWS_VOLUME_INSPECTION_SCRIPT,
+    ],
+    {
+      env: { ...commandEnv, SKYTWIN_EXTRACTION_VOLUME: volumeRoot },
+    },
+    "Windows extraction volume inspection",
+  );
+  let volume;
+  try {
+    volume = JSON.parse(volumeInspection.trim());
+  } catch {
+    throw new Error(
+      "Windows extraction volume inspection returned invalid JSON",
+    );
+  }
+  exactKeys(
+    volume,
+    ["fileSystemType", "allocationUnitSize", "sizeBytes"],
+    "Windows extraction volume inspection",
+  );
   assert(
     volumeStat.isDirectory() &&
       volumeStat.dev !== hostDevice &&
-      totalBytes > BigInt(MAX_SUBJECT_BYTES * 2) &&
-      totalBytes <= BigInt(WINDOWS_EXTRACTION_VOLUME_MIB * 1024 * 1024),
+      volume.fileSystemType === "NTFS" &&
+      volume.allocationUnitSize === WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES &&
+      Number.isSafeInteger(volume.sizeBytes) &&
+      volume.sizeBytes > 0 &&
+      totalBytes >
+        BigInt(
+          MAX_WINDOWS_EXPANDED_BYTES +
+            WINDOWS_QUOTA_MEMBER_LIMIT * WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES,
+        ) &&
+      totalBytes <= BigInt(WINDOWS_EXTRACTION_VOLUME_MIB * 1024 * 1024) &&
+      volume.sizeBytes >
+        MAX_WINDOWS_EXPANDED_BYTES +
+          WINDOWS_QUOTA_MEMBER_LIMIT * WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES &&
+      volume.sizeBytes <= WINDOWS_EXTRACTION_VOLUME_MIB * 1024 * 1024,
     "Windows extraction volume is not a distinct capacity-enforced filesystem",
   );
   // A fixed VHDX consumes its full maximum at creation. This post-allocation
@@ -1713,6 +1759,17 @@ function createWindowsQuotaVolume({
   );
   return { imagePath, volumeRoot };
 }
+
+const WINDOWS_VOLUME_INSPECTION_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$volume = Get-Volume -FilePath $env:SKYTWIN_EXTRACTION_VOLUME
+if ($null -eq $volume) { throw 'missing extraction volume' }
+[ordered]@{
+  fileSystemType = [string]$volume.FileSystemType
+  allocationUnitSize = [int64]$volume.AllocationUnitSize
+  sizeBytes = [int64]$volume.Size
+} | ConvertTo-Json -Compress
+`;
 
 function detachWindowsQuotaVolume({
   extractionRoot,
@@ -1812,6 +1869,13 @@ function deriveWindowsExecutable(
     ),
     payloadPath,
     "Windows application payload",
+  );
+  const plannedRecords = [...firstListing, ...secondListing];
+  assert(
+    plannedRecords.length <= WINDOWS_QUOTA_MEMBER_LIMIT &&
+      plannedRecords.reduce((total, record) => total + record.sizeBytes, 0) <=
+        MAX_WINDOWS_EXPANDED_BYTES,
+    "Windows nested expanded content exceeds the fixed-volume release bound",
   );
   assert(
     secondListing.filter(
@@ -2096,6 +2160,7 @@ export function verifyWindowsSubjects(
     createWindowsQuotaVolume({
       extractionRoot,
       diskpart,
+      powershell,
       execute,
       commandEnv,
       inspectFilesystem,
@@ -2661,22 +2726,41 @@ export function verifyUploadedReport(
   const platform = argv[1];
   const expectedReportName = `release.signing.${platform}.json`;
   const expectedRelativePath = `.release-evidence/upload-confirmation/${expectedReportName}`;
+  const expectedBindingPath = `.release-evidence/upload-bindings/${expectedReportName}.binding.json`;
   assert(
-    argv.length === 4 &&
+    argv.length === 6 &&
       argv[0] === "--platform" &&
-      ["macos", "windows"].includes(platform) &&
+      ["macos", "windows", "linux"].includes(platform) &&
       argv[2] === "--report" &&
-      argv[3] === expectedRelativePath,
-    "usage: --verify-upload --platform <macos|windows> --report .release-evidence/upload-confirmation/release.signing.<platform>.json",
+      argv[3] === expectedRelativePath &&
+      argv[4] === "--binding" &&
+      argv[5] === expectedBindingPath,
+    "usage: --verify-upload --platform <macos|windows|linux> --report .release-evidence/upload-confirmation/release.signing.<platform>.json --binding .release-evidence/upload-bindings/release.signing.<platform>.json.binding.json",
   );
   const expectedSha256 = env.SKYTWIN_EXPECTED_REPORT_SHA256;
   const artifactId = Number(env.SKYTWIN_UPLOADED_ARTIFACT_ID);
   const artifactSha256 = env.SKYTWIN_UPLOADED_ARTIFACT_SHA256;
+  const runId = Number(env.GITHUB_RUN_ID);
+  const runAttempt = Number(env.GITHUB_RUN_ATTEMPT);
+  const repository = env.GITHUB_REPOSITORY;
+  const sourceCommit = env.GITHUB_SHA;
+  const releaseTag = env.GITHUB_REF_NAME;
+  const ref = env.GITHUB_REF;
+  const expectedArtifactName = `release-signing-report-${platform}-attempt-${runAttempt}`;
   assert(
     SHA256_DIGEST.test(expectedSha256 ?? "") &&
       Number.isSafeInteger(artifactId) &&
       artifactId > 0 &&
-      SHA256_DIGEST.test(artifactSha256 ?? ""),
+      SHA256_DIGEST.test(artifactSha256 ?? "") &&
+      Number.isSafeInteger(runId) &&
+      runId > 0 &&
+      Number.isSafeInteger(runAttempt) &&
+      runAttempt > 0 &&
+      /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? "") &&
+      /^[0-9a-f]{40}$/u.test(sourceCommit ?? "") &&
+      typeof releaseTag === "string" &&
+      ref === `refs/tags/${releaseTag}` &&
+      env.SKYTWIN_UPLOADED_ARTIFACT_NAME === expectedArtifactName,
     "uploaded report binding outputs are missing or malformed",
   );
   const canonicalRoot = realpathSync(resolve(root));
@@ -2690,11 +2774,250 @@ export function verifyUploadedReport(
     report.sha256 === expectedSha256,
     "exact-ID downloaded release signing report does not match verifier output",
   );
-  return {
-    artifactId,
-    artifactSha256,
+  let reportDocument;
+  try {
+    reportDocument = JSON.parse(readFileSync(report.path, "utf8"));
+  } catch {
+    throw new Error(
+      "exact-ID downloaded release signing report is not valid JSON",
+    );
+  }
+  assert(
+    reportDocument.schemaVersion === 1 &&
+      reportDocument.generatedBy === "release-machine-verifier" &&
+      reportDocument.claimId === CLAIM_ID &&
+      reportDocument.platform === platform &&
+      reportDocument.repository === repository &&
+      reportDocument.sourceCommit === sourceCommit &&
+      reportDocument.releaseTag === releaseTag &&
+      reportDocument.ref === ref &&
+      reportDocument.runId === runId &&
+      reportDocument.result === "pass",
+    "exact-ID downloaded release signing report has the wrong release identity",
+  );
+  const binding = {
+    schemaVersion: 1,
+    generatedBy: "release-signing-upload-verifier",
+    claimId: CLAIM_ID,
+    platform,
+    repository,
+    sourceCommit,
+    releaseTag,
+    ref,
+    runId,
+    runAttempt,
+    reportName: expectedReportName,
     reportSha256: report.sha256,
+    sourceArtifactId: artifactId,
+    sourceArtifactName: expectedArtifactName,
+    sourceArtifactSha256: artifactSha256,
   };
+  writeUploadBinding(canonicalRoot, expectedBindingPath, binding);
+  return binding;
+}
+
+function writeUploadBinding(root, relativePath, binding) {
+  const evidenceRoot = join(root, ".release-evidence");
+  const bindingsRoot = join(evidenceRoot, "upload-bindings");
+  const output = resolve(root, relativePath);
+  assert(
+    within(bindingsRoot, output),
+    "upload binding escapes binding directory",
+  );
+  for (const [directory, description] of [
+    [evidenceRoot, "release evidence directory"],
+    [bindingsRoot, "release upload bindings directory"],
+  ]) {
+    let exists = true;
+    try {
+      lstatSync(directory);
+    } catch (error) {
+      if (!isRecord(error) || error.code !== "ENOENT") throw error;
+      exists = false;
+    }
+    if (!exists) mkdirSync(directory, { mode: 0o700 });
+    const stat = lstatSync(directory);
+    assert(
+      stat.isDirectory() &&
+        !stat.isSymbolicLink() &&
+        realpathSync(directory) === directory,
+      `${description} must be a direct real directory inside checkout`,
+    );
+  }
+  const bytes = Buffer.from(`${JSON.stringify(binding, null, 2)}\n`);
+  writeFileSync(output, bytes, { flag: "wx", mode: 0o600 });
+  const observed = inspectStableRegularFile(
+    bindingsRoot,
+    output,
+    "release signing upload binding",
+    64 * 1024,
+  );
+  assert(
+    observed.sha256 === createHash("sha256").update(bytes).digest("hex") &&
+      observed.sizeBytes === bytes.length,
+    "release signing upload binding changed while it was written",
+  );
+}
+
+function aggregationIdentity(env) {
+  const runId = Number(env.GITHUB_RUN_ID);
+  const runAttempt = Number(env.GITHUB_RUN_ATTEMPT);
+  const identity = {
+    repository: env.GITHUB_REPOSITORY,
+    sourceCommit: env.GITHUB_SHA,
+    releaseTag: env.GITHUB_REF_NAME,
+    ref: env.GITHUB_REF,
+    runId,
+    runAttempt,
+  };
+  assert(
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(identity.repository ?? "") &&
+      /^[0-9a-f]{40}$/u.test(identity.sourceCommit ?? "") &&
+      typeof identity.releaseTag === "string" &&
+      identity.ref === `refs/tags/${identity.releaseTag}` &&
+      Number.isSafeInteger(runId) &&
+      runId > 0 &&
+      Number.isSafeInteger(runAttempt) &&
+      runAttempt > 0,
+    "release signing aggregation identity is missing or malformed",
+  );
+  return identity;
+}
+
+function readUploadBindings(root, bindingsDirectory, env) {
+  const expectedDirectory = ".release-evidence/upload-bindings";
+  assert(
+    bindingsDirectory === expectedDirectory,
+    `upload bindings directory must be ${expectedDirectory}`,
+  );
+  const identity = aggregationIdentity(env);
+  const canonicalRoot = realpathSync(resolve(root));
+  const bindingsRoot = resolve(canonicalRoot, expectedDirectory);
+  const expectedReports = machineReportNamesForClaim(CLAIM_ID);
+  const expectedFiles = expectedReports
+    .map((name) => `${name}.binding.json`)
+    .sort();
+  const actualFiles = readdirSync(bindingsRoot, { withFileTypes: true })
+    .map((entry) => {
+      assert(
+        entry.isFile() && !entry.isSymbolicLink(),
+        "release signing upload bindings must contain only direct files",
+      );
+      return entry.name;
+    })
+    .sort();
+  assert(
+    JSON.stringify(actualFiles) === JSON.stringify(expectedFiles),
+    "release signing upload binding inventory is incomplete or unexpected",
+  );
+  return expectedReports.map((reportName) => {
+    const path = resolve(bindingsRoot, `${reportName}.binding.json`);
+    const observed = inspectStableRegularFile(
+      bindingsRoot,
+      path,
+      "release signing upload binding",
+      64 * 1024,
+    );
+    let binding;
+    try {
+      binding = JSON.parse(readFileSync(observed.path, "utf8"));
+    } catch {
+      throw new Error("release signing upload binding is not valid JSON");
+    }
+    exactKeys(
+      binding,
+      [
+        "schemaVersion",
+        "generatedBy",
+        "claimId",
+        "platform",
+        "repository",
+        "sourceCommit",
+        "releaseTag",
+        "ref",
+        "runId",
+        "runAttempt",
+        "reportName",
+        "reportSha256",
+        "sourceArtifactId",
+        "sourceArtifactName",
+        "sourceArtifactSha256",
+      ],
+      "release signing upload binding",
+    );
+    const platform = reportName.split(".").at(-2);
+    assert(
+      binding.schemaVersion === 1 &&
+        binding.generatedBy === "release-signing-upload-verifier" &&
+        binding.claimId === CLAIM_ID &&
+        binding.platform === platform &&
+        binding.repository === identity.repository &&
+        binding.sourceCommit === identity.sourceCommit &&
+        binding.releaseTag === identity.releaseTag &&
+        binding.ref === identity.ref &&
+        binding.runId === identity.runId &&
+        binding.runAttempt === identity.runAttempt &&
+        binding.reportName === reportName &&
+        SHA256_DIGEST.test(binding.reportSha256 ?? "") &&
+        Number.isSafeInteger(binding.sourceArtifactId) &&
+        binding.sourceArtifactId > 0 &&
+        binding.sourceArtifactName ===
+          `release-signing-report-${platform}-attempt-${identity.runAttempt}` &&
+        SHA256_DIGEST.test(binding.sourceArtifactSha256 ?? ""),
+      "release signing upload binding has the wrong run, report, or source artifact identity",
+    );
+    return binding;
+  });
+}
+
+export function resolveUploadedReportBindings(
+  argv,
+  { root = process.cwd(), env = process.env } = {},
+) {
+  assert(
+    argv.length === 2 && argv[0] === "--bindings",
+    "usage: --resolve-upload-bindings --bindings .release-evidence/upload-bindings",
+  );
+  const bindings = readUploadBindings(root, argv[1], env);
+  assert(
+    typeof env.GITHUB_OUTPUT === "string" && env.GITHUB_OUTPUT.length > 0,
+    "GITHUB_OUTPUT is required for exact signing report downloads",
+  );
+  appendWorkflowOutput(
+    env.GITHUB_OUTPUT,
+    "artifact_ids",
+    bindings.map(({ sourceArtifactId }) => sourceArtifactId).join(","),
+  );
+  return bindings;
+}
+
+export function verifyAggregatedUploadedReports(
+  argv,
+  { root = process.cwd(), env = process.env } = {},
+) {
+  assert(
+    argv.length === 4 &&
+      argv[0] === "--bindings" &&
+      argv[2] === "--reports" &&
+      argv[3] === ".release-evidence/reports",
+    "usage: --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports",
+  );
+  const canonicalRoot = realpathSync(resolve(root));
+  const reportsRoot = resolve(canonicalRoot, argv[3]);
+  const bindings = readUploadBindings(canonicalRoot, argv[1], env);
+  for (const binding of bindings) {
+    const report = inspectStableRegularFile(
+      reportsRoot,
+      resolve(reportsRoot, binding.reportName),
+      "exact-ID aggregated release signing report",
+      4 * 1024 * 1024,
+    );
+    assert(
+      report.sha256 === binding.reportSha256,
+      "exact-ID aggregated release signing report does not match its source report digest",
+    );
+  }
+  return bindings;
 }
 
 export async function runCanonicalVerifier(
@@ -2789,15 +3112,29 @@ export async function runCanonicalVerifier(
 }
 
 if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
-  const operation =
-    process.argv[2] === "--verify-upload"
-      ? Promise.resolve().then(() =>
-          verifyUploadedReport(process.argv.slice(3), {
-            root: process.cwd(),
-            env: process.env,
-          }),
-        )
-      : runCanonicalVerifier();
+  let operation;
+  if (process.argv[2] === "--verify-upload")
+    operation = Promise.resolve().then(() =>
+      verifyUploadedReport(process.argv.slice(3), {
+        root: process.cwd(),
+        env: process.env,
+      }),
+    );
+  else if (process.argv[2] === "--resolve-upload-bindings")
+    operation = Promise.resolve().then(() =>
+      resolveUploadedReportBindings(process.argv.slice(3), {
+        root: process.cwd(),
+        env: process.env,
+      }),
+    );
+  else if (process.argv[2] === "--verify-aggregated-uploads")
+    operation = Promise.resolve().then(() =>
+      verifyAggregatedUploadedReports(process.argv.slice(3), {
+        root: process.cwd(),
+        env: process.env,
+      }),
+    );
+  else operation = runCanonicalVerifier();
   operation.catch((error) => {
     console.error(
       `[${CLAIM_ID}] FAILED: ${error instanceof Error ? error.message : String(error)}`,

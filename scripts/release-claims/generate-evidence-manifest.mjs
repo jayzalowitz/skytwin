@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   ARTIFACT_VERIFICATION_DIRECTORY,
   CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
@@ -20,12 +20,22 @@ const tag = process.env.GITHUB_REF_NAME;
 const ref = process.env.GITHUB_REF;
 const token = process.env.GITHUB_TOKEN;
 const runId = Number(process.env.GITHUB_RUN_ID);
+const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
 
 if (!ledgerPath || !reportsDirectory || !outputPath)
   throw new Error(
     "usage: generate-evidence-manifest.mjs LEDGER REPORTS_DIRECTORY OUTPUT",
   );
-if (!repository || !releaseCommit || !tag || !ref || !token || !runId)
+if (
+  !repository ||
+  !releaseCommit ||
+  !tag ||
+  !ref ||
+  !token ||
+  !runId ||
+  !Number.isSafeInteger(runAttempt) ||
+  runAttempt <= 0
+)
   throw new Error("GitHub release context and GITHUB_TOKEN are required");
 if (ref !== `refs/tags/${tag}`)
   throw new Error(`expected tag ref refs/tags/${tag}, got ${ref}`);
@@ -68,7 +78,8 @@ if (
   run.head_branch !== tag ||
   run.head_sha !== releaseCommit ||
   run.path !== ".github/workflows/build.yml" ||
-  run.repository?.full_name !== repository
+  run.repository?.full_name !== repository ||
+  run.run_attempt !== runAttempt
 )
   throw new Error("current run is not the expected tag-push build workflow");
 if (jobsPage.total_count > jobsPage.jobs.length)
@@ -176,6 +187,10 @@ if (!verificationAssets.some((asset) => asset.kind === "provenance-bundle"))
   throw new Error("artifact-verification provenance bundles are missing");
 
 const evidence = [];
+const signingBindingsDirectory = join(
+  dirname(reportsDirectory),
+  "upload-bindings",
+);
 for (const readiness of ledger.release.readinessClaims) {
   for (const kind of readiness.requiredEvidenceKinds) {
     if (kind === "source") continue;
@@ -186,6 +201,7 @@ for (const readiness of ledger.release.readinessClaims) {
         checkIds: CANONICAL_CI_EVIDENCE_CHECKS.get(readiness.claimId),
         repository,
         runId,
+        runAttempt,
         ref,
         jobId: ciJob.id,
         jobName: ciJob.name,
@@ -205,6 +221,73 @@ for (const readiness of ledger.release.readinessClaims) {
     for (const reportName of reportNames) {
       const reportPath = join(reportsDirectory, reportName);
       const report = JSON.parse(readFileSync(reportPath, "utf8"));
+      let signingBinding = null;
+      if (readiness.claimId === "release.signing") {
+        const bindingPath = join(
+          signingBindingsDirectory,
+          `${reportName}.binding.json`,
+        );
+        signingBinding = JSON.parse(readFileSync(bindingPath, "utf8"));
+        const expectedPlatform = reportName.split(".").at(-2);
+        const expectedBindingKeys = [
+          "schemaVersion",
+          "generatedBy",
+          "claimId",
+          "platform",
+          "repository",
+          "sourceCommit",
+          "releaseTag",
+          "ref",
+          "runId",
+          "runAttempt",
+          "reportName",
+          "reportSha256",
+          "sourceArtifactId",
+          "sourceArtifactName",
+          "sourceArtifactSha256",
+        ].sort();
+        if (
+          JSON.stringify(Object.keys(signingBinding).sort()) !==
+            JSON.stringify(expectedBindingKeys) ||
+          signingBinding.schemaVersion !== 1 ||
+          signingBinding.generatedBy !== "release-signing-upload-verifier" ||
+          signingBinding.claimId !== "release.signing" ||
+          signingBinding.platform !== expectedPlatform ||
+          signingBinding.repository !== repository ||
+          signingBinding.sourceCommit !== releaseCommit ||
+          signingBinding.releaseTag !== tag ||
+          signingBinding.ref !== ref ||
+          signingBinding.runId !== runId ||
+          signingBinding.runAttempt !== runAttempt ||
+          signingBinding.reportName !== reportName ||
+          signingBinding.reportSha256 !== digestOf(reportPath) ||
+          !Number.isSafeInteger(signingBinding.sourceArtifactId) ||
+          signingBinding.sourceArtifactId <= 0 ||
+          signingBinding.sourceArtifactName !==
+            `release-signing-report-${expectedPlatform}-attempt-${runAttempt}` ||
+          !/^[0-9a-f]{64}$/.test(signingBinding.sourceArtifactSha256 ?? "")
+        )
+          throw new Error(
+            `release signing upload binding is invalid for ${reportName}`,
+          );
+        const sourceArtifact = oneBy(
+          artifactsPage.artifacts,
+          "id",
+          signingBinding.sourceArtifactId,
+          `source signing report artifact for ${reportName}`,
+        );
+        if (
+          sourceArtifact.name !== signingBinding.sourceArtifactName ||
+          sourceArtifact.digest !==
+            `sha256:${signingBinding.sourceArtifactSha256}` ||
+          sourceArtifact.expired !== false ||
+          sourceArtifact.workflow_run?.id !== runId ||
+          sourceArtifact.workflow_run?.head_sha !== releaseCommit
+        )
+          throw new Error(
+            `source signing report artifact is invalid for ${reportName}`,
+          );
+      }
       const producerJobName = machineProducerJobName(
         readiness.claimId,
         report.platform,
@@ -231,6 +314,7 @@ for (const readiness of ledger.release.readinessClaims) {
         checkIds: CANONICAL_MACHINE_EVIDENCE_CHECKS.get(readiness.claimId),
         repository,
         runId,
+        runAttempt,
         ref,
         evidenceArtifactId: machineArtifact.id,
         evidenceArtifactName: machineArtifact.name,
@@ -240,6 +324,13 @@ for (const readiness of ledger.release.readinessClaims) {
         ),
         reportPath: `.release-evidence/reports/${reportName}`,
         reportSha256: digestOf(reportPath),
+        ...(signingBinding
+          ? {
+              sourceReportArtifactId: signingBinding.sourceArtifactId,
+              sourceReportArtifactName: signingBinding.sourceArtifactName,
+              sourceReportArtifactSha256: signingBinding.sourceArtifactSha256,
+            }
+          : {}),
         sourceCommit: releaseCommit,
         releaseTag: tag,
         platform: report.platform,
@@ -275,6 +366,7 @@ writeFileSync(
       tag,
       ref,
       runId,
+      runAttempt,
       releaseAssets,
       verificationAssets,
       evidence,

@@ -796,7 +796,7 @@ jobs:
         id: upload-machine-evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}
+          name: ${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}
           path: .release-evidence/reports/${{ matrix.reportName }}
           if-no-files-found: error
           compression-level: 0
@@ -812,8 +812,17 @@ jobs:
         env:
           SKYTWIN_EXPECTED_REPORT_SHA256: ${{ steps.machine-verifier.outputs.report_sha256 }}
           SKYTWIN_UPLOADED_ARTIFACT_ID: ${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          SKYTWIN_UPLOADED_ARTIFACT_NAME: release-signing-report-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
           SKYTWIN_UPLOADED_ARTIFACT_SHA256: ${{ steps.upload-machine-evidence.outputs.artifact-digest }}
-        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }}
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }} --binding .release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json
+      - name: Upload signing report source binding
+        if: matrix.claimId == 'release.signing'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json
+          if-no-files-found: error
+          compression-level: 0
 
   aggregate-release-evidence:
     name: Aggregate release machine evidence
@@ -823,10 +832,30 @@ jobs:
       - release-artifact-materials
     runs-on: ubuntu-24.04
     steps:
-      - name: Download machine evidence reports
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download signing report source bindings for this run attempt
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: release-machine-evidence-*
+          pattern: release-signing-binding-*-attempt-${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings
+          merge-multiple: true
+      - name: Resolve exact source signing report artifact IDs
+        id: signing-report-bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --resolve-upload-bindings --bindings .release-evidence/upload-bindings
+      - name: Download exact source signing reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: ${{ steps.signing-report-bindings.outputs.artifact_ids }}
+          path: .release-evidence/reports
+          merge-multiple: true
+      - name: Verify aggregated source signing report bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports
+      - name: Download non-signing machine evidence reports for this run attempt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-machine-evidence-*-attempt-${{ github.run_attempt }}
           path: .release-evidence/reports
           merge-multiple: true
       - name: Download release artifact verification materials

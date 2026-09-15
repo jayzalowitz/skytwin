@@ -210,17 +210,24 @@ All notable changes to SkyTwin will be documented in this file.
   fixed-capacity HFS+ image sized for the content ceiling, worst-case
   allocation-block slack, and filesystem metadata. Host capacity is checked
   both before and after allocation, eliminating sparse-image growth against the
-  runner reserve. Windows extraction runs on an attached fixed-capacity VHDX,
-  so dishonest archive size metadata is bounded by the extraction volume rather
-  than runner free space. Windows reports bind both installer and contained executable
+  runner reserve. Windows extraction runs on an attached 5,511 MiB
+  fixed-capacity VHDX with an enforced and verified 4 KiB NTFS allocation unit.
+  Its size covers the 4 GiB combined nested-content limit, 100,000-member
+  allocation slack, and filesystem headroom while leaving the canonical runner
+  a separate 2 GiB host reserve. Dishonest archive size metadata is therefore
+  bounded by the extraction volume rather than runner free space. Windows
+  reports bind both installer and contained executable
   version metadata alongside the exact Authenticode method, pinned signer
   fingerprint, code-signing EKU, and timestamp-certificate observation. Report
   construction and the independent publisher reject omitted, altered, stale,
   or wrong-method fields. Native commands operate only on private staged copies
   whose bytes and file identity are checked against the release subject before
   and after verification. The producer downloads its uploaded signing report
-  by exact artifact ID and compares its bytes with the verifier-emitted digest;
-  the upload archive digest remains a separate API-bound value. These checks
+  by exact artifact ID and compares its bytes with the verifier-emitted digest.
+  An attempt-specific sidecar carries that source report digest separately from
+  the Actions archive digest, alongside the source artifact ID, run ID, and run
+  attempt; aggregation downloads the source reports by those exact IDs and
+  publication revalidates their API identity. These checks
   cover in-workflow mutation windows, not arbitrary same-user control of the
   hosted runner. Linux remains
   fail-closed until package-format verification methods and trust roots exist;

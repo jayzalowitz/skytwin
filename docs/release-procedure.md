@@ -168,16 +168,26 @@ a fully allocated fixed-capacity HFS+ image with allocation and
 filesystem-metadata headroom, requires a separate host free-space reserve both
 before and after allocating that image, and checks extracted link containment
 before trusting the contained app. For Windows, extraction runs on an attached
-fixed-capacity VHDX rather than the runner filesystem, and the report binds the
+5,511 MiB fixed-capacity VHDX rather than the runner filesystem. The verifier
+formats NTFS with 4 KiB clusters and confirms that allocation unit before use;
+the capacity covers the enforced 4 GiB nested-content ceiling, worst-case
+100,000-member allocation slack, and filesystem headroom while retaining a
+separate 2 GiB host reserve. The report binds the
 Authenticode and version metadata of both the NSIS installer and its exact contained
 `SkyTwin.exe`; a correctly signed but stale wrapper is not acceptable.
 Both platforms verify native tools only against a private digest-bound staged
 copy. The producer then downloads the uploaded report by its exact artifact ID
 and checks the downloaded report bytes against the verifier-emitted SHA-256;
-the artifact service's separate archive digest is retained as API-bound
-publication evidence. These controls fail closed against mutations within the
+an attempt-specific sidecar retains that source report digest separately from
+the artifact service's Actions archive digest, plus the source artifact ID,
+run ID, and run attempt. Aggregation resolves the exact source report IDs from
+those sidecars and publication revalidates both artifacts through the API.
+These controls fail closed against mutations within the
 workflow's processes and handoff windows; arbitrary same-user control of the
 hosted runner itself remains outside the evidence threat boundary.
+The fixed VHDX sizing is designed for the standard `windows-2025` runner, but a
+real hosted signing run is still required before the signing stop-ship can be
+closed.
 
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
 The packaged-sample verifier implements three of the twelve matrix reports; see
