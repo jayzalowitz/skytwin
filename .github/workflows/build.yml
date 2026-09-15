@@ -85,6 +85,18 @@ jobs:
         uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
         continue-on-error: true
 
+      - name: Capture release claim CI runtime
+        id: capture-release-claim-runtime
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: node scripts/release-claims/capture-release-claim-ci-runtime.mjs
+
       - run: pnpm install --frozen-lockfile
       - name: Test and enforce dependency advisory policy
         run: |
@@ -94,25 +106,63 @@ jobs:
         run: pnpm check:encryption-inventory
       - name: Install CockroachDB for migration integration tests
         run: |
-          curl --fail --location --retry 3 --output cockroach.tgz https://binaries.cockroachdb.com/cockroach-v26.1.0.linux-amd64.tgz
-          echo "096e2d40a2b30ce296c13652b839e04612003aef2820cfc5b8d712d06c9d0d86  cockroach.tgz" | sha256sum --check
-          tar --extract --gzip --file cockroach.tgz
-          sudo install --mode 0755 cockroach-v26.1.0.linux-amd64/cockroach /usr/local/bin/cockroach
+          mkdir -p "${RUNNER_TEMP}/skytwin-cockroach"
+          curl --fail --location --retry 3 --output "${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" https://binaries.cockroachdb.com/cockroach-v26.1.0.linux-amd64.tgz
+          echo "096e2d40a2b30ce296c13652b839e04612003aef2820cfc5b8d712d06c9d0d86  ${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" | sha256sum --check
+          tar --extract --gzip --file "${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" --directory "${RUNNER_TEMP}/skytwin-cockroach"
+          sudo install --mode 0755 "${RUNNER_TEMP}/skytwin-cockroach/cockroach-v26.1.0.linux-amd64/cockroach" /usr/local/bin/cockroach
       - name: Validate beta release claims
         env:
           GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          pnpm claims:check
-          # Every v* tag can reach the draft-release job, so every such tag is
-          # gated. The checker validates the exact tag against the ledger and
-          # safely normalizes beta tags onto the repo's four-segment VERSION.
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-            pnpm claims:check -- --require-ready --preflight --tag "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" --ref "${GITHUB_REF}"
-          fi
+        run: pnpm claims:check
       - name: Test beta release-claim guard
         run: pnpm claims:test
       - run: pnpm build
       - run: pnpm test
+
+      - name: Produce release claim CI result
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 15
+        env:
+          BASH_ENV: ''
+          COREPACK_HOME: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          PNPM_HOME: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: ${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: ${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-path }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" SKYTWIN_RELEASE_CI_NODE_PATH="$SKYTWIN_RELEASE_CI_NODE_PATH" SKYTWIN_RELEASE_CI_NODE_SHA256="$SKYTWIN_RELEASE_CI_NODE_SHA256" SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-claims/run-release-claim-ci.mjs --output release-claims-ci/result.json
+
+      - name: Upload release claim CI result
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-claims-ci
+          path: release-claims-ci/result.json
+          if-no-files-found: error
+          compression-level: 0
+
+      # Keep the final readiness failure after evidence production so a
+      # blocked tag run can still provide immutable input to the later
+      # rehearsal/resolution process. This remains a hard dependency of every
+      # packaging and publication job.
+      - name: Enforce beta release readiness
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            pnpm claims:check -- --require-ready --preflight --tag "${GITHUB_REF_NAME}" --commit "${GITHUB_SHA}" --repository "${GITHUB_REPOSITORY}" --run-id "${GITHUB_RUN_ID}" --ref "${GITHUB_REF}"
+          fi
 
       # Guardrail (#380): block any push that hardcodes a literal
       # version into the README badge URL. The badge is a dynamic
@@ -927,7 +977,7 @@ jobs:
   # PR — build.yml is now the only publisher.
   release:
     name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs:
       - test
       - desktop-mac

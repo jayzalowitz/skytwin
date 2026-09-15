@@ -43,6 +43,19 @@ All notable changes to SkyTwin will be documented in this file.
   This implementation has not yet produced evidence from a tagged release and
   does not advance the limited model-delivery claim.
 
+- **Release-claim CI results now come from observed frozen commands.** The
+  no-shell tag-push harness records canonical check exit codes and binds its
+  schema-v1 artifact to the repository, commit, ref, event, run attempt,
+  ledger, harness, and command-source digests. It runs the account-free proof as
+  the ledger's exact focused API, worker, shared-classifier, execution-router,
+  and desktop tests. Every command boundary compares the complete tracked
+  checkout and Git modes with content-addressed `HEAD` tree bytes, rejects
+  hidden index state and linked source/runtime files, and revalidates the
+  captured Node and pnpm bundle before and after every command.
+  Manual tag-context runs cannot enter the publisher, and release readiness
+  remains blocked on the outstanding machine evidence and external release
+  controls.
+
 - **The supported preview is account-free sample only; connected-account access
   is fail-closed.** The packaged desktop carries no provider client authority
   and pins its managed API and worker children to disabled account mode. Google
@@ -118,6 +131,16 @@ All notable changes to SkyTwin will be documented in this file.
   protection claim.
 
 ### Fixed (post-review)
+
+- **Hosted release-claim evidence resolves pnpm/action-setup without relaxing
+  runtime identity.** Runtime capture accepts only the generated POSIX shim's
+  exact two-branch delegation into one canonical pnpm package launcher, then
+  makes an exclusive single-link executable snapshot of the delegated CLI
+  bundle before dependency installation. Duplicate, divergent, out-of-tree,
+  and non-shell launchers fail closed; content-addressed package-store
+  hardlinks are never executed by the evidence harness. Failure observations
+  in the resulting evidence are capped at 4,096 code units and the final
+  consumer enforces the same bound.
 
 - **Release signing evidence matches the actual native package metadata and
   fails closed on incomplete provenance.** Windows ProductVersion checks now

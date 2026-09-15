@@ -8,7 +8,16 @@ export const CANONICAL_CI_EVIDENCE_CHECKS = new Map([
       "confidential-inference.response-signature",
     ],
   ],
-  ["connectors.account-free-boundary", ["connectors.account-free-disabled"]],
+  [
+    "connectors.account-free-boundary",
+    [
+      "connectors.account-free-api-disabled",
+      "connectors.account-free-worker-disabled",
+      "connectors.account-free-shared-classifier",
+      "connectors.account-free-router-disabled",
+      "connectors.account-free-desktop-disabled",
+    ],
+  ],
   [
     "safety.policy-and-provenance",
     ["policy.provenance-fail-safe", "router.provenance-backstop"],
@@ -18,6 +27,156 @@ export const CANONICAL_CI_EVIDENCE_CHECKS = new Map([
     ["explanations.action-path", "explanations.non-action-path"],
   ],
 ]);
+
+export const RELEASE_CLAIM_CI_LEDGER_PATH = "docs/beta-claim-ledger.json";
+export const RELEASE_CLAIM_CI_CONSTANTS_PATH =
+  "scripts/release-claims/release-constants.mjs";
+export const RELEASE_CLAIM_CI_HARNESS_PATH =
+  "scripts/release-claims/run-release-claim-ci.mjs";
+export const RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH =
+  "scripts/release-claims/capture-release-claim-ci-runtime.mjs";
+export const RELEASE_CLAIM_CI_RESULT_PATH = "release-claims-ci/result.json";
+export const MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS = 4096;
+export const RELEASE_CLAIM_CI_PRODUCER_STEP = "Produce release claim CI result";
+export const RELEASE_CLAIM_CI_UPLOAD_STEP = "Upload release claim CI result";
+export const RELEASE_CLAIM_CI_READINESS_STEP = "Enforce beta release readiness";
+
+export function canonicalReleaseClaimCiJobSteps(job) {
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  const exactlyOneSuccessful = (name) => {
+    const matches = steps.filter((step) => step?.name === name);
+    if (matches.length !== 1 || matches[0]?.conclusion !== "success")
+      throw new Error(`${name} must occur exactly once and succeed`);
+    return matches[0];
+  };
+  const producerStep = exactlyOneSuccessful(RELEASE_CLAIM_CI_PRODUCER_STEP);
+  const uploadStep = exactlyOneSuccessful(RELEASE_CLAIM_CI_UPLOAD_STEP);
+  const readinessSteps = steps.filter(
+    (step) => step?.name === RELEASE_CLAIM_CI_READINESS_STEP,
+  );
+  if (
+    readinessSteps.length !== 1 ||
+    !(
+      (job?.conclusion === "success" &&
+        readinessSteps[0]?.conclusion === "success") ||
+      (job?.conclusion === "failure" &&
+        readinessSteps[0]?.conclusion === "failure")
+    )
+  )
+    throw new Error(
+      "release claim CI job failure is admissible only when the canonical readiness step also failed",
+    );
+  return { producerStep, uploadStep, readinessStep: readinessSteps[0] };
+}
+export const RELEASE_CLAIM_CI_SOURCE_PATHS = Object.freeze([
+  RELEASE_CLAIM_CI_LEDGER_PATH,
+  RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
+  RELEASE_CLAIM_CI_HARNESS_PATH,
+]);
+
+export const CANONICAL_CI_EVIDENCE_COMMANDS = new Map(
+  [
+    [
+      "oauth-default.at-rest-roundtrip",
+      "@skytwin/connectors",
+      "src/__tests__/db-token-store-vault.test.ts",
+    ],
+    [
+      "twin-state.at-rest-roundtrip",
+      "@skytwin/db",
+      "src/__tests__/preferences-vault.test.ts",
+    ],
+    [
+      "confidential-inference.attestation-chain",
+      "@skytwin/llm-client",
+      "src/__tests__/inference-receipt-emission.test.ts",
+    ],
+    [
+      "confidential-inference.response-signature",
+      "@skytwin/shared-types",
+      "src/__tests__/inference-receipt.test.ts",
+    ],
+    [
+      "connectors.account-free-api-disabled",
+      "@skytwin/api",
+      [
+        "src/__tests__/oauth-google-disabled.test.ts",
+        "src/__tests__/oauth-microsoft.test.ts",
+        "src/__tests__/credentials-routes.test.ts",
+        "src/__tests__/capabilities-routes.test.ts",
+        "src/__tests__/execution-setup.test.ts",
+      ],
+    ],
+    [
+      "connectors.account-free-worker-disabled",
+      "@skytwin/worker",
+      [
+        "src/__tests__/connector-discovery.test.ts",
+        "src/__tests__/execution-account-boundary.test.ts",
+        "src/__tests__/changelog-poll.test.ts",
+        "src/__tests__/federation-sync.test.ts",
+        "src/__tests__/briefing-generator.test.ts",
+        "src/__tests__/briefing-generator-adaptive.test.ts",
+        "src/__tests__/promotion-eligibility-check.test.ts",
+      ],
+    ],
+    [
+      "connectors.account-free-shared-classifier",
+      "@skytwin/shared-types",
+      ["src/__tests__/google-preview-boundary.test.ts"],
+    ],
+    [
+      "connectors.account-free-router-disabled",
+      "@skytwin/execution-router",
+      [
+        "src/__tests__/adapter-discovery.test.ts",
+        "src/__tests__/execution-router.test.ts",
+      ],
+    ],
+    [
+      "connectors.account-free-desktop-disabled",
+      "skytwin-desktop",
+      ["src/__tests__/service-manager-env.test.ts"],
+    ],
+    [
+      "policy.provenance-fail-safe",
+      "@skytwin/policy-engine",
+      "src/__tests__/injection-guard.test.ts",
+    ],
+    [
+      "router.provenance-backstop",
+      "@skytwin/execution-router",
+      "src/__tests__/injection-guard-backstop.test.ts",
+    ],
+    [
+      "explanations.action-path",
+      "@skytwin/explanations",
+      "src/__tests__/explanation-generator.test.ts",
+    ],
+    [
+      "explanations.non-action-path",
+      "@skytwin/explanations",
+      "src/__tests__/explanation-generator.test.ts",
+    ],
+  ].map(([id, workspace, testPaths]) => [
+    id,
+    Object.freeze({
+      executable: "pnpm",
+      args: Object.freeze(
+        testPaths
+          ? [
+              "--filter",
+              workspace,
+              "test",
+              "--",
+              ...(Array.isArray(testPaths) ? testPaths : [testPaths]),
+            ]
+          : ["--filter", workspace, "test"],
+      ),
+    }),
+  ]),
+);
 
 export const CANONICAL_MACHINE_EVIDENCE_CHECKS = new Map([
   ["storage.desktop-crdb", ["storage.packaged-crdb-persistence"]],
