@@ -292,6 +292,32 @@ describe('ExecutionRouter', () => {
       expect(authority.terminalize).not.toHaveBeenCalled();
     });
 
+  it('awaits user-bound admission before adapter preparation', async () => {
+    const authority = createDispatchAuthority();
+    const localRegistry = new AdapterRegistry();
+    const adapter = createMockAdapter('ironclaw');
+    const buildPlan = vi.spyOn(adapter, 'buildPlan');
+    localRegistry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    const guard = vi.fn(async (_action: Readonly<CandidateAction>, userId: string) => {
+      await Promise.resolve();
+      return userId === 'blocked-user'
+        ? { allowed: false as const, reason: 'The persisted target is unavailable.' }
+        : { allowed: true as const };
+    });
+    const localRouter = new ExecutionRouter(localRegistry, authority, guard);
+
+    await expect(localRouter.prepareExecution(
+      makeAction(), makeRiskAssessment(), 'blocked-user', { approved: true },
+    )).rejects.toMatchObject({
+      name: 'NoRequestExecutionError',
+      message: 'The persisted target is unavailable.',
+    });
+
+    expect(guard).toHaveBeenCalledWith(expect.objectContaining({ actionType: 'archive_email' }), 'blocked-user');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(authority.start).not.toHaveBeenCalled();
+  });
+
   it('re-checks the admission boundary before consuming a prepared action', async () => {
     const authority = createDispatchAuthority();
     const adapter = createMockAdapter('ironclaw');
@@ -316,6 +342,38 @@ describe('ExecutionRouter', () => {
     )).rejects.toBeInstanceOf(NoRequestExecutionError);
     expect(authority.start).not.toHaveBeenCalled();
     expect(authority.terminalize).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('awaits the user-bound admission re-check before dispatching a prepared action', async () => {
+    const authority = createDispatchAuthority();
+    const adapter = createMockAdapter('ironclaw');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    let checks = 0;
+    const guard = vi.fn(async (_action: Readonly<CandidateAction>, userId: string) => {
+      await Promise.resolve();
+      checks += 1;
+      return checks === 1 && userId === 'user-1'
+        ? { allowed: true as const }
+        : { allowed: false as const, reason: 'The persisted target is unavailable.' };
+    });
+    const localRouter = new ExecutionRouter(registry, authority, guard);
+    const action = makeAction();
+    const risk = makeRiskAssessment();
+    const prepared = await localRouter.prepareExecution(action, risk, 'user-1', { approved: true });
+
+    await expect(localRouter.executePrepared(
+      prepared,
+      { ...action, parameters: { ...action.parameters, executionPlanId: prepared.planId } },
+      prepared.riskAssessment,
+      'user-1',
+      { approved: true },
+    )).rejects.toBeInstanceOf(NoRequestExecutionError);
+
+    expect(guard).toHaveBeenNthCalledWith(1, expect.anything(), 'user-1');
+    expect(guard).toHaveBeenNthCalledWith(2, expect.anything(), 'user-1');
+    expect(authority.start).not.toHaveBeenCalled();
     expect(execute).not.toHaveBeenCalled();
   });
 
