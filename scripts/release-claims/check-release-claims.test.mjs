@@ -607,6 +607,8 @@ jobs:
             pnpm claims:check -- --require-ready --preflight --tag "\${GITHUB_REF_NAME}" --commit "\${GITHUB_SHA}" --repository "\${GITHUB_REPOSITORY}" --run-id "\${GITHUB_RUN_ID}" --ref "\${GITHUB_REF}"
           fi
   desktop-mac:
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     outputs:
       dmg-artifact-id: \${{ steps.upload-macos-dmg.outputs.artifact-id }}
       dmg-artifact-digest: \${{ steps.upload-macos-dmg.outputs.artifact-digest }}
@@ -625,6 +627,8 @@ jobs:
         with:
           name: SkyTwin-macOS-zip
   desktop-windows:
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     outputs:
       installer-artifact-id: \${{ steps.upload-windows-installer.outputs.artifact-id }}
       installer-artifact-digest: \${{ steps.upload-windows-installer.outputs.artifact-digest }}
@@ -636,6 +640,8 @@ jobs:
         with:
           name: SkyTwin-Windows-installer
   desktop-linux:
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     outputs:
       appimage-artifact-id: \${{ steps.upload-linux-appimage.outputs.artifact-id }}
       appimage-artifact-digest: \${{ steps.upload-linux-appimage.outputs.artifact-digest }}
@@ -661,6 +667,16 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Linux-rpm
+  mobile-android:
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
+    runs-on: ubuntu-24.04
+    steps: []
+  mobile-ios:
+    needs: [test, changes]
+    if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
+    runs-on: macos-15
+    steps: []
   release-artifact-materials:
     name: Produce release artifact verification materials
     if: startsWith(github.ref, 'refs/tags/v')
@@ -2017,6 +2033,40 @@ ${step}`,
       "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
     );
   });
+
+  it.each([
+    ["desktop-mac", "desktop", "needs", "needs: [changes]"],
+    ["desktop-mac", "desktop", "condition", "if: always()"],
+    ["desktop-windows", "desktop", "needs", "needs: [changes]"],
+    ["desktop-windows", "desktop", "condition", "if: always()"],
+    ["desktop-linux", "desktop", "needs", "needs: [changes]"],
+    ["desktop-linux", "desktop", "condition", "if: always()"],
+    ["mobile-android", "mobile", "needs", "needs: [changes]"],
+    ["mobile-android", "mobile", "condition", "if: always()"],
+    ["mobile-ios", "mobile", "needs", "needs: [changes]"],
+    ["mobile-ios", "mobile", "condition", "if: always()"],
+  ])(
+    "rejects %s package gate %s mutation",
+    (jobName, changeOutput, _mutation, replacement) => {
+      const root = makeRoot();
+      writeValidFixture(root);
+      const path = join(root, ".github/workflows/build.yml");
+      const original = `  ${jobName}:\n    needs: [test, changes]\n    if: github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`;
+      const mutated = original.replace(
+        replacement.startsWith("needs:")
+          ? "needs: [test, changes]"
+          : `if: github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`,
+        replacement,
+      );
+      writeFileSync(
+        path,
+        readFileSync(path, "utf8").replace(original, mutated),
+      );
+      expect(verifyCanonicalReleasePublisher(root)).toContain(
+        `${jobName} must require the successful release-artifact test gate and exact path-change condition`,
+      );
+    },
+  );
 
   it("requires the CI-result producer to use the exact hosted runner", () => {
     const root = makeRoot();

@@ -23,7 +23,8 @@ All notable changes to SkyTwin will be documented in this file.
   hash-verified captured Node runtime in a clean environment. The
   release-workflow checker requires each test file to exist, and each file runs
   separately with empty suites treated as failures. Command, environment,
-  ordering, or failure-tolerance changes cannot weaken the gate silently.
+  ordering, package-job dependency, success-condition, or failure-tolerance
+  changes cannot weaken the gate silently.
 
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,

@@ -575,6 +575,13 @@ const RELEASE_ARTIFACT_TEST_PATHS = Object.freeze([
   "scripts/release-artifacts/generate-release-manifest.test.mjs",
   "scripts/release-artifacts/materialize-attestation-bundles.test.mjs",
 ]);
+const CANONICAL_PACKAGE_GATES = Object.freeze([
+  { jobName: "desktop-mac", changeOutput: "desktop" },
+  { jobName: "desktop-windows", changeOutput: "desktop" },
+  { jobName: "desktop-linux", changeOutput: "desktop" },
+  { jobName: "mobile-android", changeOutput: "mobile" },
+  { jobName: "mobile-ios", changeOutput: "mobile" },
+]);
 const CI_EVIDENCE_JOB_NAME = "release-claim-ci";
 const CI_EVIDENCE_ARTIFACT_NAME = "release-claims-ci";
 const MACHINE_EVIDENCE_ARTIFACT_NAME = "release-evidence";
@@ -2528,6 +2535,19 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
       errors,
       "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
     );
+  for (const { jobName, changeOutput } of CANONICAL_PACKAGE_GATES) {
+    const job = canonicalWorkflow.jobs?.[jobName];
+    if (
+      !isRecord(job) ||
+      JSON.stringify(job.needs) !== JSON.stringify(["test", "changes"]) ||
+      job.if !==
+        `github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`
+    )
+      addError(
+        errors,
+        `${jobName} must require the successful release-artifact test gate and exact path-change condition`,
+      );
+  }
   const machineProducerJob =
     canonicalWorkflow.jobs?.["release-machine-evidence"];
   const desktopLinuxJob = canonicalWorkflow.jobs?.["desktop-linux"];

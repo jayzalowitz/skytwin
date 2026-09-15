@@ -1300,7 +1300,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "a340af108d740715973840d20fe93f771bee51a685a9818d19b27df39d941410",
+          "sha256": "c5cbd0a2b5d512dacca61ba83b9983c61bf740f69f2bd4a89df28b0a2edf44e8",
           "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material and source report binding at publication"
         }
       ],
