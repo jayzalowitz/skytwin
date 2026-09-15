@@ -253,4 +253,28 @@ describe("dependency advisory policy", () => {
       }),
     ).toThrow(/exit status/);
   });
+
+  it("rejects array-shaped advisory and vulnerability collections", () => {
+    const arrayAdvisories = reportFor("development");
+    arrayAdvisories.advisories = [];
+    expect(() =>
+      validateDependencyAuditReport({
+        report: arrayAdvisories,
+        scope: "development",
+        policy,
+        now: beforeExpiry,
+      }),
+    ).toThrow(/omitted advisories/);
+
+    const arrayMetadata = reportFor("development");
+    arrayMetadata.metadata.vulnerabilities = [];
+    expect(() =>
+      validateDependencyAuditReport({
+        report: arrayMetadata,
+        scope: "development",
+        policy,
+        now: beforeExpiry,
+      }),
+    ).toThrow(/omitted vulnerability metadata/);
+  });
 });

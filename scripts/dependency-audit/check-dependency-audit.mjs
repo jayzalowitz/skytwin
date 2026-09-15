@@ -175,12 +175,15 @@ export function validateDependencyAuditReport({
     `${scope} audit registry returned an error`,
   );
   invariant(
-    report.advisories && typeof report.advisories === "object",
+    report.advisories &&
+      typeof report.advisories === "object" &&
+      !Array.isArray(report.advisories),
     `${scope} audit omitted advisories`,
   );
   invariant(
     report.metadata?.vulnerabilities &&
-      typeof report.metadata.vulnerabilities === "object",
+      typeof report.metadata.vulnerabilities === "object" &&
+      !Array.isArray(report.metadata.vulnerabilities),
     `${scope} audit omitted vulnerability metadata`,
   );
 
