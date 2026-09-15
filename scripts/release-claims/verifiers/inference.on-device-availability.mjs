@@ -57,9 +57,14 @@ const EXPECTED_ARTIFACT_NAMES = Object.freeze([
   ARTIFACT_NAME,
 ]);
 const PACKAGED_PROBE_PATH = "api/dist/bin/verify-on-device-inference.js";
+const PACKAGED_APP_ROOTS = Object.freeze(["api", "worker", "web"]);
 const SANDBOX_PROFILE = "(version 1)(allow default)(deny network*)";
 const MAX_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 const MAX_ARCHIVE_MEMBERS = 100_000;
+const MAX_PACKAGED_API_ARCHIVE_BYTES = 128 * 1024 * 1024;
+const MAX_PACKAGED_API_FILE_BYTES = 256 * 1024 * 1024;
+const MAX_PACKAGED_API_EXPANDED_BYTES = 192 * 1024 * 1024;
+const MAX_PACKAGED_API_COMPRESSION_RATIO = 100;
 const MAX_RUNTIME_REDIRECTS = 2;
 const MAX_MODEL_REDIRECTS = 4;
 const INFERENCE_TIMEOUT_MS = 180_000;
@@ -529,21 +534,9 @@ export async function acquirePinnedInputs(root, fetchImpl = globalThis.fetch) {
   validateArchiveInventory(inventory, PINNED_LLAMA_RUNTIME.root);
   runBoundedCommand("/usr/bin/tar", ["-xzf", runtimeArchive.path, "-C", root]);
   const runtimeRoot = join(root, PINNED_LLAMA_RUNTIME.root);
+  // Inspect the lexical canonical path before the tree walk canonicalizes it.
+  const binary = inspectPinnedRuntimeBinary(runtimeRoot);
   validateExtractedTree(runtimeRoot);
-  const binaryPath = realpathSync(
-    join(runtimeRoot, PINNED_LLAMA_RUNTIME.binaryName),
-  );
-  const binary = inspectStableRegularFile(
-    runtimeRoot,
-    binaryPath,
-    "pinned llama.cpp binary",
-    PINNED_LLAMA_RUNTIME.binaryExactBytes,
-    PINNED_LLAMA_RUNTIME.binarySha256,
-  );
-  assert(
-    (lstatSync(binary.path).mode & 0o111) !== 0,
-    "pinned llama.cpp binary is not executable",
-  );
   const versionText = runBoundedCommand(binary.path, ["--version"], {
     // A freshly downloaded executable can spend several seconds in the macOS
     // provenance scan before it emits its immutable build identity.
@@ -559,6 +552,22 @@ export async function acquirePinnedInputs(root, fetchImpl = globalThis.fetch) {
     "llama.cpp version output does not match the pinned build and commit",
   );
   return { runtimeArchive, model, binary, versionText };
+}
+
+export function inspectPinnedRuntimeBinary(runtimeRoot) {
+  const binaryPath = join(runtimeRoot, PINNED_LLAMA_RUNTIME.binaryName);
+  const binary = inspectStableRegularFile(
+    runtimeRoot,
+    binaryPath,
+    "pinned llama.cpp binary",
+    PINNED_LLAMA_RUNTIME.binaryExactBytes,
+    PINNED_LLAMA_RUNTIME.binarySha256,
+  );
+  assert(
+    (lstatSync(binary.path).mode & 0o111) !== 0,
+    "pinned llama.cpp binary is not executable",
+  );
+  return binary;
 }
 
 function groupExists(pid) {
@@ -665,9 +674,17 @@ export async function verifySandboxNetworkDenial(nodePath, options = {}) {
       address && typeof address === "object",
       "sandbox self-test listener has no address",
     );
+    const childExpression =
+      `const n=require("node:net");const a=[["127.0.0.1",${address.port}],["1.1.1.1",443]];` +
+      `let done=0;let failed=false;for(const [host,port] of a){const s=n.connect({host,port});let settled=false;` +
+      `const finish=(denied)=>{if(settled)return;settled=true;s.destroy();if(!denied)failed=true;` +
+      `if(++done===a.length){if(failed)process.exit(4);process.stdout.write("child-network-denied",()=>process.exit(0));}};` +
+      `s.once("connect",()=>finish(false));s.once("error",(e)=>finish(e.code==="EPERM"||e.code==="EACCES"));` +
+      `s.setTimeout(2000,()=>finish(false));}setTimeout(()=>process.exit(5),3000);`;
     const expression =
-      `const n=require("node:net");const s=n.connect({host:"127.0.0.1",port:${address.port}});` +
-      `s.once("connect",()=>process.exit(2));s.once("error",()=>process.exit(0));setTimeout(()=>process.exit(3),2000);`;
+      `const c=require("node:child_process");const r=c.spawnSync(process.execPath,["-e",${JSON.stringify(childExpression)}],` +
+      `{encoding:"utf8",env:{PATH:"/usr/bin:/bin",HOME:${JSON.stringify(tmpdir())}},timeout:4000,maxBuffer:65536});` +
+      `if(r.error||r.signal!==null||r.status!==0||r.stdout!=="child-network-denied"||r.stderr!=="")process.exit(6);`;
     const result = await (options.run ?? runBoundedProcess)(
       "/usr/bin/sandbox-exec",
       ["-p", SANDBOX_PROFILE, nodePath, "-e", expression],
@@ -743,6 +760,166 @@ export function parseProbeResult(output, expected) {
   return value;
 }
 
+const PACKAGED_API_PREFLIGHT = String.raw`
+import json, os, sys, tarfile, unicodedata
+
+archive_path, expected_probe = sys.argv[1], sys.argv[2]
+expected_roots = set(sys.argv[3].split(","))
+max_members = int(sys.argv[4])
+max_file_bytes = int(sys.argv[5])
+max_expanded_bytes = int(sys.argv[6])
+max_ratio = int(sys.argv[7])
+archive_bytes = os.stat(archive_path).st_size
+if archive_bytes <= 0:
+    raise SystemExit("packaged API archive is empty")
+
+seen = set()
+seen_casefold = set()
+member_count = 0
+regular_count = 0
+directory_count = 0
+expanded_bytes = 0
+probe_seen = False
+roots_seen = set()
+
+with tarfile.open(archive_path, mode="r:gz", errorlevel=2) as archive:
+    for member in archive:
+        member_count += 1
+        if member_count > max_members:
+            raise SystemExit("packaged API member count exceeds release bound")
+        raw_name = member.name
+        if not raw_name or any(ord(character) < 32 or ord(character) == 127 for character in raw_name):
+            raise SystemExit("packaged API member name is empty or contains a control character")
+        if "\\" in raw_name or raw_name.startswith("/"):
+            raise SystemExit("packaged API member path is unsafe")
+        name = raw_name[:-1] if raw_name.endswith("/") else raw_name
+        parts = name.split("/")
+        if not parts or parts[0] not in expected_roots or any(part in ("", ".", "..") for part in parts):
+            raise SystemExit("packaged API member escapes its canonical root")
+        roots_seen.add(parts[0])
+        if name in seen:
+            raise SystemExit("packaged API archive contains a duplicate member")
+        folded = unicodedata.normalize("NFC", name).casefold()
+        if folded in seen_casefold:
+            raise SystemExit("packaged API archive contains a case-colliding member")
+        seen.add(name)
+        seen_casefold.add(folded)
+        if member.isdir():
+            if member.size != 0:
+                raise SystemExit("packaged API directory has a non-zero size")
+            directory_count += 1
+        elif member.isfile() and member.sparse is None:
+            if member.size < 0 or member.size > max_file_bytes:
+                raise SystemExit("packaged API file exceeds release bound")
+            expanded_bytes += member.size
+            if expanded_bytes > max_expanded_bytes:
+                raise SystemExit("packaged API expanded bytes exceed release bound")
+            regular_count += 1
+            if name == expected_probe:
+                probe_seen = True
+        else:
+            raise SystemExit("packaged API archive contains a link or special member")
+
+if member_count == 0 or regular_count == 0:
+    raise SystemExit("packaged API archive is empty")
+if not probe_seen:
+    raise SystemExit("packaged API archive omits the inference probe")
+if roots_seen != expected_roots:
+    raise SystemExit("packaged API archive does not contain the exact application roots")
+if expanded_bytes > archive_bytes * max_ratio:
+    raise SystemExit("packaged API compression ratio exceeds release bound")
+print(json.dumps({"memberCount": member_count, "regularFileCount": regular_count, "directoryCount": directory_count, "expandedBytes": expanded_bytes, "rootCount": len(roots_seen)}, separators=(",", ":")))
+`;
+
+export function preflightPackagedApiArchive(archivePath) {
+  const archiveStat = lstatSync(archivePath);
+  assert(
+    archiveStat.isFile() &&
+      !archiveStat.isSymbolicLink() &&
+      archiveStat.nlink === 1 &&
+      Number.isSafeInteger(archiveStat.size) &&
+      archiveStat.size > 0 &&
+      archiveStat.size <= MAX_PACKAGED_API_ARCHIVE_BYTES,
+    "packaged API archive is not a bounded private regular file",
+  );
+  const output = runBoundedCommand(
+    "/usr/bin/python3",
+    [
+      "-c",
+      PACKAGED_API_PREFLIGHT,
+      archivePath,
+      PACKAGED_PROBE_PATH,
+      PACKAGED_APP_ROOTS.join(","),
+      String(MAX_ARCHIVE_MEMBERS),
+      String(MAX_PACKAGED_API_FILE_BYTES),
+      String(MAX_PACKAGED_API_EXPANDED_BYTES),
+      String(MAX_PACKAGED_API_COMPRESSION_RATIO),
+    ],
+    { timeoutMs: 120_000 },
+  );
+  let summary;
+  try {
+    summary = JSON.parse(output);
+  } catch {
+    throw new Error("packaged API preflight returned invalid JSON");
+  }
+  assert(
+    summary &&
+      typeof summary === "object" &&
+      !Array.isArray(summary) &&
+      JSON.stringify(Object.keys(summary).sort()) ===
+        JSON.stringify(
+          [
+            "memberCount",
+            "regularFileCount",
+            "directoryCount",
+            "expandedBytes",
+            "rootCount",
+          ].sort(),
+        ) &&
+      Number.isSafeInteger(summary.memberCount) &&
+      summary.memberCount > 0 &&
+      summary.memberCount <= MAX_ARCHIVE_MEMBERS &&
+      Number.isSafeInteger(summary.regularFileCount) &&
+      summary.regularFileCount > 0 &&
+      Number.isSafeInteger(summary.directoryCount) &&
+      summary.directoryCount >= 0 &&
+      Number.isSafeInteger(summary.expandedBytes) &&
+      summary.expandedBytes > 0 &&
+      summary.expandedBytes <= MAX_PACKAGED_API_EXPANDED_BYTES &&
+      summary.rootCount === PACKAGED_APP_ROOTS.length,
+    "packaged API preflight summary is invalid",
+  );
+  return summary;
+}
+
+export function inspectPackagedProbe(targetRoot) {
+  const probePath = join(targetRoot, PACKAGED_PROBE_PATH);
+  const probeStat = lstatSync(probePath);
+  return inspectStableRegularFile(
+    targetRoot,
+    probePath,
+    "packaged inference probe",
+    Number(probeStat.size),
+    null,
+  );
+}
+
+export function extractPackagedApiArchive(archivePath, targetRoot) {
+  preflightPackagedApiArchive(archivePath);
+  runBoundedCommand("/usr/bin/tar", [
+    "-xzf",
+    archivePath,
+    "-C",
+    targetRoot,
+    "api",
+  ]);
+  // Reject an in-root symlink at the canonical path before any tree realpath.
+  const probe = inspectPackagedProbe(targetRoot);
+  validateExtractedTree(join(targetRoot, "api"));
+  return probe;
+}
+
 function unpackPackagedApi(appExtractionRoot, executablePath, targetRoot) {
   const appsArchive = join(
     dirname(executablePath),
@@ -759,33 +936,7 @@ function unpackPackagedApi(appExtractionRoot, executablePath, targetRoot) {
     Number(archiveStat.size),
     null,
   );
-  const inventory = runBoundedCommand("/usr/bin/tar", [
-    "-tzf",
-    archive.path,
-    "api",
-  ]);
-  const members = validateArchiveInventory(inventory, "api");
-  assert(
-    members.has(PACKAGED_PROBE_PATH),
-    "packaged API archive omits the inference probe",
-  );
-  runBoundedCommand("/usr/bin/tar", [
-    "-xzf",
-    archive.path,
-    "-C",
-    targetRoot,
-    "api",
-  ]);
-  validateExtractedTree(join(targetRoot, "api"));
-  const probePath = realpathSync(join(targetRoot, PACKAGED_PROBE_PATH));
-  const probeStat = lstatSync(probePath);
-  const probe = inspectStableRegularFile(
-    targetRoot,
-    probePath,
-    "packaged inference probe",
-    Number(probeStat.size),
-    null,
-  );
+  const probe = extractPackagedApiArchive(archive.path, targetRoot);
   return { archive, probe };
 }
 

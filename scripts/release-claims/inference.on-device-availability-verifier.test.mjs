@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   isAllowlistedVerificationCommand,
@@ -9,11 +17,15 @@ import {
 } from "./check-release-claims.mjs";
 import {
   downloadPinnedFile,
+  extractPackagedApiArchive,
+  inspectPackagedProbe,
+  inspectPinnedRuntimeBinary,
   parseArtifactBindings,
   parseCanonicalArgs,
   parseProbeResult,
   PINNED_LLAMA_RUNTIME,
   observePinnedRuntimeRelease,
+  preflightPackagedApiArchive,
   runBoundedCommand,
   runBoundedProcess,
   validateArchiveInventory,
@@ -36,6 +48,63 @@ function makeRoot(prefix = "on-device-verifier-test-") {
 
 function digest(value) {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function writeTarOctal(header, offset, width, value) {
+  const encoded = `${value.toString(8).padStart(width - 1, "0")}\0`;
+  header.write(encoded, offset, width, "ascii");
+}
+
+function tarHeader({
+  name,
+  data = Buffer.alloc(0),
+  size,
+  type = "0",
+  link = "",
+}) {
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 100, "utf8");
+  writeTarOctal(header, 100, 8, type === "5" ? 0o755 : 0o644);
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, size ?? data.length);
+  writeTarOctal(header, 136, 12, 0);
+  header.fill(0x20, 148, 156);
+  header.write(type, 156, 1, "ascii");
+  header.write(link, 157, 100, "utf8");
+  header.write("ustar\0", 257, 6, "ascii");
+  header.write("00", 263, 2, "ascii");
+  const checksum = header.reduce((sum, byte) => sum + byte, 0);
+  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii");
+  return header;
+}
+
+function writeTarGz(path, members) {
+  const chunks = [];
+  for (const member of members) {
+    const data = Buffer.from(member.data ?? "");
+    chunks.push(tarHeader({ ...member, data }), data);
+    const remainder = data.length % 512;
+    if (remainder !== 0) chunks.push(Buffer.alloc(512 - remainder));
+  }
+  chunks.push(Buffer.alloc(1024));
+  writeFileSync(path, gzipSync(Buffer.concat(chunks)));
+}
+
+function validPackagedMembers() {
+  return [
+    { name: "api", type: "5" },
+    { name: "api/dist", type: "5" },
+    { name: "api/dist/bin", type: "5" },
+    {
+      name: "api/dist/bin/verify-on-device-inference.js",
+      data: "probe",
+    },
+    { name: "worker", type: "5" },
+    { name: "worker/index.js", data: "worker" },
+    { name: "web", type: "5" },
+    { name: "web/index.js", data: "web" },
+  ];
 }
 
 function probeResult(nonce = "a".repeat(64)) {
@@ -262,6 +331,91 @@ describe("packaged probe and archive boundaries", () => {
     expect(() => validateExtractedTree(root)).toThrow(/escapes/);
   });
 
+  it("preflights and extracts only a bounded regular packaged API tree", () => {
+    const root = makeRoot();
+    const archive = join(root, "apps.tar.gz");
+    const target = join(root, "extracted");
+    mkdirSync(target);
+    writeTarGz(archive, validPackagedMembers());
+
+    expect(preflightPackagedApiArchive(archive)).toEqual({
+      memberCount: 8,
+      regularFileCount: 3,
+      directoryCount: 5,
+      expandedBytes: 14,
+      rootCount: 3,
+    });
+    expect(extractPackagedApiArchive(archive, target)).toMatchObject({
+      sizeBytes: 5,
+      sha256: digest("probe"),
+    });
+    expect(readdirSync(target)).toEqual(["api"]);
+  });
+
+  it.each([
+    ["symbolic link", [{ name: "api/link", type: "2", link: "dist/bin" }]],
+    [
+      "hard link",
+      [
+        {
+          name: "api/hard-link",
+          type: "1",
+          link: "api/dist/bin/verify-on-device-inference.js",
+        },
+      ],
+    ],
+    ["special file", [{ name: "api/fifo", type: "6" }]],
+    [
+      "per-file expansion",
+      [{ name: "api/oversize.bin", size: 257 * 1024 * 1024 }],
+    ],
+    [
+      "total expansion",
+      [{ name: "api/aggregate.bin", size: 200 * 1024 * 1024 }],
+    ],
+    ["duplicate path", [{ name: "worker/index.js", data: "again" }]],
+    ["traversal path", [{ name: "api/../escape", data: "escape" }]],
+    ["unexpected root", [{ name: "other/file", data: "other" }]],
+    [
+      "case-colliding path",
+      [
+        { name: "web/Case.js", data: "one" },
+        { name: "web/case.js", data: "two" },
+      ],
+    ],
+    [
+      "compression ratio",
+      [{ name: "web/zeros.bin", data: Buffer.alloc(1024 * 1024) }],
+    ],
+  ])("rejects a malicious %s before extraction", (_description, mutation) => {
+    const root = makeRoot();
+    const archive = join(root, "apps.tar.gz");
+    const target = join(root, "extracted");
+    mkdirSync(target);
+    writeTarGz(archive, [...validPackagedMembers(), ...mutation]);
+
+    expect(() => extractPackagedApiArchive(archive, target)).toThrow();
+    expect(readdirSync(target)).toEqual([]);
+  });
+
+  it("rejects an in-root symlink substituted at the canonical probe path", () => {
+    const root = makeRoot();
+    const probe = join(root, "api/dist/bin/verify-on-device-inference.js");
+    mkdirSync(join(root, "api/dist/bin"), { recursive: true });
+    writeFileSync(join(root, "real-probe.js"), "probe");
+    symlinkSync("../../../real-probe.js", probe);
+
+    expect(() => inspectPackagedProbe(root)).toThrow(/symlink component/);
+  });
+
+  it("rejects an in-root symlink substituted at the pinned runtime path", () => {
+    const root = makeRoot();
+    writeFileSync(join(root, "real-runtime"), "runtime");
+    symlinkSync("real-runtime", join(root, PINNED_LLAMA_RUNTIME.binaryName));
+
+    expect(() => inspectPinnedRuntimeBinary(root)).toThrow(/symlink component/);
+  });
+
   it("accepts one exact content-length and digest-bound download", async () => {
     const root = makeRoot();
     const bytes = Buffer.from("pinned bytes");
@@ -430,8 +584,25 @@ describe("bounded native execution", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
   });
 
+  it("places the loopback and external probes in a sandbox-inheriting child", async () => {
+    let leaderExpression = "";
+    await expect(
+      verifySandboxNetworkDenial(process.execPath, {
+        run: async (command, args) => {
+          expect(command).toBe("/usr/bin/sandbox-exec");
+          leaderExpression = args[4];
+          return { stdout: "", stderr: "" };
+        },
+      }),
+    ).resolves.toBe(true);
+    expect(leaderExpression).toContain("spawnSync(process.execPath");
+    expect(leaderExpression).toContain("127.0.0.1");
+    expect(leaderExpression).toContain("1.1.1.1");
+    expect(leaderExpression).toContain("child-network-denied");
+  });
+
   it.runIf(process.platform === "darwin")(
-    "proves the macOS sandbox rejects a verifier-owned loopback connection",
+    "proves the macOS sandboxed child rejects loopback and external connections",
     async () => {
       await expect(verifySandboxNetworkDenial(realpathNode())).resolves.toBe(
         true,

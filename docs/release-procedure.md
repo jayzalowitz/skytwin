@@ -39,8 +39,11 @@
 > owned packaged launches, but it has not produced tagged evidence. A macOS
 > arm64 on-device inference
 > verifier is also present in source; it runs the packaged API probe with exact
-> llama.cpp and GGUF byte identities inside a network-deny sandbox, but has not
-> produced tagged evidence. The CI result producer is present in source but has
+> llama.cpp and GGUF byte identities inside a network-deny sandbox. Its nested
+> application archive is preflighted before extraction, and its sandbox
+> inheritance self-test requires a spawned child to fail both loopback and
+> external connections. It has not produced tagged evidence. The CI result
+> producer is present in source but has
 > not run on a release tag. The other three machine reports, including Linux
 > signing, are still absent.
 > The final gate therefore fails closed and the ledger remains blocked until the
@@ -278,7 +281,11 @@ report with two owned packaged launches, contained user-data storage,
 loopback-only CockroachDB listeners, and restart persistence. The on-device lane
 implements the macOS arm64 report by loading an artifact-contained API probe,
 acquiring immutable digest-pinned llama.cpp and GGUF inputs, and performing real
-inference inside a macOS sandbox that denies all network operations. Two
+inference inside a macOS sandbox that denies all network operations. The
+artifact-controlled nested archive must pass bounded member, path, type,
+expanded-size, and compression-ratio checks before extraction; the canonical
+probe and runtime binary must also pass lexical non-symlink inspection before
+canonicalization. Two
 verifier sources (two matrix reports) and the Linux signing implementation are
 absent today.
 The `release-claims-ci` producer now records the frozen source-check commands
@@ -299,7 +306,10 @@ The on-device verifier keeps acquisition outside the measured inference
 boundary: it observes the pinned upstream release/tag identities and downloads
 the exact runtime and model before entering the sandbox. The actual packaged
 probe and its llama.cpp child then run with a closed environment and a
-`deny network*` profile whose loopback denial is independently self-tested.
+`deny network*` profile. A sandboxed Node leader spawns the child used for the
+self-test, which must be denied both a verifier-owned loopback listener and a
+literal external address; this proves the inheritance path used when the
+packaged Node probe launches llama.cpp.
 The report stores byte identities, execution facts, response size and hashes,
 and observed runner hardware, but no prompt, response, token, or transient
 download URL. Neither the model nor llama.cpp runtime is bundled in the desktop

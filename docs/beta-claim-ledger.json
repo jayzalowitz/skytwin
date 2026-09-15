@@ -926,8 +926,8 @@
         },
         {
           "path": "scripts/release-claims/verifiers/inference.on-device-availability.mjs",
-          "sha256": "7d65c4651d444d0ec71554c80ab8d9782c3afddacfe5cb313b8f36b3c47ae836",
-          "why": "Canonical macOS verifier binds the exact release ZIP, immutable runtime and model bytes, network-deny sandbox, packaged probe result, and observed hardware"
+          "sha256": "b45dcd07c8e27edb95447d181947ecd114f91bdb7e25f22cd578e5162ecf54a2",
+          "why": "Canonical macOS verifier binds the exact release ZIP, preflights the nested application archive before extraction, rejects canonical-path symlinks, proves child-process network denial, and records immutable runtime, model, packaged-probe, and hardware observations"
         },
         {
           "path": "scripts/release-claims/verifiers/models.verified-delivery.mjs",
@@ -954,7 +954,7 @@
         },
         {
           "command": "pnpm exec vitest run scripts/release-claims/inference.on-device-availability-verifier.test.mjs",
-          "expected": "Verifier binding, download, archive, metadata, process, sandbox, and report-schema mutation tests pass"
+          "expected": "Verifier binding, download, pre-extraction archive, canonical-path symlink, metadata, process, inherited sandbox, and report-schema mutation tests pass"
         }
       ]
     },

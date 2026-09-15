@@ -48,6 +48,13 @@ All notable changes to SkyTwin will be documented in this file.
   upstream llama.cpp release/tag, downloads exact digest-pinned runtime and
   GGUF bytes, selects its completion binary, and performs real embedded
   inference inside a macOS sandbox that denies external and loopback networking.
+  The artifact-controlled application bundle is now preflighted before
+  extraction for bounded member and expanded sizes, compression ratio, safe
+  collision-free paths, and regular-file/directory-only member types. Canonical
+  probe and runtime paths are inspected lexically before canonicalization, and
+  the sandbox self-test requires a spawned child to be denied both a
+  verifier-owned loopback listener and an external address, matching the
+  inheritance boundary used for the production Node-to-llama.cpp launch.
   The production backend now uses the runtime's bounded `--single-turn` mode;
   this replaces a legacy argument rejected by current llama.cpp. The probe
   receives a closed environment without provider credentials and records
