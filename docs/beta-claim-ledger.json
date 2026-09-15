@@ -992,7 +992,7 @@
       "scope": "Desktop and its managed API/web/worker processes; bring-your-own-provider Ollama can be remote, execution adapters can receive action descriptions and parameters, and federation can exchange encrypted state deltas with configured peers. Only on-device Ollama is constrained to verified loopback/local execution. Exact destinations depend on enabled features and operator configuration.",
       "owner": "privacy",
       "state": "limited",
-      "limitation": "A release artifact still needs a measured network inventory and offline test tied to its SHA; local-first must never be shortened to no-cloud or no-network.",
+      "limitation": "The canonical macOS verifier exists in source, but no final tagged artifact has produced the bound sandbox and owned-socket report. Its fresh-profile account-free scenario does not cover operator-configured connectors, hosted providers, adapters, federation, downloads, updates, or opt-in reports; local-first must never be shortened to no-cloud or no-network.",
       "evidence": [
         {
           "path": "docs/privacy.html",
@@ -1018,12 +1018,31 @@
           "path": "apps/worker/src/jobs/federation-sync.ts",
           "sha256": "7207c2d4643579a149e56273bbd4e76988008541769404d2411212c6a913a620",
           "why": "Federation sync filters disabled account-backed server and provenance state, encrypts exportable deltas, and posts them to configured peer endpoints"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/network.explicit-boundaries.mjs",
+          "sha256": "7b263b6fa31944f3a4ff20b98477252ae665838aa46ac39c90a9eecf571c0a43",
+          "why": "Binds the exact macOS release ZIP and current attempt, self-tests inherited loopback-only sandbox enforcement, inventories stable owned process-tree sockets throughout a bounded account-free scenario, and requires graceful cleanup"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/sample.packaged-account-free.mjs",
+          "sha256": "82217eda3398e650958c8d1af98645fc74eadf8d434dbf4f649df770ead3d37e",
+          "why": "Provides the reviewed archive-selection, safe executable derivation, dashboard probe, and process-tree shutdown primitives reused by the network verifier"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/storage.desktop-crdb.mjs",
+          "sha256": "d611254630c93baab7931add3040d35bab4ec22fa2da0a9591e8f93305254d71",
+          "why": "Provides the bounded native-command, exact artifact-binding, and fail-closed port-availability primitives reused by the network verifier"
         }
       ],
       "verification": [
         {
           "command": "pnpm claims:check",
           "expected": "Absolute no-network/no-egress phrases are absent from release-facing surfaces"
+        },
+        {
+          "command": "pnpm exec vitest run scripts/release-claims/network.explicit-boundaries-verifier.test.mjs",
+          "expected": "Network-verifier provenance, sandbox inheritance, closed environment, owned socket inventory, bounded native output, shutdown-race, evidence-privacy, and publication-schema mutation tests pass"
         }
       ]
     },
@@ -1346,8 +1365,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "d51ad453e0895c62144fab9abe63c186fc83b61a0001d21160467b52eaf4880f",
-          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, structured desktop-storage observation, and on-device inference observation at publication"
+          "sha256": "28053fd5b9d565526ce6d780ed346643622a1d123f1a7d365a36917a89cf45e8",
+          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, structured desktop-storage, network-boundary, and on-device inference observations at publication"
         }
       ],
       "verification": [

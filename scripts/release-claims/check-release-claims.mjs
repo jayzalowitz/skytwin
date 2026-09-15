@@ -1273,6 +1273,7 @@ export function isAllowlistedVerificationCommand(command) {
       "scripts/release-claims/release.artifact-verification.test.mjs",
       "scripts/release-claims/storage.desktop-crdb-verifier.test.mjs",
       "scripts/release-claims/inference.on-device-availability-verifier.test.mjs",
+      "scripts/release-claims/network.explicit-boundaries-verifier.test.mjs",
     ].includes(tokens[4])
   )
     return true;
@@ -5212,6 +5213,172 @@ function hasCompleteDesktopStorageObservation(report) {
   );
 }
 
+function hasCompleteNetworkBoundaryObservation(report) {
+  const executable = report?.executedBinary;
+  const sandbox = report?.sandboxObservation;
+  const network = report?.networkObservation;
+  const privacy = report?.evidencePrivacy;
+  const executableKeys = [
+    "name",
+    "sizeBytes",
+    "sha256",
+    "device",
+    "inode",
+    "identityResult",
+    "derivationMethod",
+    "derivationPath",
+  ];
+  const sandboxKeys = [
+    "profileSha256",
+    "parentLoopbackResult",
+    "parentExternalError",
+    "childLoopbackResult",
+    "childExternalError",
+    "inheritanceResult",
+  ];
+  const networkKeys = [
+    "sandboxedLaunchResult",
+    "ownedNonceResult",
+    "apiReadinessResult",
+    "dashboardReadinessResult",
+    "accountFreeRead",
+    "sampleCount",
+    "maxOwnedProcessCount",
+    "maxOwnedSocketCount",
+    "observedLoopbackPorts",
+    "addressPolicy",
+    "foreignManagedSocketCount",
+    "wildcardSocketCount",
+    "externalSocketCount",
+    "udpOrMulticastSocketCount",
+    "gracefulShutdownResult",
+    "forcedShutdown",
+    "postShutdownConsecutiveCleanSamples",
+  ];
+  const accountFreeReadKeys = [
+    "result",
+    "method",
+    "pathClass",
+    "responseBytesBound",
+  ];
+  const privacyKeys = [
+    "contentCaptured",
+    "credentialsCaptured",
+    "userPathsCaptured",
+    "endpointHostnamesCaptured",
+  ];
+  const provenanceFields = [
+    "runAttempt",
+    "runAttemptStartedAt",
+    "releaseArtifactCreatedAt",
+    "desktopProducerJobId",
+    "desktopProducerJobName",
+    "desktopProducerJobRunAttempt",
+    "desktopProducerJobConclusion",
+    "desktopProducerJobStartedAt",
+    "desktopProducerJobCompletedAt",
+    "desktopUploadStartedAt",
+    "desktopUploadCompletedAt",
+    "verifierJobId",
+    "verifierJobName",
+    "verifierJobRunAttempt",
+    "verifierJobStatus",
+  ];
+  const timestamps = [
+    report?.runAttemptStartedAt,
+    report?.releaseArtifactCreatedAt,
+    report?.desktopProducerJobStartedAt,
+    report?.desktopProducerJobCompletedAt,
+    report?.desktopUploadStartedAt,
+    report?.desktopUploadCompletedAt,
+  ];
+  return (
+    report?.platform === "macos" &&
+    report?.runnerPlatform === "darwin-arm64" &&
+    provenanceFields.every((field) => report?.[field] !== undefined) &&
+    Number.isSafeInteger(report.runAttempt) &&
+    report.runAttempt > 0 &&
+    Number.isSafeInteger(report.desktopProducerJobId) &&
+    report.desktopProducerJobId > 0 &&
+    report.desktopProducerJobName === "Desktop — macOS (DMG + ZIP)" &&
+    report.desktopProducerJobRunAttempt === report.runAttempt &&
+    report.desktopProducerJobConclusion === "success" &&
+    Number.isSafeInteger(report.verifierJobId) &&
+    report.verifierJobId > 0 &&
+    report.verifierJobName ===
+      machineProducerJobName("network.explicit-boundaries", "macos") &&
+    report.verifierJobRunAttempt === report.runAttempt &&
+    report.verifierJobStatus === "in_progress" &&
+    report.releaseArtifactAttemptBindingResult ===
+      "workflow-output-and-producer-window-pass" &&
+    timestamps.every((value) => canonicalGithubTimestampMs(value) !== null) &&
+    canonicalGithubTimestampMs(report.runAttemptStartedAt) <=
+      canonicalGithubTimestampMs(report.desktopProducerJobStartedAt) &&
+    canonicalGithubTimestampMs(report.desktopProducerJobStartedAt) <=
+      canonicalGithubTimestampMs(report.desktopUploadStartedAt) &&
+    canonicalGithubTimestampMs(report.desktopUploadStartedAt) <=
+      canonicalGithubTimestampMs(report.releaseArtifactCreatedAt) &&
+    canonicalGithubTimestampMs(report.releaseArtifactCreatedAt) <=
+      canonicalGithubTimestampMs(report.desktopProducerJobCompletedAt) &&
+    canonicalGithubTimestampMs(report.desktopUploadStartedAt) <=
+      canonicalGithubTimestampMs(report.desktopUploadCompletedAt) &&
+    canonicalGithubTimestampMs(report.desktopUploadCompletedAt) <=
+      canonicalGithubTimestampMs(report.desktopProducerJobCompletedAt) &&
+    isPlainRecord(executable) &&
+    sameStringSet(Object.keys(executable), executableKeys) &&
+    isNonEmptyString(executable.name) &&
+    Number.isSafeInteger(executable.sizeBytes) &&
+    executable.sizeBytes > 0 &&
+    SOURCE_DIGEST.test(executable.sha256 ?? "") &&
+    Number.isSafeInteger(executable.device) &&
+    Number.isSafeInteger(executable.inode) &&
+    executable.identityResult === "pass" &&
+    executable.derivationMethod === "zip-ditto" &&
+    executable.derivationPath === "SkyTwin.app/Contents/MacOS/SkyTwin" &&
+    isPlainRecord(sandbox) &&
+    sameStringSet(Object.keys(sandbox), sandboxKeys) &&
+    SOURCE_DIGEST.test(sandbox.profileSha256 ?? "") &&
+    sandbox.parentLoopbackResult === "pass" &&
+    sandbox.parentExternalError === "EPERM" &&
+    sandbox.childLoopbackResult === "pass" &&
+    sandbox.childExternalError === "EPERM" &&
+    sandbox.inheritanceResult === "pass" &&
+    isPlainRecord(network) &&
+    sameStringSet(Object.keys(network), networkKeys) &&
+    network.sandboxedLaunchResult === "pass" &&
+    network.ownedNonceResult === "pass" &&
+    network.apiReadinessResult === "pass" &&
+    network.dashboardReadinessResult === "pass" &&
+    isPlainRecord(network.accountFreeRead) &&
+    sameStringSet(Object.keys(network.accountFreeRead), accountFreeReadKeys) &&
+    network.accountFreeRead.result === "pass" &&
+    network.accountFreeRead.method === "GET" &&
+    network.accountFreeRead.pathClass === "sample-decisions" &&
+    network.accountFreeRead.responseBytesBound === 262144 &&
+    Number.isSafeInteger(network.sampleCount) &&
+    network.sampleCount >= 4 &&
+    Number.isSafeInteger(network.maxOwnedProcessCount) &&
+    network.maxOwnedProcessCount >= 2 &&
+    Number.isSafeInteger(network.maxOwnedSocketCount) &&
+    network.maxOwnedSocketCount >= 4 &&
+    sameStringSet(network.observedLoopbackPorts, [26257, 26258, 3100, 3200]) &&
+    network.addressPolicy === "literal-ipv4-loopback-only" &&
+    network.foreignManagedSocketCount === 0 &&
+    network.wildcardSocketCount === 0 &&
+    network.externalSocketCount === 0 &&
+    network.udpOrMulticastSocketCount === 0 &&
+    network.gracefulShutdownResult === "pass" &&
+    network.forcedShutdown === false &&
+    network.postShutdownConsecutiveCleanSamples === 2 &&
+    isPlainRecord(privacy) &&
+    sameStringSet(Object.keys(privacy), privacyKeys) &&
+    privacy.contentCaptured === false &&
+    privacy.credentialsCaptured === false &&
+    privacy.userPathsCaptured === false &&
+    privacy.endpointHostnamesCaptured === false
+  );
+}
+
 export function verifyMachineEvidenceApplicability(
   claimId,
   report,
@@ -5225,6 +5392,14 @@ export function verifyMachineEvidenceApplicability(
   ) {
     errors.push(
       "storage.desktop-crdb machine evidence must identify stable packaged app and database binaries and prove a contained user-data store, exact loopback listeners, owned process ancestry, restart persistence, and graceful listener release",
+    );
+  }
+  if (
+    claimId === "network.explicit-boundaries" &&
+    !hasCompleteNetworkBoundaryObservation(report)
+  ) {
+    errors.push(
+      "network.explicit-boundaries machine evidence must bind the exact attempt and packaged application, prove inherited macOS loopback-only sandbox behavior, inventory only owned literal-loopback sockets throughout an account-free scenario, preserve evidence privacy, and finish with graceful cleanup",
     );
   }
   if (claimId === "inference.on-device-availability") {

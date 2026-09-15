@@ -4,6 +4,20 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **Packaged default network behavior now has a fail-closed macOS verifier in
+  source.** The verifier binds the current tag-push attempt and exact release
+  ZIP, self-tests a deny-by-default sandbox by requiring parent and spawned
+  child loopback success plus external `EPERM`, and launches the derived app in
+  that inherited loopback-only profile with a closed environment. It repeatedly
+  inventories stable owned process-tree sockets while proving nonce-bound API,
+  dashboard, and one account-free sample read; wildcard, IPv6, external, UDP,
+  multicast, malformed, stale, reused, or foreign managed socket evidence
+  fails closed. Reports contain only bounded counts, canonical loopback ports,
+  boolean results, and release identities, and require graceful shutdown plus
+  two clean post-shutdown samples. The public disclosure for configured network
+  features remains unchanged. No tagged run has produced this machine evidence,
+  so the network claim remains limited and the release remains blocked.
+
 - **Packaged desktop storage now has a fail-closed macOS evidence verifier in
   source.** The verifier derives the exact application from the release ZIP,
   launches it twice with an isolated user-data directory and credential-free
