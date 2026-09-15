@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { beforeAll, describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -27,11 +27,14 @@ const here = dirname(fileURLToPath(import.meta.url));
 // apps/desktop/src/__tests__ -> repo root
 const REPO_ROOT = resolve(here, '../../../..');
 const SCRIPT = join(REPO_ROOT, '.github/scripts/derive-app-version.sh');
+const DERIVE_PROCESS_TIMEOUT_MS = 5_000;
+const HISTORY_SETUP_TIMEOUT_MS = 15_000;
 
 /** Run the script with an explicit version argument. Returns trimmed stdout. */
 function derive(version: string, env: NodeJS.ProcessEnv = {}): string {
   return execFileSync('bash', [SCRIPT, version], {
     encoding: 'utf8',
+    timeout: DERIVE_PROCESS_TIMEOUT_MS,
     // Strip the ambient GitHub Actions vars so a local run inside CI doesn't
     // append to the real $GITHUB_ENV.
     env: { ...process.env, GITHUB_ENV: '', GITHUB_OUTPUT: '', ...env },
@@ -49,6 +52,7 @@ function deriveExpectingFailure(version: string): DeriveFailure {
     execFileSync('bash', [SCRIPT, version], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: DERIVE_PROCESS_TIMEOUT_MS,
       env: { ...process.env, GITHUB_ENV: '', GITHUB_OUTPUT: '' },
     });
   } catch (err) {
@@ -77,6 +81,8 @@ const VERSION_HISTORY = [
   '0.6.101.0',
 ];
 
+let derivedVersionHistory: string[];
+
 /** Compare two three-segment versions numerically. */
 function compareSemver(a: string, b: string): number {
   const pa = a.split('.').map(Number);
@@ -88,6 +94,10 @@ function compareSemver(a: string, b: string): number {
 }
 
 describe('derive-app-version.sh', () => {
+  beforeAll(() => {
+    derivedVersionHistory = VERSION_HISTORY.map((version) => derive(version));
+  }, HISTORY_SETUP_TIMEOUT_MS);
+
   it('exists and is executable from the repo root', () => {
     expect(existsSync(SCRIPT), `expected the script at ${SCRIPT}`).toBe(true);
   });
@@ -102,22 +112,20 @@ describe('derive-app-version.sh', () => {
   });
 
   it('emits a three-segment semver for every VERSION in this repo history', () => {
-    for (const version of VERSION_HISTORY) {
-      expect(derive(version), version).toMatch(/^\d+\.\d+\.\d+$/);
+    for (const [index, version] of VERSION_HISTORY.entries()) {
+      expect(derivedVersionHistory[index], version).toMatch(/^\d+\.\d+\.\d+$/);
     }
   });
 
   it('is injective across this repo VERSION history (no two collide)', () => {
-    const derived = VERSION_HISTORY.map((v) => derive(v));
-    expect(new Set(derived).size).toBe(VERSION_HISTORY.length);
+    expect(new Set(derivedVersionHistory).size).toBe(VERSION_HISTORY.length);
   });
 
   it('is strictly increasing across this repo VERSION history', () => {
-    const derived = VERSION_HISTORY.map((v) => derive(v));
-    for (let i = 1; i < derived.length; i++) {
+    for (let i = 1; i < derivedVersionHistory.length; i++) {
       expect(
-        compareSemver(derived[i], derived[i - 1]),
-        `${VERSION_HISTORY[i - 1]} (${derived[i - 1]}) -> ${VERSION_HISTORY[i]} (${derived[i]}) must increase`,
+        compareSemver(derivedVersionHistory[i], derivedVersionHistory[i - 1]),
+        `${VERSION_HISTORY[i - 1]} (${derivedVersionHistory[i - 1]}) -> ${VERSION_HISTORY[i]} (${derivedVersionHistory[i]}) must increase`,
       ).toBeGreaterThan(0);
     }
   });
@@ -132,6 +140,7 @@ describe('derive-app-version.sh', () => {
     const versionFile = readFileSync(join(REPO_ROOT, 'VERSION'), 'utf8').trim();
     const fromFile = execFileSync('bash', [SCRIPT], {
       encoding: 'utf8',
+      timeout: DERIVE_PROCESS_TIMEOUT_MS,
       env: { ...process.env, GITHUB_ENV: '', GITHUB_OUTPUT: '' },
     }).trim();
     expect(fromFile).toBe(derive(versionFile));
@@ -146,6 +155,7 @@ describe('derive-app-version.sh', () => {
 
     execFileSync('bash', [SCRIPT, '0.6.101.0'], {
       encoding: 'utf8',
+      timeout: DERIVE_PROCESS_TIMEOUT_MS,
       env: { ...process.env, GITHUB_ENV: envFile, GITHUB_OUTPUT: outFile },
     });
 

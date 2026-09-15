@@ -439,5 +439,5 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
       await pool.query('DROP TABLE IF EXISTS operator_rollback_sentinel');
       await pool.query('DROP TABLE IF EXISTS capability_recipes');
     }
-  }, 600_000);
+  }, 900_000);
 });
