@@ -14,17 +14,26 @@ const {
   mockLifebookRepository,
   mockUserRepository,
   mockQuery,
+  mockLoadConfig,
 } = vi.hoisted(() => ({
   mockBriefingRepository: { create: vi.fn() },
   mockAppSuggestionRepository: { getPendingForUser: vi.fn() },
   mockMemoryActionOpportunityRepository: { listRecentReportsForUser: vi.fn() },
-  mockMcpServerRepository: { listForUser: vi.fn() },
+  mockMcpServerRepository: {
+    listForUser: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
+  },
   mockLifebookRepository: { listVisible: vi.fn() },
   // spec 12: briefing-generator reads the user's locale before runPrompt. Without
   // this the call threw and the generator silently fell back to the templated
   // path, leaving the LLM-prose path untested (review #13).
   mockUserRepository: { getLocale: vi.fn().mockResolvedValue({ language: null, timezone: null }) },
   mockQuery: vi.fn().mockResolvedValue({ rows: [] }),
+  mockLoadConfig: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -66,6 +75,8 @@ const ACTIVE_SERVER = {
 describe('runBriefingGeneratorJob — H: briefing-prose adaptive path', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['create_issue']);
     mockBriefingRepository.create.mockResolvedValue({ id: 'brief-1' });
     mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
     mockMemoryActionOpportunityRepository.listRecentReportsForUser.mockResolvedValue([]);
@@ -90,6 +101,64 @@ describe('runBriefingGeneratorJob — H: briefing-prose adaptive path', () => {
     // Either LLM prose or templated fallback — both are valid Markdown strings
     expect(typeof createCall.proseMarkdown).toBe('string');
     expect(createCall.proseMarkdown.length).toBeGreaterThan(0);
+  });
+
+  it('keeps blocked display, suggestion, and promotion activity out of the LLM prompt', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { ...ACTIVE_SERVER, id: 'github', display_name: 'SAFE_GITHUB_ACTIVITY' },
+      {
+        ...ACTIVE_SERVER,
+        id: 'gmail',
+        registry_id: 'gmail-mcp',
+        display_name: 'PRIVATE_GMAIL_ACTIVITY',
+      },
+      {
+        ...ACTIVE_SERVER,
+        id: 'cached-mail',
+        registry_id: 'custom-mail',
+        oauth_provider: null,
+        display_name: 'PRIVATE_CACHED_MAIL_ACTIVITY',
+      },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
+      serverId === 'cached-mail' ? ['sendEmail'] : ['create_issue']);
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
+      { registry_id: '@modelcontextprotocol/server-github', display_name: 'SAFE_GITHUB_SUGGESTION' },
+      { registry_id: 'outlook-mcp', display_name: 'PRIVATE_OUTLOOK_SUGGESTION' },
+    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            server_id: 'gmail',
+            occurred_at: new Date(),
+            payload: { from: 'PRIVATE_PROMOTION', to: 'PRIVATE_PROMOTION' },
+          },
+        ],
+      });
+    const generate = vi.fn().mockResolvedValue({
+      content: JSON.stringify({ briefing: 'Safe generated briefing' }),
+      provider: 'test',
+      model: 'test-model',
+      latencyMs: 1,
+    });
+    const llmClient = {
+      hasProviders: true,
+      generate,
+      generateStream: vi.fn(),
+    } as unknown as LlmClient;
+
+    await runBriefingGeneratorJob({ cadence: 'daily', userIds: ['user-1'], llmClient });
+
+    const prompt = String(generate.mock.calls[0]?.[0]);
+    expect(prompt).toContain('SAFE_GITHUB_ACTIVITY');
+    expect(prompt).toContain('SAFE_GITHUB_SUGGESTION');
+    expect(prompt).not.toContain('PRIVATE_GMAIL_ACTIVITY');
+    expect(prompt).not.toContain('PRIVATE_CACHED_MAIL_ACTIVITY');
+    expect(prompt).not.toContain('PRIVATE_OUTLOOK_SUGGESTION');
+    expect(prompt).not.toContain('PRIVATE_PROMOTION');
   });
 
   // 2. LLM failure → deterministic template

@@ -1,8 +1,13 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig } from '@skytwin/config';
 import { briefingRepository, appSuggestionRepository, lifebookRepository, mcpServerRepository, userRepository, query, memoryActionOpportunityRepository } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import type { LlmClient } from '@skytwin/llm-client';
-import type { MemoryActionLoopReport, MemoryActionOpportunityStatus } from '@skytwin/shared-types';
+import {
+  isAccountBackedIntegration,
+  type MemoryActionLoopReport,
+  type MemoryActionOpportunityStatus,
+} from '@skytwin/shared-types';
 import { fetchDailyMemorySuggestions } from './memory-suggestions.js';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
@@ -77,6 +82,35 @@ export interface BriefingGeneratorJobDeps {
  */
 const BRIEFING_USER_PAGE_SIZE = 500;
 
+interface PreviewServerDescriptor {
+  id: string;
+  registry_id?: string | null;
+  oauth_provider?: string | null;
+}
+
+async function isAccountFreePreviewServerBlocked(
+  connectionMode: string | undefined,
+  server: PreviewServerDescriptor,
+): Promise<boolean> {
+  if (isAccountBackedIntegration({
+    key: server.registry_id ?? undefined,
+    integration: server.oauth_provider ?? undefined,
+  })) return connectionMode !== 'experimental';
+  if (connectionMode === 'experimental') return false;
+
+  try {
+    const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+    if (skills.length === 0) return true;
+    return isAccountBackedIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+      skills,
+    });
+  } catch {
+    return true;
+  }
+}
+
 async function getActiveUserIds(): Promise<string[]> {
   const allIds: string[] = [];
   let lastSeen: string | null = null;
@@ -113,17 +147,39 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
   const lookbackMs = cadence === 'daily' ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
   const since = new Date(Date.now() - lookbackMs);
 
-  const [suggestions, allServers, memorySuggestions, memoryActionReports] = await Promise.all([
+  const [allSuggestions, allServers, memorySuggestions, memoryActionReports] = await Promise.all([
     appSuggestionRepository.getPendingForUser(userId),
     mcpServerRepository.listForUser(userId),
     fetchDailyMemorySuggestions(userId, 5),
     memoryActionOpportunityRepository.listRecentReportsForUser(userId, since, 8),
   ]);
 
-  const active = allServers.filter(
+  const connectionMode = loadConfig().googleConnectionMode;
+  const blockedByServerId = new Map<string, boolean>();
+  await Promise.all(allServers.map(async (server) => {
+    blockedByServerId.set(
+      server.id,
+      await isAccountFreePreviewServerBlocked(connectionMode, server),
+    );
+  }));
+  const admittedServers = allServers.filter((server) => !blockedByServerId.get(server.id));
+  const admittedServerIds = new Set(admittedServers.map((server) => server.id));
+  const blockedRegistryIds = new Set(
+    allServers
+      .filter((server) => blockedByServerId.get(server.id))
+      .map((server) => server.registry_id)
+      .filter((registryId): registryId is string => typeof registryId === 'string'),
+  );
+  const suggestions = allSuggestions.filter((suggestion) =>
+    !blockedRegistryIds.has(suggestion.registry_id) &&
+    (connectionMode === 'experimental' || !isAccountBackedIntegration({
+      key: suggestion.registry_id,
+    })));
+
+  const active = admittedServers.filter(
     (s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized',
   );
-  const dormant = allServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
+  const dormant = admittedServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
 
   const recentlyInstalled = active.filter((s) => s.installed_at && s.installed_at > since);
 
@@ -134,6 +190,13 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
      ORDER BY occurred_at DESC`,
     [userId, since],
   );
+  const admittedPromotionResult = connectionMode === 'experimental'
+    ? promotionResult
+    : {
+        ...promotionResult,
+        rows: promotionResult.rows.filter((row) =>
+          typeof row.server_id === 'string' && admittedServerIds.has(row.server_id)),
+      };
 
   // Pre-compute server_id → registry_id so filterDataByLifebook can
   // map tier-promotion rows (which carry server_id but not registry_id
@@ -142,11 +205,21 @@ async function gatherBriefingData(userId: string, cadence: 'daily' | 'weekly') {
   // tier_promotion never sets — so promotions were always dropped from
   // per-Lifebook briefings.
   const serverIdToRegistry = new Map<string, string>();
-  for (const s of allServers) {
+  for (const s of admittedServers) {
     if (s.registry_id) serverIdToRegistry.set(s.id, s.registry_id);
   }
 
-  return { suggestions, active, dormant, recentlyInstalled, promotionResult, serverIdToRegistry, since, memorySuggestions, memoryActionReports };
+  return {
+    suggestions,
+    active,
+    dormant,
+    recentlyInstalled,
+    promotionResult: admittedPromotionResult,
+    serverIdToRegistry,
+    since,
+    memorySuggestions,
+    memoryActionReports,
+  };
 }
 
 /**
