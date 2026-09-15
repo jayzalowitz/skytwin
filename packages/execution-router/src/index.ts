@@ -11,6 +11,8 @@ export type {
   RollbackRoutingResult,
   ExecutionDispatchAuthorityPort,
   ExecutionDispatchLeaseGrant,
+  ExecutionAdmissionDecision,
+  ExecutionAdmissionGuard,
 } from './execution-router.js';
 
 export {
@@ -30,5 +32,6 @@ export { applyAdapterRiskModifier } from './risk-modifier.js';
 export { logSkillGap } from './skill-gap-logger.js';
 
 export { discoverAdapters } from './adapter-discovery.js';
+export type { AdapterDiscoveryOptions } from './adapter-discovery.js';
 export { validateManifest } from './adapter-manifest.js';
 export type { AdapterManifest } from './adapter-manifest.js';

@@ -26,6 +26,7 @@ const {
     getInactiveSince: vi.fn(),
     updateTrustTier: vi.fn(),
     setZeroTrustMode: vi.fn(),
+    listSkillNamesForServer: vi.fn().mockResolvedValue(['health_check']),
   },
   mockProvenanceRepository: {
     getForServer: vi.fn(),

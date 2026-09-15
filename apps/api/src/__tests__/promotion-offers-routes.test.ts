@@ -13,10 +13,20 @@ const mockPromotionOffersRepository = {
   acceptAtomic: vi.fn(),
   listOfferedSince: vi.fn(),
 };
+const mockMcpServerRepository = {
+  getById: vi.fn(),
+  listSkillNamesForServer: vi.fn(),
+};
+const mockLoadConfig = vi.fn();
 const mockSseEmit = vi.fn();
 
 vi.mock('@skytwin/db', () => ({
+  mcpServerRepository: mockMcpServerRepository,
   promotionOffersRepository: mockPromotionOffersRepository,
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('../sse.js', () => ({
@@ -32,6 +42,43 @@ const {
   createPromotionOffersRouter,
   sweepPromotionOffersOnce,
 } = await import('../routes/promotion-offers.js');
+
+const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000002';
+
+function makeOffer(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'o-1',
+    user_id: USER_ID,
+    server_id: 's-1',
+    server_name: 'Linear',
+    current_tier: 'observer',
+    proposed_tier: 'suggest',
+    reason: 'Met threshold',
+    decisions_observed_count: 20,
+    approved_count: 18,
+    offered_at: new Date('2026-05-17T00:00:00Z'),
+    responded_at: null,
+    response: null,
+    ...overrides,
+  };
+}
+
+function makeServer(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 's-1',
+    user_id: USER_ID,
+    registry_id: 'linear-mcp',
+    oauth_provider: null,
+    status: 'active',
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+  mockMcpServerRepository.getById.mockResolvedValue(makeServer());
+  mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['create_issue']);
+});
 
 function makeApp(): Express {
   const app = express();
@@ -75,22 +122,7 @@ describe('GET /promotion-offers/:userId', () => {
   });
 
   it('returns pending offers with serverName', async () => {
-    mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([
-      {
-        id: 'o-1',
-        user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
-        server_id: 's-1',
-        server_name: 'Linear',
-        current_tier: 'observer',
-        proposed_tier: 'suggest',
-        reason: 'Met threshold',
-        decisions_observed_count: 20,
-        approved_count: 18,
-        offered_at: new Date('2026-05-17T00:00:00Z'),
-        responded_at: null,
-        response: null,
-      },
-    ]);
+    mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([makeOffer()]);
     const app = makeApp();
     const { status, body } = await request(app, 'GET', '/promotion-offers/aaaaaaaa-bbbb-cccc-dddd-000000000002');
     expect(status).toBe(200);
@@ -99,6 +131,88 @@ describe('GET /promotion-offers/:userId', () => {
     expect(offers[0]!['id']).toBe('o-1');
     expect(offers[0]!['serverName']).toBe('Linear');
     expect(offers[0]!['proposedTier']).toBe('suggest');
+    expect(mockMcpServerRepository.getById).toHaveBeenCalledWith('s-1');
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'missing', server: null },
+    { name: 'wrong-owner', server: makeServer({ user_id: 'another-user' }) },
+  ])('hides an offer bound to a $name server even in experimental mode', async ({ server }) => {
+    mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([makeOffer()]);
+    mockMcpServerRepository.getById.mockResolvedValue(server);
+
+    const { body } = await request(makeApp(), 'GET', `/promotion-offers/${USER_ID}`);
+
+    expect(body['offers']).toEqual([]);
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it('hides an offer bound to an uninstalled server in experimental mode', async () => {
+    mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([makeOffer()]);
+    mockMcpServerRepository.getById.mockResolvedValue(makeServer({ status: 'uninstalled' }));
+
+    const { status, body } = await request(
+      makeApp(),
+      'GET',
+      `/promotion-offers/${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect(body['offers']).toEqual([]);
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    {
+      name: 'Google stable metadata',
+      server: makeServer({ registry_id: 'gmail-mcp' }),
+      skills: ['create_issue'],
+    },
+    {
+      name: 'Microsoft stable metadata',
+      server: makeServer({ oauth_provider: 'microsoft' }),
+      skills: ['create_issue'],
+    },
+    {
+      name: 'account-backed cached skill',
+      server: makeServer({ registry_id: 'custom-mcp' }),
+      skills: ['create_issue', 'outlook.send_mail'],
+    },
+    {
+      name: 'empty cached inventory',
+      server: makeServer({ registry_id: 'custom-mcp' }),
+      skills: [],
+    },
+  ])('hides retained offers with $name while disabled', async ({ server, skills }) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([makeOffer()]);
+    mockMcpServerRepository.getById.mockResolvedValue(server);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(skills);
+
+    const { status, body } = await request(
+      makeApp(),
+      'GET',
+      `/promotion-offers/${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect(body['offers']).toEqual([]);
+  });
+
+  it('fails closed when cached inventory cannot be read', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([makeOffer()]);
+    mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(new Error('inventory unavailable'));
+
+    const { status, body } = await request(
+      makeApp(),
+      'GET',
+      `/promotion-offers/${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect(body['offers']).toEqual([]);
   });
 
   // Missing userId: express's :userId route doesn't match `/promotion-offers/`
@@ -190,6 +304,70 @@ describe('POST /promotion-offers/:offerId/respond', () => {
       expectedCurrentTier: 'observer',
       proposedTier: 'suggest',
     });
+  });
+
+  it.each([
+    { response: 'accepted', skills: ['send_email'] },
+    { response: 'rejected', skills: [] },
+    { response: 'dismissed', skills: null },
+  ])('denies a disabled retained offer before $response side effects', async ({ response, skills }) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockPromotionOffersRepository.findById.mockResolvedValue(makeOffer());
+    if (skills === null) {
+      mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(
+        new Error('inventory unavailable'),
+      );
+    } else {
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(skills);
+    }
+
+    const { status, body } = await request(makeApp(), 'POST', '/promotion-offers/o-1/respond', {
+      userId: USER_ID,
+      response,
+    });
+
+    expect(status).toBe(503);
+    expect(body['code']).toBe('ACCOUNT_CONNECTION_DISABLED');
+    expect(String(body['error'])).not.toMatch(/google|microsoft/i);
+    expect(mockPromotionOffersRepository.acceptAtomic).not.toHaveBeenCalled();
+    expect(mockPromotionOffersRepository.markResponded).not.toHaveBeenCalled();
+    expect(mockSseEmit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: 'missing', server: null },
+    { name: 'wrong-owner', server: makeServer({ user_id: 'another-user' }) },
+  ])('denies mutation of an offer bound to a $name server in experimental mode', async ({ server }) => {
+    mockPromotionOffersRepository.findById.mockResolvedValue(makeOffer());
+    mockMcpServerRepository.getById.mockResolvedValue(server);
+
+    const { status, body } = await request(makeApp(), 'POST', '/promotion-offers/o-1/respond', {
+      userId: USER_ID,
+      response: 'accepted',
+    });
+
+    expect(status).toBe(503);
+    expect(body['code']).toBe('ACCOUNT_CONNECTION_DISABLED');
+    expect(mockPromotionOffersRepository.acceptAtomic).not.toHaveBeenCalled();
+    expect(mockPromotionOffersRepository.markResponded).not.toHaveBeenCalled();
+    expect(mockSseEmit).not.toHaveBeenCalled();
+  });
+
+  it('denies an uninstalled server offer before atomic acceptance in experimental mode', async () => {
+    mockPromotionOffersRepository.findById.mockResolvedValue(makeOffer());
+    mockMcpServerRepository.getById.mockResolvedValue(makeServer({ status: 'uninstalled' }));
+
+    const { status, body } = await request(makeApp(), 'POST', '/promotion-offers/o-1/respond', {
+      userId: USER_ID,
+      response: 'accepted',
+    });
+
+    expect(status).toBe(503);
+    expect(body['code']).toBe('ACCOUNT_CONNECTION_DISABLED');
+    expect(mockPromotionOffersRepository.acceptAtomic).not.toHaveBeenCalled();
+    expect(mockPromotionOffersRepository.markResponded).not.toHaveBeenCalled();
+    expect(mockSseEmit).not.toHaveBeenCalled();
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
   });
 
   it('on accept with stale snapshot: acceptAtomic returns staleSnapshot → 409 (cleanup happens inside acceptAtomic)', async () => {
@@ -300,22 +478,7 @@ describe('sweepPromotionOffersOnce', () => {
   });
 
   it('emits SSE for each newly-offered row', async () => {
-    mockPromotionOffersRepository.listOfferedSince.mockResolvedValue([
-      {
-        id: 'o-1',
-        user_id: 'aaaaaaaa-bbbb-cccc-dddd-000000000002',
-        server_id: 's-1',
-        server_name: 'Linear',
-        current_tier: 'observer',
-        proposed_tier: 'suggest',
-        reason: 'Met threshold',
-        decisions_observed_count: 20,
-        approved_count: 18,
-        offered_at: new Date(),
-        responded_at: null,
-        response: null,
-      },
-    ]);
+    mockPromotionOffersRepository.listOfferedSince.mockResolvedValue([makeOffer()]);
     const count = await sweepPromotionOffersOnce();
     expect(count).toBe(1);
     expect(mockSseEmit).toHaveBeenCalledTimes(1);
@@ -324,6 +487,50 @@ describe('sweepPromotionOffersOnce', () => {
     expect(event).toBe('capability:promotion-offered');
     expect((payload as Record<string, unknown>)['offerId']).toBe('o-1');
     expect((payload as Record<string, unknown>)['serverName']).toBe('Linear');
+  });
+
+  it('emits only offers whose stable metadata and cached inventory are safe', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockPromotionOffersRepository.listOfferedSince.mockResolvedValue([
+      makeOffer({ id: 'safe', server_id: 'safe', server_name: 'Linear' }),
+      makeOffer({ id: 'google', server_id: 'google', server_name: 'Mail' }),
+      makeOffer({ id: 'microsoft', server_id: 'microsoft', server_name: 'Calendar' }),
+      makeOffer({ id: 'skill', server_id: 'skill', server_name: 'Custom' }),
+      makeOffer({ id: 'empty', server_id: 'empty', server_name: 'Unknown' }),
+      makeOffer({ id: 'error', server_id: 'error', server_name: 'Unknown' }),
+    ]);
+    const servers = new Map([
+      ['safe', makeServer({ id: 'safe' })],
+      ['google', makeServer({ id: 'google', registry_id: 'gmail-mcp' })],
+      ['microsoft', makeServer({ id: 'microsoft', oauth_provider: 'microsoft' })],
+      ['skill', makeServer({ id: 'skill', registry_id: 'custom-mcp' })],
+      ['empty', makeServer({ id: 'empty', registry_id: 'custom-mcp' })],
+      ['error', makeServer({ id: 'error', registry_id: 'custom-mcp' })],
+    ]);
+    mockMcpServerRepository.getById.mockImplementation(async (id: string) => servers.get(id));
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (id: string) => {
+      if (id === 'error') throw new Error('inventory unavailable');
+      if (id === 'skill') return ['create_issue', 'outlook.send_mail'];
+      if (id === 'empty') return [];
+      return ['create_issue'];
+    });
+
+    const count = await sweepPromotionOffersOnce();
+
+    expect(count).toBe(1);
+    expect(mockSseEmit).toHaveBeenCalledTimes(1);
+    expect((mockSseEmit.mock.calls[0]![2] as Record<string, unknown>)['offerId']).toBe('safe');
+  });
+
+  it('does not emit an uninstalled server offer in experimental mode', async () => {
+    mockPromotionOffersRepository.listOfferedSince.mockResolvedValue([makeOffer()]);
+    mockMcpServerRepository.getById.mockResolvedValue(makeServer({ status: 'uninstalled' }));
+
+    const count = await sweepPromotionOffersOnce();
+
+    expect(count).toBe(0);
+    expect(mockSseEmit).not.toHaveBeenCalled();
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
   });
 
   it('returns 0 and swallows errors when the repo fails', async () => {

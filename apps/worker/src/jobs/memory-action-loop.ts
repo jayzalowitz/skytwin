@@ -54,6 +54,7 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
+  isAccountBackedIntegration,
   normalizeAdapterOutput,
   normalizeExecutionError,
   parseAutonomySettings,
@@ -78,6 +79,7 @@ import {
   type DailyMemorySuggestionBundle,
 } from './memory-suggestions.js';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
+import { createWorkerExecutionAdmissionGuard } from '../execution-account-boundary.js';
 
 const log = createLogger('worker:memory-action-loop');
 
@@ -1294,6 +1296,11 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
         apiUrl: openclawApiUrl,
         apiKey: openclawCreds['api_key'] || config.openclawApiKey || undefined,
         onCredentialNeeded: async (req) => {
+          if (config.googleConnectionMode !== 'experimental' && isAccountBackedIntegration({
+            adapter: 'openclaw',
+            integration: req.integration,
+            skills: req.skills,
+          })) return;
           for (const field of req.fields) {
             await credentialRequirementRepository.register({
               adapter: 'openclaw',
@@ -1315,7 +1322,11 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
     );
   }
 
-  return new ExecutionRouter(registry, executionDispatchLeaseRepository);
+  return new ExecutionRouter(
+    registry,
+    executionDispatchLeaseRepository,
+    createWorkerExecutionAdmissionGuard(config.googleConnectionMode),
+  );
 }
 
 async function getStoredCredentials(service: string): Promise<Record<string, string>> {

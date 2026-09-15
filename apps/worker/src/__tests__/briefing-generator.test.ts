@@ -12,6 +12,7 @@ const {
   mockMcpServerRepository,
   mockLifebookRepository,
   mockQuery,
+  mockLoadConfig,
 } = vi.hoisted(() => ({
   mockBriefingRepository: {
     create: vi.fn(),
@@ -44,6 +45,7 @@ const {
     markAllPausedForUser: vi.fn(),
     markAllResumedForUser: vi.fn(),
     updateLastActive: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
   },
   mockLifebookRepository: {
     listVisible: vi.fn(),
@@ -53,6 +55,11 @@ const {
     unhide: vi.fn(),
   },
   mockQuery: vi.fn(),
+  mockLoadConfig: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -108,6 +115,8 @@ function makeServer(overrides: Record<string, unknown> = {}) {
 describe('runBriefingGeneratorJob', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['create_issue']);
     // Default: no provenance nodes for promotions
     mockQuery.mockResolvedValue({ rows: [] });
     // Default: user has no lifebooks (no per-domain briefings written).
@@ -139,6 +148,87 @@ describe('runBriefingGeneratorJob', () => {
     expect(createArg.userId).toBe('user-001');
     expect(createArg.cadence).toBe('daily');
     expect(createArg.proseMarkdown).toContain('Linear');
+  });
+
+  it('filters stale account-backed and unclassifiable state from templated briefings', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const github = makeServer({
+      id: 'github',
+      registry_id: '@modelcontextprotocol/server-github',
+      display_name: 'SAFE_GITHUB_ACTIVITY',
+    });
+    const gmail = makeServer({
+      id: 'gmail',
+      registry_id: 'gmail-mcp',
+      display_name: 'PRIVATE_GMAIL_ACTIVITY',
+    });
+    const outlook = makeServer({
+      id: 'outlook',
+      registry_id: 'custom-mail',
+      oauth_provider: 'outlook',
+      display_name: 'PRIVATE_OUTLOOK_ACTIVITY',
+      status: 'paused',
+    });
+    const empty = makeServer({
+      id: 'empty',
+      registry_id: 'custom-empty',
+      display_name: 'EMPTY_INVENTORY_ACTIVITY',
+    });
+    const unreadable = makeServer({
+      id: 'unreadable',
+      registry_id: 'custom-unreadable',
+      display_name: 'UNREADABLE_INVENTORY_ACTIVITY',
+    });
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      github,
+      gmail,
+      outlook,
+      empty,
+      unreadable,
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) => {
+      if (serverId === 'github') return ['create_issue'];
+      if (serverId === 'empty') return [];
+      if (serverId === 'unreadable') throw new Error('cached inventory unavailable');
+      return ['sendEmail'];
+    });
+    mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
+      { registry_id: '@modelcontextprotocol/server-github', display_name: 'SAFE_GITHUB_SUGGESTION' },
+      { registry_id: 'gmail-mcp', display_name: 'PRIVATE_GMAIL_SUGGESTION' },
+      { registry_id: 'outlook-mcp', display_name: 'PRIVATE_OUTLOOK_SUGGESTION' },
+    ]);
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({
+        rows: [
+          {
+            server_id: 'github',
+            occurred_at: new Date(),
+            payload: { from: 'observer', to: 'suggest' },
+          },
+          {
+            server_id: 'gmail',
+            occurred_at: new Date(),
+            payload: { from: 'PRIVATE_PROMOTION', to: 'PRIVATE_PROMOTION' },
+          },
+        ],
+      });
+    mockLifebookRepository.listVisible.mockResolvedValue([]);
+    mockMemoryActionOpportunityRepository.listRecentReportsForUser.mockResolvedValue([]);
+    mockBriefingRepository.create.mockResolvedValue({ id: 'briefing-filtered' });
+
+    await runBriefingGeneratorJob({ cadence: 'daily', userIds: ['user-001'] });
+
+    const prose = mockBriefingRepository.create.mock.calls[0]?.[0].proseMarkdown as string;
+    expect(prose).toContain('SAFE_GITHUB_ACTIVITY');
+    expect(prose).toContain('SAFE_GITHUB_SUGGESTION');
+    expect(prose).not.toContain('PRIVATE_GMAIL_ACTIVITY');
+    expect(prose).not.toContain('PRIVATE_OUTLOOK_ACTIVITY');
+    expect(prose).not.toContain('EMPTY_INVENTORY_ACTIVITY');
+    expect(prose).not.toContain('UNREADABLE_INVENTORY_ACTIVITY');
+    expect(prose).not.toContain('PRIVATE_GMAIL_SUGGESTION');
+    expect(prose).not.toContain('PRIVATE_OUTLOOK_SUGGESTION');
+    expect(prose).not.toContain('PRIVATE_PROMOTION');
   });
 
   it('handles a user with no events gracefully (writes a placeholder briefing)', async () => {

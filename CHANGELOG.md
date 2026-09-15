@@ -4,6 +4,37 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **The supported preview is account-free sample only; connected-account access
+  is fail-closed.** The packaged desktop carries no provider client authority
+  and pins its managed API and worker children to disabled account mode. Google
+  and Microsoft authorization, callback, credential mutation/synchronization, connector
+  discovery, capability installation or transfer, and account-backed email or
+  calendar action vocabularies refuse before provider contact, adapter
+  preparation, or a dispatch lease. Dynamic Google/Gmail/Calendar and
+  Microsoft/Outlook aliases are
+  filtered across credential reads, writes, sync, and UI surfaces; failed
+  dynamic credential classification also fails closed. Stale account-backed
+  capability rows cannot be resumed, inspected through bookmarked detail
+  routes, rendered in dependency graphs or audit history, polled for
+  changelogs, included in assistant, current-briefing, retained-briefing, or
+  live-digest prompts, promoted, offered as installs, transferred, or used to
+  restore reconnect prompts. While disabled, the proactive briefing endpoint
+  returns an empty briefing for every non-sample user before reading retained
+  rows; the reserved fictional sample remains available, and only the exact
+  unsupported source-development `experimental` opt-in restores the prior
+  account-backed behavior. The worker skips provider-token enumeration while
+  the boundary is disabled and treats an empty cached capability inventory as
+  insufficient authority for changelog contact. Provider-native action
+  namespaces are denied before adapter planning or dispatch even when no
+  capability-server ID is supplied. Account-backed execution plugins
+  discovered from the filesystem are rejected before import and bound to
+  admission again before routing, preparation, or prepared dispatch. Existing
+  stored tokens and credentials
+  are retained for a future reviewed migration. Managed account access is
+  deferred, and the exact experimental source flag is not a supported operator/BYO
+  path. This correction supersedes current-looking bundled-client and
+  five-minute-setup entries below without rewriting their historical record.
+
 - **Assistant turns now carry durable, user-scoped retry identity.**
   `POST /api/assistant/messages` requires a client-generated UUID `requestId`.
   New user and assistant rows are unique per owner, request identity, and role;
@@ -40,6 +71,16 @@ All notable changes to SkyTwin will be documented in this file.
   protection claim.
 
 ### Fixed (post-review)
+
+- **DXT export history avoids redundant sequential classification.** Repeated
+  exports from the same capability reuse one owner/inventory classification
+  per request, and distinct classifications run in bounded batches while
+  preserving the repository's response order and fail-closed behavior.
+
+- **Capability-audit visibility scans bound database fan-out.** Exact visible
+  totals still use stable keyset pagination, but server classifications are
+  now memoized across the whole request and scheduled eight at a time; the
+  full-scan path no longer performs a raw count it immediately replaces.
 
 - **Ambiguous assistant failures retain their request identity.** Generic
   server/transport failures and approval-response reconciliation failures no

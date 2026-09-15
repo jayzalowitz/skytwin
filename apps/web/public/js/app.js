@@ -25,6 +25,7 @@ import { renderLifebook } from './pages/lifebook.js';
 import { initSampleGlobals, renderSample } from './pages/sample.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { wireDesktopUpdateBanner } from './components/desktop-update-banner.js';
+import { isAccountBackedIntegrationIdentifier } from './google-preview-boundary.js';
 import { DEMO_USER_ID, fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { initA11y } from './a11y.js';
@@ -49,7 +50,7 @@ const routes = {
   '/settings': { title: 'Settings', render: renderSettings },
   '/audit': { title: 'Audit Trail', render: renderAudit },
   '/setup': { title: 'Connect', render: renderSetup },
-  '/connect-gmail': { title: 'Connect Gmail', render: renderConnectGmail },
+  '/connect-gmail': { title: 'Gmail unavailable', render: renderConnectGmail },
   '/capabilities': { title: 'Capabilities', render: renderCapabilities },
   '/capabilities/audit': { title: 'Capability Audit Trail', render: renderCapabilitiesAudit },
   '/about-me': { title: 'About me', render: renderAboutMe },
@@ -410,18 +411,18 @@ async function updateConnectorsBanner() {
     return;
   }
 
-  if (!state?.anyNeedsReauth) {
-    banner.hidden = true;
-    document.body.classList.remove('has-connectors-banner');
-    return;
-  }
-
   // First needs_reauth connector wins the CTA. Multi-connector failure
   // would surface as one banner at a time; reconnecting one and
   // refreshing reveals the next.
   const broken = Object.entries(state.connectors ?? {})
-    .find(([, c]) => c?.status === 'needs_reauth');
-  const name = broken?.[0] ?? 'a connector';
+    .find(([name, c]) => c?.status === 'needs_reauth' &&
+      !isAccountBackedIntegrationIdentifier(name));
+  if (!broken) {
+    banner.hidden = true;
+    document.body.classList.remove('has-connectors-banner');
+    return;
+  }
+  const name = broken[0];
   const code = broken?.[1]?.errorCode;
   const codeNote = code === 'invalid_grant'
     ? ' (access was revoked or expired)'

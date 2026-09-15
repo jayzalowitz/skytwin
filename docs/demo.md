@@ -19,6 +19,9 @@ their other hand and read along.
 > a separate session-local simulation can approve, reject, correct, reset, and
 > learn from fixed fictional proposals. It cannot open settings, persist those
 > interactions, invoke providers or connectors, or run an execution adapter.
+> This isolated sample is the only supported preview path. Google and Microsoft
+> account connections are unavailable; do not use a real Gmail, Calendar,
+> Outlook, or Microsoft 365 account for this demo.
 
 ---
 
@@ -33,8 +36,8 @@ You'll need:
   ```
   Then open `http://localhost:3200`.
 
-If you'd rather not connect your real Gmail for this development demo, the
-seeded profile in step 1 covers the interactive walkthrough without OAuth.
+Use only fictional sample data. Real account connections and operator/BYO
+credential setup are unsupported in the current preview.
 
 ---
 
@@ -46,7 +49,7 @@ seconds.
 What you'll see: the first-run wizard. It asks one question — how you want to
 start.
 
-**Two paths from here:**
+**Supported path from here:**
 
 - **"Just show me around"** — the development seed gives you a pre-loaded user
   (Alex) who's alive
@@ -58,10 +61,13 @@ start.
   the dev "Switch user" button tells three different stories. No OAuth, no
   signal-ingestion wait. This is the demo path. (The showcase data lives in
   `packages/db/src/seeds/demo-showcase.ts`; counts move as we tune it.)
-- **"Connect your email"** — real Gmail + Calendar OAuth. Use this if you
-  want to see the live pipeline against your own data.
+Google connection is displayed as unavailable rather than as an additional
+path. Microsoft connection has no preview setup control; both providers remain
+outside the supported sample.
+Managed Google identity/Calendar is deferred, and BYO remains unsupported until
+the OAuth and credential-custody architecture gates are complete.
 
-Under those two, the app recommends a maintained local model for the machine
+Under the sample choice, the app recommends a maintained local model for the machine
 (RAM-, architecture-, and disk-aware); "Change" opens Settings → AI. The model
 is downloaded only when the user starts it, and local inference still requires
 a compatible llama.cpp runtime. Everything else (tell-SkyTwin-about-yourself, the not-yet-wired
@@ -103,27 +109,16 @@ change touches the approval buttons, it goes through `/review`.
 
 ---
 
-## Step 3 — Connect Gmail (or use the seed) (45 seconds)
+## Step 3 — Confirm the sample boundary (45 seconds)
 
-**If you took the seeded development path:** skip ahead to step 4. The seed
-provides the mock connector data this operator walkthrough needs. This does not
-describe the packaged sample's isolated, non-persistent simulation.
+Stay in the sample. Point out that the proposals, briefing, learned preferences,
+and decision history are fictional. The packaged sample's database-backed views
+remain read-only; approve, reject, correct, reset, and learn interactions use a
+separate session-local simulation.
 
-**If you took the live-OAuth path:** click "Connect Gmail" from the dashboard
-or `#/connect-gmail`. The five-step wizard walks the user through the BYO
-OAuth client setup (most users will have one bundled at launch, but the
-self-hosted path is the source of truth — and it's the only path with a
-screenshot in the repo today). Approve the scopes, watch the wizard
-auto-advance, and you're back on the dashboard with the connection-status
-dot turning green in the sidebar.
-
-The sidebar connection dot in `apps/web/public/js/app.js` flips from the
-idle grey state to a green dot with "Listening" text once SSE comes up
-(falls back to "Connected" if only HTTP works, "Reconnecting…" / "Offline"
-on disconnect). First signal lands within the next polling cycle —
-typically 2–3 minutes from a fresh inbox; immediately if there's already
-unread mail. The connector-health banner in the chrome surfaces any
-per-connector failures the moment the worker observes them (#377).
+Show the unavailable account-connection state. There is no connect button, credential form,
+authorization URL, connector wait, or provider-status promise. This absence is
+part of the release boundary, not a demo shortcut.
 
 ---
 
@@ -143,10 +138,9 @@ see:
 - **The two buttons** — "Yes, do it" and "Not this time." With an optional
   free-text "tell me why so I learn" field.
 
-Click **"Yes, do it."** The card collapses into the history below. The
-decision is logged with your approval. On the worker's next cycle, the
-action actually runs against Gmail (or the mock connector in the sample
-profile).
+Click **"Yes, do it."** The card collapses into the session-local history.
+Nothing runs against Gmail or any execution adapter; the sample simulates the
+bounded interaction without persistence or external effects.
 
 The viewer should now understand the demonstrated path: **this recorded action
 has an explanation derived from observable evidence, and the user remains the
@@ -260,8 +254,8 @@ If you're capturing this for the launch video (the docs/launch-plan.md Tier
 - Open Chrome in a 1280×800 window — matches the dashboard's intended
   layout without scrollbars and is small enough that overlay text reads
   clearly when downscaled for embed.
-- Use the sample profile, not your own Gmail. Real subjects on screen
-  invite a screenshot scandal.
+- Use the sample profile. Google and Microsoft account connections are
+  unavailable, and real-account footage is not valid preview evidence.
 - Set system audio to off; record with a headset mic so background noise
   doesn't leak. The brand voice carries; ambient typing doesn't.
 - Cut at five minutes. Anything you couldn't say in five was outside the

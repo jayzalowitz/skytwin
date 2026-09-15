@@ -20,7 +20,20 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
 
 **The core principle: ask the twin before asking the user.**
 
+> **Current supported preview:** use the isolated, account-free sample. Google
+> and Microsoft account connections are unavailable on this surface. SkyTwin does not ship a managed
+> Google OAuth client, and operator/BYO Google remains unsupported until its
+> callback, client-generation, capability, ownership, and secret-custody gates
+> are complete. Known account-backed email/calendar actions are denied before
+> adapter preparation or dispatch while this boundary is active. Stale account
+> capability rows and imported account-backed tool bundles are also withheld
+> from activation. Connector code in the source tree is not a support claim.
+
 ## How It Works
+
+This is the source architecture and intended connected-account pipeline. The
+supported preview feeds it only isolated fictional sample data; Google and
+Microsoft account connections are unavailable.
 
 ```
   Gmail, Calendar, etc.
@@ -190,7 +203,9 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the packaged build's read-only data authority and isolated, non-persistent simulation.
 3. The welcome screen recommends a local model from the machine's RAM, architecture, and free disk. The current maintained catalog contains one pinned Qwen2.5 1.5B Instruct Q4_K_M artifact (about 1.0 GiB). The artifact is downloaded on request and must pass exact-size, SHA-256, registry, and runtime-compatibility checks before automatic discovery will load it. A compatible llama.cpp binary remains a separate prerequisite. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
-5. When you're ready to wire up your own, the in-app walkthrough handles the Google API setup in about 5 minutes — paste your client ID, click "Save and connect now," and you're at Google's sign-in.
+5. Google and Microsoft account connection controls are intentionally unavailable in this preview.
+   Real-account setup is not supported; use the isolated sample while the OAuth
+   and credential-custody boundaries are completed.
 
 ### Advanced env vars
 
@@ -308,7 +323,7 @@ packages/
   llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
-  connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors with OAuth, stamps AuthoringTier
+  connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors; account providers disabled in supported preview
   assistant/                      Stateless chat service wrapping LlmClient with context enrichment
   capability-engine/              Infers user app capabilities from signals (keyword v1 + LLM verification)
   credential-vault/               AES-256-GCM + scrypt primitives for the experimental token vault (not production-default encryption)
@@ -434,7 +449,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design (18+ tables), query patterns, versioning |
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 | [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
-| [Launch-Readiness Report](./docs/launch-readiness-report.md) | Current launch-blocker status: what's code-done vs. external |
+| [Launch-Readiness Report](./docs/launch-readiness-report.md) | Historical audit with a current account-free launch override; the claim ledger remains authoritative |
 | [Release Procedure](./docs/release-procedure.md) | How the evidence-gated tag workflow verifies and publishes a release |
 | [Beta Claim Ledger](./docs/beta-claim-ledger.json) | Machine-checked release contract, evidence, limitations, owners, and stop-ship status |
 
@@ -447,9 +462,11 @@ stop-ship items. The machine-checked
 [`docs/beta-claim-ledger.json`](./docs/beta-claim-ledger.json) is the source of
 truth for release claims and support status. Current builds remain technical
 previews and published installers predate the guarded sample and verified managed
-model source paths. The core decision pipeline, twin model, policy engine,
-swappable memory layer, and Google connectors are implemented, while mobile
-remains a source/development surface rather than part of the beta support matrix.
+model source paths. The core decision pipeline, twin model, policy engine, and
+swappable memory layer are implemented. Google connector and OAuth code exists in
+source but is disabled on the supported sample-only preview; managed Google access
+is deferred, and operator/BYO use is not yet supported. Mobile remains a
+source/development surface rather than part of the beta support matrix.
 The supported beta topology is one non-demo human owner per installation.
 Installation credentials and dynamically discovered credential requirements are
 shared installation configuration; local multi-owner and hosted deployments are

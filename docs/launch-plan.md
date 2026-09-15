@@ -6,6 +6,23 @@ The plan is intentionally specific about **what's done**, **what blocks launch**
 
 ---
 
+## Current preview decision — sample only
+
+The supported preview is the isolated, account-free sample. Google and Microsoft
+account connections are unavailable: no managed provider client ships, and
+operator/BYO account setup is not a supported workaround. Existing OAuth and connector components remain in source,
+but packaged mode fails closed before authorization, callback exchange,
+credential mutation/synchronization, connector startup, refresh, or direct
+provider credential use. Existing stored credentials and tokens are retained.
+
+Managed Google identity and Calendar are deferred. Before any real-account
+claim, operator/BYO must complete the shared client-generation, callback/session,
+capability-exact scope, connector isolation, secret-custody, and owner-bound
+architecture tracked in #703. Gmail remains separately optional after those
+gates; managed Gmail verification remains tracked in #351.
+
+---
+
 ## Tier 0 — Current baseline on `main`
 
 These capabilities are present on `main`. Release support remains governed by the claim ledger and the Tier 1 gates below; code presence is not evidence that a public binary has cleared them.
@@ -15,12 +32,8 @@ These capabilities are present on `main`. Release support remains governed by th
 - **Electron desktop bundles CockroachDB + API + worker + web** — `pnpm deploy` produces self-contained app bundles; CockroachManager spawns the right per-platform binary from `<resourcesPath>/cockroach/<platform>/cockroach`. In-process migrations run via `apps/desktop/src/service-manager.ts`'s native ESM dynamic import (no child-process spawn, no asar visibility hairball).
 - **DATABASE_URL parsing fix** — every previous migration was silently landing on the wrong CRDB; `packages/db/src/connection.ts` now parses `DATABASE_URL` first.
 - **Migration cascade fixes** — 023 split into 023 (column add) + 057 (FK-chain dedupe + unique index); 046 stops using `crdb_internal.force_error()` which the bundled CRDB v23.2 blocks.
-- **Google OAuth PKCE primitives** — `@skytwin/connectors` supports both confidential and PKCE/public-client flows; bundled `BUNDLED_GOOGLE_CLIENT_ID` from the "SkyTwin Desktop" client registered in `skytwin-492700`.
-- **Tiered OAuth scope policy** — Calendar + identity through the bundled client (cheap verification path); Gmail through user-supplied credentials (no SkyTwin-side CASA assessment cost). `resolveRequestedScopes()` enforces the gate; 412 response from `/authorize?include=gmail` carries `help: '#/connect-gmail'` + `docs: 'https://jayzalowitz.github.io/skytwin/connect-gmail.html'`.
-- **In-app Gmail-setup wizard** at route `/#/connect-gmail` — five-step progress-bar wizard that opens GCP Console URLs in the user's existing browser, ends with paste-and-connect form.
-- **Dashboard Gmail follow-up CTA** — after Google OAuth completes, if scopes don't include Gmail, the dashboard renders a "Calendar connected — now hook up Gmail" card linking to the wizard.
-- **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail,demo,deck}.html`. github.io is auto-verified for Google's brand-verification checks.
-- **OAuth consent screen branding configured** in GCP (`skytwin-492700`) — app name "SkyTwin", homepage/privacy/ToS URLs, `jayzalowitz.github.io` authorized domain, Save accepted. Publishing status switched from Testing to Production.
+- **Account-provider implementation inventory, currently disabled** — Google and Microsoft OAuth, connector, and action components remain available for architecture work, but the supported preview offers no account connection control and admits no old token or credential as authority. Disabled-mode filtering also covers retained briefing and live-digest history, capability audit and graph views, background token/changelog work, and filesystem execution plugins before import or dispatch. The proactive briefing route returns an empty briefing for every non-sample user before reading retained rows; the reserved fictional sample remains available, and only the exact unsupported source-development `experimental` opt-in restores the earlier account-backed behavior.
+- **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail,demo,deck}.html` now describes the sample-only boundary. Public pages are not evidence of Google verification.
 - **Tracking issue [#351](https://github.com/jayzalowitz/skytwin/issues/351)** for the eventual Gmail restricted-scope CASA assessment.
 
 ---
@@ -32,17 +45,14 @@ These capabilities are present on `main`. Release support remains governed by th
 
 The release consumer must remain fail-closed while the remaining producer work lands. The native claim/platform matrix and exclusive evidence aggregator are scaffolded. The canonical packaged-sample verifier covers its three native matrix entries, and the artifact-verification lane now stages the exact nine desktop release subjects, generates checksums, a subject-complete SPDX 2.3 document, canonical verification instructions, and source-bound GitHub attestations, then independently verifies those materials before producing its machine report. The remaining scope is six verifier sources (eight matrix reports), the `release-claims-ci` artifact producer, and signing/notarization proof. Each machine report must bind the exact successful native producer job, reviewed verifier source digest and command, release artifact, tag run, and structured observations. Source availability is not artifact certification: `sample.packaged-account-free` and `release.artifact-verification` remain limited until a tagged run produces and the publisher validates their reports and material. See [`sample-release-evidence.md`](./sample-release-evidence.md). The authoritative completion state is `docs/beta-claim-ledger.json`; none of its stop-ship conditions may be waived informally.
 
-### 1.2 Submit brand verification + Calendar sensitive-scope review
-**Dependency:** public policy pages reachable from `main`. **Owner:** SkyTwin team. **Time:** ~1–3 weeks of Google review.
+### 1.2 Keep account connections outside the preview
+**Dependency:** #703 architecture series before any future enablement.
 
-After Pages goes live:
-1. Click **Verify branding** on https://console.cloud.google.com/auth/branding?project=skytwin-492700.
-2. Upload a 120×120 PNG app logo (TODO — needs design pass; the SkyTwin star/twin glyph from the dashboard would work).
-3. Submit for verification covering the four scopes the bundled client requests: `calendar.readonly`, `calendar.events`, `email`, `profile`. (`openid` doesn't require review.)
-4. Paste the scope justifications from `docs/google-verification.md` § Scope justifications into the per-scope text fields.
-5. Upload the demo video — see §1.4.
-
-When this clears, the bundled flow shows the SkyTwin name + logo on the consent screen instead of the raw project-ID, and the "unverified app" warning goes away for Calendar usage.
+The release candidate must keep Google and Microsoft account access disabled
+and present the account-free sample instead. Managed Google identity/Calendar
+review is deferred. Do not submit or describe a Google review from this
+candidate: the real-account architecture, scope behavior, public disclosures,
+and exact artifact must first agree.
 
 ### 1.3 Code signing + notarization
 **Dependency:** purchase. **Owner:** SkyTwin team. **Time:** 1 day setup, certs renew annually.
@@ -61,9 +71,11 @@ Acceptance test: download the resulting .dmg from GitHub Releases on a fresh Mac
 ### 1.4 Record the demo video
 **Dependency:** §1.3 (so the .dmg launches cleanly without OS warnings that would block a clean recording). **Owner:** SkyTwin team. **Time:** ~1 hour.
 
-Script lives in `docs/google-verification.md` § Demo video plan. Roughly 2–3 minutes covering install → sign in → consent screen (with all scopes named) → first signal in the Approvals queue → an action taken from the dashboard → the resulting effect visible in Gmail or Calendar's own UI.
-
-Upload as **unlisted YouTube**. Paste the URL into the Google verification submission form.
+Script lives in `docs/demo.md`. Record only the isolated sample: install,
+choose the account-free path, inspect fictional decisions and explanations, and
+show that simulated feedback has no connector, credential, persistence, or
+external-action path. This is release-demo material, not a Google verification
+submission.
 
 ### 1.5 Tag the first public release
 **Dependency:** §1.3 (so the artifacts that build are usable). **Owner:** SkyTwin team. **Time:** 5 minutes + ~15 minutes for the workflow to build all three platforms.
@@ -101,11 +113,17 @@ The electron-updater client plumbing is wired (`apps/desktop/src/auto-update.ts`
 ### 2.2 PKCE verifier store in DB — **done (Unreleased)**
 Shipped: migration `058-oauth-pkce-pending.sql` + `packages/db/src/repositories/oauth-pkce-pending-repository.ts`. `apps/api/src/routes/oauth.ts` now uses the DB-backed store; a desktop restart between `/authorize` and `/callback` no longer drops the verifier. `consume()` is a single `DELETE...RETURNING` so the replay-protection property survives the move off the in-memory Map. 5 new tests.
 
-### 2.3 Onboarding flow auto-routes through `/#/connect-gmail` — **done (Unreleased)**
-Shipped: `apps/api/src/routes/oauth.ts` accepts a whitelisted `?next=connect-gmail` parameter; the value is encoded into the HMAC-signed state and used to compose the post-OAuth redirect URL. `apps/web/public/js/pages/onboarding.js`'s "Continue with Google" button passes `next: 'connect-gmail'`. `apps/web/public/js/pages/connect-gmail.js` shows a "Calendar connected — now let's hook up Gmail" banner above the wizard when the user arrives via this deep-link. 5 new tests on the whitelist + HMAC coverage of the new tag.
+### 2.3 Historical Google onboarding implementation — **superseded for preview**
+The source previously routed onboarding through `/#/connect-gmail`. The
+sample-only boundary supersedes that current-looking flow: onboarding now offers
+the isolated sample and an unavailable Google state. The prior implementation
+remains history, not a supported preview path.
 
-### 2.4 Better error story when bundled client_id is unset — **done (Unreleased)**
-Shipped: `apps/api/src/routes/oauth.ts` tags its no-client_id 503 with `code: 'NO_GOOGLE_CLIENT_CONFIGURED'` + `help: '#/connect-gmail'`. `apps/web/public/js/api-client.js` plumbs structured `code`/`help`/`docs` fields through `ApiError`; 503s with a code use a new `kind: 'config-missing'`. The onboarding wizard detects the code and routes the user into the connect-gmail wizard (same five-step flow handles both BYO Gmail and "this fork has no bundled client"). The connect-gmail wizard's final OAuth call now uses `?newUser=true` when no userId is in localStorage, so brand-new onboarding users finish the flow without needing a pre-existing account.
+### 2.4 Typed account-connection unavailable state — **current preview**
+Google and Microsoft account routes return a stable disabled result before
+authorization, callback exchange, or persistence. The UI does not turn that
+result into a credential writer or first-use bypass; it keeps the user on the
+account-free sample path.
 
 ### 2.5 Telemetry-free crash reporting
 Automatic error reporting would expand SkyTwin's network and data-handling boundary, but **fully silent failures** are at odds with shipping a desktop app. The middle ground: an opt-in "send anonymized crash report" prompt that uploads a JSON payload with the exception, stack, and SkyTwin version (no user data) to a developer-controlled endpoint. Default off; if you opt in the prompt explains exactly what's sent.
@@ -121,10 +139,14 @@ Still open under [#630](https://github.com/jayzalowitz/skytwin/issues/630): fres
 
 ## Tier 3 — Post-launch / strategic (don't start before Tier 1 + 2 land)
 
-### 3.1 Gmail restricted-scope verification
-Tracked in [#351](https://github.com/jayzalowitz/skytwin/issues/351). Google review plus any assigned CASA assessment; obtain the current assurance-level assignment, lab quote, and schedule before budgeting. Don't start until:
-- BYO Gmail friction is measurably hurting funnel conversion (instrument the wizard step-completion drop-off rate first).
-- SkyTwin has revenue that comfortably absorbs the recurring fee.
+### 3.1 Google real-account architecture and verification
+First complete #703's operator/BYO architecture gates. Intended real-account
+defaults are identity plus explicitly granted Calendar capabilities; Gmail is
+separately optional and explicitly requested. Google publishing status, tester
+restrictions, warnings, token expiry, user-data obligations, verification, and
+any assigned security assessment still apply. A BYO test is not managed-client
+approval. Managed Gmail work remains tracked in
+[#351](https://github.com/jayzalowitz/skytwin/issues/351).
 
 ### 3.2 Mobile app stores
 The mobile app exists (Expo, React Native) and the pairing flow works locally over mDNS. App Store + Play Store submissions are separate review processes with their own friction. Defer until desktop hits product-market fit signals.
@@ -155,7 +177,7 @@ Recurring annual:
 
 One-time:
 - Logo design: $0 (use existing dashboard glyph) to ~$500 (commissioned)
-- Demo video editing: $0 (raw screen capture is fine for Google review) to ~$500 (professional cut for the homepage)
+- Account-free launch demo editing: $0 (raw screen capture is sufficient) to ~$500 (professional cut for the homepage)
 
 Deferred until §3.1 trigger:
 - CASA assessment: **current authorized-lab quote required; annual revalidation applies**
@@ -166,6 +188,6 @@ Total recurring annual cost to start: **$500–$1000** including domain.
 
 ## How this plan was put together
 
-Each Tier 1 item was selected by asking: *"If we shipped without this, what would break for the user?"* If the answer is "the .dmg won't open at all" (§1.3), "the download link doesn't exist yet" (§1.5), or "Google blocks the OAuth flow" (§1.2), it's Tier 1. If the answer is "the experience is rougher than it could be" (§2.x), it's Tier 2. If the answer is "we'll know we needed this from telemetry once we have users" (§3.x), it's Tier 3 and shouldn't drain attention before we have those users.
+Each Tier 1 item was selected by asking: *"If we shipped without this, what would break for the user?"* If the answer is "the .dmg won't open at all" (§1.3), "the download link doesn't exist yet" (§1.5), or "the sample can escape its isolation boundary" (§1.2), it's Tier 1. If the answer is "the experience is rougher than it could be" (§2.x), it's Tier 2. If the answer is "we'll know we needed this from telemetry once we have users" (§3.x), it's Tier 3 and shouldn't drain attention before we have those users.
 
-The most common failure mode for plans like this is letting Tier 3 items (interesting strategic things) crowd out Tier 1 items (necessary boring things). The release pipeline (the `release` job in `.github/workflows/build.yml`) doesn't count as "release pipeline shipped" until §1.5 actually fires it on a tag. The OAuth wizard existing at `/#/connect-gmail` doesn't count as "Gmail working for users" until §1.2 clears the brand verification that makes Google's consent screen show the SkyTwin name. Build all the way to the user, then up.
+The most common failure mode for plans like this is letting Tier 3 items (interesting strategic things) crowd out Tier 1 items (necessary boring things). The release pipeline (the `release` job in `.github/workflows/build.yml`) doesn't count as "release pipeline shipped" until §1.5 actually fires it on a tag. OAuth and connector code existing in source does not count as supported account access; that requires the complete #703 architecture and applicable external requirements on the exact candidate. Build all the way to the user, then up.

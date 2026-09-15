@@ -100,6 +100,16 @@ export interface ExecutionDispatchAuthorityPort {
   }): Promise<boolean>;
 }
 
+export type ExecutionAdmissionDecision =
+  | { allowed: true }
+  | { allowed: false; reason: string };
+
+export type ExecutionAdmissionGuard = (
+  action: Readonly<CandidateAction>,
+  userId: string,
+  adapterName?: string,
+) => ExecutionAdmissionDecision | Promise<ExecutionAdmissionDecision>;
+
 /**
  * Outcome of routing a rollback request through the registry.
  *
@@ -559,11 +569,28 @@ function bindTrustedPlanContext(
 export class ExecutionRouter {
   private readonly registry: AdapterRegistry;
   private readonly dispatchAuthority: ExecutionDispatchAuthorityPort;
+  private readonly admissionGuard?: ExecutionAdmissionGuard;
   private readonly preparedExecutions = new WeakMap<object, PreparedExecutionState>();
 
-  constructor(registry: AdapterRegistry, dispatchAuthority: ExecutionDispatchAuthorityPort) {
+  constructor(
+    registry: AdapterRegistry,
+    dispatchAuthority: ExecutionDispatchAuthorityPort,
+    admissionGuard?: ExecutionAdmissionGuard,
+  ) {
     this.registry = registry;
     this.dispatchAuthority = dispatchAuthority;
+    this.admissionGuard = admissionGuard;
+  }
+
+  private async assertAdmitted(
+    action: CandidateAction,
+    userId: string,
+    adapterName?: string,
+  ): Promise<void> {
+    const decision = await this.admissionGuard?.(action, userId, adapterName);
+    if (decision && !decision.allowed) {
+      throw new NoRequestExecutionError(decision.reason);
+    }
   }
 
   private authorityInput(
@@ -696,6 +723,7 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<RoutingDecision> {
+    await this.assertAdmitted(action, userId);
     // An explicit MCP target is execution authority, not descriptive routing
     // metadata. It can only cross the MCP host boundary whose DB claim checks
     // the exact server/tool opt-in; never reinterpret it through another
@@ -720,6 +748,11 @@ export class ExecutionRouter {
     const sorted = this.sortByTrust(capableNames);
     const primaryName = sorted[0]!;
     const fallbackChain = sorted.slice(1);
+
+    // The selected adapter is execution authority, not descriptive output.
+    // Bind it into admission before exposing a routing decision so a neutral
+    // action cannot select a retained account-backed plugin by name.
+    await this.assertAdmitted(action, userId, primaryName);
 
     const entry = this.registry.get(primaryName);
     if (!entry) {
@@ -775,6 +808,9 @@ export class ExecutionRouter {
   ): Promise<PreparedExecution> {
     assertValidExecutionInputs(action, sourceRiskAssessment);
     assertExecutionPermitted(action, context);
+    // Runtime feature boundaries must be checked before adapter plan building
+    // or request preparation. A denial here is proven to have made no request.
+    await this.assertAdmitted(action, userId);
     const streaming = context?.streaming === true;
     const exactMcp = requiresExactMcpRouting(action);
     const capableNames = exactMcp
@@ -791,6 +827,10 @@ export class ExecutionRouter {
       if (!entry) continue;
       const registryRevision = this.registry.getRevision(adapterName);
       if (registryRevision === undefined) continue;
+      // Re-check with the exact selected adapter before invoking any plugin
+      // code. Action-only admission cannot identify a provider-bound adapter
+      // when a neutral action has no persisted MCP target.
+      await this.assertAdmitted(action, userId, adapterName);
       const preparedAction: CandidateAction = bindTrustedDispatchAction({
         ...withoutLateBoundAuthority(action),
         parameters: {
@@ -902,19 +942,22 @@ export class ExecutionRouter {
     throw new NoAdapterError(gap);
   }
 
-  private consumePreparedExecution(
+  private async consumePreparedExecution(
     prepared: PreparedExecution,
     action: CandidateAction,
     riskAssessment: RiskAssessment,
     userId: string,
     streaming: boolean,
     context?: ExecutionContext,
-  ): PreparedExecutionState {
+  ): Promise<PreparedExecutionState> {
     // Read the caller-visible property once. A Proxy/getter must not be able
     // to make lookup and deletion observe different opaque handles.
     const handle = prepared.handle;
     const state = this.preparedExecutions.get(handle);
     this.preparedExecutions.delete(handle);
+    // Re-check after consuming the one-shot handle so a boundary tightened
+    // after preparation cannot execute a stale plan.
+    await this.assertAdmitted(action, userId, state?.adapterName);
     const currentEntry = state ? this.registry.get(state.adapterName) : undefined;
     if (!state || currentEntry?.adapter !== state.adapter ||
         this.registry.getRevision(state.adapterName) !== state.registryRevision ||
@@ -943,7 +986,7 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): Promise<ExecutionResult> {
-    const state = this.consumePreparedExecution(
+    const state = await this.consumePreparedExecution(
       prepared, action, riskAssessment, userId, false, context,
     );
     const dispatchAction = bindTrustedDispatchAction(action, userId);
@@ -1003,7 +1046,7 @@ export class ExecutionRouter {
     userId: string,
     context?: ExecutionContext,
   ): AsyncIterable<ExecutionEvent> {
-    const state = this.consumePreparedExecution(
+    const state = await this.consumePreparedExecution(
       prepared, action, riskAssessment, userId, true, context,
     );
     const dispatchAction = bindTrustedDispatchAction(action, userId);

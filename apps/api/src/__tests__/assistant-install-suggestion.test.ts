@@ -19,8 +19,14 @@ import type { Express } from 'express';
 
 // ── Hoist mocks ──────────────────────────────────────────────────────────────
 
-const { mockRunPrompt } = vi.hoisted(() => ({
+const { mockRunPrompt, mockRegistryGetAll, mockLoadConfig } = vi.hoisted(() => ({
   mockRunPrompt: vi.fn(),
+  mockRegistryGetAll: vi.fn(),
+  mockLoadConfig: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/policy-prompts', () => ({
@@ -43,7 +49,10 @@ const {
   mockMcpServerRepository,
   mockAiProviderRepository,
 } = vi.hoisted(() => ({
-  mockMcpServerRepository: { listForUser: vi.fn() },
+  mockMcpServerRepository: {
+    listForUser: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
+  },
   mockAiProviderRepository: {
     getEnabledForUser: vi.fn(),
     getReasoningSnapshotForUser: vi.fn(),
@@ -74,11 +83,7 @@ vi.mock('@skytwin/db', () => ({
 vi.mock('@skytwin/registry-client', () => ({
   RegistryClient: vi.fn(function RegistryClient() {
     return {
-    getAll: vi.fn().mockResolvedValue([
-      { id: 'linear-mcp', displayName: 'Linear', description: 'Manage Linear issues' },
-      { id: '@modelcontextprotocol/server-github', displayName: 'GitHub', description: 'GitHub PRs and issues' },
-      { id: '@modelcontextprotocol/server-slack', displayName: 'Slack', description: 'Send Slack messages' },
-    ]),
+      getAll: mockRegistryGetAll,
     };
   }),
 }));
@@ -144,6 +149,13 @@ const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+  mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['list_items']);
+  mockRegistryGetAll.mockResolvedValue([
+    { id: 'linear-mcp', displayName: 'Linear', description: 'Manage Linear issues', oauthProvider: null },
+    { id: '@modelcontextprotocol/server-github', displayName: 'GitHub', description: 'GitHub PRs and issues', oauthProvider: 'github' },
+    { id: '@modelcontextprotocol/server-slack', displayName: 'Slack', description: 'Send Slack messages', oauthProvider: null },
+  ]);
   mockAiProviderRepository.getReasoningSnapshotForUser.mockImplementation(async () => {
     const providers = await mockAiProviderRepository.getEnabledForUser();
     return {
@@ -307,6 +319,172 @@ describe('POST /api/assistant/install-suggestion', () => {
     };
     expect(body.suggestions).toHaveLength(1);
     expect(body.suggestions[0]!.registryId).toBe('@modelcontextprotocol/server-github');
+  });
+
+  it('removes stale and curated Google capabilities from prompt inputs and final output when disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'google-server',
+        registry_id: 'custom-drive',
+        display_name: 'Drive alias',
+        oauth_provider: 'google',
+        status: 'active',
+      },
+      {
+        id: 'slack-server',
+        registry_id: '@modelcontextprotocol/server-slack',
+        display_name: 'Slack',
+        oauth_provider: null,
+        status: 'paused',
+      },
+    ]);
+    mockRegistryGetAll.mockResolvedValue([
+      { id: 'gmail-mcp', displayName: 'Gmail', description: 'Mail', oauthProvider: 'google' },
+      { id: 'linear-mcp', displayName: 'Linear', description: 'Issues', oauthProvider: null },
+    ]);
+    mockRunPrompt.mockResolvedValue({
+      output: {
+        intent_detected: true,
+        suggestions: [
+          { id: 'gmail-mcp', name: 'Gmail', reason: 'Use mail', confidence: 0.95 },
+          { id: 'linear-mcp', name: 'Linear', reason: 'Use issues', confidence: 0.9 },
+        ],
+      },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'Connect a tool', assistantReply: 'I need a capability' },
+    );
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: {
+        installed_capabilities: Array<{ id: string }>;
+        available_capabilities: Array<{ id: string }>;
+      };
+    };
+    expect(promptCall.inputs.installed_capabilities.map((entry) => entry.id))
+      .toEqual(['@modelcontextprotocol/server-slack']);
+    expect(promptCall.inputs.available_capabilities.map((entry) => entry.id)).toEqual(['linear-mcp']);
+    expect((res.body as { suggestions: Array<{ registryId: string }> }).suggestions)
+      .toEqual([expect.objectContaining({ registryId: 'linear-mcp' })]);
+  });
+
+  it('removes an installed capability identified only by its cached account skill', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'custom-mail-server',
+        registry_id: 'custom-tools',
+        display_name: 'Custom tools',
+        oauth_provider: null,
+        status: 'active',
+      },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['sendEmail']);
+    mockRunPrompt.mockResolvedValue({
+      output: { intent_detected: false, suggestions: [] },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'Connect a tool', assistantReply: 'I need a capability' },
+    );
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: Array<{ id: string }> };
+    };
+    expect(promptCall.inputs.installed_capabilities).toEqual([]);
+    expect(mockMcpServerRepository.listSkillNamesForServer).toHaveBeenCalledWith(
+      'custom-mail-server',
+    );
+  });
+
+  it.each([
+    ['missing', []],
+    ['unavailable', new Error('skill cache unavailable')],
+  ])('fails closed when installed capability inventory is %s', async (_case, result) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'uncertain-server',
+        registry_id: 'custom-tools',
+        display_name: 'Unclassified tools',
+        oauth_provider: null,
+        status: 'active',
+      },
+    ]);
+    if (result instanceof Error) {
+      mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(result);
+    } else {
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(result);
+    }
+    mockRunPrompt.mockResolvedValue({
+      output: { intent_detected: false, suggestions: [] },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'Connect a tool', assistantReply: 'I need a capability' },
+    );
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: Array<{ id: string }> };
+    };
+    expect(promptCall.inputs.installed_capabilities).toEqual([]);
+  });
+
+  it('preserves Google prompt candidates behind the exact experimental opt-in', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    mockMcpServerRepository.listForUser.mockResolvedValue([]);
+    mockRegistryGetAll.mockResolvedValue([
+      { id: 'gmail-mcp', displayName: 'Gmail', description: 'Mail', oauthProvider: 'google' },
+    ]);
+    mockRunPrompt.mockResolvedValue({
+      output: {
+        intent_detected: true,
+        suggestions: [
+          { id: 'gmail-mcp', name: 'Gmail', reason: 'Use mail', confidence: 0.95 },
+        ],
+      },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'Connect mail', assistantReply: 'I need a capability' },
+    );
+
+    expect(res.status).toBe(200);
+    expect((res.body as { suggestions: Array<{ registryId: string }> }).suggestions)
+      .toEqual([expect.objectContaining({ registryId: 'gmail-mcp' })]);
   });
 
   it('treats uninstalled / failed / discovered statuses as NOT installed (so they can be re-suggested)', async () => {

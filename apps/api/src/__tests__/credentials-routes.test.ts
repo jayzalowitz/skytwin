@@ -192,8 +192,12 @@ describe('Credentials API routes', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
     // Default: no dynamic credential requirements.
     mockCredentialRequirementRepository.getAll.mockResolvedValue([]);
+    mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map());
+    mockCredentialRequirementRepository.getByAdapter.mockResolvedValue([]);
+    mockCredentialRequirementRepository.getByIntegration.mockResolvedValue([]);
     mockGetIronClawEnhancedAdapter.mockResolvedValue(null);
     mockRevokeCredentialFromIronClaw.mockResolvedValue(false);
     mockSyncCredentialToIronClaw.mockResolvedValue(false);
@@ -275,6 +279,34 @@ describe('Credentials API routes', () => {
       expect(body.services).toHaveProperty('google');
     });
 
+    it('does not advertise Google credential fields when the connection is disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map([
+        ['openclaw:google', {
+          label: 'Google',
+          description: 'Dynamic Google credentials',
+          adapter: 'openclaw',
+          fields: [makeRequirementRow({ integration: 'google' })],
+        }],
+        ['google:calendar', {
+          label: 'Google Calendar',
+          description: 'Dynamic Google adapter credentials',
+          adapter: 'google',
+          fields: [makeRequirementRow({ adapter: 'google', integration: 'calendar' })],
+        }],
+      ]));
+
+      const res = await request(app, 'GET', '/api/credentials/schema');
+
+      expect(res.status).toBe(200);
+      const body = res.body as { services: Record<string, unknown>; integrations: Record<string, unknown> };
+      expect(body.services).not.toHaveProperty('google');
+      expect(body.services).toHaveProperty('ironclaw');
+      expect(body.services).toHaveProperty('openclaw');
+      expect(body.integrations).not.toHaveProperty('openclaw:google');
+      expect(body.integrations).not.toHaveProperty('google:calendar');
+    });
+
     it('returns 500 when repository throws', async () => {
       mockCredentialRequirementRepository.getAllGrouped.mockRejectedValue(new Error('DB down'));
 
@@ -300,6 +332,7 @@ describe('Credentials API routes', () => {
 
     it('returns adapter health status and google config from env vars', async () => {
       mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'experimental',
         ironclawApiUrl: 'http://localhost:4000',
         openclawApiUrl: 'http://localhost:3456',
         googleClientId: 'test-client-id',
@@ -339,8 +372,39 @@ describe('Credentials API routes', () => {
       expect(body.google.configured).toBe(true);
     });
 
+    it('reports Google unavailable without reading stored credentials when disabled', async () => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'disabled',
+        ironclawApiUrl: 'http://localhost:4000',
+        openclawApiUrl: '',
+        googleClientId: 'inert-client-id',
+        googleClientSecret: 'inert-client-secret',
+      });
+      setupExecutionRouterMock(new Map());
+      mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map());
+      mockServiceCredentialRepository.getAsMap.mockResolvedValue({
+        client_id: 'stored-client-id',
+        client_secret: 'stored-client-secret',
+      });
+
+      const res = await request(app, 'GET', '/api/credentials/status');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        google: {
+          configured: false,
+          hosted: false,
+          available: false,
+          mode: 'disabled',
+          code: 'GOOGLE_CONNECTION_DISABLED',
+        },
+      });
+      expect(mockServiceCredentialRepository.getAsMap).not.toHaveBeenCalledWith('google');
+    });
+
     it('falls back to DB credentials when env vars are empty', async () => {
       mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'experimental',
         ironclawApiUrl: 'http://localhost:4000',
         openclawApiUrl: 'http://localhost:3456',
         googleClientId: '',
@@ -363,6 +427,7 @@ describe('Credentials API routes', () => {
 
     it('reports google as unconfigured when neither env nor DB has credentials', async () => {
       mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'experimental',
         ironclawApiUrl: 'http://localhost:4000',
         openclawApiUrl: 'http://localhost:3456',
         googleClientId: '',
@@ -381,6 +446,7 @@ describe('Credentials API routes', () => {
 
     it('handles health check failures gracefully', async () => {
       mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'experimental',
         ironclawApiUrl: 'http://localhost:4000',
         openclawApiUrl: 'http://localhost:3456',
         googleClientId: 'id',
@@ -409,6 +475,7 @@ describe('Credentials API routes', () => {
 
     it('handles DB credential check failure gracefully', async () => {
       mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'experimental',
         ironclawApiUrl: 'http://localhost:4000',
         openclawApiUrl: 'http://localhost:3456',
         googleClientId: '',
@@ -429,6 +496,7 @@ describe('Credentials API routes', () => {
 
     it('includes unmet integrations in the response', async () => {
       mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'experimental',
         ironclawApiUrl: 'http://localhost:4000',
         openclawApiUrl: 'http://localhost:3456',
         googleClientId: 'id',
@@ -456,6 +524,193 @@ describe('Credentials API routes', () => {
       expect(body.unmetIntegrations).toHaveLength(1);
       expect(body.unmetIntegrations[0]!.key).toBe('openclaw:twitter');
       expect(body.unmetIntegrations[0]!.missingFields).toContain('API Key');
+    });
+  });
+
+  describe('disabled Google boundary', () => {
+    beforeEach(() => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    });
+
+    it.each([
+      ['PUT', '/api/credentials/microsoft', { credentials: { client_id: 'inert-id' } }],
+      ['POST', '/api/credentials/microsoft/sync', undefined],
+      ['DELETE', '/api/credentials/microsoft/client_id', undefined],
+      ['GET', '/api/credentials/microsoft', undefined],
+      ['PUT', '/api/credentials/openclaw%3Aoutlook', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/openclaw%3Amicrosoft_graph/sync', undefined],
+      ['DELETE', '/api/credentials/outlook%3Acalendar/token', undefined],
+      ['GET', '/api/credentials/azure-mcp', undefined],
+    ])('rejects account provider %s %s before credential or adapter effects', async (method, path, body) => {
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({
+        code: 'ACCOUNT_CONNECTION_DISABLED',
+        available: false,
+        mode: 'disabled',
+      });
+      expect(mockCredentialRequirementRepository.getByAdapter).not.toHaveBeenCalled();
+      expect(mockCredentialRequirementRepository.getByIntegration).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['PUT', '/api/credentials/google', { credentials: { client_id: 'inert-id' } }],
+      ['POST', '/api/credentials/google/sync', undefined],
+      ['DELETE', '/api/credentials/google/client_id', undefined],
+      ['GET', '/api/credentials/google', undefined],
+      ['PUT', '/api/credentials/openclaw%3Agmail', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/openclaw%3Agoogle_calendar/sync', undefined],
+      ['DELETE', '/api/credentials/google%3Acalendar/token', undefined],
+      ['GET', '/api/credentials/openclaw%3Agoogle', undefined],
+    ])('rejects %s %s before credential or adapter effects', async (method, path, body) => {
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({
+        code: 'GOOGLE_CONNECTION_DISABLED',
+        available: false,
+        mode: 'disabled',
+      });
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['PUT', '/api/credentials/custom%3Amail', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/custom%3Amail/sync', undefined],
+      ['DELETE', '/api/credentials/custom%3Amail/token', undefined],
+      ['GET', '/api/credentials/custom%3Amail', undefined],
+    ])('rejects skill-shaped service via %s %s before mutation or adapter calls', async (method, path, body) => {
+      mockCredentialRequirementRepository.getByAdapter.mockResolvedValue([
+        makeRequirementRow({
+          adapter: 'custom',
+          integration: 'mail',
+          field_key: 'token',
+          skills: ['send_email'],
+        }),
+      ]);
+
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['PUT', '/api/credentials/custom%3Amail', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/custom%3Amail/sync', undefined],
+      ['DELETE', '/api/credentials/custom%3Amail/token', undefined],
+      ['GET', '/api/credentials/custom%3Amail', undefined],
+    ])('fails closed for unresolved dynamic service via %s %s', async (method, path, body) => {
+      mockCredentialRequirementRepository.getByAdapter.mockRejectedValue(
+        new Error('requirement lookup unavailable'),
+      );
+
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['PUT', '/api/credentials/custom%3Aneutral', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/custom%3Aneutral/sync', undefined],
+      ['DELETE', '/api/credentials/custom%3Aneutral/token', undefined],
+      ['GET', '/api/credentials/custom%3Aneutral', undefined],
+    ])('fails closed for an unregistered dynamic service via %s %s', async (method, path, body) => {
+      mockCredentialRequirementRepository.getByAdapter.mockResolvedValue([]);
+
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
+    it('hides aliased and skill-shaped rows while preserving a neighboring service', async () => {
+      mockCredentialRequirementRepository.getByAdapter.mockImplementation(async (adapter: string) =>
+        adapter === 'custom'
+          ? [makeRequirementRow({
+              adapter: 'custom', integration: 'mail', skills: ['send_email'],
+            })]
+          : []);
+      mockServiceCredentialRepository.getAll.mockResolvedValue([
+        makeCredentialRow({ service: 'openclaw:gmail' }),
+        makeCredentialRow({ id: 'cred-2', service: 'custom:mail' }),
+        makeCredentialRow({ id: 'cred-3', service: 'microsoft' }),
+        makeCredentialRow({ id: 'cred-4', service: 'openclaw:outlook' }),
+        makeCredentialRow({ id: 'cred-5', service: 'github' }),
+      ]);
+
+      const res = await request(app, 'GET', '/api/credentials');
+
+      expect(res.status).toBe(200);
+      expect((res.body as { credentials: Array<{ service: string }> }).credentials
+        .map((row) => row.service)).toEqual(['github']);
+    });
+
+    it('hides stale dynamic requirements by alias or account-backed skill', async () => {
+      const grouped = new Map([
+        ['openclaw:gmail', {
+          label: 'Mail', description: null, adapter: 'openclaw',
+          fields: [makeRequirementRow({ integration: 'gmail', skills: ['read_email'] })],
+        }],
+        ['custom:mail', {
+          label: 'Peer mail', description: null, adapter: 'custom',
+          fields: [makeRequirementRow({ adapter: 'custom', integration: 'mail', skills: ['send_email'] })],
+        }],
+        ['openclaw:outlook', {
+          label: 'Outlook', description: null, adapter: 'openclaw',
+          fields: [makeRequirementRow({ integration: 'outlook', skills: ['outlook.read_mail'] })],
+        }],
+        ['openclaw:github', {
+          label: 'GitHub', description: null, adapter: 'openclaw',
+          fields: [makeRequirementRow({ integration: 'github', skills: ['create_issue'] })],
+        }],
+      ]);
+      mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(grouped);
+      mockServiceCredentialRepository.getAsMap.mockResolvedValue({});
+
+      const [schema, requirements, unmet] = await Promise.all([
+        request(app, 'GET', '/api/credentials/schema'),
+        request(app, 'GET', '/api/credentials/requirements'),
+        request(app, 'GET', '/api/credentials/unmet'),
+      ]);
+
+      expect(Object.keys((schema.body as { integrations: Record<string, unknown> }).integrations))
+        .toEqual(['openclaw:github']);
+      expect((requirements.body as { requirements: Array<{ key: string }> }).requirements
+        .map((item) => item.key)).toEqual(['openclaw:github']);
+      expect((unmet.body as { unmet: Array<{ key: string }> }).unmet
+        .map((item) => item.key)).toEqual(['openclaw:github']);
     });
   });
 

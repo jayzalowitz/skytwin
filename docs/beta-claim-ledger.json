@@ -65,7 +65,7 @@
         "requiredPlatforms": ["macos", "windows", "linux"]
       },
       {
-        "claimId": "connectors.direct-provider-access",
+        "claimId": "connectors.account-free-boundary",
         "critical": true,
         "acceptedStates": ["proven"],
         "requiredEvidenceKinds": ["source", "ci"]
@@ -831,7 +831,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "8a70ae0d3136ad5132561ff30b607698e3840dd8ce56497c40fba757d84530c9",
+          "sha256": "c49f9f6282f989a8dae5d89d7cd3b21f003851ce40cc1066bc3c3207b9d8144d",
           "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
         }
       ],
@@ -919,7 +919,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "a54d5e69a755a11479970eeb9b535447e219f3a8b22be7f122f41d3be11f17a4",
+          "sha256": "1d95ab9433fd1a128c41a0397347979e2289b17a5f5276d9ac242187f952c2f9",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         }
       ],
@@ -941,7 +941,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "201b62ce77215f5cddcdd0c968ae894e4627b4ce18b3b94ada372b4b9f31a567",
+          "sha256": "78f5b306e271d6c6eee605ad100ff7313806ccdc5dc83617a270996b5e1383ca",
           "why": "Public disclosure names connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -961,8 +961,8 @@
         },
         {
           "path": "apps/worker/src/jobs/federation-sync.ts",
-          "sha256": "51f1fe3cb78088a8d25ae7d82709df5f4e492a670b599ef1c14f474e4fa0d85b",
-          "why": "Federation sync encrypts state deltas and posts them to configured peer endpoints"
+          "sha256": "7207c2d4643579a149e56273bbd4e76988008541769404d2411212c6a913a620",
+          "why": "Federation sync filters disabled account-backed server and provenance state, encrypts exportable deltas, and posts them to configured peer endpoints"
         }
       ],
       "verification": [
@@ -1003,12 +1003,12 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "923727c70cd5f02019a0d5c311d8dd0dd42b8efb19be3d092a67e09245f5bfba",
+          "sha256": "c61488f17f07caeab355af356fef169f3382264f9ed255829a9eccbd6357f668",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
           "path": "apps/web/public/js/pages/onboarding.js",
-          "sha256": "27ee1ea5972b84a36fc3a3fd3b216916828f31369d6efd0b86068cb3478e36c3",
+          "sha256": "db866e1268f05d75619c2f2434cccc35aaddf4c4be317b777793b5a92a3b3306",
           "why": "Provides the real first-run sample control, session issuance flow, and sample-route transition"
         },
         {
@@ -1034,29 +1034,43 @@
       ]
     },
     {
-      "id": "connectors.direct-provider-access",
+      "id": "connectors.account-free-boundary",
       "category": "connectors",
-      "statement": "Google and Microsoft connectors call the providers' APIs directly from the SkyTwin runtime using scopes authorized by the user.",
-      "scope": "Implemented Gmail, Google Calendar, Outlook Mail, and Outlook Calendar connectors; data still crosses the network to the applicable provider.",
+      "statement": "The supported preview blocks Google and Microsoft account connection and connector paths while preserving an explicit source-development experimental opt-in.",
+      "scope": "OAuth authorization, callback, status, account mutation, credential mutation and synchronization, connector discovery and startup, capability admission, worker activity, and packaged desktop child configuration for Google- and Microsoft-backed integrations.",
       "owner": "connectors",
       "state": "limited",
-      "limitation": "OAuth configuration, provider availability, granted scopes, and external verification determine which connector operations work in a release artifact.",
+      "limitation": "The disabled boundary is implemented and tested in source, but exact-candidate CI evidence is not yet present. Direct provider access under the exact experimental source-development opt-in is outside required public-preview support.",
       "evidence": [
         {
-          "path": "packages/connectors/src/oauth/google-oauth.ts",
-          "sha256": "73d3b2e892538e9c3cde5d4594571579203eb7db41c3e2695ef856cdc9746aa1",
-          "why": "Google OAuth endpoints and token exchange"
+          "path": "packages/shared-types/src/google-preview-boundary.ts",
+          "sha256": "41d25db663f700d65979ed011529d1aeaaf0608e666dcc8f442f50d5939bda4e",
+          "why": "Defines the shared provider-neutral classification used by disabled-mode account and execution boundaries"
         },
         {
-          "path": "packages/connectors/src/oauth/microsoft-oauth.ts",
-          "sha256": "bd55b712035df68e9238b34cead93d87df338a7c98327feae501453aee6cb70e",
-          "why": "Microsoft OAuth endpoints and token exchange"
+          "path": "apps/api/src/routes/oauth.ts",
+          "sha256": "ad1f56d0e5718857ee405e508dd640b8ce52b13ff4326b88c46d933288ec31f5",
+          "why": "OAuth routes reject disabled Google and Microsoft paths before configuration, token, database, or provider effects"
+        },
+        {
+          "path": "apps/worker/src/index.ts",
+          "sha256": "c49f9f6282f989a8dae5d89d7cd3b21f003851ce40cc1066bc3c3207b9d8144d",
+          "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch"
+        },
+        {
+          "path": "apps/desktop/src/service-manager.ts",
+          "sha256": "c61488f17f07caeab355af356fef169f3382264f9ed255829a9eccbd6357f668",
+          "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, and clear filesystem plugin authority"
         }
       ],
       "verification": [
         {
-          "command": "pnpm --filter @skytwin/connectors test",
-          "expected": "Connector OAuth, provider routing, token-store, and ingestion unit tests pass"
+          "command": "pnpm --filter @skytwin/api test -- src/__tests__/oauth-google-disabled.test.ts src/__tests__/oauth-microsoft.test.ts src/__tests__/credentials-routes.test.ts src/__tests__/capabilities-routes.test.ts",
+          "expected": "API account authorization, credential, and capability paths fail closed in the supported mode while exact experimental source opt-in remains available"
+        },
+        {
+          "command": "pnpm --filter skytwin-desktop test -- src/__tests__/service-manager-env.test.ts",
+          "expected": "Packaged child environments keep both account providers disabled and do not expose their credentials"
         }
       ]
     },
@@ -1107,7 +1121,7 @@
         },
         {
           "path": "packages/execution-router/src/execution-router.ts",
-          "sha256": "56668a9812feccfeb21092706351f6bcf0441bc765ba676d9036e525039ec356",
+          "sha256": "43e885e1985a6b2d6901bbb29945f12cfa360a4eeee374ce7a0e0e096694308d",
           "why": "Independent provenance/severity backstop before adapter execution"
         }
       ],
@@ -1197,7 +1211,7 @@
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "2ea73081a3e47af9aac360a3e00e06bb3d0599c4533c672df6bdc9184ec8eb35",
+          "sha256": "7c7359874cd45a28d86a0f11871ebc880c011a13c5aaea0ba85c8900c32b1a75",
           "why": "Defines the exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
@@ -1232,7 +1246,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "d9e96a53c308f7ec770bfbd08e89a6a28b8137e434099846aa56f94729dc5e0a",
+          "sha256": "d388baa06221a65dbf0f3a90eaa54bd185154a19455f37215ce0755f80dbf6d9",
           "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],

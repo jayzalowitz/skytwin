@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import nacl from 'tweetnacl';
 
 const { mockMcpServerRepository, mockQuery } = vi.hoisted(() => ({
-  mockMcpServerRepository: { listForUser: vi.fn() },
+  mockMcpServerRepository: {
+    listForUser: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
+  },
   mockQuery: vi.fn(),
 }));
 
@@ -18,6 +21,7 @@ import {
   buildDeltaPayload,
   runFederationSyncJob,
   sealForPeer,
+  type DeltaPayload,
 } from '../jobs/federation-sync.js';
 
 function makeKp() {
@@ -49,6 +53,7 @@ const SAMPLE_PEER = {
 beforeEach(() => {
   vi.clearAllMocks();
   mockMcpServerRepository.listForUser.mockResolvedValue([]);
+  mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
   mockQuery.mockResolvedValue({ rows: [] });
 });
 afterEach(() => {
@@ -62,7 +67,7 @@ describe('buildDeltaPayload', () => {
       { registry_id: '@c/d', display_name: 'C', trust_tier: 'observer', status: 'dormant' },
       { registry_id: '@e/f', display_name: 'E', trust_tier: 'observer', status: 'installed' },
     ]);
-    const payload = await buildDeltaPayload('user-1');
+    const payload = await buildDeltaPayload('user-1', 'experimental');
     const ids = payload.installedServers.map((s) => s.registryId);
     expect(ids).toEqual(['@a/b', '@e/f']);
   });
@@ -70,20 +75,147 @@ describe('buildDeltaPayload', () => {
   it('includes recent provenance edges in the payload', async () => {
     mockQuery.mockResolvedValue({
       rows: [
-        { from_node_id: 'n1', to_node_id: 'n2', edge_type: 'installed', occurred_at: new Date() },
+        {
+          from_node_id: 'n1',
+          to_node_id: 'n2',
+          edge_type: 'installed',
+          occurred_at: new Date(),
+          from_server_id: null,
+          to_server_id: null,
+          from_payload: { action_type: 'create_task' },
+          to_payload: { action_type: 'create_task' },
+        },
       ],
     });
-    const payload = await buildDeltaPayload('user-1');
+    const payload = await buildDeltaPayload('user-1', 'experimental');
     expect(payload.recentProvenanceEdges).toHaveLength(1);
     expect(payload.recentProvenanceEdges[0]?.edgeType).toBe('installed');
+  });
+
+  it('omits disabled provenance edges associated with retained account capabilities', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'gmail', registry_id: 'gmail-mcp', oauth_provider: 'google',
+        display_name: 'Account capability', trust_tier: 'observer', status: 'active',
+      },
+      {
+        id: 'notion', registry_id: '@notionhq/notion-mcp-server', oauth_provider: 'notion',
+        display_name: 'Notion', trust_tier: 'observer', status: 'active',
+      },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
+      serverId === 'notion' ? ['notion.search'] : ['read_email']);
+    const occurredAt = new Date('2026-09-14T12:00:00.000Z');
+    const edge = (
+      fromNodeId: string,
+      toNodeId: string,
+      fromServerId: string | null,
+      toServerId: string | null,
+      fromPayload: unknown = {},
+      toPayload: unknown = {},
+    ) => ({
+      from_node_id: fromNodeId,
+      to_node_id: toNodeId,
+      edge_type: 'contributed_to',
+      occurred_at: occurredAt,
+      from_server_id: fromServerId,
+      to_server_id: toServerId,
+      from_payload: fromPayload,
+      to_payload: toPayload,
+    });
+    mockQuery.mockResolvedValue({
+      rows: [
+        edge('safe-from', 'safe-to', 'notion', 'notion'),
+        edge('account-from', 'safe-to', 'gmail', 'notion'),
+        edge('missing-from', 'safe-to', 'missing-server', 'notion'),
+        edge('unbound-account', 'safe-unbound', null, null, { oauth_provider: 'microsoft' }),
+        edge(
+          'neutral-from',
+          'neutral-to',
+          null,
+          null,
+          { action_type: 'create_task' },
+          { registry_id: '@modelcontextprotocol/server-filesystem' },
+        ),
+        edge('unknown-from', 'neutral-to', null, null, {}, { action_type: 'create_task' }),
+      ],
+    });
+
+    const payload = await buildDeltaPayload('user-1', 'disabled');
+
+    expect(payload.recentProvenanceEdges.map((item) => item.fromNodeId))
+      .toEqual(['safe-from', 'neutral-from']);
+    const edgeQuery = String(mockQuery.mock.calls[0]?.[0]);
+    expect(edgeQuery).toContain('JOIN capability_provenance_nodes');
+    expect(edgeQuery).toContain('from_node.user_id = $1 AND to_node.user_id = $1');
+    expect(mockQuery.mock.calls[0]?.[1]).toEqual(['user-1']);
   });
 
   it('skips servers with null registry_id', async () => {
     mockMcpServerRepository.listForUser.mockResolvedValue([
       { registry_id: null, display_name: 'X', trust_tier: 'observer', status: 'active' },
     ]);
-    const payload = await buildDeltaPayload('user-1');
+    const payload = await buildDeltaPayload('user-1', 'experimental');
     expect(payload.installedServers).toHaveLength(0);
+  });
+
+  it('omits account-backed rows in disabled mode using only local authoritative metadata', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { id: 'drive', registry_id: '@modelcontextprotocol/server-google-drive', oauth_provider: null, display_name: 'Drive', trust_tier: 'observer', status: 'active' },
+      { id: 'provider', registry_id: 'custom-provider', oauth_provider: 'google', display_name: 'Provider Alias', trust_tier: 'observer', status: 'active' },
+      { id: 'microsoft-provider', registry_id: 'custom-provider', oauth_provider: 'microsoft', display_name: 'Microsoft Provider', trust_tier: 'observer', status: 'active' },
+      { id: 'outlook', registry_id: 'outlook-mcp', oauth_provider: null, display_name: 'Outlook', trust_tier: 'observer', status: 'active' },
+      { id: 'skill', registry_id: 'custom-tools', oauth_provider: null, display_name: 'Custom', trust_tier: 'observer', status: 'active' },
+      { id: 'outlook-skill', registry_id: 'custom-outlook-tools', oauth_provider: null, display_name: 'Custom Outlook', trust_tier: 'observer', status: 'active' },
+      { id: 'notion', registry_id: '@notionhq/notion-mcp-server', oauth_provider: 'notion', display_name: 'Notion', trust_tier: 'observer', status: 'active' },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
+      serverId === 'skill' ? ['read_email']
+        : serverId === 'outlook-skill' ? ['outlook.read_mail'] : ['notion.search']);
+    const network = vi.spyOn(globalThis, 'fetch');
+
+    const payload = await buildDeltaPayload('user-1', 'disabled');
+
+    expect(payload.installedServers.map((server) => server.registryId)).toEqual(['@notionhq/notion-mcp-server']);
+    expect(network).not.toHaveBeenCalled();
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('drive');
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('provider');
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('microsoft-provider');
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('outlook');
+    network.mockRestore();
+  });
+
+  it('fails closed when cached-skill classification cannot be read', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { id: 'unknown', registry_id: 'custom-tools', oauth_provider: null, display_name: 'Custom', trust_tier: 'observer', status: 'active' },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(new Error('DB unavailable'));
+
+    const payload = await buildDeltaPayload('user-1', 'disabled');
+
+    expect(payload.installedServers).toEqual([]);
+  });
+
+  it('omits an unknown neutral server when its cached-skill inventory is empty', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { id: 'unknown', registry_id: 'custom-neutral-tools', oauth_provider: null, display_name: 'Custom', trust_tier: 'observer', status: 'active' },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
+
+    const payload = await buildDeltaPayload('user-1', 'disabled');
+
+    expect(payload.installedServers).toEqual([]);
+  });
+
+  it('preserves the exact experimental opt-in without classification reads', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { id: 'gmail', registry_id: 'gmail-mcp', oauth_provider: 'google', display_name: 'Gmail', trust_tier: 'observer', status: 'active' },
+    ]);
+
+    const payload = await buildDeltaPayload('user-1', 'experimental');
+
+    expect(payload.installedServers.map((server) => server.registryId)).toEqual(['gmail-mcp']);
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
   });
 });
 
@@ -126,6 +258,7 @@ describe('runFederationSyncJob', () => {
       peers: [SAMPLE_PEER],
       fetcher,
       markSyncResult,
+      googleConnectionMode: 'experimental',
     });
     expect(result.pushed).toBe(1);
     expect(result.failed).toBe(0);
@@ -136,6 +269,38 @@ describe('runFederationSyncJob', () => {
     expect(markSyncResult).toHaveBeenCalledWith(
       expect.objectContaining({ peerId: 'peer-1', status: 'ok' }),
     );
+  });
+
+  it('never sends disabled account-backed capability rows to a peer', async () => {
+    const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { id: 'gmail', registry_id: 'gmail-mcp', oauth_provider: 'google', display_name: 'Gmail', trust_tier: 'observer', status: 'active' },
+      { id: 'notion', registry_id: '@notionhq/notion-mcp-server', oauth_provider: 'notion', display_name: 'Notion', trust_tier: 'observer', status: 'active' },
+    ]);
+
+    await runFederationSyncJob({
+      peers: [SAMPLE_PEER],
+      fetcher,
+      markSyncResult: vi.fn(),
+      googleConnectionMode: 'disabled',
+    });
+
+    const request = fetcher.mock.calls[0]?.[1] as RequestInit;
+    const envelope = JSON.parse(String(request.body)) as {
+      nonce: string;
+      ciphertext: string;
+      peerPublicKey: string;
+    };
+    const opened = nacl.box.open(
+      new Uint8Array(Buffer.from(envelope.ciphertext, 'base64')),
+      new Uint8Array(Buffer.from(envelope.nonce, 'base64')),
+      new Uint8Array(Buffer.from(envelope.peerPublicKey, 'base64')),
+      new Uint8Array(Buffer.from(peerKp.secretKeyB64, 'base64')),
+    );
+    expect(opened).not.toBeNull();
+    const payload = JSON.parse(Buffer.from(opened!).toString('utf8')) as DeltaPayload;
+    expect(payload.installedServers.map((server) => server.registryId)).toEqual(['@notionhq/notion-mcp-server']);
+    expect(JSON.stringify(payload)).not.toContain('gmail-mcp');
   });
 
   it('marks failed when peer returns non-2xx', async () => {

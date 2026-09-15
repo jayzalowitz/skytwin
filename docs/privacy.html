@@ -29,56 +29,44 @@
   <div class="wrap">
     <nav><a href="index.html">← Back to SkyTwin</a></nav>
     <h1>Privacy Policy</h1>
-    <p class="meta">Effective: 2026-08-27. SkyTwin is an open-source personal automation project. This policy describes how the SkyTwin desktop app handles Google and Microsoft user data accessed via their respective APIs.</p>
+    <p class="meta">Effective: 2026-09-14. SkyTwin is an open-source personal automation project. This policy describes the supported sample-only preview and the data boundaries that also govern source components and any future connected-account release.</p>
 
     <div class="callout">
       <strong>Summary:</strong> SkyTwin keeps its persistent application database on the device where you install it. A fresh install makes no outbound LLM or embedding calls. Connected services still require direct network requests; selecting and configuring a remote reasoning endpoint may send prompt content to its operator, while separately configuring an OpenAI-compatible embedding key may send memory and semantic-search text to that endpoint. On-device inference requires both a model artifact and a compatible <code>llama.cpp</code> runtime; neither is built in. OAuth-token storage is mixed and depends on vault state, while your twin profile, preferences, memory, receipts, and search indexes remain unencrypted by SkyTwin. Enable full-disk encryption and see <a href="#storage">How we store and protect your data</a> and <a href="#ai-providers">Data sharing &amp; transfers</a> for the exact boundaries.
+      <br><br><strong>Current preview boundary:</strong> the supported preview is an isolated, account-free sample. Google and Microsoft account connections are unavailable; it does not request Google identity, Calendar, Gmail, Outlook, or Microsoft Graph access.
     </div>
 
     <h2>Who we are</h2>
     <p>SkyTwin is developed by Jay Zalowitz, an independent open-source contributor. Source code, including the entirety of the data-handling implementation, lives at <a href="https://github.com/jayzalowitz/skytwin">github.com/jayzalowitz/skytwin</a> under the Apache 2.0 license. There is no SkyTwin Inc., no cloud product, and no centralized data store. Contact: open an issue at <a href="https://github.com/jayzalowitz/skytwin/issues">github.com/jayzalowitz/skytwin/issues</a>.</p>
 
-    <h2>What Google user data we access</h2>
-    <p>Which Google scopes SkyTwin can request depends on <strong>which OAuth client</strong> is in use. There are two tiers, and the difference matters:</p>
+    <h2>Google user data in the supported preview</h2>
+    <p>The supported preview does not access Google user data. It ships no managed Google OAuth client, exposes no supported operator/BYO credential flow, and keeps authorization, callback, connector, refresh, action, and Google credential-synchronization paths disabled. Existing credentials or tokens from prior development work are retained rather than silently deleted, but the disabled preview does not use them.</p>
 
-    <h3>Tier 1 — the bundled SkyTwin OAuth client (the default)</h3>
-    <p>A fresh desktop install uses an OAuth client owned by the SkyTwin project. That client is registered for <strong>identity and Calendar scopes only</strong>. It cannot request Gmail access — the code path that builds the authorization URL refuses to add Gmail scopes for the bundled client (<code>resolveRequestedScopes</code> in <code>apps/api/src/routes/oauth.ts</code>). The scopes it requests are:</p>
-    <ul>
-      <li><code>openid</code> + <code>email</code> + <code>profile</code> — to identify which Google account is connecting, used as the primary key for the local twin profile.</li>
-      <li><code>https://www.googleapis.com/auth/calendar.readonly</code> — to read your calendar so SkyTwin can spot conflicts, suggest times, and learn your scheduling preferences.</li>
-      <li><code>https://www.googleapis.com/auth/calendar.events</code> — to create, modify, and respond to calendar invites with your approval, or automatically for events that match patterns you have explicitly taught the twin.</li>
-    </ul>
-    <p>That is the complete list for the default install. If you never supply your own OAuth credentials, SkyTwin never asks Google for access to your mail.</p>
+    <h3>Future Google scope boundary</h3>
+    <p>Managed Google identity and Calendar are deferred. Operator/BYO Google is also unsupported until the authorization, client-generation, ownership, exact-capability, and secret-custody gates described in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/google-verification.md">the Google integration plan</a> are complete. After those gates, the intended default is identity (<code>openid</code>, <code>email</code>, <code>profile</code>) plus explicitly granted Calendar capabilities (<code>calendar.readonly</code>, <code>calendar.events</code>). Gmail remains separately optional and would require explicit consent for <code>gmail.readonly</code> and <code>gmail.modify</code>.</p>
+    <p>Any future BYO or managed flow remains subject to Google's then-current publishing, warning, tester, token-expiry, user-data, verification, and assigned security-assessment requirements. A personal OAuth test is not evidence that Google approved a SkyTwin-managed client.</p>
 
-    <h3>Tier 2 — your own Google OAuth client (bring-your-own, required for Gmail)</h3>
-    <p>Gmail's <code>readonly</code> and <code>modify</code> scopes are <em>restricted</em> scopes under Google's policy. Rather than put restricted scopes on a shared, project-owned client, SkyTwin requires you to create an OAuth client in your own Google Cloud project and paste its credentials into Setup (see <a href="connect-gmail.html">Connect Gmail</a>). Only then, and only if you explicitly opt in to Gmail during the connect flow, does SkyTwin additionally request:</p>
-    <ul>
-      <li><code>https://www.googleapis.com/auth/gmail.readonly</code> — to read incoming mail metadata and body content so SkyTwin can interpret signals (a newsletter just arrived; a friend asked for a meeting; a calendar invite needs response).</li>
-      <li><code>https://www.googleapis.com/auth/gmail.modify</code> — to apply labels and archive mail that you have taught SkyTwin to archive automatically, and to send Gmail replies or new messages after your approval or under autonomy rules you have explicitly enabled. SkyTwin does not permanently delete mail. Outgoing SkyTwin-sent emails include a small default-on footer linking to the open-source repo; you can turn that footer off in Settings.</li>
-    </ul>
-    <p>In this tier the OAuth client is yours; the grant is between you and Google, and the tokens are stored on your own machine exactly as described below.</p>
-
-    <h2>Microsoft (Outlook) data we access</h2>
-    <p>SkyTwin can also connect Outlook mail and calendar via Microsoft Graph. There is no bundled Microsoft client — connecting Outlook means registering your own Microsoft Entra application and supplying its credentials, the same bring-your-own model as Tier 2 above. The Graph scopes requested are:</p>
+    <h2>Microsoft (Outlook) source capability</h2>
+    <p>The source tree also contains a BYO Microsoft Graph connection, but real-account setup is outside the supported sample-only preview. It remains disabled unless a source-development deployment uses the same exact experimental account opt-in as Google. If explicitly configured in that unsupported mode, its requested Graph scopes are:</p>
     <ul>
       <li><code>User.Read</code> — to read the signed-in account's basic profile and email address, used as the account key for the local twin profile.</li>
       <li><code>Mail.Read</code> — read-only access to Outlook mail so SkyTwin can interpret the same kinds of signals it reads from Gmail.</li>
       <li><code>Calendars.Read</code> — read-only access to your Outlook calendar for conflict detection and scheduling context.</li>
       <li><code>offline_access</code> — Microsoft's mechanism for issuing a refresh token so background sync survives a restart. It grants no additional data access of its own.</li>
     </ul>
-    <p>The Outlook integration is <strong>read-only</strong>: SkyTwin does not request write scopes for Microsoft mail or calendar, so it cannot send Outlook mail or modify Outlook events. Microsoft user data is stored, used, and deleted on exactly the same terms as Google user data throughout this policy.</p>
+    <p>The Outlook integration is <strong>read-only</strong>: SkyTwin does not request write scopes for Microsoft mail or calendar, so it cannot send Outlook mail or modify Outlook events. Any Microsoft user data retained from earlier development work receives the same local storage, encryption, and deletion protections described below; provider-side grant management remains specific to Microsoft.</p>
 
-    <h2>How we use Google user data</h2>
-    <p>SkyTwin uses Google user data exclusively to provide the user-facing personal-assistant features visible in the SkyTwin desktop app. Specifically:</p>
+    <h2>Future use of Google user data</h2>
+    <p>If Google access becomes supported later, SkyTwin's permitted use will be limited to the user-facing personal-assistant features disclosed at consent time. The intended uses are:</p>
     <ul>
       <li><strong>Inbox triage and replies</strong> — classify mail by sender, content, and urgency; surface the few items that need your attention; auto-archive ones you have taught the app to ignore; send Gmail replies or new messages only after approval or under autonomy rules you have explicitly enabled.</li>
       <li><strong>Calendar management</strong> — detect conflicts; auto-respond to invites that match your stated preferences; suggest scheduling actions.</li>
       <li><strong>Preference learning</strong> — observe your actions (archive, reply, decline, accept) and update the typed twin profile stored locally. The twin profile is what makes future predictions about what you would want.</li>
     </ul>
-    <p>SkyTwin does not use Google user data for advertising, model training across users, lending decisions, or any purpose other than the personal-assistant features described above.</p>
+    <p>SkyTwin does not use Google user data for advertising, model training across users, lending decisions, or any purpose other than the disclosed personal-assistant features. The current supported preview uses no Google user data.</p>
 
     <h2 id="storage">How we store and protect your data</h2>
-    <p>SkyTwin's persistent copy of data accessed via Google APIs — including derived signals, decisions, preferences, and twin profile records — is stored in a CockroachDB database on the device where SkyTwin is installed. Google and any hosted model provider you explicitly configure process data under their own terms; SkyTwin does not mirror this database to a developer-operated service. The local database files live in your operating-system-standard application data directory:</p>
+    <p>The supported sample uses fictional data. If an earlier development build stored provider data, or if a future reviewed release enables connected accounts, SkyTwin's persistent copy — including derived signals, decisions, preferences, and twin profile records — is stored in a CockroachDB database on the device where SkyTwin is installed. Providers and any hosted model endpoint you explicitly configure process transmitted data under their own terms; SkyTwin does not mirror this database to a developer-operated service. The local database files live in your operating-system-standard application data directory:</p>
     <ul>
       <li>macOS: <code>~/Library/Application Support/SkyTwin/crdb-data/</code></li>
       <li>Windows: <code>%LOCALAPPDATA%\SkyTwin\crdb-data\</code></li>
@@ -113,7 +101,7 @@
     <h2 id="ai-providers">Data sharing &amp; transfers</h2>
     <p>SkyTwin does not transfer Google user data to any third party for the developers' benefit — there is no analytics, advertising, model-training, or data-broker pipeline. Features you configure can send selected data over the network through the paths below:</p>
     <ol>
-      <li>Direct API calls from the SkyTwin desktop process to the provider's own API servers (e.g. <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>, <code>graph.microsoft.com</code>) to fetch the data you authorized and carry out approved actions, including Gmail label/archive operations, Gmail sends, and calendar changes.</li>
+      <li>Connected-account source components can make direct calls to provider API servers (for example <code>gmail.googleapis.com</code>, <code>calendar.googleapis.com</code>, and <code>graph.microsoft.com</code>) to fetch authorized data or carry out approved actions. The supported sample-only preview admits neither Google nor Microsoft account connections and makes no account connector/action calls.</li>
       <li>Optional calls to a remote or custom LLM endpoint (for example OpenAI, Anthropic, Google AI, or an Ollama-compatible service) <em>only if</em> you select the configured-provider boundary and enable that endpoint — prompts may contain your data. Official endpoints follow the named provider's terms; custom endpoints, including loopback services that relay remotely, follow their operator's policy. A fresh install makes no outbound LLM calls, but it also does not bundle a model or the <code>llama.cpp</code> runtime. Builds from current source can download the pinned managed model only after explicit user action; a compatible runtime remains separate.</li>
       <li>Optional calls to an OpenAI-compatible embedding endpoint when <code>OPENAI_EMBEDDING_API_KEY</code> or <code>OPENAI_API_KEY</code> is configured in the process environment. This path sends batches of signal-summary or memory text for indexing, plus semantic-search query text—including user text submitted through assistant memory lookup or search—to <code>OPENAI_EMBEDDING_BASE_URL</code>, or to OpenAI's API when no custom base is set. It is independent of the reasoning-location selector. With neither key set, SkyTwin uses its local hash-based embedding fallback and sends neither memory nor query text to an embedding service.</li>
       <li>Configured execution adapters can POST an action description, parameters, and execution steps to the adapter URL. The IronClaw integration can also synchronize credentials to its configured server. These paths are disabled when their URLs and credentials are not configured.</li>
@@ -135,7 +123,7 @@
     </ul>
 
     <h2>Limited Use compliance</h2>
-    <p>SkyTwin's use of information received from Google APIs adheres to the <a href="https://developers.google.com/terms/api-services-user-data-policy#additional_requirements_for_specific_api_scopes">Google API Services User Data Policy</a>, including the Limited Use requirements. Specifically:</p>
+    <p>The supported preview receives no information from Google APIs. Any earlier experimental use, and any future supported use, must adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy#additional_requirements_for_specific_api_scopes">Google API Services User Data Policy</a>, including the Limited Use requirements. Specifically:</p>
     <ul>
       <li>Use is limited to providing or improving user-facing features prominent in SkyTwin's interface (mail triage, calendar management, the twin dashboard).</li>
       <li>Data is not transferred to others except as needed to provide those user-facing features or to comply with applicable law.</li>
@@ -145,10 +133,10 @@
 
     <h2>Your controls</h2>
     <ul>
-      <li><strong>Revoke at any time</strong> — go to <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and remove SkyTwin's access. SkyTwin will lose the ability to read your Gmail or Calendar immediately.</li>
-      <li><strong>Delete everything in-app</strong> — Settings → "Delete everything about me" wipes your twin profile, every decision, every memory page, every preference, OAuth tokens, sessions, spend records, and any inference-receipt metadata linked to those decisions — the whole footprint — in a single transaction. The endpoint (<code>DELETE /api/users/:userId?confirm=delete-my-data</code>) and underlying purge function (<code>userPurgeRepository.purgeUser</code> in <code>packages/db/src/repositories/user-purge-repository.ts</code>) execute the delete inside a CRDB serializable transaction, so a failure rolls back cleanly. The cascade list is exhaustive — every table backed by a <code>user_id → users(id)</code> foreign key carries <code>ON DELETE CASCADE</code> (see migration <code>061-cascade-cleanup.sql</code> from #413), and the chained children (e.g. <code>candidate_actions.decision_id</code>, <code>inference_receipts.decision_id</code>, <code>twin_profile_versions.profile_id</code>, <code>execution_plans.decision_id</code>) are deleted explicitly or by their own cascading foreign key. Your linked Google account stays connected at Google's end; SkyTwin just stops seeing it and forgets what it learned.</li>
-      <li><strong>Delete local data</strong> — quitting the app and deleting the data directory (see locations above) removes all stored Google user data and derived twin records.</li>
-      <li><strong>Pause auto-execution</strong> — the Settings control routes actions that would otherwise run automatically to manual approval without revoking OAuth access. It does not stop account synchronization. The separate capability-server pause stops installed MCP tools, not Gmail or Calendar ingestion.</li>
+      <li><strong>Revoke an earlier development grant</strong> — if you previously authorized a development build, remove its access through the applicable provider's account-permission controls. For Google, use <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>; for Microsoft, use your Microsoft account's privacy and app-permission controls. The supported preview creates no new Google or Microsoft grant.</li>
+      <li><strong>Delete everything in-app</strong> — Settings → "Delete everything about me" wipes your twin profile, every decision, every memory page, every preference, OAuth tokens, sessions, spend records, and any inference-receipt metadata linked to those decisions — the whole footprint — in a single transaction. The endpoint (<code>DELETE /api/users/:userId?confirm=delete-my-data</code>) and underlying purge function (<code>userPurgeRepository.purgeUser</code> in <code>packages/db/src/repositories/user-purge-repository.ts</code>) execute the delete inside a CRDB serializable transaction, so a failure rolls back cleanly. The cascade list is exhaustive — every table backed by a <code>user_id → users(id)</code> foreign key carries <code>ON DELETE CASCADE</code> (see migration <code>061-cascade-cleanup.sql</code> from #413), and the chained children (e.g. <code>candidate_actions.decision_id</code>, <code>inference_receipts.decision_id</code>, <code>twin_profile_versions.profile_id</code>, <code>execution_plans.decision_id</code>) are deleted explicitly or by their own cascading foreign key. Deleting local data does not revoke a provider-side grant created by an earlier development build; remove that grant through the applicable provider's account controls as well.</li>
+      <li><strong>Delete local data</strong> — quitting the app and deleting the data directory (see locations above) removes all stored account data and derived twin records.</li>
+      <li><strong>Pause auto-execution</strong> — the Settings control routes otherwise eligible actions to manual approval. This is separate from the preview's account-connection disable boundary; Google and Microsoft connection and ingestion remain unavailable regardless of the pause setting.</li>
     </ul>
 
     <h2>Children</h2>

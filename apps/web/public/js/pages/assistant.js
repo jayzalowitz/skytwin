@@ -23,6 +23,7 @@ import {
 import { getEffectiveUserId } from '../sample-session.js';
 import { showToast } from '../toast.js';
 import { renderTierPromotionModal } from '../components/tier-promotion-modal.js';
+import { isGoogleAccountIntegration } from '../google-preview-boundary.js';
 
 // State for the currently-rendered thread. Module-scope because the click
 // delegator (singleton, document-level) needs to read the active thread to
@@ -496,10 +497,7 @@ const SERVICE_HINTS = [
   { keywords: ['linear', 'linear issue', 'linear ticket'], registryId: 'linear-mcp', displayName: 'Linear' },
   { keywords: ['notion', 'notion page', 'notion doc'], registryId: '@notionhq/notion-mcp-server', displayName: 'Notion' },
   { keywords: ['github', 'github pr', 'github issue', 'pull request'], registryId: '@modelcontextprotocol/server-github', displayName: 'GitHub' },
-  { keywords: ['gmail', 'google mail', 'email'], registryId: 'gmail-mcp', displayName: 'Gmail' },
-  { keywords: ['google calendar', 'calendar', 'gcal'], registryId: 'google-calendar-mcp', displayName: 'Google Calendar' },
   { keywords: ['slack'], registryId: '@modelcontextprotocol/server-slack', displayName: 'Slack' },
-  { keywords: ['google drive', 'gdrive', 'drive'], registryId: '@modelcontextprotocol/server-google-drive', displayName: 'Google Drive' },
   { keywords: ['sqlite', 'database', 'db'], registryId: '@modelcontextprotocol/server-sqlite', displayName: 'SQLite' },
   { keywords: ['filesystem', 'files', 'file system'], registryId: '@modelcontextprotocol/server-filesystem', displayName: 'Filesystem' },
 ];
@@ -549,6 +547,9 @@ function detectServiceHints(userMessage) {
  * caller provided per-suggestion reasons.
  */
 function renderInstallAffordances(suggestions, container, leadIn) {
+  suggestions = suggestions.filter(suggestion => !isGoogleAccountIntegration({
+    key: suggestion.registryId,
+  }));
   if (suggestions.length === 0) return;
   const msgRegion = container.querySelector('[data-region="messages"]');
   if (!msgRegion) return;
@@ -648,6 +649,10 @@ async function checkReverseCapabilityFlow(userMessage, replyText, container) {
  * Calls POST /api/capabilities/install and shows a toast.
  */
 async function handleReverseCapabilityInstall(registryId, displayName) {
+  if (isGoogleAccountIntegration({ key: registryId })) {
+    showToast('Account-backed capabilities are unavailable in this preview.', { kind: 'info' });
+    return;
+  }
   const userId = getEffectiveUserId() || _state.userId || '';
   if (!userId) {
     showToast('Log in to connect capabilities.', { kind: 'warning' });

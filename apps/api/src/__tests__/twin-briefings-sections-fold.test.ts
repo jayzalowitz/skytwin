@@ -48,6 +48,9 @@ vi.mock('@skytwin/db', () => ({
   // path without the live digest.
   query: vi.fn().mockResolvedValue({ rows: [] }),
 }));
+vi.mock('@skytwin/config', () => ({
+  loadConfig: () => ({ googleConnectionMode: 'experimental' }),
+}));
 
 import { createTwinBriefingsRouter } from '../routes/twin-briefings.js';
 

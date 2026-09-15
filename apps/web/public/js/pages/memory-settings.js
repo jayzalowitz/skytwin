@@ -388,7 +388,7 @@ function renderDashboard(dashboard) {
       </div>`;
 
   const entitiesBlock = ents.length === 0
-    ? `<p class="card-subtitle">No entities mined yet. Connect Gmail / Calendar to start.</p>`
+    ? `<p class="card-subtitle">No entities mined yet. The isolated sample does not read connected accounts.</p>`
     : `<ul style="margin-top: 0.5rem;">
         ${ents.map((e) => `
           <li>

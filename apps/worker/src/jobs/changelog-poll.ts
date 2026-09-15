@@ -1,8 +1,10 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig, type GoogleConnectionMode } from '@skytwin/config';
 import { McpHost, isDestructiveSkill } from '@skytwin/mcp-host';
 import { mcpServerChangelogRepository, mcpServerRepository } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { McpServerConfig } from '@skytwin/mcp-host';
+import { isAccountBackedIntegration } from '@skytwin/shared-types';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:changelog-poll');
@@ -22,6 +24,8 @@ export interface ChangelogPollDeps {
   changelogRepo?: typeof mcpServerChangelogRepository;
   /** Inject the server repository for testing. */
   serverRepo?: typeof mcpServerRepository;
+  /** Exact preview mode from the worker generation; inject for tests. */
+  googleConnectionMode?: GoogleConnectionMode;
   signal?: AbortSignal;
 }
 
@@ -43,6 +47,7 @@ export async function runChangelogPollJob(deps: ChangelogPollDeps = {}): Promise
   requireJobAdmission(deps.signal);
   const repo = deps.changelogRepo ?? mcpServerChangelogRepository;
   const serverRepo = deps.serverRepo ?? mcpServerRepository;
+  const googleConnectionMode = deps.googleConnectionMode ?? loadConfig().googleConnectionMode;
 
   log.info('Changelog poll job starting');
 
@@ -60,6 +65,11 @@ export async function runChangelogPollJob(deps: ChangelogPollDeps = {}): Promise
 
   for (const server of servers) {
     requireJobAdmission(deps.signal);
+    if (googleConnectionMode !== 'experimental' &&
+        await isBlockedAccountServer(server, serverRepo, deps.signal)) {
+      log.info(`Changelog poll: skipping account-backed server ${server.id} while connection is disabled`);
+      continue;
+    }
     try {
       await pollServerChangelog(server, repo, deps.mcpHostFactory, deps.signal);
     } catch (err) {
@@ -74,6 +84,39 @@ export async function runChangelogPollJob(deps: ChangelogPollDeps = {}): Promise
 
   requireJobAdmission(deps.signal);
   log.info('Changelog poll job complete');
+}
+
+async function isBlockedAccountServer(
+  server: McpServerRow,
+  serverRepo: typeof mcpServerRepository,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (isAccountBackedIntegration({
+    key: server.registry_id ?? undefined,
+    integration: server.oauth_provider ?? undefined,
+  })) return true;
+
+  try {
+    const skills = await runAdmitted(signal, () =>
+      serverRepo.listSkillNamesForServer(server.id));
+    // Registry identity alone does not durably bind the mutable persisted
+    // command/URL that the poller would contact. Without cached skill evidence,
+    // disabled mode cannot prove that target is account-free.
+    if (skills.length === 0) return true;
+    return isAccountBackedIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+      skills,
+    });
+  } catch (error) {
+    // This poll is advisory. If local classification state cannot be read,
+    // do not spawn a process or contact a remote server in disabled mode.
+    log.warn('Changelog poll: skipping server because account boundary classification failed', {
+      serverId: server.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return true;
+  }
 }
 
 async function pollServerChangelog(

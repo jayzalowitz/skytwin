@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { RiskTier, ConfidenceLevel, RiskDimension } from '@skytwin/shared-types';
+import {
+  RiskTier,
+  ConfidenceLevel,
+  RiskDimension,
+  isAccountBackedActionType,
+  isAccountBackedIntegration,
+} from '@skytwin/shared-types';
 import type {
   CandidateAction,
   RiskAssessment,
@@ -247,6 +253,295 @@ describe('ExecutionRouter', () => {
   beforeEach(() => {
     registry = new AdapterRegistry();
     router = new ExecutionRouter(registry, createDispatchAuthority());
+  });
+
+  it.each([
+    'send_email',
+    'create_calendar_event',
+    'users.messages.send',
+    'me.messages.send',
+    'google.drive.files.list',
+    'onedrive.files.list',
+    'sharepoint.sites.get',
+    'exchange.messages.send',
+    'teams.messages.send',
+    'gdrive.files.list',
+    'youtube.videos.upload',
+    'gcp.compute.instances.list',
+    'google.youtube.videos.list',
+    'me.events.list',
+    'me.drive.root.children',
+    'users.list',
+    'groups.events.list',
+    'groups.calendar.get',
+    'groups.threads.list',
+    'groups.conversations.list',
+    'group.members.list',
+  ])
+    ('denies disabled account action %s before any adapter or dispatch call', async (actionType) => {
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      const adapters = ['ironclaw', 'direct', 'openclaw'].map((name) => {
+        const adapter = createMockAdapter(name);
+        localRegistry.register(
+          name,
+          adapter,
+          name === 'ironclaw'
+            ? IRONCLAW_TRUST_PROFILE
+            : name === 'direct' ? DIRECT_TRUST_PROFILE : OPENCLAW_TRUST_PROFILE,
+        );
+        return {
+          buildPlan: vi.spyOn(adapter, 'buildPlan'),
+          execute: vi.spyOn(adapter, 'execute'),
+        };
+      });
+      const localRouter = new ExecutionRouter(localRegistry, authority, (action) =>
+        isAccountBackedActionType(action.actionType)
+          ? { allowed: false, reason: 'Account-backed actions are unavailable in this preview.' }
+          : { allowed: true });
+
+      await expect(localRouter.prepareExecution(
+        makeAction({ actionType }), makeRiskAssessment(), 'user-1', { approved: true },
+      )).rejects.toMatchObject({
+        name: 'NoRequestExecutionError',
+        message: 'Account-backed actions are unavailable in this preview.',
+      });
+
+      for (const adapter of adapters) {
+        expect(adapter.buildPlan).not.toHaveBeenCalled();
+        expect(adapter.execute).not.toHaveBeenCalled();
+      }
+      expect(authority.start).not.toHaveBeenCalled();
+      expect(authority.terminalize).not.toHaveBeenCalled();
+    });
+
+  it('re-checks a group namespace before dispatch without server or domain identity', async () => {
+    const authority = createDispatchAuthority();
+    const adapter = createMockAdapter('ironclaw');
+    const buildPlan = vi.spyOn(adapter, 'buildPlan');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    let accountBoundaryEnabled = false;
+    const guard = vi.fn((action: Readonly<CandidateAction>) =>
+      accountBoundaryEnabled && isAccountBackedActionType(action.actionType)
+        ? { allowed: false as const, reason: 'Account-backed actions are unavailable in this preview.' }
+        : { allowed: true as const });
+    const action = makeAction({
+      actionType: 'groups.events.list',
+      domain: '',
+      parameters: {},
+    });
+    const risk = makeRiskAssessment();
+    const preparedRouter = new ExecutionRouter(registry, authority, guard);
+    const prepared = await preparedRouter.prepareExecution(
+      action,
+      risk,
+      'user-1',
+      { approved: true },
+    );
+    accountBoundaryEnabled = true;
+    await expect(preparedRouter.executePrepared(
+      prepared,
+      { ...action, parameters: { ...action.parameters, executionPlanId: prepared.planId } },
+      prepared.riskAssessment,
+      'user-1',
+      { approved: true },
+    )).rejects.toBeInstanceOf(NoRequestExecutionError);
+
+    expect(buildPlan).toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(authority.start).not.toHaveBeenCalled();
+    expect(authority.terminalize).not.toHaveBeenCalled();
+    expect(guard).toHaveBeenLastCalledWith(
+      expect.objectContaining({ actionType: 'groups.events.list', domain: '' }),
+      'user-1',
+      'ironclaw',
+    );
+  });
+
+  it('awaits user-bound admission before adapter preparation', async () => {
+    const authority = createDispatchAuthority();
+    const localRegistry = new AdapterRegistry();
+    const adapter = createMockAdapter('ironclaw');
+    const buildPlan = vi.spyOn(adapter, 'buildPlan');
+    localRegistry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    const guard = vi.fn(async (_action: Readonly<CandidateAction>, userId: string) => {
+      await Promise.resolve();
+      return userId === 'blocked-user'
+        ? { allowed: false as const, reason: 'The persisted target is unavailable.' }
+        : { allowed: true as const };
+    });
+    const localRouter = new ExecutionRouter(localRegistry, authority, guard);
+
+    await expect(localRouter.prepareExecution(
+      makeAction(), makeRiskAssessment(), 'blocked-user', { approved: true },
+    )).rejects.toMatchObject({
+      name: 'NoRequestExecutionError',
+      message: 'The persisted target is unavailable.',
+    });
+
+    expect(guard).toHaveBeenCalledWith(
+      expect.objectContaining({ actionType: 'archive_email' }),
+      'blocked-user',
+      undefined,
+    );
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(authority.start).not.toHaveBeenCalled();
+  });
+
+  it('re-checks the admission boundary before consuming a prepared action', async () => {
+    const authority = createDispatchAuthority();
+    const adapter = createMockAdapter('ironclaw');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    let enabled = true;
+    const localRouter = new ExecutionRouter(registry, authority, () =>
+      enabled
+        ? { allowed: true }
+        : { allowed: false, reason: 'Account-backed actions are unavailable in this preview.' });
+    const action = makeAction();
+    const risk = makeRiskAssessment();
+    const prepared = await localRouter.prepareExecution(action, risk, 'user-1', { approved: true });
+    enabled = false;
+
+    await expect(localRouter.executePrepared(
+      prepared,
+      { ...action, parameters: { ...action.parameters, executionPlanId: prepared.planId } },
+      prepared.riskAssessment,
+      'user-1',
+      { approved: true },
+    )).rejects.toBeInstanceOf(NoRequestExecutionError);
+    expect(authority.start).not.toHaveBeenCalled();
+    expect(authority.terminalize).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('awaits the user-bound admission re-check before dispatching a prepared action', async () => {
+    const authority = createDispatchAuthority();
+    const adapter = createMockAdapter('ironclaw');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    let checks = 0;
+    const guard = vi.fn(async (_action: Readonly<CandidateAction>, userId: string) => {
+      await Promise.resolve();
+      checks += 1;
+      return checks <= 2 && userId === 'user-1'
+        ? { allowed: true as const }
+        : { allowed: false as const, reason: 'The persisted target is unavailable.' };
+    });
+    const localRouter = new ExecutionRouter(registry, authority, guard);
+    const action = makeAction();
+    const risk = makeRiskAssessment();
+    const prepared = await localRouter.prepareExecution(action, risk, 'user-1', { approved: true });
+
+    await expect(localRouter.executePrepared(
+      prepared,
+      { ...action, parameters: { ...action.parameters, executionPlanId: prepared.planId } },
+      prepared.riskAssessment,
+      'user-1',
+      { approved: true },
+    )).rejects.toBeInstanceOf(NoRequestExecutionError);
+
+    expect(guard).toHaveBeenNthCalledWith(1, expect.anything(), 'user-1', undefined);
+    expect(guard).toHaveBeenNthCalledWith(2, expect.anything(), 'user-1', 'ironclaw');
+    expect(guard).toHaveBeenNthCalledWith(3, expect.anything(), 'user-1', 'ironclaw');
+    expect(authority.start).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('denies a neutral action through an account-backed plugin before preparation', async () => {
+    const authority = createDispatchAuthority();
+    const baseAdapter = createMockAdapter('gmail-mcp');
+    const adapter = {
+      ...baseAdapter,
+      prepareRequestStart: vi.fn(),
+    };
+    const buildPlan = vi.spyOn(adapter, 'buildPlan');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register(
+      'gmail-mcp',
+      adapter,
+      { ...DIRECT_TRUST_PROFILE, name: 'gmail-mcp' },
+      new Set(['create_issue']),
+    );
+    const guard = vi.fn((
+      _action: Readonly<CandidateAction>,
+      _userId: string,
+      adapterName?: string,
+    ) => adapterName && isAccountBackedIntegration({ adapter: adapterName })
+      ? { allowed: false as const, reason: 'The selected integration is unavailable.' }
+      : { allowed: true as const });
+    const localRouter = new ExecutionRouter(registry, authority, guard);
+
+    await expect(localRouter.prepareExecution(
+      makeAction({ actionType: 'create_issue', domain: 'developer' }),
+      makeRiskAssessment(),
+      'user-1',
+      { approved: true },
+    )).rejects.toMatchObject({
+      name: 'NoRequestExecutionError',
+      message: 'The selected integration is unavailable.',
+    });
+
+    expect(guard).toHaveBeenNthCalledWith(1, expect.anything(), 'user-1', undefined);
+    expect(guard).toHaveBeenNthCalledWith(2, expect.anything(), 'user-1', 'gmail-mcp');
+    expect(buildPlan).not.toHaveBeenCalled();
+    expect(adapter.prepareRequestStart).not.toHaveBeenCalled();
+    expect(authority.start).not.toHaveBeenCalled();
+    expect(authority.terminalize).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('re-checks the selected plugin identity before dispatch', async () => {
+    const authority = createDispatchAuthority();
+    const baseAdapter = createMockAdapter('gmail-mcp');
+    const adapter = {
+      ...baseAdapter,
+      prepareRequestStart: vi.fn(),
+    };
+    const buildPlan = vi.spyOn(adapter, 'buildPlan');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register(
+      'gmail-mcp',
+      adapter,
+      { ...DIRECT_TRUST_PROFILE, name: 'gmail-mcp' },
+      new Set(['create_issue']),
+    );
+    let disabled = false;
+    const guard = vi.fn((
+      _action: Readonly<CandidateAction>,
+      _userId: string,
+      adapterName?: string,
+    ) => disabled && adapterName && isAccountBackedIntegration({ adapter: adapterName })
+      ? { allowed: false as const, reason: 'The selected integration is unavailable.' }
+      : { allowed: true as const });
+    const localRouter = new ExecutionRouter(registry, authority, guard);
+    const action = makeAction({ actionType: 'create_issue', domain: 'developer' });
+    const prepared = await localRouter.prepareExecution(
+      action,
+      makeRiskAssessment(),
+      'user-1',
+      { approved: true },
+    );
+    disabled = true;
+
+    await expect(localRouter.executePrepared(
+      prepared,
+      { ...action, parameters: { ...action.parameters, executionPlanId: prepared.planId } },
+      prepared.riskAssessment,
+      'user-1',
+      { approved: true },
+    )).rejects.toMatchObject({
+      name: 'NoRequestExecutionError',
+      message: 'The selected integration is unavailable.',
+    });
+
+    expect(buildPlan).toHaveBeenCalledOnce();
+    expect(adapter.prepareRequestStart).toHaveBeenCalledOnce();
+    expect(guard).toHaveBeenLastCalledWith(expect.anything(), 'user-1', 'gmail-mcp');
+    expect(authority.start).not.toHaveBeenCalled();
+    expect(authority.terminalize).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each([

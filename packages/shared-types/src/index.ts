@@ -312,3 +312,19 @@ export type {
   FsScanRoot,
   RawSignal,
 } from './capability-acquisition.js';
+
+export {
+  isAccountBackedActionType,
+  isAccountBackedEmailOrCalendarAction,
+  isAccountBackedIntegration,
+  isAccountBackedIntegrationIdentifier,
+  isAccountBackedRegistryIdentifier,
+  isGoogleAccountActionType,
+  isGoogleAccountIntegration,
+  isGoogleAccountRegistryIdentifier,
+  isGoogleIntegrationIdentifier,
+  isMicrosoftAccountRegistryIdentifier,
+  isMicrosoftIntegrationIdentifier,
+} from './google-preview-boundary.js';
+export type { AccountActionBoundaryInput } from './google-preview-boundary.js';
+export type { IntegrationBoundaryInput } from './google-preview-boundary.js';

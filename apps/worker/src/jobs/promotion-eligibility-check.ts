@@ -1,4 +1,5 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig } from '@skytwin/config';
 import {
   mcpServerRepository,
   promotionOffersRepository,
@@ -6,7 +7,7 @@ import {
   query,
 } from '@skytwin/db';
 import { TrustTierEngine } from '@skytwin/policy-engine';
-import { PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
+import { isAccountBackedIntegration, PROMOTION_THRESHOLDS } from '@skytwin/shared-types';
 import type { TrustTier } from '@skytwin/shared-types';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
@@ -47,6 +48,33 @@ export interface PromotionEligibilityCheckResult {
   alreadyPending: number;
 }
 
+async function isAccountFreePreviewServerBlocked(
+  connectionMode: string | undefined,
+  server: {
+    id: string;
+    registry_id?: string | null;
+    oauth_provider?: string | null;
+  },
+): Promise<boolean> {
+  if (isAccountBackedIntegration({
+    key: server.registry_id ?? undefined,
+    integration: server.oauth_provider ?? undefined,
+  })) return connectionMode !== 'experimental';
+  if (connectionMode === 'experimental') return false;
+
+  try {
+    const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+    if (skills.length === 0) return true;
+    return isAccountBackedIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+      skills,
+    });
+  } catch {
+    return true;
+  }
+}
+
 export async function runPromotionEligibilityCheckJob(
   deps: { signal?: AbortSignal } = {},
 ): Promise<PromotionEligibilityCheckResult> {
@@ -55,6 +83,7 @@ export async function runPromotionEligibilityCheckJob(
 
   // Fetch all active servers that have not been paused from auto-promotion
   const activeServers = await runAdmitted(deps.signal, () => mcpServerRepository.listActive());
+  const connectionMode = loadConfig().googleConnectionMode;
   const now = new Date();
 
   const engine = new TrustTierEngine();
@@ -65,6 +94,8 @@ export async function runPromotionEligibilityCheckJob(
   for (const server of activeServers) {
     requireJobAdmission(deps.signal);
     try {
+      if (await isAccountFreePreviewServerBlocked(connectionMode, server)) continue;
+
       // Skip if auto-promotion ceremony is paused for this server
       if (server.auto_promote_paused_until && server.auto_promote_paused_until > now) {
         continue;

@@ -12,6 +12,11 @@ const mockConnectorHealthRepository = {
   findByUser: vi.fn(),
   upsert: vi.fn(),
 };
+const mockLoadConfig = vi.fn();
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
+}));
 
 vi.mock('@skytwin/db', () => ({
   connectorHealthRepository: mockConnectorHealthRepository,
@@ -64,6 +69,7 @@ const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000007';
 describe('GET /connectors/:userId/status', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
   });
 
   it('returns empty connectors map + anyNeedsReauth=false for a user with no health rows', async () => {
@@ -133,6 +139,85 @@ describe('GET /connectors/:userId/status', () => {
     const app = makeApp();
     const { status, body } = await request(app, 'GET', `/connectors/${USER_ID}/status`);
     expect(status).toBe(200);
+    expect(body['anyNeedsReauth']).toBe(false);
+  });
+
+  it('hides stale Google connector health and recomputes aggregate status while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockConnectorHealthRepository.findByUser.mockResolvedValue([
+      {
+        user_id: USER_ID,
+        connector_name: 'gmail',
+        status: 'needs_reauth',
+        error_code: 'invalid_grant',
+        last_success_at: null,
+        last_failure_at: new Date('2026-05-25T13:00:00Z'),
+        updated_at: new Date('2026-05-25T13:00:00Z'),
+      },
+      {
+        user_id: USER_ID,
+        connector_name: 'google-calendar',
+        status: 'needs_reauth',
+        error_code: 'invalid_grant',
+        last_success_at: null,
+        last_failure_at: new Date('2026-05-25T13:00:00Z'),
+        updated_at: new Date('2026-05-25T13:00:00Z'),
+      },
+    ]);
+
+    const app = makeApp();
+    const { status, body } = await request(app, 'GET', `/connectors/${USER_ID}/status`);
+
+    expect(status).toBe(200);
+    expect(body['connectors']).toEqual({});
+    expect(body['anyNeedsReauth']).toBe(false);
+  });
+
+  it('hides stale account connector health while preserving local neighbors', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const successAt = new Date('2026-05-25T12:00:00Z');
+    mockConnectorHealthRepository.findByUser.mockResolvedValue([
+      {
+        user_id: USER_ID,
+        connector_name: 'gmail',
+        status: 'needs_reauth',
+        error_code: 'invalid_grant',
+        last_success_at: null,
+        last_failure_at: new Date('2026-05-25T13:00:00Z'),
+        updated_at: new Date('2026-05-25T13:00:00Z'),
+      },
+      {
+        user_id: USER_ID,
+        connector_name: 'outlook_mail',
+        status: 'needs_reauth',
+        error_code: 'invalid_grant',
+        last_success_at: null,
+        last_failure_at: new Date('2026-05-25T13:00:00Z'),
+        updated_at: new Date('2026-05-25T13:00:00Z'),
+      },
+      {
+        user_id: USER_ID,
+        connector_name: 'mock-email',
+        status: 'connected',
+        error_code: null,
+        last_success_at: successAt,
+        last_failure_at: null,
+        updated_at: successAt,
+      },
+    ]);
+
+    const app = makeApp();
+    const { status, body } = await request(app, 'GET', `/connectors/${USER_ID}/status`);
+
+    expect(status).toBe(200);
+    expect(body['connectors']).toEqual({
+      'mock-email': {
+        status: 'connected',
+        errorCode: null,
+        lastSuccessAt: successAt.toISOString(),
+        lastFailureAt: null,
+      },
+    });
     expect(body['anyNeedsReauth']).toBe(false);
   });
 

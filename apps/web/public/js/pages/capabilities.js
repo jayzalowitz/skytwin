@@ -16,6 +16,7 @@ import {
 } from '../api-client.js';
 import { showToast } from '../toast.js';
 import { getEffectiveUserId } from '../sample-session.js';
+import { isGoogleAccountIntegration } from '../google-preview-boundary.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton click delegator guard.
@@ -45,6 +46,14 @@ let _lastContainer = null;
 
 function getCurrentUserId() {
   return getEffectiveUserId();
+}
+
+export function isVisiblePreviewCapability(row = {}) {
+  return !isGoogleAccountIntegration({
+    key: row.registry_id ?? row.server_registry_id,
+    integration: row.oauth_provider ?? row.server_oauth_provider,
+    skills: row.skill_name ? [row.skill_name] : [],
+  });
 }
 
 function ensureCapabilitiesListener() {
@@ -197,11 +206,13 @@ export async function renderCapabilities(container, userId) {
     lifebooksData = { lifebooks: [] };
   }
 
-  _cachedInstalled = capData.installed ?? [];
-  _cachedSuggestions = capData.suggestions ?? [];
-  _cachedDormant = capData.dormant ?? [];
-  _cachedRecipes = recipesData.recipes ?? [];
-  _cachedPendingOptIns = optInsData.optIns ?? [];
+  _cachedInstalled = (capData.installed ?? []).filter(isVisiblePreviewCapability);
+  _cachedSuggestions = (capData.suggestions ?? []).filter(isVisiblePreviewCapability);
+  _cachedDormant = (capData.dormant ?? []).filter(isVisiblePreviewCapability);
+  _cachedRecipes = (recipesData.recipes ?? []).filter(recipe =>
+    !(recipe.registryIds ?? []).some(registryId =>
+      isGoogleAccountIntegration({ key: registryId })));
+  _cachedPendingOptIns = (optInsData.optIns ?? []).filter(isVisiblePreviewCapability);
   // `GET /api/lifebooks/:userId` already calls `listVisible()` server-side,
   // so the response is hidden-filtered. Defensive client-side filter uses
   // the actual API field (`hidden: boolean`) — Copilot caught that the
@@ -566,7 +577,12 @@ async function renderRegistryResults(userId, state) {
 
   try {
     const { entries } = await searchCapabilityRegistry(userId, q, category);
-    const filtered = applyLifebookFilter(entries ?? [], lifebookDomain);
+    const previewSafeEntries = (entries ?? []).filter(entry =>
+      !isGoogleAccountIntegration({
+        key: entry.id,
+        adapter: entry.oauthProvider,
+      }));
+    const filtered = applyLifebookFilter(previewSafeEntries, lifebookDomain);
     if (filtered.length === 0) {
       const lifebookMsg = lifebookDomain
         ? ` for the "${escapeHtml(lifebookDomain)}" Lifebook`
@@ -675,6 +691,10 @@ async function handleSnoozeSuggestion(id, userId, days) {
 }
 
 async function handleInstallFromSuggestion(registryId, userId) {
+  if (isGoogleAccountIntegration({ key: registryId })) {
+    showToast('Account-backed capabilities are unavailable in this preview.', { kind: 'info' });
+    return;
+  }
   // Install from suggestion: placeholder — actual install wiring is via mcp-host (#176 follow-up)
   showToast(`Install requested for ${registryId} — wiring coming soon.`, { kind: 'info' });
 }
@@ -693,6 +713,10 @@ async function handleInstallRecipe(slug, userId, btn) {
 }
 
 async function handleInstallRegistryEntry(registryId, userId, btn) {
+  if (isGoogleAccountIntegration({ key: registryId })) {
+    showToast('Account-backed capabilities are unavailable in this preview.', { kind: 'info' });
+    return;
+  }
   // Direct registry install: placeholder — mcp-host wiring is downstream (#176 follow-up)
   showToast(`Install requested for ${registryId} — wiring coming soon.`, { kind: 'info' });
 }

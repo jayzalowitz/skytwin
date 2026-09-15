@@ -779,6 +779,7 @@
           "apps/api/src/routes/capabilities.ts",
           "apps/worker/src/jobs/briefing-generator.ts",
           "apps/worker/src/jobs/dormancy-check.ts",
+          "apps/worker/src/jobs/federation-sync.ts",
           "apps/worker/src/jobs/promotion-eligibility-check.ts",
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/provenance-repository.ts",

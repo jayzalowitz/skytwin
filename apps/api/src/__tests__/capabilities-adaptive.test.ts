@@ -8,8 +8,18 @@ import express from 'express';
 import type { Express } from 'express';
 
 // ── Factory mock ─────────────────────────────────────────────────────────────
-const { mockGetLlmClient } = vi.hoisted(() => ({
+const { mockGetLlmClient, mockRunPrompt, mockLoadConfig } = vi.hoisted(() => ({
   mockGetLlmClient: vi.fn(),
+  mockRunPrompt: vi.fn(),
+  mockLoadConfig: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
+}));
+
+vi.mock('@skytwin/policy-prompts', () => ({
+  runPrompt: mockRunPrompt,
 }));
 
 vi.mock('../lib/user-llm-client.js', () => ({
@@ -114,7 +124,11 @@ async function request(
 // ── C: recipe-recommendation ──────────────────────────────────────────────────
 
 describe('GET /recipes — C: recipe-recommendation', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockRunPrompt.mockRejectedValue(new Error('prompt unavailable'));
+  });
 
   // 1. No LLM → hardcoded recipes
   it('returns hardcoded recipes when no LLM is configured', async () => {
@@ -164,12 +178,87 @@ describe('GET /recipes — C: recipe-recommendation', () => {
     expect(res.status).toBe(200);
     expect(Array.isArray((res.body as { recipes: unknown[] }).recipes)).toBe(true);
   });
+
+  it('filters Google IDs from an LLM recipe and prompt inventory while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockGetLlmClient.mockReturnValue({ hasProviders: true });
+    mockRunPrompt.mockResolvedValue({
+      fellBackToDeterministic: false,
+      output: [
+        {
+          registryId: 'gmail-mcp',
+          name: 'Gmail',
+          reason: 'Read mail',
+          estimatedValueScore: 0.9,
+          riskLevel: 'high',
+        },
+        {
+          registryId: '@modelcontextprotocol/server-github',
+          name: 'GitHub',
+          reason: 'Review code',
+          estimatedValueScore: 0.8,
+          riskLevel: 'medium',
+        },
+      ],
+    });
+
+    const app = buildApp();
+    const res = await request(app, 'GET', '/api/capabilities/recipes');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({
+      recipes: [{
+        slug: 'llm-recommended',
+        displayName: 'Recommended for you',
+        description: 'GitHub: Review code',
+        registryIds: ['@modelcontextprotocol/server-github'],
+        category: 'productivity',
+      }],
+    });
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { registry: Array<{ id: string }> };
+    };
+    expect(promptCall.inputs.registry.some((entry) => entry.id === 'gmail-mcp')).toBe(false);
+    expect(promptCall.inputs.registry.some((entry) =>
+      entry.id === '@modelcontextprotocol/server-github')).toBe(true);
+  });
+
+  it('omits an emptied Google-only LLM recipe and returns the filtered fallback', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockGetLlmClient.mockReturnValue({ hasProviders: true });
+    mockRunPrompt.mockResolvedValue({
+      fellBackToDeterministic: false,
+      output: [{
+        registryId: 'google-calendar-mcp',
+        name: 'Google Calendar',
+        reason: 'Manage events',
+        estimatedValueScore: 0.9,
+        riskLevel: 'high',
+      }],
+    });
+
+    const app = buildApp();
+    const res = await request(app, 'GET', '/api/capabilities/recipes');
+
+    expect(res.status).toBe(200);
+    const recipes = (res.body as {
+      recipes: Array<{ slug: string; registryIds: string[] }>;
+    }).recipes;
+    expect(recipes.some((recipe) => recipe.slug === 'llm-recommended')).toBe(false);
+    expect(recipes.flatMap((recipe) => recipe.registryIds)).not.toContain('google-calendar-mcp');
+    expect(recipes.flatMap((recipe) => recipe.registryIds))
+      .toContain('@modelcontextprotocol/server-github');
+  });
 });
 
 // ── G: reverse-capability-intent ─────────────────────────────────────────────
 
 describe('POST /reverse-capability-intent — G: reverse-capability-intent', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockRunPrompt.mockRejectedValue(new Error('prompt unavailable'));
+  });
 
   // 1. No LLM → deterministic fallback (unknown, empty candidates)
   it('returns unknown action when no LLM is configured', async () => {
@@ -238,5 +327,72 @@ describe('POST /reverse-capability-intent — G: reverse-capability-intent', () 
     });
     expect(res.status).toBe(200);
     expect((res.body as { action: string }).action).toBe('unknown');
+  });
+
+  it('removes account-backed IDs before prompting and from model candidates while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockGetLlmClient.mockReturnValue({ hasProviders: true });
+    mockRunPrompt.mockResolvedValue({
+      fellBackToDeterministic: false,
+      output: {
+        action: 'create_issue',
+        candidate_capabilities: [
+          'gmail-mcp',
+          '@modelcontextprotocol/server-github',
+          'outlook-mcp',
+          'not-installed-mcp',
+        ],
+        confidence: 0.91,
+      },
+    });
+
+    const app = buildApp();
+    const res = await request(app, 'POST', '/api/capabilities/reverse-capability-intent', {
+      userMessage: 'Handle this follow-up',
+      installedRegistryIds: [
+        'gmail-mcp',
+        '@modelcontextprotocol/server-github',
+        'outlook-mcp',
+      ],
+    });
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: string[] };
+    };
+    expect(promptCall.inputs.installed_capabilities)
+      .toEqual(['@modelcontextprotocol/server-github']);
+    expect(res.body).toEqual({
+      action: 'create_issue',
+      candidate_capabilities: ['@modelcontextprotocol/server-github'],
+      confidence: 0.91,
+    });
+  });
+
+  it('preserves account-backed input under the exact experimental opt-in', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockGetLlmClient.mockReturnValue({ hasProviders: true });
+    mockRunPrompt.mockResolvedValue({
+      fellBackToDeterministic: false,
+      output: {
+        action: 'send_message',
+        candidate_capabilities: ['gmail-mcp', 'outlook-mcp'],
+        confidence: 0.88,
+      },
+    });
+
+    const app = buildApp();
+    const res = await request(app, 'POST', '/api/capabilities/reverse-capability-intent', {
+      userMessage: 'Send a status update',
+      installedRegistryIds: ['gmail-mcp', 'outlook-mcp'],
+    });
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: string[] };
+    };
+    expect(promptCall.inputs.installed_capabilities).toEqual(['gmail-mcp', 'outlook-mcp']);
+    expect((res.body as { candidate_capabilities: string[] }).candidate_capabilities)
+      .toEqual(['gmail-mcp', 'outlook-mcp']);
   });
 });

@@ -16,8 +16,10 @@
  * up state.
  */
 import { Router } from 'express';
+import { loadConfig } from '@skytwin/config';
 import { createLogger } from '@skytwin/core';
 import {
+  mcpServerRepository,
   promotionOffersRepository,
   type PromotionOfferRow,
   type PromotionOfferResponse,
@@ -25,6 +27,7 @@ import {
 import type { TrustTier } from '@skytwin/shared-types';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
+import { isAccountFreePreviewServerBlocked } from '../lib/google-capability-boundary.js';
 import { sseManager, SSE_CAPABILITY_PROMOTION_OFFERED } from '../sse.js';
 
 const log = createLogger('api:promotion-offers');
@@ -63,6 +66,41 @@ function rowToDTO(
   };
 }
 
+interface PromotionOfferServerRef {
+  server_id: string;
+  user_id: string;
+}
+
+/**
+ * Bind a durable offer back to the current, owned server before exposing or
+ * mutating it in every mode. In account-free mode, inventory that cannot prove
+ * a non-account capability is unavailable fails closed.
+ */
+async function isPromotionOfferUnavailable(
+  offer: PromotionOfferServerRef,
+): Promise<boolean> {
+  const connectionMode = loadConfig().googleConnectionMode;
+  try {
+    const server = await mcpServerRepository.getById(offer.server_id);
+    if (!server || server.user_id !== offer.user_id || server.status === 'uninstalled') return true;
+    return await isAccountFreePreviewServerBlocked(
+      connectionMode,
+      server,
+      (serverId) => mcpServerRepository.listSkillNamesForServer(serverId),
+    );
+  } catch {
+    return true;
+  }
+}
+
+function respondUnavailable(res: import('express').Response): void {
+  res.status(503).json({
+    error: 'This capability is unavailable in this preview.',
+    code: 'ACCOUNT_CONNECTION_DISABLED',
+    available: false,
+  });
+}
+
 export function createPromotionOffersRouter(): Router {
   const router = Router();
   bindUserIdParamValidator(router);
@@ -86,7 +124,11 @@ export function createPromotionOffersRouter(): Router {
         return;
       }
       const rows = await promotionOffersRepository.listPendingWithServerName(userId);
-      res.json({ offers: rows.map(rowToDTO) });
+      const visibleRows = (await Promise.all(rows.map(async (row) => ({
+        row,
+        hidden: row.user_id !== userId || await isPromotionOfferUnavailable(row),
+      })))).filter(({ hidden }) => !hidden).map(({ row }) => row);
+      res.json({ offers: visibleRows.map(rowToDTO) });
     } catch (err) {
       next(err);
     }
@@ -155,6 +197,10 @@ export function createPromotionOffersRouter(): Router {
           res.status(403).json({ error: 'Offer does not belong to this user' });
           return;
         }
+        if (await isPromotionOfferUnavailable(offer)) {
+          respondUnavailable(res);
+          return;
+        }
         const outcome = await promotionOffersRepository.acceptAtomic({
           offerId,
           serverId: offer.server_id,
@@ -204,6 +250,10 @@ export function createPromotionOffersRouter(): Router {
       }
       if (offer.user_id !== userId) {
         res.status(403).json({ error: 'Offer does not belong to this user' });
+        return;
+      }
+      if (await isPromotionOfferUnavailable(offer)) {
+        respondUnavailable(res);
         return;
       }
       if (offer.responded_at !== null) {
@@ -259,7 +309,9 @@ export async function sweepPromotionOffersOnce(now: Date = new Date()): Promise<
   const since = lastSweepCutoff;
   try {
     const offers = await promotionOffersRepository.listOfferedSince(since);
+    let emitted = 0;
     for (const offer of offers) {
+      if (await isPromotionOfferUnavailable(offer)) continue;
       // Shape matches what the legacy SSE listener expects (serverName,
       // currentTier, etc.) PLUS the new `offerId` so the modal can
       // call /api/promotion-offers/:offerId/respond on accept.
@@ -273,11 +325,12 @@ export async function sweepPromotionOffersOnce(now: Date = new Date()): Promise<
         decisionsObservedCount: offer.decisions_observed_count,
         approvedCount: offer.approved_count,
       });
+      emitted += 1;
     }
     // Advance the cutoff only after the read succeeded so a failed
     // tick re-attempts the same window on the next sweep.
     lastSweepCutoff = now;
-    return offers.length;
+    return emitted;
   } catch (err) {
     log.warn('Promotion-offers sweep failed; cutoff not advanced (will retry same window)', {
       error: err instanceof Error ? err.message : String(err),

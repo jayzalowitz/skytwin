@@ -13,14 +13,20 @@
  */
 
 import { Router } from 'express';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { mcpServerRepository, dxtExportRepository, dxtImportRepository, provenanceRepository, query } from '@skytwin/db';
 import type { McpServerRow, DxtExportMetadataRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { serialize, deserialize, redactCommand } from '@skytwin/dxt';
 import type { DxtArtifactInput, DxtJsonPayload } from '@skytwin/dxt';
+import { loadConfig } from '@skytwin/config';
+import { RegistryClient } from '@skytwin/registry-client';
+import { isGoogleCapabilityBlocked } from '../lib/google-capability-boundary.js';
 
 const log = createLogger('api:dxt');
+// This instance reads only SkyTwin's bundled registry. Disabling Smithery
+// makes the no-network trust boundary explicit for import admission.
+const dxtRegistryClient = new RegistryClient({ smitheryEnabled: false });
 
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
@@ -36,6 +42,38 @@ function getUserId(req: Request): string | undefined {
   const fromQuery = typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
   const fromLegacy = (req as unknown as { user?: { id?: string } }).user?.id;
   return fromAuth ?? fromQuery ?? fromLegacy;
+}
+
+async function isBlockedAccountDxtCapability(
+  registryId: string,
+  skills: readonly string[],
+  oauthProvider?: string | null,
+): Promise<boolean> {
+  const googleConnectionMode = loadConfig().googleConnectionMode;
+  if (googleConnectionMode === 'experimental') return false;
+  // In the account-free preview, an empty inventory cannot prove that a DXT
+  // artifact or its source server is free of account-backed tools. Treat
+  // missing capability evidence as blocked on every transfer path.
+  if (skills.length === 0) return true;
+  const trustedEntry = await dxtRegistryClient.getById(registryId);
+  return isGoogleCapabilityBlocked(googleConnectionMode, {
+    registryId,
+    oauthProvider,
+    skills,
+  }) || isGoogleCapabilityBlocked(googleConnectionMode, {
+    registryId,
+    oauthProvider: trustedEntry?.oauthProvider,
+    skills,
+  });
+}
+
+function sendAccountCapabilityUnavailable(res: Response): void {
+  res.status(503).json({
+    error: 'Account-backed capabilities are unavailable in this preview.',
+    code: 'ACCOUNT_CONNECTION_DISABLED',
+    available: false,
+    mode: 'disabled',
+  });
 }
 
 /**
@@ -76,8 +114,14 @@ function buildArtifactInput(server: McpServerRow, sourceInstanceId: string, skil
   return result;
 }
 
-export function createDxtRouter(): Router {
+export interface DxtRouterDeps {
+  /** Injected only to prove rejected exports never reach serialization. */
+  serializeArtifact?: typeof serialize;
+}
+
+export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
   const router = Router();
+  const serializeArtifact = deps.serializeArtifact ?? serialize;
 
   // ─────────────────────────────────────────────────────────────────────────
   // POST /export/:serverId
@@ -118,8 +162,16 @@ export function createDxtRouter(): Router {
       }
 
       const skills = await mcpServerRepository.listSkillNamesForServer(serverId);
+      if (await isBlockedAccountDxtCapability(
+        server.registry_id,
+        skills,
+        server.oauth_provider,
+      )) {
+        sendAccountCapabilityUnavailable(res);
+        return;
+      }
       const input = buildArtifactInput(server, serverId, skills);
-      const { blob, sha256 } = await serialize(input);
+      const { blob, sha256 } = await serializeArtifact(input);
 
       const row = await dxtExportRepository.create({
         userId,
@@ -156,7 +208,41 @@ export function createDxtRouter(): Router {
 
       // Metadata-only — never load full blobs into memory just to render the list.
       const rows = await dxtExportRepository.listMetadataForUser(userId);
-      const exports = rows.map((r: DxtExportMetadataRow) => ({
+      const visibleRows: DxtExportMetadataRow[] = [];
+      const visibilityByServerId = new Map<string, Promise<boolean>>();
+      const isVisible = (serverId: string): Promise<boolean> => {
+        const existing = visibilityByServerId.get(serverId);
+        if (existing) return existing;
+        const pending = (async () => {
+          const server = await mcpServerRepository.getById(serverId);
+          // A real export retains its source server through a foreign key.
+          // Treat missing or cross-user metadata as unverifiable and keep it
+          // out of the outbound response.
+          if (!server || server.user_id !== userId || !server.registry_id) return false;
+          const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+          return !(await isBlockedAccountDxtCapability(
+            server.registry_id,
+            skills,
+            server.oauth_provider,
+          ));
+        })();
+        visibilityByServerId.set(serverId, pending);
+        return pending;
+      };
+
+      // A user can export the same server repeatedly. Classify each source
+      // server once per request and use small batches so long histories do not
+      // turn into a fully sequential query chain or an unbounded DB fan-out.
+      const classificationBatchSize = 8;
+      for (let start = 0; start < rows.length; start += classificationBatchSize) {
+        const batch = rows.slice(start, start + classificationBatchSize);
+        const visibility = await Promise.all(batch.map((row) => isVisible(row.server_id)));
+        for (let index = 0; index < batch.length; index += 1) {
+          const row = batch[index];
+          if (row && visibility[index]) visibleRows.push(row);
+        }
+      }
+      const exports = visibleRows.map((r: DxtExportMetadataRow) => ({
         id: r.id,
         serverId: r.server_id,
         exportedAt: r.exported_at,
@@ -195,6 +281,39 @@ export function createDxtRouter(): Router {
       }
       if (row.user_id !== userId) {
         res.status(403).json({ error: 'Forbidden: you do not own this export' });
+        return;
+      }
+
+      // Classify the immutable artifact, not only its mutable source row. A
+      // server can be renamed or have its cached skills replaced after an
+      // export was created; that must not make a previously blocked artifact
+      // downloadable. Deserialization verifies the artifact's internal hash.
+      const artifact = deserialize(row.artifact_blob);
+      if (!artifact.success || !row.artifact_sha256.equals(artifact.data.computedSha256)) {
+        res.status(410).json({ error: 'Export artifact failed its integrity check' });
+        return;
+      }
+      const artifactCapability = artifact.data.payload.capability;
+      if (await isBlockedAccountDxtCapability(
+        artifactCapability.registryId,
+        artifactCapability.skills,
+      )) {
+        sendAccountCapabilityUnavailable(res);
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(row.server_id);
+      if (!server || server.user_id !== userId || !server.registry_id) {
+        res.status(410).json({ error: 'Export source capability is no longer available' });
+        return;
+      }
+      const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+      if (await isBlockedAccountDxtCapability(
+        server.registry_id,
+        skills,
+        server.oauth_provider,
+      )) {
+        sendAccountCapabilityUnavailable(res);
         return;
       }
 
@@ -249,6 +368,14 @@ export function createDxtRouter(): Router {
 
       const payload: DxtJsonPayload = result.data.payload;
       const sha256 = result.data.computedSha256;
+
+      if (await isBlockedAccountDxtCapability(
+        payload.capability.registryId,
+        payload.capability.skills,
+      )) {
+        sendAccountCapabilityUnavailable(res);
+        return;
+      }
 
       // Detect if this capability is already installed for this user
       let alreadyInstalled = false;
@@ -365,6 +492,11 @@ export function createDxtRouter(): Router {
 
       const payload: DxtJsonPayload = reResult.data.payload;
       const cap = payload.capability;
+
+      if (await isBlockedAccountDxtCapability(cap.registryId, cap.skills)) {
+        sendAccountCapabilityUnavailable(res);
+        return;
+      }
 
       // Build mcp_servers insert. Transport determines which fields are set.
       // args and env are JSONB — pass as JSON strings.
@@ -550,8 +682,22 @@ export function createDxtRouter(): Router {
 
       const statusFilter = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
       const rows = await dxtImportRepository.listForUser(userId, statusFilter ? { status: statusFilter } : undefined);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const visibleRows: typeof rows = [];
+      for (const row of rows) {
+        if (googleConnectionMode === 'experimental') {
+          visibleRows.push(row);
+          continue;
+        }
+        const artifact = deserialize(row.artifact_blob);
+        if (!artifact.success || !row.artifact_sha256.equals(artifact.data.computedSha256)) continue;
+        const capability = artifact.data.payload.capability;
+        if (!await isBlockedAccountDxtCapability(capability.registryId, capability.skills)) {
+          visibleRows.push(row);
+        }
+      }
 
-      const imports = rows.map((r) => ({
+      const imports = visibleRows.map((r) => ({
         id: r.id,
         registryId: r.registry_id,
         sourceInstanceId: r.source_instance_id,
