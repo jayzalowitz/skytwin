@@ -289,6 +289,26 @@ describe("release claim CI result producer", () => {
     expect(validateReleaseClaimCiResult(report)).toEqual([]);
   });
 
+  it("bounds failure observations and rejects oversized evidence", async () => {
+    const root = fixtureRoot();
+    const runtimeEnv = releaseEnv(root);
+    const report = await runReleaseClaimCi({
+      root,
+      env: runtimeEnv,
+      execute: async () => {
+        throw new Error("x".repeat(8192));
+      },
+    });
+    const checks = report.claims.flatMap((claim) => claim.checks);
+    expect(checks.every((check) => check.observed.length === 4096)).toBe(true);
+    expect(validateReleaseClaimCiResult(report)).toEqual([]);
+
+    checks[0].observed += "x";
+    expect(validateReleaseClaimCiResult(report)).toContain(
+      `${report.claims[0].claimId}/${checks[0].id} is not a canonical observed result`,
+    );
+  });
+
   it("rejects missing, duplicate, and extra canonical checks", async () => {
     const root = fixtureRoot();
     const runtimeEnv = releaseEnv(root);

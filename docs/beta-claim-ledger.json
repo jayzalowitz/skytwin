@@ -1260,8 +1260,8 @@
         },
         {
           "path": "scripts/release-claims/run-release-claim-ci.mjs",
-          "sha256": "60aec590d4207f008eac62c6f1a792da19ce76b1094498a5370b324728b17035",
-          "why": "Runs the frozen commands without a shell, records their observed exit codes and immutable workflow identity, and checks the exact tagged source tree and captured runtimes at every command boundary"
+          "sha256": "16bf1d8bd9796cf5df7085dbcef4e3de7e6e649605743a54efd08c72fc1037e6",
+          "why": "Runs the frozen commands without a shell, records bounded observed exit evidence and immutable workflow identity, and checks the exact tagged source tree and captured runtimes at every command boundary"
         },
         {
           "path": "scripts/release-claims/generate-evidence-manifest.mjs",

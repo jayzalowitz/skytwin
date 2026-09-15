@@ -45,6 +45,7 @@ const RUNTIME_ENV = Object.freeze({
 const GIT = "/usr/bin/git";
 const NULL_DEVICE = "/dev/null";
 const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024;
+const MAX_OBSERVED_CODE_UNITS = 4096;
 const GIT_OBJECT_PATTERN = /^[a-f0-9]{40}$/;
 const CANONICAL_BLOB_MODES = new Set(["100644", "100755", "120000"]);
 const SOURCE_CHECK_ENV = Object.freeze({
@@ -628,7 +629,8 @@ export function validateReleaseClaimCiResult(report) {
         !(Number.isInteger(check.exitCode) || check.exitCode === null) ||
         check.result !== (check.exitCode === 0 ? "pass" : "fail") ||
         typeof check.observed !== "string" ||
-        check.observed.length === 0
+        check.observed.length === 0 ||
+        check.observed.length > MAX_OBSERVED_CODE_UNITS
       )
         errors.push(
           `${claimId}/${check.id} is not a canonical observed result`,
@@ -700,6 +702,12 @@ export async function runReleaseClaimCi({
     const exitCode = Number.isInteger(result?.exitCode)
       ? result.exitCode
       : null;
+    const observedText =
+      exitCode === 0
+        ? "Canonical command exited with code 0"
+        : result?.error
+          ? `Canonical command did not pass: ${result.error}`
+          : `Canonical command exited with code ${String(exitCode)}`;
     observed.set(id, {
       id,
       testId: id,
@@ -709,12 +717,7 @@ export async function runReleaseClaimCi({
       },
       result: exitCode === 0 ? "pass" : "fail",
       exitCode,
-      observed:
-        exitCode === 0
-          ? "Canonical command exited with code 0"
-          : result?.error
-            ? `Canonical command did not pass: ${result.error}`
-            : `Canonical command exited with code ${String(exitCode)}`,
+      observed: observedText.slice(0, MAX_OBSERVED_CODE_UNITS),
     });
   }
   const claims = [...CANONICAL_CI_EVIDENCE_CHECKS].map(
