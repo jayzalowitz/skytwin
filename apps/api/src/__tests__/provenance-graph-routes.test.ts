@@ -642,6 +642,7 @@ describe('GET /api/capabilities/audit', () => {
     }));
     const finalBlocked = makeNode({
       id: 'dddddddd-0000-0000-0000-000000000024',
+      occurred_at: new Date('2026-01-02T00:00:00.000Z'),
       payload: { provider: 'microsoft' },
     });
     // This row represents an insert that arrives after the first raw batch.
@@ -652,28 +653,44 @@ describe('GET /api/capabilities/audit', () => {
       occurred_at: new Date('2026-04-02T00:00:00.000Z'),
       payload: { actionType: 'read_file' },
     });
-    mockQuery
-      .mockResolvedValueOnce({ rows: [{ count: '203' }], rowCount: 1 })
-      .mockResolvedValueOnce({
-        rows: [...firstBatchBlocked, safeNodes[0]],
-        rowCount: 200,
-      })
-      .mockImplementationOnce(async (sql: string, params: unknown[]) => {
-        expect(sql).toContain('(occurred_at, id) < ($2, $3)');
-        expect(sql).not.toContain('OFFSET');
-        expect(params).toEqual([
-          USER_ID,
-          safeNodes[0]?.occurred_at,
-          safeNodes[0]?.id,
-          200,
-        ]);
-        expect(concurrentNewerNode.occurred_at.getTime())
-          .toBeGreaterThan(safeNodes[0]!.occurred_at.getTime());
-        return {
-          rows: [safeNodes[1], finalBlocked, safeNodes[2]],
-          rowCount: 3,
-        };
-      });
+    let orderedRows = [
+      ...firstBatchBlocked,
+      safeNodes[0]!,
+      safeNodes[1]!,
+      finalBlocked,
+      safeNodes[2]!,
+    ];
+    let dataReads = 0;
+    mockQuery.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('COUNT(*)')) {
+        return { rows: [{ count: String(orderedRows.length) }], rowCount: 1 };
+      }
+
+      dataReads += 1;
+      if (dataReads === 1) {
+        const firstPage = orderedRows.slice(0, 200);
+        orderedRows = [concurrentNewerNode, ...orderedRows];
+        // An OFFSET 200 read would now repeat the prior page's cursor row.
+        expect(orderedRows[200]?.id).toBe(safeNodes[0]?.id);
+        return { rows: firstPage, rowCount: firstPage.length };
+      }
+
+      expect(sql).toContain('(occurred_at, id) < ($2, $3)');
+      expect(sql).not.toContain('OFFSET');
+      expect(params).toEqual([
+        USER_ID,
+        safeNodes[0]?.occurred_at,
+        safeNodes[0]?.id,
+        200,
+      ]);
+      const cursorOccurredAt = params[1] as Date;
+      const cursorId = params[2] as string;
+      const nextPage = orderedRows.filter((row) =>
+        row.occurred_at < cursorOccurredAt ||
+        (row.occurred_at.getTime() === cursorOccurredAt.getTime() && row.id < cursorId))
+        .slice(0, params[3] as number);
+      return { rows: nextPage, rowCount: nextPage.length };
+    });
 
     const { status, body } = await req(
       buildApp(),
