@@ -21,8 +21,9 @@ All notable changes to SkyTwin will be documented in this file.
   earlier fail-closed rejection emitted by the shared stable-file reader, and
   the gate invokes the three reviewed test files directly through the
   hash-verified captured Node runtime in a clean environment. The
-  release-workflow checker prevents command, environment, ordering, or failure
-  tolerance changes from weakening it silently.
+  release-workflow checker requires each test file to exist, and each file runs
+  separately with empty suites treated as failures. Command, environment,
+  ordering, or failure-tolerance changes cannot weaken the gate silently.
 
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,

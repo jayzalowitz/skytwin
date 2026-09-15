@@ -130,10 +130,9 @@ jobs:
         shell: /bin/bash --noprofile --norc -eo pipefail {0}
         run: |
           /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
-          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run \
-            scripts/release-artifacts/file-integrity.test.mjs \
-            scripts/release-artifacts/generate-release-manifest.test.mjs \
-            scripts/release-artifacts/materialize-attestation-bundles.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
       - run: pnpm build
       - run: pnpm test
 

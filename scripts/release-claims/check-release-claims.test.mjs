@@ -523,6 +523,9 @@ function writeValidFixture(
     RELEASE_CLAIM_CI_CONSTANTS_PATH,
     RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
     RELEASE_CLAIM_CI_HARNESS_PATH,
+    "scripts/release-artifacts/file-integrity.test.mjs",
+    "scripts/release-artifacts/generate-release-manifest.test.mjs",
+    "scripts/release-artifacts/materialize-attestation-bundles.test.mjs",
     "scripts/release-claims/verifiers/release.artifact-verification.mjs",
   ])
     write(root, path, FIXTURE_RELEASE_SOURCE);
@@ -563,10 +566,9 @@ jobs:
         shell: /bin/bash --noprofile --norc -eo pipefail {0}
         run: |
           /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
-          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run \\
-            scripts/release-artifacts/file-integrity.test.mjs \\
-            scripts/release-artifacts/generate-release-manifest.test.mjs \\
-            scripts/release-artifacts/materialize-attestation-bundles.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
       - name: Produce release claim CI result
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 15
@@ -1923,10 +1925,9 @@ ${step}`,
         shell: /bin/bash --noprofile --norc -eo pipefail {0}
         run: |
           /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
-          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run \\
-            scripts/release-artifacts/file-integrity.test.mjs \\
-            scripts/release-artifacts/generate-release-manifest.test.mjs \\
-            scripts/release-artifacts/materialize-attestation-bundles.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
 `;
 
   it.each([
@@ -1948,8 +1949,8 @@ ${step}`,
       "command substitution",
       (workflow) =>
         workflow.replace(
-          "node_modules/vitest/vitest.mjs run \\",
-          "node_modules/vitest/vitest.mjs --help \\",
+          "node_modules/vitest/vitest.mjs run --passWithNoTests=false",
+          "node_modules/vitest/vitest.mjs --help --passWithNoTests=false",
         ),
     ],
     [
@@ -1999,6 +2000,19 @@ ${step}`,
         "    runs-on: ubuntu-latest\n    continue-on-error: true\n",
       ),
     );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it.each([
+    "scripts/release-artifacts/file-integrity.test.mjs",
+    "scripts/release-artifacts/generate-release-manifest.test.mjs",
+    "scripts/release-artifacts/materialize-attestation-bundles.test.mjs",
+  ])("rejects a missing release artifact test file: %s", (testPath) => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    rmSync(join(root, testPath));
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
     );

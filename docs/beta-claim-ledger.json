@@ -1204,7 +1204,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "367aa2c4051746c392ed5ab71ed5c8abb2695f4c9db7fb93d0df2b1d4efffcb5",
+          "sha256": "f5d2877d18767c41b1b9de3fccb63a8ff1bb35f48329506190b9ebe35aee4132",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
@@ -1245,7 +1245,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "367aa2c4051746c392ed5ab71ed5c8abb2695f4c9db7fb93d0df2b1d4efffcb5",
+          "sha256": "f5d2877d18767c41b1b9de3fccb63a8ff1bb35f48329506190b9ebe35aee4132",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
@@ -1300,7 +1300,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "45e13baf07233e0c2849b6d66441853ffd35acd7b2c5d586c47753c2060875a3",
+          "sha256": "a340af108d740715973840d20fe93f771bee51a685a9818d19b27df39d941410",
           "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material and source report binding at publication"
         }
       ],

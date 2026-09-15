@@ -570,6 +570,11 @@ const SPDX_23_RELATIONSHIP_TYPES = new Set([
   "VARIANT_OF",
 ]);
 const RELEASE_EVIDENCE_WORKFLOW_PATH = ".github/workflows/build.yml";
+const RELEASE_ARTIFACT_TEST_PATHS = Object.freeze([
+  "scripts/release-artifacts/file-integrity.test.mjs",
+  "scripts/release-artifacts/generate-release-manifest.test.mjs",
+  "scripts/release-artifacts/materialize-attestation-bundles.test.mjs",
+]);
 const CI_EVIDENCE_JOB_NAME = "release-claim-ci";
 const CI_EVIDENCE_ARTIFACT_NAME = "release-claims-ci";
 const MACHINE_EVIDENCE_ARTIFACT_NAME = "release-evidence";
@@ -2396,10 +2401,9 @@ fi
     SKYTWIN_RELEASE_CI_NODE_SHA256: runtimeOutput("node-sha256"),
   };
   const ciArtifactTestRun = `/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
-exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run \\
-  scripts/release-artifacts/file-integrity.test.mjs \\
-  scripts/release-artifacts/generate-release-manifest.test.mjs \\
-  scripts/release-artifacts/materialize-attestation-bundles.test.mjs
+/usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
+/usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
+/usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
 `;
   const ciProducerRun = `/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
 /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
@@ -2465,6 +2469,9 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
     ) ||
     ciArtifactTest.shell !== ciShell ||
     ciArtifactTest.run !== ciArtifactTestRun ||
+    RELEASE_ARTIFACT_TEST_PATHS.some(
+      (path) => !resolveContainedRegularFile(root, path),
+    ) ||
     (ciUploadIndexes[0]?.index ?? -1) !==
       (ciProducerIndexes[0]?.index ?? -1) + 1 ||
     (ciReadinessIndexes[0]?.index ?? -1) !==
