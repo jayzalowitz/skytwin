@@ -38,7 +38,7 @@ vi.mock("../cockroach-manager.js", () => ({
   }),
 }));
 
-const { ServiceManager } = await import("../service-manager.js");
+const { ChildTerminationError, ServiceManager } = await import("../service-manager.js");
 
 interface TestStartup {
   ownership: "managed-child";
@@ -230,6 +230,53 @@ describe("ServiceManager worker start serialization", () => {
     expect(broker.attachChild).toHaveBeenCalledWith(worker, "worker", new Set());
     expect(worker.kill).toHaveBeenCalledWith("SIGTERM");
     expect(manager.worker.process).toBeNull();
+    expect(manager.worker.status).toBe("error");
+  });
+
+  it("contains the worker when broker attachment rejects", async () => {
+    const broker = {
+      attachChild: vi.fn().mockRejectedValue(new Error("broker unavailable")),
+    };
+    const manager = new ServiceManager(
+      broker as unknown as ConstructorParameters<typeof ServiceManager>[0],
+    ) as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const { startup, generation } = authorize(manager);
+    const worker = child(8211);
+    worker.kill = vi.fn(() => {
+      worker.exitCode = 0;
+      queueMicrotask(() => worker.emit("exit", 0));
+      return true;
+    });
+    processState.fork.mockReturnValue(worker);
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+
+    await manager.startWorker(startup, generation);
+
+    expect(worker.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(manager.worker.process).toBeNull();
+    expect(manager.worker.status).toBe("error");
+  });
+
+  it("propagates unproven worker containment after broker attachment fails", async () => {
+    vi.useFakeTimers();
+    const broker = { attachChild: vi.fn().mockResolvedValue(false) };
+    const manager = new ServiceManager(
+      broker as unknown as ConstructorParameters<typeof ServiceManager>[0],
+    ) as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const { startup, generation } = authorize(manager);
+    const worker = child(8212);
+    processState.fork.mockReturnValue(worker);
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+
+    const starting = manager.startWorker(startup, generation);
+    const failed = expect(starting).rejects.toBeInstanceOf(ChildTerminationError);
+    await vi.runAllTimersAsync();
+    await failed;
+
+    expect(worker.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
+    expect(worker.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+    expect(manager.worker.process).toBe(worker);
+    expect(manager.workerApiGeneration).toBe(generation);
     expect(manager.worker.status).toBe("error");
   });
 

@@ -38,7 +38,7 @@ vi.mock("../cockroach-manager.js", () => ({
   }),
 }));
 
-const { ServiceManager } = await import("../service-manager.js");
+const { ChildTerminationError, ServiceManager } = await import("../service-manager.js");
 
 interface ApiGenerationForTest {
   process: ChildProcess;
@@ -297,6 +297,34 @@ describe("ServiceManager API error lifecycle", () => {
     expect(api.kill).toHaveBeenCalledWith("SIGTERM");
     expect(manager.api.process).toBeNull();
     expect(manager.apiGeneration).toBeNull();
+  });
+
+  it("propagates unproven API containment after broker attachment fails", async () => {
+    vi.useFakeTimers();
+    const broker = { attachChild: vi.fn().mockResolvedValue(false) };
+    const manager = new ServiceManager(
+      broker as unknown as ConstructorParameters<typeof ServiceManager>[0],
+    ) as InstanceType<typeof ServiceManager> & ManagerInternals;
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.detectExternalApi = vi.fn().mockResolvedValue(false);
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+
+    const starting = manager.startApi(startup);
+    const failed = expect(starting).rejects.toBeInstanceOf(ChildTerminationError);
+    await vi.runAllTimersAsync();
+    await failed;
+
+    expect(processState.child?.kill).toHaveBeenNthCalledWith(1, "SIGTERM");
+    expect(processState.child?.kill).toHaveBeenNthCalledWith(2, "SIGKILL");
+    expect(manager.api.process).toBe(processState.child);
+    expect(manager.apiGeneration).toBeNull();
+    expect(manager.api.status).toBe("error");
   });
 
   it("observes an API exit that races a successful broker attachment", async () => {

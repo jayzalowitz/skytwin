@@ -1012,7 +1012,7 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "14dfac440c8b650b259d4314ebeee6763fbe7abf9aae96afa1b894289d4774ee",
+          "sha256": "9627a57be80913435656373a6de213655f2bb0506953e6a1001b38a250c8d765",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
@@ -1068,7 +1068,7 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "14dfac440c8b650b259d4314ebeee6763fbe7abf9aae96afa1b894289d4774ee",
+          "sha256": "9627a57be80913435656373a6de213655f2bb0506953e6a1001b38a250c8d765",
           "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, clear filesystem plugin authority, and expose no source-key production grants"
         }
       ],

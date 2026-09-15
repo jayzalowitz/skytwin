@@ -64,6 +64,12 @@ export class ChildTerminationError extends Error {
   }
 }
 
+function hasChildTerminationError(error: unknown): boolean {
+  if (error instanceof ChildTerminationError) return true;
+  return error instanceof AggregateError
+    && error.errors.some(hasChildTerminationError);
+}
+
 class ResumeCancelledError extends Error {
   constructor(phase: string) {
     super(`Resume cancelled by a newer pause request ${phase}`);
@@ -1540,15 +1546,37 @@ export class ServiceManager {
 
       // User grants are populated by the authenticated broker client in the
       // source-migration slice. An empty set is deliberately fail closed.
-      const brokerAttached = !this.keyBroker
-        || await this.keyBroker.attachChild(apiProcess, 'api', new Set());
+      let brokerAttached = !this.keyBroker;
+      let attachmentThrew = false;
+      let attachmentError: unknown;
+      if (this.keyBroker) {
+        try {
+          brokerAttached = await this.keyBroker.attachChild(apiProcess, 'api', new Set());
+        } catch (error) {
+          attachmentThrew = true;
+          attachmentError = error;
+        }
+      }
       if (
         !brokerAttached
         || childHasExited(apiProcess)
         || this.api.process !== apiProcess
         || !this.isApiGenerationCurrent(generation)
       ) {
-        if (this.api.process === apiProcess) await this.stopProcess(this.api, 'api');
+        if (this.api.process === apiProcess) {
+          try {
+            await this.stopProcess(this.api, 'api');
+          } catch (containmentError) {
+            if (attachmentThrew) {
+              throw new AggregateError(
+                [attachmentError, containmentError],
+                'API broker attachment and child containment failed',
+              );
+            }
+            throw containmentError;
+          }
+        }
+        if (attachmentThrew) throw attachmentError;
         throw new Error('API source-key broker attachment failed');
       }
 
@@ -1564,6 +1592,7 @@ export class ServiceManager {
       console.error('[api] Failed to start:', err);
       this.api.status = 'error';
       this.emitStatus();
+      if (hasChildTerminationError(err)) throw err;
       return null;
     }
   }
@@ -1967,15 +1996,37 @@ export class ServiceManager {
         }
       });
 
-      const brokerAttached = !this.keyBroker
-        || await this.keyBroker.attachChild(workerProcess, 'worker', new Set());
+      let brokerAttached = !this.keyBroker;
+      let attachmentThrew = false;
+      let attachmentError: unknown;
+      if (this.keyBroker) {
+        try {
+          brokerAttached = await this.keyBroker.attachChild(workerProcess, 'worker', new Set());
+        } catch (error) {
+          attachmentThrew = true;
+          attachmentError = error;
+        }
+      }
       if (
         !brokerAttached
         || childHasExited(workerProcess)
         || this.worker.process !== workerProcess
         || this.workerApiGeneration !== apiGeneration
       ) {
-        if (this.worker.process === workerProcess) await this.stopProcess(this.worker, 'worker');
+        if (this.worker.process === workerProcess) {
+          try {
+            await this.stopProcess(this.worker, 'worker');
+          } catch (containmentError) {
+            if (attachmentThrew) {
+              throw new AggregateError(
+                [attachmentError, containmentError],
+                'Worker broker attachment and child containment failed',
+              );
+            }
+            throw containmentError;
+          }
+        }
+        if (attachmentThrew) throw attachmentError;
         throw new Error('Worker source-key broker attachment failed');
       }
 
@@ -1991,6 +2042,7 @@ export class ServiceManager {
       console.error('[worker] Failed to start:', err);
       this.worker.status = 'error';
       this.emitStatus();
+      if (hasChildTerminationError(err)) throw err;
     }
   }
 

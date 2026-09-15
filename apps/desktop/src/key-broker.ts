@@ -888,24 +888,30 @@ export class DesktopKeyBroker {
       this.releaseChild(child, binding);
       return false;
     }
-    if (!await this.sendForAttachment(child, {
+    const capabilityDelivered = await this.sendForAttachment(child, {
       type: 'skytwin:vault:capability',
       protocolVersion: 1,
       capability: capability.toString('base64'),
       role,
-    }) || !this.attachmentIsLive(child, binding)) {
-      this.releaseChild(child, binding);
+    });
+    if (!capabilityDelivered || !this.attachmentIsLive(child, binding)) {
+      // A failed or timed-out callback does not prove that a living child
+      // never received the capability. Retain the binding until its owner
+      // proves process exit; otherwise a concurrent lock could mistake local
+      // listener cleanup for a child acknowledgement.
+      if (this.childHasExited(child)) this.releaseChild(child, binding);
       return false;
     }
     for (const userId of users) {
-      if (!await this.sendForAttachment(child, {
+      const generationDelivered = await this.sendForAttachment(child, {
         type: 'skytwin:vault:generation',
         protocolVersion: 1,
         ownerKind: 'user',
         ownerId: userId,
         generation: this.generation(userId),
-      }) || !this.attachmentIsLive(child, binding)) {
-        this.releaseChild(child, binding);
+      });
+      if (!generationDelivered || !this.attachmentIsLive(child, binding)) {
+        if (this.childHasExited(child)) this.releaseChild(child, binding);
         return false;
       }
     }

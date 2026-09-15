@@ -769,6 +769,53 @@ describe('DesktopKeyBroker', () => {
     expect(child.killSignals).toEqual([]);
   });
 
+  it('does not treat failed live-child attachment cleanup as a lock acknowledgement', async () => {
+    const secondUserId = '00000000-0000-0000-0000-000000000002';
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 5,
+    });
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.onKill = () => { /* Signal accepted without proven termination. */ };
+    const originalSend = child.send.bind(child);
+    let failSecondGeneration: ((error: Error | null) => void) | undefined;
+    child.send = (value, callback) => {
+      const message = value as Record<string, unknown>;
+      if (
+        message['type'] === 'skytwin:vault:generation'
+        && message['ownerId'] === secondUserId
+      ) {
+        child.sent.push(value);
+        failSecondGeneration = callback;
+        return true;
+      }
+      return originalSend(value, callback);
+    };
+
+    const attaching = broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId, secondUserId]),
+    );
+    for (let attempt = 0; attempt < 10 && !failSecondGeneration; attempt++) await tick();
+    expect(failSecondGeneration).toBeDefined();
+
+    const locking = broker.lock(context.userId);
+    await tick();
+    failSecondGeneration?.(new Error('generation delivery failed'));
+
+    expect(await attaching).toBe(false);
+    expect(await locking).toEqual({
+      success: false,
+      error: 'vault_broker_unavailable',
+      generation: 1,
+    });
+    expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(child.exitCode).toBeNull();
+    child.emit('exit');
+  });
+
   it('rejects and cleans up a child that exits while protocol validators load', async () => {
     let resolveValidators!: (validators: typeof protocolValidators) => void;
     const validators = new Promise<typeof protocolValidators>(resolve => {
