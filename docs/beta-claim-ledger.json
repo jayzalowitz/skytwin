@@ -818,7 +818,7 @@
         },
         {
           "path": "scripts/release-claims/verifiers/storage.desktop-crdb.mjs",
-          "sha256": "4c1a51ba653cbd7c976d38b0e2103c893425d6090b6e542bf7ea579d2647b201",
+          "sha256": "83ce95c6f07b9312725ddf2db1c67607be03b3331b9a616d19e91dd3842ff64c",
           "why": "Runs the exact packaged macOS application twice in an isolated profile and records owned loopback listeners, contained storage, marker persistence, stable binaries, and graceful shutdown"
         },
         {

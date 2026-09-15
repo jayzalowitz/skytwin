@@ -7,6 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -19,10 +20,13 @@ import {
   makeStorageLaunch,
   parseArtifactBindings,
   parseCanonicalArgs,
+  parseLsofListenerInventory,
   parseLsofListeners,
   parseMarkerQueryOutput,
   parsePsRecord,
+  targetIsUnused,
   validateCockroachCommand,
+  waitForReleasedPorts,
 } from "./verifiers/storage.desktop-crdb.mjs";
 
 const roots = [];
@@ -147,6 +151,102 @@ describe("storage desktop verifier inputs", () => {
 });
 
 describe("storage runtime observations", () => {
+  it("requires refused connect, exclusive bind, and an empty lsof inventory", async () => {
+    const bindSucceeds = async () => true;
+    const noLsofListeners = async () => true;
+    expect(
+      await targetIsUnused(26257, {
+        connectRefused: async () => false,
+        bindSucceeds,
+        noLsofListeners,
+      }),
+    ).toBe(false);
+    expect(
+      await targetIsUnused(26257, {
+        connectRefused: async () => true,
+        bindSucceeds,
+        noLsofListeners,
+      }),
+    ).toBe(true);
+    expect(
+      await targetIsUnused(26257, {
+        connectRefused: async () => true,
+        bindSucceeds,
+        noLsofListeners: async () => false,
+      }),
+    ).toBe(false);
+    await expect(
+      targetIsUnused(26257, {
+        connectRefused: async () => {
+          throw new Error("unexpected socket error");
+        },
+        bindSucceeds,
+        noLsofListeners,
+      }),
+    ).rejects.toThrow("unexpected socket error");
+  });
+
+  it("rejects a real connectable loopback listener", async () => {
+    const server = createServer();
+    await new Promise((resolveListen, rejectListen) => {
+      server.once("error", rejectListen);
+      server.listen({ host: "127.0.0.1", port: 0 }, resolveListen);
+    });
+    try {
+      const address = server.address();
+      expect(address && typeof address === "object").toBe(true);
+      expect(
+        await targetIsUnused(address.port, {
+          noLsofListeners: async () => true,
+        }),
+      ).toBe(false);
+    } finally {
+      await new Promise((resolveClose) => server.close(resolveClose));
+    }
+  });
+
+  it("retains wildcard, IPv4, and IPv6 listener inventory for fail-closed checks", () => {
+    expect(
+      parseLsofListenerInventory(
+        "p10\ncdocker\nn*:26257\np11\ncnode\nn127.0.0.1:26257\nn[::1]:26257\n",
+      ),
+    ).toEqual([
+      { pid: 10, command: "docker", names: ["*:26257"] },
+      {
+        pid: 11,
+        command: "node",
+        names: ["127.0.0.1:26257", "[::1]:26257"],
+      },
+    ]);
+  });
+
+  it("requires two consecutive clean listener-release samples", async () => {
+    const observations = [true, false, true, true];
+    let tick = 0;
+    let probes = 0;
+    await expect(
+      waitForReleasedPorts({
+        ports: [26257],
+        deadline: 10,
+        now: () => tick++,
+        probe: async () => observations[probes++],
+        delay: async () => {},
+      }),
+    ).resolves.toBe(true);
+    expect(probes).toBe(4);
+
+    tick = 0;
+    await expect(
+      waitForReleasedPorts({
+        ports: [26257],
+        deadline: 3,
+        now: () => tick++,
+        probe: async () => false,
+        delay: async () => {},
+      }),
+    ).resolves.toBe(false);
+  });
+
   it("parses one exact literal-loopback listener", () => {
     expect(
       parseLsofListeners("p123\nccockroach\nn127.0.0.1:26257\n", 26257),

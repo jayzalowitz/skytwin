@@ -11,10 +11,12 @@ All notable changes to SkyTwin will be documented in this file.
   owned descendant with literal IPv4-loopback SQL and HTTP listeners. It
   verifies one contained non-empty store, writes and reads an opaque marker
   across a graceful restart, rechecks stable artifact and executable identity,
-  and refuses residual listeners or forced cleanup. The publication consumer
-  requires the complete structured observation. No tagged run has produced
-  this machine evidence, so the storage claim remains limited and the release
-  remains blocked.
+  and refuses residual listeners or forced cleanup. Port preflight and shutdown
+  now require a refused loopback connection, a successful exclusive bind, and
+  an empty native listener inventory; shutdown requires two consecutive clean
+  samples. The publication consumer requires the complete structured
+  observation. No tagged run has produced this machine evidence, so the
+  storage claim remains limited and the release remains blocked.
 
 - **Source-key IPC clients now fail closed without activating encryption.** The
   API and worker compose fixed-role clients that strictly validate the versioned

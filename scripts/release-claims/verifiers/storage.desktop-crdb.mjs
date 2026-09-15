@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -266,24 +266,170 @@ export function makeStorageLaunch(executablePath, profileRoot, nonce) {
   };
 }
 
-async function targetIsUnused(port) {
-  const { createServer } = await import("node:net");
-  const server = createServer();
-  return new Promise((resolveUnused) => {
-    server.once("error", () => resolveUnused(false));
-    server.listen({ host: "127.0.0.1", port, exclusive: true }, () =>
-      server.close(() => resolveUnused(true)),
+async function loopbackConnectionIsRefused(port, timeoutMs = 1_000) {
+  const { createConnection } = await import("node:net");
+  return new Promise((resolveRefused, rejectProbe) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.removeAllListeners();
+      socket.destroy();
+      callback(value);
+    };
+    const timer = setTimeout(
+      () => finish(rejectProbe, new Error(`TCP connect probe timed out on port ${port}`)),
+      timeoutMs,
     );
+    socket.once("connect", () => finish(resolveRefused, false));
+    socket.once("error", (error) => {
+      if (error?.code === "ECONNREFUSED") {
+        finish(resolveRefused, true);
+        return;
+      }
+      finish(
+        rejectProbe,
+        new Error(
+          `TCP connect probe failed closed on port ${port}: ${error?.code ?? "unknown"}`,
+        ),
+      );
+    });
   });
 }
 
-async function assertPortsUnused(description) {
+async function exclusiveLoopbackBindSucceeds(port, timeoutMs = 1_000) {
+  const { createServer } = await import("node:net");
+  const server = createServer();
+  return new Promise((resolveUnused, rejectProbe) => {
+    let settled = false;
+    const finish = (callback, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      server.removeAllListeners();
+      if (server.listening) {
+        server.close(() => callback(value));
+      } else {
+        callback(value);
+      }
+    };
+    const timer = setTimeout(
+      () => finish(rejectProbe, new Error(`TCP bind probe timed out on port ${port}`)),
+      timeoutMs,
+    );
+    server.once("error", (error) => {
+      if (error?.code === "EADDRINUSE" || error?.code === "EACCES") {
+        finish(resolveUnused, false);
+        return;
+      }
+      finish(
+        rejectProbe,
+        new Error(
+          `TCP bind probe failed closed on port ${port}: ${error?.code ?? "unknown"}`,
+        ),
+      );
+    });
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      finish(resolveUnused, true);
+    });
+  });
+}
+
+export function parseLsofListenerInventory(output) {
+  const records = [];
+  let current = null;
+  for (const line of String(output).split(/\r?\n/u)) {
+    if (!line) continue;
+    const field = line[0];
+    const value = line.slice(1);
+    if (field === "p") {
+      if (current) records.push(current);
+      assert(/^\d+$/u.test(value), "lsof listener PID is malformed");
+      current = { pid: Number(value), command: null, names: [] };
+    } else if (field === "c") {
+      assert(current, "lsof command preceded its process record");
+      current.command = value;
+    } else if (field === "n") {
+      assert(current, "lsof listener preceded its process record");
+      current.names.push(value);
+    }
+  }
+  if (current) records.push(current);
+  return records;
+}
+
+function lsofReportsNoListeners(port) {
+  const result = spawnSync(
+    "/usr/sbin/lsof",
+    ["-nP", "-a", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fpcn"],
+    {
+      encoding: "utf8",
+      env: {
+        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+        LANG: "C",
+        LC_ALL: "C",
+        TZ: "UTC",
+      },
+      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  assert(!result.error, `lsof listener probe failed on port ${port}`);
+  assert(result.signal === null, `lsof listener probe was signalled on port ${port}`);
+  assert(
+    result.status === 0 || result.status === 1,
+    `lsof listener probe exited ${result.status ?? "without status"} on port ${port}`,
+  );
+  const output = result.stdout ?? "";
+  if (result.status === 1) {
+    assert(
+      output.trim() === "" && (result.stderr ?? "").trim() === "",
+      `lsof listener probe failed closed on port ${port}`,
+    );
+  }
+  return parseLsofListenerInventory(output).length === 0;
+}
+
+export async function targetIsUnused(port, probes = {}) {
+  const connectRefused =
+    probes.connectRefused ?? loopbackConnectionIsRefused;
+  const bindSucceeds =
+    probes.bindSucceeds ?? exclusiveLoopbackBindSucceeds;
+  const noLsofListeners =
+    probes.noLsofListeners ?? lsofReportsNoListeners;
+  if (!(await connectRefused(port))) return false;
+  if (!(await bindSucceeds(port))) return false;
+  return await noLsofListeners(port);
+}
+
+async function assertPortsUnused(description, probes) {
   for (const port of [SQL_PORT, HTTP_PORT, API_PORT, WEB_PORT]) {
     assert(
-      await targetIsUnused(port),
+      await targetIsUnused(port, probes),
       `${description}: port ${port} was already occupied`,
     );
   }
+}
+
+export async function waitForReleasedPorts(options = {}) {
+  const ports = options.ports ?? [SQL_PORT, HTTP_PORT, API_PORT, WEB_PORT];
+  const deadline = options.deadline ?? Date.now() + 45_000;
+  const now = options.now ?? Date.now;
+  const probe = options.probe ?? targetIsUnused;
+  const delay = options.delay ?? ((milliseconds) =>
+    new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds)));
+  let consecutiveCleanSamples = 0;
+  while (now() < deadline) {
+    const unused = (
+      await Promise.all(ports.map((port) => probe(port)))
+    ).every(Boolean);
+    consecutiveCleanSamples = unused ? consecutiveCleanSamples + 1 : 0;
+    if (consecutiveCleanSamples >= 2) return true;
+    await delay(250);
+  }
+  return false;
 }
 
 async function waitForOwnedApi(
@@ -351,25 +497,7 @@ export function parseLsofListeners(output, expectedPort) {
     Number.isSafeInteger(expectedPort) && expectedPort > 0,
     "listener port is invalid",
   );
-  const records = [];
-  let current = null;
-  for (const line of String(output).split(/\r?\n/u)) {
-    if (!line) continue;
-    const field = line[0];
-    const value = line.slice(1);
-    if (field === "p") {
-      if (current) records.push(current);
-      assert(/^\d+$/u.test(value), "lsof listener PID is malformed");
-      current = { pid: Number(value), command: null, names: [] };
-    } else if (field === "c") {
-      assert(current, "lsof command preceded its process record");
-      current.command = value;
-    } else if (field === "n") {
-      assert(current, "lsof listener preceded its process record");
-      current.names.push(value);
-    }
-  }
-  if (current) records.push(current);
+  const records = parseLsofListenerInventory(output);
   assert(
     records.length === 1,
     `expected exactly one listener process on port ${expectedPort}, found ${records.length}`,
@@ -649,23 +777,15 @@ function readMarker(databaseBinary, markerId, markerValue) {
 
 async function stopOwnedLaunch(child) {
   const termination = await stopProcessTree(child, { timeoutMs: 45_000 });
-  const deadline = Date.now() + 45_000;
-  while (Date.now() < deadline) {
-    if (
-      (
-        await Promise.all(
-          [SQL_PORT, HTTP_PORT, API_PORT, WEB_PORT].map(targetIsUnused),
-        )
-      ).every(Boolean)
-    )
-      break;
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 250));
-  }
+  const listenersReleased = await waitForReleasedPorts();
   assert(
     termination.requested && !termination.forced,
     "packaged application required forced termination",
   );
-  await assertPortsUnused("after packaged shutdown");
+  assert(
+    listenersReleased,
+    "after packaged shutdown: listeners did not remain released",
+  );
 }
 
 async function launchAndInspect(
