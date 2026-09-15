@@ -831,7 +831,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "c49f9f6282f989a8dae5d89d7cd3b21f003851ce40cc1066bc3c3207b9d8144d",
+          "sha256": "b7fcb381f12f638e8de3ef1836903fb45e9ee9882d3e94ff03bfef3f5fc5de06",
           "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
         }
       ],
@@ -1054,7 +1054,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "c49f9f6282f989a8dae5d89d7cd3b21f003851ce40cc1066bc3c3207b9d8144d",
+          "sha256": "b7fcb381f12f638e8de3ef1836903fb45e9ee9882d3e94ff03bfef3f5fc5de06",
           "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch"
         },
         {

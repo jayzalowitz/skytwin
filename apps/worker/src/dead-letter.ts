@@ -19,6 +19,18 @@ export interface DeadLetterTrackerOptions {
 }
 
 /**
+ * Retention failures are operationally useful, but database errors are not a
+ * safe logging surface: driver messages can contain connection or query
+ * details. Keep this diagnostic bounded just like persisted dead letters.
+ */
+export function reportDeadLetterRetentionFailure(_error: unknown): void {
+  log.warn('Worker dead-letter retention failed; continuing', {
+    operationCode: 'dead-letter-retention',
+    errorCode: 'job-failed',
+  });
+}
+
+/**
  * The DLQ deliberately does not inspect error messages or payloads. A generic,
  * stable code is sufficient to signal that the named job exhausted its retry
  * budget; the opaque correlation ID ties the worker log to the durable row.

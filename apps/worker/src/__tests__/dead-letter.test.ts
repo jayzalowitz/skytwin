@@ -24,7 +24,8 @@ vi.mock('@skytwin/db', () => ({
     ].includes(value),
 }));
 
-const { DeadLetterTracker } = await import('../dead-letter.js');
+const { DeadLetterTracker, reportDeadLetterRetentionFailure } =
+  await import('../dead-letter.js');
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -149,5 +150,28 @@ describe('DeadLetterTracker', () => {
 
     await value.recordOutcome('briefing-generator-daily', null);
     expect(value.getFailureStreak('briefing-generator-daily')).toBe(0);
+  });
+});
+
+describe('dead-letter retention diagnostics', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('does not inspect or log secret-bearing retention errors', () => {
+    const secret =
+      'postgresql://private:password@host/source prompt=private@example.test';
+    const error = new Error(secret);
+    Object.assign(error, { connectionString: secret, query: secret });
+
+    reportDeadLetterRetentionFailure(error);
+
+    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Worker dead-letter retention failed; continuing',
+      {
+        operationCode: 'dead-letter-retention',
+        errorCode: 'job-failed',
+      },
+    );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(secret);
   });
 });

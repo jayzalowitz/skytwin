@@ -53,7 +53,10 @@ import {
 } from './jobs/watch-scheduler.js';
 import { extractErrorCode } from './oauth-error-code.js';
 import { recordPermanentOAuthFailure } from './oauth-circuit.js';
-import { DeadLetterTracker } from './dead-letter.js';
+import {
+  DeadLetterTracker,
+  reportDeadLetterRetentionFailure,
+} from './dead-letter.js';
 import {
   createWorkerGenerationAdmission,
   isWorkerGenerationRevoked,
@@ -1151,9 +1154,7 @@ async function main(): Promise<void> {
           log.info(`Purged ${purged} resolved worker_dead_letter row(s)`);
         }
       } catch (error) {
-        log.warn('worker_dead_letter purge failed — continuing', {
-          error: error instanceof Error ? error.message : String(error),
-        });
+        reportDeadLetterRetentionFailure(error);
       }
     }
     if (!generationAdmission.isActive()) break;
