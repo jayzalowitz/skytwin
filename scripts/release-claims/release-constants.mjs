@@ -19,6 +19,110 @@ export const CANONICAL_CI_EVIDENCE_CHECKS = new Map([
   ],
 ]);
 
+export const RELEASE_CLAIM_CI_LEDGER_PATH = "docs/beta-claim-ledger.json";
+export const RELEASE_CLAIM_CI_CONSTANTS_PATH =
+  "scripts/release-claims/release-constants.mjs";
+export const RELEASE_CLAIM_CI_HARNESS_PATH =
+  "scripts/release-claims/run-release-claim-ci.mjs";
+export const RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH =
+  "scripts/release-claims/capture-release-claim-ci-runtime.mjs";
+export const RELEASE_CLAIM_CI_RESULT_PATH = "release-claims-ci/result.json";
+export const RELEASE_CLAIM_CI_PRODUCER_STEP = "Produce release claim CI result";
+export const RELEASE_CLAIM_CI_UPLOAD_STEP = "Upload release claim CI result";
+export const RELEASE_CLAIM_CI_READINESS_STEP = "Enforce beta release readiness";
+
+export function canonicalReleaseClaimCiJobSteps(job) {
+  const steps = Array.isArray(job?.steps) ? job.steps : [];
+  const exactlyOneSuccessful = (name) => {
+    const matches = steps.filter((step) => step?.name === name);
+    if (matches.length !== 1 || matches[0]?.conclusion !== "success")
+      throw new Error(`${name} must occur exactly once and succeed`);
+    return matches[0];
+  };
+  const producerStep = exactlyOneSuccessful(RELEASE_CLAIM_CI_PRODUCER_STEP);
+  const uploadStep = exactlyOneSuccessful(RELEASE_CLAIM_CI_UPLOAD_STEP);
+  const readinessSteps = steps.filter(
+    (step) => step?.name === RELEASE_CLAIM_CI_READINESS_STEP,
+  );
+  if (
+    readinessSteps.length !== 1 ||
+    !(
+      (job?.conclusion === "success" &&
+        readinessSteps[0]?.conclusion === "success") ||
+      (job?.conclusion === "failure" &&
+        readinessSteps[0]?.conclusion === "failure")
+    )
+  )
+    throw new Error(
+      "release claim CI job failure is admissible only when the canonical readiness step also failed",
+    );
+  return { producerStep, uploadStep, readinessStep: readinessSteps[0] };
+}
+export const RELEASE_CLAIM_CI_SOURCE_PATHS = Object.freeze([
+  RELEASE_CLAIM_CI_LEDGER_PATH,
+  RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
+  RELEASE_CLAIM_CI_HARNESS_PATH,
+]);
+
+export const CANONICAL_CI_EVIDENCE_COMMANDS = new Map(
+  [
+    [
+      "oauth-default.at-rest-roundtrip",
+      "@skytwin/connectors",
+      "src/__tests__/db-token-store-vault.test.ts",
+    ],
+    [
+      "twin-state.at-rest-roundtrip",
+      "@skytwin/db",
+      "src/__tests__/preferences-vault.test.ts",
+    ],
+    [
+      "confidential-inference.attestation-chain",
+      "@skytwin/llm-client",
+      "src/__tests__/inference-receipt-emission.test.ts",
+    ],
+    [
+      "confidential-inference.response-signature",
+      "@skytwin/shared-types",
+      "src/__tests__/inference-receipt.test.ts",
+    ],
+    ["connectors.account-free-disabled", null, null],
+    [
+      "policy.provenance-fail-safe",
+      "@skytwin/policy-engine",
+      "src/__tests__/injection-guard.test.ts",
+    ],
+    [
+      "router.provenance-backstop",
+      "@skytwin/execution-router",
+      "src/__tests__/injection-guard-backstop.test.ts",
+    ],
+    [
+      "explanations.action-path",
+      "@skytwin/explanations",
+      "src/__tests__/explanation-generator.test.ts",
+    ],
+    [
+      "explanations.non-action-path",
+      "@skytwin/explanations",
+      "src/__tests__/explanation-generator.test.ts",
+    ],
+  ].map(([id, workspace, testPath]) => [
+    id,
+    Object.freeze({
+      executable: "pnpm",
+      args: Object.freeze(
+        workspace === null
+          ? ["test"]
+          : testPath
+            ? ["--filter", workspace, "test", "--", testPath]
+            : ["--filter", workspace, "test"],
+      ),
+    }),
+  ]),
+);
+
 export const CANONICAL_MACHINE_EVIDENCE_CHECKS = new Map([
   ["storage.desktop-crdb", ["storage.packaged-crdb-persistence"]],
   ["inference.on-device-availability", ["inference.packaged-on-device"]],

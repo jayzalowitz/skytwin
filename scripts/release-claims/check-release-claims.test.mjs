@@ -16,6 +16,7 @@ import {
   ARTIFACT_VERIFICATION_RELEASE_PATTERN,
   CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
+  CANONICAL_CI_EVIDENCE_COMMANDS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
@@ -28,6 +29,14 @@ import {
   RELEASE_ARTIFACT_STAGING_DIRECTORY,
   RELEASE_ARTIFACT_VALIDATOR_PATH,
   RELEASE_ATTESTATION_MATERIALIZER_PATH,
+  RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_HARNESS_PATH,
+  RELEASE_CLAIM_CI_LEDGER_PATH,
+  RELEASE_CLAIM_CI_PRODUCER_STEP,
+  RELEASE_CLAIM_CI_READINESS_STEP,
+  RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
+  RELEASE_CLAIM_CI_SOURCE_PATHS,
+  RELEASE_CLAIM_CI_UPLOAD_STEP,
   machineProducerJobName,
   machineVerifierCommand,
   machineVerifierPath,
@@ -42,6 +51,7 @@ import {
   isArtifactCreationWithinProducerWindow,
   isValidSigningSourceReportArtifact,
   isValidSigningUploadBinding,
+  canonicalReleaseClaimCiJobSteps,
   isAllowlistedVerificationCommand,
   isValidSpdx23Document,
   normalizeReleaseTagToRepositoryVersion,
@@ -90,6 +100,10 @@ function signingProducerFields(artifactId, artifactName, platform) {
     artifactUploadStepCompletedAt: "2026-09-15T01:06:00Z",
   };
 }
+const FIXTURE_RELEASE_SOURCE = "export {};\n";
+const FIXTURE_RELEASE_SOURCE_SHA256 = createHash("sha256")
+  .update(FIXTURE_RELEASE_SOURCE)
+  .digest("hex");
 const productionLedger = JSON.parse(
   readFileSync(
     new URL("../../docs/beta-claim-ledger.json", import.meta.url),
@@ -412,6 +426,15 @@ function validLedger() {
             sha256: EVIDENCE_SHA256,
             why: "test evidence",
           },
+          ...(id === "release.artifact-verification"
+            ? RELEASE_CLAIM_CI_SOURCE_PATHS.filter(
+                (path) => path !== RELEASE_CLAIM_CI_LEDGER_PATH,
+              ).map((path) => ({
+                path,
+                sha256: FIXTURE_RELEASE_SOURCE_SHA256,
+                why: "pins a canonical release claim CI source",
+              }))
+            : []),
         ],
         verification: [
           {
@@ -487,9 +510,12 @@ function writeValidFixture(
     RELEASE_ARTIFACT_GENERATOR_PATH,
     RELEASE_ARTIFACT_VALIDATOR_PATH,
     RELEASE_ATTESTATION_MATERIALIZER_PATH,
+    RELEASE_CLAIM_CI_CONSTANTS_PATH,
+    RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
+    RELEASE_CLAIM_CI_HARNESS_PATH,
     "scripts/release-claims/verifiers/release.artifact-verification.mjs",
   ])
-    write(root, path, "export {};\n");
+    write(root, path, FIXTURE_RELEASE_SOURCE);
   const workflow = `env:
   ${identityLine}
 permissions:
@@ -498,6 +524,59 @@ concurrency:
   group: build-\${{ github.ref }}
   cancel-in-progress: \${{ !startsWith(github.ref, 'refs/tags/v') }}
 jobs:
+  test:
+    name: release-claim-ci
+    runs-on: ubuntu-latest
+    steps:
+      - name: Capture release claim CI runtime
+        id: capture-release-claim-runtime
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: node scripts/release-claims/capture-release-claim-ci-runtime.mjs
+      - run: pnpm install --frozen-lockfile
+      - name: Produce release claim CI result
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 15
+        env:
+          BASH_ENV: ''
+          COREPACK_HOME: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          PNPM_HOME: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: \${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: \${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH: \${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-path }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256: \${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+          exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" SKYTWIN_RELEASE_CI_NODE_PATH="$SKYTWIN_RELEASE_CI_NODE_PATH" SKYTWIN_RELEASE_CI_NODE_SHA256="$SKYTWIN_RELEASE_CI_NODE_SHA256" SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-claims/run-release-claim-ci.mjs --output release-claims-ci/result.json
+      - name: Upload release claim CI result
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-claims-ci
+          path: release-claims-ci/result.json
+          if-no-files-found: error
+          compression-level: 0
+      - name: Enforce beta release readiness
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GITHUB_TOKEN: \${{ github.token }}
+        run: |
+          if [[ "\${GITHUB_REF_TYPE}" == "tag" && "\${GITHUB_REF_NAME}" == v* ]]; then
+            pnpm claims:check -- --require-ready --preflight --tag "\${GITHUB_REF_NAME}" --commit "\${GITHUB_SHA}" --repository "\${GITHUB_REPOSITORY}" --run-id "\${GITHUB_RUN_ID}" --ref "\${GITHUB_REF}"
+          fi
   desktop-mac:
     outputs:
       dmg-artifact-id: \${{ steps.upload-macos-dmg.outputs.artifact-id }}
@@ -735,7 +814,7 @@ ${machineMatrix}
           compression-level: 0
   release:
     name: Create GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: [test, desktop-mac, desktop-windows, desktop-linux, aggregate-release-evidence]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -838,12 +917,33 @@ describe("release claim ledger validation", () => {
     expect(procedure).not.toContain('git tag -a "v$(cat VERSION)"');
     expect(procedure).toContain("pnpm --filter @skytwin/db backup export");
     expect(procedure).not.toContain("backup -- export");
+    expect(procedure).toMatch(
+      /The `release-claims-ci` producer now\s+records the frozen source-check commands/u,
+    );
+    expect(procedure).not.toContain(
+      "the separate `release-claims-ci` artifact producer are absent",
+    );
   });
 
   it("accepts a complete blocked release contract", () => {
     const root = makeRoot();
     writeValidFixture(root);
     expect(runChecks({ root }).errors).toEqual([]);
+  });
+
+  it("requires every executable CI-result source to be ledger-pinned", () => {
+    const root = makeRoot();
+    const ledger = validLedger();
+    const claim = ledger.claims.find(
+      (candidate) => candidate.id === "release.artifact-verification",
+    );
+    claim.evidence = claim.evidence.filter(
+      (evidence) => evidence.path !== RELEASE_CLAIM_CI_HARNESS_PATH,
+    );
+    writeValidFixture(root, ledger);
+    expect(validateLedgerShape(ledger, root)).toContain(
+      `release.artifact-verification must pin release claim CI source: ${RELEASE_CLAIM_CI_HARNESS_PATH}`,
+    );
   });
 
   it("rejects a no-op substituted for the canonical machine verifier", () => {
@@ -1733,7 +1833,7 @@ ${step}`,
     );
   });
 
-  it("requires the canonical tag-only release job identity", () => {
+  it("rejects a publisher that admits workflow_dispatch in a tag context", () => {
     const root = makeRoot();
     writeValidFixture(root);
     const path = join(root, ".github/workflows/build.yml");
@@ -1741,12 +1841,131 @@ ${step}`,
       path,
       replaceLast(
         readFileSync(path, "utf8"),
+        "    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')\n",
         "    if: startsWith(github.ref, 'refs/tags/v')\n",
-        "    if: always()\n",
       ),
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "canonical release job identity and dependencies must be exact",
+    );
+  });
+
+  it("rejects a CI-result producer that is not push-only", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "      - name: Produce release claim CI result\n        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
+        "      - name: Produce release claim CI result\n        if: always() && startsWith(github.ref, 'refs/tags/v')",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it("requires the CI-result producer to use the exact hosted runner", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "  test:\n    name: release-claim-ci\n    runs-on: ubuntu-latest\n",
+        "  test:\n    name: release-claim-ci\n    runs-on: ubuntu-24.04\n",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it.each([
+    ["env", "    env:\n      NODE_OPTIONS: --import=attacker.mjs\n"],
+    ["container", "    container: attacker/image:latest\n"],
+    ["defaults", "    defaults:\n      run:\n        shell: attacker-shell\n"],
+  ])("rejects CI-result job-level %s authority", (_kind, authority) => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "  test:\n    name: release-claim-ci\n",
+        `  test:\n    name: release-claim-ci\n${authority}`,
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it("rejects direct runtime-output interpolation in the producer shell", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        '"$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-claims/run-release-claim-ci.mjs',
+        '"\${{ steps.capture-release-claim-runtime.outputs.node-path }}" scripts/release-claims/run-release-claim-ci.mjs',
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it("rejects a harness invocation that inherits lifecycle environment", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "exec /usr/bin/env -i PATH=/usr/bin:/bin",
+        'exec /usr/bin/env PATH=/usr/bin:/bin NODE_OPTIONS="$NODE_OPTIONS"',
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it("rejects a report mutation step between the producer and uploader", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "      - name: Upload release claim CI result\n",
+        "      - name: Rewrite release claim CI result\n        run: node attacker.mjs release-claims-ci/result.json\n      - name: Upload release claim CI result\n",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it.each([
+    ["static", "release-claims-ci"],
+    ["dynamic", "${{ matrix.artifact }}"],
+  ])("rejects an alternate %s CI-result artifact uploader", (_kind, name) => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "  desktop-mac:\n",
+        `  shadow-ci-upload:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a\n        with:\n          name: ${name}\n          path: alternate.json\n  desktop-mac:\n`,
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
     );
   });
 
@@ -5088,19 +5307,46 @@ ${step}`,
     const ref = `refs/tags/${tag}`;
     const runId = 901;
     const releaseAssets = makeReleaseAssets(root);
+    write(root, RELEASE_CLAIM_CI_LEDGER_PATH, "fixture ledger\n");
+    write(root, RELEASE_CLAIM_CI_CONSTANTS_PATH, "fixture constants\n");
+    write(root, RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH, "fixture capture\n");
+    write(root, RELEASE_CLAIM_CI_HARNESS_PATH, "fixture harness\n");
     const ciResult = `${JSON.stringify({
       schemaVersion: 1,
       generatedBy: "release-claim-ci-harness",
       result: "pass",
+      repository: "owner/repository",
       runId,
+      runAttempt: 1,
       sourceCommit: commit,
       ref,
+      event: "push",
+      runtime: {
+        nodePath: "/opt/hostedtoolcache/node/bin/node",
+        nodeSha256: "b".repeat(64),
+        pnpmEntryPath: "/home/runner/setup-pnpm/node_modules/.bin/pnpm",
+        pnpmEntrySha256: "c".repeat(64),
+      },
+      sourceDigests: RELEASE_CLAIM_CI_SOURCE_PATHS.map((path) => ({
+        path,
+        sha256: createHash("sha256")
+          .update(readFileSync(join(root, path)))
+          .digest("hex"),
+      })),
       claims: [...CANONICAL_CI_EVIDENCE_CHECKS].map(([claimId, checkIds]) => ({
         claimId,
         checks: checkIds.map((id) => ({
           id,
           testId: id,
           result: "pass",
+          exitCode: 0,
+          command: {
+            executable: "/opt/hostedtoolcache/node/bin/node",
+            args: [
+              "/home/runner/setup-pnpm/node_modules/.bin/pnpm",
+              ...CANONICAL_CI_EVIDENCE_COMMANDS.get(id).args,
+            ],
+          },
           observed: `fixture result for ${id}`,
         })),
       })),
@@ -5152,6 +5398,11 @@ ${step}`,
     let jobRunId = runId;
     let jobHeadSha = commit;
     let jobsTotalCount = 1;
+    let jobConclusion = "failure";
+    let producerStepConclusion = "success";
+    let producerStepCount = 1;
+    let uploadStepConclusion = "success";
+    let readinessStepConclusion = "failure";
     const fetchImpl = async (url) => {
       const text = String(url);
       let body;
@@ -5164,7 +5415,7 @@ ${step}`,
               run_id: runId,
               name: "release-claim-ci",
               status: "completed",
-              conclusion: "success",
+              conclusion: jobConclusion,
               run_attempt: 1,
               started_at: "2026-09-15T01:01:00Z",
               completed_at: "2026-09-15T01:10:00Z",
@@ -5179,6 +5430,7 @@ ${step}`,
           run_attempt: 1,
           run_started_at: ATTEMPT_STARTED_AT,
           event: "push",
+          run_attempt: 1,
           head_branch: tag,
           head_sha: commit,
           path: ".github/workflows/build.yml",
@@ -5187,7 +5439,6 @@ ${step}`,
       } else if (text.endsWith(`/runs/${runId}`)) {
         body = {
           id: runId,
-          run_attempt: 1,
           event: "push",
           head_branch: tag,
           head_sha: commit,
@@ -5199,12 +5450,26 @@ ${step}`,
           id: 902,
           name: "release-claim-ci",
           status: "completed",
-          conclusion: "success",
+          conclusion: jobConclusion,
           run_attempt: 1,
           started_at: "2026-09-15T01:01:00Z",
           completed_at: "2026-09-15T01:10:00Z",
           head_sha: jobHeadSha,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${jobRunId}`,
+          steps: [
+            ...Array.from({ length: producerStepCount }, () => ({
+              name: RELEASE_CLAIM_CI_PRODUCER_STEP,
+              conclusion: producerStepConclusion,
+            })),
+            {
+              name: RELEASE_CLAIM_CI_UPLOAD_STEP,
+              conclusion: uploadStepConclusion,
+            },
+            {
+              name: RELEASE_CLAIM_CI_READINESS_STEP,
+              conclusion: readinessStepConclusion,
+            },
+          ],
         };
       } else if (text.endsWith("/903")) {
         body = {
@@ -5237,6 +5502,25 @@ ${step}`,
     expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
       [],
     );
+    jobConclusion = "success";
+    readinessStepConclusion = "success";
+    expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
+      [],
+    );
+    const tamperedReport = JSON.parse(ciResult);
+    tamperedReport.sourceDigests[0].sha256 = "f".repeat(64);
+    const tamperedReportBytes = `${JSON.stringify(tamperedReport)}\n`;
+    write(root, "artifacts/release-claims-ci/result.json", tamperedReportBytes);
+    evidence.reportSha256 = createHash("sha256")
+      .update(tamperedReportBytes)
+      .digest("hex");
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("canonical test IDs for the current tag run"),
+      ),
+    ).toBe(true);
+    write(root, "artifacts/release-claims-ci/result.json", ciResult);
+    evidence.reportSha256 = createHash("sha256").update(ciResult).digest("hex");
     jobHeadSha = undefined;
     expect(
       await verifyPublicationEvidence(ledger, manifest, options),
@@ -5260,9 +5544,87 @@ ${step}`,
     jobRunId = 1;
     expect(
       (await verifyPublicationEvidence(ledger, manifest, options)).some(
-        (error) => error.includes("job is not a successful job"),
+        (error) => error.includes("canonical readiness outcome"),
       ),
     ).toBe(true);
+    jobRunId = runId;
+    for (const conclusion of ["failure", "skipped"]) {
+      producerStepConclusion = conclusion;
+      expect(
+        (await verifyPublicationEvidence(ledger, manifest, options)).some(
+          (error) => error.includes("successful producer/upload steps"),
+        ),
+      ).toBe(true);
+    }
+    producerStepConclusion = "success";
+    for (const count of [0, 2]) {
+      producerStepCount = count;
+      expect(
+        (await verifyPublicationEvidence(ledger, manifest, options)).some(
+          (error) => error.includes("successful producer/upload steps"),
+        ),
+      ).toBe(true);
+    }
+    producerStepCount = 1;
+    uploadStepConclusion = "failure";
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("successful producer/upload steps"),
+      ),
+    ).toBe(true);
+    uploadStepConclusion = "success";
+    readinessStepConclusion = "failure";
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("canonical readiness outcome"),
+      ),
+    ).toBe(true);
+  });
+
+  it("shares the blocked-readiness CI job contract with the manifest generator", () => {
+    const blockedJob = {
+      conclusion: "failure",
+      steps: [
+        { name: RELEASE_CLAIM_CI_PRODUCER_STEP, conclusion: "success" },
+        { name: RELEASE_CLAIM_CI_UPLOAD_STEP, conclusion: "success" },
+        { name: RELEASE_CLAIM_CI_READINESS_STEP, conclusion: "failure" },
+      ],
+    };
+    expect(canonicalReleaseClaimCiJobSteps(blockedJob).producerStep).toEqual(
+      blockedJob.steps[0],
+    );
+    const passingJob = structuredClone(blockedJob);
+    passingJob.conclusion = "success";
+    passingJob.steps[2].conclusion = "success";
+    expect(() => canonicalReleaseClaimCiJobSteps(passingJob)).not.toThrow();
+
+    for (const conclusion of ["failure", "skipped"]) {
+      const job = structuredClone(blockedJob);
+      job.steps[0].conclusion = conclusion;
+      expect(() => canonicalReleaseClaimCiJobSteps(job)).toThrow(
+        "Produce release claim CI result must occur exactly once and succeed",
+      );
+    }
+    for (const producerCount of [0, 2]) {
+      const job = structuredClone(blockedJob);
+      job.steps = job.steps.filter(
+        (step) => step.name !== RELEASE_CLAIM_CI_PRODUCER_STEP,
+      );
+      job.steps.push(
+        ...Array.from({ length: producerCount }, () => ({
+          name: RELEASE_CLAIM_CI_PRODUCER_STEP,
+          conclusion: "success",
+        })),
+      );
+      expect(() => canonicalReleaseClaimCiJobSteps(job)).toThrow(
+        "Produce release claim CI result must occur exactly once and succeed",
+      );
+    }
+    const wrongFailure = structuredClone(blockedJob);
+    wrongFailure.steps[2].conclusion = "success";
+    expect(() => canonicalReleaseClaimCiJobSteps(wrongFailure)).toThrow(
+      "failure is admissible only when the canonical readiness step also failed",
+    );
   });
 
   it("scans every required shipped/public surface class", () => {

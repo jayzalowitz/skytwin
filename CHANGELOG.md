@@ -43,6 +43,13 @@ All notable changes to SkyTwin will be documented in this file.
   This implementation has not yet produced evidence from a tagged release and
   does not advance the limited model-delivery claim.
 
+- **Release-claim CI results now come from observed frozen commands.** The
+  no-shell tag-push harness records canonical check exit codes and binds its
+  schema-v1 artifact to the repository, commit, ref, event, run attempt,
+  ledger, harness, and command-source digests. Manual tag-context runs cannot
+  enter the publisher, and release readiness remains blocked on the outstanding
+  machine evidence and external release controls.
+
 - **The supported preview is account-free sample only; connected-account access
   is fail-closed.** The packaged desktop carries no provider client authority
   and pins its managed API and worker children to disabled account mode. Google

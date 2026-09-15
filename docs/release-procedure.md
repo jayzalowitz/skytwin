@@ -34,8 +34,9 @@
 > AppImage artifact to the exact workflow attempt through the upload action's
 > ID/digest outputs, an exact-ID download into a private lane directory, and the
 > exact-attempt start and producer/upload timeline, but
-> it likewise has no tagged release evidence. The other five machine reports
-> (including Linux signing) and the CI result producer are still absent.
+> it likewise has no tagged release evidence. The CI result producer is present
+> in source but has not run on a release tag; the other five machine reports,
+> including Linux signing, are still absent.
 > The final gate therefore fails closed and the ledger remains blocked until the
 > complete proof pipeline ships.
 
@@ -45,14 +46,16 @@ and hosted service deployments are outside this release procedure.
 
 The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The former
-requires a dedicated CI-result producer; it is not currently emitted by the
-`release-claim-ci` job. The latter
+is emitted only for a real `push` of a `v*` tag by the `release-claim-ci` job;
+manual workflow runs never enter the publisher. The latter
 contains the canonical `reports/<claim-id>[.<platform>].json` results for every required machine claim
 and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
 `release.spdx.json`, `VERIFY.md`, and digest-named provenance bundles.
-The CI artifact contains `result.json`, bound to the current run, source commit,
-and tag ref; the final checker hashes and validates that downloaded file as well
-as its GitHub artifact metadata.
+The CI artifact contains `result.json`, bound to the repository, source commit,
+actual ref, event, run ID and attempt, plus the ledger, harness, and
+frozen-command source digests. Its checks are frozen argv arrays executed
+without a shell and record observed exit codes. The final checker hashes and
+validates that downloaded file as well as its GitHub artifact metadata.
 Each report is created only after its subject release artifact is uploaded, so
 it can record the upload action's immutable artifact ID, name, digest, platform,
 artifact kind, subject filename, and subject SHA-256. Reports use schema version
@@ -109,7 +112,7 @@ the recommended model artifact with its source, disclosed license, published
 SHA-256, passing digest verification, and passing deletion check. Omitting one
 of these subjects fails the final gate.
 
-How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: startsWith(github.ref, 'refs/tags/v')`).
+How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`).
 
 Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
 
@@ -246,9 +249,10 @@ The packaged-sample verifier implements three of the twelve matrix reports; see
 [`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
 and model-delivery lanes implement one more each, and the signing source
 implements macOS and Windows while failing closed on Linux until package-format
-methods and trust roots exist. Four verifier sources (four matrix reports), the
-Linux signing implementation, and
-the separate `release-claims-ci` artifact producer are absent today. The
+methods and trust roots exist. Four verifier sources (four matrix reports) and
+the Linux signing implementation are absent today. The `release-claims-ci`
+producer now records the frozen source-check commands and uploads its result on
+tag pushes, but that report does not resolve any external stop-ship condition. The
 signing matrix entries cannot pass until credentialed package jobs produce
 signed artifacts, protected operator configuration supplies the expected
 signer pins, and the tagged run records passing native evidence. Machine

@@ -17,12 +17,22 @@ import {
   ARTIFACT_VERIFICATION_RELEASE_PATTERN,
   CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
+  CANONICAL_CI_EVIDENCE_COMMANDS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
   PINNED_RELEASE_WORKFLOW_ACTIONS,
+  RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_HARNESS_PATH,
+  RELEASE_CLAIM_CI_LEDGER_PATH,
+  RELEASE_CLAIM_CI_PRODUCER_STEP,
+  RELEASE_CLAIM_CI_READINESS_STEP,
+  RELEASE_CLAIM_CI_UPLOAD_STEP,
+  RELEASE_CLAIM_CI_RESULT_PATH,
+  RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
+  RELEASE_CLAIM_CI_SOURCE_PATHS,
   RELEASE_ARTIFACT_GENERATOR_PATH,
   RELEASE_ARTIFACT_MANIFEST_PATH,
   RELEASE_ARTIFACT_MATERIALS_ARTIFACT,
@@ -34,6 +44,7 @@ import {
   SAMPLE_EVIDENCE_PLATFORMS,
   desktopArtifactUploadStepName,
   desktopProducerJobName,
+  canonicalReleaseClaimCiJobSteps,
   machineEvidencePlatformFamily,
   machineProducerJobName,
   machineReportNamesForClaim,
@@ -46,12 +57,23 @@ export {
   ARTIFACT_VERIFICATION_RELEASE_PATTERN,
   CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
+  CANONICAL_CI_EVIDENCE_COMMANDS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
   PINNED_RELEASE_WORKFLOW_ACTIONS,
+  RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_HARNESS_PATH,
+  RELEASE_CLAIM_CI_LEDGER_PATH,
+  RELEASE_CLAIM_CI_PRODUCER_STEP,
+  RELEASE_CLAIM_CI_READINESS_STEP,
+  RELEASE_CLAIM_CI_RESULT_PATH,
+  RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
+  RELEASE_CLAIM_CI_SOURCE_PATHS,
+  RELEASE_CLAIM_CI_UPLOAD_STEP,
+  canonicalReleaseClaimCiJobSteps,
   RELEASE_ARTIFACT_GENERATOR_PATH,
   RELEASE_ARTIFACT_MANIFEST_PATH,
   RELEASE_ARTIFACT_MATERIALS_ARTIFACT,
@@ -2298,6 +2320,161 @@ export function verifyCanonicalReleasePublisher(root) {
     isRecord(value) &&
     Object.keys(value).length === expectedKeys.length &&
     expectedKeys.every((key) => Object.hasOwn(value, key));
+  const ciJob = canonicalWorkflow.jobs?.test;
+  const ciSteps = isRecord(ciJob) ? asArray(ciJob.steps) : [];
+  const ciRuntimeCaptureIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step?.name === "Capture release claim CI runtime");
+  const ciInstallIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step?.run === "pnpm install --frozen-lockfile");
+  const ciProducerIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step?.name === RELEASE_CLAIM_CI_PRODUCER_STEP);
+  const ciUploadIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step?.name === "Upload release claim CI result");
+  const ciReadinessIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step?.name === "Enforce beta release readiness");
+  const ciProducer = ciProducerIndexes[0]?.step;
+  const ciRuntimeCapture = ciRuntimeCaptureIndexes[0]?.step;
+  const ciUpload = ciUploadIndexes[0]?.step;
+  const ciReadiness = ciReadinessIndexes[0]?.step;
+  const ciTagCondition =
+    "always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
+  const ciReadinessRun = `if [[ "\${GITHUB_REF_TYPE}" == "tag" && "\${GITHUB_REF_NAME}" == v* ]]; then
+  pnpm claims:check -- --require-ready --preflight --tag "\${GITHUB_REF_NAME}" --commit "\${GITHUB_SHA}" --repository "\${GITHUB_REPOSITORY}" --run-id "\${GITHUB_RUN_ID}" --ref "\${GITHUB_REF}"
+fi
+`;
+  const runtimeOutput = (name) =>
+    `\${{ steps.capture-release-claim-runtime.outputs.${name} }}`;
+  const ciProducerRuntimeEnv = {
+    BASH_ENV: "",
+    COREPACK_HOME: "",
+    ENV: "",
+    LD_LIBRARY_PATH: "",
+    LD_PRELOAD: "",
+    NODE_PATH: "",
+    NODE_OPTIONS: "",
+    PNPM_HOME: "",
+    SKYTWIN_RELEASE_CI_NODE_PATH: runtimeOutput("node-path"),
+    SKYTWIN_RELEASE_CI_NODE_SHA256: runtimeOutput("node-sha256"),
+    SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH: runtimeOutput("pnpm-entry-path"),
+    SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256: runtimeOutput("pnpm-entry-sha256"),
+  };
+  const ciShell = "/bin/bash --noprofile --norc -eo pipefail {0}";
+  const ciRuntimeCaptureEnv = {
+    BASH_ENV: "",
+    ENV: "",
+    LD_LIBRARY_PATH: "",
+    LD_PRELOAD: "",
+    NODE_PATH: "",
+    NODE_OPTIONS: "",
+  };
+  const ciProducerRun = `/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" SKYTWIN_RELEASE_CI_NODE_PATH="$SKYTWIN_RELEASE_CI_NODE_PATH" SKYTWIN_RELEASE_CI_NODE_SHA256="$SKYTWIN_RELEASE_CI_NODE_SHA256" SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" ${RELEASE_CLAIM_CI_HARNESS_PATH} --output ${RELEASE_CLAIM_CI_RESULT_PATH}
+`;
+  const artifactNameCanResolveTo = (value, expected) => {
+    if (typeof value !== "string") return false;
+    const expressionPattern = /\$\{\{[\s\S]*?\}\}/gu;
+    if (!expressionPattern.test(value)) return value === expected;
+    expressionPattern.lastIndex = 0;
+    const literalSegments = value.split(expressionPattern);
+    let pattern = "^";
+    for (const [index, segment] of literalSegments.entries()) {
+      pattern += segment.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+      if (index < literalSegments.length - 1) pattern += "[\\s\\S]*";
+    }
+    return new RegExp(`${pattern}$`, "u").test(expected);
+  };
+  const ciArtifactUploaders = [];
+  for (const [path, workflow] of parsedWorkflows) {
+    for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+      for (const [stepIndex, step] of asArray(job?.steps).entries()) {
+        if (
+          isRecord(step) &&
+          typeof step.uses === "string" &&
+          step.uses.startsWith("actions/upload-artifact@") &&
+          artifactNameCanResolveTo(step.with?.name, CI_EVIDENCE_ARTIFACT_NAME)
+        )
+          ciArtifactUploaders.push({ path, jobName, stepIndex });
+      }
+    }
+  }
+  const soleCiArtifactUploader = ciArtifactUploaders[0];
+  if (
+    !isRecord(ciJob) ||
+    ciJob.name !== CI_EVIDENCE_JOB_NAME ||
+    ciJob["runs-on"] !== "ubuntu-latest" ||
+    ciJob.env !== undefined ||
+    ciJob.container !== undefined ||
+    ciJob.defaults !== undefined ||
+    ciRuntimeCaptureIndexes.length !== 1 ||
+    ciInstallIndexes.length !== 1 ||
+    ciProducerIndexes.length !== 1 ||
+    ciUploadIndexes.length !== 1 ||
+    ciReadinessIndexes.length !== 1 ||
+    (ciRuntimeCaptureIndexes[0]?.index ?? -1) >=
+      (ciInstallIndexes[0]?.index ?? -1) ||
+    (ciInstallIndexes[0]?.index ?? -1) >= (ciProducerIndexes[0]?.index ?? -1) ||
+    (ciUploadIndexes[0]?.index ?? -1) !==
+      (ciProducerIndexes[0]?.index ?? -1) + 1 ||
+    (ciReadinessIndexes[0]?.index ?? -1) !==
+      (ciUploadIndexes[0]?.index ?? -1) + 1 ||
+    !hasExactKeys(ciRuntimeCapture, ["name", "id", "env", "shell", "run"]) ||
+    ciRuntimeCapture.id !== "capture-release-claim-runtime" ||
+    !hasExactKeys(ciRuntimeCapture.env, Object.keys(ciRuntimeCaptureEnv)) ||
+    Object.entries(ciRuntimeCaptureEnv).some(
+      ([name, value]) => ciRuntimeCapture.env[name] !== value,
+    ) ||
+    ciRuntimeCapture.shell !== ciShell ||
+    ciRuntimeCapture.run !== `node ${RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH}` ||
+    !hasExactKeys(ciProducer, [
+      "name",
+      "if",
+      "timeout-minutes",
+      "env",
+      "shell",
+      "run",
+    ]) ||
+    ciProducer.if !== ciTagCondition ||
+    ciProducer["timeout-minutes"] !== 15 ||
+    !hasExactKeys(ciProducer.env, Object.keys(ciProducerRuntimeEnv)) ||
+    Object.entries(ciProducerRuntimeEnv).some(
+      ([name, value]) => ciProducer.env[name] !== value,
+    ) ||
+    ciProducer.shell !== ciShell ||
+    ciProducer.run !== ciProducerRun ||
+    !hasExactKeys(ciUpload, ["name", "if", "uses", "with"]) ||
+    ciUpload.if !== ciTagCondition ||
+    ciUpload.uses !== PINNED_RELEASE_WORKFLOW_ACTIONS.uploadArtifact ||
+    !hasExactKeys(ciUpload.with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    ciUpload.with.name !== CI_EVIDENCE_ARTIFACT_NAME ||
+    ciUpload.with.path !== RELEASE_CLAIM_CI_RESULT_PATH ||
+    ciUpload.with["if-no-files-found"] !== "error" ||
+    ciUpload.with["compression-level"] !== 0 ||
+    !hasExactKeys(ciReadiness, ["name", "if", "env", "run"]) ||
+    ciReadiness.if !== ciTagCondition ||
+    !hasExactKeys(ciReadiness.env, ["GITHUB_TOKEN"]) ||
+    ciReadiness.env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    ciReadiness.run !== ciReadinessRun ||
+    !resolveContainedRegularFile(root, RELEASE_CLAIM_CI_HARNESS_PATH) ||
+    ciArtifactUploaders.length !== 1 ||
+    soleCiArtifactUploader?.path !== workflowPath ||
+    soleCiArtifactUploader?.jobName !== "test" ||
+    soleCiArtifactUploader?.stepIndex !== ciUploadIndexes[0]?.index
+  )
+    addError(
+      errors,
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
   const machineProducerJob =
     canonicalWorkflow.jobs?.["release-machine-evidence"];
   const desktopLinuxJob = canonicalWorkflow.jobs?.["desktop-linux"];
@@ -3182,7 +3359,8 @@ export function verifyCanonicalReleasePublisher(root) {
       "steps",
     ]) ||
     releaseJob.name !== "Create GitHub Release" ||
-    releaseJob.if !== "startsWith(github.ref, 'refs/tags/v')" ||
+    releaseJob.if !==
+      "github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')" ||
     releaseJob["runs-on"] !== "ubuntu-latest" ||
     releaseJob["timeout-minutes"] !== 30 ||
     !Array.isArray(releaseJob.needs) ||
@@ -3759,6 +3937,25 @@ export function validateLedgerShape(
   for (const id of ids) {
     if (!CANONICAL_CLAIM_CATEGORIES.has(id))
       addError(errors, `unexpected canonical claim id: ${id}`);
+  }
+  const artifactVerificationClaim = claims.find(
+    (claim) => claim?.id === "release.artifact-verification",
+  );
+  const artifactVerificationEvidencePaths = new Set(
+    asArray(artifactVerificationClaim?.evidence).map(
+      (evidence) => evidence?.path,
+    ),
+  );
+  for (const sourcePath of RELEASE_CLAIM_CI_SOURCE_PATHS) {
+    // The ledger is the signed report input and cannot recursively contain its
+    // own digest. Every executable/configuration source named by the report is
+    // independently reviewed and pinned by the artifact-verification claim.
+    if (sourcePath === ledgerPath) continue;
+    if (!artifactVerificationEvidencePaths.has(sourcePath))
+      addError(
+        errors,
+        `release.artifact-verification must pin release claim CI source: ${sourcePath}`,
+      );
   }
   const licenseClaim = claims.find((claim) => claim?.id === "license.apache-2");
   if (
@@ -4561,7 +4758,19 @@ async function fetchChecked(fetchImpl, url, options, description, errors) {
   }
 }
 
-function hasExactPassingChecks(checks, expectedIds) {
+function hasExactReleaseClaimCiRuntime(runtime) {
+  return (
+    isPlainRecord(runtime) &&
+    typeof runtime.nodePath === "string" &&
+    /^\/[A-Za-z0-9_./+-]+$/u.test(runtime.nodePath) &&
+    SOURCE_DIGEST.test(runtime.nodeSha256 ?? "") &&
+    typeof runtime.pnpmEntryPath === "string" &&
+    /^\/[A-Za-z0-9_./+-]+$/u.test(runtime.pnpmEntryPath) &&
+    SOURCE_DIGEST.test(runtime.pnpmEntrySha256 ?? "")
+  );
+}
+
+function hasExactPassingChecks(checks, expectedIds, runtime) {
   if (
     !sameStringSet(
       asArray(checks).map((check) => check?.id),
@@ -4569,12 +4778,34 @@ function hasExactPassingChecks(checks, expectedIds) {
     )
   )
     return false;
-  return asArray(checks).every(
-    (check) =>
+  return asArray(checks).every((check) => {
+    const command = CANONICAL_CI_EVIDENCE_COMMANDS.get(check.id);
+    return (
       check.testId === check.id &&
       check.result === "pass" &&
-      isNonEmptyString(check.observed),
-  );
+      check.exitCode === 0 &&
+      isPlainRecord(check.command) &&
+      check.command.executable === runtime?.nodePath &&
+      JSON.stringify(check.command.args) ===
+        JSON.stringify([runtime?.pnpmEntryPath, ...(command?.args ?? [])]) &&
+      isNonEmptyString(check.observed)
+    );
+  });
+}
+
+function hasExactReleaseClaimCiSourceDigests(root, sourceDigests) {
+  const expectedPaths = RELEASE_CLAIM_CI_SOURCE_PATHS;
+  if (
+    !sameStringSet(
+      asArray(sourceDigests).map((entry) => entry?.path),
+      expectedPaths,
+    )
+  )
+    return false;
+  return sourceDigests.every((entry) => {
+    const path = resolveContainedRegularFile(root, entry.path);
+    return path && entry.sha256 === sha256(readFileSync(path));
+  });
 }
 
 function hasExactPassingMachineChecks(checks, expectedIds) {
@@ -6086,17 +6317,23 @@ export async function verifyPublicationEvidence(
       addError(errors, `${prefix} API response was not valid JSON`);
       continue;
     }
+    let hasCanonicalJobSteps = true;
+    try {
+      canonicalReleaseClaimCiJobSteps(job);
+    } catch {
+      hasCanonicalJobSteps = false;
+    }
     if (
       job.id !== evidence.jobId ||
       job.name !== evidence.jobName ||
-      job.conclusion !== "success" ||
+      !hasCanonicalJobSteps ||
       job.run_url !==
         `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
       job.head_sha !== releaseCommit
     ) {
       addError(
         errors,
-        `${prefix} job is not a successful job in the recorded run`,
+        `${prefix} job is not bound to successful producer/upload steps and the canonical readiness outcome in the recorded run`,
       );
     }
     const exactAttemptJob = exactAttemptJobsById.get(evidence.jobId);
@@ -6159,14 +6396,20 @@ export async function verifyPublicationEvidence(
       report.schemaVersion !== 1 ||
       report.generatedBy !== "release-claim-ci-harness" ||
       report.result !== "pass" ||
+      report.repository !== repository ||
       report.runId !== runId ||
+      report.runAttempt !== currentRun.run_attempt ||
       report.sourceCommit !== releaseCommit ||
       report.ref !== triggerRef ||
+      report.event !== currentRun.event ||
+      !hasExactReleaseClaimCiRuntime(report.runtime) ||
+      !hasExactReleaseClaimCiSourceDigests(root, report.sourceDigests) ||
       !sameStringSet(reportClaimIds, canonicalCiClaimIds) ||
       !claimResult ||
       !hasExactPassingChecks(
         claimResult.checks,
         CANONICAL_CI_EVIDENCE_CHECKS.get(claimId),
+        report.runtime,
       ) ||
       !sameStringSet(
         evidence.checkIds,

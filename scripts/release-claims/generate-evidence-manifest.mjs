@@ -11,6 +11,7 @@ import {
   CANONICAL_RELEASE_ASSETS,
   desktopArtifactUploadStepName,
   desktopProducerJobName,
+  canonicalReleaseClaimCiJobSteps,
   machineProducerJobName,
   machineReportNamesForClaim,
 } from "./release-constants.mjs";
@@ -149,9 +150,8 @@ function assertJobRunIdentity(job, description) {
 }
 
 const ciJob = oneBy(jobsPage.jobs, "name", "release-claim-ci", "CI job");
-if (ciJob.conclusion !== "success")
-  throw new Error("CI evidence job did not pass");
 assertJobRunIdentity(ciJob, "CI evidence job");
+const { producerStep: ciProducerStep } = canonicalReleaseClaimCiJobSteps(ciJob);
 const ciArtifact = oneBy(
   artifactsPage.artifacts,
   "name",
@@ -272,8 +272,8 @@ for (const readiness of ledger.release.readinessClaims) {
         reportPath: "artifacts/release-claims-ci/result.json",
         reportSha256: digestOf("artifacts/release-claims-ci/result.json"),
         commitSha: releaseCommit,
-        conclusion: ciJob.conclusion,
-        why: "Current tag-push CI result and its immutable evidence artifact",
+        conclusion: ciProducerStep.conclusion,
+        why: "Successful canonical producer result and its immutable artifact from the current tag-push run",
       });
       continue;
     }

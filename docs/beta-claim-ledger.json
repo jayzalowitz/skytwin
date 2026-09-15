@@ -320,7 +320,16 @@
     {
       "class": "desktop-public",
       "path": "packages",
-      "extensions": [".html", ".js", ".json", ".md", ".sh", ".ts", ".tsx", ".txt"]
+      "extensions": [
+        ".html",
+        ".js",
+        ".json",
+        ".md",
+        ".sh",
+        ".ts",
+        ".tsx",
+        ".txt"
+      ]
     },
     {
       "class": "desktop-public",
@@ -1230,7 +1239,22 @@
         {
           "path": "scripts/release-claims/release-constants.mjs",
           "sha256": "eab5126fe51f19e82931719ae8aa06485ff31749da22c1c4e4655d160f93f80a",
-          "why": "Defines the exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
+          "why": "Defines the frozen CI source and command inventories, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
+        },
+        {
+          "path": "scripts/release-claims/capture-release-claim-ci-runtime.mjs",
+          "sha256": "2d2b9201583c0499512368563d0d6a3891d7eff490ab8f0351d9ab788c732701",
+          "why": "Captures safe canonical Node and delegated pnpm CLI bundle paths and digests before dependency installation can alter the job environment"
+        },
+        {
+          "path": "scripts/release-claims/run-release-claim-ci.mjs",
+          "sha256": "0753d902b75d13f0e5c17d625239a8eb4c1c36cd3a192d70c7c04807e83fedcf",
+          "why": "Runs the frozen commands without a shell, records their observed exit codes and immutable workflow identity, and refuses a report if its reviewed inputs change during execution"
+        },
+        {
+          "path": "scripts/release-claims/generate-evidence-manifest.mjs",
+          "sha256": "140565ec1271db16b4a9e4de32088bba9146cdc9a8de229a3cf5983108d0af9e",
+          "why": "Requires the unique canonical CI producer and upload steps to succeed in the current tag-push run; an overall job failure is admissible only when the later readiness gate also failed before the artifact enters the evidence manifest"
         },
         {
           "path": "scripts/release-artifacts/file-integrity.mjs",
@@ -1265,7 +1289,7 @@
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
           "sha256": "ab148067b74b44edf8fb27e57dc82cbbac64112db7eeb8537127b55829b1e317",
-          "why": "Structurally locks the sole materials producer and exact-ID signing report aggregator and re-verifies every release material and source report binding at publication"
+          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every release material and source report binding at publication"
         }
       ],
       "verification": [
