@@ -439,7 +439,8 @@ for (const readiness of ledger.release.readinessClaims) {
             uploadStartedMs < attemptStartedMs ||
             startedMs > uploadStartedMs ||
             uploadStartedMs > createdMs ||
-            createdMs > uploadCompletedMs ||
+            createdMs > completedMs ||
+            uploadStartedMs > uploadCompletedMs ||
             uploadCompletedMs > completedMs ||
             createdMs > updatedMs
           )
@@ -496,6 +497,10 @@ for (const readiness of ledger.release.readinessClaims) {
           signingSourceArtifact.updated_at,
           "source signing report artifact update time",
         );
+        const producerStartedMs = githubTimestamp(
+          producerJob.started_at,
+          "machine evidence producer start time",
+        );
         const uploadStartedMs = githubTimestamp(
           uploadStep.started_at,
           "source signing report upload step start time",
@@ -511,9 +516,11 @@ for (const readiness of ledger.release.readinessClaims) {
         if (
           uploadStep.status !== "completed" ||
           uploadStep.conclusion !== "success" ||
-          uploadStartedMs < attemptStartedMs ||
+          producerStartedMs < attemptStartedMs ||
+          producerStartedMs > uploadStartedMs ||
           uploadStartedMs > artifactCreatedMs ||
-          artifactCreatedMs > uploadCompletedMs ||
+          artifactCreatedMs > producerCompletedMs ||
+          uploadStartedMs > uploadCompletedMs ||
           uploadCompletedMs > producerCompletedMs ||
           artifactCreatedMs > artifactUpdatedMs
         )

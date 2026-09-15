@@ -39,6 +39,7 @@ import {
   REQUIRED_SURFACE_CLASSES,
   buildCanonicalVerificationInstructions,
   hasCanonicalSuccessfulMachineSteps,
+  isArtifactCreationWithinProducerWindow,
   isValidSigningSourceReportArtifact,
   isValidSigningUploadBinding,
   isAllowlistedVerificationCommand,
@@ -4046,6 +4047,8 @@ ${step}`,
     const sourceReportArtifactId = 880;
     const sourceReportArtifactName = "release-signing-report-windows-attempt-2";
     const sourceReportArtifactSha256 = "f".repeat(64);
+    const releaseArtifactCreatedAt = "2026-09-15T01:06:01Z";
+    const sourceReportArtifactCreatedAt = "2026-09-15T01:04:01Z";
     const artifactProducers = [
       {
         artifactId: releaseAsset.artifactId,
@@ -4055,6 +4058,8 @@ ${step}`,
           releaseAsset.artifactName,
           "windows",
         ),
+        artifactCreatedAt: releaseArtifactCreatedAt,
+        artifactUpdatedAt: releaseArtifactCreatedAt,
       },
     ];
     Object.assign(report, {
@@ -4109,8 +4114,8 @@ ${step}`,
       sourceReportArtifactId,
       sourceReportArtifactName,
       sourceReportArtifactSha256,
-      sourceReportArtifactCreatedAt: "2026-09-15T01:03:00Z",
-      sourceReportArtifactUpdatedAt: "2026-09-15T01:03:00Z",
+      sourceReportArtifactCreatedAt,
+      sourceReportArtifactUpdatedAt: sourceReportArtifactCreatedAt,
       sourceCommit: commit,
       releaseTag: tag,
       platform: "windows",
@@ -4257,16 +4262,19 @@ ${step}`,
           name: sourceReportArtifactName,
           expired: false,
           digest: `sha256:${sourceReportArtifactSha256}`,
-          created_at: "2026-09-15T01:03:00Z",
-          updated_at: "2026-09-15T01:03:00Z",
+          created_at: sourceReportArtifactCreatedAt,
+          updated_at: sourceReportArtifactCreatedAt,
           workflow_run: { id: runId, head_sha: commit },
         };
-      else
-        body = releaseAssetApiBody(
-          releaseAssets.find(({ artifactId }) => artifactId === id),
-          runId,
-          commit,
-        );
+      else {
+        const asset = releaseAssets.find(({ artifactId }) => artifactId === id);
+        body = releaseAssetApiBody(asset, runId, commit);
+        if (asset?.artifactName === "SkyTwin-Windows-installer")
+          Object.assign(body, {
+            created_at: releaseArtifactCreatedAt,
+            updated_at: releaseArtifactCreatedAt,
+          });
+      }
       return { ok: true, json: async () => body };
     };
     const options = {
@@ -4319,8 +4327,8 @@ ${step}`,
           name: sourceReportArtifactName,
           expired: false,
           digest: `sha256:${sourceReportArtifactSha256}`,
-          created_at: "2026-09-15T01:03:00Z",
-          updated_at: "2026-09-15T01:03:00Z",
+          created_at: sourceReportArtifactCreatedAt,
+          updated_at: sourceReportArtifactCreatedAt,
           workflow_run: { id: runId, head_sha: commit },
         },
         evidence,
@@ -4363,6 +4371,28 @@ ${step}`,
       "release evidence manifest is missing required evidence: release.signing:machine:macos",
       "release evidence manifest is missing required evidence: release.signing:machine:linux",
     ]);
+
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        "2026-09-15T01:04:01Z",
+        "2026-09-15T01:02:00Z",
+        "2026-09-15T01:10:00Z",
+      ),
+    ).toBe(true);
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        "2026-09-15T01:10:01Z",
+        "2026-09-15T01:02:00Z",
+        "2026-09-15T01:10:00Z",
+      ),
+    ).toBe(false);
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        "2026-09-15T00:59:59Z",
+        "2026-09-15T01:02:00Z",
+        "2026-09-15T01:10:00Z",
+      ),
+    ).toBe(false);
   });
 
   it("requires CI job/run URL and artifact proof from the current run", async () => {

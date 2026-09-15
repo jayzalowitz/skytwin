@@ -188,16 +188,20 @@ predate that attempt, even when GitHub relabels a carried-forward successful
 job with the current `run_attempt`. Aggregation resolves the exact source report
 IDs from the sidecars; manifest generation and publication revalidate the
 source-report and desktop artifacts, successful jobs, upload steps, and
-creation windows through the API. A partial rerun that carries a package job
-forward therefore cannot satisfy signing evidence: rerun the desktop producer
-and verifier together.
+producer-job creation windows through the API. A partial rerun that carries a
+package job forward therefore cannot satisfy signing evidence: rerun the
+desktop producer and verifier together.
 
 GitHub's public Actions artifact API is run-wide and does not expose a direct
 artifact-to-job or artifact-to-attempt relation. The strongest available
 binding combines the upload action's exact ID/digest outputs, attempt-specific
 report names, exact-attempt job and step identity, and an artifact creation time
-inside the successful upload-step interval. This is an explicit hosted API
-limitation, not proof of a stronger native relation. These controls fail closed
+no earlier than the successful upload step start and no later than its producer
+job completion.
+GitHub's whole-second API timestamps can report artifact creation one second
+after the upload step's completion, so that completion timestamp is not used as
+the upper bound. This is an explicit hosted API limitation, not proof of a
+stronger native relation. These controls fail closed
 against stale-attempt reuse and mutations within the workflow's processes and
 handoff windows; arbitrary same-user control of the hosted runner itself
 remains outside the evidence threat boundary.

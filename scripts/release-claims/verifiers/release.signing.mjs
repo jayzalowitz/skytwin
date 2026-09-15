@@ -738,7 +738,7 @@ function assertArtifactProducerBindings(
         createdMs <= completedMs &&
         startedMs <= uploadStartedMs &&
         uploadStartedMs <= createdMs &&
-        createdMs <= uploadCompletedMs &&
+        uploadStartedMs <= uploadCompletedMs &&
         uploadCompletedMs <= completedMs &&
         createdMs <= updatedMs,
       `${description} has invalid or impossible producer provenance`,
@@ -842,7 +842,8 @@ function bindArtifactProducer(
       attemptStartedMs <= startedMs &&
       startedMs <= uploadStartedMs &&
       uploadStartedMs <= artifactCreatedMs &&
-      artifactCreatedMs <= uploadCompletedMs &&
+      artifactCreatedMs <= completedMs &&
+      uploadStartedMs <= uploadCompletedMs &&
       uploadCompletedMs <= completedMs
     );
   });

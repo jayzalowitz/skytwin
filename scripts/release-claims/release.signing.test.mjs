@@ -774,6 +774,42 @@ describe("release.signing canonical verifier", () => {
     expect(resolved).toEqual(apiArtifactMap("macos"));
     expect(fetchImpl).toHaveBeenCalledTimes(6);
 
+    const secondGranularityArtifacts = artifacts.map((artifact) => ({
+      ...artifact,
+      created_at: "2026-09-15T01:06:01Z",
+      updated_at: "2026-09-15T01:06:01Z",
+    }));
+    const secondGranularityExpected = new Map(
+      [...apiArtifactMap("macos")].map(([name, artifact]) => [
+        name,
+        {
+          ...artifact,
+          artifactCreatedAt: "2026-09-15T01:06:01Z",
+          artifactUpdatedAt: "2026-09-15T01:06:01Z",
+        },
+      ]),
+    );
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(secondGranularityArtifacts),
+      ),
+    ).resolves.toEqual(secondGranularityExpected);
+
+    const afterJobArtifacts = artifacts.map((artifact) => ({
+      ...artifact,
+      created_at: "2026-09-15T01:10:01Z",
+      updated_at: "2026-09-15T01:10:01Z",
+    }));
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(afterJobArtifacts),
+      ),
+    ).rejects.toThrow("does not map uniquely");
+
     await expect(
       resolveCurrentRunArtifacts(
         platformIdentity("macos"),

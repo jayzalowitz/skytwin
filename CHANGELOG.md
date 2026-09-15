@@ -229,10 +229,14 @@ All notable changes to SkyTwin will be documented in this file.
   attempt, attempt start, and desktop producer/upload observations. Desktop
   uploads expose exact artifact ID/digest outputs; the verifier, manifest, and
   publisher cross-check those values against the complete exact-attempt job
-  inventory and require artifact creation inside the successful current-attempt
-  upload-step interval. Carried-forward jobs, partial reruns, duplicate
-  same-name artifacts, and stale source reports fail closed. GitHub's public
-  artifact API is run-wide and has no direct artifact-to-job or attempt field,
+  inventory and require artifact creation no earlier than the successful
+  current-attempt upload step start and no later than its producer job
+  completion. This accommodates
+  GitHub's observed whole-second API timestamps, where artifact creation can
+  appear one second after upload-step completion. Carried-forward jobs, partial
+  reruns, duplicate same-name artifacts, and stale source reports fail closed.
+  GitHub's public artifact API is run-wide and has no direct artifact-to-job or
+  attempt field,
   so this composite ID/digest/job/step/time binding is the strongest available
   hosted evidence and does not claim a stronger native relation. These checks
   cover stale-attempt reuse and in-workflow mutation windows, not arbitrary

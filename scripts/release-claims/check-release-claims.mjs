@@ -1363,6 +1363,23 @@ function canonicalGithubTimestampMs(value) {
     : null;
 }
 
+export function isArtifactCreationWithinProducerWindow(
+  artifactCreatedAt,
+  uploadStartedAt,
+  producerCompletedAt,
+) {
+  const createdMs = canonicalGithubTimestampMs(artifactCreatedAt);
+  const uploadStartedMs = canonicalGithubTimestampMs(uploadStartedAt);
+  const producerCompletedMs = canonicalGithubTimestampMs(producerCompletedAt);
+  return (
+    createdMs !== null &&
+    uploadStartedMs !== null &&
+    producerCompletedMs !== null &&
+    uploadStartedMs <= createdMs &&
+    createdMs <= producerCompletedMs
+  );
+}
+
 function validSigningArtifactProducers(
   producers,
   platform,
@@ -1442,8 +1459,12 @@ function validSigningArtifactProducers(
       ].every((value) => value !== null) &&
       attemptStartedMs <= jobStartedMs &&
       jobStartedMs <= uploadStartedMs &&
-      uploadStartedMs <= createdMs &&
-      createdMs <= uploadCompletedMs &&
+      isArtifactCreationWithinProducerWindow(
+        producer.artifactCreatedAt,
+        producer.artifactUploadStepStartedAt,
+        producer.artifactProducerJobCompletedAt,
+      ) &&
+      uploadStartedMs <= uploadCompletedMs &&
       uploadCompletedMs <= jobCompletedMs &&
       createdMs <= updatedMs
     );
@@ -6108,8 +6129,13 @@ export async function verifyPublicationEvidence(
         sourceUploadCompletedMs === null ||
         verifierCompletedMs === null ||
         sourceUploadStartedMs < attemptStartedMs ||
-        sourceUploadStartedMs > sourceCreatedMs ||
-        sourceCreatedMs > sourceUploadCompletedMs ||
+        producerStartedMs > sourceUploadStartedMs ||
+        !isArtifactCreationWithinProducerWindow(
+          sourceReportArtifact?.created_at,
+          sourceUploadStep?.started_at,
+          exactAttemptProducerJob?.completed_at,
+        ) ||
+        sourceUploadStartedMs > sourceUploadCompletedMs ||
         sourceUploadCompletedMs > verifierCompletedMs ||
         sourceCreatedMs > sourceUpdatedMs
       )
@@ -6135,6 +6161,9 @@ export async function verifyPublicationEvidence(
         );
         const uploadCompletedMs = canonicalGithubTimestampMs(
           uploadStep?.completed_at,
+        );
+        const producerCompletedMs = canonicalGithubTimestampMs(
+          producerJobForAttempt?.completed_at,
         );
         if (
           !asset ||
@@ -6164,8 +6193,13 @@ export async function verifyPublicationEvidence(
           artifactCreatedMs === null ||
           uploadStartedMs === null ||
           uploadCompletedMs === null ||
-          uploadStartedMs > artifactCreatedMs ||
-          artifactCreatedMs > uploadCompletedMs
+          producerCompletedMs === null ||
+          !isArtifactCreationWithinProducerWindow(
+            apiArtifact?.created_at,
+            uploadStep?.started_at,
+            producerJobForAttempt?.completed_at,
+          ) ||
+          uploadStartedMs > uploadCompletedMs
         )
           addError(
             errors,

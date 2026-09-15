@@ -1184,7 +1184,7 @@
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "bcef90190f284bc551baf7a5cd5875f02ed4055c0e5a3a70ca55565ae7ef34c4",
+          "sha256": "311925acbf4a5e47bc99296742694271f43373005040eacec570abc7c910e07f",
           "why": "Defines contained report writes and upload bindings, exact-attempt desktop producer and artifact creation-window checks, fail-closed native macOS observations, and capacity-bounded Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
         }
       ],
@@ -1255,7 +1255,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "4e2053c894900b45f8e2388144a753a60987aab63663a22863b765030584cf93",
+          "sha256": "9361c16f26bf8f52b64c0550b9af66603450580c5aade5f52c3e94a09c38c3f2",
           "why": "Structurally locks the sole materials producer and exact-ID signing report aggregator and re-verifies every release material and source report binding at publication"
         }
       ],
