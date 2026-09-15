@@ -134,7 +134,7 @@ export function readColumn(
   fallbackWhenEmpty = '',
 ): VaultReadResult {
   if (encrypted && encrypted.length > 0) {
-    if (key === null) {
+    if (!key) {
       return { success: false, error: 'vault_locked' };
     }
     return decryptColumn(encrypted, key);
