@@ -961,8 +961,8 @@
         },
         {
           "path": "apps/worker/src/jobs/federation-sync.ts",
-          "sha256": "d1c0acec88bf21527c5891e5b94569b76d007d40e7158fd47b4261410f691f69",
-          "why": "Federation sync encrypts state deltas and posts them to configured peer endpoints"
+          "sha256": "7207c2d4643579a149e56273bbd4e76988008541769404d2411212c6a913a620",
+          "why": "Federation sync filters disabled account-backed server and provenance state, encrypts exportable deltas, and posts them to configured peer endpoints"
         }
       ],
       "verification": [
