@@ -135,6 +135,31 @@ export const CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS = Object.freeze([
 
 export const CANONICAL_MACHINE_VERIFIER_STEP = "Run canonical machine verifier";
 
+export const CANONICAL_DESKTOP_PRODUCER_JOBS = new Map([
+  ["macos", "Desktop — macOS (DMG + ZIP)"],
+  ["windows", "Desktop — Windows (NSIS installer)"],
+  ["linux", "Desktop — Linux (AppImage + deb + rpm)"],
+]);
+
+export const CANONICAL_DESKTOP_ARTIFACT_UPLOAD_STEPS = new Map([
+  ["SkyTwin-macOS-dmg", "Upload macOS DMG"],
+  ["SkyTwin-macOS-zip", "Upload macOS ZIP"],
+  ["SkyTwin-Windows-installer", "Upload Windows installer"],
+  ["SkyTwin-Linux-AppImage", "Upload Linux AppImage"],
+  ["SkyTwin-Linux-deb", "Upload Linux deb"],
+  ["SkyTwin-Linux-rpm", "Upload Linux rpm"],
+]);
+
+export function desktopProducerJobName(platform) {
+  return CANONICAL_DESKTOP_PRODUCER_JOBS.get(
+    machineEvidencePlatformFamily(platform),
+  );
+}
+
+export function desktopArtifactUploadStepName(artifactName) {
+  return CANONICAL_DESKTOP_ARTIFACT_UPLOAD_STEPS.get(artifactName);
+}
+
 export function machineEvidencePlatformFamily(platform) {
   return [...SAMPLE_EVIDENCE_PLATFORMS].find(
     (family) =>

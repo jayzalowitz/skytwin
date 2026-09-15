@@ -225,11 +225,18 @@ All notable changes to SkyTwin will be documented in this file.
   and after verification. The producer downloads its uploaded signing report
   by exact artifact ID and compares its bytes with the verifier-emitted digest.
   An attempt-specific sidecar carries that source report digest separately from
-  the Actions archive digest, alongside the source artifact ID, run ID, and run
-  attempt; aggregation downloads the source reports by those exact IDs and
-  publication revalidates their API identity. These checks
-  cover in-workflow mutation windows, not arbitrary same-user control of the
-  hosted runner. Linux remains
+  the Actions archive digest, alongside the source artifact ID, run ID, run
+  attempt, attempt start, and desktop producer/upload observations. Desktop
+  uploads expose exact artifact ID/digest outputs; the verifier, manifest, and
+  publisher cross-check those values against the complete exact-attempt job
+  inventory and require artifact creation inside the successful current-attempt
+  upload-step interval. Carried-forward jobs, partial reruns, duplicate
+  same-name artifacts, and stale source reports fail closed. GitHub's public
+  artifact API is run-wide and has no direct artifact-to-job or attempt field,
+  so this composite ID/digest/job/step/time binding is the strongest available
+  hosted evidence and does not claim a stronger native relation. These checks
+  cover stale-attempt reuse and in-workflow mutation windows, not arbitrary
+  same-user control of the hosted runner. Linux remains
   fail-closed until package-format verification methods and trust roots exist;
   final-DMG notarization is still not wired, and verifier source and tests do
   not claim signed release artifacts.

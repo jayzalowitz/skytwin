@@ -33,6 +33,8 @@ import {
 } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  desktopArtifactUploadStepName,
+  desktopProducerJobName,
   machineReportNamesForClaim,
   machineProducerJobName,
   machineVerifierCommand,
@@ -46,6 +48,7 @@ export const CHECK_IDS = Object.freeze([
 
 const WORKFLOW_PATH = ".github/workflows/build.yml";
 const MAX_API_BYTES = 16 * 1024 * 1024;
+const MAX_RUN_ATTEMPTS = 100;
 const MAX_SUBJECT_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024;
 const SHA256_DIGEST = /^[0-9a-f]{64}$/u;
@@ -589,6 +592,7 @@ export function readRunIdentity(platform, env = process.env) {
   const releaseTag = env.GITHUB_REF_NAME;
   const ref = env.GITHUB_REF;
   const runId = Number(env.GITHUB_RUN_ID);
+  const runAttempt = Number(env.GITHUB_RUN_ATTEMPT);
   assert(/^[0-9a-f]{40}$/u.test(sourceCommit ?? ""), "GITHUB_SHA is invalid");
   assert(
     /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? ""),
@@ -605,6 +609,12 @@ export function readRunIdentity(platform, env = process.env) {
     "GITHUB_RUN_ID must be a positive integer",
   );
   assert(
+    Number.isSafeInteger(runAttempt) &&
+      runAttempt > 0 &&
+      runAttempt <= MAX_RUN_ATTEMPTS,
+    `GITHUB_RUN_ATTEMPT must be between 1 and ${MAX_RUN_ATTEMPTS}`,
+  );
+  assert(
     typeof env.GITHUB_TOKEN === "string" && env.GITHUB_TOKEN.length >= 20,
     "GITHUB_TOKEN is required",
   );
@@ -614,7 +624,252 @@ export function readRunIdentity(platform, env = process.env) {
     releaseTag,
     ref,
     runId,
+    runAttempt,
+    expectedArtifactIds: env.SKYTWIN_RELEASE_ARTIFACT_IDS,
+    expectedArtifactDigests: env.SKYTWIN_RELEASE_ARTIFACT_DIGESTS,
     token: env.GITHUB_TOKEN,
+  };
+}
+
+function parseExpectedArtifactValues(value, platform, field, pattern) {
+  const config = PLATFORM_CONFIG[platform];
+  const entries = String(value ?? "")
+    .split(",")
+    .filter(Boolean)
+    .map((entry) => entry.split("="));
+  assert(
+    entries.every(
+      ([name, id, ...extra]) =>
+        extra.length === 0 &&
+        config.artifacts.some((artifact) => artifact.artifactName === name) &&
+        pattern.test(id ?? "") &&
+        (field !== "ID" || Number.isSafeInteger(Number(id))),
+    ),
+    `release artifact upload ${field} outputs are malformed`,
+  );
+  const values = new Map(entries.map(([name, entry]) => [name, entry]));
+  assert(
+    values.size === config.artifacts.length &&
+      config.artifacts.every(({ artifactName }) => values.has(artifactName)),
+    `release artifact upload ${field} outputs do not cover the exact platform artifact set`,
+  );
+  return values;
+}
+
+function githubTimestamp(value, description) {
+  assert(
+    typeof value === "string" &&
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/u.test(value) &&
+      Number.isFinite(Date.parse(value)),
+    `${description} is not a canonical GitHub timestamp`,
+  );
+  return Date.parse(value);
+}
+
+function assertArtifactProducerBindings(
+  producers,
+  platform,
+  verifierRunAttempt,
+  description,
+) {
+  const expectedNames = PLATFORM_CONFIG[platform].artifacts
+    .map(({ artifactName }) => artifactName)
+    .sort();
+  assert(
+    Array.isArray(producers) && producers.length === expectedNames.length,
+    `${description} does not cover the exact platform artifact set`,
+  );
+  for (const producer of producers) {
+    exactKeys(
+      producer,
+      [
+        "artifactId",
+        "artifactName",
+        "artifactCreatedAt",
+        "artifactUpdatedAt",
+        "artifactProducerJobId",
+        "artifactProducerJobName",
+        "artifactProducerRunAttempt",
+        "artifactProducerJobConclusion",
+        "artifactProducerJobStartedAt",
+        "artifactProducerJobCompletedAt",
+        "artifactUploadStepName",
+        "artifactUploadStepStartedAt",
+        "artifactUploadStepCompletedAt",
+      ],
+      description,
+    );
+    const createdMs = githubTimestamp(
+      producer.artifactCreatedAt,
+      `${description} artifact creation time`,
+    );
+    const updatedMs = githubTimestamp(
+      producer.artifactUpdatedAt,
+      `${description} artifact update time`,
+    );
+    const startedMs = githubTimestamp(
+      producer.artifactProducerJobStartedAt,
+      `${description} producer start time`,
+    );
+    const completedMs = githubTimestamp(
+      producer.artifactProducerJobCompletedAt,
+      `${description} producer completion time`,
+    );
+    const uploadStartedMs = githubTimestamp(
+      producer.artifactUploadStepStartedAt,
+      `${description} upload step start time`,
+    );
+    const uploadCompletedMs = githubTimestamp(
+      producer.artifactUploadStepCompletedAt,
+      `${description} upload step completion time`,
+    );
+    assert(
+      Number.isSafeInteger(producer.artifactId) &&
+        producer.artifactId > 0 &&
+        Number.isSafeInteger(producer.artifactProducerJobId) &&
+        producer.artifactProducerJobId > 0 &&
+        producer.artifactProducerJobName === desktopProducerJobName(platform) &&
+        Number.isSafeInteger(producer.artifactProducerRunAttempt) &&
+        producer.artifactProducerRunAttempt === verifierRunAttempt &&
+        producer.artifactProducerJobConclusion === "success" &&
+        producer.artifactUploadStepName ===
+          desktopArtifactUploadStepName(producer.artifactName) &&
+        startedMs <= createdMs &&
+        createdMs <= completedMs &&
+        startedMs <= uploadStartedMs &&
+        uploadStartedMs <= createdMs &&
+        createdMs <= uploadCompletedMs &&
+        uploadCompletedMs <= completedMs &&
+        createdMs <= updatedMs,
+      `${description} has invalid or impossible producer provenance`,
+    );
+  }
+  assert(
+    JSON.stringify(producers.map(({ artifactName }) => artifactName).sort()) ===
+      JSON.stringify(expectedNames) &&
+      new Set(producers.map(({ artifactId }) => artifactId)).size ===
+        producers.length,
+    `${description} has missing, duplicate, or unexpected artifact identities`,
+  );
+}
+
+async function resolveDesktopProducerJobs(
+  identity,
+  attemptStartedAt,
+  fetchImpl,
+) {
+  const page = await githubJson(
+    identity.repository,
+    `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}/jobs?per_page=100&page=1`,
+    identity.token,
+    fetchImpl,
+  );
+  assert(
+    Array.isArray(page?.jobs) &&
+      Number.isSafeInteger(page.total_count) &&
+      page.total_count <= 100 &&
+      page.jobs.length === page.total_count,
+    `GitHub job inventory for attempt ${identity.runAttempt} is malformed, paginated, or incomplete`,
+  );
+  githubTimestamp(attemptStartedAt, "workflow attempt start time");
+  return page.jobs.map((job) => {
+    assert(
+      Number.isSafeInteger(job?.id) &&
+        job.id > 0 &&
+        job.run_id === identity.runId &&
+        job.run_attempt === identity.runAttempt &&
+        job.run_url ===
+          `https://api.github.com/repos/${identity.repository}/actions/runs/${identity.runId}` &&
+        (job.head_sha === undefined || job.head_sha === identity.sourceCommit),
+      `GitHub job inventory for attempt ${identity.runAttempt} contains a wrong-run job`,
+    );
+    return job;
+  });
+}
+
+function bindArtifactProducer(
+  identity,
+  platform,
+  artifact,
+  jobs,
+  attemptStartedAt,
+) {
+  const producerName = desktopProducerJobName(platform);
+  const attemptStartedMs = githubTimestamp(
+    attemptStartedAt,
+    "workflow attempt start time",
+  );
+  const artifactCreatedMs = githubTimestamp(
+    artifact.created_at,
+    `${artifact.name} artifact creation time`,
+  );
+  githubTimestamp(artifact.updated_at, `${artifact.name} artifact update time`);
+  const candidates = jobs.filter((job) => {
+    if (
+      job.name !== producerName ||
+      job.status !== "completed" ||
+      job.conclusion !== "success"
+    )
+      return false;
+    const startedMs = githubTimestamp(
+      job.started_at,
+      `${producerName} start time`,
+    );
+    const completedMs = githubTimestamp(
+      job.completed_at,
+      `${producerName} completion time`,
+    );
+    const uploadStepName = desktopArtifactUploadStepName(artifact.name);
+    const uploadSteps = Array.isArray(job.steps)
+      ? job.steps.filter((step) => step?.name === uploadStepName)
+      : [];
+    if (uploadSteps.length !== 1) return false;
+    const uploadStep = uploadSteps[0];
+    if (
+      uploadStep.status !== "completed" ||
+      uploadStep.conclusion !== "success"
+    )
+      return false;
+    const uploadStartedMs = githubTimestamp(
+      uploadStep.started_at,
+      `${uploadStepName} start time`,
+    );
+    const uploadCompletedMs = githubTimestamp(
+      uploadStep.completed_at,
+      `${uploadStepName} completion time`,
+    );
+    return (
+      attemptStartedMs <= startedMs &&
+      startedMs <= uploadStartedMs &&
+      uploadStartedMs <= artifactCreatedMs &&
+      artifactCreatedMs <= uploadCompletedMs &&
+      uploadCompletedMs <= completedMs
+    );
+  });
+  assert(
+    candidates.length === 1,
+    `${artifact.name} artifact does not map uniquely to a successful desktop producer job attempt`,
+  );
+  const producer = candidates[0];
+  const uploadStep = producer.steps.find(
+    ({ name }) => name === desktopArtifactUploadStepName(artifact.name),
+  );
+  assert(
+    artifactCreatedMs <= Date.parse(artifact.updated_at),
+    `${artifact.name} artifact update time precedes its creation time`,
+  );
+  return {
+    artifactCreatedAt: artifact.created_at,
+    artifactUpdatedAt: artifact.updated_at,
+    artifactProducerJobId: producer.id,
+    artifactProducerJobName: producer.name,
+    artifactProducerRunAttempt: producer.run_attempt,
+    artifactProducerJobConclusion: producer.conclusion,
+    artifactProducerJobStartedAt: producer.started_at,
+    artifactProducerJobCompletedAt: producer.completed_at,
+    artifactUploadStepName: uploadStep.name,
+    artifactUploadStepStartedAt: uploadStep.started_at,
+    artifactUploadStepCompletedAt: uploadStep.completed_at,
   };
 }
 
@@ -681,8 +936,44 @@ export async function resolveCurrentRunArtifacts(
       run.head_sha === identity.sourceCommit &&
       run.head_branch === identity.releaseTag &&
       run.event === "push" &&
-      run.path === WORKFLOW_PATH,
+      run.path === WORKFLOW_PATH &&
+      run.run_attempt === identity.runAttempt,
     "current workflow run is not the canonical tag-push build for this repository and commit",
+  );
+  const attempt = await githubJson(
+    identity.repository,
+    `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}`,
+    identity.token,
+    fetchImpl,
+  );
+  assert(
+    attempt.id === identity.runId &&
+      attempt.run_attempt === identity.runAttempt &&
+      attempt.repository?.full_name === identity.repository &&
+      attempt.head_sha === identity.sourceCommit &&
+      attempt.head_branch === identity.releaseTag &&
+      attempt.event === "push" &&
+      attempt.path === WORKFLOW_PATH,
+    "current workflow attempt is not the canonical tag-push build for this repository and commit",
+  );
+  githubTimestamp(attempt.run_started_at, "workflow attempt start time");
+  identity.runAttemptStartedAt = attempt.run_started_at;
+  const expectedArtifactIds = parseExpectedArtifactValues(
+    identity.expectedArtifactIds,
+    platform,
+    "ID",
+    /^[1-9][0-9]*$/u,
+  );
+  const expectedArtifactDigests = parseExpectedArtifactValues(
+    identity.expectedArtifactDigests,
+    platform,
+    "digest",
+    SHA256_DIGEST,
+  );
+  const producerJobs = await resolveDesktopProducerJobs(
+    identity,
+    attempt.run_started_at,
+    fetchImpl,
   );
   const page = await githubJson(
     identity.repository,
@@ -712,7 +1003,10 @@ export async function resolveCurrentRunArtifacts(
     assert(
       Number.isSafeInteger(artifact.id) &&
         artifact.id > 0 &&
+        artifact.id ===
+          Number(expectedArtifactIds.get(expected.artifactName)) &&
         artifact.expired === false &&
+        digest === expectedArtifactDigests.get(expected.artifactName) &&
         /^[0-9a-f]{64}$/u.test(digest) &&
         artifact.workflow_run?.id === identity.runId &&
         artifact.workflow_run?.head_sha === identity.sourceCommit,
@@ -729,6 +1023,8 @@ export async function resolveCurrentRunArtifacts(
         detail.name === expected.artifactName &&
         detail.expired === false &&
         detail.digest === `sha256:${digest}` &&
+        detail.created_at === artifact.created_at &&
+        detail.updated_at === artifact.updated_at &&
         detail.workflow_run?.id === identity.runId &&
         detail.workflow_run?.head_sha === identity.sourceCommit,
       `${expected.artifactName} artifact detail disagrees with the current-run inventory`,
@@ -738,6 +1034,13 @@ export async function resolveCurrentRunArtifacts(
       artifactName: expected.artifactName,
       artifactSha256: digest,
       kind: expected.kind,
+      ...bindArtifactProducer(
+        identity,
+        platform,
+        detail,
+        producerJobs,
+        attempt.run_started_at,
+      ),
     });
   }
   return resolved;
@@ -2553,6 +2856,17 @@ export function buildReport({
         artifactName,
         artifactSha256: artifact.artifactSha256,
         kind: artifact.kind,
+        artifactCreatedAt: artifact.artifactCreatedAt,
+        artifactUpdatedAt: artifact.artifactUpdatedAt,
+        artifactProducerJobId: artifact.artifactProducerJobId,
+        artifactProducerJobName: artifact.artifactProducerJobName,
+        artifactProducerRunAttempt: artifact.artifactProducerRunAttempt,
+        artifactProducerJobConclusion: artifact.artifactProducerJobConclusion,
+        artifactProducerJobStartedAt: artifact.artifactProducerJobStartedAt,
+        artifactProducerJobCompletedAt: artifact.artifactProducerJobCompletedAt,
+        artifactUploadStepName: artifact.artifactUploadStepName,
+        artifactUploadStepStartedAt: artifact.artifactUploadStepStartedAt,
+        artifactUploadStepCompletedAt: artifact.artifactUploadStepCompletedAt,
         path: subject.relativePath,
         name: subject.name,
         sha256: subject.sha256,
@@ -2576,9 +2890,44 @@ export function buildReport({
       "macOS signing report subjects have different signed application identities",
     );
   }
+  const artifactProducers = coveredSubjects.map((subject) => ({
+    artifactId: subject.artifactId,
+    artifactName: subject.artifactName,
+    artifactCreatedAt: subject.artifactCreatedAt,
+    artifactUpdatedAt: subject.artifactUpdatedAt,
+    artifactProducerJobId: subject.artifactProducerJobId,
+    artifactProducerJobName: subject.artifactProducerJobName,
+    artifactProducerRunAttempt: subject.artifactProducerRunAttempt,
+    artifactProducerJobConclusion: subject.artifactProducerJobConclusion,
+    artifactProducerJobStartedAt: subject.artifactProducerJobStartedAt,
+    artifactProducerJobCompletedAt: subject.artifactProducerJobCompletedAt,
+    artifactUploadStepName: subject.artifactUploadStepName,
+    artifactUploadStepStartedAt: subject.artifactUploadStepStartedAt,
+    artifactUploadStepCompletedAt: subject.artifactUploadStepCompletedAt,
+  }));
+  assertArtifactProducerBindings(
+    artifactProducers,
+    platform,
+    identity.runAttempt,
+    "release signing artifact producer bindings",
+  );
+  const attemptStartedMs = githubTimestamp(
+    identity.runAttemptStartedAt,
+    "release signing verifier attempt start time",
+  );
+  assert(
+    artifactProducers.every(
+      ({ artifactProducerJobStartedAt, artifactUploadStepStartedAt }) =>
+        Date.parse(artifactProducerJobStartedAt) >= attemptStartedMs &&
+        Date.parse(artifactUploadStepStartedAt) >= attemptStartedMs,
+    ),
+    "release signing artifact producer was carried forward from an earlier attempt",
+  );
   return {
     releaseTag: identity.releaseTag,
     runId: identity.runId,
+    runAttempt: identity.runAttempt,
+    runAttemptStartedAt: identity.runAttemptStartedAt,
     repository: identity.repository,
     ref: identity.ref,
     releaseArtifactKind: primaryArtifact.kind,
@@ -2599,6 +2948,7 @@ export function buildReport({
     sourceCommit: identity.sourceCommit,
     platform,
     runnerPlatform: `${runtime.platform}-${runtime.arch}`,
+    artifactProducers,
     coveredSubjects,
     checks: [
       passingCheck(
@@ -2792,8 +3142,27 @@ export function verifyUploadedReport(
       reportDocument.releaseTag === releaseTag &&
       reportDocument.ref === ref &&
       reportDocument.runId === runId &&
+      reportDocument.runAttempt === runAttempt &&
       reportDocument.result === "pass",
     "exact-ID downloaded release signing report has the wrong release identity",
+  );
+  assertArtifactProducerBindings(
+    reportDocument.artifactProducers,
+    platform,
+    runAttempt,
+    "uploaded release signing artifact producer bindings",
+  );
+  const reportAttemptStartedMs = githubTimestamp(
+    reportDocument.runAttemptStartedAt,
+    "uploaded release signing verifier attempt start time",
+  );
+  assert(
+    reportDocument.artifactProducers.every(
+      ({ artifactProducerJobStartedAt, artifactUploadStepStartedAt }) =>
+        Date.parse(artifactProducerJobStartedAt) >= reportAttemptStartedMs &&
+        Date.parse(artifactUploadStepStartedAt) >= reportAttemptStartedMs,
+    ),
+    "uploaded release signing report carries an earlier-attempt artifact producer",
   );
   const binding = {
     schemaVersion: 1,
@@ -2806,6 +3175,8 @@ export function verifyUploadedReport(
     ref,
     runId,
     runAttempt,
+    runAttemptStartedAt: reportDocument.runAttemptStartedAt,
+    artifactProducers: reportDocument.artifactProducers,
     reportName: expectedReportName,
     reportSha256: report.sha256,
     sourceArtifactId: artifactId,
@@ -2937,6 +3308,8 @@ function readUploadBindings(root, bindingsDirectory, env) {
         "ref",
         "runId",
         "runAttempt",
+        "runAttemptStartedAt",
+        "artifactProducers",
         "reportName",
         "reportSha256",
         "sourceArtifactId",
@@ -2957,6 +3330,7 @@ function readUploadBindings(root, bindingsDirectory, env) {
         binding.ref === identity.ref &&
         binding.runId === identity.runId &&
         binding.runAttempt === identity.runAttempt &&
+        Number.isFinite(Date.parse(binding.runAttemptStartedAt)) &&
         binding.reportName === reportName &&
         SHA256_DIGEST.test(binding.reportSha256 ?? "") &&
         Number.isSafeInteger(binding.sourceArtifactId) &&
@@ -2965,6 +3339,24 @@ function readUploadBindings(root, bindingsDirectory, env) {
           `release-signing-report-${platform}-attempt-${identity.runAttempt}` &&
         SHA256_DIGEST.test(binding.sourceArtifactSha256 ?? ""),
       "release signing upload binding has the wrong run, report, or source artifact identity",
+    );
+    assertArtifactProducerBindings(
+      binding.artifactProducers,
+      platform,
+      identity.runAttempt,
+      "release signing upload binding artifact producers",
+    );
+    const bindingAttemptStartedMs = githubTimestamp(
+      binding.runAttemptStartedAt,
+      "release signing upload binding attempt start time",
+    );
+    assert(
+      binding.artifactProducers.every(
+        ({ artifactProducerJobStartedAt, artifactUploadStepStartedAt }) =>
+          Date.parse(artifactProducerJobStartedAt) >= bindingAttemptStartedMs &&
+          Date.parse(artifactUploadStepStartedAt) >= bindingAttemptStartedMs,
+      ),
+      "release signing upload binding carries an earlier-attempt artifact producer",
     );
     return binding;
   });

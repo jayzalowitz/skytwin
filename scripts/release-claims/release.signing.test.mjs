@@ -46,12 +46,16 @@ const signerSha256 = "a".repeat(64);
 const timestampSha256 = "b".repeat(64);
 const teamId = "TEAM123456";
 const cdHash = "c".repeat(40);
+const runAttempt = 2;
+const runAttemptStartedAt = "2026-09-15T01:00:00Z";
 const identity = {
   repository: "owner/repository",
   sourceCommit,
   releaseTag: "v0.7.0-beta",
   ref: "refs/tags/v0.7.0-beta",
   runId: 42,
+  runAttempt,
+  runAttemptStartedAt,
   token: "a-secure-test-token-with-length",
   repositoryVersion: "0.7.0.0",
   appVersion: "0.7.0",
@@ -124,12 +128,68 @@ function prepareSource(root) {
 }
 
 function artifactRecord(artifactName, id) {
+  const createdAt = `2026-09-15T01:05:0${id}Z`;
   return {
     id,
     name: artifactName,
     expired: false,
     digest: `sha256:${sha256(`archive:${artifactName}`)}`,
+    created_at: createdAt,
+    updated_at: createdAt,
     workflow_run: { id: identity.runId, head_sha: identity.sourceCommit },
+  };
+}
+
+const desktopJobs = new Map([
+  ["macos", "Desktop — macOS (DMG + ZIP)"],
+  ["windows", "Desktop — Windows (NSIS installer)"],
+  ["linux", "Desktop — Linux (AppImage + deb + rpm)"],
+]);
+const uploadSteps = new Map([
+  ["SkyTwin-macOS-dmg", "Upload macOS DMG"],
+  ["SkyTwin-macOS-zip", "Upload macOS ZIP"],
+  ["SkyTwin-Windows-installer", "Upload Windows installer"],
+  ["SkyTwin-Linux-AppImage", "Upload Linux AppImage"],
+  ["SkyTwin-Linux-deb", "Upload Linux deb"],
+  ["SkyTwin-Linux-rpm", "Upload Linux rpm"],
+]);
+
+function platformIdentity(platform) {
+  const artifacts = platformArtifacts(platform);
+  return {
+    ...identity,
+    expectedArtifactIds: artifacts
+      .map(({ name, id }) => `${name}=${id}`)
+      .join(","),
+    expectedArtifactDigests: artifacts
+      .map(({ name, digest }) => `${name}=${digest.slice(7)}`)
+      .join(","),
+  };
+}
+
+function desktopJobFor(artifacts, overrides = {}) {
+  const platform = Object.entries(subjectFixtures).find(([, fixtures]) =>
+    fixtures.some(([name]) => name === artifacts[0]?.name),
+  )?.[0];
+  return {
+    id: 500,
+    name: desktopJobs.get(platform),
+    run_id: identity.runId,
+    run_attempt: identity.runAttempt,
+    run_url: `https://api.github.com/repos/${identity.repository}/actions/runs/${identity.runId}`,
+    head_sha: identity.sourceCommit,
+    status: "completed",
+    conclusion: "success",
+    started_at: "2026-09-15T01:01:00Z",
+    completed_at: "2026-09-15T01:10:00Z",
+    steps: artifacts.map((artifact) => ({
+      name: uploadSteps.get(artifact.name),
+      status: "completed",
+      conclusion: "success",
+      started_at: "2026-09-15T01:04:00Z",
+      completed_at: "2026-09-15T01:06:00Z",
+    })),
+    ...overrides,
   };
 }
 
@@ -146,9 +206,36 @@ function jsonResponse(value, status = 200) {
   });
 }
 
-function apiFetch(artifacts, runOverrides = {}) {
+function apiFetch(artifacts, runOverrides = {}, jobOverrides = {}) {
   return vi.fn(async (rawUrl) => {
     const url = new URL(rawUrl);
+    if (
+      url.pathname.endsWith(
+        `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}/jobs`,
+      )
+    ) {
+      const jobs = jobOverrides.jobs ?? [
+        desktopJobFor(artifacts, jobOverrides),
+      ];
+      return jsonResponse({ total_count: jobs.length, jobs });
+    }
+    if (
+      url.pathname.endsWith(
+        `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}`,
+      )
+    ) {
+      return jsonResponse({
+        id: identity.runId,
+        run_attempt: identity.runAttempt,
+        run_started_at: identity.runAttemptStartedAt,
+        repository: { full_name: identity.repository },
+        head_sha: identity.sourceCommit,
+        head_branch: identity.releaseTag,
+        event: "push",
+        path: ".github/workflows/build.yml",
+        ...runOverrides,
+      });
+    }
     if (url.pathname.endsWith(`/actions/runs/${identity.runId}`)) {
       return jsonResponse({
         id: identity.runId,
@@ -157,6 +244,7 @@ function apiFetch(artifacts, runOverrides = {}) {
         head_branch: identity.releaseTag,
         event: "push",
         path: ".github/workflows/build.yml",
+        run_attempt: identity.runAttempt,
         ...runOverrides,
       });
     }
@@ -173,17 +261,48 @@ function apiArtifactMap(platform) {
     ["SkyTwin-macOS-zip", "desktop-archive"],
     ["SkyTwin-Windows-installer", "desktop-installer"],
   ]);
+  const artifacts = platformArtifacts(platform);
+  const job = desktopJobFor(artifacts);
   return new Map(
-    platformArtifacts(platform).map((artifact) => [
+    artifacts.map((artifact) => [
       artifact.name,
       {
         artifactId: artifact.id,
         artifactName: artifact.name,
         artifactSha256: artifact.digest.slice(7),
         kind: kinds.get(artifact.name),
+        artifactCreatedAt: artifact.created_at,
+        artifactUpdatedAt: artifact.updated_at,
+        artifactProducerJobId: job.id,
+        artifactProducerJobName: job.name,
+        artifactProducerRunAttempt: job.run_attempt,
+        artifactProducerJobConclusion: job.conclusion,
+        artifactProducerJobStartedAt: job.started_at,
+        artifactProducerJobCompletedAt: job.completed_at,
+        artifactUploadStepName: uploadSteps.get(artifact.name),
+        artifactUploadStepStartedAt: "2026-09-15T01:04:00Z",
+        artifactUploadStepCompletedAt: "2026-09-15T01:06:00Z",
       },
     ]),
   );
+}
+
+function artifactProducerBindings(platform, attempt = identity.runAttempt) {
+  return [...apiArtifactMap(platform).values()].map((artifact) => ({
+    artifactId: artifact.artifactId,
+    artifactName: artifact.artifactName,
+    artifactCreatedAt: artifact.artifactCreatedAt,
+    artifactUpdatedAt: artifact.artifactUpdatedAt,
+    artifactProducerJobId: artifact.artifactProducerJobId,
+    artifactProducerJobName: artifact.artifactProducerJobName,
+    artifactProducerRunAttempt: attempt,
+    artifactProducerJobConclusion: artifact.artifactProducerJobConclusion,
+    artifactProducerJobStartedAt: artifact.artifactProducerJobStartedAt,
+    artifactProducerJobCompletedAt: artifact.artifactProducerJobCompletedAt,
+    artifactUploadStepName: artifact.artifactUploadStepName,
+    artifactUploadStepStartedAt: artifact.artifactUploadStepStartedAt,
+    artifactUploadStepCompletedAt: artifact.artifactUploadStepCompletedAt,
+  }));
 }
 
 function macSignature({
@@ -648,23 +767,23 @@ describe("release.signing canonical verifier", () => {
     const artifacts = platformArtifacts("macos");
     const fetchImpl = apiFetch(artifacts);
     const resolved = await resolveCurrentRunArtifacts(
-      identity,
+      platformIdentity("macos"),
       "macos",
       fetchImpl,
     );
     expect(resolved).toEqual(apiArtifactMap("macos"));
-    expect(fetchImpl).toHaveBeenCalledTimes(4);
+    expect(fetchImpl).toHaveBeenCalledTimes(6);
 
     await expect(
       resolveCurrentRunArtifacts(
-        identity,
+        platformIdentity("macos"),
         "macos",
         apiFetch([...artifacts, { ...artifacts[0], id: 99 }]),
       ),
     ).rejects.toThrow("found 2");
     await expect(
       resolveCurrentRunArtifacts(
-        identity,
+        platformIdentity("macos"),
         "macos",
         apiFetch(artifacts, { head_sha: "f".repeat(40) }),
       ),
@@ -677,8 +796,77 @@ describe("release.signing canonical verifier", () => {
       ),
     ];
     await expect(
-      resolveCurrentRunArtifacts(identity, "macos", apiFetch(many)),
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(many),
+      ),
     ).rejects.toThrow("paginated or incomplete");
+  });
+
+  it("fails closed on carried-forward, missing, or ambiguous producer evidence", async () => {
+    const artifacts = platformArtifacts("macos");
+    const staleJob = desktopJobFor(artifacts, {
+      started_at: "2026-09-14T23:01:00Z",
+      completed_at: "2026-09-14T23:10:00Z",
+      steps: artifacts.map((artifact) => ({
+        name: uploadSteps.get(artifact.name),
+        status: "completed",
+        conclusion: "success",
+        started_at: "2026-09-14T23:04:00Z",
+        completed_at: "2026-09-14T23:06:00Z",
+      })),
+    });
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(artifacts, {}, { jobs: [staleJob] }),
+      ),
+    ).rejects.toThrow("does not map uniquely");
+
+    const missingAttempt = desktopJobFor(artifacts);
+    delete missingAttempt.run_attempt;
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(artifacts, {}, { jobs: [missingAttempt] }),
+      ),
+    ).rejects.toThrow("wrong-run job");
+
+    const currentJob = desktopJobFor(artifacts);
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(
+          artifacts,
+          {},
+          {
+            jobs: [currentJob, { ...currentJob, id: currentJob.id + 1 }],
+          },
+        ),
+      ),
+    ).rejects.toThrow("does not map uniquely");
+
+    const oldArtifact = artifacts.map((artifact) => ({
+      ...artifact,
+      created_at: "2026-09-14T23:05:00Z",
+      updated_at: "2026-09-14T23:05:00Z",
+    }));
+    await expect(
+      resolveCurrentRunArtifacts(
+        {
+          ...platformIdentity("macos"),
+          expectedArtifactDigests: oldArtifact
+            .map(({ name, digest }) => `${name}=${digest.slice(7)}`)
+            .join(","),
+        },
+        "macos",
+        apiFetch(oldArtifact),
+      ),
+    ).rejects.toThrow("does not map uniquely");
   });
 
   it("requires native runner identity and explicit pinned publisher policy", () => {
@@ -691,6 +879,11 @@ describe("release.signing canonical verifier", () => {
         GITHUB_REF_NAME: identity.releaseTag,
         GITHUB_REF: identity.ref,
         GITHUB_RUN_ID: String(identity.runId),
+        GITHUB_RUN_ATTEMPT: String(identity.runAttempt),
+        SKYTWIN_RELEASE_ARTIFACT_IDS:
+          platformIdentity("macos").expectedArtifactIds,
+        SKYTWIN_RELEASE_ARTIFACT_DIGESTS:
+          platformIdentity("macos").expectedArtifactDigests,
         GITHUB_TOKEN: identity.token,
       }),
     ).toEqual({
@@ -699,6 +892,10 @@ describe("release.signing canonical verifier", () => {
       releaseTag: identity.releaseTag,
       ref: identity.ref,
       runId: identity.runId,
+      runAttempt: identity.runAttempt,
+      expectedArtifactIds: platformIdentity("macos").expectedArtifactIds,
+      expectedArtifactDigests:
+        platformIdentity("macos").expectedArtifactDigests,
       token: identity.token,
     });
     expect(() =>
@@ -2086,6 +2283,11 @@ describe("release.signing canonical verifier", () => {
             GITHUB_REF_NAME: identity.releaseTag,
             GITHUB_REF: identity.ref,
             GITHUB_RUN_ID: String(identity.runId),
+            GITHUB_RUN_ATTEMPT: String(identity.runAttempt),
+            SKYTWIN_RELEASE_ARTIFACT_IDS:
+              platformIdentity("macos").expectedArtifactIds,
+            SKYTWIN_RELEASE_ARTIFACT_DIGESTS:
+              platformIdentity("macos").expectedArtifactDigests,
             GITHUB_TOKEN: identity.token,
           },
           executeGit: vi.fn((args) =>
@@ -2119,6 +2321,11 @@ describe("release.signing canonical verifier", () => {
           GITHUB_REF_NAME: identity.releaseTag,
           GITHUB_REF: identity.ref,
           GITHUB_RUN_ID: String(identity.runId),
+          GITHUB_RUN_ATTEMPT: String(identity.runAttempt),
+          SKYTWIN_RELEASE_ARTIFACT_IDS:
+            platformIdentity("macos").expectedArtifactIds,
+          SKYTWIN_RELEASE_ARTIFACT_DIGESTS:
+            platformIdentity("macos").expectedArtifactDigests,
           GITHUB_TOKEN: identity.token,
           SKYTWIN_MACOS_TEAM_ID: teamId,
           GITHUB_ACTIONS: "true",
@@ -2191,6 +2398,8 @@ describe("release.signing canonical verifier", () => {
       ref: identity.ref,
       runId: identity.runId,
       runAttempt: 2,
+      runAttemptStartedAt: identity.runAttemptStartedAt,
+      artifactProducers: artifactProducerBindings("macos"),
       reportName: "release.signing.macos.json",
       reportSha256,
       sourceArtifactId: 321,
@@ -2202,6 +2411,8 @@ describe("release.signing canonical verifier", () => {
     ).toMatchObject({
       runId: identity.runId,
       runAttempt: 2,
+      runAttemptStartedAt: identity.runAttemptStartedAt,
+      artifactProducers: artifactProducerBindings("macos"),
       reportSha256,
       sourceArtifactId: 321,
       sourceArtifactSha256: "d".repeat(64),
@@ -2259,6 +2470,11 @@ describe("release.signing canonical verifier", () => {
               GITHUB_REF_NAME: identity.releaseTag,
               GITHUB_REF: identity.ref,
               GITHUB_RUN_ID: String(identity.runId),
+              GITHUB_RUN_ATTEMPT: String(identity.runAttempt),
+              SKYTWIN_RELEASE_ARTIFACT_IDS:
+                platformIdentity("macos").expectedArtifactIds,
+              SKYTWIN_RELEASE_ARTIFACT_DIGESTS:
+                platformIdentity("macos").expectedArtifactDigests,
               GITHUB_TOKEN: identity.token,
               SKYTWIN_MACOS_TEAM_ID: teamId,
             },
@@ -2311,6 +2527,8 @@ describe("release.signing canonical verifier", () => {
           ref: identity.ref,
           runId: identity.runId,
           runAttempt: 3,
+          runAttemptStartedAt: identity.runAttemptStartedAt,
+          artifactProducers: artifactProducerBindings(platform, 3),
           reportName,
           reportSha256: sha256(reportBytes),
           sourceArtifactId: 700 + index,
@@ -2380,6 +2598,11 @@ describe("release.signing canonical verifier", () => {
           GITHUB_REF_NAME: identity.releaseTag,
           GITHUB_REF: identity.ref,
           GITHUB_RUN_ID: String(identity.runId),
+          GITHUB_RUN_ATTEMPT: String(identity.runAttempt),
+          SKYTWIN_RELEASE_ARTIFACT_IDS:
+            platformIdentity("macos").expectedArtifactIds,
+          SKYTWIN_RELEASE_ARTIFACT_DIGESTS:
+            platformIdentity("macos").expectedArtifactDigests,
           GITHUB_TOKEN: identity.token,
           SKYTWIN_MACOS_TEAM_ID: teamId,
         },

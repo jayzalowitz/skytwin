@@ -180,11 +180,28 @@ copy. The producer then downloads the uploaded report by its exact artifact ID
 and checks the downloaded report bytes against the verifier-emitted SHA-256;
 an attempt-specific sidecar retains that source report digest separately from
 the artifact service's Actions archive digest, plus the source artifact ID,
-run ID, and run attempt. Aggregation resolves the exact source report IDs from
-those sidecars and publication revalidates both artifacts through the API.
-These controls fail closed against mutations within the
-workflow's processes and handoff windows; arbitrary same-user control of the
-hosted runner itself remains outside the evidence threat boundary.
+run ID, run attempt, attempt start, and desktop producer/upload observations.
+The desktop upload actions also expose their exact artifact IDs and archive
+digests as job outputs. The verifier resolves the complete exact-attempt job
+inventory and rejects a desktop producer or upload step whose timestamps
+predate that attempt, even when GitHub relabels a carried-forward successful
+job with the current `run_attempt`. Aggregation resolves the exact source report
+IDs from the sidecars; manifest generation and publication revalidate the
+source-report and desktop artifacts, successful jobs, upload steps, and
+creation windows through the API. A partial rerun that carries a package job
+forward therefore cannot satisfy signing evidence: rerun the desktop producer
+and verifier together.
+
+GitHub's public Actions artifact API is run-wide and does not expose a direct
+artifact-to-job or artifact-to-attempt relation. The strongest available
+binding combines the upload action's exact ID/digest outputs, attempt-specific
+report names, exact-attempt job and step identity, and an artifact creation time
+inside the successful upload-step interval. This is an explicit hosted API
+limitation, not proof of a stronger native relation. These controls fail closed
+against stale-attempt reuse and mutations within the workflow's processes and
+handoff windows; arbitrary same-user control of the hosted runner itself
+remains outside the evidence threat boundary.
+
 The fixed VHDX sizing is designed for the standard `windows-2025` runner, but a
 real hosted signing run is still required before the signing stop-ship can be
 closed.
@@ -199,10 +216,11 @@ the separate `release-claims-ci` artifact producer are absent today. The
 signing matrix entries cannot pass until credentialed package jobs produce
 signed artifacts, protected operator configuration supplies the expected
 signer pins, and the tagged run records passing native evidence. Machine
-reports must come from the exact successful claim/platform job and canonical
-verifier step, carry the reviewed verifier path, command, and source digest, and
-provide structured observations; the release job independently checks those
-bindings against the current GitHub run. The artifact lane's SPDX producer emits
+reports must come from the exact successful claim/platform job in the recorded
+attempt, start no earlier than that attempt, and carry the canonical verifier
+step, reviewed verifier path, command, source digest, and structured
+observations; the release job independently checks those bindings against the
+current GitHub run and exact attempt. The artifact lane's SPDX producer emits
 the required 2.3 document and exact package-to-file coverage. Until the remaining
 producers and external gates land, publication stays blocked by design.
 

@@ -180,6 +180,11 @@ jobs:
     needs: [test, changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
+    outputs:
+      dmg-artifact-id: ${{ steps.upload-macos-dmg.outputs.artifact-id }}
+      dmg-artifact-digest: ${{ steps.upload-macos-dmg.outputs.artifact-digest }}
+      zip-artifact-id: ${{ steps.upload-macos-zip.outputs.artifact-id }}
+      zip-artifact-digest: ${{ steps.upload-macos-zip.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -245,6 +250,7 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
 
       - name: Upload macOS DMG
+        id: upload-macos-dmg
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-dmg
@@ -252,6 +258,7 @@ jobs:
           if-no-files-found: error
 
       - name: Upload macOS ZIP
+        id: upload-macos-zip
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-macOS-zip
@@ -281,6 +288,9 @@ jobs:
     needs: [test, changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
+    outputs:
+      installer-artifact-id: ${{ steps.upload-windows-installer.outputs.artifact-id }}
+      installer-artifact-digest: ${{ steps.upload-windows-installer.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -352,6 +362,7 @@ jobs:
         run: pnpm --filter skytwin-desktop run package:win --publish never "--config.extraMetadata.version=${{ env.APP_VERSION }}"
 
       - name: Upload Windows installer
+        id: upload-windows-installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Windows-installer
@@ -375,6 +386,13 @@ jobs:
     needs: [test, changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
+    outputs:
+      appimage-artifact-id: ${{ steps.upload-linux-appimage.outputs.artifact-id }}
+      appimage-artifact-digest: ${{ steps.upload-linux-appimage.outputs.artifact-digest }}
+      deb-artifact-id: ${{ steps.upload-linux-deb.outputs.artifact-id }}
+      deb-artifact-digest: ${{ steps.upload-linux-deb.outputs.artifact-digest }}
+      rpm-artifact-id: ${{ steps.upload-linux-rpm.outputs.artifact-id }}
+      rpm-artifact-digest: ${{ steps.upload-linux-rpm.outputs.artifact-digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
 
@@ -417,6 +435,7 @@ jobs:
         continue-on-error: true
 
       - name: Upload Linux AppImage
+        id: upload-linux-appimage
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -425,6 +444,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux deb
+        id: upload-linux-deb
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -433,6 +453,7 @@ jobs:
           if-no-files-found: warn
 
       - name: Upload Linux rpm
+        id: upload-linux-rpm
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
@@ -791,6 +812,8 @@ jobs:
         if: matrix.claimId != 'sample.packaged-account-free'
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SKYTWIN_RELEASE_ARTIFACT_IDS: ${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}
+          SKYTWIN_RELEASE_ARTIFACT_DIGESTS: ${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}
         run: node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}
       - name: Upload machine evidence report
         id: upload-machine-evidence

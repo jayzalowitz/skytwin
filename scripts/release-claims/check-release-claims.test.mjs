@@ -63,6 +63,32 @@ import {
 const temporaryRoots = [];
 const EVIDENCE = "evidence\n";
 const EVIDENCE_SHA256 = createHash("sha256").update(EVIDENCE).digest("hex");
+const ATTEMPT_STARTED_AT = "2026-09-15T01:00:00Z";
+
+function signingProducerFields(artifactId, artifactName, platform) {
+  const producerNames = {
+    macos: "Desktop — macOS (DMG + ZIP)",
+    windows: "Desktop — Windows (NSIS installer)",
+  };
+  const uploadNames = {
+    "SkyTwin-macOS-dmg": "Upload macOS DMG",
+    "SkyTwin-macOS-zip": "Upload macOS ZIP",
+    "SkyTwin-Windows-installer": "Upload Windows installer",
+  };
+  return {
+    artifactCreatedAt: "2026-09-15T01:05:00Z",
+    artifactUpdatedAt: "2026-09-15T01:05:00Z",
+    artifactProducerJobId: 500,
+    artifactProducerJobName: producerNames[platform],
+    artifactProducerRunAttempt: 2,
+    artifactProducerJobConclusion: "success",
+    artifactProducerJobStartedAt: "2026-09-15T01:01:00Z",
+    artifactProducerJobCompletedAt: "2026-09-15T01:10:00Z",
+    artifactUploadStepName: uploadNames[artifactName],
+    artifactUploadStepStartedAt: "2026-09-15T01:04:00Z",
+    artifactUploadStepCompletedAt: "2026-09-15T01:06:00Z",
+  };
+}
 const productionLedger = JSON.parse(
   readFileSync(
     new URL("../../docs/beta-claim-ledger.json", import.meta.url),
@@ -292,6 +318,8 @@ function releaseAssetApiBody(asset, runId, commit) {
     name: asset.artifactName,
     expired: false,
     digest: `sha256:${asset.artifactSha256}`,
+    created_at: "2026-09-15T01:05:00Z",
+    updated_at: "2026-09-15T01:05:00Z",
     workflow_run: { id: runId, head_sha: commit },
   };
 }
@@ -470,14 +498,59 @@ concurrency:
   cancel-in-progress: \${{ !startsWith(github.ref, 'refs/tags/v') }}
 jobs:
   desktop-mac:
+    outputs:
+      dmg-artifact-id: \${{ steps.upload-macos-dmg.outputs.artifact-id }}
+      dmg-artifact-digest: \${{ steps.upload-macos-dmg.outputs.artifact-digest }}
+      zip-artifact-id: \${{ steps.upload-macos-zip.outputs.artifact-id }}
+      zip-artifact-digest: \${{ steps.upload-macos-zip.outputs.artifact-digest }}
     runs-on: macos-15
-    steps: []
+    steps:
+      - name: Upload macOS DMG
+        id: upload-macos-dmg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-macOS-dmg
+      - name: Upload macOS ZIP
+        id: upload-macos-zip
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-macOS-zip
   desktop-windows:
+    outputs:
+      installer-artifact-id: \${{ steps.upload-windows-installer.outputs.artifact-id }}
+      installer-artifact-digest: \${{ steps.upload-windows-installer.outputs.artifact-digest }}
     runs-on: windows-2025
-    steps: []
+    steps:
+      - name: Upload Windows installer
+        id: upload-windows-installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Windows-installer
   desktop-linux:
+    outputs:
+      appimage-artifact-id: \${{ steps.upload-linux-appimage.outputs.artifact-id }}
+      appimage-artifact-digest: \${{ steps.upload-linux-appimage.outputs.artifact-digest }}
+      deb-artifact-id: \${{ steps.upload-linux-deb.outputs.artifact-id }}
+      deb-artifact-digest: \${{ steps.upload-linux-deb.outputs.artifact-digest }}
+      rpm-artifact-id: \${{ steps.upload-linux-rpm.outputs.artifact-id }}
+      rpm-artifact-digest: \${{ steps.upload-linux-rpm.outputs.artifact-digest }}
     runs-on: ubuntu-24.04
-    steps: []
+    steps:
+      - name: Upload Linux AppImage
+        id: upload-linux-appimage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Linux-AppImage
+      - name: Upload Linux deb
+        id: upload-linux-deb
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Linux-deb
+      - name: Upload Linux rpm
+        id: upload-linux-rpm
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Linux-rpm
   release-artifact-materials:
     name: Produce release artifact verification materials
     if: startsWith(github.ref, 'refs/tags/v')
@@ -563,6 +636,8 @@ ${machineMatrix}
         if: matrix.claimId != 'sample.packaged-account-free'
         env:
           GITHUB_TOKEN: \${{ github.token }}
+          SKYTWIN_RELEASE_ARTIFACT_IDS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}
+          SKYTWIN_RELEASE_ARTIFACT_DIGESTS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}
         run: node scripts/release-claims/verifiers/\${{ matrix.claimId }}.mjs --platform \${{ matrix.platform }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Upload machine evidence report
         id: upload-machine-evidence
@@ -1817,6 +1892,7 @@ ${step}`,
           artifactId: 1,
           artifactName: "SkyTwin-macOS-dmg",
           artifactSha256: "1".repeat(64),
+          ...signingProducerFields(1, "SkyTwin-macOS-dmg", "macos"),
           kind: "desktop-installer",
           path: "a.dmg",
           name: "a.dmg",
@@ -1851,6 +1927,7 @@ ${step}`,
       artifactId: 2,
       artifactName: "SkyTwin-macOS-zip",
       artifactSha256: "2".repeat(64),
+      ...signingProducerFields(2, "SkyTwin-macOS-zip", "macos"),
       kind: "desktop-archive",
       path: "a.zip",
       name: "a.zip",
@@ -1938,6 +2015,7 @@ ${step}`,
           artifactId: 1,
           artifactName: "SkyTwin-Windows-installer",
           artifactSha256: "1".repeat(64),
+          ...signingProducerFields(1, "SkyTwin-Windows-installer", "windows"),
           kind: "desktop-installer",
           path: "SkyTwin.exe",
           name: "SkyTwin.exe",
@@ -3538,6 +3616,7 @@ ${step}`,
         ref: "refs/tags/v0.7.0-beta",
         runId: 1,
         runAttempt: 1,
+        runAttemptStartedAt: ATTEMPT_STARTED_AT,
         releaseAssets,
         verificationAssets: makeVerificationAssets(root, releaseAssets),
         evidence: [
@@ -3550,6 +3629,7 @@ ${step}`,
             repository: "owner/repository",
             runId: 1,
             runAttempt: 1,
+            runAttemptStartedAt: ATTEMPT_STARTED_AT,
             ref: "refs/tags/v0.7.0-beta",
             evidenceArtifactId: 2,
             evidenceArtifactName: "release-evidence",
@@ -3559,6 +3639,7 @@ ${step}`,
             sourceCommit: commit,
             platform: "macos",
             releaseTag: "v0.7.0-beta",
+            producerJobRunAttempt: 1,
             releaseArtifactKind: "desktop-installer",
             releaseArtifactId: 3,
             releaseArtifactName: "SkyTwin-macOS-dmg",
@@ -3634,6 +3715,8 @@ ${step}`,
       releaseTag: tag,
       ref,
       runId,
+      runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       platform: "macos",
       producerJobName,
       verifierPath,
@@ -3657,6 +3740,7 @@ ${step}`,
       ref,
       runId,
       runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [
@@ -3667,6 +3751,7 @@ ${step}`,
           repository: "owner/repository",
           runId,
           runAttempt: 1,
+          runAttemptStartedAt: ATTEMPT_STARTED_AT,
           ref,
           evidenceArtifactId: 202,
           evidenceArtifactName: "release-evidence",
@@ -3680,6 +3765,7 @@ ${step}`,
           platform: report.platform,
           producerJobId,
           producerJobName,
+          producerJobRunAttempt: 1,
           producerJobConclusion: "success",
           verifierPath,
           verifierCommand,
@@ -3704,9 +3790,41 @@ ${step}`,
     };
     let runEvent = "push";
     const fetchImpl = async (url) => {
-      const id = Number(String(url).split("/").at(-1));
+      const text = String(url);
+      const id = Number(text.split("/").at(-1));
       let body;
-      if (String(url).includes("/runs/")) {
+      if (text.includes("/attempts/1/jobs")) {
+        const job = {
+          id: producerJobId,
+          run_id: runId,
+          name: producerJobName,
+          status: "completed",
+          conclusion: "success",
+          run_attempt: 1,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            {
+              name: CANONICAL_MACHINE_VERIFIER_STEP,
+              conclusion: "success",
+            },
+          ],
+        };
+        body = { total_count: 1, jobs: [job] };
+      } else if (text.endsWith("/attempts/1")) {
+        body = {
+          id: runId,
+          run_attempt: 1,
+          run_started_at: ATTEMPT_STARTED_AT,
+          event: runEvent,
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      } else if (text.endsWith(`/runs/${runId}`)) {
         body = {
           id: runId,
           run_attempt: 1,
@@ -3720,7 +3838,11 @@ ${step}`,
         body = {
           id: producerJobId,
           name: producerJobName,
+          status: "completed",
           conclusion: "success",
+          run_attempt: 1,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
           head_sha: commit,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
           steps: [
@@ -3921,12 +4043,31 @@ ${step}`,
       ],
     };
     const reportPath = ".release-evidence/reports/release.signing.windows.json";
-    const reportBytes = `${JSON.stringify(report)}\n`;
-    const reportSha256 = createHash("sha256").update(reportBytes).digest("hex");
-    write(root, reportPath, reportBytes);
     const sourceReportArtifactId = 880;
     const sourceReportArtifactName = "release-signing-report-windows-attempt-2";
     const sourceReportArtifactSha256 = "f".repeat(64);
+    const artifactProducers = [
+      {
+        artifactId: releaseAsset.artifactId,
+        artifactName: releaseAsset.artifactName,
+        ...signingProducerFields(
+          releaseAsset.artifactId,
+          releaseAsset.artifactName,
+          "windows",
+        ),
+      },
+    ];
+    Object.assign(report, {
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      artifactProducers,
+    });
+    Object.assign(report.coveredSubjects[0], artifactProducers[0]);
+    const updatedReportBytes = `${JSON.stringify(report)}\n`;
+    const updatedReportSha256 = createHash("sha256")
+      .update(updatedReportBytes)
+      .digest("hex");
+    write(root, reportPath, updatedReportBytes);
     write(
       root,
       ".release-evidence/upload-bindings/release.signing.windows.json.binding.json",
@@ -3941,8 +4082,10 @@ ${step}`,
         ref,
         runId,
         runAttempt,
+        runAttemptStartedAt: ATTEMPT_STARTED_AT,
+        artifactProducers,
         reportName: "release.signing.windows.json",
-        reportSha256,
+        reportSha256: updatedReportSha256,
         sourceArtifactId: sourceReportArtifactId,
         sourceArtifactName: sourceReportArtifactName,
         sourceArtifactSha256: sourceReportArtifactSha256,
@@ -3955,20 +4098,25 @@ ${step}`,
       repository: "owner/repository",
       runId,
       runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       ref,
       evidenceArtifactId: 870,
       evidenceArtifactName: "release-evidence",
       evidenceArtifactSha256: "c".repeat(64),
       reportPath,
-      reportSha256,
+      reportSha256: updatedReportSha256,
+      artifactProducers,
       sourceReportArtifactId,
       sourceReportArtifactName,
       sourceReportArtifactSha256,
+      sourceReportArtifactCreatedAt: "2026-09-15T01:03:00Z",
+      sourceReportArtifactUpdatedAt: "2026-09-15T01:03:00Z",
       sourceCommit: commit,
       releaseTag: tag,
       platform: "windows",
       producerJobId,
       producerJobName: report.producerJobName,
+      producerJobRunAttempt: runAttempt,
       producerJobConclusion: "success",
       verifierPath,
       verifierCommand,
@@ -3990,6 +4138,7 @@ ${step}`,
       ref,
       runId,
       runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [evidence],
@@ -3998,7 +4147,67 @@ ${step}`,
       const text = String(url);
       const id = Number(text.split("/").at(-1));
       let body;
-      if (text.includes("/runs/"))
+      if (text.includes(`/attempts/${runAttempt}/jobs`)) {
+        const machineJob = {
+          id: producerJobId,
+          run_id: runId,
+          name: report.producerJobName,
+          status: "completed",
+          conclusion: "success",
+          run_attempt: runAttempt,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
+            {
+              name: "Upload machine evidence report",
+              status: "completed",
+              conclusion: "success",
+              started_at: "2026-09-15T01:02:00Z",
+              completed_at: "2026-09-15T01:04:00Z",
+            },
+            {
+              name: "Verify exact uploaded signing report binding",
+              conclusion: "success",
+            },
+          ],
+        };
+        const desktopJob = {
+          id: 500,
+          run_id: runId,
+          name: "Desktop — Windows (NSIS installer)",
+          status: "completed",
+          conclusion: "success",
+          run_attempt: runAttempt,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            {
+              name: "Upload Windows installer",
+              status: "completed",
+              conclusion: "success",
+              started_at: "2026-09-15T01:04:00Z",
+              completed_at: "2026-09-15T01:06:00Z",
+            },
+          ],
+        };
+        body = { total_count: 2, jobs: [machineJob, desktopJob] };
+      } else if (text.endsWith(`/attempts/${runAttempt}`))
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          run_started_at: ATTEMPT_STARTED_AT,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text.endsWith(`/runs/${runId}`))
         body = {
           id: runId,
           run_attempt: runAttempt,
@@ -4012,11 +4221,22 @@ ${step}`,
         body = {
           id: producerJobId,
           name: report.producerJobName,
+          status: "completed",
           conclusion: "success",
+          run_attempt: runAttempt,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
           head_sha: commit,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
           steps: [
             { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
+            {
+              name: "Upload machine evidence report",
+              status: "completed",
+              conclusion: "success",
+              started_at: "2026-09-15T01:02:00Z",
+              completed_at: "2026-09-15T01:04:00Z",
+            },
             {
               name: "Verify exact uploaded signing report binding",
               conclusion: "success",
@@ -4037,6 +4257,8 @@ ${step}`,
           name: sourceReportArtifactName,
           expired: false,
           digest: `sha256:${sourceReportArtifactSha256}`,
+          created_at: "2026-09-15T01:03:00Z",
+          updated_at: "2026-09-15T01:03:00Z",
           workflow_run: { id: runId, head_sha: commit },
         };
       else
@@ -4097,6 +4319,8 @@ ${step}`,
           name: sourceReportArtifactName,
           expired: false,
           digest: `sha256:${sourceReportArtifactSha256}`,
+          created_at: "2026-09-15T01:03:00Z",
+          updated_at: "2026-09-15T01:03:00Z",
           workflow_run: { id: runId, head_sha: commit },
         },
         evidence,
@@ -4111,6 +4335,8 @@ ${step}`,
           name: sourceReportArtifactName,
           expired: false,
           digest: `sha256:${"0".repeat(64)}`,
+          created_at: "2026-09-15T01:03:00Z",
+          updated_at: "2026-09-15T01:03:00Z",
           workflow_run: { id: runId, head_sha: commit },
         },
         evidence,
@@ -4171,6 +4397,7 @@ ${step}`,
       repository: "owner/repository",
       runId,
       runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       ref,
       jobId: 902,
       jobName: "release-claim-ci",
@@ -4201,14 +4428,45 @@ ${step}`,
       ref,
       runId,
       runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [evidence],
     };
     let jobRunId = runId;
     const fetchImpl = async (url) => {
+      const text = String(url);
       let body;
-      if (String(url).includes("/runs/")) {
+      if (text.includes("/attempts/1/jobs")) {
+        body = {
+          total_count: 1,
+          jobs: [
+            {
+              id: 902,
+              run_id: runId,
+              name: "release-claim-ci",
+              status: "completed",
+              conclusion: "success",
+              run_attempt: 1,
+              started_at: "2026-09-15T01:01:00Z",
+              completed_at: "2026-09-15T01:10:00Z",
+              head_sha: commit,
+              run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+            },
+          ],
+        };
+      } else if (text.endsWith("/attempts/1")) {
+        body = {
+          id: runId,
+          run_attempt: 1,
+          run_started_at: ATTEMPT_STARTED_AT,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      } else if (text.endsWith(`/runs/${runId}`)) {
         body = {
           id: runId,
           run_attempt: 1,
@@ -4218,15 +4476,19 @@ ${step}`,
           path: ".github/workflows/build.yml",
           repository: { full_name: "owner/repository" },
         };
-      } else if (String(url).includes("/jobs/")) {
+      } else if (text.includes("/jobs/")) {
         body = {
           id: 902,
           name: "release-claim-ci",
+          status: "completed",
           conclusion: "success",
+          run_attempt: 1,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
           head_sha: commit,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${jobRunId}`,
         };
-      } else if (String(url).endsWith("/903")) {
+      } else if (text.endsWith("/903")) {
         body = {
           id: 903,
           name: "release-claims-ci",
@@ -4235,7 +4497,7 @@ ${step}`,
           workflow_run: { id: runId, head_sha: commit },
         };
       } else {
-        const id = Number(String(url).split("/").at(-1));
+        const id = Number(text.split("/").at(-1));
         body = releaseAssetApiBody(
           releaseAssets.find((asset) => asset.artifactId === id),
           runId,

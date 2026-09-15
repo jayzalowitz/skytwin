@@ -1170,12 +1170,12 @@
       "scope": "Every artifact named in the beta platform support matrix, built from the release tag.",
       "owner": "release-engineering",
       "state": "deferred",
-      "limitation": "CI explicitly disables automatic signing, final-DMG notarization is not wired, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations but intentionally refuses Linux until package-format methods and pinned trust roots exist; the gated tag workflow therefore refuses draft creation.",
+      "limitation": "CI explicitly disables automatic signing, final-DMG notarization is not wired, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations, bind them to exact current-attempt desktop upload jobs and artifact ID/digest outputs, and reject carried-forward partial-rerun evidence, but intentionally refuses Linux until package-format methods and pinned trust roots exist. GitHub's artifact API remains run-wide and exposes no native artifact-to-job or artifact-to-attempt relation; the gated tag workflow therefore refuses draft creation.",
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "946d1a53a792c884de944ce985c59eff71b85107a1716b3936ab9e8a9176e8bb",
-          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher requires attempt-bound source report artifacts and digest-bound signing evidence"
+          "sha256": "e24e17a2e4ebea50112a3494f89b44f91e8a45cb22071d438c418afbd9a5f25b",
+          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
           "path": "apps/desktop/package.json",
@@ -1184,8 +1184,8 @@
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "76916b36a5420ebd14629f3f77d2bba17b6c53aff40e39e7f1e464a9372de1d2",
-          "why": "Defines contained report writes and upload bindings, fail-closed native macOS observations, and capacity-bounded Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
+          "sha256": "bcef90190f284bc551baf7a5cd5875f02ed4055c0e5a3a70ca55565ae7ef34c4",
+          "why": "Defines contained report writes and upload bindings, exact-attempt desktop producer and artifact creation-window checks, fail-closed native macOS observations, and capacity-bounded Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
         }
       ],
       "verification": [
@@ -1215,12 +1215,12 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "946d1a53a792c884de944ce985c59eff71b85107a1716b3936ab9e8a9176e8bb",
+          "sha256": "e24e17a2e4ebea50112a3494f89b44f91e8a45cb22071d438c418afbd9a5f25b",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "7c7359874cd45a28d86a0f11871ebc880c011a13c5aaea0ba85c8900c32b1a75",
+          "sha256": "eab5126fe51f19e82931719ae8aa06485ff31749da22c1c4e4655d160f93f80a",
           "why": "Defines the exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
@@ -1255,7 +1255,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "cadab0a23f8aa260d441492463770213da5f0ef9f4dd99a874df1cdb74ddc259",
+          "sha256": "4e2053c894900b45f8e2388144a753a60987aab63663a22863b765030584cf93",
           "why": "Structurally locks the sole materials producer and exact-ID signing report aggregator and re-verifies every release material and source report binding at publication"
         }
       ],

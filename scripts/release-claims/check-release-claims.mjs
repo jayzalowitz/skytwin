@@ -32,6 +32,8 @@ import {
   RELEASE_ARTIFACT_VALIDATOR_PATH,
   RELEASE_ATTESTATION_MATERIALIZER_PATH,
   SAMPLE_EVIDENCE_PLATFORMS,
+  desktopArtifactUploadStepName,
+  desktopProducerJobName,
   machineEvidencePlatformFamily,
   machineProducerJobName,
   machineReportNamesForClaim,
@@ -1353,6 +1355,101 @@ function sameStringSet(actual, expected) {
   );
 }
 
+function canonicalGithubTimestampMs(value) {
+  return typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value))
+    ? Date.parse(value)
+    : null;
+}
+
+function validSigningArtifactProducers(
+  producers,
+  platform,
+  runAttempt,
+  attemptStartedAt,
+) {
+  const expectedNames =
+    platform === "macos"
+      ? ["SkyTwin-macOS-dmg", "SkyTwin-macOS-zip"]
+      : platform === "windows"
+        ? ["SkyTwin-Windows-installer"]
+        : platform === "linux"
+          ? ["SkyTwin-Linux-AppImage", "SkyTwin-Linux-deb", "SkyTwin-Linux-rpm"]
+          : [];
+  const attemptStartedMs = canonicalGithubTimestampMs(attemptStartedAt);
+  if (
+    attemptStartedMs === null ||
+    !Array.isArray(producers) ||
+    producers.length !== expectedNames.length ||
+    !sameStringSet(
+      producers.map((producer) => producer?.artifactName),
+      expectedNames,
+    ) ||
+    new Set(producers.map((producer) => producer?.artifactId)).size !==
+      producers.length
+  )
+    return false;
+  const expectedKeys = [
+    "artifactId",
+    "artifactName",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "artifactProducerJobId",
+    "artifactProducerJobName",
+    "artifactProducerRunAttempt",
+    "artifactProducerJobConclusion",
+    "artifactProducerJobStartedAt",
+    "artifactProducerJobCompletedAt",
+    "artifactUploadStepName",
+    "artifactUploadStepStartedAt",
+    "artifactUploadStepCompletedAt",
+  ];
+  return producers.every((producer) => {
+    if (!isPlainRecord(producer)) return false;
+    const createdMs = canonicalGithubTimestampMs(producer.artifactCreatedAt);
+    const updatedMs = canonicalGithubTimestampMs(producer.artifactUpdatedAt);
+    const jobStartedMs = canonicalGithubTimestampMs(
+      producer.artifactProducerJobStartedAt,
+    );
+    const jobCompletedMs = canonicalGithubTimestampMs(
+      producer.artifactProducerJobCompletedAt,
+    );
+    const uploadStartedMs = canonicalGithubTimestampMs(
+      producer.artifactUploadStepStartedAt,
+    );
+    const uploadCompletedMs = canonicalGithubTimestampMs(
+      producer.artifactUploadStepCompletedAt,
+    );
+    return (
+      sameStringSet(Object.keys(producer), expectedKeys) &&
+      Number.isSafeInteger(producer.artifactId) &&
+      producer.artifactId > 0 &&
+      Number.isSafeInteger(producer.artifactProducerJobId) &&
+      producer.artifactProducerJobId > 0 &&
+      producer.artifactProducerJobName === desktopProducerJobName(platform) &&
+      producer.artifactProducerRunAttempt === runAttempt &&
+      producer.artifactProducerJobConclusion === "success" &&
+      producer.artifactUploadStepName ===
+        desktopArtifactUploadStepName(producer.artifactName) &&
+      [
+        createdMs,
+        updatedMs,
+        jobStartedMs,
+        jobCompletedMs,
+        uploadStartedMs,
+        uploadCompletedMs,
+      ].every((value) => value !== null) &&
+      attemptStartedMs <= jobStartedMs &&
+      jobStartedMs <= uploadStartedMs &&
+      uploadStartedMs <= createdMs &&
+      createdMs <= uploadCompletedMs &&
+      uploadCompletedMs <= jobCompletedMs &&
+      createdMs <= updatedMs
+    );
+  });
+}
+
 function canonicalEvidenceChecks(claimId, kind) {
   return (
     kind === "ci"
@@ -1370,6 +1467,11 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
     addError(errors, `${prefix}.runId must be a positive integer`);
   if (!Number.isSafeInteger(evidence.runAttempt) || evidence.runAttempt <= 0)
     addError(errors, `${prefix}.runAttempt must be a positive integer`);
+  if (canonicalGithubTimestampMs(evidence.runAttemptStartedAt) === null)
+    addError(
+      errors,
+      `${prefix}.runAttemptStartedAt must be a canonical GitHub timestamp`,
+    );
   if (!isNonEmptyString(evidence.ref))
     addError(errors, `${prefix}.ref is required`);
   const expectedCheckIds = canonicalEvidenceChecks(
@@ -1483,6 +1585,9 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
       "sourceReportArtifactId",
       "sourceReportArtifactName",
       "sourceReportArtifactSha256",
+      "sourceReportArtifactCreatedAt",
+      "sourceReportArtifactUpdatedAt",
+      "artifactProducers",
     ];
     if (evidence.claimId === "release.signing") {
       if (
@@ -1505,6 +1610,21 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
         addError(
           errors,
           `${prefix}.sourceReportArtifactSha256 must be the Actions archive SHA-256 digest`,
+        );
+      if (
+        canonicalGithubTimestampMs(evidence.sourceReportArtifactCreatedAt) ===
+          null ||
+        canonicalGithubTimestampMs(evidence.sourceReportArtifactUpdatedAt) ===
+          null
+      )
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactCreatedAt and sourceReportArtifactUpdatedAt must be canonical GitHub timestamps`,
+        );
+      if (!Array.isArray(evidence.artifactProducers))
+        addError(
+          errors,
+          `${prefix}.artifactProducers must bind every signed artifact to its desktop upload job and step`,
         );
     } else if (
       sourceReportFields.some((field) => evidence[field] !== undefined)
@@ -1529,6 +1649,11 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
       );
     if (evidence.producerJobConclusion !== "success")
       addError(errors, `${prefix}.producerJobConclusion must be success`);
+    if (evidence.producerJobRunAttempt !== evidence.runAttempt)
+      addError(
+        errors,
+        `${prefix}.producerJobRunAttempt must equal the evidence runAttempt`,
+      );
     const expectedVerifierPath = machineVerifierPath(evidence.claimId);
     const expectedVerifierCommand = machineVerifierCommand(
       evidence.claimId,
@@ -2072,6 +2197,61 @@ export function verifyCanonicalReleasePublisher(root) {
     "desktop-windows",
     "desktop-linux",
   ].map((jobName) => canonicalJobNames.indexOf(jobName));
+  const desktopArtifactOutputContracts = [
+    {
+      jobName: "desktop-mac",
+      uploads: [
+        ["Upload macOS DMG", "upload-macos-dmg", "dmg"],
+        ["Upload macOS ZIP", "upload-macos-zip", "zip"],
+      ],
+    },
+    {
+      jobName: "desktop-windows",
+      uploads: [
+        ["Upload Windows installer", "upload-windows-installer", "installer"],
+      ],
+    },
+    {
+      jobName: "desktop-linux",
+      uploads: [
+        ["Upload Linux AppImage", "upload-linux-appimage", "appimage"],
+        ["Upload Linux deb", "upload-linux-deb", "deb"],
+        ["Upload Linux rpm", "upload-linux-rpm", "rpm"],
+      ],
+    },
+  ];
+  for (const { jobName, uploads } of desktopArtifactOutputContracts) {
+    const job = canonicalWorkflow.jobs?.[jobName];
+    const expectedOutputNames = uploads.flatMap(([, , outputPrefix]) => [
+      `${outputPrefix}-artifact-id`,
+      `${outputPrefix}-artifact-digest`,
+    ]);
+    const outputsValid =
+      isRecord(job?.outputs) &&
+      hasExactKeys(job.outputs, expectedOutputNames) &&
+      uploads.every(([, stepId, outputPrefix]) =>
+        ["id", "digest"].every(
+          (field) =>
+            job.outputs[`${outputPrefix}-artifact-${field}`] ===
+            `\${{ steps.${stepId}.outputs.artifact-${field} }}`,
+        ),
+      );
+    const uploadStepsValid = uploads.every(([stepName, stepId]) => {
+      const matches = asArray(job?.steps).filter(
+        (step) => step?.name === stepName,
+      );
+      return (
+        matches.length === 1 &&
+        matches[0].id === stepId &&
+        matches[0].uses === PINNED_RELEASE_WORKFLOW_ACTIONS.uploadArtifact
+      );
+    });
+    if (!outputsValid || !uploadStepsValid)
+      addError(
+        errors,
+        `${jobName} must expose exact pinned upload-artifact ID and digest outputs for signing provenance`,
+      );
+  }
   if (
     !isRecord(artifactMaterialsJob) ||
     !hasExactKeys(artifactMaterialsJob, [
@@ -2259,8 +2439,16 @@ export function verifyCanonicalReleasePublisher(root) {
     producerSteps[5].id !== "machine-verifier" ||
     producerSteps[5].if !==
       "matrix.claimId != 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[5].env, ["GITHUB_TOKEN"]) ||
+    !hasExactKeys(producerSteps[5].env, [
+      "GITHUB_TOKEN",
+      "SKYTWIN_RELEASE_ARTIFACT_IDS",
+      "SKYTWIN_RELEASE_ARTIFACT_DIGESTS",
+    ]) ||
     producerSteps[5].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[5].env.SKYTWIN_RELEASE_ARTIFACT_IDS !==
+      "${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}" ||
+    producerSteps[5].env.SKYTWIN_RELEASE_ARTIFACT_DIGESTS !==
+      "${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}" ||
     producerSteps[5].run !==
       "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[6]) ||
@@ -4199,6 +4387,17 @@ function hasCompleteMacSigningObservation(
     "artifactId",
     "artifactName",
     "artifactSha256",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "artifactProducerJobId",
+    "artifactProducerJobName",
+    "artifactProducerRunAttempt",
+    "artifactProducerJobConclusion",
+    "artifactProducerJobStartedAt",
+    "artifactProducerJobCompletedAt",
+    "artifactUploadStepName",
+    "artifactUploadStepStartedAt",
+    "artifactUploadStepCompletedAt",
     "kind",
     "path",
     "name",
@@ -4266,6 +4465,17 @@ function hasCompleteWindowsSigningObservation(
     "artifactId",
     "artifactName",
     "artifactSha256",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "artifactProducerJobId",
+    "artifactProducerJobName",
+    "artifactProducerRunAttempt",
+    "artifactProducerJobConclusion",
+    "artifactProducerJobStartedAt",
+    "artifactProducerJobCompletedAt",
+    "artifactUploadStepName",
+    "artifactUploadStepStartedAt",
+    "artifactUploadStepCompletedAt",
     "kind",
     "path",
     "name",
@@ -5133,6 +5343,8 @@ export function isValidSigningSourceReportArtifact(
     artifact?.name === evidence?.sourceReportArtifactName &&
     artifact?.expired === false &&
     artifact?.digest === `sha256:${evidence?.sourceReportArtifactSha256}` &&
+    artifact?.created_at === evidence?.sourceReportArtifactCreatedAt &&
+    artifact?.updated_at === evidence?.sourceReportArtifactUpdatedAt &&
     artifact?.workflow_run?.id === runId &&
     artifact?.workflow_run?.head_sha === releaseCommit
   );
@@ -5155,6 +5367,8 @@ export function isValidSigningUploadBinding(
       "ref",
       "runId",
       "runAttempt",
+      "runAttemptStartedAt",
+      "artifactProducers",
       "reportName",
       "reportSha256",
       "sourceArtifactId",
@@ -5171,6 +5385,9 @@ export function isValidSigningUploadBinding(
     binding.ref === triggerRef &&
     binding.runId === runId &&
     binding.runAttempt === runAttempt &&
+    binding.runAttemptStartedAt === evidence.runAttemptStartedAt &&
+    JSON.stringify(binding.artifactProducers) ===
+      JSON.stringify(evidence.artifactProducers) &&
     binding.reportName === basename(evidence.reportPath) &&
     binding.reportSha256 === evidence.reportSha256 &&
     binding.sourceArtifactId === evidence.sourceReportArtifactId &&
@@ -5244,6 +5461,11 @@ export async function verifyPublicationEvidence(
       errors,
       "release evidence manifest runAttempt must be a positive integer",
     );
+  if (canonicalGithubTimestampMs(manifest?.runAttemptStartedAt) === null)
+    addError(
+      errors,
+      "release evidence manifest runAttemptStartedAt must be a canonical GitHub timestamp",
+    );
   if (manifest?.ref !== triggerRef)
     addError(
       errors,
@@ -5297,6 +5519,19 @@ export async function verifyPublicationEvidence(
     }
     seenPairs.add(identity);
     validateExternalEvidenceShape(evidence, prefix, errors);
+    if (
+      evidence?.claimId === "release.signing" &&
+      !validSigningArtifactProducers(
+        evidence.artifactProducers,
+        evidence.platform,
+        evidence.runAttempt,
+        manifest.runAttemptStartedAt,
+      )
+    )
+      addError(
+        errors,
+        `${prefix}.artifactProducers does not prove current-attempt desktop upload provenance`,
+      );
     evidenceEntries.push({ claimId: evidence.claimId, evidence });
   }
   for (const pair of requiredPairs) {
@@ -5341,6 +5576,11 @@ export async function verifyPublicationEvidence(
       addError(
         errors,
         `${claimId} ${evidence.kind} evidence is not from the current workflow run attempt`,
+      );
+    if (evidence.runAttemptStartedAt !== manifest.runAttemptStartedAt)
+      addError(
+        errors,
+        `${claimId} ${evidence.kind} evidence is not from the current workflow attempt start`,
       );
     if (evidence.ref !== triggerRef)
       addError(
@@ -5388,6 +5628,82 @@ export async function verifyPublicationEvidence(
       "current workflow run is not the tag-push build.yml run for the release commit",
     );
     return errors;
+  }
+  const currentAttemptResponse = await fetchChecked(
+    fetchImpl,
+    `${apiRoot}/runs/${runId}/attempts/${manifest.runAttempt}`,
+    { headers },
+    "current release workflow attempt",
+    errors,
+  );
+  const currentAttemptJobsResponse = await fetchChecked(
+    fetchImpl,
+    `${apiRoot}/runs/${runId}/attempts/${manifest.runAttempt}/jobs?per_page=100&page=1`,
+    { headers },
+    "current release workflow attempt jobs",
+    errors,
+  );
+  if (!currentAttemptResponse || !currentAttemptJobsResponse) return errors;
+  let currentAttempt;
+  let currentAttemptJobsPage;
+  try {
+    [currentAttempt, currentAttemptJobsPage] = await Promise.all([
+      currentAttemptResponse.json(),
+      currentAttemptJobsResponse.json(),
+    ]);
+  } catch {
+    addError(
+      errors,
+      "current workflow attempt API response was not valid JSON",
+    );
+    return errors;
+  }
+  if (
+    currentAttempt.id !== runId ||
+    currentAttempt.run_attempt !== manifest.runAttempt ||
+    currentAttempt.head_sha !== releaseCommit ||
+    currentAttempt.event !== "push" ||
+    currentAttempt.head_branch !== tag ||
+    currentAttempt.path !== RELEASE_EVIDENCE_WORKFLOW_PATH ||
+    currentAttempt.repository?.full_name !== repository ||
+    currentAttempt.run_started_at !== manifest.runAttemptStartedAt
+  ) {
+    addError(
+      errors,
+      "current workflow attempt is not the exact tag-push build.yml attempt recorded by the manifest",
+    );
+    return errors;
+  }
+  if (
+    !Array.isArray(currentAttemptJobsPage?.jobs) ||
+    !Number.isSafeInteger(currentAttemptJobsPage.total_count) ||
+    currentAttemptJobsPage.total_count > 100 ||
+    currentAttemptJobsPage.jobs.length !== currentAttemptJobsPage.total_count
+  ) {
+    addError(
+      errors,
+      "current workflow attempt job inventory is malformed, ambiguous, or paginated",
+    );
+    return errors;
+  }
+  const exactAttemptJobsById = new Map();
+  for (const job of currentAttemptJobsPage.jobs) {
+    if (
+      !Number.isSafeInteger(job?.id) ||
+      job.id <= 0 ||
+      job.run_id !== runId ||
+      job.run_attempt !== manifest.runAttempt ||
+      job.run_url !== `${apiRoot}/runs/${runId}` ||
+      (job.head_sha !== undefined && job.head_sha !== releaseCommit) ||
+      exactAttemptJobsById.has(job.id)
+    ) {
+      addError(
+        errors,
+        "current workflow attempt job inventory has an invalid, wrong-run, or duplicate job identity",
+      );
+      return errors;
+    }
+    exactAttemptJobsById.set(job.id, job);
   }
 
   const releaseAssetsByName = new Map();
@@ -5452,7 +5768,7 @@ export async function verifyPublicationEvidence(
           `${prefix} subject is missing, unsafe, or has the wrong size or digest: ${subject.path}`,
         );
     }
-    releaseAssetsByName.set(asset.artifactName, asset);
+    releaseAssetsByName.set(asset.artifactName, { ...asset, apiArtifact });
   }
 
   for (const { claimId, evidence } of ciEntries) {
@@ -5510,6 +5826,26 @@ export async function verifyPublicationEvidence(
         `${prefix} job is not a successful job in the recorded run`,
       );
     }
+    const exactAttemptJob = exactAttemptJobsById.get(evidence.jobId);
+    const jobStartedMs = canonicalGithubTimestampMs(job.started_at);
+    const attemptStartedMs = canonicalGithubTimestampMs(
+      manifest.runAttemptStartedAt,
+    );
+    if (
+      job.run_attempt !== manifest.runAttempt ||
+      jobStartedMs === null ||
+      jobStartedMs < attemptStartedMs ||
+      exactAttemptJob?.id !== job.id ||
+      exactAttemptJob?.run_attempt !== manifest.runAttempt ||
+      exactAttemptJob?.name !== job.name ||
+      exactAttemptJob?.conclusion !== "success" ||
+      exactAttemptJob?.started_at !== job.started_at ||
+      exactAttemptJob?.completed_at !== job.completed_at
+    )
+      addError(
+        errors,
+        `${prefix} job is not current-attempt verifier evidence`,
+      );
     if (
       artifact.id !== evidence.artifactId ||
       artifact.name !== evidence.artifactName ||
@@ -5669,15 +6005,34 @@ export async function verifyPublicationEvidence(
       claimId,
       evidence.platform,
     );
+    const exactAttemptProducerJob = exactAttemptJobsById.get(
+      evidence.producerJobId,
+    );
+    const producerStartedMs = canonicalGithubTimestampMs(
+      producerJob.started_at,
+    );
+    const attemptStartedMs = canonicalGithubTimestampMs(
+      manifest.runAttemptStartedAt,
+    );
     if (
       producerJob.id !== evidence.producerJobId ||
       producerJob.name !== expectedProducerJobName ||
       producerJob.name !== evidence.producerJobName ||
       producerJob.conclusion !== "success" ||
+      producerJob.run_attempt !== manifest.runAttempt ||
+      evidence.producerJobRunAttempt !== manifest.runAttempt ||
       producerJob.run_url !==
         `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
       (producerJob.head_sha !== undefined &&
         producerJob.head_sha !== releaseCommit) ||
+      producerStartedMs === null ||
+      producerStartedMs < attemptStartedMs ||
+      exactAttemptProducerJob?.id !== producerJob.id ||
+      exactAttemptProducerJob?.run_attempt !== manifest.runAttempt ||
+      exactAttemptProducerJob?.name !== producerJob.name ||
+      exactAttemptProducerJob?.conclusion !== "success" ||
+      exactAttemptProducerJob?.started_at !== producerJob.started_at ||
+      exactAttemptProducerJob?.completed_at !== producerJob.completed_at ||
       !hasCanonicalSuccessfulMachineSteps(claimId, producerJob)
     )
       addError(
@@ -5723,6 +6078,101 @@ export async function verifyPublicationEvidence(
         errors,
         `${prefix} source report artifact is not the unexpired attempt-bound ID/name/archive-digest artifact from the current run`,
       );
+    if (claimId === "release.signing") {
+      const sourceUploadSteps = asArray(exactAttemptProducerJob?.steps).filter(
+        ({ name }) => name === "Upload machine evidence report",
+      );
+      const sourceUploadStep = sourceUploadSteps[0];
+      const sourceCreatedMs = canonicalGithubTimestampMs(
+        sourceReportArtifact?.created_at,
+      );
+      const sourceUpdatedMs = canonicalGithubTimestampMs(
+        sourceReportArtifact?.updated_at,
+      );
+      const sourceUploadStartedMs = canonicalGithubTimestampMs(
+        sourceUploadStep?.started_at,
+      );
+      const sourceUploadCompletedMs = canonicalGithubTimestampMs(
+        sourceUploadStep?.completed_at,
+      );
+      const verifierCompletedMs = canonicalGithubTimestampMs(
+        exactAttemptProducerJob?.completed_at,
+      );
+      if (
+        sourceUploadSteps.length !== 1 ||
+        sourceUploadStep?.status !== "completed" ||
+        sourceUploadStep?.conclusion !== "success" ||
+        sourceCreatedMs === null ||
+        sourceUpdatedMs === null ||
+        sourceUploadStartedMs === null ||
+        sourceUploadCompletedMs === null ||
+        verifierCompletedMs === null ||
+        sourceUploadStartedMs < attemptStartedMs ||
+        sourceUploadStartedMs > sourceCreatedMs ||
+        sourceCreatedMs > sourceUploadCompletedMs ||
+        sourceUploadCompletedMs > verifierCompletedMs ||
+        sourceCreatedMs > sourceUpdatedMs
+      )
+        addError(
+          errors,
+          `${prefix} source report artifact was not created by the successful current-attempt upload step`,
+        );
+      for (const producer of evidence.artifactProducers) {
+        const asset = releaseAssetsByName.get(producer.artifactName);
+        const apiArtifact = asset?.apiArtifact;
+        const producerJobForAttempt = exactAttemptJobsById.get(
+          producer.artifactProducerJobId,
+        );
+        const uploadSteps = asArray(producerJobForAttempt?.steps).filter(
+          ({ name }) => name === producer.artifactUploadStepName,
+        );
+        const uploadStep = uploadSteps[0];
+        const artifactCreatedMs = canonicalGithubTimestampMs(
+          apiArtifact?.created_at,
+        );
+        const uploadStartedMs = canonicalGithubTimestampMs(
+          uploadStep?.started_at,
+        );
+        const uploadCompletedMs = canonicalGithubTimestampMs(
+          uploadStep?.completed_at,
+        );
+        if (
+          !asset ||
+          asset.artifactId !== producer.artifactId ||
+          apiArtifact?.id !== producer.artifactId ||
+          apiArtifact?.name !== producer.artifactName ||
+          apiArtifact?.created_at !== producer.artifactCreatedAt ||
+          apiArtifact?.updated_at !== producer.artifactUpdatedAt ||
+          producerJobForAttempt?.id !== producer.artifactProducerJobId ||
+          producerJobForAttempt?.name !== producer.artifactProducerJobName ||
+          producerJobForAttempt?.run_attempt !== manifest.runAttempt ||
+          producerJobForAttempt?.run_id !== runId ||
+          producerJobForAttempt?.run_url !== `${apiRoot}/runs/${runId}` ||
+          (producerJobForAttempt?.head_sha !== undefined &&
+            producerJobForAttempt.head_sha !== releaseCommit) ||
+          producerJobForAttempt?.status !== "completed" ||
+          producerJobForAttempt?.conclusion !== "success" ||
+          producerJobForAttempt?.started_at !==
+            producer.artifactProducerJobStartedAt ||
+          producerJobForAttempt?.completed_at !==
+            producer.artifactProducerJobCompletedAt ||
+          uploadSteps.length !== 1 ||
+          uploadStep?.status !== "completed" ||
+          uploadStep?.conclusion !== "success" ||
+          uploadStep?.started_at !== producer.artifactUploadStepStartedAt ||
+          uploadStep?.completed_at !== producer.artifactUploadStepCompletedAt ||
+          artifactCreatedMs === null ||
+          uploadStartedMs === null ||
+          uploadCompletedMs === null ||
+          uploadStartedMs > artifactCreatedMs ||
+          artifactCreatedMs > uploadCompletedMs
+        )
+          addError(
+            errors,
+            `${prefix} release artifact is not bound to its exact current-attempt desktop upload job and step`,
+          );
+      }
+    }
     const subjectPath = resolveContainedRegularFile(root, evidence.subjectPath);
     if (!subjectPath) {
       addError(
@@ -5830,6 +6280,11 @@ export async function verifyPublicationEvidence(
       report.subjectName !== evidence.subjectName ||
       report.subjectPath !== evidence.subjectPath ||
       report.subjectSha256 !== evidence.subjectSha256 ||
+      (claimId === "release.signing" &&
+        (report.runAttempt !== manifest.runAttempt ||
+          report.runAttemptStartedAt !== manifest.runAttemptStartedAt ||
+          JSON.stringify(report.artifactProducers) !==
+            JSON.stringify(evidence.artifactProducers))) ||
       report.producerJobName !== expectedProducerJobName ||
       report.verifierPath !== expectedVerifierPath ||
       report.verifierCommand !== expectedVerifierCommand ||
