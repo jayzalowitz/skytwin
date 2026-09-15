@@ -302,6 +302,30 @@ function utf8LengthAtMost(value: unknown, maximum: number): value is string {
   );
 }
 
+function hasCanonicalBase64Shape(value: string): boolean {
+  if (value.length % 4 !== 0) return false;
+
+  let alphabetEnd = value.length;
+  if (value.endsWith('==')) alphabetEnd -= 2;
+  else if (value.endsWith('=')) alphabetEnd -= 1;
+
+  for (let index = 0; index < alphabetEnd; index += 1) {
+    const code = value.charCodeAt(index);
+    const isAlphabetCharacter =
+      (code >= 65 && code <= 90) ||
+      (code >= 97 && code <= 122) ||
+      (code >= 48 && code <= 57) ||
+      code === 43 ||
+      code === 47;
+    if (!isAlphabetCharacter) return false;
+  }
+
+  for (let index = alphabetEnd; index < value.length; index += 1) {
+    if (value.charCodeAt(index) !== 61) return false;
+  }
+  return true;
+}
+
 function decodeCanonicalBase64(
   value: unknown,
   exactBytes?: number,
@@ -312,9 +336,7 @@ function decodeCanonicalBase64(
     typeof value !== 'string' ||
     (!allowEmpty && value.length === 0) ||
     value.length > Math.ceil(maximumBytes / 3) * 4 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-      value,
-    )
+    !hasCanonicalBase64Shape(value)
   )
     return null;
   const decoded = Buffer.from(value, 'base64');

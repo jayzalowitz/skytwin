@@ -130,6 +130,109 @@ describe('source-key broker context and envelope snapshots', () => {
       expect(snapshotSourceKeyEnvelope(mutation, context)).toBeNull();
     }
   });
+
+  it('validates the full ciphertext boundary without regex stack growth', () => {
+    const maximumCiphertext = Buffer.alloc(16 * 1024 * 1024, 3).toString(
+      'base64',
+    );
+    const oversizedCiphertext = Buffer.alloc(16 * 1024 * 1024 + 1, 3).toString(
+      'base64',
+    );
+    const maximumEnvelope = { ...envelope, ciphertext: maximumCiphertext };
+    const oversizedEnvelope = { ...envelope, ciphertext: oversizedCiphertext };
+
+    expect(
+      snapshotSourceKeyEnvelope(maximumEnvelope, context)?.ciphertext.length,
+    ).toBe(maximumCiphertext.length);
+    expect(snapshotSourceKeyEnvelope(oversizedEnvelope, context)).toBeNull();
+
+    expect(
+      snapshotSourceKeyBrokerRequest({
+        ...request('decrypt'),
+        envelope: maximumEnvelope,
+      }),
+    ).not.toBeNull();
+    expect(
+      snapshotSourceKeyBrokerRequest({
+        ...request('decrypt'),
+        envelope: oversizedEnvelope,
+      }),
+    ).toBeNull();
+
+    const response = {
+      type: 'skytwin:vault:response',
+      protocolVersion: 1,
+      requestId,
+      generation: 4,
+      context,
+      result: success('encrypt'),
+    };
+    const expected = {
+      requestId,
+      generation: 4,
+      operation: 'encrypt' as const,
+      context,
+    };
+    expect(
+      snapshotSourceKeyBrokerResponse(
+        {
+          ...response,
+          result: {
+            success: true,
+            operation: 'encrypt',
+            envelope: maximumEnvelope,
+          },
+        },
+        expected,
+      ),
+    ).not.toBeNull();
+    expect(
+      snapshotSourceKeyBrokerResponse(
+        {
+          ...response,
+          result: {
+            success: true,
+            operation: 'encrypt',
+            envelope: oversizedEnvelope,
+          },
+        },
+        expected,
+      ),
+    ).toBeNull();
+  });
+
+  it('rejects malformed base64 alphabet, padding, and non-canonical pad bits', () => {
+    for (const ciphertext of [
+      'Zm9v\n',
+      'Zm9v_',
+      '=m9v',
+      'Zm=v',
+      'Zg===',
+      'Zh==',
+    ]) {
+      expect(
+        snapshotSourceKeyEnvelope({ ...envelope, ciphertext }, context),
+      ).toBeNull();
+    }
+  });
+
+  it('rejects envelope accessors and proxies without reading ciphertext', () => {
+    let ciphertextRead = false;
+    const accessor = { ...envelope } as Record<string, unknown>;
+    Object.defineProperty(accessor, 'ciphertext', {
+      enumerable: true,
+      get: () => {
+        ciphertextRead = true;
+        return envelope.ciphertext;
+      },
+    });
+
+    expect(snapshotSourceKeyEnvelope(accessor, context)).toBeNull();
+    expect(ciphertextRead).toBe(false);
+    expect(
+      snapshotSourceKeyEnvelope(new Proxy({ ...envelope }, {}), context),
+    ).toBeNull();
+  });
 });
 
 describe('source-key broker requests', () => {
