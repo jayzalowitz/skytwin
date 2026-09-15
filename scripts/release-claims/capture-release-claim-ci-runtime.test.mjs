@@ -3,6 +3,7 @@ import {
   appendFileSync,
   chmodSync,
   linkSync,
+  lstatSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -38,6 +39,10 @@ function pnpmRuntime(root, content = "// pnpm CLI bundle\n") {
   return { launcherPath, entryPath };
 }
 
+function pnpmSnapshotPath(root) {
+  return join(root, ".skytwin-release-pnpm-github-output.cjs");
+}
+
 function pnpmActionSetupRuntime(root, { alternatePathNodeTarget } = {}) {
   const relativePackageLauncher = "../pnpm/bin/pnpm.cjs";
   const packageRoot = join(
@@ -52,6 +57,8 @@ function pnpmActionSetupRuntime(root, { alternatePathNodeTarget } = {}) {
   const entryPath = join(packageRoot, "dist/pnpm.cjs");
   mkdirSync(dirname(entryPath), { recursive: true });
   writeFileSync(entryPath, "// action-setup pnpm CLI bundle\n");
+  linkSync(packageLauncherPath, `${packageLauncherPath}.store-link`);
+  linkSync(entryPath, `${entryPath}.store-link`);
   const packageLinkPath = join(root, "node_modules/pnpm");
   symlinkSync(".pnpm/pnpm@9.1.0/node_modules/pnpm", packageLinkPath);
   const launcherPath = executable(
@@ -100,7 +107,7 @@ describe("release claim CI runtime capture", () => {
       nodeSha256: createHash("sha256")
         .update(readFileSync(nodePath))
         .digest("hex"),
-      pnpmEntryPath: realpathSync(entryPath),
+      pnpmEntryPath: realpathSync(pnpmSnapshotPath(root)),
       pnpmEntrySha256: createHash("sha256")
         .update(readFileSync(entryPath))
         .digest("hex"),
@@ -110,7 +117,7 @@ describe("release claim CI runtime capture", () => {
       `node-path=${realpathSync(nodePath)}\n`,
     );
     expect(appendOutput.mock.calls[0][1]).toContain(
-      `pnpm-entry-path=${realpathSync(entryPath)}\n`,
+      `pnpm-entry-path=${realpathSync(pnpmSnapshotPath(root))}\n`,
     );
   });
 
@@ -127,7 +134,8 @@ describe("release claim CI runtime capture", () => {
       },
     });
     writeFileSync(entryPath, "// lifecycle mutation\n");
-    expect(runtime.pnpmEntryPath).toBe(realpathSync(entryPath));
+    expect(runtime.pnpmEntryPath).toBe(realpathSync(pnpmSnapshotPath(root)));
+    expect(readFileSync(runtime.pnpmEntryPath, "utf8")).toBe("// original\n");
     expect(runtime.pnpmEntrySha256).not.toBe(
       createHash("sha256").update(readFileSync(entryPath)).digest("hex"),
     );
@@ -148,7 +156,7 @@ describe("release claim CI runtime capture", () => {
         },
       }),
     ).toMatchObject({
-      pnpmEntryPath: realpathSync(entryPath),
+      pnpmEntryPath: realpathSync(pnpmSnapshotPath(root)),
       pnpmEntrySha256: createHash("sha256")
         .update(readFileSync(entryPath))
         .digest("hex"),
@@ -268,12 +276,29 @@ exec node "$basedir/../../attacker/pnpm.cjs" "$@"
     ).toThrow("outside the canonical package layout");
   });
 
-  it("rejects a hard-linked package launcher behind a valid PATH shim", () => {
+  it("snapshots hosted package-store hardlinks behind a valid PATH shim", () => {
     const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
     roots.push(root);
     const nodePath = executable(root, "node", "node runtime\n");
-    const { launcherPath, packageLauncherPath } = pnpmActionSetupRuntime(root);
-    linkSync(packageLauncherPath, `${packageLauncherPath}.hardlink`);
+    const { launcherPath } = pnpmActionSetupRuntime(root);
+
+    const runtime = captureReleaseClaimCiRuntime({
+      execPath: nodePath,
+      env: {
+        PATH: dirname(launcherPath),
+        GITHUB_OUTPUT: join(root, "github-output"),
+      },
+    });
+    expect(runtime.pnpmEntryPath).toBe(realpathSync(pnpmSnapshotPath(root)));
+    expect(lstatSync(runtime.pnpmEntryPath).nlink).toBe(1);
+  });
+
+  it("rejects a hard-linked node runtime", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath } = pnpmRuntime(root);
+    linkSync(nodePath, `${nodePath}.hardlink`);
 
     expect(() =>
       captureReleaseClaimCiRuntime({
@@ -286,27 +311,44 @@ exec node "$basedir/../../attacker/pnpm.cjs" "$@"
     ).toThrow("single-link regular file");
   });
 
-  it.each(["node", "pnpm entry"])(
-    "rejects a hard-linked %s runtime",
-    (runtimeName) => {
-      const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
-      roots.push(root);
-      const nodePath = executable(root, "node", "node runtime\n");
-      const { launcherPath, entryPath } = pnpmRuntime(root);
-      const linkedPath = runtimeName === "node" ? nodePath : entryPath;
-      linkSync(linkedPath, `${linkedPath}.hardlink`);
+  it("snapshots a hard-linked delegated pnpm bundle", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath, entryPath } = pnpmRuntime(root);
+    linkSync(entryPath, `${entryPath}.hardlink`);
 
-      expect(() =>
-        captureReleaseClaimCiRuntime({
-          execPath: nodePath,
-          env: {
-            PATH: dirname(launcherPath),
-            GITHUB_OUTPUT: join(root, "github-output"),
-          },
-        }),
-      ).toThrow("single-link regular file");
-    },
-  );
+    const runtime = captureReleaseClaimCiRuntime({
+      execPath: nodePath,
+      env: {
+        PATH: dirname(launcherPath),
+        GITHUB_OUTPUT: join(root, "github-output"),
+      },
+    });
+    expect(runtime.pnpmEntryPath).toBe(realpathSync(pnpmSnapshotPath(root)));
+    expect(lstatSync(runtime.pnpmEntryPath).nlink).toBe(1);
+  });
+
+  it("refuses to replace an existing runtime snapshot", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath } = pnpmRuntime(root);
+    writeFileSync(pnpmSnapshotPath(root), "preexisting bytes\n");
+
+    expect(() =>
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toThrow(/EEXIST/u);
+    expect(readFileSync(pnpmSnapshotPath(root), "utf8")).toBe(
+      "preexisting bytes\n",
+    );
+  });
 
   it("rejects relative and non-executable PATH candidates", () => {
     const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));

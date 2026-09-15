@@ -135,9 +135,12 @@ All notable changes to SkyTwin will be documented in this file.
 - **Hosted release-claim evidence resolves pnpm/action-setup without relaxing
   runtime identity.** Runtime capture accepts only the generated POSIX shim's
   exact two-branch delegation into one canonical pnpm package launcher, then
-  binds the delegated CLI bundle as before. Duplicate, divergent, out-of-tree,
-  linked, and non-shell launchers fail closed. Failure observations in the
-  resulting evidence are capped at 4,096 code units.
+  makes an exclusive single-link executable snapshot of the delegated CLI
+  bundle before dependency installation. Duplicate, divergent, out-of-tree,
+  and non-shell launchers fail closed; content-addressed package-store
+  hardlinks are never executed by the evidence harness. Failure observations
+  in the resulting evidence are capped at 4,096 code units and the final
+  consumer enforces the same bound.
 
 - **Release signing evidence matches the actual native package metadata and
   fails closed on incomplete provenance.** Windows ProductVersion checks now

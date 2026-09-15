@@ -22,6 +22,7 @@ import {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS,
   RELEASE_ARTIFACT_GENERATOR_PATH,
   RELEASE_ARTIFACT_MANIFEST_PATH,
   RELEASE_ARTIFACT_MATERIALS_ARTIFACT,
@@ -5350,7 +5351,8 @@ ${step}`,
       runtime: {
         nodePath: "/opt/hostedtoolcache/node/bin/node",
         nodeSha256: "b".repeat(64),
-        pnpmEntryPath: "/home/runner/setup-pnpm/node_modules/.bin/pnpm",
+        pnpmEntryPath:
+          "/home/runner/_temp/.skytwin-release-pnpm-set_output_123.cjs",
         pnpmEntrySha256: "c".repeat(64),
       },
       sourceDigests: RELEASE_CLAIM_CI_SOURCE_PATHS.map((path) => ({
@@ -5369,7 +5371,7 @@ ${step}`,
           command: {
             executable: "/opt/hostedtoolcache/node/bin/node",
             args: [
-              "/home/runner/setup-pnpm/node_modules/.bin/pnpm",
+              "/home/runner/_temp/.skytwin-release-pnpm-set_output_123.cjs",
               ...CANONICAL_CI_EVIDENCE_COMMANDS.get(id).args,
             ],
           },
@@ -5539,6 +5541,24 @@ ${step}`,
     write(root, "artifacts/release-claims-ci/result.json", tamperedReportBytes);
     evidence.reportSha256 = createHash("sha256")
       .update(tamperedReportBytes)
+      .digest("hex");
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("canonical test IDs for the current tag run"),
+      ),
+    ).toBe(true);
+    const oversizedReport = JSON.parse(ciResult);
+    oversizedReport.claims[0].checks[0].observed = "x".repeat(
+      MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS + 1,
+    );
+    const oversizedReportBytes = `${JSON.stringify(oversizedReport)}\n`;
+    write(
+      root,
+      "artifacts/release-claims-ci/result.json",
+      oversizedReportBytes,
+    );
+    evidence.reportSha256 = createHash("sha256")
+      .update(oversizedReportBytes)
       .digest("hex");
     expect(
       (await verifyPublicationEvidence(ledger, manifest, options)).some(

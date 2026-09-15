@@ -23,6 +23,7 @@ import {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS,
   PINNED_RELEASE_WORKFLOW_ACTIONS,
   RELEASE_CLAIM_CI_CONSTANTS_PATH,
   RELEASE_CLAIM_CI_HARNESS_PATH,
@@ -63,6 +64,7 @@ export {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS,
   PINNED_RELEASE_WORKFLOW_ACTIONS,
   RELEASE_CLAIM_CI_CONSTANTS_PATH,
   RELEASE_CLAIM_CI_HARNESS_PATH,
@@ -4789,10 +4791,10 @@ function hasExactReleaseClaimCiRuntime(runtime) {
   return (
     isPlainRecord(runtime) &&
     typeof runtime.nodePath === "string" &&
-    /^\/[A-Za-z0-9_./+-]+$/u.test(runtime.nodePath) &&
+    /^\/[A-Za-z0-9_./+@-]+$/u.test(runtime.nodePath) &&
     SOURCE_DIGEST.test(runtime.nodeSha256 ?? "") &&
     typeof runtime.pnpmEntryPath === "string" &&
-    /^\/[A-Za-z0-9_./+-]+$/u.test(runtime.pnpmEntryPath) &&
+    /^\/[A-Za-z0-9_./+@-]+$/u.test(runtime.pnpmEntryPath) &&
     SOURCE_DIGEST.test(runtime.pnpmEntrySha256 ?? "")
   );
 }
@@ -4815,7 +4817,8 @@ function hasExactPassingChecks(checks, expectedIds, runtime) {
       check.command.executable === runtime?.nodePath &&
       JSON.stringify(check.command.args) ===
         JSON.stringify([runtime?.pnpmEntryPath, ...(command?.args ?? [])]) &&
-      isNonEmptyString(check.observed)
+      isNonEmptyString(check.observed) &&
+      check.observed.length <= MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS
     );
   });
 }
@@ -6379,10 +6382,7 @@ export async function verifyPublicationEvidence(
       exactAttemptJob?.started_at !== job.started_at ||
       exactAttemptJob?.completed_at !== job.completed_at
     )
-      addError(
-        errors,
-        `${prefix} job is not current-attempt CI evidence`,
-      );
+      addError(errors, `${prefix} job is not current-attempt CI evidence`);
     if (
       artifact.id !== evidence.artifactId ||
       artifact.name !== evidence.artifactName ||

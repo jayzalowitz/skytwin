@@ -1250,17 +1250,17 @@
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "a1b47babdc07e1fba8b894830ab817c20dc5e0dacfc6f15bd6998421147a8316",
-          "why": "Defines the frozen focused CI source and command inventories, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
+          "sha256": "7534b60b1cefe7e170de74d6aa3e5913da38edf11a25678a1a77d21fbf665457",
+          "why": "Defines the frozen focused CI source and command inventories, bounded observed-result contract, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
           "path": "scripts/release-claims/capture-release-claim-ci-runtime.mjs",
-          "sha256": "3edc9e0ae0e4954bad575ea55f9a666b866e6ad0dcfdf4b7e8239afe9943fff0",
-          "why": "Captures safe canonical Node and delegated pnpm CLI bundle paths and digests, including the exact pnpm/action-setup package shim shape, before dependency installation can alter the job environment"
+          "sha256": "b2eb8ef5a376b4a058e2c805306c984d173606deedcdc3dc07678e0e01bf83f3",
+          "why": "Captures safe canonical Node identity and an exclusive single-link snapshot of the delegated pnpm CLI bundle, including the exact pnpm/action-setup package shim shape, before dependency installation can alter the job environment"
         },
         {
           "path": "scripts/release-claims/run-release-claim-ci.mjs",
-          "sha256": "80f42d590d951d24aff852bab830cc7aad8826fe5029c6fc73620ff96dd57626",
+          "sha256": "21d71b087c66b71acba6f45bc9e019faa20681de2a2e1f67c6a39a37b0795a3f",
           "why": "Runs the frozen commands without a shell, records bounded observed exit evidence and immutable workflow identity, and checks the exact tagged source tree and captured runtimes at every command boundary"
         },
         {
@@ -1300,8 +1300,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "6eb6c611a0501fc257bcec94a3d6bec9ad59a77ef31ae0a770d2195ba05b3a34",
-          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every release material and source report binding at publication"
+          "sha256": "58b7825d0ae1ce6e81bccbddcdd0090d56b73c70c9ff59d093e2fe4b6dba2e0e",
+          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material and source report binding at publication"
         }
       ],
       "verification": [

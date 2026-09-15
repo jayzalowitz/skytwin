@@ -5,11 +5,13 @@ import {
   accessSync,
   appendFileSync,
   lstatSync,
+  writeFileSync,
   readFileSync,
   realpathSync,
 } from "node:fs";
 import {
   delimiter,
+  basename,
   dirname,
   isAbsolute,
   join,
@@ -33,7 +35,11 @@ function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
 
-function canonicalRegularFile(path, name, { executable = false } = {}) {
+function canonicalRegularFile(
+  path,
+  name,
+  { executable = false, requireSingleLink = true } = {},
+) {
   if (
     typeof path !== "string" ||
     !isAbsolute(path) ||
@@ -44,14 +50,20 @@ function canonicalRegularFile(path, name, { executable = false } = {}) {
   if (!SAFE_ABSOLUTE_PATH.test(canonical))
     throw new Error(`${name} must resolve to a safe absolute path`);
   const stat = lstatSync(canonical);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
-    throw new Error(`${name} must resolve to a single-link regular file`);
+  if (
+    !stat.isFile() ||
+    stat.isSymbolicLink() ||
+    (requireSingleLink && stat.nlink !== 1)
+  )
+    throw new Error(
+      `${name} must resolve to a ${requireSingleLink ? "single-link " : ""}regular file`,
+    );
   if (executable) accessSync(canonical, fsConstants.X_OK);
   return canonical;
 }
 
-function canonicalExecutable(path, name) {
-  return canonicalRegularFile(path, name, { executable: true });
+function canonicalExecutable(path, name, options = {}) {
+  return canonicalRegularFile(path, name, { ...options, executable: true });
 }
 
 function resolvePathExecutable(name, pathValue) {
@@ -96,6 +108,7 @@ function resolvePnpmPackageLauncher(launcherPath) {
   const packageLauncherPath = canonicalExecutable(
     resolve(dirname(launcherPath), relativePackageLauncher),
     "pnpm package launcher",
+    { requireSingleLink: false },
   );
   if (
     !PNPM_PACKAGE_LAUNCHER.test(
@@ -118,7 +131,32 @@ function resolvePnpmEntry(launcherPath) {
   return canonicalRegularFile(
     resolve(dirname(packageLauncherPath), "../dist/pnpm.cjs"),
     "pnpm CLI bundle",
+    { requireSingleLink: false },
   );
+}
+
+function snapshotPnpmEntry(entryPath, githubOutputPath) {
+  if (
+    typeof githubOutputPath !== "string" ||
+    !isAbsolute(githubOutputPath) ||
+    !SAFE_ABSOLUTE_PATH.test(githubOutputPath)
+  )
+    throw new Error("GITHUB_OUTPUT must be a safe absolute path");
+  const outputDirectory = realpathSync(dirname(githubOutputPath));
+  if (!SAFE_ABSOLUTE_PATH.test(outputDirectory))
+    throw new Error("GITHUB_OUTPUT must be inside a safe canonical directory");
+  const outputStat = lstatSync(outputDirectory);
+  if (!outputStat.isDirectory() || outputStat.isSymbolicLink())
+    throw new Error("GITHUB_OUTPUT must be inside a canonical directory");
+  const snapshotPath = join(
+    outputDirectory,
+    `.skytwin-release-pnpm-${basename(githubOutputPath)}.cjs`,
+  );
+  writeFileSync(snapshotPath, readFileSync(entryPath), {
+    flag: "wx",
+    mode: 0o500,
+  });
+  return canonicalExecutable(snapshotPath, "pnpm CLI snapshot");
 }
 
 export function captureReleaseClaimCiRuntime({
@@ -128,15 +166,16 @@ export function captureReleaseClaimCiRuntime({
 } = {}) {
   const nodePath = canonicalExecutable(execPath, "node");
   const pnpmLauncherPath = resolvePathExecutable("pnpm", env.PATH);
-  const pnpmEntryPath = resolvePnpmEntry(pnpmLauncherPath);
+  const pnpmEntryPath = snapshotPnpmEntry(
+    resolvePnpmEntry(pnpmLauncherPath),
+    env.GITHUB_OUTPUT,
+  );
   const runtime = {
     nodePath,
     nodeSha256: sha256(nodePath),
     pnpmEntryPath,
     pnpmEntrySha256: sha256(pnpmEntryPath),
   };
-  if (typeof env.GITHUB_OUTPUT !== "string" || env.GITHUB_OUTPUT.length === 0)
-    throw new Error("GITHUB_OUTPUT is required");
   appendOutput(
     env.GITHUB_OUTPUT,
     [
