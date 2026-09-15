@@ -3,7 +3,7 @@ import {
   RiskTier,
   ConfidenceLevel,
   RiskDimension,
-  isGoogleAccountActionType,
+  isAccountBackedActionType,
 } from '@skytwin/shared-types';
 import type {
   CandidateAction,
@@ -260,6 +260,14 @@ describe('ExecutionRouter', () => {
     'users.messages.send',
     'me.messages.send',
     'google.drive.files.list',
+    'onedrive.files.list',
+    'sharepoint.sites.get',
+    'exchange.messages.send',
+    'teams.messages.send',
+    'gdrive.files.list',
+    'youtube.videos.upload',
+    'gcp.compute.instances.list',
+    'google.youtube.videos.list',
   ])
     ('denies disabled account action %s before any adapter or dispatch call', async (actionType) => {
       const authority = createDispatchAuthority();
@@ -279,7 +287,7 @@ describe('ExecutionRouter', () => {
         };
       });
       const localRouter = new ExecutionRouter(localRegistry, authority, (action) =>
-        isGoogleAccountActionType(action.actionType)
+        isAccountBackedActionType(action.actionType)
           ? { allowed: false, reason: 'Account-backed actions are unavailable in this preview.' }
           : { allowed: true });
 

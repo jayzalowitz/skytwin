@@ -86,6 +86,8 @@ describe('Google preview boundary', () => {
     'createDraft', 'sendDraft', 'sendCalendarInvite',
     'users.messages.send', 'me.messages.send', 'users.drafts.create',
     'google.drive.files.list', 'google/drive/permissions.create',
+    'gdrive.files.list', 'youtube.videos.upload', 'gcp.compute.instances.list',
+    'google.youtube.videos.list',
   ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);
@@ -100,6 +102,8 @@ describe('Google preview boundary', () => {
     'outlook.send_mail', 'read_outlook_mail', 'microsoft_graph.list_events',
     'm365.list_messages', 'o365.get_events', 'azure.list_storage',
     'azure-ad.list_users', 'entra-id.get_user',
+    'onedrive.files.list', 'sharepoint.sites.get', 'exchange.messages.send',
+    'teams.messages.send', 'msteams.chats.list', 'microsoft-teams.channels.get',
   ])
     ('recognizes the provider-qualified account-backed action %s', (actionType) => {
       expect(isAccountBackedActionType(actionType)).toBe(true);

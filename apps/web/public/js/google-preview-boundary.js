@@ -45,6 +45,16 @@ function normalizeToken(value) {
   return String(value ?? '').trim().toLowerCase().replace(/[._\-/\s]+/g, '');
 }
 
+function actionContainsIntegrationToken(normalizedAction, tokens) {
+  const segments = normalizedAction.split('_').filter(Boolean);
+  for (let start = 0; start < segments.length; start += 1) {
+    for (let length = 1; length <= 3 && start + length <= segments.length; length += 1) {
+      if (tokens.has(segments.slice(start, start + length).join(''))) return true;
+    }
+  }
+  return false;
+}
+
 function isGoogleAccountActionType(value) {
   const normalized = String(value ?? '')
     .trim()
@@ -53,7 +63,7 @@ function isGoogleAccountActionType(value) {
     .replace(/[.\-:/\s]+/g, '_');
   if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
   if (/^(?:users?|me)_(?:messages?|threads?|drafts?|labels?|history|settings|profile|watch|stop)(?:_|$)/.test(normalized)) return true;
-  if (/^google_drive_(?:files?|folders?|permissions?|drives?|changes?|comments?|replies?|revisions?)(?:_|$)/.test(normalized)) return true;
+  if (actionContainsIntegrationToken(normalized, GOOGLE_INTEGRATION_TOKENS)) return true;
   if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|gmail|google_email|google_mail|message|messages)$/.test(normalized)) return true;
   if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:(?:google_)?calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) return true;
   if (/^(?:read|get|search|list)_(?:(?:google_)?calendar_)?(?:event|events|invite|invites|meeting|meetings)$/.test(normalized)) return true;
@@ -69,8 +79,7 @@ function isAccountBackedActionType(value) {
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
     .replace(/[.\-:/\s]+/g, '_');
-  return /(?:^|_)(?:microsoft|microsoft_graph|ms_graph|m365|ms365|office_?365|o365|outlook|outlook365|azure|azure_?ad|entra|entra_?id)(?:_|$)/
-    .test(normalized);
+  return actionContainsIntegrationToken(normalized, MICROSOFT_INTEGRATION_TOKENS);
 }
 
 export function isGoogleIntegrationIdentifier(value) {

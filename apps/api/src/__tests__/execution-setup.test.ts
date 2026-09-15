@@ -658,6 +658,10 @@ describe('execution-setup', () => {
         'readEmail', 'respondToEvent', 'deleteEmails', 'schedule_focus_block',
         'users.messages.send', 'me.messages.send', 'users.drafts.create',
         'google.drive.files.list',
+        'onedrive.files.list', 'sharepoint.sites.get', 'exchange.messages.send',
+        'teams.messages.send',
+        'gdrive.files.list', 'youtube.videos.upload', 'gcp.compute.instances.list',
+        'google.youtube.videos.list',
       ]) {
         await expect(guard?.({ actionType, domain: 'generic' }, 'owner-1'))
           .resolves.toMatchObject({ allowed: false });

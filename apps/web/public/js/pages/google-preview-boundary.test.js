@@ -78,7 +78,12 @@ describe('Google preview UI boundary', () => {
         isAccountBackedIntegration({ key })).toBe(true);
     }
     expect(isAccountBackedIntegration({ key: 'custom', skills: ['outlook.send_mail'] })).toBe(true);
-    for (const skill of ['users.messages.send', 'me.messages.send', 'google.drive.files.list']) {
+    for (const skill of [
+      'users.messages.send', 'me.messages.send', 'google.drive.files.list',
+      'onedrive.files.list', 'sharepoint.sites.get', 'exchange.messages.send',
+      'teams.messages.send', 'gdrive.files.list', 'youtube.videos.upload',
+      'gcp.compute.instances.list', 'google.youtube.videos.list',
+    ]) {
       expect(isAccountBackedIntegration({ key: 'custom', skills: [skill] })).toBe(true);
     }
   });
