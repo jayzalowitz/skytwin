@@ -34,9 +34,15 @@
 > AppImage artifact to the exact workflow attempt through the upload action's
 > ID/digest outputs, an exact-ID download into a private lane directory, and the
 > exact-attempt start and producer/upload timeline, but
-> it likewise has no tagged release evidence. The CI result producer is present
-> in source but has not run on a release tag; the other five machine reports,
-> including Linux signing, are still absent.
+> it likewise has no tagged release evidence. A macOS desktop-storage verifier
+> is present in source and observes contained CockroachDB persistence across two
+> owned packaged launches, but it has not produced tagged evidence. A macOS
+> arm64 on-device inference
+> verifier is also present in source; it runs the packaged API probe with exact
+> llama.cpp and GGUF byte identities inside a network-deny sandbox, but has not
+> produced tagged evidence. The CI result producer is present in source but has
+> not run on a release tag. The other three machine reports, including Linux
+> signing, are still absent.
 > The final gate therefore fails closed and the ledger remains blocked until the
 > complete proof pipeline ships.
 
@@ -267,8 +273,14 @@ The packaged-sample verifier implements three of the twelve matrix reports; see
 [`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
 and model-delivery lanes implement one more each, and the signing source
 implements macOS and Windows while failing closed on Linux until package-format
-methods and trust roots exist. Four verifier sources (four matrix reports) and
-the Linux signing implementation are absent today.
+methods and trust roots exist. The desktop-storage lane implements its macOS
+report with two owned packaged launches, contained user-data storage,
+loopback-only CockroachDB listeners, and restart persistence. The on-device lane
+implements the macOS arm64 report by loading an artifact-contained API probe,
+acquiring immutable digest-pinned llama.cpp and GGUF inputs, and performing real
+inference inside a macOS sandbox that denies all network operations. Two
+verifier sources (two matrix reports) and the Linux signing implementation are
+absent today.
 The `release-claims-ci` producer now records the frozen source-check commands
 and uploads its result on tag pushes,
 but that report does not resolve any external stop-ship condition. The
@@ -282,6 +294,20 @@ observations; the release job independently checks those bindings against the
 current GitHub run and exact attempt. The artifact lane's SPDX producer emits
 the required 2.3 document and exact package-to-file coverage. Until the remaining
 producers and external gates land, publication stays blocked by design.
+
+The on-device verifier keeps acquisition outside the measured inference
+boundary: it observes the pinned upstream release/tag identities and downloads
+the exact runtime and model before entering the sandbox. The actual packaged
+probe and its llama.cpp child then run with a closed environment and a
+`deny network*` profile whose loopback denial is independently self-tested.
+The report stores byte identities, execution facts, response size and hashes,
+and observed runner hardware, but no prompt, response, token, or transient
+download URL. Neither the model nor llama.cpp runtime is bundled in the desktop
+artifact, and one macOS arm64 runner observation does not establish a minimum
+hardware profile, other platforms, or whole-application offline operation.
+Landing verifier source therefore leaves the claim limited and publication
+blocked until an immutable tagged clean-machine report passes the final
+consumer.
 
 ---
 

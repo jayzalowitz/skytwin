@@ -904,15 +904,35 @@
       "id": "inference.on-device-availability",
       "category": "inference",
       "statement": "SkyTwin can perform text inference on-device through llama.cpp when a compatible binary and GGUF model are present.",
-      "scope": "Persisted on-device mode for decision-event text inference: an available embedded backend or a canonical loopback Ollama endpoint. It does not cover model acquisition, connectors, updates, or other application network activity.",
+      "scope": "Persisted on-device mode for decision-event text inference: an available embedded backend or a canonical loopback Ollama endpoint. Packaged-machine evidence is limited to the embedded llama.cpp path on macOS arm64. It does not cover model acquisition, connectors, updates, or other application network activity.",
       "owner": "inference-runtime",
       "state": "limited",
-      "limitation": "Embedded inference requires its binary and compatible model; Ollama requires a supported local runtime, a local-source-qualified model, loopback endpoint, no redirects, and runtime locality verification. Tagged packaged-machine evidence is still absent, so this is not a whole-app offline claim.",
+      "limitation": "Embedded inference requires a separately acquired binary and compatible model; Ollama requires a supported local runtime, a local-source-qualified model, loopback endpoint, no redirects, and runtime locality verification. A macOS arm64 packaged verifier exists in source but no immutable tagged clean-machine report exists. One runner cannot establish a minimum hardware profile or support on other platforms, and this is not a whole-app offline claim.",
       "evidence": [
         {
           "path": "apps/api/src/lib/llm-client-factory.ts",
           "sha256": "dfcb0fffe3037788866274dfe2b1be16d623bf5de9d89babfd36bd184b95965f",
           "why": "Composes the persisted mode and admits embedded or locality-verified loopback Ollama only when their prerequisites pass"
+        },
+        {
+          "path": "packages/embedded-llm/src/llama-cpp-backend.ts",
+          "sha256": "8a750000a799a7d8ae7b46982be11b59abff65c9044910deac4bf3823e65ded6",
+          "why": "Spawns the compatible llama.cpp completion binary for one bounded non-interactive generation and returns only its generated text"
+        },
+        {
+          "path": "apps/api/src/bin/verify-on-device-inference.ts",
+          "sha256": "94f4d113a31cb07db38b51857e2740b964cac90081ba9bb0b7a3e47809b5b04b",
+          "why": "Artifact-contained probe performs real inference through the production embedded provider and emits content-free execution facts"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/inference.on-device-availability.mjs",
+          "sha256": "7d65c4651d444d0ec71554c80ab8d9782c3afddacfe5cb313b8f36b3c47ae836",
+          "why": "Canonical macOS verifier binds the exact release ZIP, immutable runtime and model bytes, network-deny sandbox, packaged probe result, and observed hardware"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/models.verified-delivery.mjs",
+          "sha256": "a768ea3d3c09e62310c5cb573015dd134178434125c49722b2bdf7999d169a22",
+          "why": "Supplies the reviewed canonical GGUF identity and stable-file/source-checkout primitives reused by the on-device verifier"
         }
       ],
       "verification": [
@@ -923,6 +943,18 @@
         {
           "command": "pnpm --filter @skytwin/embedded-llm test -- src/__tests__/runtime-detector.test.ts",
           "expected": "Missing binary/model cases fail to the unavailable port"
+        },
+        {
+          "command": "pnpm --filter @skytwin/embedded-llm test -- src/__tests__/llama-cpp-backend.test.ts",
+          "expected": "The embedded backend invokes a single bounded turn and rejects runtime failures"
+        },
+        {
+          "command": "pnpm --filter @skytwin/api test -- src/__tests__/on-device-inference-probe.test.ts",
+          "expected": "The packaged probe rejects non-canonical files, malformed nonces, and argument mutations"
+        },
+        {
+          "command": "pnpm exec vitest run scripts/release-claims/inference.on-device-availability-verifier.test.mjs",
+          "expected": "Verifier binding, download, archive, metadata, process, sandbox, and report-schema mutation tests pass"
         }
       ]
     },
@@ -1314,8 +1346,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "c377c45a3a00e15c8324f3036f36116edb9b0fd12e0b7b98ed289eaffa9672aa",
-          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, and structured desktop-storage observation at publication"
+          "sha256": "d51ad453e0895c62144fab9abe63c186fc83b61a0001d21160467b52eaf4880f",
+          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, structured desktop-storage observation, and on-device inference observation at publication"
         }
       ],
       "verification": [
