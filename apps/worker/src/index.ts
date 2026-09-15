@@ -1,3 +1,4 @@
+import './source-key-broker.js';
 import { loadConfig } from '@skytwin/config';
 import { RealIronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { SignalConnector, RawSignal } from '@skytwin/connectors';
@@ -91,13 +92,13 @@ const userCircuitBreakers = new Map<string, CircuitBreaker>();
  * fire (without setKeyCache, plaintext-token rows never get encrypted —
  * the at-rest encryption feature is dead weight).
  *
- * Cross-process unlock IPC is not yet implemented (see #212 follow-up): the
- * API process unlocks via passphrase but the worker process doesn't see that
- * derived key. Until that lands, this cache is empty and the worker behaves
- * exactly as it did before — plaintext tokens flow through, encrypted-only
- * rows surface as `credentials unavailable`. The wiring below ensures that
- * once IPC lands, the worker's DbTokenStore instances will decrypt and
- * lazy-migrate without any further code change.
+ * This legacy OAuth cache is intentionally not connected to the general
+ * source-key broker client. The new client receives no owner grants and no
+ * repository consumes it in this slice, while the worker still never receives
+ * the API-local derived key. Consequently this cache remains empty: plaintext
+ * token rows behave as before and encrypted-only rows surface as
+ * `credentials unavailable`. A later reviewed repository gateway must replace
+ * this compatibility seam instead of copying key material into it.
  */
 const workerKeyCache = workerCredentialKeyCache;
 

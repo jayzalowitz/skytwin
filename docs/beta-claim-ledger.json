@@ -831,7 +831,7 @@
       "scope": "New and existing Google/Microsoft OAuth token rows across API and worker processes.",
       "owner": "security",
       "state": "prohibited",
-      "limitation": "Storage depends on vault state: without an initialized vault, callbacks retain plaintext tokens; an unlocked matching API vault encrypts new grants and can migrate complete legacy pairs on authorized use; a locked or stale initialized vault refuses new writes instead of downgrading. Worker key delivery is still unavailable, so this blanket claim must not appear in release copy.",
+      "limitation": "Storage depends on vault state: without an initialized vault, callbacks retain plaintext tokens; an unlocked matching API vault encrypts new grants and can migrate complete legacy pairs on authorized use; a locked or stale initialized vault refuses new writes instead of downgrading. Production worker key delivery remains unavailable because the broker grant inventory is immutable and empty, so this blanket claim must not appear in release copy.",
       "evidence": [
         {
           "path": "packages/db/src/repositories/oauth-repository.ts",
@@ -840,8 +840,8 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "b7fcb381f12f638e8de3ef1836903fb45e9ee9882d3e94ff03bfef3f5fc5de06",
-          "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
+          "sha256": "af390c5150938a46c27bc1ff54f0352c032c4b091d28720a6fe3dbfa61110c1f",
+          "why": "Attaches strict cross-process broker lifecycle plumbing while immutable empty production grants prevent worker key delivery or cryptographic source-field use"
         }
       ],
       "verification": [
@@ -928,7 +928,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "1d95ab9433fd1a128c41a0397347979e2289b17a5f5276d9ac242187f952c2f9",
+          "sha256": "747c72909938bad301671f0271b68409bfa8055d22be6a06fa95f1e1d6e1edfd",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         }
       ],
@@ -1012,7 +1012,7 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "c61488f17f07caeab355af356fef169f3382264f9ed255829a9eccbd6357f668",
+          "sha256": "9627a57be80913435656373a6de213655f2bb0506953e6a1001b38a250c8d765",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
@@ -1063,13 +1063,13 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "b7fcb381f12f638e8de3ef1836903fb45e9ee9882d3e94ff03bfef3f5fc5de06",
-          "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch"
+          "sha256": "af390c5150938a46c27bc1ff54f0352c032c4b091d28720a6fe3dbfa61110c1f",
+          "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch, while source-key broker production grants remain empty"
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "c61488f17f07caeab355af356fef169f3382264f9ed255829a9eccbd6357f668",
-          "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, and clear filesystem plugin authority"
+          "sha256": "9627a57be80913435656373a6de213655f2bb0506953e6a1001b38a250c8d765",
+          "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, clear filesystem plugin authority, and expose no source-key production grants"
         }
       ],
       "verification": [
@@ -1209,7 +1209,7 @@
         },
         {
           "path": "apps/desktop/package.json",
-          "sha256": "ecc7937e37a5f7a89bf96b2534b92ca6191bcc701befedcbc48edf16bdd62c35",
+          "sha256": "bf9bd78192b4da6b356f5076a13c35ae20321d2798c36b9d1e62f7305adf4fe9",
           "why": "Defines the current platform build targets and publishing metadata"
         },
         {

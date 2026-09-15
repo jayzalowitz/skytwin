@@ -3,7 +3,11 @@ import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import {
-  DesktopKeyBroker,
+  snapshotSourceKeyBrokerControlMessage,
+  snapshotSourceKeyBrokerRequest,
+} from '@skytwin/shared-types';
+import {
+  DesktopKeyBroker as ProductionDesktopKeyBroker,
   PersistentWrappedKeyStore,
   ROLE_FIELDS,
   type BrokerContext,
@@ -13,22 +17,38 @@ import {
   type WrappedUserKey,
 } from '../key-broker.js';
 
+const protocolValidators = Object.freeze({
+  snapshotSourceKeyBrokerControlMessage,
+  snapshotSourceKeyBrokerRequest,
+});
+
+class DesktopKeyBroker extends ProductionDesktopKeyBroker {
+  constructor(
+    store: ConstructorParameters<typeof ProductionDesktopKeyBroker>[0],
+    options: NonNullable<
+      ConstructorParameters<typeof ProductionDesktopKeyBroker>[1]
+    > = {},
+  ) {
+    super(store, { ...options, protocolValidators });
+  }
+}
+
 const EXPECTED_USER_FIELDS = [
-  { purpose: 'oauth', table: 'oauth_tokens', column: 'access_token' },
-  { purpose: 'oauth', table: 'oauth_tokens', column: 'refresh_token' },
-  { purpose: 'provider_credentials', table: 'ai_provider_settings', column: 'api_key' },
-  { purpose: 'mcp_config', table: 'mcp_servers', column: 'args' },
-  { purpose: 'mcp_config', table: 'mcp_servers', column: 'command' },
-  { purpose: 'mcp_config', table: 'mcp_servers', column: 'display_name' },
-  { purpose: 'mcp_config', table: 'mcp_servers', column: 'env' },
-  { purpose: 'mcp_config', table: 'mcp_servers', column: 'url' },
-  { purpose: 'federation', table: 'federation_peers', column: 'endpoint_url' },
-  { purpose: 'federation', table: 'federation_peers', column: 'label' },
-  { purpose: 'federation', table: 'federation_peers', column: 'last_sync_error' },
-  { purpose: 'federation', table: 'federation_peers', column: 'local_secret_key' },
-  { purpose: 'connector_cursor', table: 'connector_cursors', column: 'cursor_value' },
-  { purpose: 'dxt_database', table: 'dxt_imports', column: 'artifact_blob' },
-  { purpose: 'dxt_database', table: 'dxt_imports', column: 'error_message' },
+  { purpose: 'credentials', table: 'oauth_tokens', column: 'access_token' },
+  { purpose: 'credentials', table: 'oauth_tokens', column: 'refresh_token' },
+  { purpose: 'credentials', table: 'ai_provider_settings', column: 'api_key' },
+  { purpose: 'portable_config', table: 'mcp_servers', column: 'args' },
+  { purpose: 'portable_config', table: 'mcp_servers', column: 'command' },
+  { purpose: 'portable_config', table: 'mcp_servers', column: 'display_name' },
+  { purpose: 'portable_config', table: 'mcp_servers', column: 'env' },
+  { purpose: 'portable_config', table: 'mcp_servers', column: 'url' },
+  { purpose: 'portable_config', table: 'federation_peers', column: 'endpoint_url' },
+  { purpose: 'portable_config', table: 'federation_peers', column: 'label' },
+  { purpose: 'portable_config', table: 'federation_peers', column: 'last_sync_error' },
+  { purpose: 'portable_config', table: 'federation_peers', column: 'local_secret_key' },
+  { purpose: 'portable_config', table: 'connector_cursors', column: 'cursor_value' },
+  { purpose: 'portable_config', table: 'dxt_imports', column: 'artifact_blob' },
+  { purpose: 'portable_config', table: 'dxt_imports', column: 'error_message' },
 ] as const satisfies readonly BrokerField[];
 
 class MemoryStore implements WrappedKeyStore {
@@ -72,20 +92,28 @@ class FakeChild extends EventEmitter {
   sent: unknown[] = [];
   killSignals: NodeJS.Signals[] = [];
   connected = true;
+  exitCode: number | null = null;
+  signalCode: NodeJS.Signals | null = null;
   killed = false;
   autoAck = true;
+  backpressure = false;
   asyncSendError: Error | null = null;
+  afterSuccessfulSend: (() => void) | null = null;
   onKill: ((signal: NodeJS.Signals) => void) | null = null;
   send(value: unknown, callback?: (error: Error | null) => void) {
     this.sent.push(value);
     const message = value as Record<string, unknown>;
     if (this.autoAck && message['type'] === 'skytwin:vault:lock') {
       const capability = (this.sent[0] as { capability: string }).capability;
+      const role = (this.sent[0] as { role: BrokerRole }).role;
       queueMicrotask(() => this.emit('message', {
         type: 'skytwin:vault:lock-ack',
+        protocolVersion: 1,
         capability,
         lockId: message['lockId'],
-        userId: message['userId'],
+        role,
+        ownerKind: 'user',
+        ownerId: message['ownerId'],
         generation: message['generation'],
       }));
     }
@@ -95,8 +123,11 @@ class FakeChild extends EventEmitter {
         if (callback) callback(error);
         else this.emit('error', error);
       });
-    }
-    return true;
+    } else if (callback) queueMicrotask(() => {
+      callback(null);
+      this.afterSuccessfulSend?.();
+    });
+    return !this.backpressure;
   }
   kill(signal: NodeJS.Signals = 'SIGTERM') {
     this.killSignals.push(signal);
@@ -115,7 +146,21 @@ class DeviceStore {
   keys() { return [...this.rows.keys()]; }
 }
 const deviceProtection = { isEncryptionAvailable: () => true, encryptString: (v: string) => Buffer.from(v), decryptString: (v: Buffer) => v.toString(), getSelectedStorageBackend: () => 'keychain' };
-const context: BrokerContext = { userId: 'user-0001', purpose: 'oauth', table: 'oauth_tokens', column: 'access_token', rowId: 'row-1' };
+const context: BrokerContext = {
+  userId: '00000000-0000-0000-0000-000000000001',
+  purpose: 'credentials',
+  table: 'oauth_tokens',
+  column: 'access_token',
+  rowId: 'row-1',
+};
+const wireContext = (value: BrokerContext = context) => ({
+  ownerKind: 'user' as const,
+  ownerId: value.userId,
+  purpose: value.purpose,
+  table: value.table,
+  column: value.column,
+  rowId: value.rowId,
+});
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
 
 describe('DesktopKeyBroker', () => {
@@ -259,7 +304,7 @@ describe('DesktopKeyBroker', () => {
     const child = new FakeChild();
     child.autoAck = false;
     child.onKill = () => { /* Signal accepted without proven termination. */ };
-    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
 
     expect(await broker.state(context.userId)).toEqual({ success: true, state: 'unlocked' });
     expect(await broker.unlock(context.userId, 'correct horse battery staple')).toEqual({
@@ -292,10 +337,10 @@ describe('DesktopKeyBroker', () => {
   it('uses a self-describing purpose and row-bound envelope', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore()); await broker.initialize(context.userId, 'correct horse battery staple');
     const encrypted = broker.encrypt(context, 'fixture-secret'); expect(encrypted.success).toBe(true); if (!encrypted.success) return;
-    expect(encrypted.envelope).toMatchObject({ magic: 'skytwin-envelope', algorithm: 'aes-256-gcm', ownerKind: 'user', purpose: 'oauth' });
+    expect(encrypted.envelope).toMatchObject({ magic: 'skytwin-envelope', algorithm: 'aes-256-gcm', ownerKind: 'user', purpose: 'credentials' });
     expect(broker.decrypt(context, encrypted.envelope)).toEqual({ success: true, plaintext: 'fixture-secret' });
     expect(broker.decrypt({ ...context, rowId: 'row-2' }, encrypted.envelope)).toEqual({ success: false, error: 'ciphertext_invalid' });
-    expect(broker.decrypt({ ...context, purpose: 'provider_credentials' }, encrypted.envelope)).toMatchObject({ success: false });
+    expect(broker.decrypt({ ...context, purpose: 'portable_config' }, encrypted.envelope)).toMatchObject({ success: false });
   });
 
   it(
@@ -325,15 +370,111 @@ describe('DesktopKeyBroker', () => {
 
   it('binds capability, role, exact field tuple, and owner to one child', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore()); await broker.initialize(context.userId, 'correct horse battery staple');
-    const child = new FakeChild(); broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    const child = new FakeChild(); await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
     const capability = (child.sent[0] as { capability: string }).capability;
-    child.emit('message', { type: 'skytwin:vault:request', requestId: 'ok', capability, generation: 1, operation: 'encrypt', context, plaintext: 'secret' }); await tick();
+    child.emit('message', { type: 'skytwin:vault:request', protocolVersion: 1, requestId: '0'.repeat(32), capability, role: 'api', generation: 1, operation: 'encrypt', context: { ownerKind: 'user', ownerId: context.userId, purpose: context.purpose, table: context.table, column: context.column, rowId: context.rowId }, plaintext: 'secret' }); await tick();
     expect(child.sent.at(-1)).toMatchObject({ result: { success: true } });
-    child.emit('message', { type: 'skytwin:vault:request', requestId: 'other-user', capability, generation: 1, operation: 'state', context: { ...context, userId: 'user-0002' } }); await tick();
+    child.emit('message', { type: 'skytwin:vault:request', protocolVersion: 1, requestId: '1'.repeat(32), capability, role: 'api', generation: 1, operation: 'state', context: { ownerKind: 'user', ownerId: '00000000-0000-0000-0000-000000000002', purpose: context.purpose, table: context.table, column: context.column, rowId: context.rowId } }); await tick();
     expect(child.sent.at(-1)).toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
-    child.emit('message', { type: 'skytwin:vault:request', requestId: 'tuple-smuggle', capability, generation: 1, operation: 'encrypt', context: { ...context, purpose: 'oauth', table: 'oauth_tokens:access', column: 'token' }, plaintext: 'secret' }); await tick();
-    expect(child.sent.at(-1)).toMatchObject({ result: { success: false } });
+    child.emit('message', { type: 'skytwin:vault:request', protocolVersion: 1, requestId: 'a'.repeat(32), capability, role: 'api', generation: 1, operation: 'state', context: { ownerKind: 'user', ownerId: context.userId, purpose: context.purpose, table: 'unknown_source', column: 'secret', rowId: context.rowId } }); await tick();
+    expect(child.sent.at(-1)).toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+    const sentBeforeMalformed = child.sent.length;
+    child.emit('message', { type: 'skytwin:vault:request', protocolVersion: 1, requestId: '2'.repeat(32), capability, role: 'api', generation: 1, operation: 'encrypt', context: { ownerKind: 'user', ownerId: context.userId, purpose: 'credentials', table: 'oauth_tokens:access', column: 'token', rowId: context.rowId }, plaintext: 'secret' }); await tick();
+    expect(child.sent).toHaveLength(sentBeforeMalformed);
   });
+
+  it('emits exact protocol responses and rejects hostile wire objects without property access', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const requestId = '5'.repeat(32);
+    child.emit('message', {
+      type: 'skytwin:vault:request',
+      protocolVersion: 1,
+      requestId,
+      capability,
+      role: 'api',
+      generation: 1,
+      operation: 'encrypt',
+      context: wireContext(),
+      plaintext: 'fixture-secret',
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      type: 'skytwin:vault:response',
+      protocolVersion: 1,
+      requestId,
+      generation: 1,
+      context: wireContext(),
+      result: { success: true, operation: 'encrypt' },
+    });
+
+    let accessed = false;
+    const hostile = {
+      protocolVersion: 1,
+      requestId: '6'.repeat(32),
+      capability,
+      role: 'api',
+      generation: 1,
+      operation: 'state',
+      context: wireContext(),
+    } as Record<string, unknown>;
+    Object.defineProperty(hostile, 'type', {
+      enumerable: true,
+      get: () => {
+        accessed = true;
+        return 'skytwin:vault:request';
+      },
+    });
+    const sentBeforeHostile = child.sent.length;
+    child.emit('message', hostile);
+    child.emit('message', new Proxy({
+      type: 'skytwin:vault:request',
+      protocolVersion: 1,
+      requestId: '7'.repeat(32),
+      capability,
+      role: 'api',
+      generation: 1,
+      operation: 'state',
+      context: wireContext(),
+    }, { get: () => { accessed = true; throw new Error('must not read'); } }));
+    await tick();
+    expect(accessed).toBe(false);
+    expect(child.sent).toHaveLength(sentBeforeHostile);
+  });
+
+  it(
+    'enforces the 16 MiB plaintext boundary through the versioned child protocol',
+    async () => {
+      const broker = new DesktopKeyBroker(new MemoryStore());
+      await broker.initialize(context.userId, 'correct horse battery staple');
+      const child = new FakeChild();
+      await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+      const capability = (child.sent[0] as { capability: string }).capability;
+      const maximum = 'x'.repeat(16 * 1024 * 1024);
+      child.emit('message', {
+        type: 'skytwin:vault:request', protocolVersion: 1,
+        requestId: '8'.repeat(32), capability, role: 'api', generation: 1,
+        operation: 'encrypt', context: wireContext(), plaintext: maximum,
+      });
+      await tick();
+      expect(child.sent.at(-1)).toMatchObject({
+        result: { success: true, operation: 'encrypt' },
+      });
+
+      const beforeOversized = child.sent.length;
+      child.emit('message', {
+        type: 'skytwin:vault:request', protocolVersion: 1,
+        requestId: '9'.repeat(32), capability, role: 'api', generation: 1,
+        operation: 'encrypt', context: wireContext(), plaintext: `${maximum}x`,
+      });
+      await tick();
+      expect(child.sent).toHaveLength(beforeOversized);
+    },
+    30_000,
+  );
 
   it('maps every role permission to an inventoried user-owned encrypted source field', () => {
     expect(ROLE_FIELDS).toEqual({
@@ -375,17 +516,24 @@ describe('DesktopKeyBroker', () => {
 
     for (const role of ['api', 'worker'] satisfies readonly BrokerRole[]) {
       const child = new FakeChild();
-      broker.attachChild(child as unknown as ChildProcess, role, new Set([context.userId]));
+      await broker.attachChild(child as unknown as ChildProcess, role, new Set([context.userId]));
       const capability = (child.sent[0] as { capability: string }).capability;
       for (const [index, field] of EXPECTED_USER_FIELDS.entries()) {
-        const requestId = `${role}-${index}`;
+        const requestId = `${role === 'api' ? 'a' : 'b'}${index.toString(16).padStart(31, '0')}`;
         child.emit('message', {
           type: 'skytwin:vault:request',
+          protocolVersion: 1,
           requestId,
           capability,
+          role,
           generation: 1,
           operation: 'encrypt',
-          context: { ...field, userId: context.userId, rowId: `row-${index}` },
+          context: {
+            ...field,
+            ownerKind: 'user',
+            ownerId: context.userId,
+            rowId: `row-${index}`,
+          },
           plaintext: 'secret',
         });
         await tick();
@@ -395,18 +543,21 @@ describe('DesktopKeyBroker', () => {
         ).toMatchObject({ result: { success: true } });
       }
 
-      const requestId = `${role}-installation-pkce`;
+      const requestId = `${role === 'api' ? 'c' : 'd'}${'0'.repeat(31)}`;
       child.emit('message', {
         type: 'skytwin:vault:request',
+        protocolVersion: 1,
         requestId,
         capability,
+        role,
         generation: 1,
         operation: 'encrypt',
         context: {
-          purpose: 'oauth_transient',
+          ownerKind: 'user',
+          ownerId: context.userId,
+          purpose: 'portable_config',
           table: 'oauth_pkce_pending',
           column: 'code_verifier',
-          userId: context.userId,
           rowId: 'pkce-state',
         },
         plaintext: 'verifier',
@@ -419,31 +570,63 @@ describe('DesktopKeyBroker', () => {
 
   it('denies every request when a child has no owner grants', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore()); await broker.initialize(context.userId, 'correct horse battery staple');
-    const child = new FakeChild(); broker.attachChild(child as unknown as ChildProcess, 'api', new Set());
+    const child = new FakeChild(); await broker.attachChild(child as unknown as ChildProcess, 'api', new Set());
     const capability = (child.sent[0] as { capability: string }).capability;
-    child.emit('message', { type: 'skytwin:vault:request', requestId: 'no-grant', capability, generation: 1, operation: 'encrypt', context, plaintext: 'secret' }); await tick();
+    child.emit('message', { type: 'skytwin:vault:request', protocolVersion: 1, requestId: 'e'.repeat(32), capability, role: 'api', generation: 1, operation: 'encrypt', context: { ownerKind: 'user', ownerId: context.userId, purpose: context.purpose, table: context.table, column: context.column, rowId: context.rowId }, plaintext: 'secret' }); await tick();
     expect(child.sent.at(-1)).toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
+    const response = JSON.stringify(child.sent.at(-1));
+    expect(response).not.toContain('secret');
+    expect(response).not.toContain(capability);
   });
 
   it('keeps admission closed until overlapping locks for that user finish', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore()); await broker.initialize(context.userId, 'correct horse battery staple');
-    const child = new FakeChild(); broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    const child = new FakeChild(); await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
     const capability = (child.sent[0] as { capability: string }).capability;
     const first = broker.lock(context.userId), second = broker.lock(context.userId);
-    child.emit('message', { type: 'skytwin:vault:request', requestId: 'during-second-lock', capability, generation: 1, operation: 'state', context }); await tick();
-    expect(child.sent.find(value => (value as { requestId?: string }).requestId === 'during-second-lock'))
+    const requestId = 'f'.repeat(32);
+    child.emit('message', { type: 'skytwin:vault:request', protocolVersion: 1, requestId, capability, role: 'api', generation: 1, operation: 'state', context: { ownerKind: 'user', ownerId: context.userId, purpose: context.purpose, table: context.table, column: context.column, rowId: context.rowId } }); await tick();
+    expect(child.sent.find(value => (value as { requestId?: string }).requestId === requestId))
       .toMatchObject({ result: { success: false, error: 'vault_broker_unavailable' } });
     await Promise.all([first, second]);
+  });
+
+  it('publishes the installed generation only after the child lock barrier', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId]),
+    );
+
+    expect(await broker.unlock(
+      context.userId,
+      'correct horse battery staple',
+    )).toEqual({ success: true, generation: 2 });
+    const lockIndex = child.sent.findIndex(
+      value => (value as { type?: string }).type === 'skytwin:vault:lock',
+    );
+    const readyIndex = child.sent.findLastIndex(
+      value => (value as { type?: string }).type === 'skytwin:vault:generation',
+    );
+    expect(lockIndex).toBeGreaterThan(0);
+    expect(readyIndex).toBeGreaterThan(lockIndex);
+    expect(child.sent[readyIndex]).toMatchObject({
+      ownerId: context.userId,
+      generation: 2,
+    });
   });
 
   it('refuses to create a device wrapper while a lock is draining child work', async () => {
     const store = new PausableGetStore(), devices = new DeviceStore();
     const broker = new DesktopKeyBroker(store, { deviceProtection, deviceStore: devices, platform: 'darwin' });
     await broker.initialize(context.userId, 'correct horse battery staple');
-    const child = new FakeChild(); broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    const child = new FakeChild(); await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
     const capability = (child.sent[0] as { capability: string }).capability;
     store.pauseNextGet();
-    child.emit('message', { type: 'skytwin:vault:request', requestId: 'state-in-flight', capability, generation: 1, operation: 'state', context });
+    child.emit('message', { type: 'skytwin:vault:request', protocolVersion: 1, requestId: '3'.repeat(32), capability, role: 'api', generation: 1, operation: 'state', context: { ownerKind: 'user', ownerId: context.userId, purpose: context.purpose, table: context.table, column: context.column, rowId: context.rowId } });
     await tick();
     const locking = broker.lock(context.userId);
     expect(broker.rememberDevice(context.userId)).toEqual({ success: false, error: 'vault_locked' });
@@ -525,7 +708,7 @@ describe('DesktopKeyBroker', () => {
     await broker.initialize(context.userId, 'correct horse battery staple');
     const child = new FakeChild();
     child.autoAck = false;
-    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
 
     const locking = broker.lock(context.userId);
     expect(await broker.state(context.userId)).toEqual({
@@ -545,7 +728,7 @@ describe('DesktopKeyBroker', () => {
     const child = new FakeChild();
     child.autoAck = false;
     child.onKill = () => { /* Signal accepted without proven termination. */ };
-    expect(broker.attachChild(
+    expect(await broker.attachChild(
       child as unknown as ChildProcess,
       'api',
       new Set([context.userId]),
@@ -554,7 +737,7 @@ describe('DesktopKeyBroker', () => {
     const locking = broker.lock(context.userId);
     await tick();
 
-    expect(broker.attachChild(
+    expect(await broker.attachChild(
       child as unknown as ChildProcess,
       'worker',
       new Set([context.userId]),
@@ -567,7 +750,7 @@ describe('DesktopKeyBroker', () => {
     });
   });
 
-  it('contains asynchronous IPC delivery errors without satisfying the lock barrier', async () => {
+  it('rejects attachment when initial capability delivery fails asynchronously', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore(), {
       lockAckTimeoutMs: 5,
       childExitTimeoutMs: 5,
@@ -578,19 +761,124 @@ describe('DesktopKeyBroker', () => {
     child.asyncSendError = new Error('IPC channel closed asynchronously');
     child.onKill = () => { /* Signal accepted without proven termination. */ };
 
-    expect(broker.attachChild(
+    expect(await broker.attachChild(
       child as unknown as ChildProcess,
       'api',
       new Set([context.userId]),
-    )).toBe(true);
-    await tick();
+    )).toBe(false);
+    expect(child.killSignals).toEqual([]);
+  });
 
-    expect(await broker.lock(context.userId)).toEqual({
+  it('does not treat failed live-child attachment cleanup as a lock acknowledgement', async () => {
+    const secondUserId = '00000000-0000-0000-0000-000000000002';
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 5,
+      childExitTimeoutMs: 5,
+    });
+    const child = new FakeChild();
+    child.autoAck = false;
+    child.onKill = () => { /* Signal accepted without proven termination. */ };
+    const originalSend = child.send.bind(child);
+    let failSecondGeneration: ((error: Error | null) => void) | undefined;
+    child.send = (value, callback) => {
+      const message = value as Record<string, unknown>;
+      if (
+        message['type'] === 'skytwin:vault:generation'
+        && message['ownerId'] === secondUserId
+      ) {
+        child.sent.push(value);
+        failSecondGeneration = callback;
+        return true;
+      }
+      return originalSend(value, callback);
+    };
+
+    const attaching = broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId, secondUserId]),
+    );
+    for (let attempt = 0; attempt < 10 && !failSecondGeneration; attempt++) await tick();
+    expect(failSecondGeneration).toBeDefined();
+
+    const locking = broker.lock(context.userId);
+    await tick();
+    failSecondGeneration?.(new Error('generation delivery failed'));
+
+    expect(await attaching).toBe(false);
+    expect(await locking).toEqual({
       success: false,
       error: 'vault_broker_unavailable',
-      generation: 2,
+      generation: 1,
     });
     expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
+    expect(child.exitCode).toBeNull();
+    child.emit('exit');
+  });
+
+  it('rejects and cleans up a child that exits while protocol validators load', async () => {
+    let resolveValidators!: (validators: typeof protocolValidators) => void;
+    const validators = new Promise<typeof protocolValidators>(resolve => {
+      resolveValidators = resolve;
+    });
+    const broker = new ProductionDesktopKeyBroker(new MemoryStore(), {
+      protocolValidators: validators,
+    });
+    const child = new FakeChild();
+
+    const attaching = broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId]),
+    );
+    expect(child.listenerCount('message')).toBe(1);
+    expect(child.listenerCount('exit')).toBe(1);
+    child.exitCode = 1;
+    child.connected = false;
+    child.emit('exit', 1);
+    resolveValidators(protocolValidators);
+
+    expect(await attaching).toBe(false);
+    expect(child.sent).toEqual([]);
+    expect(child.listenerCount('message')).toBe(0);
+    expect(child.listenerCount('exit')).toBe(0);
+  });
+
+  it('rejects an exit between a successful delivery callback and await continuation', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    const child = new FakeChild();
+    child.afterSuccessfulSend = () => {
+      child.afterSuccessfulSend = null;
+      child.exitCode = 1;
+      child.connected = false;
+      child.emit('exit', 1);
+    };
+
+    expect(await broker.attachChild(
+      child as unknown as ChildProcess,
+      'worker',
+      new Set(),
+    )).toBe(false);
+    expect(child.listenerCount('message')).toBe(0);
+    expect(child.listenerCount('exit')).toBe(0);
+  });
+
+  it('accepts initial IPC backpressure when delivery callbacks succeed', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), {
+      lockAckTimeoutMs: 25,
+    });
+    const child = new FakeChild();
+    child.backpressure = true;
+
+    expect(await broker.attachChild(
+      child as unknown as ChildProcess,
+      'worker',
+      new Set(),
+    )).toBe(true);
+    expect(child.sent[0]).toMatchObject({
+      type: 'skytwin:vault:capability',
+      role: 'worker',
+    });
   });
 
   it('does not report locked when clock expiry reaches an unproven child barrier first', async () => {
@@ -605,7 +893,7 @@ describe('DesktopKeyBroker', () => {
     const child = new FakeChild();
     child.autoAck = false;
     child.onKill = () => { /* Signal accepted without proven termination. */ };
-    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
     now += 60_001;
 
     expect(await broker.state(context.userId)).toEqual({
@@ -630,7 +918,7 @@ describe('DesktopKeyBroker', () => {
     child.onKill = signal => {
       if (signal === 'SIGTERM') setTimeout(() => child.emit('exit'), 10);
     };
-    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
     expect(await broker.lock(context.userId)).toMatchObject({ success: true });
     expect(child.killSignals).toEqual(['SIGTERM']);
     expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
@@ -647,7 +935,7 @@ describe('DesktopKeyBroker', () => {
     child.onKill = signal => {
       if (signal === 'SIGKILL') queueMicrotask(() => child.emit('close'));
     };
-    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
 
     expect(await broker.lock(context.userId)).toMatchObject({ success: true });
     expect(child.killSignals).toEqual(['SIGTERM', 'SIGKILL']);
@@ -662,7 +950,7 @@ describe('DesktopKeyBroker', () => {
     const child = new FakeChild();
     child.autoAck = false;
     child.onKill = () => { /* Signal accepted without proven termination. */ };
-    broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set([context.userId]));
 
     expect(await broker.lock(context.userId)).toEqual({
       success: false,
@@ -692,16 +980,17 @@ describe('DesktopKeyBroker', () => {
     await broker.initialize(context.userId, 'correct horse battery staple');
     const grants = new Set([context.userId]);
     const child = new FakeChild();
-    broker.attachChild(child as unknown as ChildProcess, 'api', grants);
-    grants.add('user-0002');
+    await broker.attachChild(child as unknown as ChildProcess, 'api', grants);
+    grants.add('00000000-0000-0000-0000-000000000002');
     const capability = (child.sent[0] as { capability: string }).capability;
+    const requestId = '4'.repeat(32);
     child.emit('message', {
-      type: 'skytwin:vault:request', requestId: 'late-grant', capability,
-      generation: 1, operation: 'state', context: { ...context, userId: 'user-0002' },
+      type: 'skytwin:vault:request', protocolVersion: 1, requestId, capability, role: 'api',
+      generation: 1, operation: 'state', context: { ownerKind: 'user', ownerId: '00000000-0000-0000-0000-000000000002', purpose: context.purpose, table: context.table, column: context.column, rowId: context.rowId },
     });
     await tick();
     expect(child.sent.at(-1)).toMatchObject({
-      requestId: 'late-grant',
+      requestId,
       result: { success: false, error: 'vault_broker_unavailable' },
     });
   });

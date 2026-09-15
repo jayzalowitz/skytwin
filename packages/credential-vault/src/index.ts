@@ -29,3 +29,19 @@ export type { EncryptResult } from './envelope.js';
 
 export { KeyCache } from './key-cache.js';
 export type { KeyCacheOptions } from './key-cache.js';
+
+export { SourceKeyBrokerClient } from './source-key-broker-client.js';
+export type {
+  SourceKeyBrokerClientOptions,
+  SourceKeyBrokerClientTransport,
+  SourceKeyBrokerClientWireMessage,
+  SourceKeyBrokerOwnerLeaseFailure,
+  SourceKeyBrokerOwnerLeaseResult,
+  SourceKeyBrokerOwnerLeaseSuccess,
+} from './source-key-broker-client.js';
+
+export { createProcessSourceKeyBrokerClient } from './process-source-key-broker-client.js';
+export type {
+  ProcessSourceKeyBrokerClientOptions,
+  SourceKeyBrokerProcessPort,
+} from './process-source-key-broker-client.js';

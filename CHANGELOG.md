@@ -4,6 +4,16 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **Source-key IPC clients now fail closed without activating encryption.** The
+  API and worker compose fixed-role clients that strictly validate the versioned
+  broker protocol, bind responses to the exact request context and generation,
+  cap and time out pending work, make disconnect terminal, and hold owner lock
+  acknowledgements until admitted callbacks drain. Electron contains child
+  startup when broker attachment cannot be proven and validates all child wire
+  messages through the shared protocol. Production owner grants remain empty;
+  no repository consumes the clients and no source field or public encryption
+  claim changes in this slice.
+
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,
   and mobile dependency graph no longer resolves the audited vulnerable
