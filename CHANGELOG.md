@@ -12,7 +12,12 @@ All notable changes to SkyTwin will be documented in this file.
   and limitation counts; an independent verifier recomputes those facts before
   the sidecar joins the tag-only `release-claims-ci` artifact. Current source
   evidence reports 10/10 inventoried paths with passing safety scenarios but
-  only 3/10 explanation-persistence boundaries, leaving seven disclosed gaps.
+  6/10 explanation-persistence boundaries, leaving four disclosed gaps. Three
+  append-only mapped regressions now prove existing durable behavior: replayed
+  events return only their captured explanation without re-running inference,
+  execution-router backstop refusals reach the atomic preparation-disposition
+  record before the API responds, and source-less outbound proposals fail safe
+  to untrusted provenance, one-click approval, and a receipt-bound explanation.
   The tag step revalidates and invokes the captured Node and pnpm entry points
   through a closed environment and no-profile shell, has a fixed 15-minute
   ceiling, and gives each mapped test process a 60-second hard-kill timeout.
@@ -22,7 +27,7 @@ All notable changes to SkyTwin will be documented in this file.
   exact tracked checkout. It publishes the three safety sidecars and carries
   the digest of the exact manifest bytes checked before draft creation across
   the publication gap. No tagged report exists, the bounded inventory still
-  has seven explanation gaps, and `safety.explanation-coverage` and release
+  has four explanation gaps, and `safety.explanation-coverage` and release
   readiness therefore remain blocked.
 
 - **Packaged default network behavior now has a fail-closed macOS verifier in

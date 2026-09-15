@@ -22,8 +22,11 @@
     {
       "id": "api.events_ingest",
       "sourceFiles": ["apps/api/src/routes/events.ts"],
-      "safetyScenarioIds": ["adv-v1-events-no-replay-ambiguous"],
-      "explanationScenarioIds": []
+      "safetyScenarioIds": [
+        "adv-v1-events-no-replay-ambiguous",
+        "adv-v1-events-no-replay-explanation"
+      ],
+      "explanationScenarioIds": ["adv-v1-events-no-replay-explanation"]
     },
     {
       "id": "api.routines",
@@ -40,8 +43,11 @@
     {
       "id": "execution_router.pre_dispatch_guard",
       "sourceFiles": ["packages/execution-router/src/execution-router.ts"],
-      "safetyScenarioIds": ["adv-v1-router-direct-shell"],
-      "explanationScenarioIds": []
+      "safetyScenarioIds": [
+        "adv-v1-router-direct-shell",
+        "adv-v1-router-direct-shell-persisted"
+      ],
+      "explanationScenarioIds": ["adv-v1-router-direct-shell-persisted"]
     },
     {
       "id": "ironclaw_adapter.execute",
@@ -60,10 +66,11 @@
         "adv-v1-mcp-account-delete",
         "adv-v1-mcp-credential-revoke",
         "adv-v1-missing-origin-send",
+        "adv-v1-missing-origin-send-persisted",
         "adv-v1-web-purchase-untrusted",
         "adv-v1-web-shell-exec"
       ],
-      "explanationScenarioIds": []
+      "explanationScenarioIds": ["adv-v1-missing-origin-send-persisted"]
     },
     {
       "id": "worker.memory_action_loop",

@@ -135,10 +135,10 @@ Approve, reject, correct, reset, and learn interactions now run through a separa
 
 The release-safety producer now inventories and reruns the v1 catalog's ten
 declared runtime entry paths on a tag, but its bounded report currently finds
-only three explanation-persistence boundaries. The final consumer now binds
+only six explanation-persistence boundaries. The final consumer now binds
 the exact four-file payload to the current-attempt GitHub artifact and reruns
 both independent verifiers before publishing its three safety sidecars. This
-reduces ambiguity around the release-evals blocker; the seven disclosed gaps
+reduces ambiguity around the release-evals blocker; the four disclosed gaps
 and absence of a tagged run mean it does not close the blocker or change the
 blocked launch decision.
 
