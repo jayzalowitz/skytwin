@@ -3000,7 +3000,7 @@ ${step}`,
       releaseArtifactId: releaseAsset.artifactId,
       releaseArtifactName: releaseAsset.artifactName,
       releaseArtifactSha256: releaseAsset.artifactSha256,
-      releaseArtifactCreatedAt: "2026-09-15T01:05:00Z",
+      releaseArtifactCreatedAt: "2026-09-15T01:04:00Z",
       releaseArtifactAttemptBindingResult:
         "workflow-output-and-producer-window-pass",
       releaseArtifactDownloadPath: `.release-evidence/model-delivery-subject/${subject.name}`,
@@ -3018,9 +3018,9 @@ ${step}`,
       desktopProducerJobRunAttempt: runAttempt,
       desktopProducerJobConclusion: "success",
       desktopProducerJobStartedAt: "2026-09-15T01:01:00Z",
-      desktopProducerJobCompletedAt: "2026-09-15T01:10:00Z",
-      desktopUploadStartedAt: "2026-09-15T01:04:00Z",
-      desktopUploadCompletedAt: "2026-09-15T01:06:00Z",
+      desktopProducerJobCompletedAt: "2026-09-15T01:06:00Z",
+      desktopUploadStartedAt: "2026-09-15T01:03:00Z",
+      desktopUploadCompletedAt: "2026-09-15T01:05:00Z",
       verifierJobId: machineJobId,
       verifierJobName: producerJobName,
       verifierJobRunAttempt: runAttempt,
@@ -3173,7 +3173,7 @@ ${step}`,
       status: "completed",
       conclusion: "success",
       run_attempt: runAttempt,
-      started_at: "2026-09-15T01:02:00Z",
+      started_at: "2026-09-15T01:07:00Z",
       completed_at: "2026-09-15T01:09:00Z",
       head_sha: commit,
       run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
@@ -3185,14 +3185,16 @@ ${step}`,
         { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
       ],
     };
+    let liveDesktopRunAttempt = runAttempt;
     let liveUploadStartedAt = report.desktopUploadStartedAt;
-    const desktopJob = () => ({
+    let liveAppImageName = releaseAsset.artifactName;
+    const desktopJob = ({ live = false } = {}) => ({
       id: desktopJobId,
       run_id: runId,
       name: report.desktopProducerJobName,
       status: "completed",
       conclusion: "success",
-      run_attempt: runAttempt,
+      run_attempt: live ? liveDesktopRunAttempt : runAttempt,
       started_at: report.desktopProducerJobStartedAt,
       completed_at: report.desktopProducerJobCompletedAt,
       head_sha: commit,
@@ -3202,19 +3204,34 @@ ${step}`,
         {
           name: "Upload Linux AppImage",
           conclusion: "success",
-          started_at: liveUploadStartedAt,
+          started_at: live
+            ? liveUploadStartedAt
+            : report.desktopUploadStartedAt,
           completed_at: report.desktopUploadCompletedAt,
         },
       ],
     });
+    const apiRoot = "https://api.github.com/repos/owner/repository/actions";
+    const runUrl = `${apiRoot}/runs/${runId}`;
+    const attemptUrl = `${runUrl}/attempts/${runAttempt}`;
+    const attemptJobsUrl = `${attemptUrl}/jobs?per_page=100&page=1`;
+    const machineJobUrl = `${apiRoot}/jobs/${machineJobId}`;
+    const desktopJobUrl = `${apiRoot}/jobs/${desktopJobId}`;
+    const evidenceArtifactUrl = `${apiRoot}/artifacts/${evidenceArtifactId}`;
+    const releaseArtifactUrls = new Map(
+      releaseAssets.map((asset) => [
+        `${apiRoot}/artifacts/${asset.artifactId}`,
+        asset,
+      ]),
+    );
     const requestedUrls = [];
     const fetchImpl = async (url) => {
       const text = String(url);
       requestedUrls.push(text);
       let body;
-      if (text.includes(`/attempts/${runAttempt}/jobs`))
+      if (text === attemptJobsUrl)
         body = { total_count: 2, jobs: [machineJob, desktopJob()] };
-      else if (text.endsWith(`/attempts/${runAttempt}`))
+      else if (text === attemptUrl)
         body = {
           id: runId,
           run_attempt: runAttempt,
@@ -3225,7 +3242,7 @@ ${step}`,
           path: ".github/workflows/build.yml",
           repository: { full_name: "owner/repository" },
         };
-      else if (text.endsWith(`/runs/${runId}`))
+      else if (text === runUrl)
         body = {
           id: runId,
           run_attempt: runAttempt,
@@ -3235,9 +3252,9 @@ ${step}`,
           path: ".github/workflows/build.yml",
           repository: { full_name: "owner/repository" },
         };
-      else if (text.endsWith(`/jobs/${machineJobId}`)) body = machineJob;
-      else if (text.endsWith(`/jobs/${desktopJobId}`)) body = desktopJob();
-      else if (text.endsWith(`/artifacts/${evidenceArtifactId}`))
+      else if (text === machineJobUrl) body = machineJob;
+      else if (text === desktopJobUrl) body = desktopJob({ live: true });
+      else if (text === evidenceArtifactUrl)
         body = {
           id: evidenceArtifactId,
           name: "release-evidence",
@@ -3245,13 +3262,16 @@ ${step}`,
           digest: `sha256:${"c".repeat(64)}`,
           workflow_run: { id: runId, head_sha: commit },
         };
-      else {
-        const id = Number(text.split("/").at(-1));
-        const asset = releaseAssets.find(
-          (candidate) => candidate.artifactId === id,
-        );
+      else if (releaseArtifactUrls.has(text)) {
+        const asset = releaseArtifactUrls.get(text);
         body = releaseAssetApiBody(asset, runId, commit);
-      }
+        if (asset.artifactId === releaseAsset.artifactId)
+          Object.assign(body, {
+            name: liveAppImageName,
+            created_at: report.releaseArtifactCreatedAt,
+            updated_at: report.releaseArtifactCreatedAt,
+          });
+      } else throw new Error(`unexpected GitHub API URL: ${text}`);
       return { ok: true, json: async () => body };
     };
     const ledger = {
@@ -3271,20 +3291,90 @@ ${step}`,
       githubToken: "token",
       fetchImpl,
     };
+    expect(Date.parse(report.desktopProducerJobCompletedAt)).toBeLessThan(
+      Date.parse(machineJob.started_at),
+    );
     expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
       [],
     );
-    expect(requestedUrls).toContain(
-      `https://api.github.com/repos/owner/repository/actions/jobs/${desktopJobId}`,
-    );
-    expect(requestedUrls).toContain(
-      `https://api.github.com/repos/owner/repository/actions/runs/${runId}/attempts/${runAttempt}`,
+    const requestCount = (url) =>
+      requestedUrls.filter((requested) => requested === url).length;
+    expect(requestCount(runUrl)).toBe(1);
+    expect(requestCount(attemptUrl)).toBe(2);
+    expect(requestCount(attemptJobsUrl)).toBe(1);
+    expect(requestCount(machineJobUrl)).toBe(1);
+    expect(requestCount(desktopJobUrl)).toBe(1);
+    expect(requestCount(evidenceArtifactUrl)).toBe(1);
+    for (const [url, asset] of releaseArtifactUrls)
+      expect(requestCount(url)).toBe(
+        asset.artifactId === releaseAsset.artifactId ? 2 : 1,
+      );
+    expect(new Set(requestedUrls)).toEqual(
+      new Set([
+        runUrl,
+        attemptUrl,
+        attemptJobsUrl,
+        machineJobUrl,
+        desktopJobUrl,
+        evidenceArtifactUrl,
+        ...releaseArtifactUrls.keys(),
+      ]),
     );
 
-    liveUploadStartedAt = "2026-09-15T00:59:59Z";
+    liveUploadStartedAt = "2026-09-15T01:02:00Z";
+    const exactTimestampErrors = await verifyPublicationEvidence(
+      ledger,
+      manifest,
+      options,
+    );
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        report.releaseArtifactCreatedAt,
+        liveUploadStartedAt,
+        report.desktopProducerJobCompletedAt,
+      ),
+    ).toBe(true);
+    expect(exactTimestampErrors).toEqual([
+      "models.verified-delivery machine evidence AppImage artifact is not bound to its exact-attempt successful producer and producer/upload timeline",
+    ]);
+    liveUploadStartedAt = report.desktopUploadStartedAt;
+
+    liveDesktopRunAttempt = runAttempt - 1;
     expect(
       (await verifyPublicationEvidence(ledger, manifest, options)).some(
         (error) => error.includes("AppImage artifact is not bound"),
+      ),
+    ).toBe(true);
+    liveDesktopRunAttempt = runAttempt;
+
+    liveAppImageName = "SkyTwin-Linux-AppImage-unexpected";
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("release artifact is not the unexpired"),
+      ),
+    ).toBe(true);
+    liveAppImageName = releaseAsset.artifactName;
+
+    liveUploadStartedAt = "2026-09-15T00:59:59Z";
+    report.desktopUploadStartedAt = liveUploadStartedAt;
+    const invalidChronologyReportBytes = `${JSON.stringify(report)}\n`;
+    write(root, reportPath, invalidChronologyReportBytes);
+    evidence.reportSha256 = createHash("sha256")
+      .update(invalidChronologyReportBytes)
+      .digest("hex");
+    const chronologyErrors = await verifyPublicationEvidence(
+      ledger,
+      manifest,
+      options,
+    );
+    expect(
+      chronologyErrors.some((error) =>
+        error.includes("AppImage artifact is not bound"),
+      ),
+    ).toBe(true);
+    expect(
+      chronologyErrors.some((error) =>
+        error.includes("complete verifier report contract"),
       ),
     ).toBe(true);
   });

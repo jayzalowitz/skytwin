@@ -498,20 +498,13 @@ describe("current-run release artifact identity", () => {
       return jsonResponse({ total_count: jobs.length, jobs });
     };
     await expect(
-      resolveAttemptProvenance(
-        identity(),
-        "2026-09-15T01:02:00Z",
-        fetchImpl,
-      ),
+      resolveAttemptProvenance(identity(), "2026-09-15T01:02:00Z", fetchImpl),
     ).resolves.toMatchObject(attemptProvenance());
 
     const staleJobs = jobs.map((job) => ({ ...job, run_attempt: 1 }));
     await expect(
-      resolveAttemptProvenance(
-        identity(),
-        "2026-09-15T01:02:00Z",
-        async () =>
-          jsonResponse({ total_count: staleJobs.length, jobs: staleJobs }),
+      resolveAttemptProvenance(identity(), "2026-09-15T01:02:00Z", async () =>
+        jsonResponse({ total_count: staleJobs.length, jobs: staleJobs }),
       ),
     ).rejects.toThrow(/exact workflow attempt/);
 
@@ -525,14 +518,11 @@ describe("current-run release artifact identity", () => {
         : job,
     );
     await expect(
-      resolveAttemptProvenance(
-        identity(),
-        "2026-09-15T01:02:00Z",
-        async () =>
-          jsonResponse({
-            total_count: relabeledCarriedForward.length,
-            jobs: relabeledCarriedForward,
-          }),
+      resolveAttemptProvenance(identity(), "2026-09-15T01:02:00Z", async () =>
+        jsonResponse({
+          total_count: relabeledCarriedForward.length,
+          jobs: relabeledCarriedForward,
+        }),
       ),
     ).rejects.toThrow(/outside the current workflow attempt/);
 
@@ -549,14 +539,11 @@ describe("current-run release artifact identity", () => {
         : job,
     );
     await expect(
-      resolveAttemptProvenance(
-        identity(),
-        "2026-09-15T01:02:00Z",
-        async () =>
-          jsonResponse({
-            total_count: missingExactDownload.length,
-            jobs: missingExactDownload,
-          }),
+      resolveAttemptProvenance(identity(), "2026-09-15T01:02:00Z", async () =>
+        jsonResponse({
+          total_count: missingExactDownload.length,
+          jobs: missingExactDownload,
+        }),
       ),
     ).rejects.toThrow(/exact-ID Linux AppImage download/);
   });
@@ -745,6 +732,37 @@ describe("pinned model delivery", () => {
         siblings: modelMetadata(model).siblings.map((sibling) =>
           sibling.rfilename === model.name
             ? { ...sibling, lfs: { ...sibling.lfs, sha256: "f".repeat(64) } }
+            : sibling,
+        ),
+      }),
+      modelMetadata(model, {
+        siblings: modelMetadata(model).siblings.map((sibling) =>
+          sibling.rfilename === model.name
+            ? { ...sibling, size: sibling.size + 1 }
+            : sibling,
+        ),
+      }),
+      modelMetadata(model, {
+        siblings: modelMetadata(model).siblings.map((sibling) =>
+          sibling.rfilename === model.name
+            ? {
+                ...sibling,
+                lfs: { ...sibling.lfs, size: sibling.lfs.size + 1 },
+              }
+            : sibling,
+        ),
+      }),
+      modelMetadata(model, {
+        siblings: modelMetadata(model).siblings.map((sibling) =>
+          sibling.rfilename === "LICENSE"
+            ? { ...sibling, size: sibling.size + 1 }
+            : sibling,
+        ),
+      }),
+      modelMetadata(model, {
+        siblings: modelMetadata(model).siblings.map((sibling) =>
+          sibling.rfilename === "LICENSE"
+            ? { ...sibling, blobId: "b".repeat(40) }
             : sibling,
         ),
       }),
