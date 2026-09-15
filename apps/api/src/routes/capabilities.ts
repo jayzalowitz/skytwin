@@ -185,6 +185,14 @@ interface CapabilityHistoryNode {
   payload: unknown;
 }
 
+interface CapabilityAuditRow extends CapabilityHistoryNode {
+  id: string;
+  node_type: string;
+  ref_table: string;
+  ref_id: string;
+  occurred_at: Date;
+}
+
 const HISTORY_REGISTRY_KEYS = ['registryId', 'registry_id'] as const;
 const HISTORY_ADAPTER_KEYS = ['adapter'] as const;
 const HISTORY_PROVIDER_KEYS = [
@@ -1991,48 +1999,70 @@ export function createCapabilitiesRouter(): Router {
       );
       const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
 
-      params.push(limit, offset);
-      const dataResult = await query<{
-        id: string;
-        node_type: string;
-        ref_table: string;
-        ref_id: string;
-        server_id: string | null;
-        occurred_at: Date;
-        payload: unknown;
-      }>(
-        `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
-         FROM capability_provenance_nodes
-         WHERE ${where}
-         ORDER BY occurred_at DESC
-         LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
-        params,
-      );
-
       const googleConnectionMode = loadConfig().googleConnectionMode;
-      const visibleRows = await filterCapabilityHistoryNodes(
-        dataResult.rows,
-        userId,
-        googleConnectionMode,
-      );
-      let nodes = visibleRows.map((row) => ({
-        ...row,
-        payload: redactPayload(row.payload as Record<string, unknown> | null),
-      }));
-
-      // Free-text filter on redacted payload string (post-redaction for safety)
-      if (q) {
-        nodes = nodes.filter((n) => {
+      // Account-free filtering and free-text matching happen in application
+      // code. Scan fixed-size raw batches for those modes so both the reported
+      // total and offset are defined over visible rows, never over a raw page
+      // that may contain hidden history. Exact totals require visiting every
+      // matching row, but response memory and each database read remain bounded.
+      const requiresFullVisibilityScan = googleConnectionMode !== 'experimental' || q.length > 0;
+      const visibleNodesFor = async (rows: readonly CapabilityAuditRow[]) => {
+        const visibleRows = await filterCapabilityHistoryNodes(
+          rows,
+          userId,
+          googleConnectionMode,
+        );
+        let visibleNodes = visibleRows.map((row) => ({
+          ...row,
+          payload: redactPayload(row.payload as Record<string, unknown> | null),
+        }));
+        // Free-text filtering intentionally follows redaction so a match does
+        // not disclose that a secret value existed in a hidden payload field.
+        if (q) visibleNodes = visibleNodes.filter((n) => {
           const payloadStr = n.payload ? JSON.stringify(n.payload).toLowerCase() : '';
           return n.node_type.includes(q) || payloadStr.includes(q);
         });
-      }
+        return visibleNodes;
+      };
 
-      // The database count includes retained rows before the account boundary.
-      // Do not reveal that hidden-record count in disabled mode. The filtered
-      // count is page-local, matching the already post-query free-text filter.
-      const visibleTotal = googleConnectionMode === 'experimental' ? total : nodes.length;
-      res.json({ nodes, total: visibleTotal, limit, offset });
+      let visibleTotal = total;
+      let pageNodes: Array<CapabilityAuditRow & {
+        payload: Record<string, unknown> | null;
+      }> = [];
+      if (!requiresFullVisibilityScan) {
+        const dataResult = await query<CapabilityAuditRow>(
+          `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+           FROM capability_provenance_nodes
+           WHERE ${where}
+           ORDER BY occurred_at DESC, id DESC
+           LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+          [...params, limit, offset],
+        );
+        pageNodes = await visibleNodesFor(dataResult.rows);
+      } else {
+        const scanBatchSize = 200;
+        visibleTotal = 0;
+        for (let scanOffset = 0; scanOffset < total;) {
+          const dataResult = await query<CapabilityAuditRow>(
+            `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+             FROM capability_provenance_nodes
+             WHERE ${where}
+             ORDER BY occurred_at DESC, id DESC
+             LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+            [...params, scanBatchSize, scanOffset],
+          );
+          if (dataResult.rows.length === 0) break;
+
+          const visibleBatch = await visibleNodesFor(dataResult.rows);
+          for (const node of visibleBatch) {
+            if (visibleTotal >= offset && pageNodes.length < limit) pageNodes.push(node);
+            visibleTotal += 1;
+          }
+          scanOffset += dataResult.rows.length;
+          if (dataResult.rows.length < scanBatchSize) break;
+        }
+      }
+      res.json({ nodes: pageNodes, total: visibleTotal, limit, offset });
     } catch (err) {
       next(err);
     }

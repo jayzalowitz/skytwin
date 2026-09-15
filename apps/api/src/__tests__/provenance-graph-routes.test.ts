@@ -617,6 +617,83 @@ describe('GET /api/capabilities/audit', () => {
       .toEqual([safeNode.id]);
     expect(typedBody.total).toBe(1);
   });
+
+  it('counts and paginates the complete visible audit set after account filtering', async () => {
+    const safeNodes = [
+      makeNode({
+        id: 'dddddddd-0000-0000-0000-000000000020',
+        occurred_at: new Date('2026-01-05T00:00:00.000Z'),
+        payload: { actionType: 'read_file' },
+      }),
+      makeNode({
+        id: 'dddddddd-0000-0000-0000-000000000021',
+        occurred_at: new Date('2026-01-03T00:00:00.000Z'),
+        payload: { actionType: 'create_issue' },
+      }),
+      makeNode({
+        id: 'dddddddd-0000-0000-0000-000000000022',
+        occurred_at: new Date('2026-01-01T00:00:00.000Z'),
+        payload: { actionType: 'health_check' },
+      }),
+    ];
+    const firstBatchBlocked = Array.from({ length: 199 }, (_, index) => makeNode({
+      id: `blocked-audit-${index}`,
+      payload: { registryId: 'gmail-mcp' },
+    }));
+    const finalBlocked = makeNode({
+      id: 'dddddddd-0000-0000-0000-000000000024',
+      payload: { provider: 'microsoft' },
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ count: '203' }], rowCount: 1 })
+      .mockResolvedValueOnce({
+        rows: [...firstBatchBlocked, safeNodes[0]],
+        rowCount: 200,
+      })
+      .mockResolvedValueOnce({
+        rows: [safeNodes[1], finalBlocked, safeNodes[2]],
+        rowCount: 3,
+      });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/audit?userId=${USER_ID}&limit=2&offset=1`,
+    );
+
+    expect(status).toBe(200);
+    const typedBody = body as { nodes: Array<{ id: string }>; total: number };
+    expect(typedBody.nodes.map((node) => node.id))
+      .toEqual([safeNodes[1]?.id, safeNodes[2]?.id]);
+    expect(typedBody.total).toBe(3);
+    expect(mockQuery.mock.calls[1]?.[1]).toEqual([USER_ID, 200, 0]);
+    expect(mockQuery.mock.calls[2]?.[1]).toEqual([USER_ID, 200, 200]);
+  });
+
+  it('applies free-text matching after redaction when computing the visible total', async () => {
+    const secretOnlyMatch = makeNode({
+      id: 'dddddddd-0000-0000-0000-000000000030',
+      payload: { token: 'needle' },
+    });
+    const publicMatch = makeNode({
+      id: 'dddddddd-0000-0000-0000-000000000031',
+      payload: { displayName: 'Needle tool', actionType: 'read_file' },
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [secretOnlyMatch, publicMatch], rowCount: 2 });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/audit?userId=${USER_ID}&q=needle`,
+    );
+
+    expect(status).toBe(200);
+    const typedBody = body as { nodes: Array<{ id: string }>; total: number };
+    expect(typedBody.nodes.map((node) => node.id)).toEqual([publicMatch.id]);
+    expect(typedBody.total).toBe(1);
+  });
 });
 
 // ── Tests: buildEvidencePreview helper ────────────────────────────────────
