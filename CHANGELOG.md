@@ -16,9 +16,14 @@ All notable changes to SkyTwin will be documented in this file.
   The tag step revalidates and invokes the captured Node and pnpm entry points
   through a closed environment and no-profile shell, has a fixed 15-minute
   ceiling, and gives each mapped test process a 60-second hard-kill timeout.
-  The final publication consumer does not yet re-verify this sidecar against
-  the immutable GitHub artifact identity, no tagged report exists, and
-  `safety.explanation-coverage` and release readiness therefore remain blocked.
+  The final publication consumer now binds the exact four-file payload to its
+  GitHub artifact ID/digest, current run/attempt, successful producer job, and
+  upload chronology, then reruns both independent safety verifiers from the
+  exact tracked checkout. It publishes the three safety sidecars and carries
+  the digest of the exact manifest bytes checked before draft creation across
+  the publication gap. No tagged report exists, the bounded inventory still
+  has seven explanation gaps, and `safety.explanation-coverage` and release
+  readiness therefore remain blocked.
 
 - **Packaged default network behavior now has a fail-closed macOS verifier in
   source.** The verifier binds the current tag-push attempt and exact release

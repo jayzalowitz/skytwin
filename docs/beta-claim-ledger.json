@@ -1238,7 +1238,7 @@
       "scope": "All release-supported API, worker, routine, connector, and adapter outcomes, including failures, blocks, and no-action decisions.",
       "owner": "explanations",
       "state": "limited",
-      "limitation": "The release-SHA-bound inventory currently covers the ten entry paths declared by the v1 adversarial catalog and reports passing safety scenarios for all ten, but only three have an integrity-bound regression that reaches an explanation persistence boundary. Seven explanation gaps, catalog completeness beyond the declared denominator, network/clock containment, final immutable-artifact consumption, and a tagged run remain open.",
+      "limitation": "The release-SHA-bound inventory currently covers the ten entry paths declared by the v1 adversarial catalog and reports passing safety scenarios for all ten, but only three have an integrity-bound regression that reaches an explanation persistence boundary. The final publication consumer now binds and independently re-verifies the exact four-member CI artifact before publishing its three safety sidecars. Seven explanation gaps, catalog completeness beyond the declared denominator, network/clock containment, and a tagged run remain open; independent artifact-archive re-download is explicitly outside this bounded consumer.",
       "evidence": [
         {
           "path": "packages/explanations/src/index.ts",
@@ -1262,7 +1262,7 @@
         },
         {
           "path": "scripts/release-evidence/verify-release-safety-evidence.mjs",
-          "sha256": "28de9f407a3bdc6e13f426b99414c78ef89274b16b68ef3cbbe158d708f88a8a",
+          "sha256": "6b2e82f6c49417fd0a3d57545b8317293a3fd73eec401361e3b8403e693c8a0c",
           "why": "Independently fixes and recomputes the report schema, tag context, source identities, denominator, hashes, coverage counts, and disclosed gaps"
         },
         {
@@ -1298,7 +1298,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "51ed2a1ddf3dd8cb20b2b540a27b0c0af5797223b1488106c0eb8ea0cb7f2010",
+          "sha256": "b81f87cd8d9638e7b2ff94e131457a41d1fba4ecd3762f594f748239956a71da",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
@@ -1339,13 +1339,13 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "51ed2a1ddf3dd8cb20b2b540a27b0c0af5797223b1488106c0eb8ea0cb7f2010",
+          "sha256": "b81f87cd8d9638e7b2ff94e131457a41d1fba4ecd3762f594f748239956a71da",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "03917494efe12a955e654a3e16575c03a5e3bc822cb2ffd828b6ed71da782631",
-          "why": "Defines the frozen focused CI source and command inventories, bounded observed-result contract, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
+          "sha256": "f5eedbeb966295363c51342e735f82f569dce6895d1815dcdacfed2559271f5e",
+          "why": "Defines the frozen focused CI source and command inventories, exact four-member CI evidence artifact and three published safety sidecars, bounded observed-result contract, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
           "path": "scripts/release-claims/capture-release-claim-ci-runtime.mjs",
@@ -1354,8 +1354,8 @@
         },
         {
           "path": "scripts/release-claims/run-release-claim-ci.mjs",
-          "sha256": "21d71b087c66b71acba6f45bc9e019faa20681de2a2e1f67c6a39a37b0795a3f",
-          "why": "Runs the frozen commands without a shell, records bounded observed exit evidence and immutable workflow identity, and checks the exact tagged source tree and captured runtimes at every command boundary"
+          "sha256": "cb616cc41660d65128a4e1c516e579fbc31ef702f8bf47699df2514b03b318e9",
+          "why": "Runs the frozen commands without a shell, records bounded observed exit evidence and immutable workflow identity, checks the exact tagged source tree and captured runtimes at every command boundary, and exposes the same tracked-exact checkout validation to publication verifiers"
         },
         {
           "path": "scripts/release-evidence/release-safety-entry-paths.json",
@@ -1369,13 +1369,23 @@
         },
         {
           "path": "scripts/release-evidence/verify-release-safety-evidence.mjs",
-          "sha256": "28de9f407a3bdc6e13f426b99414c78ef89274b16b68ef3cbbe158d708f88a8a",
-          "why": "Independently recomputes the safety sidecar's fixed schema, tag context, tree, hashes, denominator, counts, and conservative status before upload"
+          "sha256": "6b2e82f6c49417fd0a3d57545b8317293a3fd73eec401361e3b8403e693c8a0c",
+          "why": "Independently recomputes the safety sidecar's fixed schema, tag context, tree, hashes, denominator, counts, and conservative status before upload and again from the exact tracked publication checkout"
+        },
+        {
+          "path": "scripts/release-evidence/verify-adversarial-evidence.mjs",
+          "sha256": "4798e3a2d414811fa9f7efcdf2cd79a9daee69687948b8c3cd0b5d5453e4e238",
+          "why": "Independently verifies the adversarial report and its immutable source/fixture baseline from the exact tracked publication checkout"
         },
         {
           "path": "scripts/release-claims/generate-evidence-manifest.mjs",
-          "sha256": "4f25f635b8f798cfd0bf9e69ecfdec756ac6f6d5151d6a32d5ac0bf94c4e9b35",
-          "why": "Requires the unique canonical CI producer and upload steps to succeed in the current tag-push run; an overall job failure is admissible only when the later readiness gate also failed before the artifact enters the evidence manifest"
+          "sha256": "47994d9a4e60728ce5fed4587504fc26911ea0f3756d5c1aa3b1efd19cd122ff",
+          "why": "Binds the exact four-member local CI payload and stable hashes to the unique successful current-attempt producer/upload job, immutable artifact ID/digest, and canonical chronology without manifest self-reference"
+        },
+        {
+          "path": "scripts/release-claims/publish-verified-draft.mjs",
+          "sha256": "8a42ef23a7da2e795097a61e861b81a8963cd47e793f4b4aa3a5e1e492216dad",
+          "why": "Carries the checker's exact manifest digest across draft creation and requires the three canonical safety sidecars in the exact release asset-name/digest set"
         },
         {
           "path": "scripts/release-artifacts/file-integrity.mjs",
@@ -1409,8 +1419,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "6880867006b2c48518d1e7c4b346fef74f94cc9d03e0d0ebdc50c5a6079e5935",
-          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, structured desktop-storage, network-boundary, and on-device inference observations at publication"
+          "sha256": "ee09dea45d273650e6196e1671f32812b15e92d09b253309f0ae16952455900b",
+          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, re-verifies the exact four-member safety artifact with both independent verifiers, emits the digest of the stable manifest bytes it checked, and validates every other bounded release material and source report binding at publication"
         }
       ],
       "verification": [

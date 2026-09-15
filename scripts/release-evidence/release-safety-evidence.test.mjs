@@ -191,4 +191,32 @@ describe("release safety evidence", () => {
       }),
     ).toThrow(/expected tag context/);
   });
+
+  it("allows generated outputs only when every tracked byte still matches HEAD", () => {
+    const { root } = fixtureRoot();
+    writeFileSync(join(root, "publication-output.json"), "generated\n");
+    expect(() => verifyReleaseSafetyEvidence({ root })).toThrow(
+      /clean checkout/,
+    );
+    expect(() =>
+      verifyReleaseSafetyEvidence({ root, trackedExactCheckout: true }),
+    ).not.toThrow();
+  });
+
+  it.each(["skip-worktree", "assume-unchanged"])(
+    "rejects a tracked mutation hidden by %s in tracked-exact mode",
+    (flag) => {
+      const { root, report } = fixtureRoot();
+      const path = report.sourceFiles[0].path;
+      git(root, ["update-index", `--${flag}`, path]);
+      writeFileSync(join(root, path), "hidden tracked mutation\n");
+      expect(git(root, ["status", "--porcelain=v1"])).toBe("");
+      expect(() =>
+        verifyReleaseSafetyEvidence({
+          root,
+          trackedExactCheckout: true,
+        }),
+      ).toThrow(/skip-worktree or assume-unchanged/);
+    },
+  );
 });

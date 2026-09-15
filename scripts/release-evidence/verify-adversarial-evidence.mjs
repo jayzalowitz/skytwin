@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import ts from 'typescript';
 import { readStableRegularFile } from '../release-artifacts/file-integrity.mjs';
 import { createTrustedGit } from './trusted-git.mjs';
+import { assertExactTrackedCheckout } from '../release-claims/run-release-claim-ci.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '../..');
@@ -711,7 +712,12 @@ export function verifyAdversarialEvidence(reportPath, baselinePath = DEFAULT_BAS
   exactKeys(report.source, ['commit', 'ref', 'cleanTree'], 'report.source');
   if (!/^[0-9a-f]{40}$/.test(report.source.commit) || typeof report.source.ref !== 'string' ||
       typeof report.source.cleanTree !== 'boolean') throw new Error('source identity is malformed');
-  const live = liveGitIdentity(options.repoRoot ?? REPO_ROOT);
+  const repoRoot = options.repoRoot ?? REPO_ROOT;
+  const live = liveGitIdentity(repoRoot);
+  if (options.trackedExactCheckout === true) {
+    assertExactTrackedCheckout(repoRoot, live.commit);
+    live.cleanTree = true;
+  }
   const expectedCommit = options.expectedCommit ?? live.commit;
   if (report.source.commit !== expectedCommit || report.source.commit !== live.commit || expectedCommit !== live.commit) {
     throw new Error('source commit does not match the expected and live checkout');

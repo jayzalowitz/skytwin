@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { assertExactTrackedCheckout } from "../release-claims/run-release-claim-ci.mjs";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_ROOT = resolve(HERE, "../..");
 const SHA256 = /^[a-f0-9]{64}$/u;
@@ -169,6 +170,7 @@ export function verifyReleaseSafetyEvidence({
   adversarialPath = RELEASE_SAFETY_ADVERSARIAL_REPORT_PATH,
   expected = {},
   requireComplete = false,
+  trackedExactCheckout = false,
 } = {}) {
   root = realpathSync(resolve(root));
   const reportInput = readJson(root, reportPath, "release safety report");
@@ -249,7 +251,8 @@ export function verifyReleaseSafetyEvidence({
     throw new Error(
       "release safety report source identity is not the checked-out commit and tree",
     );
-  if (
+  if (trackedExactCheckout) assertExactTrackedCheckout(root, head);
+  else if (
     git(
       root,
       ["status", "--porcelain=v1", "--untracked-files=all"],

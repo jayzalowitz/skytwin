@@ -8,6 +8,8 @@ import {
   ARTIFACT_VERIFICATION_DIRECTORY,
   CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+  CANONICAL_RELEASE_SAFETY_ASSET_PATHS,
+  RELEASE_CLAIM_CI_ARTIFACT_FILES,
 } from "./release-constants.mjs";
 
 const READ_ATTEMPTS = 3;
@@ -224,16 +226,29 @@ export async function publishVerifiedDraft({
   tag,
   commit,
   releaseId,
+  expectedManifestSha256,
   token,
   fetchImpl = globalThis.fetch,
 }) {
-  if (!manifestPath || !repository || !tag || !commit || !token)
+  if (
+    !manifestPath ||
+    !repository ||
+    !tag ||
+    !commit ||
+    !token ||
+    !/^[a-f0-9]{64}$/u.test(expectedManifestSha256 ?? "")
+  )
     throw new Error("manifest path and GitHub release context are required");
   const numericReleaseId = Number(releaseId);
   if (!Number.isSafeInteger(numericReleaseId) || numericReleaseId <= 0)
     throw new Error("a positive GitHub release ID is required");
 
   const manifestBytes = readFileSync(manifestPath);
+  const manifestSha256 = createHash("sha256")
+    .update(manifestBytes)
+    .digest("hex");
+  if (manifestSha256 !== expectedManifestSha256)
+    throw new Error("evidence manifest changed after publication verification");
   const manifest = JSON.parse(manifestBytes.toString("utf8"));
   if (
     manifest.repository !== repository ||
@@ -309,15 +324,41 @@ export async function publishVerifiedDraft({
       );
     expected.set(reportName, durableReports.get(reportPath));
   }
+  const safetyFiles = manifest.ciEvidenceArtifact?.files;
+  if (!Array.isArray(safetyFiles))
+    throw new Error("CI safety evidence asset inventory is missing");
+  const safetyFilesByPath = new Map(
+    safetyFiles.map((file) => [file?.path, file]),
+  );
+  const canonicalCiPaths = RELEASE_CLAIM_CI_ARTIFACT_FILES.map(
+    ({ downloadedPath }) => downloadedPath,
+  );
+  if (
+    safetyFilesByPath.size !== safetyFiles.length ||
+    safetyFiles.length !== canonicalCiPaths.length ||
+    canonicalCiPaths.some((path) => !safetyFilesByPath.has(path))
+  )
+    throw new Error("CI safety evidence asset inventory is not canonical");
+  if (
+    safetyFilesByPath.get("artifacts/release-claims-ci/result.json")?.sha256 !==
+    durableReports.get("artifacts/release-claims-ci/result.json")
+  )
+    throw new Error("CI result digest conflicts with durable evidence");
+  for (const path of CANONICAL_RELEASE_SAFETY_ASSET_PATHS) {
+    const file = safetyFilesByPath.get(path);
+    if (!file || !/^[a-f0-9]{64}$/u.test(file.sha256 ?? ""))
+      throw new Error(`missing CI safety evidence release asset: ${path}`);
+    const name = basename(path);
+    if (expected.has(name))
+      throw new Error(`CI safety evidence asset name conflicts with ${name}`);
+    expected.set(name, file.sha256);
+  }
   const manifestName = basename(manifestPath);
   if (expected.has(manifestName))
     throw new Error(
       `release subject conflicts with evidence manifest: ${manifestName}`,
     );
-  expected.set(
-    manifestName,
-    createHash("sha256").update(manifestBytes).digest("hex"),
-  );
+  expected.set(manifestName, manifestSha256);
 
   const headers = githubHeaders(token);
   const api = `https://api.github.com/repos/${repository}`;
@@ -462,6 +503,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     tag: process.env.GITHUB_REF_NAME,
     commit: process.env.GITHUB_SHA,
     releaseId: process.env.RELEASE_ID,
+    expectedManifestSha256: process.env.RELEASE_EVIDENCE_MANIFEST_SHA256,
     token: process.env.GITHUB_TOKEN,
   };
   if (mode === "--assert-absent") await assertReleaseTagAbsent(context);

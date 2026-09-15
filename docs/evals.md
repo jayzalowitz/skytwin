@@ -430,11 +430,16 @@ entry paths declared by the v1 catalog, not an assertion that all effect paths
 have been discovered. All ten currently have a passing cataloged safety
 scenario, while only three declare an integrity-bound regression that reaches
 an explanation persistence boundary. Seven explanation gaps remain explicit.
-The tests use declared mocks and do not provide network or clock containment;
-the sidecar has not been produced by an immutable tag run; and the final
-publication consumer does not yet re-verify it against GitHub's immutable
-artifact identity. It cannot make the explanation claim proven or the release
-ready.
+The tests use declared mocks and do not provide network or clock containment,
+and the sidecar has not been produced by an immutable tag run. The final
+publication consumer now binds the exact four members and their hashes to the
+GitHub artifact ID/digest, current run/attempt, successful producer job, and
+upload chronology, then runs both independent verifiers in exact-tracked
+checkout mode before publishing the three safety sidecars. It deliberately
+does not re-download the artifact archive independently of the pinned GitHub
+download action. This consumer evidence cannot make the explanation claim
+proven or the release ready while the seven coverage gaps and tagged-run
+requirement remain open.
 
 In code, use the `EvalRunner` class directly:
 

@@ -36,6 +36,34 @@ export const RELEASE_CLAIM_CI_HARNESS_PATH =
 export const RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH =
   "scripts/release-claims/capture-release-claim-ci-runtime.mjs";
 export const RELEASE_CLAIM_CI_RESULT_PATH = "release-claims-ci/result.json";
+export const RELEASE_CLAIM_CI_ARTIFACT_FILES = Object.freeze([
+  Object.freeze({
+    role: "claim-result",
+    artifactPath: RELEASE_CLAIM_CI_RESULT_PATH,
+    downloadedPath: "artifacts/release-claims-ci/result.json",
+  }),
+  Object.freeze({
+    role: "adversarial-report",
+    artifactPath: "release-claims-ci/adversarial-evidence.json",
+    downloadedPath: "artifacts/release-claims-ci/adversarial-evidence.json",
+  }),
+  Object.freeze({
+    role: "adversarial-checksum",
+    artifactPath: "release-claims-ci/adversarial-evidence.json.sha256",
+    downloadedPath:
+      "artifacts/release-claims-ci/adversarial-evidence.json.sha256",
+  }),
+  Object.freeze({
+    role: "release-safety-report",
+    artifactPath: "release-claims-ci/release-safety-evidence.json",
+    downloadedPath: "artifacts/release-claims-ci/release-safety-evidence.json",
+  }),
+]);
+export const CANONICAL_RELEASE_SAFETY_ASSET_PATHS = Object.freeze(
+  RELEASE_CLAIM_CI_ARTIFACT_FILES.slice(1).map(
+    ({ downloadedPath }) => downloadedPath,
+  ),
+);
 export const MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS = 4096;
 export const RELEASE_CLAIM_CI_PRODUCER_STEP = "Produce release claim CI result";
 export const RELEASE_CLAIM_CI_UPLOAD_STEP = "Upload release claim CI result";

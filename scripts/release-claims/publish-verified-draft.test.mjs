@@ -13,6 +13,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   ARTIFACT_VERIFICATION_DIRECTORY,
   CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+  CANONICAL_RELEASE_SAFETY_ASSET_PATHS,
+  RELEASE_CLAIM_CI_ARTIFACT_FILES,
 } from "./release-constants.mjs";
 import {
   assertReleaseCommitOnMain,
@@ -88,6 +90,19 @@ function fixture() {
       path: `${ARTIFACT_VERIFICATION_DIRECTORY}/${name}`,
       sha256: digest.repeat(64),
     })),
+    ciEvidenceArtifact: {
+      files: RELEASE_CLAIM_CI_ARTIFACT_FILES.map(
+        ({ role, downloadedPath }, index) => ({
+          role,
+          path: downloadedPath,
+          sha256:
+            role === "claim-result"
+              ? reportDigest(0)
+              : (index + 6).toString(16).repeat(64),
+          sizeBytes: index + 1,
+        }),
+      ),
+    },
     evidence: [
       ...CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS.map((reportPath, index) => ({
         reportPath,
@@ -138,6 +153,10 @@ function releaseBody(manifestDigest, overrides = {}) {
       ...CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS.map((reportPath, index) => ({
         name: reportPath.split("/").at(-1),
         digest: `sha256:${reportDigest(index)}`,
+      })),
+      ...CANONICAL_RELEASE_SAFETY_ASSET_PATHS.map((path, index) => ({
+        name: path.split("/").at(-1),
+        digest: `sha256:${(index + 7).toString(16).repeat(64)}`,
       })),
       { name: "manifest.json", digest: `sha256:${manifestDigest}` },
     ],
@@ -227,6 +246,9 @@ function githubFixture({
 function publishContext(manifestPath, fetchImpl) {
   return {
     manifestPath,
+    expectedManifestSha256: createHash("sha256")
+      .update(readFileSync(manifestPath))
+      .digest("hex"),
     repository: "owner/repo",
     tag: "v1.0.0-beta.1",
     commit: COMMIT,
@@ -444,6 +466,46 @@ it("does not publish a draft with a changed asset digest", async () => {
     publishVerifiedDraft(publishContext(manifestPath, fetchImpl)),
   ).rejects.toThrow("do not exactly match");
   expect(fetchImpl).toHaveBeenCalledTimes(1);
+});
+
+it("rejects a manifest changed after the publication evidence gate", async () => {
+  const { manifestPath, manifestDigest } = fixture();
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+  manifest.tag = "v1.0.0-beta.2";
+  writeFileSync(manifestPath, `${JSON.stringify(manifest)}\n`);
+  const fetchImpl = vi.fn();
+  await expect(
+    publishVerifiedDraft({
+      ...publishContext(manifestPath, fetchImpl),
+      expectedManifestSha256: manifestDigest,
+    }),
+  ).rejects.toThrow("changed after publication verification");
+  expect(fetchImpl).not.toHaveBeenCalled();
+});
+
+it("requires every CI safety sidecar with its manifest-bound digest", async () => {
+  const { manifestPath, manifestDigest } = fixture();
+  for (const mutate of [
+    (assets) =>
+      assets.filter(({ name }) => name !== "release-safety-evidence.json"),
+    (assets) =>
+      assets.map((asset) =>
+        asset.name === "adversarial-evidence.json"
+          ? { ...asset, digest: `sha256:${"0".repeat(64)}` }
+          : asset,
+      ),
+  ]) {
+    const changed = releaseBody(manifestDigest);
+    changed.assets = mutate(changed.assets);
+    await expect(
+      publishVerifiedDraft(
+        publishContext(
+          manifestPath,
+          vi.fn().mockResolvedValue(response(changed)),
+        ),
+      ),
+    ).rejects.toThrow("do not exactly match");
+  }
 });
 
 it("requires the exact draft release ID emitted by the creator action", async () => {

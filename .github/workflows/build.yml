@@ -1076,6 +1076,7 @@ jobs:
           path: artifacts
 
       - name: Verify post-build release evidence
+        id: verify-release-evidence
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -1094,7 +1095,8 @@ jobs:
             --repository "${GITHUB_REPOSITORY}" \
             --run-id "${GITHUB_RUN_ID}" \
             --ref "${GITHUB_REF}" \
-            --evidence-manifest .release-evidence/manifest.json
+            --evidence-manifest .release-evidence/manifest.json \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: List artifacts
         run: find artifacts -type f | sort
@@ -1140,6 +1142,9 @@ jobs:
             artifacts/SkyTwin-Linux-rpm/*
             artifacts/SkyTwin-Linux-update-manifest/*
             artifacts/release-claims-ci/result.json
+            artifacts/release-claims-ci/adversarial-evidence.json
+            artifacts/release-claims-ci/adversarial-evidence.json.sha256
+            artifacts/release-claims-ci/release-safety-evidence.json
             .release-evidence/reports/storage.desktop-crdb.json
             .release-evidence/reports/inference.on-device-availability.json
             .release-evidence/reports/inference.confidential-verification.json
@@ -1159,4 +1164,5 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           RELEASE_ID: ${{ steps.create-release-draft.outputs.id }}
+          RELEASE_EVIDENCE_MANIFEST_SHA256: ${{ steps.verify-release-evidence.outputs.manifest-sha256 }}
         run: node scripts/release-claims/publish-verified-draft.mjs .release-evidence/manifest.json
