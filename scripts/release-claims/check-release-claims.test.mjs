@@ -38,6 +38,10 @@ import {
   REQUIRED_STOP_SHIP_IDS,
   REQUIRED_SURFACE_CLASSES,
   buildCanonicalVerificationInstructions,
+  hasCanonicalSuccessfulMachineSteps,
+  isArtifactCreationWithinProducerWindow,
+  isValidSigningSourceReportArtifact,
+  isValidSigningUploadBinding,
   isAllowlistedVerificationCommand,
   isValidSpdx23Document,
   normalizeReleaseTagToRepositoryVersion,
@@ -60,6 +64,32 @@ import {
 const temporaryRoots = [];
 const EVIDENCE = "evidence\n";
 const EVIDENCE_SHA256 = createHash("sha256").update(EVIDENCE).digest("hex");
+const ATTEMPT_STARTED_AT = "2026-09-15T01:00:00Z";
+
+function signingProducerFields(artifactId, artifactName, platform) {
+  const producerNames = {
+    macos: "Desktop — macOS (DMG + ZIP)",
+    windows: "Desktop — Windows (NSIS installer)",
+  };
+  const uploadNames = {
+    "SkyTwin-macOS-dmg": "Upload macOS DMG",
+    "SkyTwin-macOS-zip": "Upload macOS ZIP",
+    "SkyTwin-Windows-installer": "Upload Windows installer",
+  };
+  return {
+    artifactCreatedAt: "2026-09-15T01:05:00Z",
+    artifactUpdatedAt: "2026-09-15T01:05:00Z",
+    artifactProducerJobId: 500,
+    artifactProducerJobName: producerNames[platform],
+    artifactProducerRunAttempt: 2,
+    artifactProducerJobConclusion: "success",
+    artifactProducerJobStartedAt: "2026-09-15T01:01:00Z",
+    artifactProducerJobCompletedAt: "2026-09-15T01:10:00Z",
+    artifactUploadStepName: uploadNames[artifactName],
+    artifactUploadStepStartedAt: "2026-09-15T01:04:00Z",
+    artifactUploadStepCompletedAt: "2026-09-15T01:06:00Z",
+  };
+}
 const productionLedger = JSON.parse(
   readFileSync(
     new URL("../../docs/beta-claim-ledger.json", import.meta.url),
@@ -122,6 +152,7 @@ function makeReleaseAssets(root, startId = 1000) {
           name,
           path,
           sha256: createHash("sha256").update(content).digest("hex"),
+          sizeBytes: Buffer.byteLength(content),
         },
       ],
     };
@@ -288,6 +319,8 @@ function releaseAssetApiBody(asset, runId, commit) {
     name: asset.artifactName,
     expired: false,
     digest: `sha256:${asset.artifactSha256}`,
+    created_at: "2026-09-15T01:05:00Z",
+    updated_at: "2026-09-15T01:05:00Z",
     workflow_run: { id: runId, head_sha: commit },
   };
 }
@@ -466,14 +499,59 @@ concurrency:
   cancel-in-progress: \${{ !startsWith(github.ref, 'refs/tags/v') }}
 jobs:
   desktop-mac:
+    outputs:
+      dmg-artifact-id: \${{ steps.upload-macos-dmg.outputs.artifact-id }}
+      dmg-artifact-digest: \${{ steps.upload-macos-dmg.outputs.artifact-digest }}
+      zip-artifact-id: \${{ steps.upload-macos-zip.outputs.artifact-id }}
+      zip-artifact-digest: \${{ steps.upload-macos-zip.outputs.artifact-digest }}
     runs-on: macos-15
-    steps: []
+    steps:
+      - name: Upload macOS DMG
+        id: upload-macos-dmg
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-macOS-dmg
+      - name: Upload macOS ZIP
+        id: upload-macos-zip
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-macOS-zip
   desktop-windows:
+    outputs:
+      installer-artifact-id: \${{ steps.upload-windows-installer.outputs.artifact-id }}
+      installer-artifact-digest: \${{ steps.upload-windows-installer.outputs.artifact-digest }}
     runs-on: windows-2025
-    steps: []
+    steps:
+      - name: Upload Windows installer
+        id: upload-windows-installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Windows-installer
   desktop-linux:
+    outputs:
+      appimage-artifact-id: \${{ steps.upload-linux-appimage.outputs.artifact-id }}
+      appimage-artifact-digest: \${{ steps.upload-linux-appimage.outputs.artifact-digest }}
+      deb-artifact-id: \${{ steps.upload-linux-deb.outputs.artifact-id }}
+      deb-artifact-digest: \${{ steps.upload-linux-deb.outputs.artifact-digest }}
+      rpm-artifact-id: \${{ steps.upload-linux-rpm.outputs.artifact-id }}
+      rpm-artifact-digest: \${{ steps.upload-linux-rpm.outputs.artifact-digest }}
     runs-on: ubuntu-24.04
-    steps: []
+    steps:
+      - name: Upload Linux AppImage
+        id: upload-linux-appimage
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Linux-AppImage
+      - name: Upload Linux deb
+        id: upload-linux-deb
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Linux-deb
+      - name: Upload Linux rpm
+        id: upload-linux-rpm
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: SkyTwin-Linux-rpm
   release-artifact-materials:
     name: Produce release artifact verification materials
     if: startsWith(github.ref, 'refs/tags/v')
@@ -555,15 +633,42 @@ ${machineMatrix}
           SKYTWIN_RELEASE_PROVENANCE_SHA256: \${{ steps.sample-provenance.outputs.descriptor_sha256 }}
         run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform \${{ matrix.platform }} --descriptor .release-evidence/provenance/\${{ matrix.reportName }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Run canonical machine verifier
+        id: machine-verifier
         if: matrix.claimId != 'sample.packaged-account-free'
         env:
           GITHUB_TOKEN: \${{ github.token }}
+          SKYTWIN_RELEASE_ARTIFACT_IDS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}
+          SKYTWIN_RELEASE_ARTIFACT_DIGESTS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}
         run: node scripts/release-claims/verifiers/\${{ matrix.claimId }}.mjs --platform \${{ matrix.platform }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Upload machine evidence report
+        id: upload-machine-evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: release-machine-evidence-\${{ matrix.claimId }}-\${{ matrix.platform }}
+          name: \${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}
           path: .release-evidence/reports/\${{ matrix.reportName }}
+          if-no-files-found: error
+          compression-level: 0
+      - name: Download exact uploaded signing report
+        if: matrix.claimId == 'release.signing'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: \${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          path: .release-evidence/upload-confirmation
+          merge-multiple: true
+      - name: Verify exact uploaded signing report binding
+        if: matrix.claimId == 'release.signing'
+        env:
+          SKYTWIN_EXPECTED_REPORT_SHA256: \${{ steps.machine-verifier.outputs.report_sha256 }}
+          SKYTWIN_UPLOADED_ARTIFACT_ID: \${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          SKYTWIN_UPLOADED_ARTIFACT_NAME: release-signing-report-\${{ matrix.platform }}-attempt-\${{ github.run_attempt }}
+          SKYTWIN_UPLOADED_ARTIFACT_SHA256: \${{ steps.upload-machine-evidence.outputs.artifact-digest }}
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform \${{ matrix.platform }} --report .release-evidence/upload-confirmation/\${{ matrix.reportName }} --binding .release-evidence/upload-bindings/\${{ matrix.reportName }}.binding.json
+      - name: Upload signing report source binding
+        if: matrix.claimId == 'release.signing'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: release-signing-binding-\${{ matrix.platform }}-attempt-\${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings/\${{ matrix.reportName }}.binding.json
           if-no-files-found: error
           compression-level: 0
   aggregate-release-evidence:
@@ -572,10 +677,30 @@ ${machineMatrix}
     needs: [release-machine-evidence, release-artifact-materials]
     runs-on: ubuntu-24.04
     steps:
-      - name: Download machine evidence reports
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Download signing report source bindings for this run attempt
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
-          pattern: release-machine-evidence-*
+          pattern: release-signing-binding-*-attempt-\${{ github.run_attempt }}
+          path: .release-evidence/upload-bindings
+          merge-multiple: true
+      - name: Resolve exact source signing report artifact IDs
+        id: signing-report-bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --resolve-upload-bindings --bindings .release-evidence/upload-bindings
+      - name: Download exact source signing reports
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: \${{ steps.signing-report-bindings.outputs.artifact_ids }}
+          path: .release-evidence/reports
+          merge-multiple: true
+      - name: Verify aggregated source signing report bindings
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports
+      - name: Download non-signing machine evidence reports for this run attempt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: release-machine-evidence-*-attempt-\${{ github.run_attempt }}
           path: .release-evidence/reports
           merge-multiple: true
       - name: Download release artifact verification materials
@@ -1104,6 +1229,78 @@ ${step}`,
     );
   });
 
+  it("requires exact-ID post-upload signing report verification in the producer job", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "          artifact-ids: ${{ steps.upload-machine-evidence.outputs.artifact-id }}",
+        "          artifact-ids: 999",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+  });
+
+  it("requires the exact signing upload-verification step to succeed before publication", () => {
+    const verifierStep = {
+      name: CANONICAL_MACHINE_VERIFIER_STEP,
+      conclusion: "success",
+    };
+    const uploadVerificationStep = {
+      name: "Verify exact uploaded signing report binding",
+      conclusion: "success",
+    };
+    expect(
+      hasCanonicalSuccessfulMachineSteps("release.signing", {
+        steps: [verifierStep],
+      }),
+    ).toBe(false);
+    expect(
+      hasCanonicalSuccessfulMachineSteps("release.signing", {
+        steps: [
+          verifierStep,
+          { ...uploadVerificationStep, conclusion: "failure" },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      hasCanonicalSuccessfulMachineSteps("release.signing", {
+        steps: [verifierStep, uploadVerificationStep],
+      }),
+    ).toBe(true);
+  });
+
+  it("requires attempt-specific signing bindings and exact-ID aggregation", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    const workflow = readFileSync(path, "utf8");
+    writeFileSync(
+      path,
+      workflow.replace(
+        "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}",
+        "release-signing-binding-${{ matrix.platform }}",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+    writeFileSync(
+      path,
+      workflow.replace(
+        "artifact-ids: ${{ steps.signing-report-bindings.outputs.artifact_ids }}",
+        "pattern: release-signing-report-*",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence aggregation must be the exact producer-dependent immutable artifact graph",
+    );
+  });
+
   it("requires machine verification to depend on the materials producer", () => {
     const root = makeRoot();
     writeValidFixture(root);
@@ -1158,7 +1355,7 @@ ${step}`,
       ),
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
-      "only the canonical machine producer may upload artifacts matching the release-machine-evidence prefix",
+      "only the canonical machine producer may upload attempt-bound machine reports and signing bindings",
     );
   });
 
@@ -1655,14 +1852,32 @@ ${step}`,
   it("requires signing proof for every installer/archive subject", () => {
     const assets = [
       {
+        artifactId: 1,
         kind: "desktop-installer",
         artifactName: "SkyTwin-macOS-dmg",
-        subjects: [{ path: "a.dmg", sha256: "a".repeat(64) }],
+        artifactSha256: "1".repeat(64),
+        subjects: [
+          {
+            name: "a.dmg",
+            path: "a.dmg",
+            sha256: "a".repeat(64),
+            sizeBytes: 10,
+          },
+        ],
       },
       {
+        artifactId: 2,
         kind: "desktop-archive",
         artifactName: "SkyTwin-macOS-zip",
-        subjects: [{ path: "a.zip", sha256: "b".repeat(64) }],
+        artifactSha256: "2".repeat(64),
+        subjects: [
+          {
+            name: "a.zip",
+            path: "a.zip",
+            sha256: "b".repeat(64),
+            sizeBytes: 20,
+          },
+        ],
       },
       {
         kind: "update-manifest",
@@ -1671,13 +1886,38 @@ ${step}`,
     ];
     const report = {
       platform: "macos",
+      runnerPlatform: "darwin-arm64",
+      releaseTag: "v0.7.0-beta",
       coveredSubjects: [
         {
+          artifactId: 1,
+          artifactName: "SkyTwin-macOS-dmg",
+          artifactSha256: "1".repeat(64),
+          ...signingProducerFields(1, "SkyTwin-macOS-dmg", "macos"),
+          kind: "desktop-installer",
           path: "a.dmg",
+          name: "a.dmg",
           sha256: "a".repeat(64),
+          sizeBytes: 10,
           platform: "macos-arm64",
           signatureResult: "pass",
           notarizationResult: "pass",
+          verificationMethod:
+            "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign",
+          signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
+          signerTeamId: "TEAM123456",
+          signedIdentifier: "com.skytwin.desktop",
+          signedContentCdHash: "d".repeat(40),
+          signedBundleVersion: "0.7.0",
+          signedBundleBuildVersion: "0.7.0",
+          executableArchitecture: "arm64",
+          containerSignature: {
+            signatureResult: "pass",
+            signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
+            signerTeamId: "TEAM123456",
+            signedIdentifier: "com.skytwin.desktop.dmg",
+            signedContentCdHash: "e".repeat(40),
+          },
         },
       ],
     };
@@ -1685,15 +1925,198 @@ ${step}`,
       verifyMachineEvidenceApplicability("release.signing", report, assets),
     ).toHaveLength(1);
     report.coveredSubjects.push({
+      artifactId: 2,
+      artifactName: "SkyTwin-macOS-zip",
+      artifactSha256: "2".repeat(64),
+      ...signingProducerFields(2, "SkyTwin-macOS-zip", "macos"),
+      kind: "desktop-archive",
       path: "a.zip",
+      name: "a.zip",
       sha256: "b".repeat(64),
+      sizeBytes: 20,
       platform: "macos-arm64",
       signatureResult: "pass",
       notarizationResult: "pass",
+      verificationMethod:
+        "bounded-volume+ditto-contained-app+codesign+gatekeeper+stapler",
+      signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
+      signerTeamId: "TEAM123456",
+      signedIdentifier: "com.skytwin.desktop",
+      signedContentCdHash: "d".repeat(40),
+      signedBundleVersion: "0.7.0",
+      signedBundleBuildVersion: "0.7.0",
+      executableArchitecture: "arm64",
+      containerSignature: null,
     });
     expect(
       verifyMachineEvidenceApplicability("release.signing", report, assets),
     ).toEqual([]);
+
+    for (const [field, tampered] of [
+      ["artifactId", 99],
+      ["artifactSha256", "9".repeat(64)],
+      ["kind", "desktop-archive"],
+      ["name", "other.dmg"],
+      ["sizeBytes", 11],
+      ["signedContentCdHash", undefined],
+      ["signedBundleVersion", "0.6.99"],
+      ["signedBundleBuildVersion", "0.6.99"],
+      ["executableArchitecture", "x86_64"],
+      ["verificationMethod", "codesign-only"],
+      ["signerTeamId", "OTHER12345"],
+    ]) {
+      const changed = structuredClone(report);
+      if (tampered === undefined) delete changed.coveredSubjects[0][field];
+      else changed.coveredSubjects[0][field] = tampered;
+      expect(
+        verifyMachineEvidenceApplicability("release.signing", changed, assets),
+        `tampered ${field}`,
+      ).toHaveLength(1);
+    }
+    const extraField = structuredClone(report);
+    extraField.coveredSubjects[0].unexpected = true;
+    expect(
+      verifyMachineEvidenceApplicability("release.signing", extraField, assets),
+    ).toHaveLength(1);
+    const mismatchedContainer = structuredClone(report);
+    mismatchedContainer.coveredSubjects[0].containerSignature.signer =
+      "Developer ID Application: Other Publisher (TEAM123456)";
+    expect(
+      verifyMachineEvidenceApplicability(
+        "release.signing",
+        mismatchedContainer,
+        assets,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("requires complete pinned Windows signature observations", () => {
+    const assets = [
+      {
+        artifactId: 1,
+        kind: "desktop-installer",
+        artifactName: "SkyTwin-Windows-installer",
+        artifactSha256: "1".repeat(64),
+        subjects: [
+          {
+            name: "SkyTwin.exe",
+            path: "SkyTwin.exe",
+            sha256: "a".repeat(64),
+            sizeBytes: 10,
+          },
+        ],
+      },
+    ];
+    const report = {
+      platform: "windows",
+      runnerPlatform: "win32-x64",
+      releaseTag: "v0.7.0-beta",
+      coveredSubjects: [
+        {
+          artifactId: 1,
+          artifactName: "SkyTwin-Windows-installer",
+          artifactSha256: "1".repeat(64),
+          ...signingProducerFields(1, "SkyTwin-Windows-installer", "windows"),
+          kind: "desktop-installer",
+          path: "SkyTwin.exe",
+          name: "SkyTwin.exe",
+          sha256: "a".repeat(64),
+          sizeBytes: 10,
+          platform: "windows-x64",
+          signatureResult: "pass",
+          verificationMethod:
+            "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+          authenticodeStatus: "Valid",
+          authenticodeSignatureType: "Authenticode",
+          signer: "CN=SkyTwin Publisher",
+          signerIssuer: "CN=Public Code Signing CA",
+          signerCertificateSha256: "b".repeat(64),
+          signerCertificatePinned: true,
+          codeSigningEku: true,
+          timestampCertificatePresent: true,
+          timestampSignerCertificateSha256: "c".repeat(64),
+          timestampCertificateValidation:
+            "presence-and-fingerprint-recorded-not-independently-validated",
+          productVersion: "0.7.0.0",
+          fileVersionMajor: 0,
+          fileVersionMinor: 7,
+          fileVersionBuild: 0,
+          fileVersionPrivate: 0,
+          containedExecutable: {
+            derivationMethod: "nsis-7zip",
+            derivationPath: "app-64.7z!/SkyTwin.exe",
+            name: "SkyTwin.exe",
+            sha256: "d".repeat(64),
+            sizeBytes: 128,
+            architecture: "AMD64",
+            productVersion: "0.7.0.0",
+            fileVersionMajor: 0,
+            fileVersionMinor: 7,
+            fileVersionBuild: 0,
+            fileVersionPrivate: 0,
+            signatureResult: "pass",
+            verificationMethod:
+              "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+            authenticodeStatus: "Valid",
+            authenticodeSignatureType: "Authenticode",
+            signer: "CN=SkyTwin Publisher",
+            signerIssuer: "CN=Public Code Signing CA",
+            signerCertificateSha256: "b".repeat(64),
+            signerCertificatePinned: true,
+            codeSigningEku: true,
+            timestampCertificatePresent: true,
+            timestampSignerCertificateSha256: "c".repeat(64),
+            timestampCertificateValidation:
+              "presence-and-fingerprint-recorded-not-independently-validated",
+          },
+        },
+      ],
+    };
+    expect(
+      verifyMachineEvidenceApplicability("release.signing", report, assets),
+    ).toEqual([]);
+
+    for (const [field, tampered] of [
+      ["artifactId", 99],
+      ["artifactSha256", "9".repeat(64)],
+      ["kind", "desktop-archive"],
+      ["name", "other.exe"],
+      ["sizeBytes", 11],
+      ["codeSigningEku", undefined],
+      ["signerCertificatePinned", false],
+      ["signerCertificateSha256", "not-a-digest"],
+      ["timestampCertificatePresent", false],
+      ["productVersion", "0.6.0"],
+      ["fileVersionBuild", 99],
+      ["verificationMethod", "fingerprint-only"],
+    ]) {
+      const changed = structuredClone(report);
+      if (tampered === undefined) delete changed.coveredSubjects[0][field];
+      else changed.coveredSubjects[0][field] = tampered;
+      expect(
+        verifyMachineEvidenceApplicability("release.signing", changed, assets),
+        `tampered ${field}`,
+      ).toHaveLength(1);
+    }
+    for (const [field, tampered] of [
+      ["sha256", "not-a-digest"],
+      ["architecture", "I386"],
+      ["productVersion", "0.6.0"],
+      ["signer", "CN=Other"],
+      ["fileVersionPrivate", 1],
+    ]) {
+      const changed = structuredClone(report);
+      changed.coveredSubjects[0].containedExecutable[field] = tampered;
+      expect(
+        verifyMachineEvidenceApplicability("release.signing", changed, assets),
+        `tampered contained executable ${field}`,
+      ).toHaveLength(1);
+    }
+    const extraField = structuredClone(report);
+    extraField.coveredSubjects[0].containedExecutable.unexpected = true;
+    expect(
+      verifyMachineEvidenceApplicability("release.signing", extraField, assets),
+    ).toHaveLength(1);
   });
 
   it("rejects signing evidence asserted by the wrong native platform", () => {
@@ -3086,6 +3509,7 @@ ${step}`,
       tag: "v0.7.0-beta",
       ref: "refs/tags/v0.7.0-beta",
       runId: 111,
+      runAttempt: 1,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [],
@@ -3101,6 +3525,7 @@ ${step}`,
                 checkIds: CANONICAL_CI_EVIDENCE_CHECKS.get(readiness.claimId),
                 repository: "owner/repository",
                 runId: 111,
+                runAttempt: 1,
                 ref: "refs/tags/v0.7.0-beta",
                 jobId: 222,
                 jobName: "release-claim-ci",
@@ -3121,6 +3546,7 @@ ${step}`,
                 ),
                 repository: "owner/repository",
                 runId: 111,
+                runAttempt: 1,
                 ref: "refs/tags/v0.7.0-beta",
                 evidenceArtifactId: 333,
                 evidenceArtifactName: "release-evidence",
@@ -3190,6 +3616,8 @@ ${step}`,
         tag: "v0.7.0-beta",
         ref: "refs/tags/v0.7.0-beta",
         runId: 1,
+        runAttempt: 1,
+        runAttemptStartedAt: ATTEMPT_STARTED_AT,
         releaseAssets,
         verificationAssets: makeVerificationAssets(root, releaseAssets),
         evidence: [
@@ -3201,6 +3629,8 @@ ${step}`,
             ),
             repository: "owner/repository",
             runId: 1,
+            runAttempt: 1,
+            runAttemptStartedAt: ATTEMPT_STARTED_AT,
             ref: "refs/tags/v0.7.0-beta",
             evidenceArtifactId: 2,
             evidenceArtifactName: "release-evidence",
@@ -3210,6 +3640,7 @@ ${step}`,
             sourceCommit: commit,
             platform: "macos",
             releaseTag: "v0.7.0-beta",
+            producerJobRunAttempt: 1,
             releaseArtifactKind: "desktop-installer",
             releaseArtifactId: 3,
             releaseArtifactName: "SkyTwin-macOS-dmg",
@@ -3285,6 +3716,8 @@ ${step}`,
       releaseTag: tag,
       ref,
       runId,
+      runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       platform: "macos",
       producerJobName,
       verifierPath,
@@ -3307,6 +3740,8 @@ ${step}`,
       tag,
       ref,
       runId,
+      runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [
@@ -3316,6 +3751,8 @@ ${step}`,
           checkIds,
           repository: "owner/repository",
           runId,
+          runAttempt: 1,
+          runAttemptStartedAt: ATTEMPT_STARTED_AT,
           ref,
           evidenceArtifactId: 202,
           evidenceArtifactName: "release-evidence",
@@ -3329,6 +3766,7 @@ ${step}`,
           platform: report.platform,
           producerJobId,
           producerJobName,
+          producerJobRunAttempt: 1,
           producerJobConclusion: "success",
           verifierPath,
           verifierCommand,
@@ -3353,11 +3791,44 @@ ${step}`,
     };
     let runEvent = "push";
     const fetchImpl = async (url) => {
-      const id = Number(String(url).split("/").at(-1));
+      const text = String(url);
+      const id = Number(text.split("/").at(-1));
       let body;
-      if (String(url).includes("/runs/")) {
+      if (text.includes("/attempts/1/jobs")) {
+        const job = {
+          id: producerJobId,
+          run_id: runId,
+          name: producerJobName,
+          status: "completed",
+          conclusion: "success",
+          run_attempt: 1,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            {
+              name: CANONICAL_MACHINE_VERIFIER_STEP,
+              conclusion: "success",
+            },
+          ],
+        };
+        body = { total_count: 1, jobs: [job] };
+      } else if (text.endsWith("/attempts/1")) {
         body = {
           id: runId,
+          run_attempt: 1,
+          run_started_at: ATTEMPT_STARTED_AT,
+          event: runEvent,
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      } else if (text.endsWith(`/runs/${runId}`)) {
+        body = {
+          id: runId,
+          run_attempt: 1,
           event: runEvent,
           head_branch: tag,
           head_sha: commit,
@@ -3368,7 +3839,11 @@ ${step}`,
         body = {
           id: producerJobId,
           name: producerJobName,
+          status: "completed",
           conclusion: "success",
+          run_attempt: 1,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
           head_sha: commit,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
           steps: [
@@ -3464,6 +3939,462 @@ ${step}`,
     ).toBe(true);
   });
 
+  it("binds signing publication to the source report artifact and run attempt", async () => {
+    const root = makeRoot();
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const tag = "v0.7.0-beta";
+    const ref = `refs/tags/${tag}`;
+    const runId = 801;
+    const runAttempt = 2;
+    const releaseAssets = makeReleaseAssets(root, 900);
+    const releaseAsset = releaseAssets.find(
+      ({ artifactName }) => artifactName === "SkyTwin-Windows-installer",
+    );
+    const subject = releaseAsset.subjects[0];
+    const producerJobId = 850;
+    const verifierPath = machineVerifierPath("release.signing");
+    const verifierCommand = machineVerifierCommand(
+      "release.signing",
+      "windows",
+    );
+    const verifierSource = "// signing verifier fixture\n";
+    const verifierSha256 = createHash("sha256")
+      .update(verifierSource)
+      .digest("hex");
+    write(root, verifierPath, verifierSource);
+    const signature = {
+      signatureResult: "pass",
+      verificationMethod:
+        "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+      authenticodeStatus: "Valid",
+      authenticodeSignatureType: "Authenticode",
+      signer: "CN=SkyTwin Publisher",
+      signerIssuer: "CN=Public Code Signing CA",
+      signerCertificateSha256: "b".repeat(64),
+      signerCertificatePinned: true,
+      codeSigningEku: true,
+      timestampCertificatePresent: true,
+      timestampSignerCertificateSha256: "d".repeat(64),
+      timestampCertificateValidation:
+        "presence-and-fingerprint-recorded-not-independently-validated",
+    };
+    const report = {
+      schemaVersion: 1,
+      generatedBy: "release-machine-verifier",
+      result: "pass",
+      checks: [
+        {
+          id: "release.platform-signature-validation",
+          testId: "release.platform-signature-validation",
+          result: "pass",
+          observed: { assertion: "signed", measurement: "one", exitCode: 0 },
+        },
+      ],
+      claimId: "release.signing",
+      repository: "owner/repository",
+      sourceCommit: commit,
+      releaseTag: tag,
+      ref,
+      runId,
+      platform: "windows",
+      runnerPlatform: "win32-x64",
+      producerJobName: machineProducerJobName("release.signing", "windows"),
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      coveredSubjects: [
+        {
+          artifactId: releaseAsset.artifactId,
+          artifactName: releaseAsset.artifactName,
+          artifactSha256: releaseAsset.artifactSha256,
+          kind: releaseAsset.kind,
+          path: subject.path,
+          name: subject.name,
+          sha256: subject.sha256,
+          sizeBytes: subject.sizeBytes,
+          platform: "windows-x64",
+          ...signature,
+          productVersion: "0.7.0.0",
+          fileVersionMajor: 0,
+          fileVersionMinor: 7,
+          fileVersionBuild: 0,
+          fileVersionPrivate: 0,
+          containedExecutable: {
+            derivationMethod: "nsis-7zip",
+            derivationPath: "app-64.7z!/SkyTwin.exe",
+            name: "SkyTwin.exe",
+            sha256: "e".repeat(64),
+            sizeBytes: 128,
+            architecture: "AMD64",
+            productVersion: "0.7.0.0",
+            fileVersionMajor: 0,
+            fileVersionMinor: 7,
+            fileVersionBuild: 0,
+            fileVersionPrivate: 0,
+            ...signature,
+          },
+        },
+      ],
+    };
+    const reportPath = ".release-evidence/reports/release.signing.windows.json";
+    const sourceReportArtifactId = 880;
+    const sourceReportArtifactName = "release-signing-report-windows-attempt-2";
+    const sourceReportArtifactSha256 = "f".repeat(64);
+    const releaseArtifactCreatedAt = "2026-09-15T01:06:01Z";
+    const sourceReportArtifactCreatedAt = "2026-09-15T01:04:01Z";
+    const artifactProducers = [
+      {
+        artifactId: releaseAsset.artifactId,
+        artifactName: releaseAsset.artifactName,
+        ...signingProducerFields(
+          releaseAsset.artifactId,
+          releaseAsset.artifactName,
+          "windows",
+        ),
+        artifactCreatedAt: releaseArtifactCreatedAt,
+        artifactUpdatedAt: releaseArtifactCreatedAt,
+      },
+    ];
+    Object.assign(report, {
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      artifactProducers,
+    });
+    Object.assign(report.coveredSubjects[0], artifactProducers[0]);
+    const updatedReportBytes = `${JSON.stringify(report)}\n`;
+    const updatedReportSha256 = createHash("sha256")
+      .update(updatedReportBytes)
+      .digest("hex");
+    write(root, reportPath, updatedReportBytes);
+    write(
+      root,
+      ".release-evidence/upload-bindings/release.signing.windows.json.binding.json",
+      `${JSON.stringify({
+        schemaVersion: 1,
+        generatedBy: "release-signing-upload-verifier",
+        claimId: "release.signing",
+        platform: "windows",
+        repository: "owner/repository",
+        sourceCommit: commit,
+        releaseTag: tag,
+        ref,
+        runId,
+        runAttempt,
+        runAttemptStartedAt: ATTEMPT_STARTED_AT,
+        artifactProducers,
+        reportName: "release.signing.windows.json",
+        reportSha256: updatedReportSha256,
+        sourceArtifactId: sourceReportArtifactId,
+        sourceArtifactName: sourceReportArtifactName,
+        sourceArtifactSha256: sourceReportArtifactSha256,
+      })}\n`,
+    );
+    const evidence = {
+      claimId: "release.signing",
+      kind: "machine",
+      checkIds: ["release.platform-signature-validation"],
+      repository: "owner/repository",
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      ref,
+      evidenceArtifactId: 870,
+      evidenceArtifactName: "release-evidence",
+      evidenceArtifactSha256: "c".repeat(64),
+      reportPath,
+      reportSha256: updatedReportSha256,
+      artifactProducers,
+      sourceReportArtifactId,
+      sourceReportArtifactName,
+      sourceReportArtifactSha256,
+      sourceReportArtifactCreatedAt,
+      sourceReportArtifactUpdatedAt: sourceReportArtifactCreatedAt,
+      sourceCommit: commit,
+      releaseTag: tag,
+      platform: "windows",
+      producerJobId,
+      producerJobName: report.producerJobName,
+      producerJobRunAttempt: runAttempt,
+      producerJobConclusion: "success",
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      why: "fixture",
+    };
+    const manifest = {
+      schemaVersion: 1,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      ref,
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      releaseAssets,
+      verificationAssets: makeVerificationAssets(root, releaseAssets),
+      evidence: [evidence],
+    };
+    const fetchImpl = async (url) => {
+      const text = String(url);
+      const id = Number(text.split("/").at(-1));
+      let body;
+      if (text.includes(`/attempts/${runAttempt}/jobs`)) {
+        const machineJob = {
+          id: producerJobId,
+          run_id: runId,
+          name: report.producerJobName,
+          status: "completed",
+          conclusion: "success",
+          run_attempt: runAttempt,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
+            {
+              name: "Upload machine evidence report",
+              status: "completed",
+              conclusion: "success",
+              started_at: "2026-09-15T01:02:00Z",
+              completed_at: "2026-09-15T01:04:00Z",
+            },
+            {
+              name: "Verify exact uploaded signing report binding",
+              conclusion: "success",
+            },
+          ],
+        };
+        const desktopJob = {
+          id: 500,
+          run_id: runId,
+          name: "Desktop — Windows (NSIS installer)",
+          status: "completed",
+          conclusion: "success",
+          run_attempt: runAttempt,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            {
+              name: "Upload Windows installer",
+              status: "completed",
+              conclusion: "success",
+              started_at: "2026-09-15T01:04:00Z",
+              completed_at: "2026-09-15T01:06:00Z",
+            },
+          ],
+        };
+        body = { total_count: 2, jobs: [machineJob, desktopJob] };
+      } else if (text.endsWith(`/attempts/${runAttempt}`))
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          run_started_at: ATTEMPT_STARTED_AT,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text.endsWith(`/runs/${runId}`))
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text.includes("/jobs/"))
+        body = {
+          id: producerJobId,
+          name: report.producerJobName,
+          status: "completed",
+          conclusion: "success",
+          run_attempt: runAttempt,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: commit,
+          run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+          steps: [
+            { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
+            {
+              name: "Upload machine evidence report",
+              status: "completed",
+              conclusion: "success",
+              started_at: "2026-09-15T01:02:00Z",
+              completed_at: "2026-09-15T01:04:00Z",
+            },
+            {
+              name: "Verify exact uploaded signing report binding",
+              conclusion: "success",
+            },
+          ],
+        };
+      else if (id === 870)
+        body = {
+          id,
+          name: "release-evidence",
+          expired: false,
+          digest: `sha256:${"c".repeat(64)}`,
+          workflow_run: { id: runId, head_sha: commit },
+        };
+      else if (id === sourceReportArtifactId)
+        body = {
+          id,
+          name: sourceReportArtifactName,
+          expired: false,
+          digest: `sha256:${sourceReportArtifactSha256}`,
+          created_at: sourceReportArtifactCreatedAt,
+          updated_at: sourceReportArtifactCreatedAt,
+          workflow_run: { id: runId, head_sha: commit },
+        };
+      else {
+        const asset = releaseAssets.find(({ artifactId }) => artifactId === id);
+        body = releaseAssetApiBody(asset, runId, commit);
+        if (asset?.artifactName === "SkyTwin-Windows-installer")
+          Object.assign(body, {
+            created_at: releaseArtifactCreatedAt,
+            updated_at: releaseArtifactCreatedAt,
+          });
+      }
+      return { ok: true, json: async () => body };
+    };
+    const options = {
+      root,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      runId,
+      triggerRef: ref,
+      githubToken: "token",
+      fetchImpl,
+    };
+    const binding = JSON.parse(
+      readFileSync(
+        join(
+          root,
+          ".release-evidence/upload-bindings/release.signing.windows.json.binding.json",
+        ),
+        "utf8",
+      ),
+    );
+    expect(
+      isValidSigningUploadBinding(binding, evidence, {
+        repository: "owner/repository",
+        releaseCommit: commit,
+        tag,
+        triggerRef: ref,
+        runId,
+        runAttempt,
+      }),
+    ).toBe(true);
+    expect(
+      isValidSigningUploadBinding(
+        { ...binding, runAttempt: runAttempt - 1 },
+        evidence,
+        {
+          repository: "owner/repository",
+          releaseCommit: commit,
+          tag,
+          triggerRef: ref,
+          runId,
+          runAttempt,
+        },
+      ),
+    ).toBe(false);
+    expect(
+      isValidSigningSourceReportArtifact(
+        {
+          id: sourceReportArtifactId,
+          name: sourceReportArtifactName,
+          expired: false,
+          digest: `sha256:${sourceReportArtifactSha256}`,
+          created_at: sourceReportArtifactCreatedAt,
+          updated_at: sourceReportArtifactCreatedAt,
+          workflow_run: { id: runId, head_sha: commit },
+        },
+        evidence,
+        runId,
+        commit,
+      ),
+    ).toBe(true);
+    expect(
+      isValidSigningSourceReportArtifact(
+        {
+          id: sourceReportArtifactId,
+          name: sourceReportArtifactName,
+          expired: false,
+          digest: `sha256:${"0".repeat(64)}`,
+          created_at: "2026-09-15T01:03:00Z",
+          updated_at: "2026-09-15T01:03:00Z",
+          workflow_run: { id: runId, head_sha: commit },
+        },
+        evidence,
+        runId,
+        commit,
+      ),
+    ).toBe(false);
+    expect(
+      await verifyPublicationEvidence(
+        {
+          release: {
+            readinessClaims: [
+              {
+                claimId: "release.signing",
+                requiredEvidenceKinds: ["machine"],
+              },
+            ],
+          },
+        },
+        manifest,
+        options,
+      ),
+    ).toEqual([
+      "release evidence manifest is missing required evidence: release.signing:machine:macos",
+      "release evidence manifest is missing required evidence: release.signing:machine:linux",
+    ]);
+
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        "2026-09-15T01:04:01Z",
+        "2026-09-15T01:02:00Z",
+        "2026-09-15T01:10:00Z",
+      ),
+    ).toBe(true);
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        "2026-09-15T01:10:01Z",
+        "2026-09-15T01:02:00Z",
+        "2026-09-15T01:10:00Z",
+      ),
+    ).toBe(false);
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        "2026-09-15T00:59:59Z",
+        "2026-09-15T01:02:00Z",
+        "2026-09-15T01:10:00Z",
+      ),
+    ).toBe(false);
+  });
+
   it("requires CI job/run URL and artifact proof from the current run", async () => {
     const root = makeRoot();
     const commit = "0123456789abcdef0123456789abcdef01234567";
@@ -3495,6 +4426,8 @@ ${step}`,
       checkIds: CANONICAL_CI_EVIDENCE_CHECKS.get("encryption.oauth-default"),
       repository: "owner/repository",
       runId,
+      runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       ref,
       jobId: 902,
       jobName: "release-claim-ci",
@@ -3524,31 +4457,70 @@ ${step}`,
       tag,
       ref,
       runId,
+      runAttempt: 1,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [evidence],
     };
     let jobRunId = runId;
+    let jobHeadSha = commit;
+    let jobsTotalCount = 1;
     const fetchImpl = async (url) => {
+      const text = String(url);
       let body;
-      if (String(url).includes("/runs/")) {
+      if (text.includes("/attempts/1/jobs")) {
+        body = {
+          total_count: jobsTotalCount,
+          jobs: [
+            {
+              id: 902,
+              run_id: runId,
+              name: "release-claim-ci",
+              status: "completed",
+              conclusion: "success",
+              run_attempt: 1,
+              started_at: "2026-09-15T01:01:00Z",
+              completed_at: "2026-09-15T01:10:00Z",
+              head_sha: jobHeadSha,
+              run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+            },
+          ],
+        };
+      } else if (text.endsWith("/attempts/1")) {
         body = {
           id: runId,
+          run_attempt: 1,
+          run_started_at: ATTEMPT_STARTED_AT,
           event: "push",
           head_branch: tag,
           head_sha: commit,
           path: ".github/workflows/build.yml",
           repository: { full_name: "owner/repository" },
         };
-      } else if (String(url).includes("/jobs/")) {
+      } else if (text.endsWith(`/runs/${runId}`)) {
+        body = {
+          id: runId,
+          run_attempt: 1,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      } else if (text.includes("/jobs/")) {
         body = {
           id: 902,
           name: "release-claim-ci",
+          status: "completed",
           conclusion: "success",
-          head_sha: commit,
+          run_attempt: 1,
+          started_at: "2026-09-15T01:01:00Z",
+          completed_at: "2026-09-15T01:10:00Z",
+          head_sha: jobHeadSha,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${jobRunId}`,
         };
-      } else if (String(url).endsWith("/903")) {
+      } else if (text.endsWith("/903")) {
         body = {
           id: 903,
           name: "release-claims-ci",
@@ -3557,7 +4529,7 @@ ${step}`,
           workflow_run: { id: runId, head_sha: commit },
         };
       } else {
-        const id = Number(String(url).split("/").at(-1));
+        const id = Number(text.split("/").at(-1));
         body = releaseAssetApiBody(
           releaseAssets.find((asset) => asset.artifactId === id),
           runId,
@@ -3579,6 +4551,26 @@ ${step}`,
     expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
       [],
     );
+    jobHeadSha = undefined;
+    expect(
+      await verifyPublicationEvidence(ledger, manifest, options),
+    ).toContain(
+      "current workflow attempt job inventory has an invalid, wrong-run, or duplicate job identity",
+    );
+    jobHeadSha = commit;
+    jobsTotalCount = 101;
+    expect(
+      await verifyPublicationEvidence(ledger, manifest, options),
+    ).toContain(
+      "current workflow attempt job inventory is malformed, ambiguous, or paginated",
+    );
+    jobsTotalCount = 2;
+    expect(
+      await verifyPublicationEvidence(ledger, manifest, options),
+    ).toContain(
+      "current workflow attempt job inventory is malformed, ambiguous, or paginated",
+    );
+    jobsTotalCount = 1;
     jobRunId = 1;
     expect(
       (await verifyPublicationEvidence(ledger, manifest, options)).some(

@@ -2,13 +2,15 @@
 
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import {
   ARTIFACT_VERIFICATION_DIRECTORY,
   CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
   CANONICAL_RELEASE_ASSETS,
+  desktopArtifactUploadStepName,
+  desktopProducerJobName,
   machineProducerJobName,
   machineReportNamesForClaim,
 } from "./release-constants.mjs";
@@ -20,12 +22,23 @@ const tag = process.env.GITHUB_REF_NAME;
 const ref = process.env.GITHUB_REF;
 const token = process.env.GITHUB_TOKEN;
 const runId = Number(process.env.GITHUB_RUN_ID);
+const runAttempt = Number(process.env.GITHUB_RUN_ATTEMPT);
 
 if (!ledgerPath || !reportsDirectory || !outputPath)
   throw new Error(
     "usage: generate-evidence-manifest.mjs LEDGER REPORTS_DIRECTORY OUTPUT",
   );
-if (!repository || !releaseCommit || !tag || !ref || !token || !runId)
+if (
+  !repository ||
+  !releaseCommit ||
+  !tag ||
+  !ref ||
+  !token ||
+  !runId ||
+  !Number.isSafeInteger(runAttempt) ||
+  runAttempt <= 0 ||
+  runAttempt > 100
+)
   throw new Error("GitHub release context and GITHUB_TOKEN are required");
 if (ref !== `refs/tags/${tag}`)
   throw new Error(`expected tag ref refs/tags/${tag}, got ${ref}`);
@@ -40,6 +53,16 @@ async function getJson(url) {
   const response = await fetch(url, { headers });
   if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
   return response.json();
+}
+
+function githubTimestamp(value, description) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  )
+    throw new Error(`${description} is not a canonical GitHub timestamp`);
+  return Date.parse(value);
 }
 
 function oneBy(items, field, value, description) {
@@ -57,10 +80,13 @@ function digestOf(path) {
 
 const ledger = JSON.parse(readFileSync(resolve(ledgerPath), "utf8"));
 const apiRoot = `https://api.github.com/repos/${repository}/actions`;
-const [run, jobsPage, artifactsPage] = await Promise.all([
+const [run, attempt, jobsPage, artifactsPage] = await Promise.all([
   getJson(`${apiRoot}/runs/${runId}`),
-  getJson(`${apiRoot}/runs/${runId}/jobs?per_page=100`),
-  getJson(`${apiRoot}/runs/${runId}/artifacts?per_page=100`),
+  getJson(`${apiRoot}/runs/${runId}/attempts/${runAttempt}`),
+  getJson(
+    `${apiRoot}/runs/${runId}/attempts/${runAttempt}/jobs?per_page=100&page=1`,
+  ),
+  getJson(`${apiRoot}/runs/${runId}/artifacts?per_page=100&page=1`),
 ]);
 if (
   run.id !== runId ||
@@ -68,19 +94,64 @@ if (
   run.head_branch !== tag ||
   run.head_sha !== releaseCommit ||
   run.path !== ".github/workflows/build.yml" ||
-  run.repository?.full_name !== repository
+  run.repository?.full_name !== repository ||
+  run.run_attempt !== runAttempt
 )
   throw new Error("current run is not the expected tag-push build workflow");
-if (jobsPage.total_count > jobsPage.jobs.length)
-  throw new Error("job result is paginated; refusing an incomplete manifest");
-if (artifactsPage.total_count > artifactsPage.artifacts.length)
+if (
+  attempt.id !== runId ||
+  attempt.run_attempt !== runAttempt ||
+  attempt.event !== "push" ||
+  attempt.head_branch !== tag ||
+  attempt.head_sha !== releaseCommit ||
+  attempt.path !== ".github/workflows/build.yml" ||
+  attempt.repository?.full_name !== repository
+)
+  throw new Error(
+    "current attempt is not the expected tag-push build workflow",
+  );
+const attemptStartedMs = githubTimestamp(
+  attempt.run_started_at,
+  "current workflow attempt start time",
+);
+if (
+  !Array.isArray(jobsPage?.jobs) ||
+  !Number.isSafeInteger(jobsPage.total_count) ||
+  jobsPage.total_count > 100 ||
+  jobsPage.jobs.length !== jobsPage.total_count
+)
+  throw new Error(
+    "job result is malformed or paginated; refusing an incomplete manifest",
+  );
+if (
+  !Array.isArray(artifactsPage?.artifacts) ||
+  !Number.isSafeInteger(artifactsPage.total_count) ||
+  artifactsPage.total_count > 100 ||
+  artifactsPage.artifacts.length !== artifactsPage.total_count
+)
   throw new Error(
     "artifact result is paginated; refusing an incomplete manifest",
   );
 
+function assertJobRunIdentity(job, description) {
+  if (
+    job.run_id !== runId ||
+    job.run_attempt !== runAttempt ||
+    job.run_url !==
+      `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
+    job.head_sha !== releaseCommit ||
+    githubTimestamp(job.started_at, `${description} start time`) <
+      attemptStartedMs
+  )
+    throw new Error(
+      `${description} is carried forward or has the wrong workflow attempt identity`,
+    );
+}
+
 const ciJob = oneBy(jobsPage.jobs, "name", "release-claim-ci", "CI job");
 if (ciJob.conclusion !== "success")
   throw new Error("CI evidence job did not pass");
+assertJobRunIdentity(ciJob, "CI evidence job");
 const ciArtifact = oneBy(
   artifactsPage.artifacts,
   "name",
@@ -109,12 +180,14 @@ const releaseAssets = CANONICAL_RELEASE_ASSETS.map(([artifactName, kind]) => {
           `${directory} must contain only direct regular-file release subjects`,
         );
       const path = join(directory, entry.name);
-      if (!lstatSync(path).isFile())
+      const stat = lstatSync(path);
+      if (!stat.isFile())
         throw new Error(`${path} is not a regular release subject`);
       return {
         name: entry.name,
         path,
         sha256: digestOf(path),
+        sizeBytes: stat.size,
       };
     },
   );
@@ -174,6 +247,10 @@ if (!verificationAssets.some((asset) => asset.kind === "provenance-bundle"))
   throw new Error("artifact-verification provenance bundles are missing");
 
 const evidence = [];
+const signingBindingsDirectory = join(
+  dirname(reportsDirectory),
+  "upload-bindings",
+);
 for (const readiness of ledger.release.readinessClaims) {
   for (const kind of readiness.requiredEvidenceKinds) {
     if (kind === "source") continue;
@@ -184,6 +261,8 @@ for (const readiness of ledger.release.readinessClaims) {
         checkIds: CANONICAL_CI_EVIDENCE_CHECKS.get(readiness.claimId),
         repository,
         runId,
+        runAttempt,
+        runAttemptStartedAt: attempt.run_started_at,
         ref,
         jobId: ciJob.id,
         jobName: ciJob.name,
@@ -203,6 +282,191 @@ for (const readiness of ledger.release.readinessClaims) {
     for (const reportName of reportNames) {
       const reportPath = join(reportsDirectory, reportName);
       const report = JSON.parse(readFileSync(reportPath, "utf8"));
+      let signingBinding = null;
+      let signingSourceArtifact = null;
+      if (readiness.claimId === "release.signing") {
+        const bindingPath = join(
+          signingBindingsDirectory,
+          `${reportName}.binding.json`,
+        );
+        signingBinding = JSON.parse(readFileSync(bindingPath, "utf8"));
+        const expectedPlatform = reportName.split(".").at(-2);
+        const expectedBindingKeys = [
+          "schemaVersion",
+          "generatedBy",
+          "claimId",
+          "platform",
+          "repository",
+          "sourceCommit",
+          "releaseTag",
+          "ref",
+          "runId",
+          "runAttempt",
+          "runAttemptStartedAt",
+          "artifactProducers",
+          "reportName",
+          "reportSha256",
+          "sourceArtifactId",
+          "sourceArtifactName",
+          "sourceArtifactSha256",
+        ].sort();
+        if (
+          JSON.stringify(Object.keys(signingBinding).sort()) !==
+            JSON.stringify(expectedBindingKeys) ||
+          signingBinding.schemaVersion !== 1 ||
+          signingBinding.generatedBy !== "release-signing-upload-verifier" ||
+          signingBinding.claimId !== "release.signing" ||
+          signingBinding.platform !== expectedPlatform ||
+          signingBinding.repository !== repository ||
+          signingBinding.sourceCommit !== releaseCommit ||
+          signingBinding.releaseTag !== tag ||
+          signingBinding.ref !== ref ||
+          signingBinding.runId !== runId ||
+          signingBinding.runAttempt !== runAttempt ||
+          signingBinding.runAttemptStartedAt !== attempt.run_started_at ||
+          signingBinding.reportName !== reportName ||
+          signingBinding.reportSha256 !== digestOf(reportPath) ||
+          !Number.isSafeInteger(signingBinding.sourceArtifactId) ||
+          signingBinding.sourceArtifactId <= 0 ||
+          signingBinding.sourceArtifactName !==
+            `release-signing-report-${expectedPlatform}-attempt-${runAttempt}` ||
+          !/^[0-9a-f]{64}$/.test(signingBinding.sourceArtifactSha256 ?? "")
+        )
+          throw new Error(
+            `release signing upload binding is invalid for ${reportName}`,
+          );
+        if (
+          report.runAttempt !== runAttempt ||
+          report.runAttemptStartedAt !== attempt.run_started_at ||
+          JSON.stringify(signingBinding.artifactProducers) !==
+            JSON.stringify(report.artifactProducers)
+        )
+          throw new Error(
+            `release signing report producer provenance is invalid for ${reportName}`,
+          );
+        const expectedArtifactNames = report.coveredSubjects
+          .map(({ artifactName }) => artifactName)
+          .sort();
+        if (
+          !Array.isArray(report.artifactProducers) ||
+          JSON.stringify(
+            report.artifactProducers
+              .map(({ artifactName }) => artifactName)
+              .sort(),
+          ) !== JSON.stringify(expectedArtifactNames)
+        )
+          throw new Error(
+            `release signing artifact producer inventory is invalid for ${reportName}`,
+          );
+        for (const producer of report.artifactProducers) {
+          const artifact = oneBy(
+            artifactsPage.artifacts,
+            "id",
+            producer.artifactId,
+            `release artifact producer binding for ${reportName}`,
+          );
+          const coveredSubject = oneBy(
+            report.coveredSubjects,
+            "artifactId",
+            producer.artifactId,
+            `covered release artifact for ${reportName}`,
+          );
+          const producerJob = oneBy(
+            jobsPage.jobs,
+            "id",
+            producer.artifactProducerJobId,
+            `desktop producer job for ${reportName}`,
+          );
+          assertJobRunIdentity(producerJob, "desktop producer job");
+          const uploadStepName = desktopArtifactUploadStepName(artifact.name);
+          const uploadStep = oneBy(
+            producerJob.steps ?? [],
+            "name",
+            uploadStepName,
+            `desktop artifact upload step for ${reportName}`,
+          );
+          const createdMs = githubTimestamp(
+            artifact.created_at,
+            "release artifact creation time",
+          );
+          const updatedMs = githubTimestamp(
+            artifact.updated_at,
+            "release artifact update time",
+          );
+          const startedMs = githubTimestamp(
+            producerJob.started_at,
+            "desktop producer start time",
+          );
+          const completedMs = githubTimestamp(
+            producerJob.completed_at,
+            "desktop producer completion time",
+          );
+          const uploadStartedMs = githubTimestamp(
+            uploadStep.started_at,
+            "desktop artifact upload step start time",
+          );
+          const uploadCompletedMs = githubTimestamp(
+            uploadStep.completed_at,
+            "desktop artifact upload step completion time",
+          );
+          if (
+            artifact.id !== coveredSubject.artifactId ||
+            artifact.name !== coveredSubject.artifactName ||
+            artifact.digest !== `sha256:${coveredSubject.artifactSha256}` ||
+            artifact.expired !== false ||
+            artifact.workflow_run?.id !== runId ||
+            artifact.workflow_run?.head_sha !== releaseCommit ||
+            producer.artifactName !== artifact.name ||
+            producer.artifactCreatedAt !== artifact.created_at ||
+            producer.artifactUpdatedAt !== artifact.updated_at ||
+            producer.artifactProducerJobName !==
+              desktopProducerJobName(report.platform) ||
+            producer.artifactProducerRunAttempt !== runAttempt ||
+            producerJob.name !== producer.artifactProducerJobName ||
+            producerJob.status !== "completed" ||
+            producerJob.conclusion !== "success" ||
+            producer.artifactProducerJobConclusion !== "success" ||
+            producer.artifactProducerJobStartedAt !== producerJob.started_at ||
+            producer.artifactProducerJobCompletedAt !==
+              producerJob.completed_at ||
+            uploadStep.status !== "completed" ||
+            uploadStep.conclusion !== "success" ||
+            producer.artifactUploadStepName !== uploadStepName ||
+            producer.artifactUploadStepStartedAt !== uploadStep.started_at ||
+            producer.artifactUploadStepCompletedAt !==
+              uploadStep.completed_at ||
+            startedMs < attemptStartedMs ||
+            uploadStartedMs < attemptStartedMs ||
+            startedMs > uploadStartedMs ||
+            uploadStartedMs > createdMs ||
+            createdMs > completedMs ||
+            uploadStartedMs > uploadCompletedMs ||
+            uploadCompletedMs > completedMs ||
+            createdMs > updatedMs
+          )
+            throw new Error(
+              `release artifact does not bind to its recorded desktop producer for ${reportName}`,
+            );
+        }
+        const sourceArtifact = oneBy(
+          artifactsPage.artifacts,
+          "id",
+          signingBinding.sourceArtifactId,
+          `source signing report artifact for ${reportName}`,
+        );
+        if (
+          sourceArtifact.name !== signingBinding.sourceArtifactName ||
+          sourceArtifact.digest !==
+            `sha256:${signingBinding.sourceArtifactSha256}` ||
+          sourceArtifact.expired !== false ||
+          sourceArtifact.workflow_run?.id !== runId ||
+          sourceArtifact.workflow_run?.head_sha !== releaseCommit
+        )
+          throw new Error(
+            `source signing report artifact is invalid for ${reportName}`,
+          );
+        signingSourceArtifact = sourceArtifact;
+      }
       const producerJobName = machineProducerJobName(
         readiness.claimId,
         report.platform,
@@ -217,6 +481,53 @@ for (const readiness of ledger.release.readinessClaims) {
         throw new Error(
           `machine evidence producer job did not pass for ${readiness.claimId}`,
         );
+      assertJobRunIdentity(producerJob, "machine evidence producer job");
+      if (signingSourceArtifact) {
+        const uploadStep = oneBy(
+          producerJob.steps ?? [],
+          "name",
+          "Upload machine evidence report",
+          `source signing report upload step for ${reportName}`,
+        );
+        const artifactCreatedMs = githubTimestamp(
+          signingSourceArtifact.created_at,
+          "source signing report artifact creation time",
+        );
+        const artifactUpdatedMs = githubTimestamp(
+          signingSourceArtifact.updated_at,
+          "source signing report artifact update time",
+        );
+        const producerStartedMs = githubTimestamp(
+          producerJob.started_at,
+          "machine evidence producer start time",
+        );
+        const uploadStartedMs = githubTimestamp(
+          uploadStep.started_at,
+          "source signing report upload step start time",
+        );
+        const uploadCompletedMs = githubTimestamp(
+          uploadStep.completed_at,
+          "source signing report upload step completion time",
+        );
+        const producerCompletedMs = githubTimestamp(
+          producerJob.completed_at,
+          "machine evidence producer completion time",
+        );
+        if (
+          uploadStep.status !== "completed" ||
+          uploadStep.conclusion !== "success" ||
+          producerStartedMs < attemptStartedMs ||
+          producerStartedMs > uploadStartedMs ||
+          uploadStartedMs > artifactCreatedMs ||
+          artifactCreatedMs > producerCompletedMs ||
+          uploadStartedMs > uploadCompletedMs ||
+          uploadCompletedMs > producerCompletedMs ||
+          artifactCreatedMs > artifactUpdatedMs
+        )
+          throw new Error(
+            `source signing report artifact was not created by the current-attempt upload step for ${reportName}`,
+          );
+      }
       const releaseArtifact = oneBy(
         artifactsPage.artifacts,
         "id",
@@ -229,6 +540,8 @@ for (const readiness of ledger.release.readinessClaims) {
         checkIds: CANONICAL_MACHINE_EVIDENCE_CHECKS.get(readiness.claimId),
         repository,
         runId,
+        runAttempt,
+        runAttemptStartedAt: attempt.run_started_at,
         ref,
         evidenceArtifactId: machineArtifact.id,
         evidenceArtifactName: machineArtifact.name,
@@ -238,12 +551,25 @@ for (const readiness of ledger.release.readinessClaims) {
         ),
         reportPath: `.release-evidence/reports/${reportName}`,
         reportSha256: digestOf(reportPath),
+        ...(signingBinding
+          ? {
+              sourceReportArtifactId: signingBinding.sourceArtifactId,
+              sourceReportArtifactName: signingBinding.sourceArtifactName,
+              sourceReportArtifactSha256: signingBinding.sourceArtifactSha256,
+              sourceReportArtifactCreatedAt: signingSourceArtifact.created_at,
+              sourceReportArtifactUpdatedAt: signingSourceArtifact.updated_at,
+            }
+          : {}),
         sourceCommit: releaseCommit,
         releaseTag: tag,
         platform: report.platform,
         producerJobId: producerJob.id,
         producerJobName: producerJob.name,
+        producerJobRunAttempt: runAttempt,
         producerJobConclusion: producerJob.conclusion,
+        ...(signingBinding
+          ? { artifactProducers: report.artifactProducers }
+          : {}),
         verifierPath: report.verifierPath,
         verifierCommand: report.verifierCommand,
         verifierSha256: report.verifierSha256,
@@ -273,6 +599,8 @@ writeFileSync(
       tag,
       ref,
       runId,
+      runAttempt,
+      runAttemptStartedAt: attempt.run_started_at,
       releaseAssets,
       verificationAssets,
       evidence,

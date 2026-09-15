@@ -97,6 +97,18 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **Release signing evidence matches the actual native package metadata and
+  fails closed on incomplete provenance.** Windows ProductVersion checks now
+  require electron-builder's four-field value for both the installer and its
+  contained executable, while FileVersion remains independently numeric. The
+  verifier, manifest generator, and publication checker require exact job
+  commit identity; persisted Actions timestamps use canonical GitHub syntax;
+  workflow outputs reject line breaks; and macOS ZIPs reject noncanonical
+  AppleDouble resource-fork entries. Attempt timing is returned explicitly
+  rather than being written into caller-owned identity state. Release remains
+  blocked pending the documented signing, notarization, Linux trust-policy,
+  and tagged native-evidence gates.
+
 - **DXT export history avoids redundant sequential classification.** Repeated
   exports from the same capability reuse one owner/inventory classification
   per request, and distinct classifications run in bounded batches while
@@ -199,6 +211,51 @@ All notable changes to SkyTwin will be documented in this file.
   migrations; restore is supported only into a fresh compatible installation.
 
 ### Fixed (post-review)
+
+- **Signing evidence observations are now load-bearing.** The macOS verifier
+  requires the DMG's own Developer ID signer/team to match the contained app,
+  then requires the exact contained-app bundle identifier, CDHash, release
+  marketing and build versions, arm64 architecture, hardened-runtime,
+  Gatekeeper, and notarization observations for both DMG and ZIP. ZIP members,
+  declared expanded size, and extracted link containment are checked before the
+  signed app is trusted; ZIP extraction also runs on a fully allocated
+  fixed-capacity HFS+ image sized for the content ceiling, worst-case
+  allocation-block slack, and filesystem metadata. Host capacity is checked
+  both before and after allocation, eliminating sparse-image growth against the
+  runner reserve. Windows extraction runs on an attached 5,511 MiB
+  fixed-capacity VHDX with an enforced and verified 4 KiB NTFS allocation unit.
+  Its size covers the 4 GiB combined nested-content limit, 100,000-member
+  allocation slack, and filesystem headroom while leaving the canonical runner
+  a separate 2 GiB host reserve. Dishonest archive size metadata is therefore
+  bounded by the extraction volume rather than runner free space. Windows
+  reports bind both installer and contained executable
+  version metadata alongside the exact Authenticode method, pinned signer
+  fingerprint, code-signing EKU, and timestamp-certificate observation. Report
+  construction and the independent publisher reject omitted, altered, stale,
+  or wrong-method fields. Native commands operate only on private staged copies
+  whose bytes and file identity are checked against the release subject before
+  and after verification. The producer downloads its uploaded signing report
+  by exact artifact ID and compares its bytes with the verifier-emitted digest.
+  An attempt-specific sidecar carries that source report digest separately from
+  the Actions archive digest, alongside the source artifact ID, run ID, run
+  attempt, attempt start, and desktop producer/upload observations. Desktop
+  uploads expose exact artifact ID/digest outputs; the verifier, manifest, and
+  publisher cross-check those values against the complete exact-attempt job
+  inventory and require artifact creation no earlier than the successful
+  current-attempt upload step start and no later than its producer job
+  completion. This accommodates
+  GitHub's observed whole-second API timestamps, where artifact creation can
+  appear one second after upload-step completion. Carried-forward jobs, partial
+  reruns, duplicate same-name artifacts, and stale source reports fail closed.
+  GitHub's public artifact API is run-wide and has no direct artifact-to-job or
+  attempt field,
+  so this composite ID/digest/job/step/time binding is the strongest available
+  hosted evidence and does not claim a stronger native relation. These checks
+  cover stale-attempt reuse and in-workflow mutation windows, not arbitrary
+  same-user control of the hosted runner. Linux remains
+  fail-closed until package-format verification methods and trust roots exist;
+  final-DMG notarization is still not wired, and verifier source and tests do
+  not claim signed release artifacts.
 
 - **Tag-run verification now matches clean hosted runners and real packaging
   output.** The independent verifier uses only Node built-ins plus the local

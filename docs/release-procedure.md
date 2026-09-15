@@ -23,10 +23,13 @@
 > verifier with GitHub API discovery separated from package execution and a
 > strict allowlisted child environment. The artifact-verification lane also has
 > a tag-only material producer and independent verifier in source, but it has not
-> yet produced evidence from a tagged release run. The other six
-> machine-verifier implementations and the CI result producer are still absent.
-> The final gate therefore fails closed and the ledger remains blocked until the
-> complete proof pipeline ships.
+> yet produced evidence from a tagged release run. The signing lane is wired
+> into the native matrix and has macOS and Windows verifier source, but the
+> package jobs are not credentialed, protected signer pins are not configured,
+> no passing tagged-run evidence exists, and Linux signing remains deliberately
+> blocked pending package-specific trust methods. Five other verifier sources (five reports) and
+> the CI result producer are still absent. The final gate therefore fails closed
+> and the ledger remains blocked until the complete proof pipeline ships.
 
 The supported beta topology is one non-demo human owner per installation.
 Installation credentials are shared configuration, so multi-owner local installs
@@ -158,15 +161,79 @@ above, but source availability alone cannot move the ledger to ready. A tagged
 clean run must still produce the immutable report and materials, and platform
 signing/notarization remains a separate stop-ship.
 
+For macOS, the signing report requires the DMG's own Developer ID signer and
+team to match its contained app, binds both signed bundle version keys, and
+checks the ZIP member inventory and declared expanded-size ceiling, extracts on
+a fully allocated fixed-capacity HFS+ image with allocation and
+filesystem-metadata headroom, requires a separate host free-space reserve both
+before and after allocating that image, rejects AppleDouble `__MACOSX`
+resource-fork entries rather than admitting files outside the canonical app
+root, and checks extracted link containment before trusting the contained app.
+For Windows, extraction runs on an attached
+5,511 MiB fixed-capacity VHDX rather than the runner filesystem. The verifier
+formats NTFS with 4 KiB clusters and confirms that allocation unit before use;
+the capacity covers the enforced 4 GiB nested-content ceiling, worst-case
+100,000-member allocation slack, and filesystem headroom while retaining a
+separate 2 GiB host reserve. The report binds the Authenticode and version
+metadata of both the NSIS installer and its exact contained `SkyTwin.exe`; a
+correctly signed but stale wrapper is not acceptable. Because the pinned
+electron-builder 26.15.3 converts the three-field application version to
+Windows' four-field ProductVersion, a `0.7.0` application must report
+ProductVersion `0.7.0.0`; FileVersion is checked independently as four numeric
+fields.
+Both platforms verify native tools only against a private digest-bound staged
+copy. The producer then downloads the uploaded report by its exact artifact ID
+and checks the downloaded report bytes against the verifier-emitted SHA-256;
+an attempt-specific sidecar retains that source report digest separately from
+the artifact service's Actions archive digest, plus the source artifact ID,
+run ID, run attempt, attempt start, and desktop producer/upload observations.
+The desktop upload actions also expose their exact artifact IDs and archive
+digests as job outputs. The verifier resolves the complete exact-attempt job
+inventory and rejects a desktop producer or upload step whose timestamps
+predate that attempt, even when GitHub relabels a carried-forward successful
+job with the current `run_attempt`. Aggregation resolves the exact source report
+IDs from the sidecars; manifest generation and publication revalidate the
+source-report and desktop artifacts, successful jobs, upload steps, and
+producer-job creation windows through the API. A partial rerun that carries a
+package job forward therefore cannot satisfy signing evidence: rerun the
+desktop producer and verifier together.
+
+GitHub's public Actions artifact API is run-wide and does not expose a direct
+artifact-to-job or artifact-to-attempt relation. The strongest available
+binding combines the upload action's exact ID/digest outputs, attempt-specific
+report names, exact-attempt job and step identity, and an artifact creation time
+no earlier than the successful upload step start and no later than its producer
+job completion.
+Every persisted Actions timestamp is required to use GitHub's canonical
+whole-second UTC form (`YYYY-MM-DDTHH:MM:SSZ`). The service's second-level
+quantization can report artifact creation in the second after the upload
+step's completion, so upload completion is not used as the upper bound. The
+accepted creation interval is inclusive from upload-step start through producer
+job completion; that whole-second tolerance is an explicit hosted API
+limitation, not proof of a stronger native relation. These controls fail closed
+against stale-attempt reuse and mutations within the workflow's processes and
+handoff windows; arbitrary same-user control of the hosted runner itself
+remains outside the evidence threat boundary.
+
+The fixed VHDX sizing is designed for the standard `windows-2025` runner, but a
+real hosted signing run is still required before the signing stop-ship can be
+closed.
+
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
 The packaged-sample verifier implements three of the twelve matrix reports; see
 [`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
-implements one more. The other six verifier sources (eight matrix reports) and
-the separate `release-claims-ci` artifact producer are absent today. Machine
-reports must come from the exact successful claim/platform job and canonical
-verifier step, carry the reviewed verifier path, command, and source digest, and
-provide structured observations; the release job independently checks those
-bindings against the current GitHub run. The artifact lane's SPDX producer emits
+implements one more, and the signing source implements macOS and Windows while
+failing closed on Linux until package-format methods and trust roots exist. Five
+verifier sources (five matrix reports), the Linux signing implementation, and
+the separate `release-claims-ci` artifact producer are absent today. The
+signing matrix entries cannot pass until credentialed package jobs produce
+signed artifacts, protected operator configuration supplies the expected
+signer pins, and the tagged run records passing native evidence. Machine
+reports must come from the exact successful claim/platform job in the recorded
+attempt, start no earlier than that attempt, and carry the canonical verifier
+step, reviewed verifier path, command, source digest, and structured
+observations; the release job independently checks those bindings against the
+current GitHub run and exact attempt. The artifact lane's SPDX producer emits
 the required 2.3 document and exact package-to-file coverage. Until the remaining
 producers and external gates land, publication stays blocked by design.
 
@@ -180,7 +247,13 @@ The ledger's stop-ship conditions keep the tag job from reaching draft creation 
 
 The desktop package jobs set `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` and skip signing for CI. Acquiring the Apple Developer + Windows EV certs is necessary but **not sufficient** — after the certs exist you must also wire the secrets into the three `package:*` steps in `build.yml`:
 
-- macOS notarization: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, plus `CSC_LINK` + `CSC_KEY_PASSWORD`, and flip `CSC_IDENTITY_AUTO_DISCOVERY` on.
+- macOS notarization: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
+  `APPLE_TEAM_ID`, plus `CSC_LINK` + `CSC_KEY_PASSWORD`, and flip
+  `CSC_IDENTITY_AUTO_DISCOVERY` on. The checked-in `dmg.sign: true` setting also
+  signs the outer disk image; do not remove it or treat a signed contained app
+  as equivalent. The credentialed workflow must then submit and staple that
+  final DMG after packaging; this post-package notarization step is not wired
+  today.
 - Windows: `CSC_LINK` + `CSC_KEY_PASSWORD` (the EV cert).
 
 Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the README documents the right-click→Open / More-info→Run-anyway bypass).

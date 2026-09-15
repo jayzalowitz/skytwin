@@ -1170,23 +1170,32 @@
       "scope": "Every artifact named in the beta platform support matrix, built from the release tag.",
       "owner": "release-engineering",
       "state": "deferred",
-      "limitation": "CI explicitly disables automatic signing and produces no notarization evidence; the gated tag workflow therefore refuses draft creation until digest-bound signing evidence proves every supported artifact.",
+      "limitation": "CI explicitly disables automatic signing, final-DMG notarization is not wired, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations, bind them to exact current-attempt desktop upload jobs and artifact ID/digest outputs, and reject carried-forward partial-rerun evidence, but intentionally refuses Linux until package-format methods and pinned trust roots exist. GitHub's artifact API remains run-wide and exposes no native artifact-to-job or artifact-to-attempt relation; its timestamps are quantized to whole seconds, so the accepted artifact-creation interval is inclusively bounded by upload-step start and producer-job completion rather than upload-step completion. The gated tag workflow therefore refuses draft creation.",
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "31bf0370fcd626cdeb9b3ae816ce95fda9fb2ce92e433d5f685b5666fecf2a96",
-          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
+          "sha256": "e24e17a2e4ebea50112a3494f89b44f91e8a45cb22071d438c418afbd9a5f25b",
+          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
           "path": "apps/desktop/package.json",
-          "sha256": "22d7ef2881017cfd478d20d175290d87d83574b7de811267894e47e02ebd48d5",
+          "sha256": "ecc7937e37a5f7a89bf96b2534b92ca6191bcc701befedcbc48edf16bdd62c35",
           "why": "Defines the current platform build targets and publishing metadata"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/release.signing.mjs",
+          "sha256": "f149bb08d448a0a33cb9b0ee5dc45cdd289ab342ad12d24c9c150cce9ef2ef15",
+          "why": "Defines contained report writes and upload bindings, exact-attempt desktop producer and canonical artifact creation-window checks, fail-closed native macOS observations, and capacity-bounded Windows outer-and-contained signature and four-field version observations while refusing Linux until its package trust policy exists"
         }
       ],
       "verification": [
         {
           "command": "rg -n -- \"CSC_IDENTITY_AUTO_DISCOVERY: 'false'|notar\" .github/workflows/build.yml apps/desktop/scripts/sign-and-notarize.ts",
           "expected": "Release review continues to show unsigned CI artifacts until credentialed signing and notarization are wired"
+        },
+        {
+          "command": "pnpm claims:test",
+          "expected": "Release-claim tests pass, including signing-verifier regressions; no unsigned or Linux package can produce passing release evidence"
         }
       ]
     },
@@ -1206,12 +1215,12 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "31bf0370fcd626cdeb9b3ae816ce95fda9fb2ce92e433d5f685b5666fecf2a96",
+          "sha256": "e24e17a2e4ebea50112a3494f89b44f91e8a45cb22071d438c418afbd9a5f25b",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "7c7359874cd45a28d86a0f11871ebc880c011a13c5aaea0ba85c8900c32b1a75",
+          "sha256": "eab5126fe51f19e82931719ae8aa06485ff31749da22c1c4e4655d160f93f80a",
           "why": "Defines the exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
@@ -1246,8 +1255,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "d388baa06221a65dbf0f3a90eaa54bd185154a19455f37215ce0755f80dbf6d9",
-          "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
+          "sha256": "46b8630d2c7be634961e6fb27e5e81857559c5a6a715024990eeaafc3ba14290",
+          "why": "Structurally locks the sole materials producer and exact-ID signing report aggregator and re-verifies every release material and source report binding at publication"
         }
       ],
       "verification": [

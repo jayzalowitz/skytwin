@@ -9,7 +9,7 @@ import {
   readdirSync,
   realpathSync,
 } from "node:fs";
-import { extname, join, relative, resolve, sep } from "node:path";
+import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import {
@@ -32,6 +32,8 @@ import {
   RELEASE_ARTIFACT_VALIDATOR_PATH,
   RELEASE_ATTESTATION_MATERIALIZER_PATH,
   SAMPLE_EVIDENCE_PLATFORMS,
+  desktopArtifactUploadStepName,
+  desktopProducerJobName,
   machineEvidencePlatformFamily,
   machineProducerJobName,
   machineReportNamesForClaim,
@@ -780,6 +782,20 @@ const BETA_TAG = new RegExp(
 const FOUR_SEGMENT_VERSION = new RegExp(
   `^${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}$`,
 );
+const MACOS_SIGNING_METHODS = new Map([
+  [
+    "SkyTwin-macOS-dmg",
+    "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign",
+  ],
+  [
+    "SkyTwin-macOS-zip",
+    "bounded-volume+ditto-contained-app+codesign+gatekeeper+stapler",
+  ],
+]);
+const WINDOWS_SIGNING_METHOD =
+  "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate";
+const WINDOWS_TIMESTAMP_VALIDATION =
+  "presence-and-fingerprint-recorded-not-independently-validated";
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -791,6 +807,14 @@ function asArray(value) {
 
 function isPlainRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactRecordKeys(value, expectedKeys) {
+  return (
+    isPlainRecord(value) &&
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify([...expectedKeys].sort())
+  );
 }
 
 function addError(errors, message) {
@@ -1007,6 +1031,16 @@ export function normalizeReleaseTagToRepositoryVersion(tag) {
   if (!beta) return null;
   const [, major, minor, patch, build] = beta;
   return `${major}.${minor}.${patch}.${build ?? "0"}`;
+}
+
+function normalizeReleaseTagToAppVersion(tag) {
+  if (!isNonEmptyString(tag)) return null;
+  const match = FOUR_SEGMENT_TAG.exec(tag) ?? BETA_TAG.exec(tag);
+  if (!match) return null;
+  const [, major, minor, patch, rawBuild] = match;
+  const build = rawBuild ?? "0";
+  if (Number(build) >= 100 || Number(patch) > 999999) return null;
+  return `${major}.${minor}.${Number(patch) * 100 + Number(build)}`;
 }
 
 function tokenizeVerificationCommand(command) {
@@ -1321,6 +1355,122 @@ function sameStringSet(actual, expected) {
   );
 }
 
+function canonicalGithubTimestampMs(value) {
+  return typeof value === "string" &&
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value) &&
+    Number.isFinite(Date.parse(value))
+    ? Date.parse(value)
+    : null;
+}
+
+export function isArtifactCreationWithinProducerWindow(
+  artifactCreatedAt,
+  uploadStartedAt,
+  producerCompletedAt,
+) {
+  const createdMs = canonicalGithubTimestampMs(artifactCreatedAt);
+  const uploadStartedMs = canonicalGithubTimestampMs(uploadStartedAt);
+  const producerCompletedMs = canonicalGithubTimestampMs(producerCompletedAt);
+  return (
+    createdMs !== null &&
+    uploadStartedMs !== null &&
+    producerCompletedMs !== null &&
+    uploadStartedMs <= createdMs &&
+    createdMs <= producerCompletedMs
+  );
+}
+
+function validSigningArtifactProducers(
+  producers,
+  platform,
+  runAttempt,
+  attemptStartedAt,
+) {
+  const expectedNames =
+    platform === "macos"
+      ? ["SkyTwin-macOS-dmg", "SkyTwin-macOS-zip"]
+      : platform === "windows"
+        ? ["SkyTwin-Windows-installer"]
+        : platform === "linux"
+          ? ["SkyTwin-Linux-AppImage", "SkyTwin-Linux-deb", "SkyTwin-Linux-rpm"]
+          : [];
+  const attemptStartedMs = canonicalGithubTimestampMs(attemptStartedAt);
+  if (
+    attemptStartedMs === null ||
+    !Array.isArray(producers) ||
+    producers.length !== expectedNames.length ||
+    !sameStringSet(
+      producers.map((producer) => producer?.artifactName),
+      expectedNames,
+    ) ||
+    new Set(producers.map((producer) => producer?.artifactId)).size !==
+      producers.length
+  )
+    return false;
+  const expectedKeys = [
+    "artifactId",
+    "artifactName",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "artifactProducerJobId",
+    "artifactProducerJobName",
+    "artifactProducerRunAttempt",
+    "artifactProducerJobConclusion",
+    "artifactProducerJobStartedAt",
+    "artifactProducerJobCompletedAt",
+    "artifactUploadStepName",
+    "artifactUploadStepStartedAt",
+    "artifactUploadStepCompletedAt",
+  ];
+  return producers.every((producer) => {
+    if (!isPlainRecord(producer)) return false;
+    const createdMs = canonicalGithubTimestampMs(producer.artifactCreatedAt);
+    const updatedMs = canonicalGithubTimestampMs(producer.artifactUpdatedAt);
+    const jobStartedMs = canonicalGithubTimestampMs(
+      producer.artifactProducerJobStartedAt,
+    );
+    const jobCompletedMs = canonicalGithubTimestampMs(
+      producer.artifactProducerJobCompletedAt,
+    );
+    const uploadStartedMs = canonicalGithubTimestampMs(
+      producer.artifactUploadStepStartedAt,
+    );
+    const uploadCompletedMs = canonicalGithubTimestampMs(
+      producer.artifactUploadStepCompletedAt,
+    );
+    return (
+      sameStringSet(Object.keys(producer), expectedKeys) &&
+      Number.isSafeInteger(producer.artifactId) &&
+      producer.artifactId > 0 &&
+      Number.isSafeInteger(producer.artifactProducerJobId) &&
+      producer.artifactProducerJobId > 0 &&
+      producer.artifactProducerJobName === desktopProducerJobName(platform) &&
+      producer.artifactProducerRunAttempt === runAttempt &&
+      producer.artifactProducerJobConclusion === "success" &&
+      producer.artifactUploadStepName ===
+        desktopArtifactUploadStepName(producer.artifactName) &&
+      [
+        createdMs,
+        updatedMs,
+        jobStartedMs,
+        jobCompletedMs,
+        uploadStartedMs,
+        uploadCompletedMs,
+      ].every((value) => value !== null) &&
+      attemptStartedMs <= jobStartedMs &&
+      jobStartedMs <= uploadStartedMs &&
+      isArtifactCreationWithinProducerWindow(
+        producer.artifactCreatedAt,
+        producer.artifactUploadStepStartedAt,
+        producer.artifactProducerJobCompletedAt,
+      ) &&
+      uploadStartedMs <= uploadCompletedMs &&
+      uploadCompletedMs <= jobCompletedMs &&
+      createdMs <= updatedMs
+    );
+  });
+}
+
 function canonicalEvidenceChecks(claimId, kind) {
   return (
     kind === "ci"
@@ -1336,6 +1486,13 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
     addError(errors, `${prefix}.repository must be an owner/repository name`);
   if (!Number.isSafeInteger(evidence.runId) || evidence.runId <= 0)
     addError(errors, `${prefix}.runId must be a positive integer`);
+  if (!Number.isSafeInteger(evidence.runAttempt) || evidence.runAttempt <= 0)
+    addError(errors, `${prefix}.runAttempt must be a positive integer`);
+  if (canonicalGithubTimestampMs(evidence.runAttemptStartedAt) === null)
+    addError(
+      errors,
+      `${prefix}.runAttemptStartedAt must be a canonical GitHub timestamp`,
+    );
   if (!isNonEmptyString(evidence.ref))
     addError(errors, `${prefix}.ref is required`);
   const expectedCheckIds = canonicalEvidenceChecks(
@@ -1445,6 +1602,58 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
       if (!Number.isSafeInteger(evidence[field]) || evidence[field] <= 0)
         addError(errors, `${prefix}.${field} must be a positive integer`);
     }
+    const sourceReportFields = [
+      "sourceReportArtifactId",
+      "sourceReportArtifactName",
+      "sourceReportArtifactSha256",
+      "sourceReportArtifactCreatedAt",
+      "sourceReportArtifactUpdatedAt",
+      "artifactProducers",
+    ];
+    if (evidence.claimId === "release.signing") {
+      if (
+        !Number.isSafeInteger(evidence.sourceReportArtifactId) ||
+        evidence.sourceReportArtifactId <= 0
+      )
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactId must be a positive integer`,
+        );
+      if (
+        evidence.sourceReportArtifactName !==
+        `release-signing-report-${evidence.platform}-attempt-${evidence.runAttempt}`
+      )
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactName must bind the platform and run attempt`,
+        );
+      if (!SOURCE_DIGEST.test(evidence.sourceReportArtifactSha256 ?? ""))
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactSha256 must be the Actions archive SHA-256 digest`,
+        );
+      if (
+        canonicalGithubTimestampMs(evidence.sourceReportArtifactCreatedAt) ===
+          null ||
+        canonicalGithubTimestampMs(evidence.sourceReportArtifactUpdatedAt) ===
+          null
+      )
+        addError(
+          errors,
+          `${prefix}.sourceReportArtifactCreatedAt and sourceReportArtifactUpdatedAt must be canonical GitHub timestamps`,
+        );
+      if (!Array.isArray(evidence.artifactProducers))
+        addError(
+          errors,
+          `${prefix}.artifactProducers must bind every signed artifact to its desktop upload job and step`,
+        );
+    } else if (
+      sourceReportFields.some((field) => evidence[field] !== undefined)
+    )
+      addError(
+        errors,
+        `${prefix} may carry source report artifact fields only for release.signing`,
+      );
     if (
       !Number.isSafeInteger(evidence.producerJobId) ||
       evidence.producerJobId <= 0
@@ -1461,6 +1670,11 @@ function validateExternalEvidenceShape(evidence, prefix, errors) {
       );
     if (evidence.producerJobConclusion !== "success")
       addError(errors, `${prefix}.producerJobConclusion must be success`);
+    if (evidence.producerJobRunAttempt !== evidence.runAttempt)
+      addError(
+        errors,
+        `${prefix}.producerJobRunAttempt must equal the evidence runAttempt`,
+      );
     const expectedVerifierPath = machineVerifierPath(evidence.claimId);
     const expectedVerifierCommand = machineVerifierCommand(
       evidence.claimId,
@@ -1557,6 +1771,11 @@ function validateReleaseAssetManifest(manifest, errors) {
       subjectPaths.add(subject?.path);
       if (!SOURCE_DIGEST.test(subject?.sha256 ?? ""))
         addError(errors, `${subjectPrefix}.sha256 must be a SHA-256 digest`);
+      if (!Number.isSafeInteger(subject?.sizeBytes) || subject.sizeBytes <= 0)
+        addError(
+          errors,
+          `${subjectPrefix}.sizeBytes must be a positive integer`,
+        );
     }
   }
   for (const [name] of expected) {
@@ -1999,6 +2218,61 @@ export function verifyCanonicalReleasePublisher(root) {
     "desktop-windows",
     "desktop-linux",
   ].map((jobName) => canonicalJobNames.indexOf(jobName));
+  const desktopArtifactOutputContracts = [
+    {
+      jobName: "desktop-mac",
+      uploads: [
+        ["Upload macOS DMG", "upload-macos-dmg", "dmg"],
+        ["Upload macOS ZIP", "upload-macos-zip", "zip"],
+      ],
+    },
+    {
+      jobName: "desktop-windows",
+      uploads: [
+        ["Upload Windows installer", "upload-windows-installer", "installer"],
+      ],
+    },
+    {
+      jobName: "desktop-linux",
+      uploads: [
+        ["Upload Linux AppImage", "upload-linux-appimage", "appimage"],
+        ["Upload Linux deb", "upload-linux-deb", "deb"],
+        ["Upload Linux rpm", "upload-linux-rpm", "rpm"],
+      ],
+    },
+  ];
+  for (const { jobName, uploads } of desktopArtifactOutputContracts) {
+    const job = canonicalWorkflow.jobs?.[jobName];
+    const expectedOutputNames = uploads.flatMap(([, , outputPrefix]) => [
+      `${outputPrefix}-artifact-id`,
+      `${outputPrefix}-artifact-digest`,
+    ]);
+    const outputsValid =
+      isRecord(job?.outputs) &&
+      hasExactKeys(job.outputs, expectedOutputNames) &&
+      uploads.every(([, stepId, outputPrefix]) =>
+        ["id", "digest"].every(
+          (field) =>
+            job.outputs[`${outputPrefix}-artifact-${field}`] ===
+            `\${{ steps.${stepId}.outputs.artifact-${field} }}`,
+        ),
+      );
+    const uploadStepsValid = uploads.every(([stepName, stepId]) => {
+      const matches = asArray(job?.steps).filter(
+        (step) => step?.name === stepName,
+      );
+      return (
+        matches.length === 1 &&
+        matches[0].id === stepId &&
+        matches[0].uses === PINNED_RELEASE_WORKFLOW_ACTIONS.uploadArtifact
+      );
+    });
+    if (!outputsValid || !uploadStepsValid)
+      addError(
+        errors,
+        `${jobName} must expose exact pinned upload-artifact ID and digest outputs for signing provenance`,
+      );
+  }
   if (
     !isRecord(artifactMaterialsJob) ||
     !hasExactKeys(artifactMaterialsJob, [
@@ -2133,7 +2407,7 @@ export function verifyCanonicalReleasePublisher(root) {
     JSON.stringify(machineProducerJob.strategy.matrix.include) !==
       JSON.stringify(expectedMachineMatrix) ||
     !Array.isArray(producerSteps) ||
-    producerSteps.length !== 7 ||
+    producerSteps.length !== 10 ||
     !isRecord(producerSteps[0]) ||
     !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
     producerSteps[0].uses !==
@@ -2181,17 +2455,27 @@ export function verifyCanonicalReleasePublisher(root) {
     producerSteps[4].run !==
       "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[5]) ||
-    !hasExactKeys(producerSteps[5], ["name", "if", "env", "run"]) ||
+    !hasExactKeys(producerSteps[5], ["name", "id", "if", "env", "run"]) ||
     producerSteps[5].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    producerSteps[5].id !== "machine-verifier" ||
     producerSteps[5].if !==
       "matrix.claimId != 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[5].env, ["GITHUB_TOKEN"]) ||
+    !hasExactKeys(producerSteps[5].env, [
+      "GITHUB_TOKEN",
+      "SKYTWIN_RELEASE_ARTIFACT_IDS",
+      "SKYTWIN_RELEASE_ARTIFACT_DIGESTS",
+    ]) ||
     producerSteps[5].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[5].env.SKYTWIN_RELEASE_ARTIFACT_IDS !==
+      "${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}" ||
+    producerSteps[5].env.SKYTWIN_RELEASE_ARTIFACT_DIGESTS !==
+      "${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}" ||
     producerSteps[5].run !==
       "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[6]) ||
-    !hasExactKeys(producerSteps[6], ["name", "uses", "with"]) ||
+    !hasExactKeys(producerSteps[6], ["name", "id", "uses", "with"]) ||
     producerSteps[6].name !== "Upload machine evidence report" ||
+    producerSteps[6].id !== "upload-machine-evidence" ||
     producerSteps[6].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
     !hasExactKeys(producerSteps[6].with, [
@@ -2201,11 +2485,64 @@ export function verifyCanonicalReleasePublisher(root) {
       "compression-level",
     ]) ||
     producerSteps[6].with.name !==
-      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}" ||
+      "${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}" ||
     producerSteps[6].with.path !==
       ".release-evidence/reports/${{ matrix.reportName }}" ||
     producerSteps[6].with["if-no-files-found"] !== "error" ||
-    producerSteps[6].with["compression-level"] !== 0
+    producerSteps[6].with["compression-level"] !== 0 ||
+    !isRecord(producerSteps[7]) ||
+    !hasExactKeys(producerSteps[7], ["name", "if", "uses", "with"]) ||
+    producerSteps[7].name !== "Download exact uploaded signing report" ||
+    producerSteps[7].if !== "matrix.claimId == 'release.signing'" ||
+    producerSteps[7].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(producerSteps[7].with, [
+      "artifact-ids",
+      "path",
+      "merge-multiple",
+    ]) ||
+    producerSteps[7].with["artifact-ids"] !==
+      "${{ steps.upload-machine-evidence.outputs.artifact-id }}" ||
+    producerSteps[7].with.path !== ".release-evidence/upload-confirmation" ||
+    producerSteps[7].with["merge-multiple"] !== true ||
+    !isRecord(producerSteps[8]) ||
+    !hasExactKeys(producerSteps[8], ["name", "if", "env", "run"]) ||
+    producerSteps[8].name !== "Verify exact uploaded signing report binding" ||
+    producerSteps[8].if !== "matrix.claimId == 'release.signing'" ||
+    !hasExactKeys(producerSteps[8].env, [
+      "SKYTWIN_EXPECTED_REPORT_SHA256",
+      "SKYTWIN_UPLOADED_ARTIFACT_ID",
+      "SKYTWIN_UPLOADED_ARTIFACT_NAME",
+      "SKYTWIN_UPLOADED_ARTIFACT_SHA256",
+    ]) ||
+    producerSteps[8].env.SKYTWIN_EXPECTED_REPORT_SHA256 !==
+      "${{ steps.machine-verifier.outputs.report_sha256 }}" ||
+    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_ID !==
+      "${{ steps.upload-machine-evidence.outputs.artifact-id }}" ||
+    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_NAME !==
+      "release-signing-report-${{ matrix.platform }}-attempt-${{ github.run_attempt }}" ||
+    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_SHA256 !==
+      "${{ steps.upload-machine-evidence.outputs.artifact-digest }}" ||
+    producerSteps[8].run !==
+      "node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }} --binding .release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json" ||
+    !isRecord(producerSteps[9]) ||
+    !hasExactKeys(producerSteps[9], ["name", "if", "uses", "with"]) ||
+    producerSteps[9].name !== "Upload signing report source binding" ||
+    producerSteps[9].if !== "matrix.claimId == 'release.signing'" ||
+    producerSteps[9].uses !==
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
+    !hasExactKeys(producerSteps[9].with, [
+      "name",
+      "path",
+      "if-no-files-found",
+      "compression-level",
+    ]) ||
+    producerSteps[9].with.name !==
+      "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}" ||
+    producerSteps[9].with.path !==
+      ".release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json" ||
+    producerSteps[9].with["if-no-files-found"] !== "error" ||
+    producerSteps[9].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -2233,44 +2570,93 @@ export function verifyCanonicalReleasePublisher(root) {
       ]) ||
     evidenceAggregatorJob["runs-on"] !== "ubuntu-24.04" ||
     !Array.isArray(aggregatorSteps) ||
-    aggregatorSteps.length !== 3 ||
+    aggregatorSteps.length !== 8 ||
     !isRecord(aggregatorSteps[0]) ||
-    !hasExactKeys(aggregatorSteps[0], ["name", "uses", "with"]) ||
-    aggregatorSteps[0].name !== "Download machine evidence reports" ||
-    aggregatorSteps[0].uses !==
-      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
-    !hasExactKeys(aggregatorSteps[0].with, [
+    !hasExactKeys(aggregatorSteps[0], ["uses", "with"]) ||
+    aggregatorSteps[0].uses !== PINNED_RELEASE_WORKFLOW_ACTIONS.checkout ||
+    !hasExactKeys(aggregatorSteps[0].with, ["persist-credentials"]) ||
+    aggregatorSteps[0].with["persist-credentials"] !== false ||
+    !isRecord(aggregatorSteps[1]) ||
+    !hasExactKeys(aggregatorSteps[1], ["name", "uses", "with"]) ||
+    aggregatorSteps[1].name !==
+      "Download signing report source bindings for this run attempt" ||
+    aggregatorSteps[1].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(aggregatorSteps[1].with, [
       "pattern",
       "path",
       "merge-multiple",
     ]) ||
-    aggregatorSteps[0].with.pattern !== "release-machine-evidence-*" ||
-    aggregatorSteps[0].with.path !== ".release-evidence/reports" ||
-    aggregatorSteps[0].with["merge-multiple"] !== true ||
-    !isRecord(aggregatorSteps[1]) ||
-    !hasExactKeys(aggregatorSteps[1], ["name", "uses", "with"]) ||
-    aggregatorSteps[1].name !==
-      "Download release artifact verification materials" ||
-    aggregatorSteps[1].uses !==
-      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
-    !hasExactKeys(aggregatorSteps[1].with, ["name", "path"]) ||
-    aggregatorSteps[1].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
-    aggregatorSteps[1].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
+    aggregatorSteps[1].with.pattern !==
+      "release-signing-binding-*-attempt-${{ github.run_attempt }}" ||
+    aggregatorSteps[1].with.path !== ".release-evidence/upload-bindings" ||
+    aggregatorSteps[1].with["merge-multiple"] !== true ||
     !isRecord(aggregatorSteps[2]) ||
-    !hasExactKeys(aggregatorSteps[2], ["name", "uses", "with"]) ||
-    aggregatorSteps[2].name !== "Upload aggregated release evidence" ||
-    aggregatorSteps[2].uses !==
+    !hasExactKeys(aggregatorSteps[2], ["name", "id", "run"]) ||
+    aggregatorSteps[2].name !==
+      "Resolve exact source signing report artifact IDs" ||
+    aggregatorSteps[2].id !== "signing-report-bindings" ||
+    aggregatorSteps[2].run !==
+      "node scripts/release-claims/verifiers/release.signing.mjs --resolve-upload-bindings --bindings .release-evidence/upload-bindings" ||
+    !isRecord(aggregatorSteps[3]) ||
+    !hasExactKeys(aggregatorSteps[3], ["name", "uses", "with"]) ||
+    aggregatorSteps[3].name !== "Download exact source signing reports" ||
+    aggregatorSteps[3].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(aggregatorSteps[3].with, [
+      "artifact-ids",
+      "path",
+      "merge-multiple",
+    ]) ||
+    aggregatorSteps[3].with["artifact-ids"] !==
+      "${{ steps.signing-report-bindings.outputs.artifact_ids }}" ||
+    aggregatorSteps[3].with.path !== ".release-evidence/reports" ||
+    aggregatorSteps[3].with["merge-multiple"] !== true ||
+    !isRecord(aggregatorSteps[4]) ||
+    !hasExactKeys(aggregatorSteps[4], ["name", "run"]) ||
+    aggregatorSteps[4].name !==
+      "Verify aggregated source signing report bindings" ||
+    aggregatorSteps[4].run !==
+      "node scripts/release-claims/verifiers/release.signing.mjs --verify-aggregated-uploads --bindings .release-evidence/upload-bindings --reports .release-evidence/reports" ||
+    !isRecord(aggregatorSteps[5]) ||
+    !hasExactKeys(aggregatorSteps[5], ["name", "uses", "with"]) ||
+    aggregatorSteps[5].name !==
+      "Download non-signing machine evidence reports for this run attempt" ||
+    aggregatorSteps[5].uses !==
+      "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
+    !hasExactKeys(aggregatorSteps[5].with, [
+      "pattern",
+      "path",
+      "merge-multiple",
+    ]) ||
+    aggregatorSteps[5].with.pattern !==
+      "release-machine-evidence-*-attempt-${{ github.run_attempt }}" ||
+    aggregatorSteps[5].with.path !== ".release-evidence/reports" ||
+    aggregatorSteps[5].with["merge-multiple"] !== true ||
+    !isRecord(aggregatorSteps[6]) ||
+    !hasExactKeys(aggregatorSteps[6], ["name", "uses", "with"]) ||
+    aggregatorSteps[6].name !==
+      "Download release artifact verification materials" ||
+    aggregatorSteps[6].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(aggregatorSteps[6].with, ["name", "path"]) ||
+    aggregatorSteps[6].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
+    aggregatorSteps[6].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
+    !isRecord(aggregatorSteps[7]) ||
+    !hasExactKeys(aggregatorSteps[7], ["name", "uses", "with"]) ||
+    aggregatorSteps[7].name !== "Upload aggregated release evidence" ||
+    aggregatorSteps[7].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
-    !hasExactKeys(aggregatorSteps[2].with, [
+    !hasExactKeys(aggregatorSteps[7].with, [
       "name",
       "path",
       "if-no-files-found",
       "compression-level",
     ]) ||
-    aggregatorSteps[2].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
-    aggregatorSteps[2].with.path !== ".release-evidence" ||
-    aggregatorSteps[2].with["if-no-files-found"] !== "error" ||
-    aggregatorSteps[2].with["compression-level"] !== 0
+    aggregatorSteps[7].with.name !== MACHINE_EVIDENCE_ARTIFACT_NAME ||
+    aggregatorSteps[7].with.path !== ".release-evidence" ||
+    aggregatorSteps[7].with["if-no-files-found"] !== "error" ||
+    aggregatorSteps[7].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -2353,6 +2739,10 @@ export function verifyCanonicalReleasePublisher(root) {
     );
   const machineInputUploaders = [];
   const dynamicArtifactUploaders = [];
+  const canonicalMachineReportUploadName =
+    "${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}";
+  const canonicalSigningBindingUploadName =
+    "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}";
   for (const [jobName, job] of Object.entries(canonicalWorkflow.jobs ?? {})) {
     if (!isRecord(job)) continue;
     for (const [stepIndex, step] of asArray(job.steps).entries()) {
@@ -2368,28 +2758,40 @@ export function verifyCanonicalReleasePublisher(root) {
         dynamicArtifactUploaders.push(location);
         continue;
       }
-      if (artifactName.startsWith("release-machine-evidence-"))
+      if (
+        artifactName.includes("release-machine-evidence-") ||
+        artifactName.includes("release-signing-report-") ||
+        artifactName.includes("release-signing-binding-")
+      )
         machineInputUploaders.push({ jobName, artifactName, location });
       if (
         artifactName.includes("${{") &&
         !(
           jobName === "release-machine-evidence" &&
-          artifactName ===
-            "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+          [
+            canonicalMachineReportUploadName,
+            canonicalSigningBindingUploadName,
+          ].includes(artifactName)
         )
       )
         dynamicArtifactUploaders.push(location);
     }
   }
   if (
-    machineInputUploaders.length !== 1 ||
-    machineInputUploaders[0]?.jobName !== "release-machine-evidence" ||
-    machineInputUploaders[0]?.artifactName !==
-      "release-machine-evidence-${{ matrix.claimId }}-${{ matrix.platform }}"
+    machineInputUploaders.length !== 2 ||
+    machineInputUploaders.some(
+      ({ jobName }) => jobName !== "release-machine-evidence",
+    ) ||
+    !machineInputUploaders.some(
+      ({ artifactName }) => artifactName === canonicalMachineReportUploadName,
+    ) ||
+    !machineInputUploaders.some(
+      ({ artifactName }) => artifactName === canonicalSigningBindingUploadName,
+    )
   )
     addError(
       errors,
-      "only the canonical machine producer may upload artifacts matching the release-machine-evidence prefix",
+      "only the canonical machine producer may upload attempt-bound machine reports and signing bindings",
     );
   if (dynamicArtifactUploaders.length > 0)
     addError(
@@ -3997,6 +4399,209 @@ function hasExactPassingMachineChecks(checks, expectedIds) {
   );
 }
 
+function hasCompleteMacSigningObservation(
+  subject,
+  expectedArtifactName,
+  expectedAppVersion,
+) {
+  const expectedKeys = [
+    "artifactId",
+    "artifactName",
+    "artifactSha256",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "artifactProducerJobId",
+    "artifactProducerJobName",
+    "artifactProducerRunAttempt",
+    "artifactProducerJobConclusion",
+    "artifactProducerJobStartedAt",
+    "artifactProducerJobCompletedAt",
+    "artifactUploadStepName",
+    "artifactUploadStepStartedAt",
+    "artifactUploadStepCompletedAt",
+    "kind",
+    "path",
+    "name",
+    "sha256",
+    "sizeBytes",
+    "platform",
+    "signatureResult",
+    "notarizationResult",
+    "verificationMethod",
+    "signer",
+    "signerTeamId",
+    "signedIdentifier",
+    "signedContentCdHash",
+    "signedBundleVersion",
+    "signedBundleBuildVersion",
+    "executableArchitecture",
+    "containerSignature",
+  ];
+  const expectedMethod = MACOS_SIGNING_METHODS.get(expectedArtifactName);
+  const teamId = subject?.signerTeamId;
+  const container = subject?.containerSignature;
+  const containerKeys = [
+    "signatureResult",
+    "signer",
+    "signerTeamId",
+    "signedIdentifier",
+    "signedContentCdHash",
+  ];
+  return (
+    isPlainRecord(subject) &&
+    Object.keys(subject).length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(subject, key)) &&
+    subject?.artifactName === expectedArtifactName &&
+    subject?.signatureResult === "pass" &&
+    subject?.notarizationResult === "pass" &&
+    subject?.verificationMethod === expectedMethod &&
+    /^[A-Z0-9]{10}$/u.test(teamId ?? "") &&
+    new RegExp(`^Developer ID Application: .+ \\(${teamId}\\)$`, "u").test(
+      subject?.signer ?? "",
+    ) &&
+    subject?.signedIdentifier === "com.skytwin.desktop" &&
+    /^[0-9a-f]{40}$/u.test(subject?.signedContentCdHash ?? "") &&
+    subject?.signedBundleVersion === expectedAppVersion &&
+    subject?.signedBundleBuildVersion === expectedAppVersion &&
+    subject?.executableArchitecture === "arm64" &&
+    (expectedArtifactName === "SkyTwin-macOS-dmg"
+      ? isPlainRecord(container) &&
+        Object.keys(container).length === containerKeys.length &&
+        containerKeys.every((key) => Object.hasOwn(container, key)) &&
+        container.signatureResult === "pass" &&
+        container.signer === subject.signer &&
+        container.signerTeamId === teamId &&
+        isNonEmptyString(container.signedIdentifier) &&
+        /^[0-9a-f]{40}$/u.test(container.signedContentCdHash ?? "")
+      : container === null)
+  );
+}
+
+function hasCompleteWindowsSigningObservation(
+  subject,
+  expectedArtifactName,
+  expectedAppVersion,
+) {
+  const expectedKeys = [
+    "artifactId",
+    "artifactName",
+    "artifactSha256",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "artifactProducerJobId",
+    "artifactProducerJobName",
+    "artifactProducerRunAttempt",
+    "artifactProducerJobConclusion",
+    "artifactProducerJobStartedAt",
+    "artifactProducerJobCompletedAt",
+    "artifactUploadStepName",
+    "artifactUploadStepStartedAt",
+    "artifactUploadStepCompletedAt",
+    "kind",
+    "path",
+    "name",
+    "sha256",
+    "sizeBytes",
+    "platform",
+    "signatureResult",
+    "verificationMethod",
+    "authenticodeStatus",
+    "authenticodeSignatureType",
+    "signer",
+    "signerIssuer",
+    "signerCertificateSha256",
+    "signerCertificatePinned",
+    "codeSigningEku",
+    "timestampCertificatePresent",
+    "timestampSignerCertificateSha256",
+    "timestampCertificateValidation",
+    "productVersion",
+    "fileVersionMajor",
+    "fileVersionMinor",
+    "fileVersionBuild",
+    "fileVersionPrivate",
+    "containedExecutable",
+  ];
+  const executableKeys = [
+    "derivationMethod",
+    "derivationPath",
+    "name",
+    "sha256",
+    "sizeBytes",
+    "architecture",
+    "productVersion",
+    "fileVersionMajor",
+    "fileVersionMinor",
+    "fileVersionBuild",
+    "fileVersionPrivate",
+    "signatureResult",
+    "verificationMethod",
+    "authenticodeStatus",
+    "authenticodeSignatureType",
+    "signer",
+    "signerIssuer",
+    "signerCertificateSha256",
+    "signerCertificatePinned",
+    "codeSigningEku",
+    "timestampCertificatePresent",
+    "timestampSignerCertificateSha256",
+    "timestampCertificateValidation",
+  ];
+  const executable = subject?.containedExecutable;
+  const expectedProductVersion = `${expectedAppVersion}.0`;
+  return (
+    isPlainRecord(subject) &&
+    Object.keys(subject).length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(subject, key)) &&
+    subject?.artifactName === expectedArtifactName &&
+    subject?.signatureResult === "pass" &&
+    subject?.verificationMethod === WINDOWS_SIGNING_METHOD &&
+    subject?.authenticodeStatus === "Valid" &&
+    subject?.authenticodeSignatureType === "Authenticode" &&
+    isNonEmptyString(subject?.signer) &&
+    isNonEmptyString(subject?.signerIssuer) &&
+    subject.signer !== subject.signerIssuer &&
+    SOURCE_DIGEST.test(subject?.signerCertificateSha256 ?? "") &&
+    subject?.signerCertificatePinned === true &&
+    subject?.codeSigningEku === true &&
+    subject?.timestampCertificatePresent === true &&
+    SOURCE_DIGEST.test(subject?.timestampSignerCertificateSha256 ?? "") &&
+    subject?.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION &&
+    subject?.productVersion === expectedProductVersion &&
+    subject?.fileVersionMajor === Number(expectedAppVersion.split(".")[0]) &&
+    subject?.fileVersionMinor === Number(expectedAppVersion.split(".")[1]) &&
+    subject?.fileVersionBuild === Number(expectedAppVersion.split(".")[2]) &&
+    subject?.fileVersionPrivate === 0 &&
+    isPlainRecord(executable) &&
+    Object.keys(executable).length === executableKeys.length &&
+    executableKeys.every((key) => Object.hasOwn(executable, key)) &&
+    executable.derivationMethod === "nsis-7zip" &&
+    executable.derivationPath === "app-64.7z!/SkyTwin.exe" &&
+    executable.name === "SkyTwin.exe" &&
+    SOURCE_DIGEST.test(executable.sha256 ?? "") &&
+    Number.isSafeInteger(executable.sizeBytes) &&
+    executable.sizeBytes > 0 &&
+    executable.architecture === "AMD64" &&
+    executable.productVersion === expectedProductVersion &&
+    executable.fileVersionMajor === Number(expectedAppVersion.split(".")[0]) &&
+    executable.fileVersionMinor === Number(expectedAppVersion.split(".")[1]) &&
+    executable.fileVersionBuild === Number(expectedAppVersion.split(".")[2]) &&
+    executable.fileVersionPrivate === 0 &&
+    executable.signatureResult === "pass" &&
+    executable.verificationMethod === WINDOWS_SIGNING_METHOD &&
+    executable.authenticodeStatus === "Valid" &&
+    executable.authenticodeSignatureType === "Authenticode" &&
+    executable.signer === subject.signer &&
+    executable.signerIssuer === subject.signerIssuer &&
+    executable.signerCertificateSha256 === subject.signerCertificateSha256 &&
+    executable.signerCertificatePinned === true &&
+    executable.codeSigningEku === true &&
+    executable.timestampCertificatePresent === true &&
+    SOURCE_DIGEST.test(executable.timestampSignerCertificateSha256 ?? "") &&
+    executable.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION
+  );
+}
+
 export function verifyMachineEvidenceApplicability(
   claimId,
   report,
@@ -4040,7 +4645,12 @@ export function verifyMachineEvidenceApplicability(
   }
   if (claimId === "release.signing") {
     const reportPlatform = machineEvidencePlatformFamily(report?.platform);
-    const expectedSubjects = asArray(releaseAssets)
+    const expectedRunnerPlatforms = new Map([
+      ["macos", "darwin-arm64"],
+      ["windows", "win32-x64"],
+      ["linux", "linux-x64"],
+    ]);
+    const expectedAssets = asArray(releaseAssets)
       .filter((asset) =>
         ["desktop-installer", "desktop-archive"].includes(asset.kind),
       )
@@ -4051,30 +4661,76 @@ export function verifyMachineEvidenceApplicability(
           (reportPlatform === "windows" && name.includes("Windows")) ||
           (reportPlatform === "linux" && name.includes("Linux"))
         );
-      })
-      .flatMap((asset) =>
-        asArray(asset.subjects).map(
-          (subject) => `${subject.path}:${subject.sha256}`,
-        ),
-      )
-      .sort();
+      });
+    const expectedSubjectArtifacts = new Map(
+      expectedAssets.flatMap((asset) =>
+        asArray(asset.subjects).map((subject) => [
+          `${subject.path}:${subject.sha256}`,
+          { asset, subject },
+        ]),
+      ),
+    );
+    const expectedSubjects = [...expectedSubjectArtifacts.keys()].sort();
     const coveredSubjects = asArray(report?.coveredSubjects);
     const actualSubjects = coveredSubjects
       .map((subject) => `${subject?.path}:${subject?.sha256}`)
       .sort();
+    const expectedAppVersion = normalizeReleaseTagToAppVersion(
+      report?.releaseTag,
+    );
+    const observationsAreComplete = coveredSubjects.every((subject) => {
+      const subjectKey = `${subject?.path}:${subject?.sha256}`;
+      const expected = expectedSubjectArtifacts.get(subjectKey);
+      const expectedArtifactName = expected?.asset?.artifactName;
+      const identityMatches =
+        subject?.artifactId === expected?.asset?.artifactId &&
+        subject?.artifactName === expectedArtifactName &&
+        subject?.artifactSha256 === expected?.asset?.artifactSha256 &&
+        subject?.kind === expected?.asset?.kind &&
+        subject?.name === expected?.subject?.name &&
+        subject?.sizeBytes === expected?.subject?.sizeBytes;
+      if (!identityMatches) return false;
+      if (reportPlatform === "macos")
+        return hasCompleteMacSigningObservation(
+          subject,
+          expectedArtifactName,
+          expectedAppVersion,
+        );
+      if (reportPlatform === "windows")
+        return hasCompleteWindowsSigningObservation(
+          subject,
+          expectedArtifactName,
+          expectedAppVersion,
+        );
+      return false;
+    });
+    const macIdentities = new Set(
+      coveredSubjects.map((subject) =>
+        [
+          subject?.signer,
+          subject?.signerTeamId,
+          subject?.signedIdentifier,
+          subject?.signedContentCdHash,
+          subject?.signedBundleVersion,
+          subject?.signedBundleBuildVersion,
+          subject?.executableArchitecture,
+        ].join("\u0000"),
+      ),
+    );
     if (
       !sameStringSet(actualSubjects, expectedSubjects) ||
       expectedSubjects.length === 0 ||
+      reportPlatform === "linux" ||
+      expectedRunnerPlatforms.get(reportPlatform) !== report?.runnerPlatform ||
       coveredSubjects.some(
         (subject) =>
-          machineEvidencePlatformFamily(subject?.platform) !== reportPlatform ||
-          subject?.signatureResult !== "pass" ||
-          (subject.platform.startsWith("macos") &&
-            subject.notarizationResult !== "pass"),
-      )
+          machineEvidencePlatformFamily(subject?.platform) !== reportPlatform,
+      ) ||
+      !observationsAreComplete ||
+      (reportPlatform === "macos" && macIdentities.size !== 1)
     )
       errors.push(
-        "release.signing machine evidence must prove signature trust for every published installer/archive subject and notarization for every macOS subject",
+        "release.signing machine evidence must prove the complete platform-native signature, identity, architecture, and notarization contract for every published installer/archive subject",
       );
   }
   if (claimId === "release.artifact-verification") {
@@ -4678,6 +5334,90 @@ export async function verifyArtifactVerificationMaterials(
   return errors;
 }
 
+export function hasCanonicalSuccessfulMachineSteps(claimId, producerJob) {
+  const steps = asArray(producerJob?.steps);
+  const verifierStepName =
+    claimId === "sample.packaged-account-free"
+      ? "Run canonical packaged sample verifier without GitHub API token"
+      : CANONICAL_MACHINE_VERIFIER_STEP;
+  return (
+    steps.some(
+      (step) =>
+        step?.name === verifierStepName && step?.conclusion === "success",
+    ) &&
+    (claimId !== "release.signing" ||
+      steps.some(
+        (step) =>
+          step?.name === "Verify exact uploaded signing report binding" &&
+          step?.conclusion === "success",
+      ))
+  );
+}
+
+export function isValidSigningSourceReportArtifact(
+  artifact,
+  evidence,
+  runId,
+  releaseCommit,
+) {
+  return (
+    artifact?.id === evidence?.sourceReportArtifactId &&
+    artifact?.name === evidence?.sourceReportArtifactName &&
+    artifact?.expired === false &&
+    artifact?.digest === `sha256:${evidence?.sourceReportArtifactSha256}` &&
+    artifact?.created_at === evidence?.sourceReportArtifactCreatedAt &&
+    artifact?.updated_at === evidence?.sourceReportArtifactUpdatedAt &&
+    artifact?.workflow_run?.id === runId &&
+    artifact?.workflow_run?.head_sha === releaseCommit
+  );
+}
+
+export function isValidSigningUploadBinding(
+  binding,
+  evidence,
+  { repository, releaseCommit, tag, triggerRef, runId, runAttempt },
+) {
+  return (
+    hasExactRecordKeys(binding, [
+      "schemaVersion",
+      "generatedBy",
+      "claimId",
+      "platform",
+      "repository",
+      "sourceCommit",
+      "releaseTag",
+      "ref",
+      "runId",
+      "runAttempt",
+      "runAttemptStartedAt",
+      "artifactProducers",
+      "reportName",
+      "reportSha256",
+      "sourceArtifactId",
+      "sourceArtifactName",
+      "sourceArtifactSha256",
+    ]) &&
+    binding.schemaVersion === 1 &&
+    binding.generatedBy === "release-signing-upload-verifier" &&
+    binding.claimId === evidence.claimId &&
+    binding.platform === evidence.platform &&
+    binding.repository === repository &&
+    binding.sourceCommit === releaseCommit &&
+    binding.releaseTag === tag &&
+    binding.ref === triggerRef &&
+    binding.runId === runId &&
+    binding.runAttempt === runAttempt &&
+    binding.runAttemptStartedAt === evidence.runAttemptStartedAt &&
+    JSON.stringify(binding.artifactProducers) ===
+      JSON.stringify(evidence.artifactProducers) &&
+    binding.reportName === basename(evidence.reportPath) &&
+    binding.reportSha256 === evidence.reportSha256 &&
+    binding.sourceArtifactId === evidence.sourceReportArtifactId &&
+    binding.sourceArtifactName === evidence.sourceReportArtifactName &&
+    binding.sourceArtifactSha256 === evidence.sourceReportArtifactSha256
+  );
+}
+
 export async function verifyPublicationEvidence(
   ledger,
   manifest,
@@ -4738,6 +5478,16 @@ export async function verifyPublicationEvidence(
       errors,
       "release evidence manifest runId does not match the current workflow run",
     );
+  if (!Number.isSafeInteger(manifest?.runAttempt) || manifest.runAttempt <= 0)
+    addError(
+      errors,
+      "release evidence manifest runAttempt must be a positive integer",
+    );
+  if (canonicalGithubTimestampMs(manifest?.runAttemptStartedAt) === null)
+    addError(
+      errors,
+      "release evidence manifest runAttemptStartedAt must be a canonical GitHub timestamp",
+    );
   if (manifest?.ref !== triggerRef)
     addError(
       errors,
@@ -4791,6 +5541,19 @@ export async function verifyPublicationEvidence(
     }
     seenPairs.add(identity);
     validateExternalEvidenceShape(evidence, prefix, errors);
+    if (
+      evidence?.claimId === "release.signing" &&
+      !validSigningArtifactProducers(
+        evidence.artifactProducers,
+        evidence.platform,
+        evidence.runAttempt,
+        manifest.runAttemptStartedAt,
+      )
+    )
+      addError(
+        errors,
+        `${prefix}.artifactProducers does not prove current-attempt desktop upload provenance`,
+      );
     evidenceEntries.push({ claimId: evidence.claimId, evidence });
   }
   for (const pair of requiredPairs) {
@@ -4831,6 +5594,16 @@ export async function verifyPublicationEvidence(
         errors,
         `${claimId} ${evidence.kind} evidence is not from the current workflow run`,
       );
+    if (evidence.runAttempt !== manifest.runAttempt)
+      addError(
+        errors,
+        `${claimId} ${evidence.kind} evidence is not from the current workflow run attempt`,
+      );
+    if (evidence.runAttemptStartedAt !== manifest.runAttemptStartedAt)
+      addError(
+        errors,
+        `${claimId} ${evidence.kind} evidence is not from the current workflow attempt start`,
+      );
     if (evidence.ref !== triggerRef)
       addError(
         errors,
@@ -4869,13 +5642,90 @@ export async function verifyPublicationEvidence(
     currentRun.event !== "push" ||
     currentRun.head_branch !== tag ||
     currentRun.path !== RELEASE_EVIDENCE_WORKFLOW_PATH ||
-    currentRun.repository?.full_name !== repository
+    currentRun.repository?.full_name !== repository ||
+    currentRun.run_attempt !== manifest.runAttempt
   ) {
     addError(
       errors,
       "current workflow run is not the tag-push build.yml run for the release commit",
     );
     return errors;
+  }
+  const currentAttemptResponse = await fetchChecked(
+    fetchImpl,
+    `${apiRoot}/runs/${runId}/attempts/${manifest.runAttempt}`,
+    { headers },
+    "current release workflow attempt",
+    errors,
+  );
+  const currentAttemptJobsResponse = await fetchChecked(
+    fetchImpl,
+    `${apiRoot}/runs/${runId}/attempts/${manifest.runAttempt}/jobs?per_page=100&page=1`,
+    { headers },
+    "current release workflow attempt jobs",
+    errors,
+  );
+  if (!currentAttemptResponse || !currentAttemptJobsResponse) return errors;
+  let currentAttempt;
+  let currentAttemptJobsPage;
+  try {
+    [currentAttempt, currentAttemptJobsPage] = await Promise.all([
+      currentAttemptResponse.json(),
+      currentAttemptJobsResponse.json(),
+    ]);
+  } catch {
+    addError(
+      errors,
+      "current workflow attempt API response was not valid JSON",
+    );
+    return errors;
+  }
+  if (
+    currentAttempt.id !== runId ||
+    currentAttempt.run_attempt !== manifest.runAttempt ||
+    currentAttempt.head_sha !== releaseCommit ||
+    currentAttempt.event !== "push" ||
+    currentAttempt.head_branch !== tag ||
+    currentAttempt.path !== RELEASE_EVIDENCE_WORKFLOW_PATH ||
+    currentAttempt.repository?.full_name !== repository ||
+    currentAttempt.run_started_at !== manifest.runAttemptStartedAt
+  ) {
+    addError(
+      errors,
+      "current workflow attempt is not the exact tag-push build.yml attempt recorded by the manifest",
+    );
+    return errors;
+  }
+  if (
+    !Array.isArray(currentAttemptJobsPage?.jobs) ||
+    !Number.isSafeInteger(currentAttemptJobsPage.total_count) ||
+    currentAttemptJobsPage.total_count > 100 ||
+    currentAttemptJobsPage.jobs.length !== currentAttemptJobsPage.total_count
+  ) {
+    addError(
+      errors,
+      "current workflow attempt job inventory is malformed, ambiguous, or paginated",
+    );
+    return errors;
+  }
+  const exactAttemptJobsById = new Map();
+  for (const job of currentAttemptJobsPage.jobs) {
+    if (
+      !Number.isSafeInteger(job?.id) ||
+      job.id <= 0 ||
+      job.run_id !== runId ||
+      job.run_attempt !== manifest.runAttempt ||
+      job.run_url !== `${apiRoot}/runs/${runId}` ||
+      job.head_sha !== releaseCommit ||
+      exactAttemptJobsById.has(job.id)
+    ) {
+      addError(
+        errors,
+        "current workflow attempt job inventory has an invalid, wrong-run, or duplicate job identity",
+      );
+      return errors;
+    }
+    exactAttemptJobsById.set(job.id, job);
   }
 
   const releaseAssetsByName = new Map();
@@ -4930,13 +5780,17 @@ export async function verifyPublicationEvidence(
     }
     for (const subject of asset.subjects) {
       const subjectPath = resolveContainedRegularFile(root, subject.path);
-      if (!subjectPath || sha256(readFileSync(subjectPath)) !== subject.sha256)
+      if (
+        !subjectPath ||
+        lstatSync(subjectPath).size !== subject.sizeBytes ||
+        sha256(readFileSync(subjectPath)) !== subject.sha256
+      )
         addError(
           errors,
-          `${prefix} subject is missing, unsafe, or has the wrong digest: ${subject.path}`,
+          `${prefix} subject is missing, unsafe, or has the wrong size or digest: ${subject.path}`,
         );
     }
-    releaseAssetsByName.set(asset.artifactName, asset);
+    releaseAssetsByName.set(asset.artifactName, { ...asset, apiArtifact });
   }
 
   for (const { claimId, evidence } of ciEntries) {
@@ -4987,13 +5841,33 @@ export async function verifyPublicationEvidence(
       job.conclusion !== "success" ||
       job.run_url !==
         `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
-      (job.head_sha !== undefined && job.head_sha !== releaseCommit)
+      job.head_sha !== releaseCommit
     ) {
       addError(
         errors,
         `${prefix} job is not a successful job in the recorded run`,
       );
     }
+    const exactAttemptJob = exactAttemptJobsById.get(evidence.jobId);
+    const jobStartedMs = canonicalGithubTimestampMs(job.started_at);
+    const attemptStartedMs = canonicalGithubTimestampMs(
+      manifest.runAttemptStartedAt,
+    );
+    if (
+      job.run_attempt !== manifest.runAttempt ||
+      jobStartedMs === null ||
+      jobStartedMs < attemptStartedMs ||
+      exactAttemptJob?.id !== job.id ||
+      exactAttemptJob?.run_attempt !== manifest.runAttempt ||
+      exactAttemptJob?.name !== job.name ||
+      exactAttemptJob?.conclusion !== "success" ||
+      exactAttemptJob?.started_at !== job.started_at ||
+      exactAttemptJob?.completed_at !== job.completed_at
+    )
+      addError(
+        errors,
+        `${prefix} job is not current-attempt verifier evidence`,
+      );
     if (
       artifact.id !== evidence.artifactId ||
       artifact.name !== evidence.artifactName ||
@@ -5116,21 +5990,35 @@ export async function verifyPublicationEvidence(
       `${prefix} release artifact`,
       errors,
     );
+    const sourceReportArtifactResponse =
+      claimId === "release.signing"
+        ? await fetchChecked(
+            fetchImpl,
+            `${apiRoot}/artifacts/${evidence.sourceReportArtifactId}`,
+            { headers },
+            `${prefix} source report artifact`,
+            errors,
+          )
+        : null;
     if (
       !producerJobResponse ||
       !evidenceArtifactResponse ||
-      !releaseArtifactResponse
+      !releaseArtifactResponse ||
+      (claimId === "release.signing" && !sourceReportArtifactResponse)
     )
       continue;
     let producerJob;
     let evidenceArtifact;
     let releaseArtifact;
+    let sourceReportArtifact;
     try {
-      [producerJob, evidenceArtifact, releaseArtifact] = await Promise.all([
-        producerJobResponse.json(),
-        evidenceArtifactResponse.json(),
-        releaseArtifactResponse.json(),
-      ]);
+      [producerJob, evidenceArtifact, releaseArtifact, sourceReportArtifact] =
+        await Promise.all([
+          producerJobResponse.json(),
+          evidenceArtifactResponse.json(),
+          releaseArtifactResponse.json(),
+          sourceReportArtifactResponse?.json(),
+        ]);
     } catch {
       addError(errors, `${prefix} API response was not valid JSON`);
       continue;
@@ -5139,23 +6027,34 @@ export async function verifyPublicationEvidence(
       claimId,
       evidence.platform,
     );
+    const exactAttemptProducerJob = exactAttemptJobsById.get(
+      evidence.producerJobId,
+    );
+    const producerStartedMs = canonicalGithubTimestampMs(
+      producerJob.started_at,
+    );
+    const attemptStartedMs = canonicalGithubTimestampMs(
+      manifest.runAttemptStartedAt,
+    );
     if (
       producerJob.id !== evidence.producerJobId ||
       producerJob.name !== expectedProducerJobName ||
       producerJob.name !== evidence.producerJobName ||
       producerJob.conclusion !== "success" ||
+      producerJob.run_attempt !== manifest.runAttempt ||
+      evidence.producerJobRunAttempt !== manifest.runAttempt ||
       producerJob.run_url !==
         `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
-      (producerJob.head_sha !== undefined &&
-        producerJob.head_sha !== releaseCommit) ||
-      !asArray(producerJob.steps).some(
-        (step) =>
-          step?.name ===
-            (claimId === "sample.packaged-account-free"
-              ? "Run canonical packaged sample verifier without GitHub API token"
-              : CANONICAL_MACHINE_VERIFIER_STEP) &&
-          step?.conclusion === "success",
-      )
+      producerJob.head_sha !== releaseCommit ||
+      producerStartedMs === null ||
+      producerStartedMs < attemptStartedMs ||
+      exactAttemptProducerJob?.id !== producerJob.id ||
+      exactAttemptProducerJob?.run_attempt !== manifest.runAttempt ||
+      exactAttemptProducerJob?.name !== producerJob.name ||
+      exactAttemptProducerJob?.conclusion !== "success" ||
+      exactAttemptProducerJob?.started_at !== producerJob.started_at ||
+      exactAttemptProducerJob?.completed_at !== producerJob.completed_at ||
+      !hasCanonicalSuccessfulMachineSteps(claimId, producerJob)
     )
       addError(
         errors,
@@ -5187,6 +6086,126 @@ export async function verifyPublicationEvidence(
         `${prefix} release artifact is not the unexpired ID/name/digest-bound artifact from the current run`,
       );
     }
+    if (
+      claimId === "release.signing" &&
+      !isValidSigningSourceReportArtifact(
+        sourceReportArtifact,
+        evidence,
+        runId,
+        releaseCommit,
+      )
+    )
+      addError(
+        errors,
+        `${prefix} source report artifact is not the unexpired attempt-bound ID/name/archive-digest artifact from the current run`,
+      );
+    if (claimId === "release.signing") {
+      const sourceUploadSteps = asArray(exactAttemptProducerJob?.steps).filter(
+        ({ name }) => name === "Upload machine evidence report",
+      );
+      const sourceUploadStep = sourceUploadSteps[0];
+      const sourceCreatedMs = canonicalGithubTimestampMs(
+        sourceReportArtifact?.created_at,
+      );
+      const sourceUpdatedMs = canonicalGithubTimestampMs(
+        sourceReportArtifact?.updated_at,
+      );
+      const sourceUploadStartedMs = canonicalGithubTimestampMs(
+        sourceUploadStep?.started_at,
+      );
+      const sourceUploadCompletedMs = canonicalGithubTimestampMs(
+        sourceUploadStep?.completed_at,
+      );
+      const verifierCompletedMs = canonicalGithubTimestampMs(
+        exactAttemptProducerJob?.completed_at,
+      );
+      if (
+        sourceUploadSteps.length !== 1 ||
+        sourceUploadStep?.status !== "completed" ||
+        sourceUploadStep?.conclusion !== "success" ||
+        sourceCreatedMs === null ||
+        sourceUpdatedMs === null ||
+        sourceUploadStartedMs === null ||
+        sourceUploadCompletedMs === null ||
+        verifierCompletedMs === null ||
+        sourceUploadStartedMs < attemptStartedMs ||
+        producerStartedMs > sourceUploadStartedMs ||
+        !isArtifactCreationWithinProducerWindow(
+          sourceReportArtifact?.created_at,
+          sourceUploadStep?.started_at,
+          exactAttemptProducerJob?.completed_at,
+        ) ||
+        sourceUploadStartedMs > sourceUploadCompletedMs ||
+        sourceUploadCompletedMs > verifierCompletedMs ||
+        sourceCreatedMs > sourceUpdatedMs
+      )
+        addError(
+          errors,
+          `${prefix} source report artifact was not created by the successful current-attempt upload step`,
+        );
+      for (const producer of evidence.artifactProducers) {
+        const asset = releaseAssetsByName.get(producer.artifactName);
+        const apiArtifact = asset?.apiArtifact;
+        const producerJobForAttempt = exactAttemptJobsById.get(
+          producer.artifactProducerJobId,
+        );
+        const uploadSteps = asArray(producerJobForAttempt?.steps).filter(
+          ({ name }) => name === producer.artifactUploadStepName,
+        );
+        const uploadStep = uploadSteps[0];
+        const artifactCreatedMs = canonicalGithubTimestampMs(
+          apiArtifact?.created_at,
+        );
+        const uploadStartedMs = canonicalGithubTimestampMs(
+          uploadStep?.started_at,
+        );
+        const uploadCompletedMs = canonicalGithubTimestampMs(
+          uploadStep?.completed_at,
+        );
+        const producerCompletedMs = canonicalGithubTimestampMs(
+          producerJobForAttempt?.completed_at,
+        );
+        if (
+          !asset ||
+          asset.artifactId !== producer.artifactId ||
+          apiArtifact?.id !== producer.artifactId ||
+          apiArtifact?.name !== producer.artifactName ||
+          apiArtifact?.created_at !== producer.artifactCreatedAt ||
+          apiArtifact?.updated_at !== producer.artifactUpdatedAt ||
+          producerJobForAttempt?.id !== producer.artifactProducerJobId ||
+          producerJobForAttempt?.name !== producer.artifactProducerJobName ||
+          producerJobForAttempt?.run_attempt !== manifest.runAttempt ||
+          producerJobForAttempt?.run_id !== runId ||
+          producerJobForAttempt?.run_url !== `${apiRoot}/runs/${runId}` ||
+          producerJobForAttempt?.head_sha !== releaseCommit ||
+          producerJobForAttempt?.status !== "completed" ||
+          producerJobForAttempt?.conclusion !== "success" ||
+          producerJobForAttempt?.started_at !==
+            producer.artifactProducerJobStartedAt ||
+          producerJobForAttempt?.completed_at !==
+            producer.artifactProducerJobCompletedAt ||
+          uploadSteps.length !== 1 ||
+          uploadStep?.status !== "completed" ||
+          uploadStep?.conclusion !== "success" ||
+          uploadStep?.started_at !== producer.artifactUploadStepStartedAt ||
+          uploadStep?.completed_at !== producer.artifactUploadStepCompletedAt ||
+          artifactCreatedMs === null ||
+          uploadStartedMs === null ||
+          uploadCompletedMs === null ||
+          producerCompletedMs === null ||
+          !isArtifactCreationWithinProducerWindow(
+            apiArtifact?.created_at,
+            uploadStep?.started_at,
+            producerJobForAttempt?.completed_at,
+          ) ||
+          uploadStartedMs > uploadCompletedMs
+        )
+          addError(
+            errors,
+            `${prefix} release artifact is not bound to its exact current-attempt desktop upload job and step`,
+          );
+      }
+    }
     const subjectPath = resolveContainedRegularFile(root, evidence.subjectPath);
     if (!subjectPath) {
       addError(
@@ -5216,6 +6235,38 @@ export async function verifyPublicationEvidence(
     if (sha256(bytes) !== evidence.reportSha256) {
       addError(errors, `${prefix} report digest does not match reportSha256`);
       continue;
+    }
+    if (claimId === "release.signing") {
+      const bindingRelativePath = `.release-evidence/upload-bindings/${basename(
+        evidence.reportPath,
+      )}.binding.json`;
+      const bindingPath = resolveContainedRegularFile(
+        root,
+        bindingRelativePath,
+      );
+      let binding;
+      try {
+        binding = JSON.parse(readFileSync(bindingPath, "utf8"));
+      } catch {
+        addError(errors, `${prefix} upload binding is missing or invalid JSON`);
+        continue;
+      }
+      if (
+        !isValidSigningUploadBinding(binding, evidence, {
+          repository,
+          releaseCommit,
+          tag,
+          triggerRef,
+          runId,
+          runAttempt: manifest.runAttempt,
+        })
+      ) {
+        addError(
+          errors,
+          `${prefix} upload binding does not bind the source report bytes, artifact, run, and attempt`,
+        );
+        continue;
+      }
     }
     let report;
     try {
@@ -5262,6 +6313,11 @@ export async function verifyPublicationEvidence(
       report.subjectName !== evidence.subjectName ||
       report.subjectPath !== evidence.subjectPath ||
       report.subjectSha256 !== evidence.subjectSha256 ||
+      (claimId === "release.signing" &&
+        (report.runAttempt !== manifest.runAttempt ||
+          report.runAttemptStartedAt !== manifest.runAttemptStartedAt ||
+          JSON.stringify(report.artifactProducers) !==
+            JSON.stringify(evidence.artifactProducers))) ||
       report.producerJobName !== expectedProducerJobName ||
       report.verifierPath !== expectedVerifierPath ||
       report.verifierCommand !== expectedVerifierCommand ||
