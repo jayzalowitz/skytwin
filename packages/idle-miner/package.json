@@ -27,7 +27,7 @@
     "vitest": "^4.1.10"
   },
   "peerDependencies": {
-    "electron": "*"
+    "electron": ">=43.0.0 <45.0.0"
   },
   "peerDependenciesMeta": {
     "electron": {
