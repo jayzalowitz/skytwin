@@ -165,6 +165,9 @@ export {
   executionRepository,
   connectorHealthRepository,
   workerDeadLetterRepository,
+  WORKER_DEAD_LETTER_JOB_CODES,
+  WORKER_DEAD_LETTER_ERROR_CODES,
+  isWorkerDeadLetterJobCode,
   userPurgeRepository,
   ActiveExecutionAdmissionError,
   accessLogRepository,
@@ -186,6 +189,8 @@ export type {
 export type {
   ConnectorHealthRow,
   WorkerDeadLetterRow,
+  WorkerDeadLetterJobCode,
+  WorkerDeadLetterErrorCode,
   WorkerDeadLetterStatus,
   RecordDeadLetterInput,
   PurgeUserResult,

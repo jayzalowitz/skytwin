@@ -2,7 +2,10 @@ import { Router } from 'express';
 import { createLogger } from '@skytwin/core';
 import {
   workerDeadLetterRepository,
+  isWorkerDeadLetterJobCode,
   type WorkerDeadLetterRow,
+  type WorkerDeadLetterErrorCode,
+  type WorkerDeadLetterJobCode,
   type WorkerDeadLetterStatus,
 } from '@skytwin/db';
 
@@ -38,10 +41,10 @@ const VALID_RESOLUTIONS: ReadonlySet<string> = new Set(['replayed', 'discarded']
 
 interface DeadLetterDTO {
   id: string;
-  jobName: string;
-  errorMessage: string;
+  correlationId: string;
+  jobCode: WorkerDeadLetterJobCode;
+  errorCode: WorkerDeadLetterErrorCode;
   attempts: number;
-  context: unknown;
   status: WorkerDeadLetterStatus;
   deadLetteredAt: string;
   resolvedAt: string | null;
@@ -50,10 +53,10 @@ interface DeadLetterDTO {
 function rowToDTO(row: WorkerDeadLetterRow): DeadLetterDTO {
   return {
     id: row.id,
-    jobName: row.job_name,
-    errorMessage: row.error_message,
+    correlationId: row.correlation_id,
+    jobCode: row.job_code,
+    errorCode: row.error_code,
     attempts: row.attempts,
-    context: row.context,
     status: row.status,
     deadLetteredAt: row.dead_lettered_at.toISOString(),
     resolvedAt: row.resolved_at ? row.resolved_at.toISOString() : null,
@@ -68,7 +71,8 @@ export function createAdminDlqRouter(): Router {
    *
    * Query params (all optional):
    *   status  — 'pending' (default) | 'replayed' | 'discarded' | 'all'
-   *   jobName — narrow to a single job
+   *   jobCode — narrow to a single stable job code (`jobName` remains a
+   *             validated compatibility alias for existing clients)
    *   limit   — page size (default 100, capped at 500 by the repo)
    *
    * Returns the rows plus a `pendingCount` badge so the dashboard can
@@ -77,7 +81,12 @@ export function createAdminDlqRouter(): Router {
   router.get('/dead-letter', async (req, res, next) => {
     try {
       const rawStatus = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
-      const jobName = typeof req.query['jobName'] === 'string' ? req.query['jobName'] : undefined;
+      const rawJobCode =
+        typeof req.query['jobCode'] === 'string'
+          ? req.query['jobCode']
+          : typeof req.query['jobName'] === 'string'
+            ? req.query['jobName']
+            : undefined;
       const rawLimit = typeof req.query['limit'] === 'string' ? Number(req.query['limit']) : undefined;
 
       // Map the public query value to the repository's `status` option.
@@ -97,10 +106,14 @@ export function createAdminDlqRouter(): Router {
       }
 
       const limit = rawLimit !== undefined && Number.isFinite(rawLimit) ? rawLimit : undefined;
+      if (rawJobCode !== undefined && !isWorkerDeadLetterJobCode(rawJobCode)) {
+        res.status(400).json({ error: 'Invalid worker dead-letter job code' });
+        return;
+      }
 
       const rows = await workerDeadLetterRepository.list({
         status,
-        ...(jobName ? { jobName } : {}),
+        ...(rawJobCode ? { jobCode: rawJobCode } : {}),
         ...(limit !== undefined ? { limit } : {}),
       });
       const pendingCount = await workerDeadLetterRepository.countPending();
@@ -156,7 +169,8 @@ export function createAdminDlqRouter(): Router {
 
       log.info('Dead-letter row resolved', {
         id,
-        jobName: updated.job_name,
+        correlationId: updated.correlation_id,
+        jobCode: updated.job_code,
         resolution,
       });
       res.json({ ok: true, deadLetter: rowToDTO(updated) });

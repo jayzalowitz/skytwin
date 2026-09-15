@@ -961,7 +961,8 @@ async function main(): Promise<void> {
           // the batch helper). Revert the timestamp so the next cycle
           // retries immediately rather than waiting another 24h.
           log.warn('Relationship-tier backfill batch failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'relationship-tier-backfill',
+            errorCode: 'job-failed',
           });
           lastRelationshipTierBackfillAt = previousLastAt;
           // #407: feed the failure streak so a persistently broken batch
@@ -995,7 +996,8 @@ async function main(): Promise<void> {
         })
         .catch((err) => {
           log.warn('Memory action loop failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'memory-action-loop',
+            errorCode: 'job-failed',
           });
           lastMemoryActionLoopAt = previousLastAt;
           void deadLetterTracker.recordOutcome('memory-action-loop', err);
@@ -1032,12 +1034,11 @@ async function main(): Promise<void> {
         })
         .catch((err) => {
           log.warn('Daily briefing generator failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'briefing-generator-daily',
+            errorCode: 'job-failed',
           });
           lastBriefingDailyAt = previousLastAt;
-          void deadLetterTracker.recordOutcome('briefing-generator-daily', err, {
-            cadence: 'daily',
-          });
+          void deadLetterTracker.recordOutcome('briefing-generator-daily', err);
         })
         .finally(() => {
           briefingDailyInFlight = false;
@@ -1062,12 +1063,11 @@ async function main(): Promise<void> {
         })
         .catch((err) => {
           log.warn('Weekly briefing generator failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'briefing-generator-weekly',
+            errorCode: 'job-failed',
           });
           lastBriefingWeeklyAt = previousLastAt;
-          void deadLetterTracker.recordOutcome('briefing-generator-weekly', err, {
-            cadence: 'weekly',
-          });
+          void deadLetterTracker.recordOutcome('briefing-generator-weekly', err);
         })
         .finally(() => {
           briefingWeeklyInFlight = false;
@@ -1097,7 +1097,8 @@ async function main(): Promise<void> {
         })
         .catch((err) => {
           log.warn('Promotion eligibility check failed', {
-            error: err instanceof Error ? err.message : String(err),
+            jobCode: 'promotion-eligibility-check',
+            errorCode: 'job-failed',
           });
           lastPromotionEligibilityAt = previousLastAt;
           void deadLetterTracker.recordOutcome('promotion-eligibility-check', err);
