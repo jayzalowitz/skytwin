@@ -431,8 +431,10 @@ have been discovered. All ten currently have a passing cataloged safety
 scenario, while six declare an integrity-bound regression that reaches an
 explanation persistence boundary. Four explanation gaps remain explicit. The
 additional regressions bind replay suppression to its captured explanation,
-the router backstop to its atomic preparation disposition, and a missing-origin
-send proposal to untrusted provenance plus its approval-bound continuation.
+the router backstop's generated explanation to receipt finalization before
+router preparation and its separate atomic preparation disposition, and a
+missing-origin send proposal to untrusted provenance plus its approval-bound
+continuation.
 The tests use declared mocks and do not provide network or clock containment,
 and the sidecar has not been produced by an immutable tag run. The final
 publication consumer now binds the exact four members and their hashes to the

@@ -212,9 +212,9 @@
       "expectedDisposition": "blocked_before_dispatch",
       "expectedConfirmation": "dual",
       "evidenceMode": "mapped_regression",
-      "executableTestId": "@skytwin/api::src/__tests__/adversarial-router-direct-shell-persistence.test.ts::adv-v1-router-direct-shell-persisted records the router refusal before returning",
+      "executableTestId": "@skytwin/api::src/__tests__/adversarial-router-direct-shell-persistence.test.ts::adv-v1-router-direct-shell-persisted links the generated explanation before router refusal",
       "assertionFile": "apps/api/src/__tests__/adversarial-router-direct-shell-persistence.test.ts",
-      "assertionSha256": "f4aec2649d2c9d125e35085e4f1654e32917af3da75c263f3af18cb5d0e93e03"
+      "assertionSha256": "4a90fcb0f68e9e81a07b68348efc0be0d845db8f2325ba31af771742ca93b84d"
     },
     {
       "id": "adv-v1-events-no-replay-ambiguous",

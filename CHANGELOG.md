@@ -15,9 +15,11 @@ All notable changes to SkyTwin will be documented in this file.
   6/10 explanation-persistence boundaries, leaving four disclosed gaps. Three
   append-only mapped regressions now prove existing durable behavior: replayed
   events return only their captured explanation without re-running inference,
-  execution-router backstop refusals reach the atomic preparation-disposition
-  record before the API responds, and source-less outbound proposals fail safe
-  to untrusted provenance, one-click approval, and a receipt-bound explanation.
+  execution-router backstop refusals link the generated explanation into
+  receipt finalization before router preparation, then reach the separate
+  atomic preparation-disposition record before the API responds, and
+  source-less outbound proposals fail safe to untrusted provenance, one-click
+  approval, and a receipt-bound explanation.
   The tag step revalidates and invokes the captured Node and pnpm entry points
   through a closed environment and no-profile shell, has a fixed 15-minute
   ceiling, and gives each mapped test process a 60-second hard-kill timeout.

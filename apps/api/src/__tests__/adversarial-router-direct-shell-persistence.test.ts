@@ -11,6 +11,7 @@ import type { IronClawAdapter } from "@skytwin/ironclaw-adapter";
 import type {
   CandidateAction,
   ExecutionPlan,
+  ExplanationRecord,
   RiskAssessment,
   RollbackResult,
 } from "@skytwin/shared-types";
@@ -271,8 +272,9 @@ function risk(actionId: string): RiskAssessment {
   };
 }
 
-it("adv-v1-router-direct-shell-persisted records the router refusal before returning", async () => {
+it("adv-v1-router-direct-shell-persisted links the generated explanation before router refusal", async () => {
   vi.clearAllMocks();
+  const lifecycle: string[] = [];
   const candidate: CandidateAction = {
     id: "action-1",
     decisionId: "decision-1",
@@ -298,12 +300,20 @@ it("adv-v1-router-direct-shell-persisted records the router refusal before retur
     decidedAt: new Date("2026-09-15T00:00:00.000Z"),
     policyVerdicts: { [candidate.id]: "allowed" as const },
   };
-  const explanation = {
+  const explanation: ExplanationRecord = {
     id: "explanation-1",
     decisionId: "decision-1",
-    summary: "The action reached the dispatch boundary.",
-    riskTier: "low",
-    overallConfidence: 0.5,
+    userId,
+    summary:
+      "The action was selected but still must pass the dispatch boundary.",
+    evidenceUsed: [],
+    preferencesInvoked: [],
+    confidenceReasoning: "The adversarial fixture is deterministic.",
+    actionRationale: "Exercise the router's independent pre-dispatch guard.",
+    correctionGuidance: "Reject the unsafe action or correct its provenance.",
+    riskTier: RiskTier.LOW,
+    overallConfidence: ConfidenceLevel.HIGH,
+    createdAt: new Date("2026-09-15T00:00:00.000Z"),
   };
   const buildPlan = vi.fn<IronClawAdapter["buildPlan"]>(
     async (): Promise<ExecutionPlan> => ({
@@ -316,8 +326,11 @@ it("adv-v1-router-direct-shell-persisted records the router refusal before retur
     }),
   );
   const execute = vi.fn<IronClawAdapter["execute"]>();
+  const prepareRequestStart =
+    vi.fn<NonNullable<IronClawAdapter["prepareRequestStart"]>>();
   const adapter: IronClawAdapter = {
     buildPlan,
+    prepareRequestStart,
     execute,
     async getStatus() {
       return "completed";
@@ -350,6 +363,7 @@ it("adv-v1-router-direct-shell-persisted records the router refusal before retur
   const originalPrepare = actualRouter.prepareExecution.bind(actualRouter);
   vi.spyOn(actualRouter, "prepareExecution").mockImplementation(
     async (...args) => {
+      lifecycle.push("router-prepare");
       try {
         return await originalPrepare(...args);
       } catch (error) {
@@ -376,13 +390,43 @@ it("adv-v1-router-direct-shell-persisted records the router refusal before retur
     created: true,
   }));
   mocks.evaluate.mockResolvedValue(outcome);
-  mocks.generateExplanation.mockResolvedValue(explanation);
+  mocks.generateExplanation.mockImplementation(async () => {
+    lifecycle.push("explanation-generated");
+    return explanation;
+  });
+  let capturedReceiptFinalization:
+    | {
+        decisionId: string;
+        explanationId: string;
+        continuationKind: string;
+        confirmationLevel: string | null;
+        continuation: {
+          outcome: typeof outcome;
+          explanation: ExplanationRecord;
+        };
+      }
+    | undefined;
   mocks.createReceipts.mockImplementation(
     async (
       _owner: unknown,
       inputs: unknown[],
-      completion: { continuation: unknown },
-    ) => ({ receipts: inputs, continuation: completion.continuation }),
+      completion: typeof capturedReceiptFinalization,
+    ) => {
+      if (!completion) {
+        throw new Error("Receipt finalization metadata is required");
+      }
+      if (
+        completion.explanationId !== explanation.id ||
+        completion.continuation.explanation !== explanation
+      ) {
+        throw new Error(
+          "Receipt finalization did not capture the generated explanation",
+        );
+      }
+      lifecycle.push("receipt-finalized");
+      capturedReceiptFinalization = structuredClone(completion);
+      return { receipts: inputs, continuation: completion.continuation };
+    },
   );
   mocks.findUser.mockResolvedValue({
     id: userId,
@@ -401,7 +445,24 @@ it("adv-v1-router-direct-shell-persisted records the router refusal before retur
       "SkyTwin deliberately did not execute because the router refused the unsafe action.",
     riskTier: null,
   };
-  mocks.recordPreparationDisposition.mockResolvedValue(durableDisposition);
+  mocks.recordPreparationDisposition.mockImplementation(async () => {
+    if (!capturedReceiptFinalization) {
+      throw new Error("Router refusal occurred before receipt finalization");
+    }
+    if (
+      capturedReceiptFinalization.decisionId !== explanation.decisionId ||
+      capturedReceiptFinalization.explanationId !== explanation.id ||
+      capturedReceiptFinalization.continuationKind !== "auto_execute" ||
+      capturedReceiptFinalization.confirmationLevel !== null ||
+      capturedReceiptFinalization.continuation.explanation.id !== explanation.id
+    ) {
+      throw new Error(
+        "Receipt finalization did not link the generated explanation before refusal",
+      );
+    }
+    lifecycle.push("router-refusal-persisted");
+    return durableDisposition;
+  });
 
   expect({
     runtimeEntryPath: mappedScenario.runtimeEntryPath,
@@ -433,6 +494,28 @@ it("adv-v1-router-direct-shell-persisted records the router refusal before retur
       },
     }),
   });
+  expect(mocks.generateExplanation).toHaveBeenCalledOnce();
+  expect(mocks.createReceipts).toHaveBeenCalledOnce();
+  expect(mocks.createReceipts).toHaveBeenCalledWith(userId, [], {
+    decisionId: "decision-1",
+    explanationId: explanation.id,
+    continuationKind: "auto_execute",
+    confirmationLevel: null,
+    continuation: { outcome, explanation },
+  });
+  expect(capturedReceiptFinalization).toEqual({
+    decisionId: "decision-1",
+    explanationId: explanation.id,
+    continuationKind: "auto_execute",
+    confirmationLevel: null,
+    continuation: { outcome, explanation },
+  });
+  expect(lifecycle).toEqual([
+    "explanation-generated",
+    "receipt-finalized",
+    "router-prepare",
+    "router-refusal-persisted",
+  ]);
   expect(mocks.recordPreparationDisposition).toHaveBeenCalledOnce();
   expect(mocks.recordPreparationDisposition).toHaveBeenCalledWith({
     userId,
@@ -442,9 +525,11 @@ it("adv-v1-router-direct-shell-persisted records the router refusal before retur
     reason: "[redacted:execution-error]",
   });
   expect(durableDisposition.explanationId).toBe("router-refusal-explanation-1");
+  expect(durableDisposition.explanationId).not.toBe(explanation.id);
   expect(guardError).toBeInstanceOf(InvariantViolationError);
   expect((guardError as Error).message).toContain("two-step confirmation");
   expect(buildPlan).not.toHaveBeenCalled();
+  expect(prepareRequestStart).not.toHaveBeenCalled();
   expect(execute).not.toHaveBeenCalled();
   expect(mocks.claimExecution).not.toHaveBeenCalled();
   expect(mocks.createApproval).not.toHaveBeenCalled();
