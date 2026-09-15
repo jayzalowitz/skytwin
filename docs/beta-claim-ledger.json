@@ -831,7 +831,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "4a1fa97cb6665d699179ccff2cc9eadf85404c7f2d3da698cc1652ecbf75849d",
+          "sha256": "0fa148d6ef900485532bda3cf33f9e2b13018e118fcda69e619c84c8adf04a2e",
           "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
         }
       ],
@@ -919,7 +919,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "d8812d03e655ed1c41c004840b87747ee30261e48f99ca5c3c676f68d49b0b1e",
+          "sha256": "1d95ab9433fd1a128c41a0397347979e2289b17a5f5276d9ac242187f952c2f9",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         }
       ],
@@ -941,7 +941,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "b1335fd84988d9f39b4b376a6c89b96e00411fcf3c80f3ec3ee412ac0832b469",
+          "sha256": "1da8f60f278248764366db69d46e51266378c05c48eb6ce6965b1b48a6a688ed",
           "why": "Public disclosure names connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -961,7 +961,7 @@
         },
         {
           "path": "apps/worker/src/jobs/federation-sync.ts",
-          "sha256": "f7fab3491211a7b2792f472736abd71e90ec95fba19b71f532c8f4f5831c1d2e",
+          "sha256": "d1c0acec88bf21527c5891e5b94569b76d007d40e7158fd47b4261410f691f69",
           "why": "Federation sync encrypts state deltas and posts them to configured peer endpoints"
         }
       ],
@@ -1003,7 +1003,7 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "71fa5fd9e6c6f9ec801b8a625121ada376560063c332fe58e0c7066c1dfb11c7",
+          "sha256": "6fcd5d153e0b23ba104d7373cd56e76ae8d2ed57eea001dc8bb5db08cf175ad0",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
