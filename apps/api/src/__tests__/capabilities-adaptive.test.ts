@@ -328,4 +328,71 @@ describe('POST /reverse-capability-intent — G: reverse-capability-intent', () 
     expect(res.status).toBe(200);
     expect((res.body as { action: string }).action).toBe('unknown');
   });
+
+  it('removes account-backed IDs before prompting and from model candidates while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockGetLlmClient.mockReturnValue({ hasProviders: true });
+    mockRunPrompt.mockResolvedValue({
+      fellBackToDeterministic: false,
+      output: {
+        action: 'create_issue',
+        candidate_capabilities: [
+          'gmail-mcp',
+          '@modelcontextprotocol/server-github',
+          'outlook-mcp',
+          'not-installed-mcp',
+        ],
+        confidence: 0.91,
+      },
+    });
+
+    const app = buildApp();
+    const res = await request(app, 'POST', '/api/capabilities/reverse-capability-intent', {
+      userMessage: 'Handle this follow-up',
+      installedRegistryIds: [
+        'gmail-mcp',
+        '@modelcontextprotocol/server-github',
+        'outlook-mcp',
+      ],
+    });
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: string[] };
+    };
+    expect(promptCall.inputs.installed_capabilities)
+      .toEqual(['@modelcontextprotocol/server-github']);
+    expect(res.body).toEqual({
+      action: 'create_issue',
+      candidate_capabilities: ['@modelcontextprotocol/server-github'],
+      confidence: 0.91,
+    });
+  });
+
+  it('preserves account-backed input under the exact experimental opt-in', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockGetLlmClient.mockReturnValue({ hasProviders: true });
+    mockRunPrompt.mockResolvedValue({
+      fellBackToDeterministic: false,
+      output: {
+        action: 'send_message',
+        candidate_capabilities: ['gmail-mcp', 'outlook-mcp'],
+        confidence: 0.88,
+      },
+    });
+
+    const app = buildApp();
+    const res = await request(app, 'POST', '/api/capabilities/reverse-capability-intent', {
+      userMessage: 'Send a status update',
+      installedRegistryIds: ['gmail-mcp', 'outlook-mcp'],
+    });
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: string[] };
+    };
+    expect(promptCall.inputs.installed_capabilities).toEqual(['gmail-mcp', 'outlook-mcp']);
+    expect((res.body as { candidate_capabilities: string[] }).candidate_capabilities)
+      .toEqual(['gmail-mcp', 'outlook-mcp']);
+  });
 });

@@ -1242,6 +1242,10 @@ export function createCapabilitiesRouter(): Router {
       const installedRegistryIds = Array.isArray(body?.installedRegistryIds)
         ? (body.installedRegistryIds as unknown[]).filter((x): x is string => typeof x === 'string')
         : [];
+      const connectionMode = loadConfig().googleConnectionMode;
+      const admittedRegistryIds = installedRegistryIds.filter((registryId) =>
+        !isGoogleCapabilityBlocked(connectionMode, { registryId }));
+      const admittedRegistryIdSet = new Set(admittedRegistryIds);
 
       const llmResolution = await resolveUserLlmClient(userId);
       const llmClient = llmResolution.client;
@@ -1257,7 +1261,7 @@ export function createCapabilitiesRouter(): Router {
             promptName: 'reverse-capability-intent',
             inputs: {
               user_message: body.userMessage,
-              installed_capabilities: installedRegistryIds,
+              installed_capabilities: admittedRegistryIds,
               risk_profile: '',
             },
             user: { userId },
@@ -1266,7 +1270,14 @@ export function createCapabilitiesRouter(): Router {
           });
 
           if (!result.fellBackToDeterministic) {
-            return res.json(result.output);
+            const candidateCapabilities = Array.isArray(result.output.candidate_capabilities)
+              ? result.output.candidate_capabilities.filter((registryId): registryId is string =>
+                  typeof registryId === 'string' && admittedRegistryIdSet.has(registryId))
+              : [];
+            return res.json({
+              ...result.output,
+              candidate_capabilities: candidateCapabilities,
+            });
           }
           return res.json({
             action: 'unknown',
