@@ -2003,8 +2003,10 @@ export function createCapabilitiesRouter(): Router {
       // Account-free filtering and free-text matching happen in application
       // code. Scan fixed-size raw batches for those modes so both the reported
       // total and offset are defined over visible rows, never over a raw page
-      // that may contain hidden history. Exact totals require visiting every
-      // matching row, but response memory and each database read remain bounded.
+      // that may contain hidden history. Keyset pagination prevents a newer
+      // concurrent audit row from shifting later batches and duplicating or
+      // skipping an entry. Exact totals require visiting every matching row,
+      // but response memory and each database read remain bounded.
       const requiresFullVisibilityScan = googleConnectionMode !== 'experimental' || q.length > 0;
       const visibleNodesFor = async (rows: readonly CapabilityAuditRow[]) => {
         const visibleRows = await filterCapabilityHistoryNodes(
@@ -2042,15 +2044,24 @@ export function createCapabilitiesRouter(): Router {
       } else {
         const scanBatchSize = 200;
         visibleTotal = 0;
-        for (let scanOffset = 0; scanOffset < total;) {
-          const dataResult = await query<CapabilityAuditRow>(
-            `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
-             FROM capability_provenance_nodes
-             WHERE ${where}
-             ORDER BY occurred_at DESC, id DESC
-             LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
-            [...params, scanBatchSize, scanOffset],
-          );
+        let cursor: { occurredAt: Date; id: string } | null = null;
+        while (true) {
+          const cursorCondition: string = cursor
+            ? ` AND (occurred_at, id) < ($${paramIdx}, $${paramIdx + 1})`
+            : '';
+          const scanParams: unknown[] = cursor
+            ? [...params, cursor.occurredAt, cursor.id, scanBatchSize]
+            : [...params, scanBatchSize];
+          const limitParamIdx: number = paramIdx + (cursor ? 2 : 0);
+          const dataResult: { rows: CapabilityAuditRow[]; rowCount: number | null } =
+            await query<CapabilityAuditRow>(
+              `SELECT id, node_type, ref_table, ref_id, server_id, occurred_at, payload
+               FROM capability_provenance_nodes
+               WHERE ${where}${cursorCondition}
+               ORDER BY occurred_at DESC, id DESC
+               LIMIT $${limitParamIdx}`,
+              scanParams,
+            );
           if (dataResult.rows.length === 0) break;
 
           const visibleBatch = await visibleNodesFor(dataResult.rows);
@@ -2058,7 +2069,10 @@ export function createCapabilitiesRouter(): Router {
             if (visibleTotal >= offset && pageNodes.length < limit) pageNodes.push(node);
             visibleTotal += 1;
           }
-          scanOffset += dataResult.rows.length;
+          const lastRow: CapabilityAuditRow | undefined =
+            dataResult.rows[dataResult.rows.length - 1];
+          if (!lastRow) break;
+          cursor = { occurredAt: lastRow.occurred_at, id: lastRow.id };
           if (dataResult.rows.length < scanBatchSize) break;
         }
       }

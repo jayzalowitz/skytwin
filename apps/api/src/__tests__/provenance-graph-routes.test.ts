@@ -618,7 +618,7 @@ describe('GET /api/capabilities/audit', () => {
     expect(typedBody.total).toBe(1);
   });
 
-  it('counts and paginates the complete visible audit set after account filtering', async () => {
+  it('counts and paginates the visible audit set without shifting after a newer insert', async () => {
     const safeNodes = [
       makeNode({
         id: 'dddddddd-0000-0000-0000-000000000020',
@@ -644,15 +644,35 @@ describe('GET /api/capabilities/audit', () => {
       id: 'dddddddd-0000-0000-0000-000000000024',
       payload: { provider: 'microsoft' },
     });
+    // This row represents an insert that arrives after the first raw batch.
+    // A second OFFSET page would shift and repeat an earlier row; the keyset
+    // cursor excludes it because it is newer than the last row already read.
+    const concurrentNewerNode = makeNode({
+      id: 'dddddddd-0000-0000-0000-000000000025',
+      occurred_at: new Date('2026-04-02T00:00:00.000Z'),
+      payload: { actionType: 'read_file' },
+    });
     mockQuery
       .mockResolvedValueOnce({ rows: [{ count: '203' }], rowCount: 1 })
       .mockResolvedValueOnce({
         rows: [...firstBatchBlocked, safeNodes[0]],
         rowCount: 200,
       })
-      .mockResolvedValueOnce({
-        rows: [safeNodes[1], finalBlocked, safeNodes[2]],
-        rowCount: 3,
+      .mockImplementationOnce(async (sql: string, params: unknown[]) => {
+        expect(sql).toContain('(occurred_at, id) < ($2, $3)');
+        expect(sql).not.toContain('OFFSET');
+        expect(params).toEqual([
+          USER_ID,
+          safeNodes[0]?.occurred_at,
+          safeNodes[0]?.id,
+          200,
+        ]);
+        expect(concurrentNewerNode.occurred_at.getTime())
+          .toBeGreaterThan(safeNodes[0]!.occurred_at.getTime());
+        return {
+          rows: [safeNodes[1], finalBlocked, safeNodes[2]],
+          rowCount: 3,
+        };
       });
 
     const { status, body } = await req(
@@ -666,8 +686,7 @@ describe('GET /api/capabilities/audit', () => {
     expect(typedBody.nodes.map((node) => node.id))
       .toEqual([safeNodes[1]?.id, safeNodes[2]?.id]);
     expect(typedBody.total).toBe(3);
-    expect(mockQuery.mock.calls[1]?.[1]).toEqual([USER_ID, 200, 0]);
-    expect(mockQuery.mock.calls[2]?.[1]).toEqual([USER_ID, 200, 200]);
+    expect(mockQuery.mock.calls[1]?.[1]).toEqual([USER_ID, 200]);
   });
 
   it('applies free-text matching after redaction when computing the visible total', async () => {
