@@ -1127,6 +1127,7 @@ async function runPackagedScenario(executablePath, profileRoot) {
       );
     return {
       sandboxedLaunchResult: "pass",
+      boundaryEnforcement: "continuous-inherited-macos-sandbox",
       ownedNonceResult: result.info.instanceNonce === nonce ? "pass" : "fail",
       apiReadinessResult: "pass",
       dashboardReadinessResult: "pass",
@@ -1140,6 +1141,7 @@ async function runPackagedScenario(executablePath, profileRoot) {
       ),
       observedLoopbackPorts: observedPorts,
       addressPolicy: "literal-ipv4-loopback-only",
+      socketSamplingRole: "corroborates-persistent-and-listening-sockets",
       foreignManagedSocketCount: 0,
       wildcardSocketCount: 0,
       externalSocketCount: 0,
@@ -1266,7 +1268,7 @@ export function buildReport({
         observed: {
           assertion:
             "The exact packaged fresh-profile sample scenario was confined to literal IPv4 loopback by a self-tested inherited macOS sandbox profile.",
-          measurement: `sandbox parent+child loopback pass/external EPERM; ${observation.sampleCount} owned socket samples; API/dashboard/sample read pass; two clean post-shutdown samples`,
+          measurement: `continuous inherited sandbox enforcement: parent+child loopback pass/external EPERM; ${observation.sampleCount} lsof samples corroborated persistent/listening owned sockets; API/dashboard/sample read pass; two clean post-shutdown samples`,
           exitCode: 0,
         },
       },

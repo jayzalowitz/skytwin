@@ -5238,6 +5238,7 @@ function hasCompleteNetworkBoundaryObservation(report) {
   ];
   const networkKeys = [
     "sandboxedLaunchResult",
+    "boundaryEnforcement",
     "ownedNonceResult",
     "apiReadinessResult",
     "dashboardReadinessResult",
@@ -5247,6 +5248,7 @@ function hasCompleteNetworkBoundaryObservation(report) {
     "maxOwnedSocketCount",
     "observedLoopbackPorts",
     "addressPolicy",
+    "socketSamplingRole",
     "foreignManagedSocketCount",
     "wildcardSocketCount",
     "externalSocketCount",
@@ -5346,6 +5348,7 @@ function hasCompleteNetworkBoundaryObservation(report) {
     isPlainRecord(network) &&
     sameStringSet(Object.keys(network), networkKeys) &&
     network.sandboxedLaunchResult === "pass" &&
+    network.boundaryEnforcement === "continuous-inherited-macos-sandbox" &&
     network.ownedNonceResult === "pass" &&
     network.apiReadinessResult === "pass" &&
     network.dashboardReadinessResult === "pass" &&
@@ -5363,6 +5366,8 @@ function hasCompleteNetworkBoundaryObservation(report) {
     network.maxOwnedSocketCount >= 4 &&
     sameStringSet(network.observedLoopbackPorts, [26257, 26258, 3100, 3200]) &&
     network.addressPolicy === "literal-ipv4-loopback-only" &&
+    network.socketSamplingRole ===
+      "corroborates-persistent-and-listening-sockets" &&
     network.foreignManagedSocketCount === 0 &&
     network.wildcardSocketCount === 0 &&
     network.externalSocketCount === 0 &&

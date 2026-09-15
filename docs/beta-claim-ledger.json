@@ -1021,8 +1021,8 @@
         },
         {
           "path": "scripts/release-claims/verifiers/network.explicit-boundaries.mjs",
-          "sha256": "2c26d3f2c44d601a5dffb7cd3fa5423c88b26d1fcd92afe8c14af90738f9d0e4",
-          "why": "Binds the exact macOS release ZIP and current attempt, self-tests continuously inherited loopback-only sandbox enforcement, corroborates it with stable owned process-tree Internet-socket inventories throughout a bounded account-free scenario, and requires graceful cleanup"
+          "sha256": "8725b91789c746a6df6ea3fb40def1315d4f5e647321ef573a0594c46df17bfe",
+          "why": "Binds the exact macOS release ZIP and current attempt, self-tests continuously inherited loopback-only sandbox enforcement, uses repeated lsof samples to corroborate persistent and listening owned process-tree sockets throughout a bounded account-free scenario, and requires graceful cleanup"
         },
         {
           "path": "scripts/release-claims/verifiers/sample.packaged-account-free.mjs",

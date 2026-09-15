@@ -9,15 +9,15 @@ All notable changes to SkyTwin will be documented in this file.
   ZIP, self-tests a deny-by-default sandbox by requiring parent and spawned
   child loopback success plus external `EPERM`, and launches the derived app in
   that inherited loopback-only profile with a closed environment. The sandbox
-  continuously enforces the boundary; repeated stable owned process-tree socket
-  inventories corroborate it while the verifier proves nonce-bound API,
-  dashboard, and one account-free sample read; wildcard, IPv6, external, UDP,
-  multicast, malformed, stale, reused, or foreign managed socket evidence
-  fails closed. Reports contain only bounded counts, canonical loopback ports,
-  boolean results, and release identities, and require graceful shutdown plus
-  two clean post-shutdown samples. The public disclosure for configured network
-  features remains unchanged. No tagged run has produced this machine evidence,
-  so the network claim remains limited and the release remains blocked.
+  continuously enforces the boundary; repeated `lsof` inventories corroborate
+  persistent and listening owned process-tree sockets while the verifier proves
+  nonce-bound API, dashboard, and one account-free sample read; wildcard, IPv6,
+  external, UDP, multicast, malformed, stale, reused, or foreign managed socket
+  evidence fails closed. Reports contain only bounded counts, canonical
+  loopback ports, boolean results, and release identities, and require graceful
+  shutdown plus two clean post-shutdown samples. The public disclosure for
+  configured network features remains unchanged. No tagged run has produced this
+  machine evidence, so the network claim remains limited and the release remains blocked.
 
 - **Packaged desktop storage now has a fail-closed macOS evidence verifier in
   source.** The verifier derives the exact application from the release ZIP,
@@ -57,6 +57,7 @@ All notable changes to SkyTwin will be documented in this file.
   Database-only owner cascades and `revokeAllForUser` still lack a linearizable
   broker-wide revocation barrier; that must be closed before a source consumer
   is activated.
+
 - **The macOS arm64 on-device inference evidence lane now has a fail-closed
   verifier in source.** It derives the application from the exact release ZIP,
   loads the probe from the artifact-contained API bundle, observes an immutable

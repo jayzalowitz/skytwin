@@ -104,6 +104,7 @@ function report() {
     },
     observation: {
       sandboxedLaunchResult: "pass",
+      boundaryEnforcement: "continuous-inherited-macos-sandbox",
       ownedNonceResult: "pass",
       apiReadinessResult: "pass",
       dashboardReadinessResult: "pass",
@@ -118,6 +119,7 @@ function report() {
       maxOwnedSocketCount: 8,
       observedLoopbackPorts: [26257, 26258, 3100, 3200],
       addressPolicy: "literal-ipv4-loopback-only",
+      socketSamplingRole: "corroborates-persistent-and-listening-sockets",
       foreignManagedSocketCount: 0,
       wildcardSocketCount: 0,
       externalSocketCount: 0,
@@ -571,27 +573,10 @@ describe("owned process-tree socket inventory", () => {
       name: "127.0.0.1:3100",
       state: "LISTEN",
     };
-    expect(
-      validateSocketInventory(
-        [
-          base,
-          {
-            ...base,
-            fd: "11",
-            name: "127.0.0.1:54321->127.0.0.1:3100",
-          },
-          {
-            ...base,
-            pid: 99,
-            command: "foreign",
-            name: "192.0.2.2:54321->192.0.2.3:3100",
-          },
-        ],
-        owned,
-        before,
-        after,
-      ),
-    ).toEqual({ ownedSocketCount: 2, loopbackPorts: [3100] });
+    expect(validateSocketInventory([base], owned, before, after)).toEqual({
+      ownedSocketCount: 1,
+      loopbackPorts: [3100],
+    });
     for (const mutation of [
       { name: "*:3100" },
       { name: "[::1]:3100" },
@@ -608,6 +593,48 @@ describe("owned process-tree socket inventory", () => {
           after,
         ),
       ).toThrow();
+  });
+
+  it("does not mistake a foreign connection's managed remote port for a managed listener", () => {
+    const records = parseProcessTable(ps);
+    expect(
+      validateSocketInventory(
+        [
+          {
+            pid: 99,
+            command: "foreign",
+            fd: "11",
+            protocol: "TCP",
+            name: "127.0.0.1:54321->127.0.0.1:3100",
+            state: "ESTABLISHED",
+          },
+        ],
+        ownedProcessTree(records, 10),
+        records,
+        records,
+      ),
+    ).toEqual({ ownedSocketCount: 0, loopbackPorts: [] });
+  });
+
+  it("excludes owned ephemeral client ports from the reported managed ports", () => {
+    const records = parseProcessTable(ps);
+    expect(
+      validateSocketInventory(
+        [
+          {
+            pid: 11,
+            command: "SkyTwin",
+            fd: "11",
+            protocol: "TCP",
+            name: "127.0.0.1:54321->127.0.0.1:3100",
+            state: "ESTABLISHED",
+          },
+        ],
+        ownedProcessTree(records, 10),
+        records,
+        records,
+      ),
+    ).toEqual({ ownedSocketCount: 1, loopbackPorts: [3100] });
   });
 
   it("rejects descendant exit, PID reuse, and stale socket samples", () => {
@@ -857,6 +884,9 @@ describe("network report publication applicability", () => {
         value.networkObservation.sandboxedLaunchResult = "skip";
       },
       (value) => {
+        value.networkObservation.boundaryEnforcement = "sampled-only";
+      },
+      (value) => {
         value.networkObservation.ownedNonceResult = "fail";
       },
       (value) => {
@@ -882,6 +912,9 @@ describe("network report publication applicability", () => {
       },
       (value) => {
         value.networkObservation.addressPolicy = "any-local";
+      },
+      (value) => {
+        value.networkObservation.socketSamplingRole = "complete-egress-proof";
       },
       (value) => {
         value.networkObservation.foreignManagedSocketCount = 1;
