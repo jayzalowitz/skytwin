@@ -549,4 +549,31 @@ describe('GET /api/dxt/imports', () => {
       expect.objectContaining({ status: 'pending' }),
     );
   });
+
+  it('hides stale account-backed imports while preserving neighboring history', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const blocked = await buildArtifact('custom-productivity', ['sendEmail']);
+    const visible = await buildArtifact('notion-mcp', ['notion.search']);
+    mockDxtImportRepo.listForUser.mockResolvedValueOnce([
+      {
+        ...makePendingImportRow(),
+        artifact_blob: blocked.blob,
+        artifact_sha256: blocked.sha256,
+        registry_id: 'custom-productivity',
+      },
+      {
+        ...makePendingImportRow(),
+        id: 'dddddddd-eeee-ffff-aaaa-555555555555',
+        artifact_blob: visible.blob,
+        artifact_sha256: visible.sha256,
+        registry_id: 'notion-mcp',
+      },
+    ]);
+
+    const result = await req(buildApp(), 'GET', '/api/dxt/imports');
+
+    expect(result.status).toBe(200);
+    expect((result.body as { imports: Array<{ registryId: string }> }).imports)
+      .toEqual([expect.objectContaining({ registryId: 'notion-mcp' })]);
+  });
 });

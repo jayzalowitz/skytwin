@@ -13,7 +13,10 @@ import {
 } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
-import { isGoogleCapabilityBlocked } from '../lib/google-capability-boundary.js';
+import {
+  isAccountFreePreviewServerBlocked,
+  isGoogleCapabilityBlocked,
+} from '../lib/google-capability-boundary.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
 // sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
@@ -918,8 +921,14 @@ export function createCapabilitiesRouter(): Router {
       ]);
       const googleConnectionMode = loadConfig().googleConnectionMode;
 
-      const visibleServers = allServers.filter((server) =>
-        !isBlockedGoogleServer(server, googleConnectionMode));
+      const visibleServers: McpServerRow[] = [];
+      for (const server of allServers) {
+        if (!await isAccountFreePreviewServerBlocked(
+          googleConnectionMode,
+          server,
+          (serverId) => mcpServerRepository.listSkillNamesForServer(serverId),
+        )) visibleServers.push(server);
+      }
       const visibleSuggestions = suggestions.filter((suggestion) =>
         !isGoogleCapabilityBlocked(googleConnectionMode, {
           registryId: suggestion.registry_id,
@@ -1509,9 +1518,15 @@ export function createCapabilitiesRouter(): Router {
         resumedServers = await mcpServerRepository.markAllResumedForUser(userId);
       } else {
         const googleConnectionMode = loadConfig().googleConnectionMode;
-        const pausedServers = (await mcpServerRepository.listForUser(userId))
-          .filter((server) => server.status === 'paused' &&
-            !isBlockedGoogleServer(server, googleConnectionMode));
+        const pausedServers: McpServerRow[] = [];
+        for (const server of await mcpServerRepository.listForUser(userId)) {
+          if (server.status !== 'paused' || await isAccountFreePreviewServerBlocked(
+            googleConnectionMode,
+            server,
+            (serverId) => mcpServerRepository.listSkillNamesForServer(serverId),
+          )) continue;
+          pausedServers.push(server);
+        }
         if (pausedServers.length === 0) {
           resumedServers = [];
         } else {

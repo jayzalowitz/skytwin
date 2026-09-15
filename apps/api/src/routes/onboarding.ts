@@ -16,6 +16,7 @@ import { createLogger } from '@skytwin/core';
 import { buildUserLlmClient } from '../lib/user-llm-client.js';
 import { loadConfig } from '@skytwin/config';
 import { isGoogleAccountIntegration } from '@skytwin/shared-types';
+import { isAccountFreePreviewServerBlocked } from '../lib/google-capability-boundary.js';
 
 const log = createLogger('api:onboarding');
 
@@ -166,9 +167,19 @@ export function createOnboardingRouter(): Router {
 
       // Check whether the user has any installed MCP servers
       const servers = await mcpServerRepository.listForUser(userId).catch(() => []);
-      const hasInstalledServers = servers.some(
-        (s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized',
-      );
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      let hasInstalledServers = false;
+      for (const server of servers) {
+        if ((server.status === 'active' || server.status === 'installed' || server.status === 'authorized') &&
+          !await isAccountFreePreviewServerBlocked(
+            googleConnectionMode,
+            server,
+            (serverId) => mcpServerRepository.listSkillNamesForServer(serverId),
+          )) {
+          hasInstalledServers = true;
+          break;
+        }
+      }
 
       // Check LLM provider availability
       const hasLlmProvider = await buildUserLlmClient(userId) !== null;

@@ -43,6 +43,7 @@ const {
   },
   mockMcpServerRepository: {
     listForUser: vi.fn().mockResolvedValue([]),
+    listSkillNamesForServer: vi.fn().mockResolvedValue([]),
   },
   mockQuery: vi.fn().mockResolvedValue({ rows: [{ count: '0' }] }),
 }));
@@ -121,6 +122,7 @@ describe('GET /api/onboarding/state', () => {
     mockQuery.mockResolvedValue({ rows: [{ count: '0' }] });
     // No installed servers
     mockMcpServerRepository.listForUser.mockResolvedValue([]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
   });
 
   it('returns isFirstRun=true for a new user with no memory or servers', async () => {
@@ -141,6 +143,43 @@ describe('GET /api/onboarding/state', () => {
     const { status, body } = await request(app, 'get', '/api/onboarding/state');
     expect(status).toBe(200);
     expect((body as { isFirstRun: boolean }).isFirstRun).toBe(false);
+  });
+
+  it('ignores retained account-backed servers for the disabled first-run decision', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'srv-google',
+        registry_id: 'gmail-mcp',
+        oauth_provider: 'google',
+        status: 'active',
+      },
+    ]);
+
+    const { status, body } = await request(buildApp(), 'get', '/api/onboarding/state');
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({
+      isFirstRun: true,
+      hasMemory: false,
+      hasInstalledServers: false,
+    });
+  });
+
+  it('ignores a retained custom server with account-backed cached skills', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepository.listForUser.mockResolvedValue([{
+      id: 'srv-custom',
+      registry_id: 'custom-productivity',
+      oauth_provider: null,
+      status: 'active',
+    }]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['readGmail']);
+
+    const { status, body } = await request(buildApp(), 'get', '/api/onboarding/state');
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ isFirstRun: true, hasInstalledServers: false });
   });
 
   it('reports hasLlmProvider=true when LLM client is available', async () => {

@@ -659,8 +659,22 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
 
       const statusFilter = typeof req.query['status'] === 'string' ? req.query['status'] : undefined;
       const rows = await dxtImportRepository.listForUser(userId, statusFilter ? { status: statusFilter } : undefined);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const visibleRows: typeof rows = [];
+      for (const row of rows) {
+        if (googleConnectionMode === 'experimental') {
+          visibleRows.push(row);
+          continue;
+        }
+        const artifact = deserialize(row.artifact_blob);
+        if (!artifact.success || !row.artifact_sha256.equals(artifact.data.computedSha256)) continue;
+        const capability = artifact.data.payload.capability;
+        if (!await isBlockedGoogleDxtCapability(capability.registryId, capability.skills)) {
+          visibleRows.push(row);
+        }
+      }
 
-      const imports = rows.map((r) => ({
+      const imports = visibleRows.map((r) => ({
         id: r.id,
         registryId: r.registry_id,
         sourceInstanceId: r.source_instance_id,
