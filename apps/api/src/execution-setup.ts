@@ -36,10 +36,11 @@ import {
   isAccountBackedRegistryIdentifier,
 } from '@skytwin/shared-types';
 import type { OpenClawCredentialRequirement } from '@skytwin/execution-router';
-import { accessLogRepository, credentialRequirementRepository, executionDispatchLeaseRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository } from '@skytwin/db';
+import { accessLogRepository, credentialRequirementRepository, executionDispatchLeaseRepository, ironClawToolRepository, serviceCredentialRepository, mcpServerChangelogRepository, mcpServerRepository } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { sseManager } from './sse.js';
 import { sharedKeyCache } from './routes/credential-vault.js';
+import { isAccountFreePreviewServerBlocked } from './lib/google-capability-boundary.js';
 
 const log = createLogger('api:execution');
 
@@ -202,13 +203,41 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
   return new ExecutionRouter(
     registry,
     executionDispatchLeaseRepository,
-    (action) => config.googleConnectionMode !== 'experimental' &&
-        isAccountBackedEmailOrCalendarAction(action)
-      ? {
+    async (action, userId) => {
+      if (config.googleConnectionMode === 'experimental') return { allowed: true };
+      if (isAccountBackedEmailOrCalendarAction(action)) {
+        return {
           allowed: false,
           reason: 'Account-backed email and calendar actions are unavailable in this preview.',
+        };
+      }
+
+      const serverId = action.parameters?.['mcpServerId'];
+      if (typeof serverId !== 'string' || serverId.trim().length === 0) {
+        return { allowed: true };
+      }
+
+      try {
+        const server = await mcpServerRepository.getById(serverId);
+        if (!server || server.user_id !== userId || await isAccountFreePreviewServerBlocked(
+          config.googleConnectionMode,
+          server,
+          (id) => mcpServerRepository.listSkillNamesForServer(id),
+        )) {
+          return {
+            allowed: false,
+            reason: 'The targeted capability is unavailable in this preview.',
+          };
         }
-      : { allowed: true },
+      } catch {
+        return {
+          allowed: false,
+          reason: 'The targeted capability is unavailable in this preview.',
+        };
+      }
+
+      return { allowed: true };
+    },
   );
 }
 

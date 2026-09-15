@@ -15,6 +15,7 @@ const {
   mockExecutionRouterConstructor,
   mockOpenClawAdapter,
   mockCredentialRequirementRepository,
+  mockMcpServerRepository,
   mockSseManager,
 } = vi.hoisted(() => {
   const registryMap = new Map<string, { adapter: unknown }>();
@@ -52,6 +53,7 @@ const {
     mockExecutionRouterConstructor: mockRouterConstructor,
     mockOpenClawAdapter: vi.fn(),
     mockCredentialRequirementRepository: { register: vi.fn(), getAllGrouped: vi.fn() },
+    mockMcpServerRepository: { getById: vi.fn(), listSkillNamesForServer: vi.fn() },
     mockSseManager: { emit: vi.fn(), emitAll: vi.fn() },
   };
 });
@@ -60,6 +62,7 @@ vi.mock('@skytwin/db', () => ({
   serviceCredentialRepository: mockServiceCredentialRepository,
   ironClawToolRepository: mockIronClawToolRepository,
   credentialRequirementRepository: mockCredentialRequirementRepository,
+  mcpServerRepository: mockMcpServerRepository,
   executionDispatchLeaseRepository: { start: vi.fn(), terminalize: vi.fn() },
 }));
 
@@ -199,6 +202,8 @@ describe('execution-setup', () => {
     mockAdapterRegistry._map.clear();
     mockServiceCredentialRepository.getAsMap.mockResolvedValue({});
     mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map());
+    mockMcpServerRepository.getById.mockResolvedValue(null);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
   });
 
   // =========================================================================
@@ -643,7 +648,7 @@ describe('execution-setup', () => {
           actionType: string;
           domain?: string;
           parameters?: Record<string, unknown>;
-        }) => { allowed: boolean }) | undefined;
+        }, userId: string) => Promise<{ allowed: boolean }>) | undefined;
       expect(guard).toBeTypeOf('function');
 
       for (const actionType of [
@@ -652,17 +657,100 @@ describe('execution-setup', () => {
         'calendar_update', 'rsvp_yes', 'get_calendar_events', 'sendEmail',
         'readEmail', 'respondToEvent', 'deleteEmails', 'schedule_focus_block',
       ]) {
-        expect(guard?.({ actionType, domain: 'generic' })).toMatchObject({ allowed: false });
+        await expect(guard?.({ actionType, domain: 'generic' }, 'owner-1'))
+          .resolves.toMatchObject({ allowed: false });
       }
-      expect(guard?.({ actionType: 'accept', domain: 'calendar' }))
-        .toMatchObject({ allowed: false });
-      expect(guard?.({
+      await expect(guard?.({ actionType: 'accept', domain: 'calendar' }, 'owner-1'))
+        .resolves.toMatchObject({ allowed: false });
+      await expect(guard?.({
         actionType: 'invoke_tool',
         domain: 'developer',
         parameters: { mcpServerId: 'server-1', mcpToolName: 'read_email' },
-      })).toMatchObject({ allowed: false });
-      expect(guard?.({ actionType: 'create_issue', domain: 'developer' }))
-        .toEqual({ allowed: true });
+      }, 'owner-1')).resolves.toMatchObject({ allowed: false });
+      await expect(guard?.({ actionType: 'create_issue', domain: 'developer' }, 'owner-1'))
+        .resolves.toEqual({ allowed: true });
+    });
+
+    it('blocks a provider-bound MCP target with a neutral tool before preparation', async () => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'disabled',
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: '',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+      mockMcpServerRepository.getById.mockResolvedValue({
+        id: 'server-google-drive',
+        user_id: 'owner-1',
+        registry_id: 'google-drive-mcp',
+        oauth_provider: 'google',
+      });
+
+      await createExecutionRouter();
+      const guard = mockExecutionRouterConstructor.mock.calls.at(-1)?.[2] as
+        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string) =>
+          Promise<{ allowed: boolean }>) | undefined;
+
+      await expect(guard?.({
+        actionType: 'invoke_tool',
+        parameters: { mcpServerId: 'server-google-drive', mcpToolName: 'read_file' },
+      }, 'owner-1')).resolves.toMatchObject({ allowed: false });
+      expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['missing server row', null, []],
+      ['wrong owner', {
+        id: 'server-1', user_id: 'other-user', registry_id: null, oauth_provider: null,
+      }, []],
+      ['empty inventory', {
+        id: 'server-1', user_id: 'owner-1', registry_id: null, oauth_provider: null,
+      }, []],
+    ])('fails closed for a targeted MCP server with %s', async (_label, server, skills) => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'disabled',
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: '',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+      mockMcpServerRepository.getById.mockResolvedValue(server);
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(skills);
+
+      await createExecutionRouter();
+      const guard = mockExecutionRouterConstructor.mock.calls.at(-1)?.[2] as
+        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string) =>
+          Promise<{ allowed: boolean }>) | undefined;
+
+      await expect(guard?.({
+        actionType: 'invoke_tool',
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'search' },
+      }, 'owner-1')).resolves.toMatchObject({ allowed: false });
+    });
+
+    it('preserves exact experimental MCP admission without consulting persisted inventory', async () => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'experimental',
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: '',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+
+      await createExecutionRouter();
+      const guard = mockExecutionRouterConstructor.mock.calls.at(-1)?.[2] as
+        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string) =>
+          Promise<{ allowed: boolean }>) | undefined;
+
+      await expect(guard?.({
+        actionType: 'invoke_tool',
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'read_file' },
+      }, 'owner-1')).resolves.toEqual({ allowed: true });
+      expect(mockMcpServerRepository.getById).not.toHaveBeenCalled();
+      expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
     });
   });
 
