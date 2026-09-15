@@ -15,7 +15,10 @@ const {
   executeRollback,
   query,
 } = vi.hoisted(() => ({
-  mcpServers: { getById: vi.fn() },
+  mcpServers: {
+    getById: vi.fn(),
+    listSkillNamesForServer: vi.fn().mockResolvedValue(['filesystem_rollback']),
+  },
   executions: { getRollbackTargetsByServer: vi.fn() },
   users: { findById: vi.fn() },
   policies: { getEnabledPolicies: vi.fn(), evaluate: vi.fn() },
