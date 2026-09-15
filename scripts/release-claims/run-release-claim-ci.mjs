@@ -427,7 +427,12 @@ function assertCanonicalIndex(root, snapshot) {
   }
 }
 
-function assertExactTaggedSource(root, sourceCommit, snapshot) {
+function assertExactTaggedSource(
+  root,
+  sourceCommit,
+  snapshot,
+  { allowUntracked = false } = {},
+) {
   const head = gitOutput(
     root,
     ["rev-parse", "--verify", "HEAD^{commit}"],
@@ -474,10 +479,18 @@ function assertExactTaggedSource(root, sourceCommit, snapshot) {
     ["ls-files", "--others", "--exclude-per-directory=.gitignore", "-z"],
     "release claim untracked source inventory",
   );
-  if (untracked.length !== 0)
+  if (!allowUntracked && untracked.length !== 0)
     throw new Error(
       "release claim source tree changed while checks were running",
     );
+}
+
+export function assertExactTrackedCheckout(root, sourceCommit) {
+  root = realpathSync(resolve(root));
+  const snapshot = captureSourceSnapshot(root, sourceCommit);
+  assertExactTaggedSource(root, sourceCommit, snapshot, {
+    allowUntracked: true,
+  });
 }
 
 export function releaseClaimCommandEnvironment(runtime) {

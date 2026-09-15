@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -22,6 +23,7 @@ import {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  CANONICAL_RELEASE_SAFETY_ASSET_PATHS,
   MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS,
   RELEASE_ARTIFACT_GENERATOR_PATH,
   RELEASE_ARTIFACT_MANIFEST_PATH,
@@ -31,6 +33,7 @@ import {
   RELEASE_ARTIFACT_VALIDATOR_PATH,
   RELEASE_ATTESTATION_MATERIALIZER_PATH,
   RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_ARTIFACT_FILES,
   RELEASE_CLAIM_CI_HARNESS_PATH,
   RELEASE_CLAIM_CI_LEDGER_PATH,
   RELEASE_CLAIM_CI_PRODUCER_STEP,
@@ -57,6 +60,7 @@ import {
   isAllowlistedVerificationCommand,
   isValidSpdx23Document,
   normalizeReleaseTagToRepositoryVersion,
+  readPublicationEvidenceManifest,
   runChecks,
   runPublicationChecks,
   runPublicationPreflight,
@@ -940,6 +944,7 @@ ${CANONICAL_UPDATE_FEED_RUN.split("\n")
         with:
           path: artifacts
       - name: Verify post-build release evidence
+        id: verify-release-evidence
         env:
           GITHUB_TOKEN: \${{ github.token }}
         run: |
@@ -972,12 +977,14 @@ ${CANONICAL_RELEASE_EVIDENCE_RUN.split("\n")
           files: |
 ${[...CANONICAL_RELEASE_ASSETS].map(([name]) => `            artifacts/${name}/*`).join("\n")}
 ${CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS.map((path) => `            ${path}`).join("\n")}
+${CANONICAL_RELEASE_SAFETY_ASSET_PATHS.map((path) => `            ${path}`).join("\n")}
             ${ARTIFACT_VERIFICATION_RELEASE_PATTERN}
             .release-evidence/manifest.json
       - name: Verify exact draft assets and publish
         env:
           GITHUB_TOKEN: \${{ github.token }}
           RELEASE_ID: \${{ steps.create-release-draft.outputs.id }}
+          RELEASE_EVIDENCE_MANIFEST_SHA256: \${{ steps.verify-release-evidence.outputs.manifest-sha256 }}
         run: node scripts/release-claims/publish-verified-draft.mjs .release-evidence/manifest.json
   approved-copy:
     runs-on: ubuntu-latest
@@ -1169,6 +1176,41 @@ describe("release claim ledger validation", () => {
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "post-build release evidence gate must execute before the canonical publisher",
     );
+  });
+
+  it("requires the checker to emit the digest of the manifest bytes it verified", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const workflowPath = join(root, ".github/workflows/build.yml");
+    const workflow = readFileSync(workflowPath, "utf8");
+    const canonicalOutput = '--github-output "$GITHUB_OUTPUT"';
+    expect(workflow).toContain(canonicalOutput);
+    writeFileSync(
+      workflowPath,
+      workflow.replace(
+        canonicalOutput,
+        "/usr/bin/sha256sum .release-evidence/manifest.json",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "post-build release evidence gate must execute with canonical fail-closed controls",
+    );
+  });
+
+  it("returns the digest of exact stable manifest bytes and rejects hardlinks", () => {
+    const root = makeRoot();
+    const manifestPath = join(root, "manifest.json");
+    const bytes = '{"schemaVersion":1}\n';
+    writeFileSync(manifestPath, bytes);
+    expect(readPublicationEvidenceManifest(root, "manifest.json")).toEqual({
+      manifest: { schemaVersion: 1 },
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+    const hardlinkPath = join(root, "manifest-hardlink.json");
+    linkSync(manifestPath, hardlinkPath);
+    expect(() =>
+      readPublicationEvidenceManifest(root, "manifest-hardlink.json"),
+    ).toThrow("evidence manifest must be single-link");
   });
 
   it("rejects credentials on the packaged sample execution step", () => {
@@ -5674,6 +5716,41 @@ ${step}`,
       })),
     })}\n`;
     write(root, "artifacts/release-claims-ci/result.json", ciResult);
+    const adversarialReport = '{"fixture":"adversarial"}\n';
+    const adversarialSha256 = createHash("sha256")
+      .update(adversarialReport)
+      .digest("hex");
+    const adversarialChecksum = `${adversarialSha256}  adversarial-evidence.json\n`;
+    const safetyReport = '{"fixture":"release-safety"}\n';
+    write(
+      root,
+      "artifacts/release-claims-ci/adversarial-evidence.json",
+      adversarialReport,
+    );
+    write(
+      root,
+      "artifacts/release-claims-ci/adversarial-evidence.json.sha256",
+      adversarialChecksum,
+    );
+    write(
+      root,
+      "artifacts/release-claims-ci/release-safety-evidence.json",
+      safetyReport,
+    );
+    const ciContents = new Map([
+      ["claim-result", ciResult],
+      ["adversarial-report", adversarialReport],
+      ["adversarial-checksum", adversarialChecksum],
+      ["release-safety-report", safetyReport],
+    ]);
+    const ciFiles = RELEASE_CLAIM_CI_ARTIFACT_FILES.map(
+      ({ role, downloadedPath }) => ({
+        role,
+        path: downloadedPath,
+        sha256: createHash("sha256").update(ciContents.get(role)).digest("hex"),
+        sizeBytes: Buffer.byteLength(ciContents.get(role)),
+      }),
+    );
     const evidence = {
       claimId: "encryption.oauth-default",
       kind: "ci",
@@ -5713,6 +5790,31 @@ ${step}`,
       runId,
       runAttempt: 1,
       runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      ciEvidenceArtifact: {
+        artifactId: 903,
+        artifactName: "release-claims-ci",
+        artifactSha256: "a".repeat(64),
+        artifactCreatedAt: "2026-09-15T01:06:00Z",
+        artifactUpdatedAt: "2026-09-15T01:06:00Z",
+        repository: "owner/repository",
+        sourceCommit: commit,
+        ref,
+        runId,
+        runAttempt: 1,
+        runAttemptStartedAt: ATTEMPT_STARTED_AT,
+        producerJobId: 902,
+        producerJobName: "release-claim-ci",
+        producerJobStatus: "completed",
+        producerJobConclusion: "success",
+        producerJobStartedAt: "2026-09-15T01:01:00Z",
+        producerJobCompletedAt: "2026-09-15T01:10:00Z",
+        uploadStepName: RELEASE_CLAIM_CI_UPLOAD_STEP,
+        uploadStepStatus: "completed",
+        uploadStepConclusion: "success",
+        uploadStepStartedAt: "2026-09-15T01:05:00Z",
+        uploadStepCompletedAt: "2026-09-15T01:07:00Z",
+        files: ciFiles,
+      },
       releaseAssets,
       verificationAssets: makeVerificationAssets(root, releaseAssets),
       evidence: [evidence],
@@ -5720,11 +5822,11 @@ ${step}`,
     let jobRunId = runId;
     let jobHeadSha = commit;
     let jobsTotalCount = 1;
-    let jobConclusion = "failure";
+    let jobConclusion = "success";
     let producerStepConclusion = "success";
     let producerStepCount = 1;
     let uploadStepConclusion = "success";
-    let readinessStepConclusion = "failure";
+    let readinessStepConclusion = "success";
     const fetchImpl = async (url) => {
       const text = String(url);
       let body;
@@ -5770,6 +5872,7 @@ ${step}`,
       } else if (text.includes("/jobs/")) {
         body = {
           id: 902,
+          run_id: runId,
           name: "release-claim-ci",
           status: "completed",
           conclusion: jobConclusion,
@@ -5781,18 +5884,24 @@ ${step}`,
           steps: [
             {
               name: RELEASE_SAFETY_EVIDENCE_STEP,
+              status: "completed",
               conclusion: "success",
             },
             ...Array.from({ length: producerStepCount }, () => ({
               name: RELEASE_CLAIM_CI_PRODUCER_STEP,
+              status: "completed",
               conclusion: producerStepConclusion,
             })),
             {
               name: RELEASE_CLAIM_CI_UPLOAD_STEP,
+              status: "completed",
               conclusion: uploadStepConclusion,
+              started_at: "2026-09-15T01:05:00Z",
+              completed_at: "2026-09-15T01:07:00Z",
             },
             {
               name: RELEASE_CLAIM_CI_READINESS_STEP,
+              status: "completed",
               conclusion: readinessStepConclusion,
             },
           ],
@@ -5803,6 +5912,8 @@ ${step}`,
           name: "release-claims-ci",
           expired: false,
           digest: `sha256:${"a".repeat(64)}`,
+          created_at: "2026-09-15T01:06:00Z",
+          updated_at: "2026-09-15T01:06:00Z",
           workflow_run: { id: runId, head_sha: commit },
         };
       } else {
@@ -5815,6 +5926,10 @@ ${step}`,
       }
       return { ok: true, json: async () => body };
     };
+    const adversarialEvidenceVerifier = vi.fn(() => ({ scenarioCount: 10 }));
+    const releaseSafetyEvidenceVerifier = vi.fn(() => ({
+      status: "limited",
+    }));
     const options = {
       root,
       repository: "owner/repository",
@@ -5824,15 +5939,117 @@ ${step}`,
       triggerRef: ref,
       githubToken: "token",
       fetchImpl,
+      adversarialEvidenceVerifier,
+      releaseSafetyEvidenceVerifier,
     };
     expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
       [],
     );
-    jobConclusion = "success";
-    readinessStepConclusion = "success";
-    expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
-      [],
+    expect(adversarialEvidenceVerifier).toHaveBeenCalledWith(
+      join(root, "artifacts/release-claims-ci/adversarial-evidence.json"),
+      join(
+        root,
+        "scripts/release-evidence/adversarial-source-checkout-baseline.json",
+      ),
+      expect.objectContaining({
+        expectedCommit: commit,
+        trackedExactCheckout: true,
+      }),
     );
+    expect(releaseSafetyEvidenceVerifier).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requireComplete: false,
+        trackedExactCheckout: true,
+        expected: expect.objectContaining({
+          sourceCommit: commit,
+          runId,
+          runAttempt: 1,
+        }),
+      }),
+    );
+
+    const canonicalCiEvidenceArtifact = manifest.ciEvidenceArtifact;
+    delete manifest.ciEvidenceArtifact;
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("ciEvidenceArtifact has unexpected"),
+      ),
+    ).toBe(true);
+    manifest.ciEvidenceArtifact = canonicalCiEvidenceArtifact;
+
+    const checksumPath =
+      "artifacts/release-claims-ci/adversarial-evidence.json.sha256";
+    const checksumBinding = manifest.ciEvidenceArtifact.files.find(
+      ({ role }) => role === "adversarial-checksum",
+    );
+    const originalChecksum = readFileSync(join(root, checksumPath), "utf8");
+    const changedChecksum = `${"0".repeat(64)}  adversarial-evidence.json\n`;
+    write(root, checksumPath, changedChecksum);
+    checksumBinding.sha256 = createHash("sha256")
+      .update(changedChecksum)
+      .digest("hex");
+    checksumBinding.sizeBytes = Buffer.byteLength(changedChecksum);
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("checksum is not canonical"),
+      ),
+    ).toBe(true);
+    write(root, checksumPath, originalChecksum);
+    checksumBinding.sha256 = createHash("sha256")
+      .update(originalChecksum)
+      .digest("hex");
+    checksumBinding.sizeBytes = Buffer.byteLength(originalChecksum);
+
+    write(root, "artifacts/release-claims-ci/unexpected.json", "{}\n");
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("member inventory does not exactly equal"),
+      ),
+    ).toBe(true);
+    rmSync(join(root, "artifacts/release-claims-ci/unexpected.json"));
+
+    const safetyPath =
+      "artifacts/release-claims-ci/release-safety-evidence.json";
+    const outsideSafety = join(root, "outside-safety-evidence.json");
+    writeFileSync(outsideSafety, safetyReport);
+    rmSync(join(root, safetyPath));
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("member inventory does not exactly equal"),
+      ),
+    ).toBe(true);
+    symlinkSync(outsideSafety, join(root, safetyPath));
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("contains a symlink"),
+      ),
+    ).toBe(true);
+    rmSync(join(root, safetyPath));
+    linkSync(outsideSafety, join(root, safetyPath));
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("is not single-link"),
+      ),
+    ).toBe(true);
+    rmSync(join(root, safetyPath));
+    rmSync(outsideSafety);
+    write(root, safetyPath, safetyReport);
+
+    options.releaseSafetyEvidenceVerifier = vi.fn(() => ({ status: "pass" }));
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("must remain limited"),
+      ),
+    ).toBe(true);
+    options.releaseSafetyEvidenceVerifier = releaseSafetyEvidenceVerifier;
+
+    manifest.ciEvidenceArtifact.artifactCreatedAt = "2026-09-15T01:04:59Z";
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("producer/upload timeline"),
+      ),
+    ).toBe(true);
+    manifest.ciEvidenceArtifact.artifactCreatedAt = "2026-09-15T01:06:00Z";
     const tamperedReport = JSON.parse(ciResult);
     tamperedReport.sourceDigests[0].sha256 = "f".repeat(64);
     const tamperedReportBytes = `${JSON.stringify(tamperedReport)}\n`;

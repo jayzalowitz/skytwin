@@ -189,7 +189,6 @@ test('accepts canonical fixture-bound evidence matching the live checkout', () =
   );
   assert.equal(verified.scenarioCount, baseline.exactIds.length);
 }));
-
 test('reads the trusted baseline and fixture directly from an immutable commit', () =>
   withRepository((context) => {
     const trustedCommit = commitTrustedEvidence(context.directory);
@@ -769,6 +768,32 @@ test('rejects stale source identity and mismatched live clean state', () => with
     /must be clean/,
   );
 }));
+
+test('tracked-exact publication mode permits generated files but rejects hidden tracked changes', () =>
+  withRepository((context) => {
+    writeFileSync(join(context.directory, 'publication-output.json'), 'generated\n');
+    const options = { ...context.options, trackedExactCheckout: true };
+    const verified = verifyAdversarialEvidence(
+      writeEvidence(context.directory, validReport(context.commit)),
+      baselinePath,
+      options,
+    );
+    assert.equal(verified.scenarioCount, baseline.exactIds.length);
+
+    execFileSync('git', ['update-index', '--assume-unchanged', '.gitignore'], {
+      cwd: context.directory,
+    });
+    writeFileSync(join(context.directory, '.gitignore'), 'changed\n');
+    assert.throws(
+      () =>
+        verifyAdversarialEvidence(
+          writeEvidence(context.directory, validReport(context.commit)),
+          baselinePath,
+          options,
+        ),
+      /skip-worktree or assume-unchanged/,
+    );
+  }));
 
 test('rejects noncanonical bytes and duplicate JSON keys', () => withRepository((context) => {
   const report = validReport(context.commit);

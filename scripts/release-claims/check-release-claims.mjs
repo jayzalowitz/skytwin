@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
+  appendFileSync,
   existsSync,
   lstatSync,
   readFileSync,
@@ -12,6 +13,9 @@ import {
 import { basename, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
+import { readStableRegularFile } from "../release-artifacts/file-integrity.mjs";
+import { verifyAdversarialEvidence } from "../release-evidence/verify-adversarial-evidence.mjs";
+import { verifyReleaseSafetyEvidence } from "../release-evidence/verify-release-safety-evidence.mjs";
 import {
   ARTIFACT_VERIFICATION_DIRECTORY,
   ARTIFACT_VERIFICATION_RELEASE_PATTERN,
@@ -23,9 +27,11 @@ import {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  CANONICAL_RELEASE_SAFETY_ASSET_PATHS,
   MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS,
   PINNED_RELEASE_WORKFLOW_ACTIONS,
   RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_ARTIFACT_FILES,
   RELEASE_CLAIM_CI_HARNESS_PATH,
   RELEASE_CLAIM_CI_LEDGER_PATH,
   RELEASE_CLAIM_CI_PRODUCER_STEP,
@@ -65,9 +71,11 @@ export {
   CANONICAL_MACHINE_EVIDENCE_MATRIX,
   CANONICAL_MACHINE_VERIFIER_STEP,
   CANONICAL_RELEASE_ASSETS,
+  CANONICAL_RELEASE_SAFETY_ASSET_PATHS,
   MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS,
   PINNED_RELEASE_WORKFLOW_ACTIONS,
   RELEASE_CLAIM_CI_CONSTANTS_PATH,
+  RELEASE_CLAIM_CI_ARTIFACT_FILES,
   RELEASE_CLAIM_CI_HARNESS_PATH,
   RELEASE_CLAIM_CI_LEDGER_PATH,
   RELEASE_CLAIM_CI_PRODUCER_STEP,
@@ -489,11 +497,13 @@ node scripts/release-claims/check-release-claims.mjs \\
   --repository "\${GITHUB_REPOSITORY}" \\
   --run-id "\${GITHUB_RUN_ID}" \\
   --ref "\${GITHUB_REF}" \\
-  --evidence-manifest .release-evidence/manifest.json`;
+  --evidence-manifest .release-evidence/manifest.json \\
+  --github-output "$GITHUB_OUTPUT"`;
 
 const CANONICAL_RELEASE_FILE_PATTERNS = new Set([
   ...CANONICAL_RELEASE_ASSETS.map(([name]) => `artifacts/${name}/*`),
   ...CANONICAL_DURABLE_EVIDENCE_REPORT_PATHS,
+  ...CANONICAL_RELEASE_SAFETY_ASSET_PATHS,
   ARTIFACT_VERIFICATION_RELEASE_PATTERN,
   ".release-evidence/manifest.json",
 ]);
@@ -2014,6 +2024,120 @@ function validateArtifactVerificationAssetManifest(manifest, errors) {
       errors,
       "release evidence manifest is missing artifact-verification provenance bundles",
     );
+}
+
+function validateCiEvidenceArtifactManifest(manifest, errors) {
+  const initialErrorCount = errors.length;
+  const binding = manifest?.ciEvidenceArtifact;
+  const prefix = "release evidence manifest ciEvidenceArtifact";
+  const expectedKeys = [
+    "artifactId",
+    "artifactName",
+    "artifactSha256",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "repository",
+    "sourceCommit",
+    "ref",
+    "runId",
+    "runAttempt",
+    "runAttemptStartedAt",
+    "producerJobId",
+    "producerJobName",
+    "producerJobStatus",
+    "producerJobConclusion",
+    "producerJobStartedAt",
+    "producerJobCompletedAt",
+    "uploadStepName",
+    "uploadStepStatus",
+    "uploadStepConclusion",
+    "uploadStepStartedAt",
+    "uploadStepCompletedAt",
+    "files",
+  ];
+  if (
+    !isPlainRecord(binding) ||
+    !sameStringSet(Object.keys(binding), expectedKeys)
+  ) {
+    addError(errors, `${prefix} has unexpected or missing fields`);
+    return false;
+  }
+  if (!Number.isSafeInteger(binding.artifactId) || binding.artifactId <= 0)
+    addError(errors, `${prefix}.artifactId must be a positive integer`);
+  if (binding.artifactName !== CI_EVIDENCE_ARTIFACT_NAME)
+    addError(
+      errors,
+      `${prefix}.artifactName must be ${CI_EVIDENCE_ARTIFACT_NAME}`,
+    );
+  if (!SOURCE_DIGEST.test(binding.artifactSha256 ?? ""))
+    addError(errors, `${prefix}.artifactSha256 must be a SHA-256 digest`);
+  if (!GITHUB_REPOSITORY.test(binding.repository ?? ""))
+    addError(errors, `${prefix}.repository must be an owner/repository name`);
+  if (!COMMIT_SHA.test(binding.sourceCommit ?? ""))
+    addError(errors, `${prefix}.sourceCommit must be a commit SHA`);
+  if (!isNonEmptyString(binding.ref))
+    addError(errors, `${prefix}.ref is required`);
+  for (const field of ["runId", "runAttempt", "producerJobId"])
+    if (!Number.isSafeInteger(binding[field]) || binding[field] <= 0)
+      addError(errors, `${prefix}.${field} must be a positive integer`);
+  for (const field of [
+    "runAttemptStartedAt",
+    "artifactCreatedAt",
+    "artifactUpdatedAt",
+    "producerJobStartedAt",
+    "producerJobCompletedAt",
+    "uploadStepStartedAt",
+    "uploadStepCompletedAt",
+  ])
+    if (canonicalGithubTimestampMs(binding[field]) === null)
+      addError(
+        errors,
+        `${prefix}.${field} must be a canonical GitHub timestamp`,
+      );
+  if (
+    binding.producerJobName !== CI_EVIDENCE_JOB_NAME ||
+    binding.producerJobStatus !== "completed" ||
+    binding.producerJobConclusion !== "success" ||
+    binding.uploadStepName !== RELEASE_CLAIM_CI_UPLOAD_STEP ||
+    binding.uploadStepStatus !== "completed" ||
+    binding.uploadStepConclusion !== "success"
+  )
+    addError(
+      errors,
+      `${prefix} must identify the successful canonical producer/upload`,
+    );
+
+  const expectedFiles = RELEASE_CLAIM_CI_ARTIFACT_FILES.map(
+    ({ role, downloadedPath }) => ({ role, path: downloadedPath }),
+  );
+  const files = asArray(binding.files);
+  if (files.length !== expectedFiles.length) {
+    addError(
+      errors,
+      `${prefix}.files must contain the exact four canonical members`,
+    );
+    return false;
+  }
+  for (const [index, expected] of expectedFiles.entries()) {
+    const file = files[index];
+    const filePrefix = `${prefix}.files[${index}]`;
+    if (
+      !isPlainRecord(file) ||
+      !sameStringSet(Object.keys(file), [
+        "role",
+        "path",
+        "sha256",
+        "sizeBytes",
+      ]) ||
+      file.role !== expected.role ||
+      file.path !== expected.path ||
+      !SOURCE_DIGEST.test(file.sha256 ?? "") ||
+      !Number.isSafeInteger(file.sizeBytes) ||
+      file.sizeBytes <= 0
+    )
+      addError(errors, `${filePrefix} is not the canonical member binding`);
+  }
+  return errors.length === initialErrorCount;
 }
 
 function collectDownloadedArtifactSubjects(root, artifactName, errors) {
@@ -3559,7 +3683,8 @@ release-claims-ci/release-safety-evidence.json
   if (
     evidenceGateIndex === -1 ||
     !isRecord(evidenceStep) ||
-    !hasExactKeys(evidenceStep, ["name", "env", "run"]) ||
+    !hasExactKeys(evidenceStep, ["name", "id", "env", "run"]) ||
+    evidenceStep.id !== "verify-release-evidence" ||
     !hasExactEnvironment(evidenceStep, githubTokenEnvironment) ||
     executableEvidenceRun !== CANONICAL_RELEASE_EVIDENCE_RUN
   )
@@ -3720,6 +3845,8 @@ release-claims-ci/release-safety-evidence.json
     env: {
       GITHUB_TOKEN: "${{ github.token }}",
       RELEASE_ID: "${{ steps.create-release-draft.outputs.id }}",
+      RELEASE_EVIDENCE_MANIFEST_SHA256:
+        "${{ steps.verify-release-evidence.outputs.manifest-sha256 }}",
     },
     error:
       "controlled draft verification and publication must use canonical fail-closed controls",
@@ -6478,6 +6605,8 @@ export async function verifyPublicationEvidence(
     githubToken,
     fetchImpl = globalThis.fetch,
     attestationVerifier = verifyGitHubArtifactAttestation,
+    adversarialEvidenceVerifier = verifyAdversarialEvidence,
+    releaseSafetyEvidenceVerifier = verifyReleaseSafetyEvidence,
   } = {},
 ) {
   const errors = [];
@@ -6550,6 +6679,12 @@ export async function verifyPublicationEvidence(
       if (kind !== "source") requiredPairs.add(`${readiness.claimId}:${kind}`);
     }
   }
+  const requiresCiEvidence = [...requiredPairs].some((pair) =>
+    pair.endsWith(":ci"),
+  );
+  const ciBindingValid = requiresCiEvidence
+    ? validateCiEvidenceArtifactManifest(manifest, errors)
+    : false;
   const evidenceEntries = [];
   const seenPairs = new Set();
   for (const [index, evidence] of asArray(manifest?.evidence).entries()) {
@@ -6775,6 +6910,223 @@ export async function verifyPublicationEvidence(
     exactAttemptJobsById.set(job.id, job);
   }
 
+  const ciBinding = manifest.ciEvidenceArtifact;
+  if (ciEntries.length > 0 && ciBindingValid) {
+    const ciBindingPrefix = "release CI evidence artifact";
+    const [ciJobResponse, ciArtifactResponse] = await Promise.all([
+      fetchChecked(
+        fetchImpl,
+        `${apiRoot}/jobs/${ciBinding.producerJobId}`,
+        { headers },
+        `${ciBindingPrefix} job`,
+        errors,
+      ),
+      fetchChecked(
+        fetchImpl,
+        `${apiRoot}/artifacts/${ciBinding.artifactId}`,
+        { headers },
+        ciBindingPrefix,
+        errors,
+      ),
+    ]);
+    let ciBindingJob;
+    let ciBindingArtifact;
+    if (ciJobResponse && ciArtifactResponse) {
+      try {
+        [ciBindingJob, ciBindingArtifact] = await Promise.all([
+          ciJobResponse.json(),
+          ciArtifactResponse.json(),
+        ]);
+      } catch {
+        addError(errors, `${ciBindingPrefix} API response was not valid JSON`);
+      }
+    }
+    let liveCiSteps;
+    let liveCiUploadStep;
+    if (ciBindingJob) {
+      try {
+        liveCiSteps = canonicalReleaseClaimCiJobSteps(ciBindingJob);
+        liveCiUploadStep = liveCiSteps.uploadStep;
+      } catch {
+        addError(errors, `${ciBindingPrefix} job steps are not canonical`);
+      }
+    }
+    const exactAttemptCiJob = exactAttemptJobsById.get(ciBinding.producerJobId);
+    const timeline = [
+      ciBinding.runAttemptStartedAt,
+      ciBinding.producerJobStartedAt,
+      ciBinding.uploadStepStartedAt,
+      ciBinding.artifactCreatedAt,
+      ciBinding.uploadStepCompletedAt,
+      ciBinding.producerJobCompletedAt,
+      ciBinding.artifactUpdatedAt,
+    ].map(canonicalGithubTimestampMs);
+    if (
+      !ciBindingJob ||
+      !ciBindingArtifact ||
+      !liveCiUploadStep ||
+      ciBinding.repository !== repository ||
+      ciBinding.sourceCommit !== releaseCommit ||
+      ciBinding.ref !== triggerRef ||
+      ciBinding.runId !== runId ||
+      ciBinding.runAttempt !== manifest.runAttempt ||
+      ciBinding.runAttemptStartedAt !== manifest.runAttemptStartedAt ||
+      ciBindingJob.id !== ciBinding.producerJobId ||
+      ciBindingJob.name !== ciBinding.producerJobName ||
+      ciBindingJob.status !== ciBinding.producerJobStatus ||
+      ciBindingJob.conclusion !== ciBinding.producerJobConclusion ||
+      ciBindingJob.run_id !== runId ||
+      ciBindingJob.run_attempt !== manifest.runAttempt ||
+      ciBindingJob.run_url !== `${apiRoot}/runs/${runId}` ||
+      ciBindingJob.head_sha !== releaseCommit ||
+      ciBindingJob.started_at !== ciBinding.producerJobStartedAt ||
+      ciBindingJob.completed_at !== ciBinding.producerJobCompletedAt ||
+      Object.values(liveCiSteps ?? {}).some(
+        (step) => step?.status !== "completed",
+      ) ||
+      exactAttemptCiJob?.id !== ciBindingJob.id ||
+      exactAttemptCiJob?.name !== ciBindingJob.name ||
+      exactAttemptCiJob?.status !== ciBindingJob.status ||
+      exactAttemptCiJob?.conclusion !== ciBindingJob.conclusion ||
+      exactAttemptCiJob?.started_at !== ciBindingJob.started_at ||
+      exactAttemptCiJob?.completed_at !== ciBindingJob.completed_at ||
+      liveCiUploadStep?.name !== ciBinding.uploadStepName ||
+      liveCiUploadStep?.status !== ciBinding.uploadStepStatus ||
+      liveCiUploadStep?.conclusion !== ciBinding.uploadStepConclusion ||
+      liveCiUploadStep?.started_at !== ciBinding.uploadStepStartedAt ||
+      liveCiUploadStep?.completed_at !== ciBinding.uploadStepCompletedAt ||
+      ciBindingArtifact.id !== ciBinding.artifactId ||
+      ciBindingArtifact.name !== ciBinding.artifactName ||
+      ciBindingArtifact.digest !== `sha256:${ciBinding.artifactSha256}` ||
+      ciBindingArtifact.expired !== false ||
+      ciBindingArtifact.created_at !== ciBinding.artifactCreatedAt ||
+      ciBindingArtifact.updated_at !== ciBinding.artifactUpdatedAt ||
+      ciBindingArtifact.workflow_run?.id !== runId ||
+      ciBindingArtifact.workflow_run?.head_sha !== releaseCommit ||
+      timeline.some((value) => value === null) ||
+      timeline[0] > timeline[1] ||
+      timeline[1] > timeline[2] ||
+      timeline[2] > timeline[3] ||
+      timeline[2] > timeline[4] ||
+      timeline[3] > timeline[5] ||
+      timeline[4] > timeline[5] ||
+      timeline[3] > timeline[6]
+    )
+      addError(
+        errors,
+        `${ciBindingPrefix} is not bound to its exact current-attempt producer/upload timeline`,
+      );
+
+    const actualCiPaths = collectDownloadedArtifactSubjects(
+      root,
+      CI_EVIDENCE_ARTIFACT_NAME,
+      errors,
+    );
+    const expectedCiPaths = ciBinding.files.map(({ path }) => path).sort();
+    if (
+      actualCiPaths.length !== expectedCiPaths.length ||
+      actualCiPaths.some((path, index) => path !== expectedCiPaths[index])
+    )
+      addError(
+        errors,
+        `${ciBindingPrefix} member inventory does not exactly equal the downloaded artifact contents`,
+      );
+    const ciFilesByRole = new Map();
+    for (const file of ciBinding.files) {
+      const absolute = resolveContainedRegularFile(root, file.path);
+      if (!absolute) {
+        addError(
+          errors,
+          `${ciBindingPrefix} member is missing or unsafe: ${file.path}`,
+        );
+        continue;
+      }
+      try {
+        if (lstatSync(absolute).nlink !== 1)
+          throw new Error(`${file.path} is not single-link`);
+        const stable = readStableRegularFile(realpathSync(root), absolute);
+        if (stable.size !== file.sizeBytes || stable.sha256 !== file.sha256)
+          addError(
+            errors,
+            `${ciBindingPrefix} member digest or size changed: ${file.path}`,
+          );
+        else ciFilesByRole.set(file.role, { ...file, bytes: stable.bytes });
+      } catch (error) {
+        addError(
+          errors,
+          `${ciBindingPrefix} member is unstable: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+    const adversarialMember = ciFilesByRole.get("adversarial-report");
+    const checksumMember = ciFilesByRole.get("adversarial-checksum");
+    const safetyMember = ciFilesByRole.get("release-safety-report");
+    if (
+      adversarialMember &&
+      checksumMember &&
+      !checksumMember.bytes.equals(
+        Buffer.from(
+          `${adversarialMember.sha256}  adversarial-evidence.json\n`,
+          "utf8",
+        ),
+      )
+    )
+      addError(
+        errors,
+        `${ciBindingPrefix} adversarial checksum is not canonical`,
+      );
+    if (adversarialMember && safetyMember) {
+      try {
+        adversarialEvidenceVerifier(
+          resolve(root, adversarialMember.path),
+          resolve(
+            root,
+            "scripts/release-evidence/adversarial-source-checkout-baseline.json",
+          ),
+          {
+            repoRoot: root,
+            sourceRoot: root,
+            fixturePath: resolve(
+              root,
+              "packages/evals/fixtures/v1/adversarial-scenarios.json",
+            ),
+            expectedCommit: releaseCommit,
+            trackedExactCheckout: true,
+          },
+        );
+      } catch (error) {
+        addError(
+          errors,
+          `${ciBindingPrefix} adversarial report failed independent verification: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+      try {
+        const result = releaseSafetyEvidenceVerifier({
+          root,
+          reportPath: safetyMember.path,
+          adversarialPath: adversarialMember.path,
+          expected: {
+            repository,
+            sourceCommit: releaseCommit,
+            ref: triggerRef,
+            event: "push",
+            runId,
+            runAttempt: manifest.runAttempt,
+          },
+          requireComplete: false,
+          trackedExactCheckout: true,
+        });
+        if (result?.status !== "limited")
+          throw new Error("release safety evidence must remain limited");
+      } catch (error) {
+        addError(
+          errors,
+          `${ciBindingPrefix} safety sidecar failed independent verification: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
   const releaseAssetsByName = new Map();
   for (const asset of manifest.releaseAssets) {
     const prefix = `release asset ${asset.artifactName}`;
@@ -6842,6 +7194,28 @@ export async function verifyPublicationEvidence(
 
   for (const { claimId, evidence } of ciEntries) {
     const prefix = `${claimId} CI evidence`;
+    if (
+      !ciBindingValid ||
+      evidence.repository !== ciBinding.repository ||
+      evidence.commitSha !== ciBinding.sourceCommit ||
+      evidence.ref !== ciBinding.ref ||
+      evidence.runId !== ciBinding.runId ||
+      evidence.runAttempt !== ciBinding.runAttempt ||
+      evidence.runAttemptStartedAt !== ciBinding.runAttemptStartedAt ||
+      evidence.jobId !== ciBinding.producerJobId ||
+      evidence.jobName !== ciBinding.producerJobName ||
+      evidence.artifactId !== ciBinding.artifactId ||
+      evidence.artifactName !== ciBinding.artifactName ||
+      evidence.artifactSha256 !== ciBinding.artifactSha256 ||
+      evidence.reportPath !==
+        ciBinding.files.find(({ role }) => role === "claim-result")?.path ||
+      evidence.reportSha256 !==
+        ciBinding.files.find(({ role }) => role === "claim-result")?.sha256
+    )
+      addError(
+        errors,
+        `${prefix} does not match the canonical shared CI artifact binding`,
+      );
     if (evidence.repository !== repository)
       addError(errors, `${prefix} repository is not the triggering repository`);
     if (evidence.commitSha !== releaseCommit)
@@ -7647,6 +8021,21 @@ export function runPublicationPreflight(options) {
   return result;
 }
 
+export function readPublicationEvidenceManifest(root, manifestPath) {
+  const absoluteRoot = realpathSync(resolve(root));
+  const absoluteManifestPath = resolve(absoluteRoot, manifestPath);
+  if (lstatSync(absoluteManifestPath).nlink !== 1)
+    throw new Error("evidence manifest must be single-link");
+  const stableManifest = readStableRegularFile(
+    absoluteRoot,
+    absoluteManifestPath,
+  );
+  return {
+    manifest: JSON.parse(stableManifest.bytes.toString("utf8")),
+    sha256: stableManifest.sha256,
+  };
+}
+
 export async function runPublicationChecks(options) {
   const result = runPublicationPreflight(options);
   if (result.errors.length > 0 || !result.ledger) return result;
@@ -7671,8 +8060,14 @@ export async function runPublicationChecks(options) {
     };
   }
   let manifest;
+  let manifestSha256;
   try {
-    manifest = JSON.parse(readFileSync(safeManifestPath, "utf8"));
+    const loaded = readPublicationEvidenceManifest(
+      options.root,
+      options.evidenceManifestPath,
+    );
+    manifestSha256 = loaded.sha256;
+    manifest = loaded.manifest;
   } catch (error) {
     return {
       ...result,
@@ -7696,7 +8091,11 @@ export async function runPublicationChecks(options) {
       fetchImpl: options.fetchImpl,
     },
   );
-  return { ...result, errors: [...result.errors, ...evidenceErrors] };
+  return {
+    ...result,
+    errors: [...result.errors, ...evidenceErrors],
+    manifestSha256,
+  };
 }
 
 function parseArgs(argv) {
@@ -7708,6 +8107,7 @@ function parseArgs(argv) {
     commit: null,
     repository: null,
     evidenceManifestPath: null,
+    githubOutputPath: null,
     preflight: false,
     runId: null,
     ref: null,
@@ -7726,6 +8126,8 @@ function parseArgs(argv) {
     } else if (argv[index] === "--ref") args.ref = argv[++index];
     else if (argv[index] === "--evidence-manifest")
       args.evidenceManifestPath = argv[++index];
+    else if (argv[index] === "--github-output")
+      args.githubOutputPath = argv[++index];
     else if (argv[index] === "--preflight") args.preflight = true;
     else throw new Error(`unknown argument: ${argv[index]}`);
   }
@@ -7750,6 +8152,15 @@ if (isCli) {
       for (const error of result.errors) console.error(`- ${error}`);
       process.exitCode = 1;
     } else {
+      if (args.githubOutputPath) {
+        if (!SOURCE_DIGEST.test(result.manifestSha256 ?? ""))
+          throw new Error("verified evidence manifest digest is unavailable");
+        appendFileSync(
+          args.githubOutputPath,
+          `manifest-sha256=${result.manifestSha256}\n`,
+          "utf8",
+        );
+      }
       console.log(
         `Release claim check passed: ${result.ledger.claims.length} claims, target ${result.ledger.release.targetVersion} (${result.ledger.release.status}).`,
       );

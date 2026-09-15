@@ -3,12 +3,14 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { readStableRegularFile } from "../release-artifacts/file-integrity.mjs";
 import {
   ARTIFACT_VERIFICATION_DIRECTORY,
   CANONICAL_ARTIFACT_VERIFICATION_ASSETS,
   CANONICAL_CI_EVIDENCE_CHECKS,
   CANONICAL_MACHINE_EVIDENCE_CHECKS,
   CANONICAL_RELEASE_ASSETS,
+  RELEASE_CLAIM_CI_ARTIFACT_FILES,
   desktopArtifactUploadStepName,
   desktopProducerJobName,
   canonicalReleaseClaimCiJobSteps,
@@ -151,13 +153,142 @@ function assertJobRunIdentity(job, description) {
 
 const ciJob = oneBy(jobsPage.jobs, "name", "release-claim-ci", "CI job");
 assertJobRunIdentity(ciJob, "CI evidence job");
-const { producerStep: ciProducerStep } = canonicalReleaseClaimCiJobSteps(ciJob);
+const {
+  producerStep: ciProducerStep,
+  safetyStep: ciSafetyStep,
+  uploadStep: ciUploadStep,
+  readinessStep: ciReadinessStep,
+} = canonicalReleaseClaimCiJobSteps(ciJob);
 const ciArtifact = oneBy(
   artifactsPage.artifacts,
   "name",
   "release-claims-ci",
   "CI evidence artifact",
 );
+const ciDirectory = resolve("artifacts/release-claims-ci");
+const ciDirectoryStat = lstatSync(ciDirectory);
+if (ciDirectoryStat.isSymbolicLink() || !ciDirectoryStat.isDirectory())
+  throw new Error("downloaded CI evidence artifact is not a real directory");
+const expectedCiNames = RELEASE_CLAIM_CI_ARTIFACT_FILES.map(
+  ({ downloadedPath }) => downloadedPath.split("/").at(-1),
+).sort();
+const actualCiNames = readdirSync(ciDirectory, { withFileTypes: true })
+  .map((entry) => {
+    if (!entry.isFile() || entry.isSymbolicLink())
+      throw new Error(
+        "downloaded CI evidence artifact must contain only direct regular files",
+      );
+    return entry.name;
+  })
+  .sort();
+if (JSON.stringify(actualCiNames) !== JSON.stringify(expectedCiNames))
+  throw new Error(
+    "downloaded CI evidence artifact does not have the exact canonical inventory",
+  );
+const ciFiles = RELEASE_CLAIM_CI_ARTIFACT_FILES.map(
+  ({ role, downloadedPath }) => {
+    if (lstatSync(resolve(downloadedPath)).nlink !== 1)
+      throw new Error(
+        `downloaded CI evidence member must be single-link: ${downloadedPath}`,
+      );
+    const stable = readStableRegularFile(resolve("."), resolve(downloadedPath));
+    return {
+      role,
+      path: downloadedPath,
+      sha256: stable.sha256,
+      sizeBytes: stable.size,
+    };
+  },
+);
+const adversarialFile = ciFiles.find(
+  ({ role }) => role === "adversarial-report",
+);
+const checksumFile = ciFiles.find(
+  ({ role }) => role === "adversarial-checksum",
+);
+const checksumBytes = readStableRegularFile(
+  resolve("."),
+  resolve(checksumFile.path),
+  { maxBytes: 256 },
+).bytes;
+if (
+  !checksumBytes.equals(
+    Buffer.from(
+      `${adversarialFile.sha256}  adversarial-evidence.json\n`,
+      "utf8",
+    ),
+  )
+)
+  throw new Error("downloaded adversarial checksum is not canonical");
+
+const ciJobStartedMs = githubTimestamp(ciJob.started_at, "CI job start time");
+const ciJobCompletedMs = githubTimestamp(
+  ciJob.completed_at,
+  "CI job completion time",
+);
+const ciUploadStartedMs = githubTimestamp(
+  ciUploadStep.started_at,
+  "CI artifact upload start time",
+);
+const ciUploadCompletedMs = githubTimestamp(
+  ciUploadStep.completed_at,
+  "CI artifact upload completion time",
+);
+const ciArtifactCreatedMs = githubTimestamp(
+  ciArtifact.created_at,
+  "CI artifact creation time",
+);
+const ciArtifactUpdatedMs = githubTimestamp(
+  ciArtifact.updated_at,
+  "CI artifact update time",
+);
+if (
+  ciJob.status !== "completed" ||
+  ciJob.conclusion !== "success" ||
+  ciSafetyStep.status !== "completed" ||
+  ciProducerStep.status !== "completed" ||
+  ciUploadStep.status !== "completed" ||
+  ciReadinessStep.status !== "completed" ||
+  ciArtifact.expired !== false ||
+  !/^sha256:[a-f0-9]{64}$/u.test(ciArtifact.digest ?? "") ||
+  ciArtifact.workflow_run?.id !== runId ||
+  ciArtifact.workflow_run?.head_sha !== releaseCommit ||
+  attemptStartedMs > ciJobStartedMs ||
+  ciJobStartedMs > ciUploadStartedMs ||
+  ciUploadStartedMs > ciArtifactCreatedMs ||
+  ciArtifactCreatedMs > ciJobCompletedMs ||
+  ciUploadStartedMs > ciUploadCompletedMs ||
+  ciUploadCompletedMs > ciJobCompletedMs ||
+  ciArtifactCreatedMs > ciArtifactUpdatedMs
+)
+  throw new Error(
+    "CI evidence artifact is not bound to its current-attempt successful producer/upload timeline",
+  );
+const ciEvidenceArtifact = {
+  artifactId: ciArtifact.id,
+  artifactName: ciArtifact.name,
+  artifactSha256: String(ciArtifact.digest).replace(/^sha256:/u, ""),
+  artifactCreatedAt: ciArtifact.created_at,
+  artifactUpdatedAt: ciArtifact.updated_at,
+  repository,
+  sourceCommit: releaseCommit,
+  ref,
+  runId,
+  runAttempt,
+  runAttemptStartedAt: attempt.run_started_at,
+  producerJobId: ciJob.id,
+  producerJobName: ciJob.name,
+  producerJobStatus: ciJob.status,
+  producerJobConclusion: ciJob.conclusion,
+  producerJobStartedAt: ciJob.started_at,
+  producerJobCompletedAt: ciJob.completed_at,
+  uploadStepName: ciUploadStep.name,
+  uploadStepStatus: ciUploadStep.status,
+  uploadStepConclusion: ciUploadStep.conclusion,
+  uploadStepStartedAt: ciUploadStep.started_at,
+  uploadStepCompletedAt: ciUploadStep.completed_at,
+  files: ciFiles,
+};
 const machineArtifact = oneBy(
   artifactsPage.artifacts,
   "name",
@@ -270,7 +401,8 @@ for (const readiness of ledger.release.readinessClaims) {
         artifactName: ciArtifact.name,
         artifactSha256: String(ciArtifact.digest).replace(/^sha256:/, ""),
         reportPath: "artifacts/release-claims-ci/result.json",
-        reportSha256: digestOf("artifacts/release-claims-ci/result.json"),
+        reportSha256: ciFiles.find(({ role }) => role === "claim-result")
+          .sha256,
         commitSha: releaseCommit,
         conclusion: ciProducerStep.conclusion,
         why: "Successful canonical producer result and its immutable artifact from the current tag-push run",
@@ -601,6 +733,7 @@ writeFileSync(
       runId,
       runAttempt,
       runAttemptStartedAt: attempt.run_started_at,
+      ciEvidenceArtifact,
       releaseAssets,
       verificationAssets,
       evidence,
