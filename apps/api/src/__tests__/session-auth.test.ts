@@ -17,9 +17,7 @@ const mockBroker = vi.hoisted(() => ({
 // Stub the session repository before importing the middleware
 vi.mock('@skytwin/db', () => ({
   sessionRepository: {
-    findByTokenHash: vi.fn(),
-    refreshExpiry: vi.fn(),
-    touchLastActive: vi.fn(),
+    authenticateAndMaintain: vi.fn(),
     revalidateSourceKeyAuthority: vi.fn(),
   },
   userRepository: { findDemoById: vi.fn() },
@@ -80,10 +78,8 @@ describe('sessionAuth middleware', () => {
     // Re-mock after resetModules
     vi.doMock('@skytwin/db', () => ({
       sessionRepository: {
-        findByTokenHash: vi.fn(),
-        refreshExpiry: vi.fn(),
-        touchLastActive: vi.fn(),
-        revalidateSourceKeyAuthority: vi.fn().mockResolvedValue(false),
+        authenticateAndMaintain: vi.fn().mockResolvedValue({ status: 'inactive' }),
+        revalidateSourceKeyAuthority: vi.fn().mockResolvedValue({ status: 'inactive' }),
       },
       userRepository: { findDemoById: vi.fn() },
     }));
@@ -126,7 +122,8 @@ describe('sessionAuth middleware', () => {
     const mod = await import('../middleware/session-auth.js');
     sessionAuth = mod.sessionAuth;
     const db = await import('@skytwin/db');
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+    (db.sessionRepository.authenticateAndMaintain as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ status: 'inactive' });
 
     const req = mockReq({ headers: { authorization: 'Bearer bad-token' } });
     const res = mockRes();
@@ -138,17 +135,37 @@ describe('sessionAuth middleware', () => {
     expect(res.status).toHaveBeenCalledWith(401);
   });
 
+  it('returns unavailable without minting authority when session storage is transiently down', async () => {
+    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
+    const mod = await import('../middleware/session-auth.js');
+    sessionAuth = mod.sessionAuth;
+    const db = await import('@skytwin/db');
+    (db.sessionRepository.authenticateAndMaintain as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ status: 'unavailable' });
+    const req = mockReq({ headers: { authorization: 'Bearer retry-token' } });
+    const res = mockRes();
+    const next = vi.fn();
+
+    await sessionAuth(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(next).not.toHaveBeenCalled();
+    expect(mockBroker.grantSession).not.toHaveBeenCalled();
+  });
+
   it('attaches userId to request on valid session', async () => {
     process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
     const mod = await import('../middleware/session-auth.js');
     sessionAuth = mod.sessionAuth;
     const db = await import('@skytwin/db');
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'session-1',
-      user_id: 'user-abc',
-      expires_at: new Date(Date.now() + 86400000 * 3), // 3 days from now
+    (db.sessionRepository.authenticateAndMaintain as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'active',
+      session: {
+        id: 'session-1',
+        user_id: 'user-abc',
+        expires_at: new Date(Date.now() + 86400000 * 3), // 3 days from now
+      },
     });
-    (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 
     const req = mockReq({ headers: { authorization: 'Bearer good-token' } });
     const res = mockRes();
@@ -172,12 +189,10 @@ describe('sessionAuth middleware', () => {
       user_id: '22222222-2222-4222-8222-222222222222',
       expires_at: expiresAt,
     };
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>)
-      .mockResolvedValue(row);
-    (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>)
-      .mockResolvedValue(undefined);
+    (db.sessionRepository.authenticateAndMaintain as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ status: 'active', session: row });
     (db.sessionRepository.revalidateSourceKeyAuthority as ReturnType<typeof vi.fn>)
-      .mockResolvedValue(true);
+      .mockResolvedValue({ status: 'active' });
     const authority = {
       kind: 'api_session' as const,
       sessionId: row.id,
@@ -206,12 +221,14 @@ describe('sessionAuth middleware', () => {
     const mod = await import('../middleware/session-auth.js');
     sessionAuth = mod.sessionAuth;
     const db = await import('@skytwin/db');
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'session-2',
-      user_id: 'user-sse',
-      expires_at: new Date(Date.now() + 86400000 * 3),
+    (db.sessionRepository.authenticateAndMaintain as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'active',
+      session: {
+        id: 'session-2',
+        user_id: 'user-sse',
+        expires_at: new Date(Date.now() + 86400000 * 3),
+      },
     });
-    (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>).mockResolvedValue(undefined);
 
     const req = mockReq({ query: { token: 'sse-token' } });
     const res = mockRes();
@@ -228,11 +245,8 @@ describe('sessionAuth middleware', () => {
     const mod = await import('../middleware/session-auth.js');
     sessionAuth = mod.sessionAuth;
     const db = await import('@skytwin/db');
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: 'session-1',
-      user_id: 'user-abc',
-      expires_at: new Date(Date.now() - 1000), // expired
-    });
+    (db.sessionRepository.authenticateAndMaintain as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ status: 'inactive' });
 
     const req = mockReq({ headers: { authorization: 'Bearer expired-token' } });
     const res = mockRes();
@@ -294,12 +308,10 @@ describe('sessionAuth middleware', () => {
       user_id: '22222222-2222-4222-8222-222222222222',
       expires_at: expiresAt,
     };
-    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>)
-      .mockResolvedValue(row);
-    (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>)
-      .mockResolvedValue(undefined);
+    (db.sessionRepository.authenticateAndMaintain as ReturnType<typeof vi.fn>)
+      .mockResolvedValue({ status: 'active', session: row });
     (db.sessionRepository.revalidateSourceKeyAuthority as ReturnType<typeof vi.fn>)
-      .mockResolvedValue(true);
+      .mockResolvedValue({ status: 'active' });
     mockBroker.grantSession.mockResolvedValue({
       success: true,
       authority: {
@@ -414,7 +426,7 @@ describe('sessionAuth middleware', () => {
         expect(next).not.toHaveBeenCalled();
         expect(res.status).toHaveBeenCalledWith(403);
         expect(db.userRepository.findDemoById).not.toHaveBeenCalled();
-        expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+        expect(db.sessionRepository.authenticateAndMaintain).not.toHaveBeenCalled();
       },
     );
 
@@ -944,7 +956,7 @@ describe('sessionAuth middleware', () => {
         expect(next).not.toHaveBeenCalled();
         expect(res.status).toHaveBeenCalledWith(403);
       }
-      expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+      expect(db.sessionRepository.authenticateAndMaintain).not.toHaveBeenCalled();
     });
 
     it('keeps the sample principal read-only when the localhost development bypass is enabled', async () => {
@@ -975,7 +987,7 @@ describe('sessionAuth middleware', () => {
 
       expect(next).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(403);
-      expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+      expect(db.sessionRepository.authenticateAndMaintain).not.toHaveBeenCalled();
     });
 
     it.each(['expired', 'malformed'])(
@@ -1008,7 +1020,7 @@ describe('sessionAuth middleware', () => {
 
         expect(next).not.toHaveBeenCalled();
         expect(res.status).toHaveBeenCalledWith(401);
-        expect(db.sessionRepository.findByTokenHash).not.toHaveBeenCalled();
+        expect(db.sessionRepository.authenticateAndMaintain).not.toHaveBeenCalled();
       },
     );
 

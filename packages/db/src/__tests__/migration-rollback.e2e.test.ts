@@ -363,6 +363,13 @@ describe.skipIf(!ENABLED)('E2E: migration rollback and reapply', () => {
     const expectedColumns = await columnDefinitions();
     const expectedConstraints = await semanticConstraints();
     const expectedIndexes = await indexDefinitions();
+    expect(expectedIndexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tablename: 'sessions',
+        indexname: 'sessions_token_hash_unique_idx',
+        indexdef: expect.stringMatching(/UNIQUE INDEX .* \(token_hash ASC\)/i),
+      }),
+    ]));
     await pool.query(`
       CREATE TABLE operator_fk_sentinel (
         id UUID PRIMARY KEY,

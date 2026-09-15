@@ -42,8 +42,6 @@ declare global {
 }
 
 const SESSION_SECRET = process.env['SESSION_SECRET'] ?? 'skytwin-dev-secret';
-const REFRESH_WINDOW_MS = 24 * 60 * 60 * 1000; // 1 day
-const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
  * Whether the dev auth bypass is active.
@@ -598,41 +596,30 @@ export async function sessionAuth(
   }
   const tokenHash = hashToken(token);
 
-  const session = await sessionRepository.findByTokenHash(tokenHash);
-  if (!session) {
+  const authentication = await sessionRepository.authenticateAndMaintain(tokenHash);
+  if (authentication.status === 'unavailable') {
+    res.status(503).json({
+      error: 'Session store unavailable',
+      message: 'Try again shortly.',
+    });
+    return;
+  }
+  if (authentication.status === 'inactive') {
     res.status(401).json({
       error: 'Invalid session',
       message: 'Scan the QR code again from your desktop.',
     });
     return;
   }
-
-  // Check expiry
-  if (new Date(session.expires_at) < new Date()) {
-    res.status(401).json({
-      error: 'Session expired',
-      message: 'Scan the QR code again from your desktop.',
-    });
-    return;
-  }
+  const session = authentication.session;
 
   // Attach identity to request
   req.authenticatedUserId = session.user_id;
   req.authenticatedSessionId = session.id;
 
-  // Auto-refresh if within 1 day of expiry
-  let authorityExpiresAtMs = new Date(session.expires_at).getTime();
-  const timeUntilExpiry = authorityExpiresAtMs - Date.now();
-  if (timeUntilExpiry < REFRESH_WINDOW_MS) {
-    const refreshedExpiry = new Date(Date.now() + SESSION_DURATION_MS);
-    await sessionRepository.refreshExpiry(
-      session.id,
-      refreshedExpiry,
-    );
-    authorityExpiresAtMs = refreshedExpiry.getTime();
-  } else {
-    await sessionRepository.touchLastActive(session.id);
-  }
+  // Authentication and lease maintenance are one Cockroach statement, so
+  // concurrent requests all receive the canonical persisted expiry.
+  const authorityExpiresAtMs = new Date(session.expires_at).getTime();
 
   // This is the sole production grant path. Revalidate the immutable session
   // identity, owner, token hash, revocation state, and exact current expiry
@@ -647,7 +634,7 @@ export async function sessionAuth(
       expiresAtMs: authorityExpiresAtMs,
     };
     if (
-      await sessionRepository.revalidateSourceKeyAuthority(authorityInput)
+      (await sessionRepository.revalidateSourceKeyAuthority(authorityInput)).status === 'active'
     ) {
       const grant = await apiSourceKeyBrokerClient.grantSession(authorityInput);
       if (grant.success) req.sourceKeySessionAuthority = grant.authority;

@@ -214,7 +214,12 @@ export type SessionAuthorityVerifier = (input: {
   ownerId: string;
   tokenHash: string;
   expiresAtMs: number;
-}) => Promise<boolean>;
+}) => Promise<SessionAuthorityVerificationResult>;
+
+export type SessionAuthorityVerificationResult =
+  | Readonly<{ status: 'active' }>
+  | Readonly<{ status: 'inactive' }>
+  | Readonly<{ status: 'unavailable' }>;
 
 const MAX_SESSION_AUTHORITY_RECORDS = 1_024;
 const MAX_SESSION_AUTHORITY_MS = 8 * 24 * 60 * 60 * 1000;
@@ -1164,19 +1169,19 @@ export class DesktopKeyBroker {
       return;
     }
     const generationAtAdmission = this.generation(message.ownerId);
-    let live = false;
+    let verification: SessionAuthorityVerificationResult = { status: 'unavailable' };
     try {
-      live = await binding.verifySession({
+      verification = await binding.verifySession({
         sessionId: message.sessionId,
         ownerId: message.ownerId,
         tokenHash: message.tokenHash,
         expiresAtMs: message.expiresAtMs,
       });
     } catch {
-      live = false;
+      verification = { status: 'unavailable' };
     }
     if (
-      !live || binding.authorityClosed ||
+      verification.status !== 'active' || binding.authorityClosed ||
       this.children.get(child) !== binding ||
       binding.sessionTombstones.has(message.sessionId) ||
       message.expiresAtMs <= Date.now() ||
@@ -1187,6 +1192,26 @@ export class DesktopKeyBroker {
       return;
     }
     this.pruneSessionAuthority(binding);
+    const existing = binding.sessions.get(message.sessionId);
+    if (existing) {
+      if (
+        existing.ownerId !== message.ownerId ||
+        existing.tokenHash !== message.tokenHash ||
+        existing.expiresAtMs !== message.expiresAtMs
+      ) {
+        deny();
+        return;
+      }
+      this.safeSend(child, {
+        type: 'skytwin:vault:owner-grant-result',
+        protocolVersion: 1,
+        requestId: message.requestId,
+        role: 'api', ownerKind: 'user', ownerId: message.ownerId,
+        sessionId: message.sessionId, expiresAtMs: message.expiresAtMs,
+        success: true, grantId: existing.grantId, generation: generationAtAdmission,
+      } as SourceKeyBrokerOwnerGrantResult);
+      return;
+    }
     if (
       !binding.sessions.has(message.sessionId) &&
       binding.sessions.size >= MAX_SESSION_AUTHORITY_RECORDS
@@ -1195,7 +1220,6 @@ export class DesktopKeyBroker {
       deny();
       return;
     }
-    this.removeSessionGrant(binding, message.sessionId);
     const grantId = randomBytes(16).toString('hex');
     const timer = setTimeout(() => {
       this.removeSessionGrant(binding, message.sessionId);
@@ -1234,22 +1258,23 @@ export class DesktopKeyBroker {
       grant.expiresAtMs <= Date.now() ||
       binding.sessionTombstones.has(request.authority.sessionId)
     ) return false;
-    let live = false;
+    let verification: SessionAuthorityVerificationResult = { status: 'unavailable' };
     try {
-      live = await binding.verifySession({
+      verification = await binding.verifySession({
         sessionId: request.authority.sessionId,
         ownerId: grant.ownerId,
         tokenHash: grant.tokenHash,
         expiresAtMs: grant.expiresAtMs,
       });
     } catch {
-      live = false;
+      verification = { status: 'unavailable' };
     }
-    if (!live) {
+    if (verification.status === 'inactive') {
       this.tombstoneSession(binding, request.authority.sessionId, grant.expiresAtMs);
       this.removeSessionGrant(binding, request.authority.sessionId);
       return false;
     }
+    if (verification.status === 'unavailable') return false;
     return (
       this.children.get(child) === binding &&
       !binding.authorityClosed &&

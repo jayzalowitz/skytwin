@@ -170,11 +170,76 @@ const OWNER_B = '00000000-0000-0000-0000-000000000002';
 const TOKEN_HASH = 'a'.repeat(64);
 
 describe('DesktopKeyBroker', () => {
+  it('keeps the first exact grant stable and rejects same-session replacement', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession: vi.fn().mockResolvedValue({ status: 'active' }),
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    const base = {
+      type: 'skytwin:vault:owner-grant-request' as const, protocolVersion: 1 as const,
+      capability, role: 'api' as const, ownerKind: 'user' as const,
+      ownerId: context.userId, sessionId: SESSION_A, tokenHash: TOKEN_HASH, expiresAtMs,
+    };
+    child.emit('message', { ...base, requestId: '1'.repeat(32) });
+    child.emit('message', { ...base, requestId: '2'.repeat(32) });
+    await tick();
+    await tick();
+    const first = child.sent.find((value) =>
+      (value as { requestId?: string }).requestId === '1'.repeat(32)) as { grantId: string };
+    const second = child.sent.find((value) =>
+      (value as { requestId?: string }).requestId === '2'.repeat(32)) as { grantId: string };
+    expect(second.grantId).toBe(first.grantId);
+
+    child.emit('message', {
+      ...base, requestId: '3'.repeat(32), ownerId: OWNER_B,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '3'.repeat(32), success: false });
+  });
+
+  it('denies transient revalidation failure without revoking a live grant', async () => {
+    const verifySession = vi.fn()
+      .mockResolvedValueOnce({ status: 'active' })
+      .mockResolvedValueOnce({ status: 'unavailable' })
+      .mockResolvedValueOnce({ status: 'active' });
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), { verifySession });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    child.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: '4'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A, tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    await tick();
+    const grantId = (child.sent.at(-1) as { grantId: string }).grantId;
+    for (const requestId of ['5'.repeat(32), '6'.repeat(32)]) {
+      child.emit('message', {
+        type: 'skytwin:vault:request', protocolVersion: 1, requestId,
+        capability, role: 'api', generation: 1, operation: 'state',
+        context: wireContext(),
+        authority: { kind: 'api_session', sessionId: SESSION_A, grantId },
+      });
+      await tick();
+    }
+    expect(child.sent.at(-2)).toMatchObject({
+      requestId: '5'.repeat(32), result: { success: false },
+    });
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: '6'.repeat(32), result: { success: true },
+    });
+  });
+
   it('starts empty and grants only an exact DB-revalidated API session', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore());
     await broker.initialize(context.userId, 'correct horse battery staple');
     const child = new FakeChild();
-    const verifySession = vi.fn().mockResolvedValue(true);
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
     await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
       verifySession,
     });
@@ -259,8 +324,8 @@ describe('DesktopKeyBroker', () => {
   });
 
   it('makes revoke beat a delayed grant and rejects replay and malformed authority', async () => {
-    let release!: (live: boolean) => void;
-    const delayed = new Promise<boolean>(resolve => { release = resolve; });
+    let release!: (live: { status: 'active' }) => void;
+    const delayed = new Promise<{ status: 'active' }>(resolve => { release = resolve; });
     const broker = new DesktopKeyBroker(new MemoryStore());
     await broker.initialize(context.userId, 'correct horse battery staple');
     const child = new FakeChild();
@@ -282,7 +347,7 @@ describe('DesktopKeyBroker', () => {
       requestId: '8'.repeat(32), capability, role: 'api', ownerKind: 'user',
       ownerId: context.userId, sessionId: SESSION_A,
     });
-    release(true);
+    release({ status: 'active' });
     await tick();
     await tick();
     expect(child.sent.find((message) =>
@@ -315,8 +380,8 @@ describe('DesktopKeyBroker', () => {
   });
 
   it('rejects a grant whose revalidation crosses an owner lock generation', async () => {
-    let release!: (live: boolean) => void;
-    const delayed = new Promise<boolean>(resolve => { release = resolve; });
+    let release!: (live: { status: 'active' }) => void;
+    const delayed = new Promise<{ status: 'active' }>(resolve => { release = resolve; });
     const broker = new DesktopKeyBroker(new MemoryStore());
     await broker.initialize(context.userId, 'correct horse battery staple');
     const child = new FakeChild();
@@ -332,7 +397,7 @@ describe('DesktopKeyBroker', () => {
     });
     await tick();
     await broker.lock(context.userId);
-    release(true);
+    release({ status: 'active' });
     await tick();
     expect(child.sent.at(-1)).toMatchObject({
       requestId: 'a'.repeat(32), success: false,
@@ -342,7 +407,7 @@ describe('DesktopKeyBroker', () => {
   it('revalidates on use and isolates concurrent sessions and owners', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore());
     await broker.initialize(context.userId, 'correct horse battery staple');
-    const verifySession = vi.fn().mockResolvedValue(true);
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
     const child = new FakeChild();
     await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
       verifySession,
@@ -388,7 +453,7 @@ describe('DesktopKeyBroker', () => {
       });
     }
 
-    verifySession.mockResolvedValue(false);
+    verifySession.mockResolvedValue({ status: 'inactive' });
     child.emit('message', {
       type: 'skytwin:vault:request', protocolVersion: 1,
       requestId: '3'.repeat(32), capability, role: 'api', generation: 1,
@@ -407,7 +472,7 @@ describe('DesktopKeyBroker', () => {
   it('bounds live authority tombstones by closing the binding', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore());
     const child = new FakeChild();
-    const verifySession = vi.fn().mockResolvedValue(true);
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
     await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
       verifySession,
     });
@@ -435,7 +500,7 @@ describe('DesktopKeyBroker', () => {
   it('does not carry a session grant across child restart or admit one during lock', async () => {
     const broker = new DesktopKeyBroker(new MemoryStore(), { lockAckTimeoutMs: 1_000 });
     await broker.initialize(context.userId, 'correct horse battery staple');
-    const verifySession = vi.fn().mockResolvedValue(true);
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
     const child = new FakeChild();
     await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
       verifySession,

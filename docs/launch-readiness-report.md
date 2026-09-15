@@ -67,7 +67,7 @@ items in this historical inventory are explicitly non-blocking and deferred.
 
 4. **Code and architecture** — the #401 key-management decision is now captured
    by ADR 0001 and the first locked broker/custody slice exists, but #374 remains
-   incomplete: production grants, clients, the Cockroach-backed broker gateway,
+   incomplete: source clients, an owner-wide cascade/revoke barrier,
    source-field migration, packaged verification, and bake evidence are still
    required. See [§ Encryption and key-management detail](#encryption-and-key-management-detail).
    Other partial code-side items remain tracked under #357 and in the inventory below.
@@ -110,7 +110,10 @@ items in this historical inventory are explicitly non-blocking and deferred.
 > locked, capability-scoped source-key broker with private API/worker child IPC.
 > Every production child binding starts with empty owner authority. Exact live
 > human API sessions can now receive session-bound authority after independent
-> API and Electron database revalidation, while worker, demo, development-bypass,
+> API and Electron database revalidation. Token hashes are globally unique,
+> lease refresh is atomic, and concurrent exact grants cannot replace one
+> another. Transient database loss denies the current source-key operation
+> without manufacturing a revocation. Worker, demo, development-bypass,
 > service, and unauthenticated paths remain unable to grant. Recovery wrappers now use
 > the narrow CockroachDB registry adapter with no Electron-store or plaintext
 > fallback, but no source repository consumes the broker, so it encrypts no
@@ -118,14 +121,14 @@ items in this historical inventory are explicitly non-blocking and deferred.
 > grants when its matching generation is unlocked and can migrate complete plaintext
 > grants on authorized use; without a vault, tokens remain plaintext, and the worker
 > does not receive the API key. Source repository clients and migration, an
-> owned-service authority design, clean packaged-platform
+> owner-wide database-cascade/bulk-revoke barrier, an owned-service authority design, clean packaged-platform
 > verification, and bake period remain blockers. See the
 > [implementation status](./security/source-key-broker-implementation.md).
 
 **[#374 — user memory and preferences are stored unencrypted](https://github.com/jayzalowitz/skytwin/issues/374)** (P1, Epic D). Re-audited 2026-06-16 (full code-state findings on the issue). The encryption **infrastructure shipped** via #520 — but it is **dormant** in production and **partial**, and the memory half has an architectural conflict that makes it a design task, not a wiring task:
 
 - **Shipped (#520):** migration `066-encrypt-high-value-tables.sql` adds `_encrypted BYTES` columns to `preferences` / `twin_profiles` / `brain_pages`; `packages/db/src/lib/vault-helper.ts` (`encryptColumn`/`readColumn`/`resolveKey`, AES-256-GCM + scrypt); and encrypt-on-write / decrypt-on-read wiring in `twin-repository-adapter.ts` **for `preferences` only**.
-- **Dormant:** `setPreferenceVaultKeyProvider(...)` is called **only in tests** — no app composition root enables it, so `vaultKeyProvider` stays `null` and even preferences are written plaintext in the running app. ADR 0001 resolves the key-custody design, but the deliberately empty production grants and missing source-field clients keep this path inactive.
+- **Dormant:** `setPreferenceVaultKeyProvider(...)` is called **only in tests** — no app composition root enables it, so `vaultKeyProvider` stays `null` and even preferences are written plaintext in the running app. ADR 0001 resolves the key-custody design, but authenticated API grants have no source-field client and worker grants remain empty, keeping this path inactive. Database-only account cascades and bulk session revocation also need an owner-wide broker barrier before activation.
 - **Partial:** `twin_profiles`' 7 `_encrypted` columns are unused, and `brain_pages` (user memory) is written plaintext (`insertPage()` in `packages/memory-gbrain-crdb-adapter/src/repository.ts` ignores the `_encrypted` columns).
 - **The hard part:** `brain_pages` is the *searchable* store. RRF retrieval needs `content_tsv @@ plainto_tsquery` (full-text, server-side) and the row's `embedding` (vector — pulled out and scored with `cosineSimilarity` in application code, brute-force; not a CRDB `<=>` operator). Both are derived from plaintext content, and a `tsvector` stores the lexemes in the clear — so encrypting `content` while keeping `content_tsv` queryable leaks it anyway, while encrypting the index breaks search; the embedding likewise has to be read back out in the clear to score. So memory-at-rest encryption needs a design (scope to non-searched columns, index-time decrypt, or searchable encryption), not just an `encryptColumn` call.
 
@@ -177,7 +180,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#368](https://github.com/jayzalowitz/skytwin/issues/368) | ⛔ external | **YES** | — | Code-signing certs + notarization (external) |
 | [#369](https://github.com/jayzalowitz/skytwin/issues/369) | 🟡 partial | **YES** | partly | EAS config + CI rewrite (code) · real icons + store accounts (external) |
 | [#370](https://github.com/jayzalowitz/skytwin/issues/370) | ✅ closed | done | yes | Code complete + closed: manifests + curl-latest CI + the user-facing banner + "Check for Updates…" menu all shipped (#523). Only signed-build e2e remains, tracked under #368. |
-| [#374](https://github.com/jayzalowitz/skytwin/issues/374) | 🟡 partial | **YES** | yes | Accepted design + broker/custody foundation shipped; production grants, clients, migration, packaged verification, and bake remain |
+| [#374](https://github.com/jayzalowitz/skytwin/issues/374) | 🟡 partial | **YES** | yes | Accepted design + broker/custody/session-authority foundation shipped; source clients, owner-wide revoke barrier, migration, packaged verification, and bake remain |
 | [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Decision-pipeline redactor shipped (#524): `redactPromptPii` masks email addresses in `PromptBuilder` by default, ReDoS-hardened. Remaining: assistant memory-context block (needs provider-trust gating) + number/name masking. |
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | ✅ closed | done | yes | Shipped + closed: resumable chunked voice upload end-to-end — `voice-chunker.ts` + `transcribeChunked()` (per-chunk retry, progress, cancel) + server `/upload/session`/`/chunk`/finalize + 3 test files. Only the airplane-mode manual smoke is device-only. |
 | [#387](https://github.com/jayzalowitz/skytwin/issues/387) | 🟡 partial | — | yes | Deep-link routing slice shipped + wired (tap → specific approval, scrolled into view; `deep-link.ts` + `App.tsx` + `ApprovalsScreen.tsx`, tested). Remaining: native inline Approve/Reject actions (iOS NSE + Android actions + EAS dev build — gated on #360/#404). |

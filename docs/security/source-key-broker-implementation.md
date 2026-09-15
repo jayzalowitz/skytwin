@@ -28,6 +28,16 @@ worker paths cannot mint a grant. The renderer-facing source-vault preload
 surface and handlers are deliberately unavailable: loopback-port identity is
 not an ownership proof.
 
+Session-token hashes are globally unique under migration 082. The migration
+refuses ambiguous existing rows instead of choosing an owner and verifies that
+an `IF NOT EXISTS` namesake is actually the expected global unique index. API
+authentication, last-active maintenance, and conditional expiry refresh happen
+in one CockroachDB statement and use its returned canonical expiry. Concurrent
+exact grant requests share the first admission; a conflicting tuple cannot
+replace it. Electron treats a definitive inactive result as revocation, but a
+transient database failure denies only that operation and preserves the grant
+for a later independently revalidated retry.
+
 Migration 073 defines the CockroachDB recovery-key registry and durable device
 wrapper deletion intent. The broker also supports explicit device opt-in, but
 only when Electron reports an exact reviewed OS protection backend; stored
@@ -46,6 +56,13 @@ consumes either child client, so all production source fields remain on their
 existing storage paths. An owned-service identity proof, deletion-intent
 consumer, production source repository clients and source-specific migration
 remain release blockers.
+
+There is not yet a linearizable owner-wide broker barrier around database-only
+session cascades or `sessionRepository.revokeAllForUser`. Per-operation database
+revalidation prevents use after the database mutation commits, but it does not
+atomically tombstone every in-memory session grant at that commit boundary.
+No source consumer may be activated until account purge and every bulk-revoke
+entry point coordinate such a barrier (or an equivalent durable generation).
 
 Migration 081 separately closes the broker plan's global dead-letter ownership
 prerequisite. `worker_dead_letter` now stores only constrained job/error codes,

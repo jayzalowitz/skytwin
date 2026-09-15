@@ -98,6 +98,7 @@ interface PendingLock {
 
 interface PendingGrant {
   readonly input: SourceKeyBrokerSessionGrantInput;
+  readonly promise: Promise<SourceKeyBrokerSessionGrantResult>;
   readonly timer: ReturnType<typeof setTimeout>;
   readonly resolve: (result: SourceKeyBrokerSessionGrantResult) => void;
 }
@@ -322,6 +323,16 @@ export class SourceKeyBrokerClient {
         authority: existing.authority,
       }));
     }
+    if (existing) return Promise.resolve(unavailable);
+    for (const pending of this.pendingGrants.values()) {
+      if (pending.input.sessionId !== input.sessionId) continue;
+      if (
+        pending.input.ownerId === input.ownerId &&
+        pending.input.tokenHash === input.tokenHash &&
+        pending.input.expiresAtMs === input.expiresAtMs
+      ) return pending.promise;
+      return Promise.resolve(unavailable);
+    }
     if (this.pending.size + this.pendingGrants.size >= this.maxPendingRequests) {
       return Promise.resolve(unavailable);
     }
@@ -343,14 +354,19 @@ export class SourceKeyBrokerClient {
     if (!message || message.type !== 'skytwin:vault:owner-grant-request') {
       return Promise.resolve(unavailable);
     }
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        const pending = this.takePendingGrant(requestId);
-        if (pending) pending.resolve(unavailable);
-      }, this.requestTimeoutMs);
-      this.pendingGrants.set(requestId, { input: Object.freeze({ ...input }), timer, resolve });
-      this.deliver(message, requestId);
+    let resolveGrant!: (result: SourceKeyBrokerSessionGrantResult) => void;
+    const promise = new Promise<SourceKeyBrokerSessionGrantResult>((resolve) => {
+      resolveGrant = resolve;
     });
+    const timer = setTimeout(() => {
+      const pending = this.takePendingGrant(requestId);
+      if (pending) pending.resolve(unavailable);
+    }, this.requestTimeoutMs);
+    this.pendingGrants.set(requestId, {
+      input: Object.freeze({ ...input }), promise, timer, resolve: resolveGrant,
+    });
+    this.deliver(message, requestId);
+    return promise;
   }
 
   /** Revoke locally before notifying Electron so delayed grant replies lose. */

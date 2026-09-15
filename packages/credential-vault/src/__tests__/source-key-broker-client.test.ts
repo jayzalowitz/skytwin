@@ -153,6 +153,37 @@ afterEach(() => {
 });
 
 describe('SourceKeyBrokerClient', () => {
+  it('coalesces simultaneous exact grants and rejects a conflicting tuple', async () => {
+    const { client, transport } = createClient();
+    authorize(client);
+    const input = {
+      ownerId: OWNER_A, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs: Date.now() + 60_000,
+    };
+    const first = client.grantSession(input);
+    const identical = client.grantSession({ ...input });
+    const conflicting = client.grantSession({ ...input, ownerId: OWNER_B });
+    expect(grantRequests(transport)).toHaveLength(1);
+    await expect(conflicting).resolves.toEqual({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    const request = grantRequests(transport)[0]!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: request.requestId, role: 'api', ownerKind: 'user',
+      ownerId: input.ownerId, sessionId: input.sessionId,
+      expiresAtMs: input.expiresAtMs, success: true,
+      grantId: 'c'.repeat(32), generation: 1,
+    });
+    await expect(Promise.all([first, identical])).resolves.toEqual([
+      expect.objectContaining({ success: true }),
+      expect.objectContaining({ success: true }),
+    ]);
+    await expect(client.grantSession({ ...input, tokenHash: 'b'.repeat(64) }))
+      .resolves.toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(grantRequests(transport)).toHaveLength(1);
+  });
+
   it('uses only an exact granted API session on every crypto request', async () => {
     const transport = new RecordingTransport();
     let authority: { kind: 'api_session'; sessionId: string; grantId: string } | undefined;

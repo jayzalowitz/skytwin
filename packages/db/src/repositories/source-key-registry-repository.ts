@@ -1,6 +1,7 @@
 import { query } from '../connection.js';
 import {
   revalidateSourceKeySessionAuthority,
+  type SessionAuthorityVerificationResult,
   type SourceKeySessionAuthorityInput,
 } from './session-repository.js';
 
@@ -129,7 +130,7 @@ function normalizeRow(raw: RawSourceKeyRegistryRow): SourceKeyRegistryRow {
 export const sourceKeyRegistryRepository = {
   async revalidateSessionAuthority(
     input: SourceKeySessionAuthorityInput,
-  ): Promise<boolean> {
+  ): Promise<SessionAuthorityVerificationResult> {
     return await revalidateSourceKeySessionAuthority(input);
   },
   async getCurrent(userId: string): Promise<SourceKeyRegistryRow | null> {

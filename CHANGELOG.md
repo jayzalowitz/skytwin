@@ -25,13 +25,21 @@ All notable changes to SkyTwin will be documented in this file.
   immutable session ID, owner, token hash, revocation state, and expiry before
   Electron returns an opaque session-bound grant, and Electron repeats the
   database check for every cryptographic request. Pending responses remain
-  bound to that exact live grant. Revoke wins delayed-grant races through
+  bound to that exact live grant. Session-token hashes are globally unique;
+  ambiguous legacy rows stop migration, and authentication plus lease refresh
+  is one atomic database statement. Concurrent identical grants coalesce and
+  cannot replace the first grant. A transient database outage denies the
+  current cryptographic request without turning it into a durable revocation,
+  while definitive inactivity removes the grant. Revoke wins delayed-grant races through
   bounded tombstones; expiry, lock admission, malformed authority
   traffic, disconnect, and child restart all fail closed. Demo,
   development-bypass, service, unauthenticated, and worker paths cannot mint
   authority. Pairing-token creation now requires a pre-existing real session so
   an arbitrary user ID cannot bootstrap this authority. No repository consumes
   the broker yet, no source data is migrated, and no encryption claim changes.
+  Database-only owner cascades and `revokeAllForUser` still lack a linearizable
+  broker-wide revocation barrier; that must be closed before a source consumer
+  is activated.
 
 - **Source-key IPC clients now fail closed without activating encryption.** The
   API and worker compose fixed-role clients that strictly validate the versioned

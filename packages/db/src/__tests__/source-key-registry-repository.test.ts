@@ -86,7 +86,7 @@ describe('sourceKeyRegistryRepository', () => {
     });
     await expect(
       sourceKeyRegistryRepository.revalidateSessionAuthority(authority),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ status: 'active' });
     expect(mockQuery.mock.calls[0]![0]).toContain('token_hash = $3');
     expect(mockQuery.mock.calls[0]![0]).toContain('revoked = false');
     expect(mockQuery.mock.calls[0]![0]).toContain('expires_at = $4');
@@ -103,7 +103,7 @@ describe('sourceKeyRegistryRepository', () => {
     });
     await expect(
       sourceKeyRegistryRepository.revalidateSessionAuthority(authority),
-    ).resolves.toBe(false);
+    ).resolves.toEqual({ status: 'inactive' });
   });
 
   it('rejects malformed session authority without querying CockroachDB', async () => {
@@ -112,7 +112,7 @@ describe('sourceKeyRegistryRepository', () => {
       ownerId: input.user_id,
       tokenHash: 'a'.repeat(64),
       expiresAtMs: 1_800_000_000_000,
-    })).resolves.toBe(false);
+    })).resolves.toEqual({ status: 'inactive' });
     expect(mockQuery).not.toHaveBeenCalled();
   });
 });

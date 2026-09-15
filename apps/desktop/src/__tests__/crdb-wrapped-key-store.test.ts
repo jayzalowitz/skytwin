@@ -61,7 +61,7 @@ function registry(
     getCurrent: vi.fn(async () => current),
     createInitial: vi.fn(async () => true),
     deleteInitialIfMatch: vi.fn(async () => true),
-    revalidateSessionAuthority: vi.fn(async () => true),
+    revalidateSessionAuthority: vi.fn(async () => ({ status: "active" as const })),
   };
 }
 
@@ -92,7 +92,7 @@ describe("CockroachWrappedKeyStore", () => {
 
     const repository = registry();
     vi.mocked(repository.createInitial).mockResolvedValue(
-      "yes" as unknown as boolean,
+      "yes" as unknown as { status: "active" },
     );
     vi.mocked(repository.deleteInitialIfMatch).mockResolvedValue(
       1 as unknown as boolean,

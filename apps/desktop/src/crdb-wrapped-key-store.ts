@@ -1,4 +1,8 @@
-import type { WrappedKeyStore, WrappedUserKey } from "./key-broker.js";
+import type {
+  SessionAuthorityVerificationResult,
+  WrappedKeyStore,
+  WrappedUserKey,
+} from "./key-broker.js";
 
 export interface SourceKeyRegistryRecord {
   user_id: string;
@@ -18,7 +22,7 @@ export interface SourceKeyRegistryPort {
     ownerId: string;
     tokenHash: string;
     expiresAtMs: number;
-  }): Promise<boolean>;
+  }): Promise<SessionAuthorityVerificationResult>;
 }
 
 type DynamicImport = (specifier: string) => Promise<unknown>;
@@ -156,12 +160,17 @@ export async function loadSourceKeyRegistryPort(
     },
     async revalidateSessionAuthority(
       input: Parameters<SourceKeyRegistryPort["revalidateSessionAuthority"]>[0],
-    ): Promise<boolean> {
+    ): Promise<SessionAuthorityVerificationResult> {
       const result: unknown = await revalidateSessionAuthority.call(repository, input);
-      if (typeof result !== "boolean") {
+      if (
+        !hasExactDataKeys(result, ["status"]) ||
+        (ownData(result, "status") !== "active" &&
+          ownData(result, "status") !== "inactive" &&
+          ownData(result, "status") !== "unavailable")
+      ) {
         throw new Error("source-key session authority result is invalid");
       }
-      return result;
+      return Object.freeze({ status: ownData(result, "status") }) as SessionAuthorityVerificationResult;
     },
   });
 }

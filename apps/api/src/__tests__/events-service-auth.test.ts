@@ -42,7 +42,7 @@ const { savedEnv, mocks, SERVICE_TOKEN, TEST_USER_ID } = vi.hoisted(() => {
       getOutcome: vi.fn(),
       approvalCreate: vi.fn(),
       approvalFindByDecisionId: vi.fn(),
-      findByTokenHash: vi.fn(),
+      authenticateAndMaintain: vi.fn(),
       runWithRequestContext: vi.fn(),
     },
   };
@@ -102,9 +102,8 @@ vi.mock('../lib/user-llm-client.js', () => ({
 vi.mock('@skytwin/db', () => ({
   // sessionAuth
   sessionRepository: {
-    findByTokenHash: mocks.findByTokenHash,
-    refreshExpiry: vi.fn(),
-    touchLastActive: vi.fn(),
+    authenticateAndMaintain: mocks.authenticateAndMaintain,
+    revalidateSourceKeyAuthority: vi.fn().mockResolvedValue({ status: 'inactive' }),
   },
   // requestContext
   runWithRequestContext: mocks.runWithRequestContext,
@@ -228,7 +227,7 @@ describe('/api/events/ingest behind the production auth chain', () => {
     mocks.runWithRequestContext.mockImplementation(
       async (_userId: unknown, fn: () => Promise<unknown>) => fn(),
     );
-    mocks.findByTokenHash.mockResolvedValue(null);
+    mocks.authenticateAndMaintain.mockResolvedValue({ status: 'inactive' });
     mocks.interpret.mockResolvedValue({
       id: 'decision-1',
       situationType: 'email_triage',
@@ -328,7 +327,7 @@ describe('/api/events/ingest behind the production auth chain', () => {
     });
     // Falls through to the session lookup, which finds nothing.
     expect(res).toBe(401);
-    expect(mocks.findByTokenHash).toHaveBeenCalled();
+    expect(mocks.authenticateAndMaintain).toHaveBeenCalled();
   });
 
   it('rejects everything when SKYTWIN_SERVICE_TOKEN is unset (no token means no service auth)', async () => {
