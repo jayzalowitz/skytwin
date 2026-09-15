@@ -2965,6 +2965,330 @@ ${step}`,
     ).toHaveLength(1);
   });
 
+  it("cross-binds model delivery publication to live attempt and AppImage producer evidence", async () => {
+    const root = makeRoot();
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const tag = "v0.7.0-beta";
+    const ref = `refs/tags/${tag}`;
+    const runId = 601;
+    const runAttempt = 2;
+    const machineJobId = 602;
+    const desktopJobId = 603;
+    const evidenceArtifactId = 604;
+    const releaseAssets = makeReleaseAssets(root, 700);
+    const releaseAsset = releaseAssets.find(
+      ({ artifactName }) => artifactName === "SkyTwin-Linux-AppImage",
+    );
+    const subject = releaseAsset.subjects[0];
+    const claimId = "models.verified-delivery";
+    const producerJobName = machineProducerJobName(claimId, "linux");
+    const verifierPath = machineVerifierPath(claimId);
+    const verifierCommand = machineVerifierCommand(claimId, "linux");
+    const verifierSource = "// model delivery verifier fixture\n";
+    const verifierSha256 = createHash("sha256")
+      .update(verifierSource)
+      .digest("hex");
+    write(root, verifierPath, verifierSource);
+    const report = {
+      releaseTag: tag,
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      repository: "owner/repository",
+      ref,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      releaseArtifactCreatedAt: "2026-09-15T01:05:00Z",
+      releaseArtifactAttemptBindingResult:
+        "workflow-output-and-producer-window-pass",
+      releaseArtifactDownloadPath: `.release-evidence/model-delivery-subject/${subject.name}`,
+      releaseArtifactDownloadStepName:
+        "Download exact Linux AppImage for model delivery",
+      releaseArtifactDownloadStepConclusion: "success",
+      releaseArtifactDownloadBindingResult:
+        "exact-artifact-id-action-download-pass",
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      producerJobName,
+      desktopProducerJobId: desktopJobId,
+      desktopProducerJobName: "Desktop — Linux (AppImage + deb + rpm)",
+      desktopProducerJobRunAttempt: runAttempt,
+      desktopProducerJobConclusion: "success",
+      desktopProducerJobStartedAt: "2026-09-15T01:01:00Z",
+      desktopProducerJobCompletedAt: "2026-09-15T01:10:00Z",
+      desktopUploadStartedAt: "2026-09-15T01:04:00Z",
+      desktopUploadCompletedAt: "2026-09-15T01:06:00Z",
+      verifierJobId: machineJobId,
+      verifierJobName: producerJobName,
+      verifierJobRunAttempt: runAttempt,
+      verifierJobStatus: "in_progress",
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      schemaVersion: 1,
+      generatedBy: "release-machine-verifier",
+      claimId,
+      result: "pass",
+      sourceCommit: commit,
+      platform: "linux",
+      runnerPlatform: "linux-x64",
+      modelArtifacts: [
+        {
+          id: "qwen2.5-1.5b-instruct-q4-k-m",
+          name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          source:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          deliveryHost: "us.aws.cdn.hf.co",
+          sourceRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          sourceRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadata:
+            "https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/revision/91cad51170dc346986eccefdc2dd33a9da36ead9?blobs=true",
+          metadataRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          metadataRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadataCardLicense: "apache-2.0",
+          metadataSiblingName: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          metadataSiblingExactBytes: 1_117_320_736,
+          metadataSiblingSha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+          metadataLicenseSiblingName: "LICENSE",
+          metadataLicenseSiblingExactBytes: 11_343,
+          metadataLicenseSiblingBlobId:
+            "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          metadataVerificationResult: "pass",
+          license: "Apache-2.0",
+          licenseName: "Apache License 2.0",
+          licenseUrl:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseSource:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseExactBytes: 11_343,
+          licenseSha256:
+            "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+          licenseBlobId: "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          licenseVerificationResult: "pass",
+          exactBytes: 1_117_320_736,
+          sha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+          digestVerificationResult: "pass",
+          stableFileIdentityResult: "pass",
+          deletionResult: "pass",
+        },
+      ],
+      checks: [
+        {
+          id: "models.delivery-digest",
+          testId: "models.delivery-digest",
+          result: "pass",
+          observed: {
+            assertion:
+              "The delivered model bytes match the reviewed immutable source pin",
+            measurement:
+              "qwen2.5-1.5b-instruct-q4_k_m.gguf 1117320736 bytes sha256:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-license",
+          testId: "models.delivery-license",
+          result: "pass",
+          observed: {
+            assertion:
+              "The model metadata and license bytes are observed at the same immutable source revision",
+            measurement:
+              "Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 card=apache-2.0; LICENSE 11343 bytes sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-delete",
+          testId: "models.delivery-delete",
+          result: "pass",
+          observed: {
+            assertion:
+              "The verified candidate was removed from the isolated verifier workspace",
+            measurement:
+              "stable inode quarantined and deleted after verification",
+            exitCode: 0,
+          },
+        },
+      ],
+    };
+    const reportPath =
+      ".release-evidence/reports/models.verified-delivery.json";
+    const reportBytes = `${JSON.stringify(report)}\n`;
+    write(root, reportPath, reportBytes);
+    const evidence = {
+      claimId,
+      kind: "machine",
+      checkIds: CANONICAL_MACHINE_EVIDENCE_CHECKS.get(claimId),
+      repository: "owner/repository",
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      ref,
+      evidenceArtifactId,
+      evidenceArtifactName: "release-evidence",
+      evidenceArtifactSha256: "c".repeat(64),
+      reportPath,
+      reportSha256: createHash("sha256").update(reportBytes).digest("hex"),
+      sourceCommit: commit,
+      releaseTag: tag,
+      platform: "linux",
+      producerJobId: machineJobId,
+      producerJobName,
+      producerJobRunAttempt: runAttempt,
+      producerJobConclusion: "success",
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      why: "fixture",
+    };
+    const manifest = {
+      schemaVersion: 1,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      ref,
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      releaseAssets,
+      verificationAssets: makeVerificationAssets(root, releaseAssets),
+      evidence: [evidence],
+    };
+    const machineJob = {
+      id: machineJobId,
+      run_id: runId,
+      name: producerJobName,
+      status: "completed",
+      conclusion: "success",
+      run_attempt: runAttempt,
+      started_at: "2026-09-15T01:02:00Z",
+      completed_at: "2026-09-15T01:09:00Z",
+      head_sha: commit,
+      run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+      steps: [
+        {
+          name: "Download exact Linux AppImage for model delivery",
+          conclusion: "success",
+        },
+        { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
+      ],
+    };
+    let liveUploadStartedAt = report.desktopUploadStartedAt;
+    const desktopJob = () => ({
+      id: desktopJobId,
+      run_id: runId,
+      name: report.desktopProducerJobName,
+      status: "completed",
+      conclusion: "success",
+      run_attempt: runAttempt,
+      started_at: report.desktopProducerJobStartedAt,
+      completed_at: report.desktopProducerJobCompletedAt,
+      head_sha: commit,
+      run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+      steps: [
+        { name: "Package Linux desktop app", conclusion: "success" },
+        {
+          name: "Upload Linux AppImage",
+          conclusion: "success",
+          started_at: liveUploadStartedAt,
+          completed_at: report.desktopUploadCompletedAt,
+        },
+      ],
+    });
+    const requestedUrls = [];
+    const fetchImpl = async (url) => {
+      const text = String(url);
+      requestedUrls.push(text);
+      let body;
+      if (text.includes(`/attempts/${runAttempt}/jobs`))
+        body = { total_count: 2, jobs: [machineJob, desktopJob()] };
+      else if (text.endsWith(`/attempts/${runAttempt}`))
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          run_started_at: ATTEMPT_STARTED_AT,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text.endsWith(`/runs/${runId}`))
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text.endsWith(`/jobs/${machineJobId}`)) body = machineJob;
+      else if (text.endsWith(`/jobs/${desktopJobId}`)) body = desktopJob();
+      else if (text.endsWith(`/artifacts/${evidenceArtifactId}`))
+        body = {
+          id: evidenceArtifactId,
+          name: "release-evidence",
+          expired: false,
+          digest: `sha256:${"c".repeat(64)}`,
+          workflow_run: { id: runId, head_sha: commit },
+        };
+      else {
+        const id = Number(text.split("/").at(-1));
+        const asset = releaseAssets.find(
+          (candidate) => candidate.artifactId === id,
+        );
+        body = releaseAssetApiBody(asset, runId, commit);
+      }
+      return { ok: true, json: async () => body };
+    };
+    const ledger = {
+      release: {
+        readinessClaims: [
+          { claimId, requiredEvidenceKinds: ["source", "machine"] },
+        ],
+      },
+    };
+    const options = {
+      root,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      runId,
+      triggerRef: ref,
+      githubToken: "token",
+      fetchImpl,
+    };
+    expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
+      [],
+    );
+    expect(requestedUrls).toContain(
+      `https://api.github.com/repos/owner/repository/actions/jobs/${desktopJobId}`,
+    );
+    expect(requestedUrls).toContain(
+      `https://api.github.com/repos/owner/repository/actions/runs/${runId}/attempts/${runAttempt}`,
+    );
+
+    liveUploadStartedAt = "2026-09-15T00:59:59Z";
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("AppImage artifact is not bound"),
+      ),
+    ).toBe(true);
+  });
+
   it("requires stable unpacked executable identity for packaged sample evidence", () => {
     expect(
       verifyMachineEvidenceApplicability(
