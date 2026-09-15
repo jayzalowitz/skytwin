@@ -81,6 +81,8 @@ describe('Google preview boundary', () => {
     'readGmail', 'sendGoogleMail', 'getGoogleCalendarEvents',
     'getMessage', 'get_message', 'fetchEmail', 'modifyMessage', 'trashMessage',
     'createDraft', 'sendDraft', 'sendCalendarInvite',
+    'users.messages.send', 'me.messages.send', 'users.drafts.create',
+    'google.drive.files.list', 'google/drive/permissions.create',
   ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);

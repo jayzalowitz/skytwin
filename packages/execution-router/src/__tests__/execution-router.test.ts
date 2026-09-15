@@ -254,7 +254,13 @@ describe('ExecutionRouter', () => {
     router = new ExecutionRouter(registry, createDispatchAuthority());
   });
 
-  it.each(['send_email', 'create_calendar_event'])
+  it.each([
+    'send_email',
+    'create_calendar_event',
+    'users.messages.send',
+    'me.messages.send',
+    'google.drive.files.list',
+  ])
     ('denies disabled account action %s before any adapter or dispatch call', async (actionType) => {
       const authority = createDispatchAuthority();
       const localRegistry = new AdapterRegistry();

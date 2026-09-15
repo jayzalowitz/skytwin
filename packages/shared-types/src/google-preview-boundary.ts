@@ -137,6 +137,17 @@ export function isGoogleAccountActionType(actionType: string): boolean {
   const normalized = normalizeActionType(actionType);
   if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
 
+  // Provider APIs commonly expose resource-qualified method names rather
+  // than SkyTwin's verb-first action vocabulary. Deny the stable Gmail /
+  // Microsoft Graph mailbox roots and explicit Google Drive namespace before
+  // an adapter can treat them as generic remote actions.
+  if (/^(?:users?|me)_(?:messages?|threads?|drafts?|labels?|history|settings|profile|watch|stop)(?:_|$)/.test(normalized)) {
+    return true;
+  }
+  if (/^google_drive_(?:files?|folders?|permissions?|drives?|changes?|comments?|replies?|revisions?)(?:_|$)/.test(normalized)) {
+    return true;
+  }
+
   // MCP and legacy adapters are allowed to advertise action names that are
   // not in the built-in catalogs. Cover stable email/calendar write and read
   // vocabularies without relying on peer-authored labels or descriptions.

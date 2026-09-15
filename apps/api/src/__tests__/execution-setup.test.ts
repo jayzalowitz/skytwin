@@ -656,6 +656,8 @@ describe('execution-setup', () => {
         'create_event', 'update_event', 'schedule_meeting', 'calendar.create',
         'calendar_update', 'rsvp_yes', 'get_calendar_events', 'sendEmail',
         'readEmail', 'respondToEvent', 'deleteEmails', 'schedule_focus_block',
+        'users.messages.send', 'me.messages.send', 'users.drafts.create',
+        'google.drive.files.list',
       ]) {
         await expect(guard?.({ actionType, domain: 'generic' }, 'owner-1'))
           .resolves.toMatchObject({ allowed: false });
