@@ -19,7 +19,10 @@ const schema = `
 function run(sql: string) {
   return spawnSync(
     'cockroach',
-    ['demo', '--empty', '--insecure', '--format=csv', '--execute', sql],
+    [
+      'demo', '--empty', '--insecure', '--sql-port=0', '--http-port=0',
+      '--format=csv', '--execute', sql,
+    ],
     { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024 },
   );
 }
