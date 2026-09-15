@@ -685,6 +685,53 @@ describe('Capabilities API routes', () => {
         .not.toContain('ya29.adapter-secret');
     });
 
+    it('keeps an owned retained account capability report-only without external mutation', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
+        user_id: USER_ID,
+        oauth_provider: 'microsoft',
+      }));
+      mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([{
+        actionId: 'action-retained',
+        payload: { reversible: true },
+        occurredAt: new Date(),
+        executionPlanId: 'plan-retained',
+        adapterUsed: 'ironclaw',
+      }]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'POST',
+        `/api/capabilities/${SERVER_ID}/regret`,
+        { withinHours: 24 },
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        status: 'report_only',
+        code: 'generic_rollback_report_only',
+        undone: [],
+        unavailable: [{
+          actionId: 'action-retained',
+          planId: 'plan-retained',
+          adapterUsed: 'ironclaw',
+          result: 'rollback_unavailable',
+        }],
+      });
+      expect(mockExecutionRepository.getRollbackTargetsByServer).toHaveBeenCalledWith({
+        serverId: SERVER_ID,
+        userId: USER_ID,
+        since: expect.any(Date),
+      });
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockRouterRollback).not.toHaveBeenCalled();
+      expect(mockProvenanceRepository.writeNode).not.toHaveBeenCalled();
+      expect(mockMcpServerRepository.softDelete).not.toHaveBeenCalled();
+      expect(mockMcpServerRepository.updateTrustTier).not.toHaveBeenCalled();
+      expect(mockOauthRepository.deleteById).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+
     it('returns 403 when requester is not the owner', async () => {
       const OTHER_USER = 'cccccccc-dddd-eeee-ffff-000000000099';
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: OTHER_USER }));
@@ -1553,7 +1600,6 @@ describe('Capabilities API routes', () => {
   });
 
   it.each([
-    ['regret report', 'POST', `/api/capabilities/${SERVER_ID}/regret`, { withinHours: 24 }],
     ['time-machine report', 'POST', `/api/capabilities/${SERVER_ID}/time-machine`, {
       decisionId: 'dddddddd-0000-0000-0000-000000000001',
     }],
