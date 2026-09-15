@@ -35,9 +35,10 @@ Migration 081 separately closes the broker plan's global dead-letter ownership
 prerequisite. `worker_dead_letter` now stores only constrained job/error codes,
 bounded attempts, status/timestamps, and opaque UUID identifiers. The migration
 discards existing diagnostic strings and JSON by removing those columns;
-the worker and admin API have no content-bearing DLQ fields. This is a
-content-removal boundary, not evidence that the broker is active for any
-user-owned source field.
+CockroachDB reclaims the dropped physical data asynchronously under its configured
+GC policy, while prior backups retain their normal lifecycle. The worker and admin
+API have no content-bearing DLQ fields. This is a content-removal boundary, not
+evidence that the broker is active for any user-owned source field.
 
 Consequently, the public privacy policy cannot make a general source-field
 encryption-at-rest claim. It separately discloses the API-local OAuth vault's
