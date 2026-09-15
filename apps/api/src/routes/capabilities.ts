@@ -675,13 +675,9 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
@@ -773,15 +769,12 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const body = req.body as { decisionId?: string; withoutCapability?: boolean } | undefined;
       const { decisionId, withoutCapability = true } = body ?? {};
@@ -848,15 +841,12 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const body = req.body as { daysBack?: number } | undefined;
       const daysBack = typeof body?.daysBack === 'number' && body.daysBack > 0
@@ -1600,15 +1590,12 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const currentTier = server.trust_tier as TrustTier;
 
@@ -1737,13 +1724,9 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
@@ -1787,13 +1770,9 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
@@ -1990,13 +1969,9 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 
@@ -2357,16 +2332,12 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const previousValue = server.zero_trust_mode;
       const updatedServer = await mcpServerRepository.setZeroTrustMode(id, true);
@@ -2408,16 +2379,12 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server || server.status === 'uninstalled') {
-        res.status(404).json({ error: 'Capability server not found' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
-
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
-        return;
-      }
+      const server = owned.server;
 
       const previousValue = server.zero_trust_mode;
       const updatedServer = await mcpServerRepository.setZeroTrustMode(id, false);
