@@ -330,7 +330,7 @@ node scripts/release-evidence/verify-adversarial-evidence.mjs \
 This artifact deliberately identifies itself as `source_checkout`. It has no
 release subject or attestation, does not establish release readiness, and does
 not claim there are zero bypasses. The catalog has nine deterministic-policy
-cases and five mapped-regression cases. Its adapter dimension names the three
+cases and nine mapped-regression cases. Its adapter dimension names the three
 execution adapters (`direct`, `ironclaw`, and `openclaw`) plus `none`, which is a
 policy-only category rather than a fourth adapter. The CLI runs every exact
 mapped Vitest ID and verifies the SHA-256 of its dedicated one-scenario test file before recording
@@ -352,15 +352,17 @@ never turns a failed assertion into a passing result. Those dimension counts
 are catalog-declared scenario presence, not typed runtime observations. In the
 pre-dispatch guard case, `direct` records the intended downstream adapter even
 though the guard correctly stops execution before adapter selection. The
-catalog's broader target denominator remains explicit: this development foundation currently
-catalogs only six of ten identified runtime entry paths, including the
-capability-regret route's explicit refusal to dispatch generic rollback, so
-`developmentStatus` remains `incomplete` even when all mapped checks pass. A
+catalog's broader target denominator remains explicit: this development foundation now
+catalogs all ten currently declared runtime entry paths, including approval,
+assistant, routine, memory-loop, and capability-regret boundaries. Ten of ten is
+coverage of that declared denominator, not proof that the denominator exhausts
+every present or future effect-capable path, so `developmentStatus` remains
+`incomplete` even when all mapped checks pass. A
 future `complete` state would additionally require every mapped assertion,
 every structural target, artifact-subject binding, attestation, and the other
-release gates; source-checkout evidence cannot claim it. This foundation does
-not yet enumerate every API, worker, assistant, memory, or routine entry path
-needed for that gate. Test-process network and clock
+release gates; source-checkout evidence cannot claim it. A release-candidate
+inventory must still re-enumerate API, worker, assistant, memory, routine, and
+adapter paths at the exact release SHA. Test-process network and clock
 control are not enforced and are stated as such in the report. API and worker
 TypeScript source is parsed for call expressions whose terminal method name is
 in the verifier's fixed dispatch-name set, excluding comments, strings, tests,
