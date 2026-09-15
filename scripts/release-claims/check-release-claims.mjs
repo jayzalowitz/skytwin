@@ -571,6 +571,8 @@ const RELEASE_EVIDENCE_WORKFLOW_PATH = ".github/workflows/build.yml";
 const CI_EVIDENCE_JOB_NAME = "release-claim-ci";
 const CI_EVIDENCE_ARTIFACT_NAME = "release-claims-ci";
 const MACHINE_EVIDENCE_ARTIFACT_NAME = "release-evidence";
+const CANONICAL_MACHINE_REPORT_UPLOAD_NAME =
+  "${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}";
 const CANONICAL_AUDIT_BASELINE = Object.freeze({
   ref: "origin/main",
   commit: "563c60f43e461910a16f30423cbab4ce8092fb61",
@@ -2399,6 +2401,10 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
           isRecord(step) &&
           typeof step.uses === "string" &&
           step.uses.startsWith("actions/upload-artifact@") &&
+          !(
+            jobName === "release-machine-evidence" &&
+            step.with?.name === CANONICAL_MACHINE_REPORT_UPLOAD_NAME
+          ) &&
           artifactNameCanResolveTo(step.with?.name, CI_EVIDENCE_ARTIFACT_NAME)
         )
           ciArtifactUploaders.push({ path, jobName, stepIndex });
@@ -3115,8 +3121,6 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
     );
   const machineInputUploaders = [];
   const dynamicArtifactUploaders = [];
-  const canonicalMachineReportUploadName =
-    "${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}";
   const canonicalSigningBindingUploadName =
     "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}";
   for (const [jobName, job] of Object.entries(canonicalWorkflow.jobs ?? {})) {
@@ -3145,7 +3149,7 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
         !(
           jobName === "release-machine-evidence" &&
           [
-            canonicalMachineReportUploadName,
+            CANONICAL_MACHINE_REPORT_UPLOAD_NAME,
             canonicalSigningBindingUploadName,
           ].includes(artifactName)
         )
@@ -3159,7 +3163,8 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
       ({ jobName }) => jobName !== "release-machine-evidence",
     ) ||
     !machineInputUploaders.some(
-      ({ artifactName }) => artifactName === canonicalMachineReportUploadName,
+      ({ artifactName }) =>
+        artifactName === CANONICAL_MACHINE_REPORT_UPLOAD_NAME,
     ) ||
     !machineInputUploaders.some(
       ({ artifactName }) => artifactName === canonicalSigningBindingUploadName,
@@ -6370,13 +6375,13 @@ export async function verifyPublicationEvidence(
       exactAttemptJob?.id !== job.id ||
       exactAttemptJob?.run_attempt !== manifest.runAttempt ||
       exactAttemptJob?.name !== job.name ||
-      exactAttemptJob?.conclusion !== "success" ||
+      exactAttemptJob?.conclusion !== job.conclusion ||
       exactAttemptJob?.started_at !== job.started_at ||
       exactAttemptJob?.completed_at !== job.completed_at
     )
       addError(
         errors,
-        `${prefix} job is not current-attempt verifier evidence`,
+        `${prefix} job is not current-attempt CI evidence`,
       );
     if (
       artifact.id !== evidence.artifactId ||

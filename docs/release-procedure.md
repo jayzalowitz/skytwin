@@ -268,9 +268,10 @@ The packaged-sample verifier implements three of the twelve matrix reports; see
 and model-delivery lanes implement one more each, and the signing source
 implements macOS and Windows while failing closed on Linux until package-format
 methods and trust roots exist. Four verifier sources (four matrix reports) and
-the Linux signing implementation are absent today. The `release-claims-ci`
-producer now records the frozen source-check commands and uploads its result on
-tag pushes, but that report does not resolve any external stop-ship condition. The
+the Linux signing implementation are absent today.
+The `release-claims-ci` producer now records the frozen source-check commands
+and uploads its result on tag pushes,
+but that report does not resolve any external stop-ship condition. The
 signing matrix entries cannot pass until credentialed package jobs produce
 signed artifacts, protected operator configuration supplies the expected
 signer pins, and the tagged run records passing native evidence. Machine
