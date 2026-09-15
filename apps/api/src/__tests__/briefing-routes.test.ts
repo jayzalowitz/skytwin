@@ -11,7 +11,7 @@ import type { Express } from 'express';
 
 // ── Mocks (vi.hoisted so factories run before vi.mock) ─────────────────────
 
-const { mockBriefingRepository, mockLifebookRepository } = vi.hoisted(() => ({
+const { mockBriefingRepository, mockLifebookRepository, mockConfig } = vi.hoisted(() => ({
   mockBriefingRepository: {
     create: vi.fn(),
     getLatestForUser: vi.fn(),
@@ -29,12 +29,14 @@ const { mockBriefingRepository, mockLifebookRepository } = vi.hoisted(() => ({
   mockLifebookRepository: {
     listVisible: vi.fn().mockResolvedValue([]),
   },
+  mockConfig: { googleConnectionMode: 'experimental' },
 }));
 
 vi.mock('@skytwin/db', () => ({
   briefingRepository: mockBriefingRepository,
   lifebookRepository: mockLifebookRepository,
 }));
+vi.mock('@skytwin/config', () => ({ loadConfig: () => mockConfig }));
 
 // ── Import after mocks ─────────────────────────────────────────────────────
 
@@ -103,7 +105,23 @@ async function req(
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe('GET /api/twin-briefings/latest', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConfig.googleConnectionMode = 'experimental';
+  });
+
+  it('returns an empty account-free state before reading retained non-sample briefings', async () => {
+    mockConfig.googleConnectionMode = 'disabled';
+    mockBriefingRepository.getLatestForUser.mockResolvedValue(BRIEFING_ROW);
+
+    const { status, body } = await req(buildApp(), 'GET', '/api/twin-briefings/latest');
+
+    expect(status).toBe(200);
+    expect(body).toEqual({ briefing: null, sections: [] });
+    expect(mockBriefingRepository.getLatestForUser).not.toHaveBeenCalled();
+    expect(mockBriefingRepository.getLatestPerLifebook).not.toHaveBeenCalled();
+    expect(mockLifebookRepository.listVisible).not.toHaveBeenCalled();
+  });
 
   it('returns the latest briefing for the authenticated user', async () => {
     mockBriefingRepository.getLatestForUser.mockResolvedValue(BRIEFING_ROW);
@@ -140,7 +158,21 @@ describe('GET /api/twin-briefings/latest', () => {
 });
 
 describe('GET /api/twin-briefings', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConfig.googleConnectionMode = 'experimental';
+  });
+
+  it('hides retained non-sample briefing history while account connections are disabled', async () => {
+    mockConfig.googleConnectionMode = 'disabled';
+    mockBriefingRepository.listForUser.mockResolvedValue([BRIEFING_ROW]);
+
+    const { status, body } = await req(buildApp(), 'GET', '/api/twin-briefings');
+
+    expect(status).toBe(200);
+    expect(body).toEqual({ briefings: [] });
+    expect(mockBriefingRepository.listForUser).not.toHaveBeenCalled();
+  });
 
   it('returns a list of briefings for the user', async () => {
     mockBriefingRepository.listForUser.mockResolvedValue([BRIEFING_ROW]);
@@ -162,7 +194,20 @@ describe('GET /api/twin-briefings', () => {
 });
 
 describe('POST /api/twin-briefings/:id/read', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConfig.googleConnectionMode = 'experimental';
+  });
+
+  it('does not read or mutate retained non-sample briefings while account connections are disabled', async () => {
+    mockConfig.googleConnectionMode = 'disabled';
+
+    const { status } = await req(buildApp(), 'POST', `/api/twin-briefings/${BRIEFING_ID}/read`);
+
+    expect(status).toBe(404);
+    expect(mockBriefingRepository.listForUser).not.toHaveBeenCalled();
+    expect(mockBriefingRepository.markRead).not.toHaveBeenCalled();
+  });
 
   it('marks a briefing as read and returns it', async () => {
     const readRow = { ...BRIEFING_ROW, read_at: new Date() };
@@ -206,6 +251,21 @@ describe('POST /api/twin-briefings/:id/read', () => {
 describe('GET /api/twin-briefings/lifebook/:domain/latest', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockConfig.googleConnectionMode = 'experimental';
+  });
+
+  it('hides retained non-sample Lifebook prose while account connections are disabled', async () => {
+    mockConfig.googleConnectionMode = 'disabled';
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      '/api/twin-briefings/lifebook/Health/latest',
+    );
+
+    expect(status).toBe(200);
+    expect(body).toEqual({ briefing: null });
+    expect(mockBriefingRepository.getLatestForUserDomain).not.toHaveBeenCalled();
   });
 
   it('returns the per-Lifebook briefing when one exists', async () => {

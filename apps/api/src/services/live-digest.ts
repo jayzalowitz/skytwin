@@ -36,6 +36,7 @@ import {
   type DailyMemorySuggestion,
   type DailyMemorySuggestionPage,
 } from '@skytwin/shared-types';
+import { DEMO_USER_ID } from '../auth/demo-session.js';
 
 /**
  * Cross-signal entity linking (spec 05, #478) collapse switch. Default ON;
@@ -490,6 +491,15 @@ function commitmentTodosFor(
  * null when the user has no decisions (caller falls back to prose / empty).
  */
 export async function buildLiveDigest(userId: string): Promise<LiveDigest | null> {
+  // The supported preview is an isolated fictional sample. Retained decisions
+  // from earlier account-connected development builds can contain message or
+  // calendar content, so do not even query them while the account boundary is
+  // disabled. The reserved sample identity is safe because its fixture is
+  // synthetic and separately protected by the sample-session authority.
+  if (loadConfig().googleConnectionMode !== 'experimental' && userId !== DEMO_USER_ID) {
+    return null;
+  }
+
   const decisions = await query<DecisionDigestRow>(
     `SELECT d.id,
             d.raw_event,

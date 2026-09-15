@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import { briefingRepository, lifebookRepository } from '@skytwin/db';
+import { loadConfig } from '@skytwin/config';
 import { createLogger } from '@skytwin/core';
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
 import { buildLiveDigest } from '../services/live-digest.js';
+import { DEMO_USER_ID } from '../auth/demo-session.js';
 
 const log = createLogger('api:twin-briefings');
 
@@ -24,6 +26,10 @@ export function createTwinBriefingsRouter(): Router {
   function getUserId(req: import('express').Request): string | undefined {
     return (req as unknown as { user?: { id?: string } }).user?.id
       ?? (req.query['userId'] as string | undefined);
+  }
+
+  function canReadBriefings(userId: string): boolean {
+    return loadConfig().googleConnectionMode === 'experimental' || userId === DEMO_USER_ID;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -50,6 +56,10 @@ export function createTwinBriefingsRouter(): Router {
       const userId = getUserId(req);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+      if (!canReadBriefings(userId)) {
+        res.json({ briefing: null, sections: [] });
         return;
       }
 
@@ -155,6 +165,10 @@ export function createTwinBriefingsRouter(): Router {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
+      if (!canReadBriefings(userId)) {
+        res.json({ briefing: null });
+        return;
+      }
       const { domain } = req.params;
       if (!domain || domain.length === 0) {
         res.status(400).json({ error: 'domain is required' });
@@ -196,6 +210,10 @@ export function createTwinBriefingsRouter(): Router {
         res.status(400).json({ error: 'userId is required' });
         return;
       }
+      if (!canReadBriefings(userId)) {
+        res.json({ briefings: [] });
+        return;
+      }
 
       const rawCadence = req.query['cadence'];
       const cadence = rawCadence === 'daily' || rawCadence === 'weekly'
@@ -229,6 +247,10 @@ export function createTwinBriefingsRouter(): Router {
       const userId = getUserId(req);
       if (!userId) {
         res.status(400).json({ error: 'userId is required' });
+        return;
+      }
+      if (!canReadBriefings(userId)) {
+        res.status(404).json({ error: 'Briefing not found' });
         return;
       }
 

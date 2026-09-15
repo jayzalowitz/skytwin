@@ -13,6 +13,7 @@ vi.mock('@skytwin/db', () => ({
 vi.mock('@skytwin/config', () => ({ loadConfig: mockLoadConfig }));
 
 import { buildLiveDigest } from '../services/live-digest.js';
+import { DEMO_USER_ID } from '../auth/demo-session.js';
 
 function decisionRow(over: Record<string, unknown> = {}) {
   return {
@@ -129,20 +130,16 @@ describe('buildLiveDigest', () => {
     expect(d!.coverage?.missing).not.toContain('gmail'); // never nudged to connect Google
   });
 
-  it('ignores retained account tokens for coverage while account connections are disabled', async () => {
+  it('does not read retained decisions or tokens for a non-sample user while account connections are disabled', async () => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-    mockQuery
-      .mockResolvedValueOnce({ rows: [decisionRow()] })
-      .mockResolvedValueOnce({ rows: [] });
 
     const d = await buildLiveDigest('u1');
 
-    expect(d!.coverage?.coldStart).toBe(true);
-    expect(d!.coverage?.connected).toEqual([]);
-    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('oauth_tokens'))).toBe(false);
+    expect(d).toBeNull();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
-  it('does not surface a retained Microsoft token while account connections are disabled', async () => {
+  it('preserves the fictional sample digest without reading retained account tokens', async () => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
     mockQuery.mockImplementation(async (sql: unknown) => {
       const statement = String(sql);
@@ -153,8 +150,9 @@ describe('buildLiveDigest', () => {
       return { rows: [] };
     });
 
-    const d = await buildLiveDigest('u1');
+    const d = await buildLiveDigest(DEMO_USER_ID);
 
+    expect(d).not.toBeNull();
     expect(d!.coverage?.connected).not.toContain('outlook');
     expect(d!.coverage?.connected).not.toContain('outlook_calendar');
     expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('oauth_tokens'))).toBe(false);
