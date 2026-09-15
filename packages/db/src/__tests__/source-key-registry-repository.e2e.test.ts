@@ -5,6 +5,7 @@ import {
   SourceKeyRegistryConflictError,
   sourceKeyRegistryRepository,
 } from '../repositories/source-key-registry-repository.js';
+import { sessionRepository } from '../repositories/session-repository.js';
 
 const E2E = process.env['E2E'] === 'true';
 const users = [
@@ -38,6 +39,7 @@ describe.skipIf(!E2E)('E2E: source-key registry authority', () => {
   });
 
   afterEach(async () => {
+    await pool.query('DELETE FROM sessions WHERE user_id = ANY($1::UUID[])', [users]);
     await pool.query('DELETE FROM user_source_key_registry WHERE user_id = ANY($1::UUID[])', [users]);
     await pool.query('DELETE FROM source_key_deletion_intents WHERE user_id = ANY($1::UUID[])', [users]);
   });
@@ -89,5 +91,23 @@ describe.skipIf(!E2E)('E2E: source-key registry authority', () => {
     expect(await sourceKeyRegistryRepository.getCurrent(users[0]!)).not.toBeNull();
     expect(await sourceKeyRegistryRepository.deleteInitialIfMatch(record)).toBe(true);
     expect(await sourceKeyRegistryRepository.getCurrent(users[0]!)).toBeNull();
+  });
+
+  it('returns one canonical refreshed expiry to concurrent authentication calls', async () => {
+    const tokenHash = 'a'.repeat(64);
+    await pool.query(
+      `INSERT INTO sessions (user_id, token_hash, expires_at)
+       VALUES ($1, $2, now() + INTERVAL '10 minutes')`,
+      [users[0], tokenHash],
+    );
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => sessionRepository.authenticateAndMaintain(tokenHash)),
+    );
+    expect(results.every((result) => result.status === 'active')).toBe(true);
+    const expiries = results.map((result) =>
+      result.status === 'active' ? new Date(result.session.expires_at).getTime() : null,
+    );
+    expect(new Set(expiries).size).toBe(1);
+    expect(expiries[0]).toBeGreaterThan(Date.now() + 6 * 24 * 60 * 60 * 1_000);
   });
 });
