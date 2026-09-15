@@ -54,7 +54,16 @@ export function requestContext(
     next();
     return;
   }
-  runWithRequestContext({ userId }, () => {
+  const authority = req.sourceKeySessionAuthority;
+  const hasExactSessionAuthority =
+    !req.demoAuthenticated && !req.serviceAuthenticated &&
+    authority?.sessionId === req.authenticatedSessionId;
+  runWithRequestContext({
+    userId,
+    ...(hasExactSessionAuthority
+      ? { sourceKeySessionAuthority: authority }
+      : {}),
+  }, () => {
     next();
   });
 }

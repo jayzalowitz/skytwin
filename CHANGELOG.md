@@ -20,15 +20,38 @@ All notable changes to SkyTwin will be documented in this file.
   observation. No tagged run has produced this machine evidence, so the
   storage claim remains limited and the release remains blocked.
 
+- **Real API sessions can establish fail-closed source-key owner authority
+  without activating encryption.** Both API and Electron revalidate the exact
+  immutable session ID, owner, token hash, revocation state, and expiry before
+  Electron returns an opaque session-bound grant, and Electron repeats the
+  database check for every cryptographic request. Pending responses remain
+  bound to that exact live grant. Session-token hashes are globally unique;
+  ambiguous legacy rows stop migration, and authentication plus lease refresh
+  is one atomic database statement. Concurrent identical grants coalesce;
+  only an independently revalidated, strictly later expiry for the same
+  session, owner, and token can rotate a grant. Substitutions and stale leases
+  cannot replace it. A transient database outage denies the
+  current cryptographic request without turning it into a durable revocation,
+  while definitive inactivity removes the grant. Revoke wins delayed-grant races through
+  bounded tombstones; expiry, lock admission, malformed authority
+  traffic, disconnect, and child restart all fail closed. Demo,
+  development-bypass, service, unauthenticated, and worker paths cannot mint
+  authority. Pairing-token creation now requires a pre-existing real session so
+  an arbitrary user ID cannot bootstrap this authority. No repository consumes
+  the broker yet, no source data is migrated, and no encryption claim changes.
+  Database-only owner cascades and `revokeAllForUser` still lack a linearizable
+  broker-wide revocation barrier; that must be closed before a source consumer
+  is activated.
+
 - **Source-key IPC clients now fail closed without activating encryption.** The
   API and worker compose fixed-role clients that strictly validate the versioned
   broker protocol, bind responses to the exact request context and generation,
   cap and time out pending work, make disconnect terminal, and hold owner lock
   acknowledgements until admitted callbacks drain. Electron contains child
   startup when broker attachment cannot be proven and validates all child wire
-  messages through the shared protocol. Production owner grants remain empty;
-  no repository consumes the clients and no source field or public encryption
-  claim changes in this slice.
+  messages through the shared protocol. Child bindings begin with empty owner
+  authority and the worker stays empty; no repository consumes the clients and
+  no source field or public encryption claim changes in this slice.
 
 - **Release artifact adversarial tests are now a mandatory packaging gate.**
   The canonical build workflow runs the stable-file, checksum, SBOM,
@@ -47,8 +70,8 @@ All notable changes to SkyTwin will be documented in this file.
   already-contained API deployment, avoiding a duplicate broad dependency
   closure. It has no fallback to the legacy Electron recovery-wrapper file or
   plaintext when the database or module is unavailable. Device wrappers remain
-  local; API and worker grants remain empty, no source repository consumes the
-  broker, and no encryption claim advances.
+  local; API authority remains session-scoped while worker grants remain empty,
+  no source repository consumes the broker, and no encryption claim advances.
 
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,

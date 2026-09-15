@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { SourceKeyBrokerSessionAuthority } from '@skytwin/shared-types';
 
 /**
  * Request-scoped context that travels across async boundaries.
@@ -22,6 +23,8 @@ export interface RequestContext {
    * arbitrary request input.
    */
   userId: string;
+  /** Present only for a revalidated real session that Electron granted. */
+  sourceKeySessionAuthority?: SourceKeyBrokerSessionAuthority;
 }
 
 const storage = new AsyncLocalStorage<RequestContext>();

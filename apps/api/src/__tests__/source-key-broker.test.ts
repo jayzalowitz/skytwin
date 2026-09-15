@@ -5,7 +5,8 @@ const broker = vi.hoisted(() => ({
   create: vi.fn(),
 }));
 
-vi.mock('@skytwin/credential-vault', () => ({
+vi.mock('@skytwin/credential-vault', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@skytwin/credential-vault')>(),
   createProcessSourceKeyBrokerClient: broker.create,
 }));
 
@@ -16,7 +17,9 @@ describe('API source-key broker composition', () => {
     const module = await import('../source-key-broker.js');
 
     expect(broker.create).toHaveBeenCalledOnce();
-    expect(broker.create).toHaveBeenCalledWith('api');
+    expect(broker.create).toHaveBeenCalledWith('api', undefined, {
+      sessionAuthorityProvider: expect.any(Function),
+    });
     expect(module.apiSourceKeyBrokerClient).toBe(broker.client);
   });
 });

@@ -9,10 +9,15 @@ import {
 import type { ChildProcess } from 'child_process';
 import { pathToFileURL } from 'node:url';
 import { join } from 'node:path';
+import { types as utilTypes } from 'node:util';
 import type {
   SourceKeyBrokerContext,
   SourceKeyBrokerControlMessage,
   SourceKeyBrokerFailureCode,
+  SourceKeyBrokerOwnerAuthorityMessage,
+  SourceKeyBrokerOwnerGrantRequest,
+  SourceKeyBrokerOwnerGrantResult,
+  SourceKeyBrokerOwnerRevokeRequest,
   SourceKeyBrokerRequest,
   SourceKeyBrokerResponse,
   SourceKeyBrokerRole,
@@ -105,6 +110,9 @@ export interface SourceKeyProtocolValidators {
   readonly snapshotSourceKeyBrokerControlMessage: (
     value: unknown,
   ) => SourceKeyBrokerControlMessage | null;
+  readonly snapshotSourceKeyBrokerOwnerAuthorityMessage: (
+    value: unknown,
+  ) => SourceKeyBrokerOwnerAuthorityMessage | null;
   readonly snapshotSourceKeyBrokerRequest: (
     value: unknown,
   ) => SourceKeyBrokerRequest | null;
@@ -179,12 +187,43 @@ interface PendingLockAck {
 interface Binding {
   role: BrokerRole;
   capability: Buffer;
-  users: ReadonlySet<string>;
+  users: Set<string>;
+  staticUsers: ReadonlySet<string>;
+  sessions: Map<string, SessionGrant>;
+  sessionTombstones: Map<string, number>;
+  authorityRequestIds: Map<string, number>;
+  authorityClosed: boolean;
+  authorityTail: Promise<void>;
+  verifySession?: SessionAuthorityVerifier;
   inFlight: Map<string, number>;
   lockAcks: Map<string, PendingLockAck>;
   onMessage: (message: unknown) => void;
   onExit: () => void;
 }
+
+interface SessionGrant {
+  readonly ownerId: string;
+  readonly tokenHash: string;
+  readonly expiresAtMs: number;
+  readonly grantId: string;
+  readonly timer: ReturnType<typeof setTimeout>;
+}
+
+export type SessionAuthorityVerifier = (input: {
+  sessionId: string;
+  ownerId: string;
+  tokenHash: string;
+  expiresAtMs: number;
+}) => Promise<SessionAuthorityVerificationResult>;
+
+export type SessionAuthorityVerificationResult =
+  | Readonly<{ status: 'active' }>
+  | Readonly<{ status: 'superseded' }>
+  | Readonly<{ status: 'inactive' }>
+  | Readonly<{ status: 'unavailable' }>;
+
+const MAX_SESSION_AUTHORITY_RECORDS = 1_024;
+const MAX_SESSION_AUTHORITY_MS = 8 * 24 * 60 * 60 * 1000;
 
 interface StoredDeviceWrapper {
   version: 1;
@@ -204,6 +243,22 @@ export const isValidVaultUserId = (value: unknown): value is string =>
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function ownDataString(value: unknown, key: string): string | null {
+  try {
+    if (
+      value === null || typeof value !== 'object' || Array.isArray(value) ||
+      utilTypes.isProxy(value) || Object.getPrototypeOf(value) !== Object.prototype
+    ) return null;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    return descriptor?.enumerable === true &&
+      Object.hasOwn(descriptor, 'value') && typeof descriptor.value === 'string'
+      ? descriptor.value
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
@@ -851,6 +906,7 @@ export class DesktopKeyBroker {
     child: ChildProcess,
     role: BrokerRole,
     authorizedUsers: ReadonlySet<string>,
+    options: { verifySession?: SessionAuthorityVerifier } = {},
   ): Promise<boolean> {
     if (
       this.children.has(child)
@@ -859,6 +915,7 @@ export class DesktopKeyBroker {
     ) return false;
     const capability = randomBytes(KEY_BYTES);
     const users = new Set([...authorizedUsers].filter(isValidVaultUserId));
+    const staticUsers = new Set(users);
     let protocol: SourceKeyProtocolValidators | null = null;
     let binding!: Binding;
     const onMessage = (message: unknown): void => {
@@ -870,6 +927,13 @@ export class DesktopKeyBroker {
       role,
       capability,
       users,
+      staticUsers,
+      sessions: new Map(),
+      sessionTombstones: new Map(),
+      authorityRequestIds: new Map(),
+      authorityClosed: false,
+      authorityTail: Promise.resolve(),
+      verifySession: role === 'api' ? options.verifySession : undefined,
       inFlight: new Map(),
       lockAcks: new Map(),
       onMessage,
@@ -925,6 +989,35 @@ export class DesktopKeyBroker {
   ): Promise<void> {
     const binding = this.children.get(child);
     if (!binding) return;
+    const authorityMessage = protocol.snapshotSourceKeyBrokerOwnerAuthorityMessage(raw);
+    if (authorityMessage) {
+      if (authorityMessage.type === 'skytwin:vault:owner-grant-result') {
+        this.closeSessionAuthority(binding);
+        return;
+      }
+      if (authorityMessage.type === 'skytwin:vault:owner-revoke') {
+        // Revoke installs its tombstone synchronously. It must not wait behind
+        // a slow grant revalidation, or that delayed grant could win the race.
+        void this.handleOwnerAuthority(child, binding, authorityMessage);
+        return;
+      }
+      binding.authorityTail = binding.authorityTail
+        .catch(() => undefined)
+        .then(() => this.handleOwnerAuthority(child, binding, authorityMessage))
+        .catch(() => {
+          this.closeSessionAuthority(binding);
+        });
+      return;
+    }
+    const rawType = ownDataString(raw, 'type');
+    if (
+      rawType === 'skytwin:vault:owner-grant-request' ||
+      rawType === 'skytwin:vault:owner-grant-result' ||
+      rawType === 'skytwin:vault:owner-revoke'
+    ) {
+      this.closeSessionAuthority(binding);
+      return;
+    }
     const control = protocol.snapshotSourceKeyBrokerControlMessage(raw);
     if (control?.type === 'skytwin:vault:lock-ack') {
       const capability = b64(control.capability, KEY_BYTES, KEY_BYTES);
@@ -970,10 +1063,8 @@ export class DesktopKeyBroker {
         context: request.context,
         result: { success: false, operation: request.operation, error },
       });
-      if (
-        !binding.users.has(context.userId)
-        || (this.lockDepth.get(context.userId) ?? 0) > 0
-      ) {
+      const authorized = await this.requestIsAuthorized(child, binding, request);
+      if (!authorized || (this.lockDepth.get(context.userId) ?? 0) > 0) {
         deny('vault_broker_unavailable');
         return;
       }
@@ -1037,6 +1128,229 @@ export class DesktopKeyBroker {
       }
     } finally {
       capability?.fill(0);
+    }
+  }
+
+  private async handleOwnerAuthority(
+    child: ChildProcess,
+    binding: Binding,
+    message: SourceKeyBrokerOwnerGrantRequest | SourceKeyBrokerOwnerRevokeRequest,
+  ): Promise<void> {
+    if (
+      binding.authorityClosed || binding.role !== 'api' ||
+      !this.capabilityMatches(binding, message.capability) ||
+      this.rememberAuthorityRequest(binding, message.requestId) === false
+    ) return;
+
+    if (message.type === 'skytwin:vault:owner-revoke') {
+      this.tombstoneSession(binding, message.sessionId);
+      this.removeSessionGrant(binding, message.sessionId);
+      return;
+    }
+
+    const deny = (): void => {
+      this.safeSend(child, {
+        type: 'skytwin:vault:owner-grant-result',
+        protocolVersion: 1,
+        requestId: message.requestId,
+        role: 'api', ownerKind: 'user', ownerId: message.ownerId,
+        sessionId: message.sessionId, expiresAtMs: message.expiresAtMs,
+        success: false, error: 'vault_broker_unavailable',
+      } as SourceKeyBrokerOwnerGrantResult);
+    };
+    const now = Date.now();
+    if (
+      !binding.verifySession ||
+      message.expiresAtMs <= now ||
+      message.expiresAtMs - now > MAX_SESSION_AUTHORITY_MS ||
+      binding.sessionTombstones.has(message.sessionId) ||
+      (this.lockDepth.get(message.ownerId) ?? 0) > 0
+    ) {
+      deny();
+      return;
+    }
+    const generationAtAdmission = this.generation(message.ownerId);
+    let verification: SessionAuthorityVerificationResult = { status: 'unavailable' };
+    try {
+      verification = await binding.verifySession({
+        sessionId: message.sessionId,
+        ownerId: message.ownerId,
+        tokenHash: message.tokenHash,
+        expiresAtMs: message.expiresAtMs,
+      });
+    } catch {
+      verification = { status: 'unavailable' };
+    }
+    if (
+      verification.status !== 'active' || binding.authorityClosed ||
+      this.children.get(child) !== binding ||
+      binding.sessionTombstones.has(message.sessionId) ||
+      message.expiresAtMs <= Date.now() ||
+      this.generation(message.ownerId) !== generationAtAdmission ||
+      (this.lockDepth.get(message.ownerId) ?? 0) > 0
+    ) {
+      deny();
+      return;
+    }
+    this.pruneSessionAuthority(binding);
+    const existing = binding.sessions.get(message.sessionId);
+    if (existing) {
+      if (
+        existing.ownerId !== message.ownerId ||
+        existing.tokenHash !== message.tokenHash ||
+        existing.expiresAtMs > message.expiresAtMs
+      ) {
+        deny();
+        return;
+      }
+      if (existing.expiresAtMs === message.expiresAtMs) this.safeSend(child, {
+        type: 'skytwin:vault:owner-grant-result',
+        protocolVersion: 1,
+        requestId: message.requestId,
+        role: 'api', ownerKind: 'user', ownerId: message.ownerId,
+        sessionId: message.sessionId, expiresAtMs: message.expiresAtMs,
+        success: true, grantId: existing.grantId, generation: generationAtAdmission,
+      } as SourceKeyBrokerOwnerGrantResult);
+      if (existing.expiresAtMs === message.expiresAtMs) return;
+    }
+    if (
+      !binding.sessions.has(message.sessionId) &&
+      binding.sessions.size >= MAX_SESSION_AUTHORITY_RECORDS
+    ) {
+      this.closeSessionAuthority(binding);
+      deny();
+      return;
+    }
+    if (existing) this.removeSessionGrant(binding, message.sessionId);
+    const grantId = randomBytes(16).toString('hex');
+    const timer = setTimeout(() => {
+      this.removeSessionGrant(binding, message.sessionId);
+      this.tombstoneSession(binding, message.sessionId, message.expiresAtMs);
+    }, Math.max(1, message.expiresAtMs - Date.now()));
+    timer.unref?.();
+    binding.sessions.set(message.sessionId, {
+      ownerId: message.ownerId,
+      tokenHash: message.tokenHash,
+      expiresAtMs: message.expiresAtMs,
+      grantId,
+      timer,
+    });
+    binding.users.add(message.ownerId);
+    this.safeSend(child, {
+      type: 'skytwin:vault:owner-grant-result',
+      protocolVersion: 1,
+      requestId: message.requestId,
+      role: 'api', ownerKind: 'user', ownerId: message.ownerId,
+      sessionId: message.sessionId, expiresAtMs: message.expiresAtMs,
+      success: true, grantId, generation: generationAtAdmission,
+    } as SourceKeyBrokerOwnerGrantResult);
+  }
+
+  private async requestIsAuthorized(
+    child: ChildProcess,
+    binding: Binding,
+    request: SourceKeyBrokerRequest,
+  ): Promise<boolean> {
+    if (!request.authority) return binding.staticUsers.has(request.context.ownerId);
+    if (binding.role !== 'api' || binding.authorityClosed || !binding.verifySession) return false;
+    const grant = binding.sessions.get(request.authority.sessionId);
+    if (
+      !grant || grant.ownerId !== request.context.ownerId ||
+      grant.grantId !== request.authority.grantId ||
+      grant.expiresAtMs <= Date.now() ||
+      binding.sessionTombstones.has(request.authority.sessionId)
+    ) return false;
+    let verification: SessionAuthorityVerificationResult = { status: 'unavailable' };
+    try {
+      verification = await binding.verifySession({
+        sessionId: request.authority.sessionId,
+        ownerId: grant.ownerId,
+        tokenHash: grant.tokenHash,
+        expiresAtMs: grant.expiresAtMs,
+      });
+    } catch {
+      verification = { status: 'unavailable' };
+    }
+    if (verification.status === 'inactive') {
+      this.tombstoneSession(binding, request.authority.sessionId, grant.expiresAtMs);
+      this.removeSessionGrant(binding, request.authority.sessionId);
+      return false;
+    }
+    if (verification.status === 'superseded') {
+      this.removeSessionGrant(binding, request.authority.sessionId);
+      return false;
+    }
+    if (verification.status === 'unavailable') return false;
+    return (
+      this.children.get(child) === binding &&
+      !binding.authorityClosed &&
+      binding.sessions.get(request.authority.sessionId) === grant &&
+      grant.expiresAtMs > Date.now()
+    );
+  }
+
+  private capabilityMatches(binding: Binding, encoded: string): boolean {
+    const candidate = b64(encoded, KEY_BYTES, KEY_BYTES);
+    try {
+      return candidate !== null && timingSafeEqual(candidate, binding.capability);
+    } finally {
+      candidate?.fill(0);
+    }
+  }
+
+  private rememberAuthorityRequest(binding: Binding, requestId: string): boolean {
+    this.pruneSessionAuthority(binding);
+    if (binding.authorityRequestIds.has(requestId)) return false;
+    if (binding.authorityRequestIds.size >= MAX_SESSION_AUTHORITY_RECORDS) {
+      this.closeSessionAuthority(binding);
+      return false;
+    }
+    binding.authorityRequestIds.set(requestId, Date.now() + MAX_SESSION_AUTHORITY_MS);
+    return true;
+  }
+
+  private tombstoneSession(
+    binding: Binding,
+    sessionId: string,
+    until = Date.now() + MAX_SESSION_AUTHORITY_MS,
+  ): void {
+    this.pruneSessionAuthority(binding);
+    if (!binding.sessionTombstones.has(sessionId) &&
+        binding.sessionTombstones.size >= MAX_SESSION_AUTHORITY_RECORDS) {
+      this.closeSessionAuthority(binding);
+      return;
+    }
+    binding.sessionTombstones.set(sessionId, Math.max(until, Date.now() + 1));
+  }
+
+  private removeSessionGrant(binding: Binding, sessionId: string): void {
+    const grant = binding.sessions.get(sessionId);
+    if (!grant) return;
+    clearTimeout(grant.timer);
+    binding.sessions.delete(sessionId);
+    if (
+      !binding.staticUsers.has(grant.ownerId) &&
+      ![...binding.sessions.values()].some((candidate) => candidate.ownerId === grant.ownerId)
+    ) binding.users.delete(grant.ownerId);
+  }
+
+  private pruneSessionAuthority(binding: Binding): void {
+    const now = Date.now();
+    for (const [sessionId, until] of binding.sessionTombstones) {
+      if (until <= now) binding.sessionTombstones.delete(sessionId);
+    }
+    for (const [requestId, until] of binding.authorityRequestIds) {
+      if (until <= now) binding.authorityRequestIds.delete(requestId);
+    }
+    for (const [sessionId, grant] of binding.sessions) {
+      if (grant.expiresAtMs <= now) this.removeSessionGrant(binding, sessionId);
+    }
+  }
+
+  private closeSessionAuthority(binding: Binding): void {
+    binding.authorityClosed = true;
+    for (const sessionId of [...binding.sessions.keys()]) {
+      this.removeSessionGrant(binding, sessionId);
     }
   }
 
@@ -1306,12 +1620,13 @@ export class DesktopKeyBroker {
     child.removeListener('message', expected.onMessage);
     child.removeListener('exit', expected.onExit);
     expected.capability.fill(0);
+    this.closeSessionAuthority(expected);
     for (const ack of [...expected.lockAcks.values()]) ack.finish();
   }
 
   private safeSend(
     child: ChildProcess,
-    message: SourceKeyBrokerResponse | SourceKeyBrokerControlMessage,
+    message: SourceKeyBrokerResponse | SourceKeyBrokerControlMessage | SourceKeyBrokerOwnerGrantResult,
   ): boolean {
     try {
       if (child.connected === false || !child.send) return false;

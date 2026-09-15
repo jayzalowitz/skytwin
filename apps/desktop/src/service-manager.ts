@@ -8,6 +8,10 @@ import { CockroachManager, type CockroachStartResult } from './cockroach-manager
 import { computeBundleMarker } from './bundle-marker.js';
 import { DesktopKeyBroker } from './key-broker.js';
 import {
+  loadSourceKeyRegistryPort,
+  type SourceKeyRegistryPort,
+} from './crdb-wrapped-key-store.js';
+import {
   extractionDone,
   extractionProgress,
   type ExtractionProgress,
@@ -255,6 +259,7 @@ export class ServiceManager {
   private workerStartInFlight: Promise<void> | null = null;
   private readonly terminatingProcesses = new WeakMap<ChildProcess, Promise<void>>();
   private readonly recoveringApiGenerations = new WeakSet<ApiGeneration>();
+  private sourceKeyRegistryPortPromise: Promise<SourceKeyRegistryPort> | null = null;
 
   constructor(private readonly keyBroker: DesktopKeyBroker | null = null) {
     this.cockroach.setAuthorityLossHandler((generation) => {
@@ -915,6 +920,13 @@ export class ServiceManager {
       );
     }
     return pathToFileURL(realPath).href;
+  }
+
+  private async sourceKeyRegistryPort(): Promise<SourceKeyRegistryPort> {
+    this.sourceKeyRegistryPortPromise ??= loadSourceKeyRegistryPort(
+      await this.sourceKeyRegistryModuleSpecifier(),
+    );
+    return await this.sourceKeyRegistryPortPromise;
   }
 
   private async registerWorkerGenerationAuthority(
@@ -1615,7 +1627,16 @@ export class ServiceManager {
       let attachmentError: unknown;
       if (this.keyBroker) {
         try {
-          brokerAttached = await this.keyBroker.attachChild(apiProcess, 'api', new Set());
+          brokerAttached = await this.keyBroker.attachChild(
+            apiProcess,
+            'api',
+            new Set(),
+            {
+              verifySession: async (input) =>
+                await (await this.sourceKeyRegistryPort())
+                  .revalidateSessionAuthority(input),
+            },
+          );
         } catch (error) {
           attachmentThrew = true;
           attachmentError = error;

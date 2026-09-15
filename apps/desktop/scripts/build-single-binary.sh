@@ -238,7 +238,7 @@ node --input-type=module -e '
   const { pathToFileURL } = await import("node:url");
   const loaded = await import(pathToFileURL(process.argv[1]).href);
   const repository = loaded.sourceKeyRegistryRepository;
-  const methods = ["getCurrent", "createInitial", "deleteInitialIfMatch"];
+  const methods = ["getCurrent", "createInitial", "deleteInitialIfMatch", "revalidateSessionAuthority"];
   if (!repository || methods.some((name) => typeof repository[name] !== "function")) {
     throw new Error("deployed source-key registry contract is invalid");
   }

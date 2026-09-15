@@ -845,7 +845,7 @@
       "scope": "New and existing Google/Microsoft OAuth token rows across API and worker processes.",
       "owner": "security",
       "state": "prohibited",
-      "limitation": "Storage depends on vault state: without an initialized vault, callbacks retain plaintext tokens; an unlocked matching API vault encrypts new grants and can migrate complete legacy pairs on authorized use; a locked or stale initialized vault refuses new writes instead of downgrading. Production worker key delivery remains unavailable because the broker grant inventory is immutable and empty, so this blanket claim must not appear in release copy.",
+      "limitation": "Storage depends on vault state: without an initialized vault, callbacks retain plaintext tokens; an unlocked matching API vault encrypts new grants and can migrate complete legacy pairs on authorized use; a locked or stale initialized vault refuses new writes instead of downgrading. Production worker key delivery remains unavailable because the worker broker grant inventory is immutable and empty, so this blanket claim must not appear in release copy.",
       "evidence": [
         {
           "path": "packages/db/src/repositories/oauth-repository.ts",
@@ -942,7 +942,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "747c72909938bad301671f0271b68409bfa8055d22be6a06fa95f1e1d6e1edfd",
+          "sha256": "389b22f9e10469163ba781173192e48f2acfb2a52c644061e55ca53507221187",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         }
       ],
@@ -1026,7 +1026,7 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "a99b4388cb98fc406cd03a342c92e81c764001913eaeb1790696f57d41f4d15a",
+          "sha256": "cfa343401c0b67f6c9f8578a474a46fa0def6bd0e8f87f37d3da15716d9e0240",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
@@ -1072,18 +1072,18 @@
         },
         {
           "path": "apps/api/src/routes/oauth.ts",
-          "sha256": "ad1f56d0e5718857ee405e508dd640b8ce52b13ff4326b88c46d933288ec31f5",
+          "sha256": "d1e89675fdbb62af1e087c3708f2c50345dae94660445a181687f38e81068d13",
           "why": "OAuth routes reject disabled Google and Microsoft paths before configuration, token, database, or provider effects"
         },
         {
           "path": "apps/worker/src/index.ts",
           "sha256": "af390c5150938a46c27bc1ff54f0352c032c4b091d28720a6fe3dbfa61110c1f",
-          "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch, while source-key broker production grants remain empty"
+          "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch, while worker source-key broker grants remain empty"
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "a99b4388cb98fc406cd03a342c92e81c764001913eaeb1790696f57d41f4d15a",
-          "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, clear filesystem plugin authority, and expose no source-key production grants"
+          "sha256": "cfa343401c0b67f6c9f8578a474a46fa0def6bd0e8f87f37d3da15716d9e0240",
+          "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, clear filesystem plugin authority, keep worker source-key grants empty, and allow only exact live human API-session grants that no repository consumes"
         }
       ],
       "verification": [
@@ -1125,7 +1125,7 @@
         },
         {
           "path": "apps/desktop/scripts/build-single-binary.sh",
-          "sha256": "f136e49c51fbe87f52463bf3f5c60894f1e1785240513167fd0a74d01b913beb",
+          "sha256": "cb3f4dbb0574bd274172c6aa1d684a93322c8a2bbc88306665fc04ce9507f479",
           "why": "Desktop bundling downloads and verifies CockroachDB, not a GGUF model"
         },
         {
@@ -1254,7 +1254,7 @@
       "evidence": [
         {
           "path": "apps/desktop/scripts/build-single-binary.sh",
-          "sha256": "f136e49c51fbe87f52463bf3f5c60894f1e1785240513167fd0a74d01b913beb",
+          "sha256": "cb3f4dbb0574bd274172c6aa1d684a93322c8a2bbc88306665fc04ce9507f479",
           "why": "Verifies the bundled CockroachDB archive against pinned digests"
         },
         {

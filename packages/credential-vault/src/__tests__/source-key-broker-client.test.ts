@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   SOURCE_KEY_BROKER_PROTOCOL_VERSION,
   type SourceKeyBrokerContext,
+  type SourceKeyBrokerOwnerGrantRequest,
   type SourceKeyBrokerRequest,
   type SourceKeyBrokerResult,
   type SourceKeyEnvelopeV2,
@@ -15,6 +16,9 @@ import {
 const OWNER_A = '11111111-1111-4111-8111-111111111111';
 const OWNER_B = '22222222-2222-4222-8222-222222222222';
 const CAPABILITY = Buffer.alloc(32, 7).toString('base64');
+const SESSION_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const SESSION_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const TOKEN_HASH = 'a'.repeat(64);
 
 const contextA: SourceKeyBrokerContext = Object.freeze({
   ownerKind: 'user',
@@ -101,6 +105,15 @@ function requests(transport: RecordingTransport): SourceKeyBrokerRequest[] {
   );
 }
 
+function grantRequests(
+  transport: RecordingTransport,
+): SourceKeyBrokerOwnerGrantRequest[] {
+  return transport.messages.filter(
+    (message): message is SourceKeyBrokerOwnerGrantRequest =>
+      message.type === 'skytwin:vault:owner-grant-request',
+  );
+}
+
 function respond(
   client: SourceKeyBrokerClient,
   request: SourceKeyBrokerRequest,
@@ -116,11 +129,344 @@ function respond(
   });
 }
 
+async function grantApiSession(
+  client: SourceKeyBrokerClient,
+  transport: RecordingTransport,
+  input: { ownerId: string; sessionId: string; expiresAtMs: number },
+  grantId: string,
+  generation = 1,
+) {
+  const pending = client.grantSession({ ...input, tokenHash: TOKEN_HASH });
+  const request = grantRequests(transport).at(-1)!;
+  client.handleMessage({
+    type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+    requestId: request.requestId, role: 'api', ownerKind: 'user',
+    ...input, success: true, grantId, generation,
+  });
+  const result = await pending;
+  if (!result.success) throw new Error('fixture grant failed');
+  return result.authority;
+}
+
 afterEach(() => {
   vi.useRealTimers();
 });
 
 describe('SourceKeyBrokerClient', () => {
+  it('coalesces simultaneous exact grants and rejects a conflicting tuple', async () => {
+    const { client, transport } = createClient();
+    authorize(client);
+    const input = {
+      ownerId: OWNER_A, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs: Date.now() + 60_000,
+    };
+    const first = client.grantSession(input);
+    const identical = client.grantSession({ ...input });
+    const conflicting = client.grantSession({ ...input, ownerId: OWNER_B });
+    expect(grantRequests(transport)).toHaveLength(1);
+    await expect(conflicting).resolves.toEqual({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    const request = grantRequests(transport)[0]!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: request.requestId, role: 'api', ownerKind: 'user',
+      ownerId: input.ownerId, sessionId: input.sessionId,
+      expiresAtMs: input.expiresAtMs, success: true,
+      grantId: 'c'.repeat(32), generation: 1,
+    });
+    await expect(Promise.all([first, identical])).resolves.toEqual([
+      expect.objectContaining({ success: true }),
+      expect.objectContaining({ success: true }),
+    ]);
+    await expect(client.grantSession({ ...input, tokenHash: 'b'.repeat(64) }))
+      .resolves.toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(grantRequests(transport)).toHaveLength(1);
+
+    const later = client.grantSession({ ...input, expiresAtMs: input.expiresAtMs + 60_000 });
+    const replacement = grantRequests(transport)[1]!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: replacement.requestId, role: 'api', ownerKind: 'user',
+      ownerId: input.ownerId, sessionId: input.sessionId,
+      expiresAtMs: input.expiresAtMs + 60_000, success: true,
+      grantId: 'd'.repeat(32), generation: 1,
+    });
+    await expect(later).resolves.toMatchObject({
+      success: true, authority: { grantId: 'd'.repeat(32) },
+    });
+    await expect(client.grantSession({ ...input, expiresAtMs: input.expiresAtMs - 1 }))
+      .resolves.toEqual({ success: false, error: 'vault_broker_unavailable' });
+  });
+
+  it('uses only an exact granted API session on every crypto request', async () => {
+    const transport = new RecordingTransport();
+    let authority: { kind: 'api_session'; sessionId: string; grantId: string } | undefined;
+    const client = new SourceKeyBrokerClient({
+      role: 'api',
+      transport,
+      requestIdFactory: idFactory(),
+      sessionAuthorityProvider: () => authority,
+    });
+    client.handleMessage({
+      type: 'skytwin:vault:capability', protocolVersion: 1,
+      role: 'api', capability: CAPABILITY,
+    });
+    const expiresAtMs = Date.now() + 60_000;
+    const pendingGrant = client.grantSession({
+      ownerId: OWNER_A, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    const grantRequest = grantRequests(transport)[0]!;
+    expect(grantRequest).toMatchObject({
+      ownerId: OWNER_A, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: grantRequest.requestId, role: 'api', ownerKind: 'user',
+      ownerId: OWNER_A, sessionId: SESSION_A, expiresAtMs,
+      success: true, grantId: 'c'.repeat(32), generation: 7,
+    });
+    const granted = await pendingGrant;
+    expect(granted.success).toBe(true);
+    if (!granted.success) throw new Error('fixture grant failed');
+    authority = granted.authority;
+
+    const pending = client.encrypt(contextA, 'session-secret');
+    const cryptoRequest = requests(transport)[0]!;
+    expect(cryptoRequest).toMatchObject({
+      generation: 7,
+      authority: granted.authority,
+      context: contextA,
+    });
+    respond(client, cryptoRequest, {
+      success: false, operation: 'encrypt', error: 'vault_locked',
+    });
+    await expect(pending).resolves.toMatchObject({ error: 'vault_locked' });
+
+    authority = { ...granted.authority, grantId: 'd'.repeat(32) };
+    await expect(client.state(contextA)).resolves.toMatchObject({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    authority = { ...granted.authority, sessionId: SESSION_B };
+    await expect(client.state(contextA)).resolves.toMatchObject({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    authority = granted.authority;
+    await expect(client.state(contextB)).resolves.toMatchObject({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    expect(requests(transport)).toHaveLength(1);
+  });
+
+  it('settles old-authority work when a monotonic lease replacement lands', async () => {
+    const transport = new RecordingTransport();
+    let authority: { kind: 'api_session'; sessionId: string; grantId: string } | undefined;
+    const client = new SourceKeyBrokerClient({
+      role: 'api', transport, requestIdFactory: idFactory(),
+      sessionAuthorityProvider: () => authority,
+    });
+    authorize(client);
+    const input = { ownerId: OWNER_A, sessionId: SESSION_A, expiresAtMs: Date.now() + 60_000 };
+    authority = await grantApiSession(client, transport, input, 'c'.repeat(32));
+    const oldWork = client.state(contextA);
+    const renewal = client.grantSession({
+      ...input, tokenHash: TOKEN_HASH, expiresAtMs: input.expiresAtMs + 60_000,
+    });
+    const request = grantRequests(transport).at(-1)!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: request.requestId, role: 'api', ownerKind: 'user',
+      ownerId: input.ownerId, sessionId: input.sessionId,
+      expiresAtMs: input.expiresAtMs + 60_000, success: true,
+      grantId: 'd'.repeat(32), generation: 1,
+    });
+    await expect(oldWork).resolves.toEqual({
+      success: false, operation: 'state', error: 'vault_broker_unavailable',
+    });
+    await expect(renewal).resolves.toMatchObject({ success: true });
+  });
+
+  it('rejects substituted and replayed grant results', async () => {
+    const transport = new RecordingTransport();
+    const client = new SourceKeyBrokerClient({
+      role: 'api', transport, requestIdFactory: idFactory(),
+    });
+    authorize(client);
+    const expiresAtMs = Date.now() + 60_000;
+    const pending = client.grantSession({
+      ownerId: OWNER_A, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    const grant = grantRequests(transport)[0]!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: grant.requestId, role: 'api', ownerKind: 'user',
+      ownerId: OWNER_B, sessionId: SESSION_A, expiresAtMs,
+      success: true, grantId: 'c'.repeat(32), generation: 1,
+    });
+    await expect(pending).resolves.toEqual({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: grant.requestId, role: 'api', ownerKind: 'user',
+      ownerId: OWNER_A, sessionId: SESSION_A, expiresAtMs,
+      success: true, grantId: 'd'.repeat(32), generation: 1,
+    });
+    expect(grantRequests(transport)).toHaveLength(1);
+  });
+
+  it('makes revoke beat a delayed grant and expiry remove request authority', async () => {
+    vi.useFakeTimers();
+    const base = Date.now();
+    vi.setSystemTime(base);
+    const transport = new RecordingTransport();
+    let authority: { kind: 'api_session'; sessionId: string; grantId: string } | undefined;
+    const client = new SourceKeyBrokerClient({
+      role: 'api', transport, requestTimeoutMs: 1_000,
+      requestIdFactory: idFactory(), sessionAuthorityProvider: () => authority,
+    });
+    authorize(client);
+    const expiresAtMs = base + 500;
+    const pending = client.grantSession({
+      ownerId: OWNER_A, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    const grant = grantRequests(transport)[0]!;
+    client.revokeSession(OWNER_A, SESSION_A);
+    await expect(pending).resolves.toEqual({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: grant.requestId, role: 'api', ownerKind: 'user',
+      ownerId: OWNER_A, sessionId: SESSION_A, expiresAtMs,
+      success: true, grantId: 'c'.repeat(32), generation: 1,
+    });
+    authority = { kind: 'api_session', sessionId: SESSION_A, grantId: 'c'.repeat(32) };
+    await expect(client.state(contextA)).resolves.toMatchObject({
+      success: false, error: 'vault_broker_unavailable',
+    });
+
+    const second = client.grantSession({
+      ownerId: OWNER_A, sessionId: SESSION_B,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    const secondGrant = grantRequests(transport)[1]!;
+    client.handleMessage({
+      type: 'skytwin:vault:owner-grant-result', protocolVersion: 1,
+      requestId: secondGrant.requestId, role: 'api', ownerKind: 'user',
+      ownerId: OWNER_A, sessionId: SESSION_B, expiresAtMs,
+      success: true, grantId: 'e'.repeat(32), generation: 1,
+    });
+    const accepted = await second;
+    if (!accepted.success) throw new Error('fixture grant failed');
+    authority = accepted.authority;
+    vi.setSystemTime(base + 501);
+    await expect(client.state(contextA)).resolves.toMatchObject({
+      success: false, error: 'vault_broker_unavailable',
+    });
+  });
+
+  it('keeps worker authority empty and closes instead of evicting live tombstones', async () => {
+    const workerTransport = new RecordingTransport();
+    const worker = new SourceKeyBrokerClient({ role: 'worker', transport: workerTransport });
+    worker.handleMessage({
+      type: 'skytwin:vault:capability', protocolVersion: 1,
+      role: 'worker', capability: CAPABILITY,
+    });
+    await expect(worker.grantSession({
+      ownerId: OWNER_A, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs: Date.now() + 60_000,
+    })).resolves.toEqual({ success: false, error: 'vault_broker_unavailable' });
+    expect(workerTransport.messages).toHaveLength(0);
+
+    const transport = new RecordingTransport();
+    const api = new SourceKeyBrokerClient({
+      role: 'api', transport, maxPendingRequests: 1,
+      requestIdFactory: idFactory(),
+    });
+    authorize(api);
+    api.revokeSession(OWNER_A, SESSION_A);
+    api.revokeSession(OWNER_A, SESSION_B);
+    await expect(api.state(contextA)).resolves.toMatchObject({
+      success: false, error: 'vault_broker_unavailable',
+    });
+    expect(transport.messages.filter((message) =>
+      message.type === 'skytwin:vault:owner-revoke')).toHaveLength(1);
+  });
+
+  it('rejects a delayed S1 response after revoke while same-owner S2 remains live', async () => {
+    const transport = new RecordingTransport();
+    let authority: { kind: 'api_session'; sessionId: string; grantId: string } | undefined;
+    const client = new SourceKeyBrokerClient({
+      role: 'api', transport, requestIdFactory: idFactory(),
+      sessionAuthorityProvider: () => authority,
+    });
+    authorize(client);
+    const expiresAtMs = Date.now() + 60_000;
+    const first = await grantApiSession(
+      client, transport,
+      { ownerId: OWNER_A, sessionId: SESSION_A, expiresAtMs },
+      'a'.repeat(32),
+    );
+    const second = await grantApiSession(
+      client, transport,
+      { ownerId: OWNER_A, sessionId: SESSION_B, expiresAtMs },
+      'b'.repeat(32),
+    );
+
+    authority = first;
+    const pending = client.decrypt(contextA, envelope);
+    const delayedRequest = requests(transport).at(-1)!;
+    client.revokeSession(OWNER_A, SESSION_A);
+    await expect(pending).resolves.toEqual({
+      success: false, operation: 'decrypt', error: 'vault_broker_unavailable',
+    });
+    respond(client, delayedRequest, {
+      success: true, operation: 'decrypt', plaintext: 'must-not-escape',
+    });
+
+    authority = second;
+    const stillLive = client.state(contextA);
+    const secondRequest = requests(transport).at(-1)!;
+    respond(client, secondRequest, {
+      success: true, operation: 'state', state: 'unlocked',
+    });
+    await expect(stillLive).resolves.toEqual({
+      success: true, operation: 'state', state: 'unlocked',
+    });
+  });
+
+  it('rejects plaintext arriving after the exact session grant expires', async () => {
+    vi.useFakeTimers();
+    const base = Date.now();
+    vi.setSystemTime(base);
+    const transport = new RecordingTransport();
+    let authority: { kind: 'api_session'; sessionId: string; grantId: string } | undefined;
+    const client = new SourceKeyBrokerClient({
+      role: 'api', transport, requestIdFactory: idFactory(),
+      sessionAuthorityProvider: () => authority,
+    });
+    authorize(client);
+    authority = await grantApiSession(
+      client, transport,
+      { ownerId: OWNER_A, sessionId: SESSION_A, expiresAtMs: base + 500 },
+      'a'.repeat(32),
+    );
+    const pending = client.decrypt(contextA, envelope);
+    const delayedRequest = requests(transport).at(-1)!;
+    vi.setSystemTime(base + 501);
+    respond(client, delayedRequest, {
+      success: true, operation: 'decrypt', plaintext: 'must-not-escape',
+    });
+    await expect(pending).resolves.toEqual({
+      success: false, operation: 'decrypt', error: 'vault_broker_unavailable',
+    });
+  });
+
   it('rejects unbounded timeout and pending-request options', () => {
     const transport = new RecordingTransport();
     expect(

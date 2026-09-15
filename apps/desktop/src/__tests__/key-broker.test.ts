@@ -1,9 +1,10 @@
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ChildProcess } from 'child_process';
 import {
   snapshotSourceKeyBrokerControlMessage,
+  snapshotSourceKeyBrokerOwnerAuthorityMessage,
   snapshotSourceKeyBrokerRequest,
 } from '@skytwin/shared-types';
 import {
@@ -19,6 +20,7 @@ import {
 
 const protocolValidators = Object.freeze({
   snapshotSourceKeyBrokerControlMessage,
+  snapshotSourceKeyBrokerOwnerAuthorityMessage,
   snapshotSourceKeyBrokerRequest,
 });
 
@@ -162,8 +164,460 @@ const wireContext = (value: BrokerContext = context) => ({
   rowId: value.rowId,
 });
 const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0));
+const SESSION_A = '11111111-1111-4111-8111-111111111111';
+const SESSION_B = '22222222-2222-4222-8222-222222222222';
+const OWNER_B = '00000000-0000-0000-0000-000000000002';
+const TOKEN_HASH = 'a'.repeat(64);
 
 describe('DesktopKeyBroker', () => {
+  it('keeps exact grants stable and permits only monotonic same-session renewal', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession: vi.fn().mockResolvedValue({ status: 'active' }),
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    const base = {
+      type: 'skytwin:vault:owner-grant-request' as const, protocolVersion: 1 as const,
+      capability, role: 'api' as const, ownerKind: 'user' as const,
+      ownerId: context.userId, sessionId: SESSION_A, tokenHash: TOKEN_HASH, expiresAtMs,
+    };
+    child.emit('message', { ...base, requestId: '1'.repeat(32) });
+    child.emit('message', { ...base, requestId: '2'.repeat(32) });
+    await tick();
+    await tick();
+    const first = child.sent.find((value) =>
+      (value as { requestId?: string }).requestId === '1'.repeat(32)) as { grantId: string };
+    const second = child.sent.find((value) =>
+      (value as { requestId?: string }).requestId === '2'.repeat(32)) as { grantId: string };
+    expect(second.grantId).toBe(first.grantId);
+
+    child.emit('message', {
+      ...base, requestId: '3'.repeat(32), expiresAtMs: expiresAtMs + 60_000,
+    });
+    await tick();
+    const renewed = child.sent.at(-1) as { requestId: string; success: boolean; grantId: string };
+    expect(renewed).toMatchObject({ requestId: '3'.repeat(32), success: true });
+    expect(renewed.grantId).not.toBe(first.grantId);
+
+    child.emit('message', { ...base, requestId: '4'.repeat(32) });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '4'.repeat(32), success: false });
+    child.emit('message', {
+      ...base, requestId: '5'.repeat(32), ownerId: OWNER_B,
+      expiresAtMs: expiresAtMs + 120_000,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '5'.repeat(32), success: false });
+  });
+
+  it('denies transient revalidation failure without revoking a live grant', async () => {
+    const verifySession = vi.fn()
+      .mockResolvedValueOnce({ status: 'active' })
+      .mockResolvedValueOnce({ status: 'unavailable' })
+      .mockResolvedValueOnce({ status: 'active' });
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), { verifySession });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    child.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: '4'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A, tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    await tick();
+    const grantId = (child.sent.at(-1) as { grantId: string }).grantId;
+    for (const requestId of ['5'.repeat(32), '6'.repeat(32)]) {
+      child.emit('message', {
+        type: 'skytwin:vault:request', protocolVersion: 1, requestId,
+        capability, role: 'api', generation: 1, operation: 'state',
+        context: wireContext(),
+        authority: { kind: 'api_session', sessionId: SESSION_A, grantId },
+      });
+      await tick();
+    }
+    expect(child.sent.at(-2)).toMatchObject({
+      requestId: '5'.repeat(32), result: { success: false },
+    });
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: '6'.repeat(32), result: { success: true },
+    });
+  });
+
+  it('retires a superseded lease without tombstoning its session renewal', async () => {
+    const verifySession = vi.fn()
+      .mockResolvedValueOnce({ status: 'active' })
+      .mockResolvedValueOnce({ status: 'superseded' })
+      .mockResolvedValueOnce({ status: 'active' });
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), { verifySession });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    const grantMessage = {
+      type: 'skytwin:vault:owner-grant-request' as const, protocolVersion: 1 as const,
+      capability, role: 'api' as const, ownerKind: 'user' as const,
+      ownerId: context.userId, sessionId: SESSION_A, tokenHash: TOKEN_HASH,
+    };
+    child.emit('message', { ...grantMessage, requestId: '7'.repeat(32), expiresAtMs });
+    await tick();
+    const oldGrantId = (child.sent.at(-1) as { grantId: string }).grantId;
+    child.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: '8'.repeat(32), capability, role: 'api', generation: 1,
+      operation: 'state', context: wireContext(),
+      authority: { kind: 'api_session', sessionId: SESSION_A, grantId: oldGrantId },
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '8'.repeat(32), result: { success: false } });
+
+    child.emit('message', {
+      ...grantMessage, requestId: '9'.repeat(32), expiresAtMs: expiresAtMs + 60_000,
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({ requestId: '9'.repeat(32), success: true });
+  });
+
+  it('starts empty and grants only an exact DB-revalidated API session', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession,
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+
+    child.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: '1'.repeat(32), capability, role: 'api', generation: 1,
+      operation: 'state', context: wireContext(),
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: '1'.repeat(32),
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+
+    child.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: '2'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    await tick();
+    expect(verifySession).toHaveBeenCalledWith({
+      ownerId: context.userId, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    const grant = child.sent.at(-1) as {
+      success: boolean; grantId: string; generation: number;
+    };
+    expect(grant).toMatchObject({ success: true, generation: 1 });
+
+    child.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: '3'.repeat(32), capability, role: 'api', generation: 1,
+      operation: 'state', context: wireContext(),
+      authority: { kind: 'api_session', sessionId: SESSION_A, grantId: grant.grantId },
+    });
+    await tick();
+    expect(verifySession).toHaveBeenCalledTimes(2);
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: '3'.repeat(32),
+      result: { success: true, state: 'unlocked' },
+    });
+
+    for (const [requestId, authority, ownerId] of [
+      ['4'.repeat(32), { kind: 'api_session', sessionId: SESSION_B, grantId: grant.grantId }, context.userId],
+      ['5'.repeat(32), { kind: 'api_session', sessionId: SESSION_A, grantId: 'f'.repeat(32) }, context.userId],
+      ['6'.repeat(32), { kind: 'api_session', sessionId: SESSION_A, grantId: grant.grantId }, OWNER_B],
+    ] as const) {
+      child.emit('message', {
+        type: 'skytwin:vault:request', protocolVersion: 1,
+        requestId, capability, role: 'api', generation: 1,
+        operation: 'state', context: wireContext({ ...context, userId: ownerId }),
+        authority,
+      });
+      await tick();
+      expect(child.sent.at(-1)).toMatchObject({
+        requestId,
+        result: { success: false, error: 'vault_broker_unavailable' },
+      });
+    }
+
+    child.emit('message', {
+      type: 'skytwin:vault:owner-revoke', protocolVersion: 1,
+      requestId: '7'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A,
+      unexpected: true,
+    });
+    child.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: '8'.repeat(32), capability, role: 'api', generation: 1,
+      operation: 'state', context: wireContext(),
+      authority: { kind: 'api_session', sessionId: SESSION_A, grantId: grant.grantId },
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: '8'.repeat(32),
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+  });
+
+  it('makes revoke beat a delayed grant and rejects replay and malformed authority', async () => {
+    let release!: (live: { status: 'active' }) => void;
+    const delayed = new Promise<{ status: 'active' }>(resolve => { release = resolve; });
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession: () => delayed,
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    const grantRequest = {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: '7'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    } as const;
+    child.emit('message', grantRequest);
+    await tick();
+    child.emit('message', {
+      type: 'skytwin:vault:owner-revoke', protocolVersion: 1,
+      requestId: '8'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A,
+    });
+    release({ status: 'active' });
+    await tick();
+    await tick();
+    expect(child.sent.find((message) =>
+      (message as { requestId?: string; success?: boolean }).requestId === grantRequest.requestId &&
+      (message as { success?: boolean }).success === true)).toBeUndefined();
+
+    child.emit('message', grantRequest);
+    await tick();
+    expect(child.sent.find((message) =>
+      (message as { requestId?: string; success?: boolean }).requestId === grantRequest.requestId &&
+      (message as { success?: boolean }).success === true)).toBeUndefined();
+
+    child.emit('message', {
+      ...grantRequest,
+      requestId: '9'.repeat(32),
+      role: 'worker',
+    });
+    await tick();
+    child.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: 'a'.repeat(32), capability, role: 'api', generation: 1,
+      operation: 'state', context: wireContext(),
+      authority: { kind: 'api_session', sessionId: SESSION_A, grantId: 'b'.repeat(32) },
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: 'a'.repeat(32),
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+  });
+
+  it('rejects a grant whose revalidation crosses an owner lock generation', async () => {
+    let release!: (live: { status: 'active' }) => void;
+    const delayed = new Promise<{ status: 'active' }>(resolve => { release = resolve; });
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession: () => delayed,
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    child.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: 'a'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs: Date.now() + 60_000,
+    });
+    await tick();
+    await broker.lock(context.userId);
+    release({ status: 'active' });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: 'a'.repeat(32), success: false,
+    });
+  });
+
+  it('revalidates on use and isolates concurrent sessions and owners', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession,
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    const fixtures = [
+      { requestId: 'f'.repeat(32), ownerId: context.userId, sessionId: SESSION_A },
+      { requestId: '0'.repeat(32), ownerId: OWNER_B, sessionId: SESSION_B },
+    ];
+    for (const fixture of fixtures) {
+      child.emit('message', {
+        type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+        capability, role: 'api', ownerKind: 'user', tokenHash: TOKEN_HASH,
+        expiresAtMs, ...fixture,
+      });
+      await tick();
+    }
+    const grants = fixtures.map((fixture) => child.sent.find((message) =>
+      (message as { requestId?: string; success?: boolean }).requestId === fixture.requestId &&
+      (message as { success?: boolean }).success === true) as { grantId: string });
+    expect(grants.every(Boolean)).toBe(true);
+
+    for (const [index, fixture] of fixtures.entries()) {
+      const requestId = `${index + 1}`.repeat(32);
+      child.emit('message', {
+        type: 'skytwin:vault:request', protocolVersion: 1,
+        requestId, capability, role: 'api',
+        generation: index === 0 ? 1 : 0,
+        operation: 'state',
+        context: wireContext({ ...context, userId: fixture.ownerId }),
+        authority: {
+          kind: 'api_session', sessionId: fixture.sessionId,
+          grantId: grants[index]!.grantId,
+        },
+      });
+      await tick();
+      expect(child.sent.at(-1)).toMatchObject({
+        requestId,
+        result: index === 0
+          ? { success: true, state: 'unlocked' }
+          : { success: true, state: 'uninitialized' },
+      });
+    }
+
+    verifySession.mockResolvedValue({ status: 'inactive' });
+    child.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: '3'.repeat(32), capability, role: 'api', generation: 1,
+      operation: 'state', context: wireContext(),
+      authority: {
+        kind: 'api_session', sessionId: SESSION_A, grantId: grants[0]!.grantId,
+      },
+    });
+    await tick();
+    expect(child.sent.at(-1)).toMatchObject({
+      requestId: '3'.repeat(32),
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+  });
+
+  it('bounds live authority tombstones by closing the binding', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    const child = new FakeChild();
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession,
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    for (let index = 1; index <= 1_025; index += 1) {
+      const suffix = index.toString(16).padStart(12, '0');
+      child.emit('message', {
+        type: 'skytwin:vault:owner-revoke', protocolVersion: 1,
+        requestId: index.toString(16).padStart(32, '0'), capability,
+        role: 'api', ownerKind: 'user', ownerId: context.userId,
+        sessionId: `00000000-0000-4000-8000-${suffix}`,
+      });
+    }
+    child.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: 'e'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs: Date.now() + 60_000,
+    });
+    await tick();
+    expect(verifySession).not.toHaveBeenCalled();
+    expect(child.sent).toHaveLength(1);
+  });
+
+  it('does not carry a session grant across child restart or admit one during lock', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore(), { lockAckTimeoutMs: 1_000 });
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const verifySession = vi.fn().mockResolvedValue({ status: 'active' });
+    const child = new FakeChild();
+    await broker.attachChild(child as unknown as ChildProcess, 'api', new Set(), {
+      verifySession,
+    });
+    const capability = (child.sent[0] as { capability: string }).capability;
+    const expiresAtMs = Date.now() + 60_000;
+    child.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: 'b'.repeat(32), capability, role: 'api', ownerKind: 'user',
+      ownerId: context.userId, sessionId: SESSION_A,
+      tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    await tick();
+    const grantId = (child.sent.at(-1) as { grantId: string }).grantId;
+    child.emit('exit');
+
+    const restarted = new FakeChild();
+    await broker.attachChild(restarted as unknown as ChildProcess, 'api', new Set(), {
+      verifySession,
+    });
+    const restartedCapability = (restarted.sent[0] as { capability: string }).capability;
+    restarted.emit('message', {
+      type: 'skytwin:vault:request', protocolVersion: 1,
+      requestId: 'c'.repeat(32), capability: restartedCapability,
+      role: 'api', generation: 1, operation: 'state', context: wireContext(),
+      authority: { kind: 'api_session', sessionId: SESSION_A, grantId },
+    });
+    await tick();
+    expect(restarted.sent.at(-1)).toMatchObject({
+      requestId: 'c'.repeat(32),
+      result: { success: false, error: 'vault_broker_unavailable' },
+    });
+
+    restarted.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: 'd'.repeat(32), capability: restartedCapability,
+      role: 'api', ownerKind: 'user', ownerId: context.userId,
+      sessionId: SESSION_B, tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    await tick();
+    expect(restarted.sent.at(-1)).toMatchObject({
+      requestId: 'd'.repeat(32), success: true,
+    });
+
+    restarted.autoAck = false;
+    const locking = broker.lock(context.userId);
+    await tick();
+    restarted.emit('message', {
+      type: 'skytwin:vault:owner-grant-request', protocolVersion: 1,
+      requestId: 'e'.repeat(32), capability: restartedCapability,
+      role: 'api', ownerKind: 'user', ownerId: context.userId,
+      sessionId: SESSION_A, tokenHash: TOKEN_HASH, expiresAtMs,
+    });
+    await tick();
+    expect(restarted.sent.at(-1)).toMatchObject({
+      requestId: 'e'.repeat(32), success: false,
+    });
+    const lock = restarted.sent.find((message) =>
+      (message as { type?: string }).type === 'skytwin:vault:lock') as {
+        lockId: string; generation: number;
+      };
+    restarted.emit('message', {
+      type: 'skytwin:vault:lock-ack', protocolVersion: 1,
+      lockId: lock.lockId, capability: restartedCapability,
+      role: 'api', ownerKind: 'user', ownerId: context.userId,
+      generation: lock.generation,
+    });
+    await expect(locking).resolves.toMatchObject({ success: true });
+  });
+
   it('round-trips wrapped keys through the persistent key-value adapter', async () => {
     const rows = new Map<string, WrappedUserKey>();
     const persistent = new PersistentWrappedKeyStore({ get: key => rows.get(key), set: (key, value) => { rows.set(key, structuredClone(value)); }, delete: key => { rows.delete(key); } });

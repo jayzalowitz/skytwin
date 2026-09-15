@@ -17,18 +17,30 @@ const mockSessionRepository = {
   findByTokenHash: vi.fn(),
   revoke: vi.fn(),
 };
+const authState = vi.hoisted(() => ({ realSession: true }));
+const mockBroker = vi.hoisted(() => ({ revokeSession: vi.fn() }));
 
 vi.mock('@skytwin/db', () => ({
   sessionRepository: mockSessionRepository,
 }));
 
 vi.mock('../middleware/session-auth.js', () => ({
-  sessionAuth: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+  sessionAuth: (req: express.Request, _res: express.Response, next: express.NextFunction) => {
+    if (authState.realSession) {
+      req.authenticatedUserId = 'user-1';
+      req.authenticatedSessionId = '11111111-1111-4111-8111-111111111111';
+    }
+    next();
+  },
   hashToken: (t: string) => `hashed:${t}`,
 }));
 
 vi.mock('../middleware/require-ownership.js', () => ({
   requireOwnership: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
+}));
+
+vi.mock('../source-key-broker.js', () => ({
+  apiSourceKeyBrokerClient: mockBroker,
 }));
 
 const { createSessionsRouter } = await import('../routes/sessions.js');
@@ -43,7 +55,7 @@ function makeApp(): Express {
 
 async function request(
   app: Express,
-  method: 'POST',
+  method: 'POST' | 'DELETE',
   path: string,
   body?: unknown,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
@@ -72,6 +84,7 @@ async function request(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authState.realSession = true;
   __resetPairingTokenStoreForTests();
   mockSessionRepository.create.mockResolvedValue({
     id: 'session-1',
@@ -86,6 +99,15 @@ afterEach(() => {
 });
 
 describe('POST /api/sessions (#385: now mints a pairing token, not a session)', () => {
+  it('requires a pre-existing real session before minting a pairing credential', async () => {
+    authState.realSession = false;
+    const { status } = await request(
+      makeApp(), 'POST', '/api/sessions', { userId: 'user-1' },
+    );
+    expect(status).toBe(401);
+    expect(mockSessionRepository.create).not.toHaveBeenCalled();
+  });
+
   it('returns a 5-minute pairing token + QR URL with pairToken= query param', async () => {
     const app = makeApp();
     const beforeMs = Date.now();
@@ -190,5 +212,23 @@ describe('POST /api/sessions/pair/consume (#385)', () => {
     expect(status).toBe(201);
     const arg = mockSessionRepository.create.mock.calls[0]![0];
     expect(arg.deviceName).toBe('Tablet');
+  });
+});
+
+describe('DELETE /api/sessions/:sessionId authority revocation', () => {
+  it('removes the database session before tombstoning broker authority', async () => {
+    const sessionId = '22222222-2222-4222-8222-222222222222';
+    mockSessionRepository.findActiveByUser.mockResolvedValue([{ id: sessionId }]);
+    mockSessionRepository.revoke.mockResolvedValue(undefined);
+    const { status, body } = await request(
+      makeApp(), 'DELETE', `/api/sessions/${sessionId}`, { userId: 'user-1' },
+    );
+    expect(status).toBe(200);
+    expect(body).toEqual({ revoked: true });
+    expect(mockSessionRepository.revoke).toHaveBeenCalledWith(sessionId);
+    expect(mockBroker.revokeSession).toHaveBeenCalledWith('user-1', sessionId);
+    expect(mockSessionRepository.revoke.mock.invocationCallOrder[0]).toBeLessThan(
+      mockBroker.revokeSession.mock.invocationCallOrder[0]!,
+    );
   });
 });

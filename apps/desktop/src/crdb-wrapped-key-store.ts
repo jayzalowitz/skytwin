@@ -1,4 +1,8 @@
-import type { WrappedKeyStore, WrappedUserKey } from "./key-broker.js";
+import type {
+  SessionAuthorityVerificationResult,
+  WrappedKeyStore,
+  WrappedUserKey,
+} from "./key-broker.js";
 
 export interface SourceKeyRegistryRecord {
   user_id: string;
@@ -13,6 +17,12 @@ export interface SourceKeyRegistryPort {
   getCurrent(userId: string): Promise<SourceKeyRegistryRecord | null>;
   createInitial(input: SourceKeyRegistryRecord): Promise<boolean>;
   deleteInitialIfMatch(input: SourceKeyRegistryRecord): Promise<boolean>;
+  revalidateSessionAuthority(input: {
+    sessionId: string;
+    ownerId: string;
+    tokenHash: string;
+    expiresAtMs: number;
+  }): Promise<SessionAuthorityVerificationResult>;
 }
 
 type DynamicImport = (specifier: string) => Promise<unknown>;
@@ -112,11 +122,13 @@ export async function loadSourceKeyRegistryPort(
   const getCurrent = ownData(repository, "getCurrent");
   const createInitial = ownData(repository, "createInitial");
   const deleteInitialIfMatch = ownData(repository, "deleteInitialIfMatch");
+  const revalidateSessionAuthority = ownData(repository, "revalidateSessionAuthority");
   if (
     repository === INVALID ||
     typeof getCurrent !== "function" ||
     typeof createInitial !== "function" ||
-    typeof deleteInitialIfMatch !== "function"
+    typeof deleteInitialIfMatch !== "function" ||
+    typeof revalidateSessionAuthority !== "function"
   ) {
     throw new Error("source-key registry module is invalid");
   }
@@ -145,6 +157,21 @@ export async function loadSourceKeyRegistryPort(
         throw new Error("source-key registry delete result is invalid");
       }
       return result;
+    },
+    async revalidateSessionAuthority(
+      input: Parameters<SourceKeyRegistryPort["revalidateSessionAuthority"]>[0],
+    ): Promise<SessionAuthorityVerificationResult> {
+      const result: unknown = await revalidateSessionAuthority.call(repository, input);
+      if (
+        !hasExactDataKeys(result, ["status"]) ||
+        (ownData(result, "status") !== "active" &&
+          ownData(result, "status") !== "superseded" &&
+          ownData(result, "status") !== "inactive" &&
+          ownData(result, "status") !== "unavailable")
+      ) {
+        throw new Error("source-key session authority result is invalid");
+      }
+      return Object.freeze({ status: ownData(result, "status") }) as SessionAuthorityVerificationResult;
     },
   });
 }

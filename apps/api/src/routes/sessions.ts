@@ -8,6 +8,7 @@ import {
   issuePairingToken,
   consumePairingToken,
 } from '../pairing-token-store.js';
+import { apiSourceKeyBrokerClient } from '../source-key-broker.js';
 
 const SESSION_DURATION_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
@@ -32,7 +33,15 @@ export function createSessionsRouter(): Router {
    * the pairing token, `qrUrl` uses `pairToken=` in the query string
    * to signal the new semantics, and `expiresAt` is now 5 minutes.
    */
-  router.post('/', async (req, res, next) => {
+  router.post('/', sessionAuth, requireOwnership, (req, res, next) => {
+    // Pairing can create a durable real session, so dev bypass is not enough.
+    // A pre-existing real human session must authorize the new device.
+    if (!req.authenticatedSessionId || !req.authenticatedUserId) {
+      res.status(401).json({ error: 'A real session is required to pair a device.' });
+      return;
+    }
+    next();
+  }, async (req, res, next) => {
     try {
       const body = req.body as { userId: string; deviceName?: string };
       if (!body.userId) {
@@ -178,6 +187,7 @@ export function createSessionsRouter(): Router {
       }
 
       await sessionRepository.revoke(sessionId);
+      apiSourceKeyBrokerClient.revokeSession(body.userId, sessionId);
       res.json({ revoked: true });
     } catch (error) {
       next(error);
