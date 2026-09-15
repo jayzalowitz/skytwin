@@ -885,6 +885,35 @@ describe("release claim ledger validation", () => {
     }
   });
 
+  it("requires the combined model and signing graph to retain every Linux artifact output", () => {
+    for (const [needle, replacement] of [
+      [
+        "      deb-artifact-id: ${{ steps.upload-linux-deb.outputs.artifact-id }}",
+        "      deb-artifact-id: forged",
+      ],
+      [
+        "      rpm-artifact-digest: ${{ steps.upload-linux-rpm.outputs.artifact-digest }}",
+        "      rpm-artifact-digest: forged",
+      ],
+    ]) {
+      const root = makeRoot();
+      writeValidFixture(root);
+      const path = join(root, ".github/workflows/build.yml");
+      const workflow = readFileSync(path, "utf8");
+      expect(workflow).toContain(needle);
+      expect(workflow).toContain(
+        "          SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH: ${{ steps.download-model-appimage.outputs.download-path }}",
+      );
+      expect(workflow).toContain(
+        "          SKYTWIN_RELEASE_ARTIFACT_IDS: ${{ matrix.platform == 'macos'",
+      );
+      writeFileSync(path, workflow.replace(needle, replacement));
+      expect(verifyCanonicalReleasePublisher(root)).toContain(
+        "Linux release uploads must expose their exact immutable current-attempt artifact IDs and digests",
+      );
+    }
+  });
+
   it("requires every release-risk category and exact evidence command", () => {
     const root = makeRoot();
     write(root, "evidence.txt", "evidence");

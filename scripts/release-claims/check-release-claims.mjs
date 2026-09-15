@@ -2319,11 +2319,23 @@ export function verifyCanonicalReleasePublisher(root) {
     !hasExactKeys(desktopLinuxJob.outputs, [
       "appimage-artifact-id",
       "appimage-artifact-digest",
+      "deb-artifact-id",
+      "deb-artifact-digest",
+      "rpm-artifact-id",
+      "rpm-artifact-digest",
     ]) ||
     desktopLinuxJob.outputs["appimage-artifact-id"] !==
       "${{ steps.upload-linux-appimage.outputs.artifact-id }}" ||
     desktopLinuxJob.outputs["appimage-artifact-digest"] !==
       "${{ steps.upload-linux-appimage.outputs.artifact-digest }}" ||
+    desktopLinuxJob.outputs["deb-artifact-id"] !==
+      "${{ steps.upload-linux-deb.outputs.artifact-id }}" ||
+    desktopLinuxJob.outputs["deb-artifact-digest"] !==
+      "${{ steps.upload-linux-deb.outputs.artifact-digest }}" ||
+    desktopLinuxJob.outputs["rpm-artifact-id"] !==
+      "${{ steps.upload-linux-rpm.outputs.artifact-id }}" ||
+    desktopLinuxJob.outputs["rpm-artifact-digest"] !==
+      "${{ steps.upload-linux-rpm.outputs.artifact-digest }}" ||
     desktopLinuxAppImageUpload.length !== 1 ||
     desktopLinuxAppImageUpload[0].id !== "upload-linux-appimage" ||
     desktopLinuxAppImageUpload[0].uses !==
@@ -2331,7 +2343,7 @@ export function verifyCanonicalReleasePublisher(root) {
   )
     addError(
       errors,
-      "Linux AppImage upload must expose its immutable current-attempt artifact ID and digest",
+      "Linux release uploads must expose their exact immutable current-attempt artifact IDs and digests",
     );
   for (const sourcePath of artifactMaterialSources) {
     if (!resolveContainedRegularFile(root, sourcePath))
