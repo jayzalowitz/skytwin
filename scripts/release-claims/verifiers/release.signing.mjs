@@ -20,6 +20,7 @@ import {
 import { tmpdir } from "node:os";
 import {
   basename,
+  dirname,
   isAbsolute,
   join,
   posix,
@@ -55,7 +56,8 @@ const MACOS_NATIVE_TOOLS = Object.freeze({
   plutil: "/usr/bin/plutil",
 });
 const MACOS_VERIFICATION_METHODS = Object.freeze({
-  "SkyTwin-macOS-dmg": "gatekeeper+stapler+dmg-contained-app-codesign",
+  "SkyTwin-macOS-dmg":
+    "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign",
   "SkyTwin-macOS-zip": "ditto-contained-app+codesign+gatekeeper+stapler",
 });
 const WINDOWS_VERIFICATION_METHOD =
@@ -996,6 +998,28 @@ function verifyMacApp(
   };
 }
 
+function verifyMacDmg(dmgPath, expectedTeamId, execute, env) {
+  checkedCommand(
+    execute,
+    MACOS_NATIVE_TOOLS.codesign,
+    ["--verify", "--strict", "--verbose=4", dmgPath],
+    { env },
+    "macOS DMG code-signature verification",
+  );
+  return parseMacCodeSignature(
+    checkedCommand(
+      execute,
+      MACOS_NATIVE_TOOLS.codesign,
+      ["--display", "--verbose=4", dmgPath],
+      { env },
+      "macOS DMG signature inspection",
+    ),
+    expectedTeamId,
+    "macOS DMG",
+    { requireRuntime: false },
+  );
+}
+
 export function verifyMacSubjects(
   subjects,
   policy,
@@ -1024,7 +1048,14 @@ export function verifyMacSubjects(
     let detachMount = null;
     try {
       let appPath;
+      let containerSignature = null;
       if (artifactName === "SkyTwin-macOS-dmg") {
+        containerSignature = verifyMacDmg(
+          subject.path,
+          policy.teamId,
+          execute,
+          commandEnv,
+        );
         parseMacGatekeeper(
           checkedCommand(
             execute,
@@ -1115,6 +1146,12 @@ export function verifyMacSubjects(
         commandEnv,
         artifactName,
       );
+      if (containerSignature !== null)
+        assert(
+          containerSignature.teamId === appSignature.teamId &&
+            containerSignature.signer === appSignature.signer,
+          "macOS DMG signer does not match the contained application signer",
+        );
       const observedExecutable = inspectStableRegularFile(
         extractionRoot,
         appPath.packagedExecutable.path,
@@ -1128,6 +1165,19 @@ export function verifyMacSubjects(
           observedExecutable.device === appPath.packagedExecutable.device &&
           observedExecutable.inode === appPath.packagedExecutable.inode,
         `${artifactName} packaged executable changed during native verification`,
+      );
+      const observedSubject = inspectStableRegularFile(
+        dirname(subject.path),
+        subject.path,
+        `${artifactName} subject after native verification`,
+        MAX_SUBJECT_BYTES,
+      );
+      assert(
+        observedSubject.sha256 === subject.sha256 &&
+          observedSubject.sizeBytes === subject.sizeBytes &&
+          observedSubject.device === subject.device &&
+          observedSubject.inode === subject.inode,
+        `${artifactName} subject changed while signing evidence was collected`,
       );
       canonicalAppIdentity = canonicalAppIdentity ?? appSignature;
       assert(
@@ -1154,6 +1204,16 @@ export function verifyMacSubjects(
         signedBundleVersion: appSignature.bundleShortVersion,
         signedBundleBuildVersion: appSignature.bundleBuildVersion,
         executableArchitecture: appSignature.executableArchitecture,
+        containerSignature:
+          containerSignature === null
+            ? null
+            : {
+                signatureResult: "pass",
+                signer: containerSignature.signer,
+                signerTeamId: containerSignature.teamId,
+                signedIdentifier: containerSignature.identifier,
+                signedContentCdHash: containerSignature.cdHash,
+              },
       });
     } finally {
       try {
@@ -1795,9 +1855,28 @@ function assertMacReportObservation(result, artifactName, appVersion) {
       "signedBundleVersion",
       "signedBundleBuildVersion",
       "executableArchitecture",
+      "containerSignature",
     ],
     `${artifactName} signing observation`,
   );
+  if (artifactName === "SkyTwin-macOS-dmg")
+    exactKeys(
+      result.containerSignature,
+      [
+        "signatureResult",
+        "signer",
+        "signerTeamId",
+        "signedIdentifier",
+        "signedContentCdHash",
+      ],
+      `${artifactName} container signing observation`,
+    );
+  else
+    assert(
+      result.containerSignature === null,
+      `${artifactName} must not claim a ZIP container signature`,
+    );
+  const container = result.containerSignature;
   assert(
     result.signatureResult === "pass" &&
       result.notarizationResult === "pass" &&
@@ -1811,7 +1890,14 @@ function assertMacReportObservation(result, artifactName, appVersion) {
       /^[0-9a-f]{40}$/u.test(result.signedContentCdHash) &&
       result.signedBundleVersion === appVersion &&
       result.signedBundleBuildVersion === appVersion &&
-      result.executableArchitecture === "arm64",
+      result.executableArchitecture === "arm64" &&
+      (artifactName !== "SkyTwin-macOS-dmg" ||
+        (container.signatureResult === "pass" &&
+          container.signer === result.signer &&
+          container.signerTeamId === result.signerTeamId &&
+          typeof container.signedIdentifier === "string" &&
+          container.signedIdentifier.length > 0 &&
+          /^[0-9a-f]{40}$/u.test(container.signedContentCdHash))),
     `${artifactName} has incomplete or inconsistent macOS signing observations`,
   );
 }
@@ -2033,7 +2119,7 @@ export function buildReport({
       passingCheck(
         platform === "windows"
           ? "Windows Get-AuthenticodeSignature reported Status=Valid for the exact installer and contained AMD64 SkyTwin executable; both signer certificates matched the operator-supplied pin"
-          : "Every canonical macOS package subject passed notarization validation and contained the same arm64 Developer ID signed app from the pinned team",
+          : "The canonical macOS DMG passed direct Developer ID signature and notarization validation; every package contained the same arm64 Developer ID signed app from the pinned team",
         platform === "windows"
           ? `${coveredSubjects.length} exact subject byte identity plus contained executable SHA-256 from ${apiArtifacts.size} current-run ID/name/digest-bound artifact; timestamp certificate presence and SHA-256 fingerprint recorded without an independent timestamp trust assertion`
           : `${coveredSubjects.length} exact subject byte identities from ${apiArtifacts.size} current-run ID/name/digest-bound artifacts`,

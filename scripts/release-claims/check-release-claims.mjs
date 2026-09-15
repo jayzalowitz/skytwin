@@ -781,7 +781,10 @@ const FOUR_SEGMENT_VERSION = new RegExp(
   `^${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}$`,
 );
 const MACOS_SIGNING_METHODS = new Map([
-  ["SkyTwin-macOS-dmg", "gatekeeper+stapler+dmg-contained-app-codesign"],
+  [
+    "SkyTwin-macOS-dmg",
+    "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign",
+  ],
   ["SkyTwin-macOS-zip", "ditto-contained-app+codesign+gatekeeper+stapler"],
 ]);
 const WINDOWS_SIGNING_METHOD =
@@ -4045,9 +4048,18 @@ function hasCompleteMacSigningObservation(
     "signedBundleVersion",
     "signedBundleBuildVersion",
     "executableArchitecture",
+    "containerSignature",
   ];
   const expectedMethod = MACOS_SIGNING_METHODS.get(expectedArtifactName);
   const teamId = subject?.signerTeamId;
+  const container = subject?.containerSignature;
+  const containerKeys = [
+    "signatureResult",
+    "signer",
+    "signerTeamId",
+    "signedIdentifier",
+    "signedContentCdHash",
+  ];
   return (
     isPlainRecord(subject) &&
     Object.keys(subject).length === expectedKeys.length &&
@@ -4064,7 +4076,17 @@ function hasCompleteMacSigningObservation(
     /^[0-9a-f]{40}$/u.test(subject?.signedContentCdHash ?? "") &&
     subject?.signedBundleVersion === expectedAppVersion &&
     subject?.signedBundleBuildVersion === expectedAppVersion &&
-    subject?.executableArchitecture === "arm64"
+    subject?.executableArchitecture === "arm64" &&
+    (expectedArtifactName === "SkyTwin-macOS-dmg"
+      ? isPlainRecord(container) &&
+        Object.keys(container).length === containerKeys.length &&
+        containerKeys.every((key) => Object.hasOwn(container, key)) &&
+        container.signatureResult === "pass" &&
+        container.signer === subject.signer &&
+        container.signerTeamId === teamId &&
+        isNonEmptyString(container.signedIdentifier) &&
+        /^[0-9a-f]{40}$/u.test(container.signedContentCdHash ?? "")
+      : container === null)
   );
 }
 

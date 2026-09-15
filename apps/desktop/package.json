@@ -52,6 +52,9 @@
         }
       ]
     },
+    "dmg": {
+      "sign": true
+    },
     "win": {
       "target": [
         "nsis"

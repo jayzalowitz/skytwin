@@ -201,7 +201,8 @@ All notable changes to SkyTwin will be documented in this file.
 ### Fixed (post-review)
 
 - **Signing evidence observations are now load-bearing.** The macOS verifier
-  requires exact contained-app signer/team, bundle identifier, CDHash, release
+  requires the DMG's own Developer ID signer/team to match the contained app,
+  then requires the exact contained-app bundle identifier, CDHash, release
   marketing and build versions, arm64 architecture, hardened-runtime,
   Gatekeeper, and notarization observations for both DMG and ZIP. ZIP members,
   expanded size, and extracted link containment are checked before the signed

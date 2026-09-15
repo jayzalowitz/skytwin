@@ -1179,13 +1179,13 @@
         },
         {
           "path": "apps/desktop/package.json",
-          "sha256": "22d7ef2881017cfd478d20d175290d87d83574b7de811267894e47e02ebd48d5",
+          "sha256": "ecc7937e37a5f7a89bf96b2534b92ca6191bcc701befedcbc48edf16bdd62c35",
           "why": "Defines the current platform build targets and publishing metadata"
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "3acaa46876dc40999a175abf649104a11e032229ed9d86863d089898bb533fa3",
-          "why": "Defines contained report writes and fail-closed native macOS and Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
+          "sha256": "068f976c767f3eaf66e59a44e4ecd93d9768c548e377a037daa8a2d05b40848d",
+          "why": "Defines contained report writes, fail-closed native macOS DMG and contained-app signature observations, and Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
         }
       ],
       "verification": [
@@ -1255,7 +1255,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "097a45e8c66193c0c5a5d864041e9d97aa932edd2a4f0acc12d43dd94c3d6871",
+          "sha256": "e32a29232a465fdbd8509b0eea0302a44c85fed89dd7ae6f5129089de9a274e6",
           "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],

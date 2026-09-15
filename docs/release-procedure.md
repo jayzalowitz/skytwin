@@ -161,10 +161,11 @@ above, but source availability alone cannot move the ledger to ready. A tagged
 clean run must still produce the immutable report and materials, and platform
 signing/notarization remains a separate stop-ship.
 
-For macOS, the signing report binds both signed bundle version keys and checks
-the ZIP member inventory, expanded-size ceiling, and extracted link containment
-before trusting the contained app. For Windows, it binds the Authenticode and
-version metadata of both the NSIS installer and its exact contained
+For macOS, the signing report requires the DMG's own Developer ID signer and
+team to match its contained app, binds both signed bundle version keys, and
+checks the ZIP member inventory, expanded-size ceiling, and extracted link
+containment before trusting the contained app. For Windows, it binds the
+Authenticode and version metadata of both the NSIS installer and its exact contained
 `SkyTwin.exe`; a correctly signed but stale wrapper is not acceptable.
 
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
@@ -194,7 +195,11 @@ The ledger's stop-ship conditions keep the tag job from reaching draft creation 
 
 The desktop package jobs set `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` and skip signing for CI. Acquiring the Apple Developer + Windows EV certs is necessary but **not sufficient** — after the certs exist you must also wire the secrets into the three `package:*` steps in `build.yml`:
 
-- macOS notarization: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`, plus `CSC_LINK` + `CSC_KEY_PASSWORD`, and flip `CSC_IDENTITY_AUTO_DISCOVERY` on.
+- macOS notarization: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`,
+  `APPLE_TEAM_ID`, plus `CSC_LINK` + `CSC_KEY_PASSWORD`, and flip
+  `CSC_IDENTITY_AUTO_DISCOVERY` on. The checked-in `dmg.sign: true` setting also
+  signs the outer disk image; do not remove it or treat a signed contained app
+  as equivalent.
 - Windows: `CSC_LINK` + `CSC_KEY_PASSWORD` (the EV cert).
 
 Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the README documents the right-click→Open / More-info→Run-anyway bypass).

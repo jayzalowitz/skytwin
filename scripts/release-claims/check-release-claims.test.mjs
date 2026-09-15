@@ -1705,7 +1705,8 @@ ${step}`,
           platform: "macos-arm64",
           signatureResult: "pass",
           notarizationResult: "pass",
-          verificationMethod: "gatekeeper+stapler+dmg-contained-app-codesign",
+          verificationMethod:
+            "dmg-codesign+gatekeeper+stapler+dmg-contained-app-codesign",
           signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
           signerTeamId: "TEAM123456",
           signedIdentifier: "com.skytwin.desktop",
@@ -1713,6 +1714,13 @@ ${step}`,
           signedBundleVersion: "0.7.0",
           signedBundleBuildVersion: "0.7.0",
           executableArchitecture: "arm64",
+          containerSignature: {
+            signatureResult: "pass",
+            signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
+            signerTeamId: "TEAM123456",
+            signedIdentifier: "com.skytwin.desktop.dmg",
+            signedContentCdHash: "e".repeat(40),
+          },
         },
       ],
     };
@@ -1739,6 +1747,7 @@ ${step}`,
       signedBundleVersion: "0.7.0",
       signedBundleBuildVersion: "0.7.0",
       executableArchitecture: "arm64",
+      containerSignature: null,
     });
     expect(
       verifyMachineEvidenceApplicability("release.signing", report, assets),
@@ -1769,6 +1778,16 @@ ${step}`,
     extraField.coveredSubjects[0].unexpected = true;
     expect(
       verifyMachineEvidenceApplicability("release.signing", extraField, assets),
+    ).toHaveLength(1);
+    const mismatchedContainer = structuredClone(report);
+    mismatchedContainer.coveredSubjects[0].containerSignature.signer =
+      "Developer ID Application: Other Publisher (TEAM123456)";
+    expect(
+      verifyMachineEvidenceApplicability(
+        "release.signing",
+        mismatchedContainer,
+        assets,
+      ),
     ).toHaveLength(1);
   });
 
