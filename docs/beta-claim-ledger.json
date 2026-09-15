@@ -1262,7 +1262,7 @@
         },
         {
           "path": "scripts/release-evidence/verify-release-safety-evidence.mjs",
-          "sha256": "bd614c278cee0b16ca59e546e392156835dccdb322420e574ae57ea56a30609b",
+          "sha256": "28de9f407a3bdc6e13f426b99414c78ef89274b16b68ef3cbbe158d708f88a8a",
           "why": "Independently fixes and recomputes the report schema, tag context, source identities, denominator, hashes, coverage counts, and disclosed gaps"
         }
       ],
@@ -1359,7 +1359,7 @@
         },
         {
           "path": "scripts/release-evidence/verify-release-safety-evidence.mjs",
-          "sha256": "bd614c278cee0b16ca59e546e392156835dccdb322420e574ae57ea56a30609b",
+          "sha256": "28de9f407a3bdc6e13f426b99414c78ef89274b16b68ef3cbbe158d708f88a8a",
           "why": "Independently recomputes the safety sidecar's fixed schema, tag context, tree, hashes, denominator, counts, and conservative status before upload"
         },
         {

@@ -313,7 +313,19 @@ export function verifyReleaseSafetyEvidence({
     },
     { passed: 0, failed: 0, uncovered: 0 },
   );
-  same(adversarial.testSummary, scenarioCounts, "adversarial test summary");
+  exactKeys(
+    adversarial.testSummary,
+    ["passed", "failed", "uncovered"],
+    "adversarial test summary",
+  );
+  if (
+    Object.entries(scenarioCounts).some(
+      ([status, count]) => adversarial.testSummary[status] !== count,
+    )
+  )
+    throw new Error(
+      "adversarial test summary does not match canonical evidence",
+    );
 
   exactKeys(
     inventory,

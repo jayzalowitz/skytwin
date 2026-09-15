@@ -94,7 +94,7 @@ function fixtureRoot() {
     fixtures: { sha256: sha256(fixtureBytes) },
     exactIds: results.map(({ id }) => id),
     results,
-    testSummary: { passed: results.length, failed: 0, uncovered: 0 },
+    testSummary: { failed: 0, passed: results.length, uncovered: 0 },
     developmentStatus: "incomplete",
     releaseReadiness: null,
     zeroBypassesClaimed: false,
