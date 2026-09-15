@@ -44,7 +44,7 @@ function getUserId(req: Request): string | undefined {
   return fromAuth ?? fromQuery ?? fromLegacy;
 }
 
-async function isBlockedGoogleDxtCapability(
+async function isBlockedAccountDxtCapability(
   registryId: string,
   skills: readonly string[],
   oauthProvider?: string | null,
@@ -67,10 +67,10 @@ async function isBlockedGoogleDxtCapability(
   });
 }
 
-function sendGoogleCapabilityUnavailable(res: Response): void {
+function sendAccountCapabilityUnavailable(res: Response): void {
   res.status(503).json({
-    error: 'Google account capabilities are unavailable in this preview.',
-    code: 'GOOGLE_CONNECTION_DISABLED',
+    error: 'Account-backed capabilities are unavailable in this preview.',
+    code: 'ACCOUNT_CONNECTION_DISABLED',
     available: false,
     mode: 'disabled',
   });
@@ -162,12 +162,12 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
       }
 
       const skills = await mcpServerRepository.listSkillNamesForServer(serverId);
-      if (await isBlockedGoogleDxtCapability(
+      if (await isBlockedAccountDxtCapability(
         server.registry_id,
         skills,
         server.oauth_provider,
       )) {
-        sendGoogleCapabilityUnavailable(res);
+        sendAccountCapabilityUnavailable(res);
         return;
       }
       const input = buildArtifactInput(server, serverId, skills);
@@ -216,7 +216,7 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
         // the outbound response.
         if (!server || server.user_id !== userId || !server.registry_id) continue;
         const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
-        if (await isBlockedGoogleDxtCapability(
+        if (await isBlockedAccountDxtCapability(
           server.registry_id,
           skills,
           server.oauth_provider,
@@ -275,11 +275,11 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
         return;
       }
       const artifactCapability = artifact.data.payload.capability;
-      if (await isBlockedGoogleDxtCapability(
+      if (await isBlockedAccountDxtCapability(
         artifactCapability.registryId,
         artifactCapability.skills,
       )) {
-        sendGoogleCapabilityUnavailable(res);
+        sendAccountCapabilityUnavailable(res);
         return;
       }
 
@@ -289,12 +289,12 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
         return;
       }
       const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
-      if (await isBlockedGoogleDxtCapability(
+      if (await isBlockedAccountDxtCapability(
         server.registry_id,
         skills,
         server.oauth_provider,
       )) {
-        sendGoogleCapabilityUnavailable(res);
+        sendAccountCapabilityUnavailable(res);
         return;
       }
 
@@ -350,11 +350,11 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
       const payload: DxtJsonPayload = result.data.payload;
       const sha256 = result.data.computedSha256;
 
-      if (await isBlockedGoogleDxtCapability(
+      if (await isBlockedAccountDxtCapability(
         payload.capability.registryId,
         payload.capability.skills,
       )) {
-        sendGoogleCapabilityUnavailable(res);
+        sendAccountCapabilityUnavailable(res);
         return;
       }
 
@@ -474,8 +474,8 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
       const payload: DxtJsonPayload = reResult.data.payload;
       const cap = payload.capability;
 
-      if (await isBlockedGoogleDxtCapability(cap.registryId, cap.skills)) {
-        sendGoogleCapabilityUnavailable(res);
+      if (await isBlockedAccountDxtCapability(cap.registryId, cap.skills)) {
+        sendAccountCapabilityUnavailable(res);
         return;
       }
 
@@ -673,7 +673,7 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
         const artifact = deserialize(row.artifact_blob);
         if (!artifact.success || !row.artifact_sha256.equals(artifact.data.computedSha256)) continue;
         const capability = artifact.data.payload.capability;
-        if (!await isBlockedGoogleDxtCapability(capability.registryId, capability.skills)) {
+        if (!await isBlockedAccountDxtCapability(capability.registryId, capability.skills)) {
           visibleRows.push(row);
         }
       }

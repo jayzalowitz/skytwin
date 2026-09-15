@@ -1340,16 +1340,17 @@ describe('Capabilities API routes', () => {
   });
 
   describe('POST /install', () => {
-    it('rejects a known Google capability before registry lookup or provenance writes', async () => {
+    it.each(['gmail-mcp', 'outlook-mcp'])
+    ('rejects the known account capability %s before registry lookup or provenance writes', async (registryId) => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
       const app = buildApp(USER_ID);
       const res = await request(app, 'POST', `/api/capabilities/install?userId=${USER_ID}`, {
-        registryId: 'gmail-mcp',
+        registryId,
       });
 
       expect(res.status).toBe(503);
       expect(res.body).toMatchObject({
-        code: 'GOOGLE_CONNECTION_DISABLED',
+        code: 'ACCOUNT_CONNECTION_DISABLED',
         available: false,
         mode: 'disabled',
       });
@@ -1373,7 +1374,7 @@ describe('Capabilities API routes', () => {
       });
 
       expect(res.status).toBe(503);
-      expect(res.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+      expect(res.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
       expect(mockRegistrySearch).toHaveBeenCalledWith('custom-google-photos');
       expect(mockProvenanceRepository.writeNode).not.toHaveBeenCalled();
     });

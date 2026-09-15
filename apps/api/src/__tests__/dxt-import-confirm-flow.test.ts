@@ -246,7 +246,7 @@ describe('POST /api/dxt/import', () => {
     });
 
     expect(result.status).toBe(503);
-    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(result.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
     expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
@@ -264,6 +264,7 @@ describe('POST /api/dxt/import', () => {
     });
 
     expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
     expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
@@ -278,7 +279,7 @@ describe('POST /api/dxt/import', () => {
     });
 
     expect(result.status).toBe(503);
-    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(result.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
     expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
   });
@@ -293,7 +294,7 @@ describe('POST /api/dxt/import', () => {
     });
 
     expect(result.status).toBe(503);
-    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(result.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
     expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
@@ -451,7 +452,7 @@ describe('POST /api/dxt/imports/:id/confirm', () => {
     const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
 
     expect(result.status).toBe(503);
-    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(result.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.markFailed).not.toHaveBeenCalled();
@@ -489,7 +490,7 @@ describe('POST /api/dxt/imports/:id/confirm', () => {
     const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
 
     expect(result.status).toBe(503);
-    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(result.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.markFailed).not.toHaveBeenCalled();

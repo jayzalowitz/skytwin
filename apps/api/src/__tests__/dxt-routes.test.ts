@@ -227,7 +227,7 @@ describe('POST /api/dxt/export/:serverId', () => {
 
     expect(result.status).toBe(503);
     expect(result.body).toEqual(expect.objectContaining({
-      code: 'GOOGLE_CONNECTION_DISABLED',
+      code: 'ACCOUNT_CONNECTION_DISABLED',
       available: false,
     }));
     expect(serializeArtifact).not.toHaveBeenCalled();
@@ -403,7 +403,7 @@ describe('GET /api/dxt/exports/:id/blob', () => {
 
     expect(result.status).toBe(503);
     expect(result.body).toEqual(expect.objectContaining({
-      code: 'GOOGLE_CONNECTION_DISABLED',
+      code: 'ACCOUNT_CONNECTION_DISABLED',
       available: false,
     }));
     expect(JSON.stringify(result.body)).not.toContain(artifact.blob.toString('base64'));

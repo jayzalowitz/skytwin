@@ -390,7 +390,7 @@ describe('POST /api/capabilities/pending-opt-ins/:id/accept', () => {
     );
 
     expect(status).toBe(503);
-    expect(body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
     expect(mockChangelogRepo.acceptOptIn).not.toHaveBeenCalled();
   });
 });

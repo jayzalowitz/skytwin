@@ -8,7 +8,7 @@ import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
 import {
-  isGoogleAccountRegistryIdentifier,
+  isAccountBackedRegistryIdentifier,
   PROMOTION_THRESHOLDS,
 } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
@@ -359,7 +359,7 @@ function filterRecipeForGoogleBoundary(
 ): CapabilityRecipe | null {
   if (googleCapabilitySurfaceAvailable()) return recipe;
   const registryIds = recipe.registryIds.filter((registryId) =>
-    !isGoogleAccountRegistryIdentifier(registryId) && !additionallyBlockedIds.has(registryId));
+    !isAccountBackedRegistryIdentifier(registryId) && !additionallyBlockedIds.has(registryId));
   if (registryIds.length === 0) return null;
   if (registryIds.length === recipe.registryIds.length) return recipe;
   return {
@@ -1182,7 +1182,7 @@ export function createCapabilitiesRouter(): Router {
             const availableOutput = googleCapabilitySurfaceAvailable()
               ? result.output
               : result.output.filter((recommendation) =>
-                  !isGoogleAccountRegistryIdentifier(recommendation.registryId) &&
+                  !isAccountBackedRegistryIdentifier(recommendation.registryId) &&
                   !blockedRegistryIds.has(recommendation.registryId));
             // Synthesize a single recipe from the LLM's ordered registry list.
             // CapabilityRecipe (local-defined above) is the API response shape;
@@ -1338,8 +1338,8 @@ export function createCapabilitiesRouter(): Router {
       }
       if (!recipe) {
         res.status(503).json({
-          error: 'This capability recipe is unavailable while Google connections are disabled.',
-          code: 'GOOGLE_CONNECTION_DISABLED',
+          error: 'This capability recipe is unavailable while account connections are disabled.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
           available: false,
           mode: 'disabled',
         });
@@ -1816,10 +1816,10 @@ export function createCapabilitiesRouter(): Router {
       }
 
       if (!googleCapabilitySurfaceAvailable() &&
-          isGoogleAccountRegistryIdentifier(registryId)) {
+          isAccountBackedRegistryIdentifier(registryId)) {
         res.status(503).json({
-          error: 'Google account capabilities are unavailable in this preview.',
-          code: 'GOOGLE_CONNECTION_DISABLED',
+          error: 'Account-backed capabilities are unavailable in this preview.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
           available: false,
           mode: 'disabled',
         });
@@ -1831,8 +1831,8 @@ export function createCapabilitiesRouter(): Router {
       const entry = entries.find((e) => e.id === registryId);
       if (entry && isBlockedGoogleRegistryEntry(entry)) {
         res.status(503).json({
-          error: 'Google account capabilities are unavailable in this preview.',
-          code: 'GOOGLE_CONNECTION_DISABLED',
+          error: 'Account-backed capabilities are unavailable in this preview.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
           available: false,
           mode: 'disabled',
         });
@@ -2258,8 +2258,8 @@ export function createCapabilitiesRouter(): Router {
 
       if (isBlockedGoogleOptIn(optIn)) {
         res.status(503).json({
-          error: 'This capability is unavailable while Google connections are disabled.',
-          code: 'GOOGLE_CONNECTION_DISABLED',
+          error: 'This capability is unavailable while account connections are disabled.',
+          code: 'ACCOUNT_CONNECTION_DISABLED',
           available: false,
           mode: 'disabled',
         });
