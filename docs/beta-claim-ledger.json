@@ -1170,7 +1170,7 @@
       "scope": "Every artifact named in the beta platform support matrix, built from the release tag.",
       "owner": "release-engineering",
       "state": "deferred",
-      "limitation": "CI explicitly disables automatic signing, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations but intentionally refuses Linux until package-format methods and pinned trust roots exist; the gated tag workflow therefore refuses draft creation.",
+      "limitation": "CI explicitly disables automatic signing, final-DMG notarization is not wired, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations but intentionally refuses Linux until package-format methods and pinned trust roots exist; the gated tag workflow therefore refuses draft creation.",
       "evidence": [
         {
           "path": ".github/workflows/build.yml",

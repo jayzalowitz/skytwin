@@ -199,7 +199,9 @@ The desktop package jobs set `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` and skip sig
   `APPLE_TEAM_ID`, plus `CSC_LINK` + `CSC_KEY_PASSWORD`, and flip
   `CSC_IDENTITY_AUTO_DISCOVERY` on. The checked-in `dmg.sign: true` setting also
   signs the outer disk image; do not remove it or treat a signed contained app
-  as equivalent.
+  as equivalent. The credentialed workflow must then submit and staple that
+  final DMG after packaging; this post-package notarization step is not wired
+  today.
 - Windows: `CSC_LINK` + `CSC_KEY_PASSWORD` (the EV cert).
 
 Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the README documents the right-click→Open / More-info→Run-anyway bypass).

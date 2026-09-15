@@ -212,7 +212,8 @@ All notable changes to SkyTwin will be documented in this file.
   construction and the independent publisher reject omitted, altered, stale,
   or wrong-method fields. Linux remains
   fail-closed until package-format verification methods and trust roots exist;
-  verifier source and tests do not claim signed release artifacts.
+  final-DMG notarization is still not wired, and verifier source and tests do
+  not claim signed release artifacts.
 
 - **Tag-run verification now matches clean hosted runners and real packaging
   output.** The independent verifier uses only Node built-ins plus the local
