@@ -286,9 +286,16 @@ async function assertPortsUnused(description) {
   }
 }
 
-async function waitForOwnedApi(child, nonce, deadline) {
+async function waitForOwnedApi(
+  child,
+  nonce,
+  deadline,
+  getSpawnError = () => null,
+) {
   let lastError = new Error("packaged API did not become ready");
   while (Date.now() < deadline) {
+    const spawnError = getSpawnError();
+    if (spawnError) throw spawnError;
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error(
         `packaged executable exited before readiness (${child.exitCode ?? child.signalCode})`,
@@ -428,7 +435,15 @@ export function parsePsRecord(output) {
 function processRecord(pid) {
   assert(Number.isSafeInteger(pid) && pid > 1, "process PID is invalid");
   return parsePsRecord(
-    command("/bin/ps", ["-p", String(pid), "-o", "ppid=", "-o", "command="]),
+    command("/bin/ps", [
+      "-ww",
+      "-p",
+      String(pid),
+      "-o",
+      "ppid=",
+      "-o",
+      "command=",
+    ]),
   );
 }
 
@@ -666,7 +681,7 @@ async function launchAndInspect(
     spawnError = error;
   });
   try {
-    await waitForOwnedApi(child, nonce, Date.now() + 90_000);
+    await waitForOwnedApi(child, nonce, Date.now() + 90_000, () => spawnError);
     if (spawnError) throw spawnError;
     assert(
       Number.isSafeInteger(child.pid) && child.pid > 1,
