@@ -169,6 +169,7 @@ describe.skipIf(!ENABLED)(
         ]);
 
         const beforeRerun = migrated.rows[0];
+        await applyMigration(client, LEGACY_MIGRATION);
         await applyMigration(client, CONTENT_FREE_MIGRATION);
         const afterRerun = await client.query(
           "SELECT * FROM worker_dead_letter",
@@ -196,6 +197,105 @@ describe.skipIf(!ENABLED)(
         ).rejects.toThrow(
           /worker_dead_letter_error_code_check|check constraint/i,
         );
+      } finally {
+        await client.query("SET search_path TO public");
+        await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+        client.release();
+      }
+    }, 120_000);
+
+    it("recovers a partially applied content-free migration through the production replay order", async () => {
+      const client = await pool.connect();
+      const schema = `dlq_partial_${randomUUID().replaceAll("-", "")}`;
+
+      try {
+        await client.query(`CREATE SCHEMA "${schema}"`);
+        await client.query(`SET search_path TO "${schema}"`);
+        await applyMigration(client, LEGACY_MIGRATION);
+        await client.query(
+          `INSERT INTO worker_dead_letter
+           (job_name, error_message, attempts, context)
+         VALUES ($1, $2, 3, $3::JSONB)`,
+          ["embedding-backfill", SECRET, JSON.stringify({ secret: SECRET })],
+        );
+
+        // Simulate interruption after all replacement columns and constraints
+        // exist, but before the legacy index/columns are removed.
+        const partialStatements = splitSqlStatements(
+          CONTENT_FREE_MIGRATION,
+        ).slice(0, 8);
+        expect(partialStatements).toHaveLength(8);
+        for (const statement of partialStatements) {
+          await client.query(statement);
+        }
+
+        const interruptedColumns = await client.query<{ column_name: string }>(
+          `SELECT column_name
+             FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'worker_dead_letter'`,
+          [schema],
+        );
+        const interruptedNames = new Set(
+          interruptedColumns.rows.map(({ column_name }) => column_name),
+        );
+        for (const column of [
+          "job_name",
+          "error_message",
+          "context",
+          "job_code",
+          "error_code",
+          "correlation_id",
+        ]) {
+          expect(interruptedNames.has(column)).toBe(true);
+        }
+
+        // This is the actual next-start order: old migrations replay before
+        // the newest migration resumes its idempotent cleanup.
+        await applyMigration(client, LEGACY_MIGRATION);
+        await applyMigration(client, CONTENT_FREE_MIGRATION);
+
+        const finalColumns = await client.query<{ column_name: string }>(
+          `SELECT column_name
+             FROM information_schema.columns
+            WHERE table_schema = $1 AND table_name = 'worker_dead_letter'
+            ORDER BY column_name`,
+          [schema],
+        );
+        expect(finalColumns.rows.map(({ column_name }) => column_name)).toEqual(
+          [
+            "attempts",
+            "correlation_id",
+            "dead_lettered_at",
+            "error_code",
+            "id",
+            "job_code",
+            "resolved_at",
+            "status",
+          ],
+        );
+        const rows = await client.query("SELECT * FROM worker_dead_letter");
+        expect(JSON.stringify(rows.rows)).not.toContain(SECRET);
+        expect(rows.rows).toHaveLength(1);
+        expect(rows.rows[0]).toMatchObject({
+          job_code: "legacy-redacted",
+          error_code: "legacy-redacted",
+          attempts: "3",
+          status: "pending",
+        });
+        await expect(
+          client.query(
+            "SELECT job_name, error_message, context FROM worker_dead_letter",
+          ),
+        ).rejects.toThrow(/column .* does not exist/i);
+
+        const indexes = await client.query<{ index_name: string }>(
+          "SHOW INDEXES FROM worker_dead_letter",
+        );
+        const indexNames = new Set(
+          indexes.rows.map(({ index_name }) => index_name),
+        );
+        expect(indexNames.has("worker_dead_letter_job_idx")).toBe(false);
+        expect(indexNames.has("worker_dead_letter_job_code_idx")).toBe(true);
       } finally {
         await client.query("SET search_path TO public");
         await client.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
