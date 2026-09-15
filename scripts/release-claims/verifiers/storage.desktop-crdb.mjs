@@ -163,27 +163,32 @@ function positiveInteger(name) {
   return value;
 }
 
-function validateCommit(commit) {
+export function validateCommit(commit, options = {}) {
   assert(COMMIT.test(commit), "source commit must be a full lowercase Git SHA");
-  const options = { encoding: "utf8", maxBuffer: MAX_COMMAND_OUTPUT_BYTES };
-  const head = execFileSync(
-    "/usr/bin/git",
-    ["rev-parse", "HEAD"],
-    options,
+  const commandOptions = {
+    runner: options.runner,
+    timeoutMs: options.timeoutMs,
+  };
+  const head = (
+    runBoundedCommand(
+      "/usr/bin/git",
+      ["rev-parse", "HEAD"],
+      commandOptions,
+    ).stdout ?? ""
   ).trim();
   assert(
     head === commit,
     `source commit ${commit} does not match checked-out HEAD ${head}`,
   );
-  execFileSync(
+  runBoundedCommand(
     "/usr/bin/git",
     ["diff", "--quiet", "--ignore-submodules", "HEAD", "--"],
-    options,
+    commandOptions,
   );
-  execFileSync(
+  runBoundedCommand(
     "/usr/bin/git",
     ["diff", "--cached", "--quiet", "--ignore-submodules", "HEAD", "--"],
-    options,
+    commandOptions,
   );
 }
 

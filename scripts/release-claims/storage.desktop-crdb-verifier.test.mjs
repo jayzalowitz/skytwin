@@ -27,6 +27,7 @@ import {
   parsePsRecord,
   runBoundedCommand,
   targetIsUnused,
+  validateCommit,
   validateCockroachCommand,
   waitForReleasedPorts,
 } from "./verifiers/storage.desktop-crdb.mjs";
@@ -80,6 +81,54 @@ function storageReport() {
 }
 
 describe("storage desktop verifier inputs", () => {
+  it("validates the exact clean commit through bounded native commands", () => {
+    const commit = "a".repeat(40);
+    const invocations = [];
+    expect(
+      validateCommit(commit, {
+        timeoutMs: 456,
+        runner: (command, args, options) => {
+          invocations.push({ command, args, options });
+          return {
+            error: undefined,
+            signal: null,
+            status: 0,
+            stderr: "",
+            stdout: args[0] === "rev-parse" ? `${commit}\n` : "",
+          };
+        },
+      }),
+    ).toBeUndefined();
+    expect(invocations).toHaveLength(3);
+    expect(invocations.map(({ command, args }) => [command, ...args])).toEqual([
+      ["/usr/bin/git", "rev-parse", "HEAD"],
+      ["/usr/bin/git", "diff", "--quiet", "--ignore-submodules", "HEAD", "--"],
+      [
+        "/usr/bin/git",
+        "diff",
+        "--cached",
+        "--quiet",
+        "--ignore-submodules",
+        "HEAD",
+        "--",
+      ],
+    ]);
+    expect(invocations.every(({ options }) => options.timeout === 456)).toBe(
+      true,
+    );
+    expect(() =>
+      validateCommit(commit, {
+        runner: () => ({
+          error: undefined,
+          signal: null,
+          status: 0,
+          stderr: "",
+          stdout: `${"b".repeat(40)}\n`,
+        }),
+      }),
+    ).toThrow(/does not match/);
+  });
+
   it("accepts only the canonical macOS invocation", () => {
     const output = ".release-evidence/reports/storage.desktop-crdb.json";
     expect(
