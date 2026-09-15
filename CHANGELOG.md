@@ -15,6 +15,16 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **Adversarial route harnesses now have an append-only v2 migration path.**
+  The immutable v1 assertion bytes remain intact. A separate reserved v2
+  fixture binds two proposed v1 harness retirements to their assertion hashes
+  and last-valid commit, reserves persistence-aware successors, and
+  requires any later activation to append its final assertion hash and commit.
+  The generator and independent verifier reject missing, rewritten, forged,
+  or mismatched supersession provenance. Both successors remain skipped and
+  uncounted, so explanation coverage stays 3/10, the claim stays limited, and
+  release readiness stays blocked.
+
 - **Internal source evaluation now has an immutable, non-public preparation
   path without weakening the beta release gate.** The exact-SHA-only packager
   requires a fully clean checkout, writes only to a new directory outside the

@@ -446,6 +446,25 @@ download action. This consumer evidence cannot make the explanation claim
 proven or the release ready while the four coverage gaps and tagged-run
 requirement remain open.
 
+### Versioned adversarial harness migration
+
+The v1 fixture and baseline are immutable even when a production path gains a
+new fail-closed dependency that its original closed mock did not expose. The
+reserved v2 migration contract in
+`packages/evals/fixtures/v2/adversarial-scenario-migration.json` preserves each
+proposed v1 harness retirement: scenario ID, assertion path and hash, and the
+exact last-valid commit. Each entry has one reserved v2 successor with its
+complete scenario semantics, assertion source hash, and required
+persistence-aware mock exports. The v1 harnesses remain active until those
+successors are activated.
+
+Reservations are deliberately not executable coverage. Activation is a later
+append-only record binding the final assertion hash and activation commit; the
+v2 verifier rejects missing, rewritten, forged, or mismatched predecessor,
+retirement, reservation, and activation provenance. Until activation, the v1
+catalog remains the active execution contract and the current 3/10 explanation
+coverage, seven gaps, limited claim, and blocked release status do not change.
+
 In code, use the `EvalRunner` class directly:
 
 ```typescript

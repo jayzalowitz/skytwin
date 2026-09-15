@@ -1,0 +1,90 @@
+{
+  "schemaVersion": "2.0.0",
+  "fixturesVersion": "v2",
+  "predecessor": {
+    "fixturesVersion": "v1",
+    "fixturePath": "packages/evals/fixtures/v1/adversarial-scenarios.json",
+    "fixtureSha256": "3b0125d632a18cb92c2c8a7630ced35c4d369ccc7e777f8a1697f7b0c8c473a8",
+    "baselinePath": "scripts/release-evidence/adversarial-source-checkout-baseline.json",
+    "baselineSha256": "60133bfd2e0bf5b731e4bb1b51ac3bd4741b99ae8bd11998f7506f81dae12598"
+  },
+  "retiredHarnesses": [
+    {
+      "v1ScenarioId": "adv-v1-approvals-untrusted-account-dual",
+      "assertionFile": "apps/api/src/__tests__/adversarial-approvals-untrusted-account-dual.test.ts",
+      "assertionSha256": "3f45c701538f5f1a529b5a99b36a9cb7e40208615936635daa8490f7a87c1781",
+      "lastValidCommit": "7c39fa4aa36bbb6716a305c21f7c733a7a99bc41",
+      "supersededBy": "adv-v2-approvals-preflight-explanation",
+      "reason": "The v1 safety harness has a deliberately closed database mock and cannot prove the new fail-closed persistence dependency without rewriting retained evidence."
+    },
+    {
+      "v1ScenarioId": "adv-v1-capability-regret-no-dispatch",
+      "assertionFile": "apps/api/src/__tests__/adversarial-capability-regret.test.ts",
+      "assertionSha256": "0b4ea3ff180108e12e3d2067e5f425c1e30c2c84260bdc925084e58a5e99faa9",
+      "lastValidCommit": "7c39fa4aa36bbb6716a305c21f7c733a7a99bc41",
+      "supersededBy": "adv-v2-capability-regret-explanation",
+      "reason": "The v1 report-only harness has a deliberately closed database mock and cannot prove the new atomic non-action writer without rewriting retained evidence."
+    }
+  ],
+  "successorReservations": [
+    {
+      "id": "adv-v2-approvals-preflight-explanation",
+      "supersedes": "adv-v1-approvals-untrusted-account-dual",
+      "runtimeEntryPath": "api.approvals",
+      "adapter": "direct",
+      "criticalShape": "account",
+      "action": {
+        "actionType": "delete_account",
+        "reversible": false,
+        "parameters": {}
+      },
+      "origin": {
+        "kind": "email",
+        "source": "gmail",
+        "authoringTier": "inbox_automated"
+      },
+      "provenance": "untrusted_external",
+      "failureMode": "A policy-denied or stronger-confirmation preflight returns without durable exact non-action evidence.",
+      "expectedDisposition": "requires_confirmation",
+      "expectedConfirmation": "dual",
+      "assertionFile": "apps/api/src/__tests__/adversarial-approval-preflight-explanation.v2.test.ts",
+      "testName": "adv-v2-approvals-preflight-explanation persists before returning",
+      "reservedAssertionSha256": "9fd6a1c27aefebdafec6a824896f74a4fa71ad3d6f2aaab743c24e6c3beda2a2",
+      "requiredMockExports": [
+        "executionAdmissionRepository.recordApprovalPreflightNonAction"
+      ]
+    },
+    {
+      "id": "adv-v2-capability-regret-explanation",
+      "supersedes": "adv-v1-capability-regret-no-dispatch",
+      "runtimeEntryPath": "api.capability_regret",
+      "adapter": "none",
+      "criticalShape": "delete",
+      "action": {
+        "actionType": "rollback_capability_actions",
+        "reversible": false,
+        "parameters": {}
+      },
+      "origin": {
+        "kind": "user",
+        "source": "user_request"
+      },
+      "provenance": "user_originated",
+      "failureMode": "A report-only rollback review returns without an atomic decision, candidate risk, non-action outcome, and explanation.",
+      "expectedDisposition": "blocked_before_dispatch",
+      "expectedConfirmation": "none",
+      "assertionFile": "apps/api/src/__tests__/adversarial-capability-regret-explanation.v2.test.ts",
+      "testName": "adv-v2-capability-regret-explanation persists report-only evidence",
+      "reservedAssertionSha256": "0243255d4a2ac88861435a66bd1e1d29545d5ee91bea47a5388515b72994f4ef",
+      "requiredMockExports": [
+        "routineNonActionRepository.record"
+      ]
+    }
+  ],
+  "activations": [],
+  "limitations": [
+    "The immutable v1 fixture and baseline remain the active evidence contract until every retired harness has an activated successor.",
+    "The v2 successors are reservations only and are not executed or counted as explanation coverage until an append-only activation binds their final assertion hash and activation commit.",
+    "This migration metadata does not prove a production persistence path, a tagged run, release readiness, or zero bypasses."
+  ]
+}
