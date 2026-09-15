@@ -1,12 +1,13 @@
 const GOOGLE_INTEGRATION_TOKENS = new Set([
-  'google', 'gmail', 'googlemail', 'googlecalendar', 'googledrive', 'gcal',
+  'google', 'gmail', 'googlemail', 'googlecalendar', 'googledrive', 'gdrive', 'gcal',
   'youtube', 'gcp',
 ]);
 
 const MICROSOFT_INTEGRATION_TOKENS = new Set([
   'microsoft', 'microsoft365', 'm365', 'ms365', 'microsoftgraph', 'msgraph',
   'office365', 'o365', 'outlook', 'outlook365', 'outlookcalendar',
-  'outlookmail', 'azure', 'azuread', 'entra', 'entraid',
+  'outlookmail', 'azure', 'azuread', 'entra', 'entraid', 'onedrive',
+  'sharepoint', 'exchange', 'microsoftteams', 'msteams', 'teams',
 ]);
 
 const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
@@ -25,6 +26,7 @@ const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
 
 const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
   '@modelcontextprotocol/server-google-drive',
+  'google-drive-mcp',
   'gmail-mcp',
   'google-calendar-mcp',
   'youtube-mcp',
@@ -35,7 +37,8 @@ const MICROSOFT_ACCOUNT_REGISTRY_IDS = new Set([
   'azure-mcp', 'microsoft-365-mcp', 'm365-mcp', 'ms365-mcp',
   'microsoft-graph-mcp', 'office365-mcp', 'o365-mcp', 'outlook-mcp',
   'outlook365-mcp', 'azure-ad-mcp', 'azuread-mcp', 'entra-id-mcp',
-  'entraid-mcp',
+  'entraid-mcp', 'onedrive-mcp', 'sharepoint-mcp', 'exchange-mcp',
+  'microsoft-teams-mcp', 'ms-teams-mcp', 'teams-mcp',
 ]);
 
 function normalizeToken(value) {
@@ -49,6 +52,8 @@ function isGoogleAccountActionType(value) {
     .toLowerCase()
     .replace(/[.\-:/\s]+/g, '_');
   if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
+  if (/^(?:users?|me)_(?:messages?|threads?|drafts?|labels?|history|settings|profile|watch|stop)(?:_|$)/.test(normalized)) return true;
+  if (/^google_drive_(?:files?|folders?|permissions?|drives?|changes?|comments?|replies?|revisions?)(?:_|$)/.test(normalized)) return true;
   if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|gmail|google_email|google_mail|message|messages)$/.test(normalized)) return true;
   if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:(?:google_)?calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) return true;
   if (/^(?:read|get|search|list)_(?:(?:google_)?calendar_)?(?:event|events|invite|invites|meeting|meetings)$/.test(normalized)) return true;

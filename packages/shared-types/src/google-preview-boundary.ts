@@ -12,6 +12,7 @@ const GOOGLE_INTEGRATION_TOKENS = new Set([
   'googlemail',
   'googlecalendar',
   'googledrive',
+  'gdrive',
   'gcal',
   'youtube',
   'gcp',
@@ -19,6 +20,7 @@ const GOOGLE_INTEGRATION_TOKENS = new Set([
 
 const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
   '@modelcontextprotocol/server-google-drive',
+  'google-drive-mcp',
   'gmail-mcp',
   'google-calendar-mcp',
   'youtube-mcp',
@@ -42,6 +44,12 @@ const MICROSOFT_INTEGRATION_TOKENS = new Set([
   'azuread',
   'entra',
   'entraid',
+  'onedrive',
+  'sharepoint',
+  'exchange',
+  'microsoftteams',
+  'msteams',
+  'teams',
 ]);
 
 const MICROSOFT_ACCOUNT_REGISTRY_IDS = new Set([
@@ -58,6 +66,12 @@ const MICROSOFT_ACCOUNT_REGISTRY_IDS = new Set([
   'azuread-mcp',
   'entra-id-mcp',
   'entraid-mcp',
+  'onedrive-mcp',
+  'sharepoint-mcp',
+  'exchange-mcp',
+  'microsoft-teams-mcp',
+  'ms-teams-mcp',
+  'teams-mcp',
 ]);
 
 const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([

@@ -23,6 +23,7 @@ describe('Google preview boundary', () => {
     'openclaw:google-drive',
     'openclaw:google/drive',
     'openclaw:google drive',
+    'openclaw:gdrive',
     'openclaw:youtube',
     'openclaw:gcp',
     'google:calendar',
@@ -40,6 +41,8 @@ describe('Google preview boundary', () => {
     'microsoft', 'openclaw:outlook', 'openclaw:outlook_calendar',
     'openclaw:microsoft-graph', 'm365', 'ms365', 'office365', 'o365',
     'outlook365', 'azure', 'azuread', 'azure-ad', 'entra', 'entraid', 'entra-id',
+    'openclaw:onedrive', 'openclaw:sharepoint', 'openclaw:exchange',
+    'openclaw:teams', 'microsoft-teams',
   ])('recognizes the Microsoft account integration alias %s', (identifier) => {
     expect(isMicrosoftIntegrationIdentifier(identifier)).toBe(true);
     expect(isAccountBackedIntegrationIdentifier(identifier)).toBe(true);
@@ -104,6 +107,7 @@ describe('Google preview boundary', () => {
 
   it.each([
     '@modelcontextprotocol/server-google-drive',
+    'google-drive-mcp',
     'gmail-mcp',
     'google-calendar-mcp',
     'youtube-mcp',
@@ -117,6 +121,8 @@ describe('Google preview boundary', () => {
     'microsoft-graph-mcp', 'office365-mcp', 'o365-mcp', 'outlook-mcp',
     'outlook365-mcp', 'azure-ad-mcp', 'azuread-mcp', 'entra-id-mcp',
     'entraid-mcp',
+    'onedrive-mcp', 'sharepoint-mcp', 'exchange-mcp',
+    'microsoft-teams-mcp', 'ms-teams-mcp', 'teams-mcp',
   ])
     ('recognizes the Microsoft account registry entry %s', (registryId) => {
       expect(isMicrosoftAccountRegistryIdentifier(registryId)).toBe(true);

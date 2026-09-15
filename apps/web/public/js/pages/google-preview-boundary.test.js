@@ -44,6 +44,7 @@ describe('Google preview UI boundary', () => {
       'google', 'openclaw:google', 'openclaw:gmail',
       'openclaw:google_calendar', 'openclaw:google-drive',
       'openclaw:google/drive', 'openclaw:google drive',
+      'openclaw:gdrive',
       'openclaw:youtube', 'openclaw:gcp', 'google:calendar',
     ]) {
       expect(isGoogleIntegrationIdentifier(key)).toBe(true);
@@ -68,12 +69,18 @@ describe('Google preview UI boundary', () => {
       'microsoft', 'openclaw:outlook', 'openclaw:outlook_calendar',
       'openclaw:microsoft-graph', 'office365', 'm365', 'o365', 'outlook365',
       'azure-ad', 'entra-id', 'azure-mcp', 'm365-mcp', 'o365-mcp',
-      'azure-ad-mcp', 'entra-id-mcp',
+      'azure-ad-mcp', 'entra-id-mcp', 'openclaw:onedrive',
+      'openclaw:sharepoint', 'openclaw:exchange', 'openclaw:teams',
+      'google-drive-mcp', 'onedrive-mcp', 'sharepoint-mcp', 'exchange-mcp',
+      'teams-mcp',
     ]) {
       expect(isAccountBackedIntegrationIdentifier(key) ||
         isAccountBackedIntegration({ key })).toBe(true);
     }
     expect(isAccountBackedIntegration({ key: 'custom', skills: ['outlook.send_mail'] })).toBe(true);
+    for (const skill of ['users.messages.send', 'me.messages.send', 'google.drive.files.list']) {
+      expect(isAccountBackedIntegration({ key: 'custom', skills: [skill] })).toBe(true);
+    }
   });
 
   it('does not render credential controls for aliased or skill-shaped Google requirements', () => {
