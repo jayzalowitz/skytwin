@@ -698,42 +698,52 @@ describe("owned process-tree socket inventory", () => {
 
   it("samples throughout work and fails closed on any intermediate observation", async () => {
     let count = 0;
-    const capture = () => ({
-      processCount: 2,
-      ownedSocketCount: 4,
-      loopbackPorts: [26257, 26258, 3100, 3200],
-      n: count++,
+    let releaseWork;
+    const enoughSamples = new Promise((resolve) => {
+      releaseWork = resolve;
+    });
+    const capture = () => {
+      count += 1;
+      if (count === 3) releaseWork();
+      return {
+        processCount: 2,
+        ownedSocketCount: 4,
+        loopbackPorts: [26257, 26258, 3100, 3200],
+        n: count,
+      };
+    };
+    const completed = await runContinuousSampler(
+      10,
+      async () => {
+        await enoughSamples;
+        return "done";
+      },
+      { capture, delay: async () => {} },
+    );
+    expect(completed.result).toBe("done");
+    expect(completed.samples.map((sample) => sample.n)).toEqual([1, 2, 3]);
+
+    let attempt = 0;
+    let releaseFailingWork;
+    const secondSample = new Promise((resolve) => {
+      releaseFailingWork = resolve;
     });
     await expect(
       runContinuousSampler(
         10,
         async () => {
-          await new Promise((resolveDelay) => setTimeout(resolveDelay, 4));
-          return "done";
-        },
-        {
-          capture,
-          delay: async () =>
-            new Promise((resolveDelay) => setTimeout(resolveDelay, 0)),
-        },
-      ),
-    ).resolves.toMatchObject({ result: "done" });
-    let attempt = 0;
-    await expect(
-      runContinuousSampler(
-        10,
-        async () => {
-          while (attempt < 2)
-            await new Promise((resolveDelay) => setTimeout(resolveDelay, 0));
+          await secondSample;
         },
         {
           capture: () => {
             attempt += 1;
-            if (attempt === 2) throw new Error("external socket");
+            if (attempt === 2) {
+              releaseFailingWork();
+              throw new Error("external socket");
+            }
             return { processCount: 2, ownedSocketCount: 0, loopbackPorts: [] };
           },
-          delay: async () =>
-            new Promise((resolveDelay) => setTimeout(resolveDelay, 0)),
+          delay: async () => {},
         },
       ),
     ).rejects.toThrow(/external socket/);
