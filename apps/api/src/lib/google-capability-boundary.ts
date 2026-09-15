@@ -50,6 +50,7 @@ export async function isAccountFreePreviewServerBlocked(
 
   try {
     const skills = await readSkills(server.id);
+    if (skills.length === 0) return true;
     return isGoogleCapabilityBlocked(googleConnectionMode, {
       registryId: server.registry_id,
       oauthProvider: server.oauth_provider,

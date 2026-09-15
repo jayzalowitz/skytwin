@@ -802,7 +802,7 @@ describe('Capabilities API routes', () => {
         github,
       ]);
       mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
-        serverId === customMail.id ? ['sendEmail'] : []);
+        serverId === customMail.id ? ['sendEmail'] : ['create_issue']);
       mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
         { registry_id: 'google-calendar-mcp' },
         { registry_id: 'linear-mcp' },
@@ -888,6 +888,7 @@ describe('Capabilities API routes', () => {
         status: 'paused',
       });
       mockMcpServerRepository.listForUser.mockResolvedValue([gmail, googleOauthAlias, github]);
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['create_issue']);
       mockMcpServerRepository.markResumedForUserByIds.mockResolvedValueOnce([
         { ...github, status: 'active' },
       ]);
@@ -966,6 +967,27 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.listSkillNamesForServer.mockRejectedValueOnce(
         new Error('classification unavailable'),
       );
+
+      const res = await request(
+        buildApp(USER_ID),
+        'POST',
+        `/api/capabilities/resume-all?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ resumedCount: 0 });
+      expect(mockMcpServerRepository.markResumedForUserByIds).not.toHaveBeenCalled();
+    });
+
+    it('does not resume a neutral custom server with no cached inventory evidence', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const custom = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000026',
+        registry_id: 'custom-productivity',
+        status: 'paused',
+      });
+      mockMcpServerRepository.listForUser.mockResolvedValue([custom]);
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValueOnce([]);
 
       const res = await request(
         buildApp(USER_ID),

@@ -182,6 +182,22 @@ describe('GET /api/onboarding/state', () => {
     expect(body).toMatchObject({ isFirstRun: true, hasInstalledServers: false });
   });
 
+  it('treats an empty custom inventory as unknown while the preview is disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepository.listForUser.mockResolvedValue([{
+      id: 'srv-custom-empty',
+      registry_id: 'custom-productivity',
+      oauth_provider: null,
+      status: 'active',
+    }]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
+
+    const { status, body } = await request(buildApp(), 'get', '/api/onboarding/state');
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ isFirstRun: true, hasInstalledServers: false });
+  });
+
   it('reports hasLlmProvider=true when LLM client is available', async () => {
     mockGetLlmClient.mockReturnValue({ hasProviders: true });
     const app = buildApp();
