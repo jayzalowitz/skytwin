@@ -272,7 +272,9 @@ describe('execution-setup', () => {
         makeCredentialRow({ service: 'openclaw:gmail', credential_key: 'token' }),
         makeCredentialRow({ id: 'cred-2', service: 'openclaw:google_calendar', credential_key: 'token' }),
         makeCredentialRow({ id: 'cred-3', service: 'custom:mail', credential_key: 'token' }),
-        makeCredentialRow({ id: 'cred-4', service: 'github', credential_key: 'token' }),
+        makeCredentialRow({ id: 'cred-4', service: 'microsoft', credential_key: 'client_secret' }),
+        makeCredentialRow({ id: 'cred-5', service: 'openclaw:outlook', credential_key: 'token' }),
+        makeCredentialRow({ id: 'cred-6', service: 'github', credential_key: 'token' }),
       ]);
       mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
 
@@ -281,6 +283,24 @@ describe('execution-setup', () => {
       expect(adapter.registerCredential).toHaveBeenCalledTimes(1);
       expect(adapter.registerCredential).toHaveBeenCalledWith('github.token', 'test-value');
       expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledTimes(1);
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('github', 'token');
+    });
+
+    it('never exports an unregistered dynamic credential when classification is empty', async () => {
+      const adapter = makeAdapter();
+      mockCredentialRequirementRepository.getAllGrouped.mockResolvedValue(new Map());
+      mockServiceCredentialRepository.getUnsyncedCredentials.mockResolvedValue([
+        makeCredentialRow({ service: 'custom:neutral', credential_key: 'token' }),
+        makeCredentialRow({ id: 'cred-2', service: 'github', credential_key: 'token' }),
+      ]);
+      mockServiceCredentialRepository.markSynced.mockResolvedValue(null);
+
+      await syncUnsyncedCredentialsToIronClaw(adapter as never);
+
+      expect(adapter.registerCredential).toHaveBeenCalledOnce();
+      expect(adapter.registerCredential).toHaveBeenCalledWith('github.token', 'test-value');
+      expect(adapter.registerCredential).not.toHaveBeenCalledWith('custom:neutral.token', expect.anything());
+      expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledOnce();
       expect(mockServiceCredentialRepository.markSynced).toHaveBeenCalledWith('github', 'token');
     });
 
@@ -572,7 +592,7 @@ describe('execution-setup', () => {
       expect(mockSseManager.emit).not.toHaveBeenCalled();
     });
 
-    it.each(['gmail-mcp', 'google-calendar-mcp'])
+    it.each(['gmail-mcp', 'google-calendar-mcp', 'outlook-mcp', 'azure-mcp'])
     ('drops the stable registry ID %s when supplied as a dynamic integration', async (integration) => {
       mockLoadConfig.mockReturnValue({
         googleConnectionMode: 'disabled',
@@ -661,7 +681,10 @@ describe('execution-setup', () => {
       expect(mockServiceCredentialRepository.markSynced).not.toHaveBeenCalled();
     });
 
-    it.each(['openclaw:gmail', 'openclaw:google_calendar', 'google:calendar'])
+    it.each([
+      'openclaw:gmail', 'openclaw:google_calendar', 'google:calendar',
+      'microsoft', 'openclaw:outlook', 'openclaw:microsoft_graph', 'azure-mcp',
+    ])
       ('rejects the alias %s before resolving or calling an adapter', async (service) => {
         const adapter = makeAdapter();
         setupRouterWithAdapter(adapter);
@@ -729,6 +752,17 @@ describe('execution-setup', () => {
       setupRouterWithAdapter(adapter);
 
       const result = await revokeCredentialFromIronClaw('google', 'client_secret');
+
+      expect(result).toBe(false);
+      expect(adapter.revokeCredential).not.toHaveBeenCalled();
+    });
+
+    it.each(['microsoft', 'outlook', 'openclaw:microsoft_graph'])
+    ('rejects account provider %s before resolving or calling an adapter', async (service) => {
+      const adapter = makeAdapter();
+      setupRouterWithAdapter(adapter);
+
+      const result = await revokeCredentialFromIronClaw(service, 'client_secret');
 
       expect(result).toBe(false);
       expect(adapter.revokeCredential).not.toHaveBeenCalled();

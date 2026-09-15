@@ -1,4 +1,5 @@
 import { loadConfig } from '@skytwin/config';
+import { isAccountBackedIntegrationIdentifier } from '@skytwin/shared-types';
 import {
   executionDispatchLeaseRepository,
   credentialVaultMetaRepository,
@@ -145,9 +146,15 @@ export class DbCredentialProvider implements CredentialProvider {
     allowPlaintextMigration: boolean,
     dispatchProof?: DispatchLeaseProof,
   ): Promise<CredentialOutcome> {
-    if (provider === 'google' && loadConfig().googleConnectionMode !== 'experimental') {
+    if (isAccountBackedIntegrationIdentifier(provider) &&
+        loadConfig().googleConnectionMode !== 'experimental') {
       return markCredentialRequestBoundary(
-        { success: false, error: 'Google connection is unavailable in this preview.' },
+        {
+          success: false,
+          error: provider === 'google'
+            ? 'Google connection is unavailable in this preview.'
+            : 'Microsoft account connection is unavailable in this preview.',
+        },
         false,
       );
     }

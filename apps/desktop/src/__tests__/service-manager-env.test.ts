@@ -14,8 +14,8 @@ import { tmpdir } from 'os';
  *  2. `SKYTWIN_DEV_AUTH_BYPASS` is pinned to `'false'` AFTER the
  *     `...process.env` spread, so a developer's shell bypass can never be
  *     inherited into a packaged build.
- *  3. Packaged children are pinned to the disabled Google connection mode and
- *     receive no bundled/default Google client ID.
+ *  3. Packaged children are pinned to the account-free connection mode and
+ *     receive no Microsoft or bundled/default provider credentials.
  */
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'skytwin-sm-env-'));
@@ -66,6 +66,11 @@ describe('ServiceManager.getEnv()', () => {
     SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'],
     GOOGLE_CLIENT_ID: process.env['GOOGLE_CLIENT_ID'],
     GOOGLE_CLIENT_SECRET: process.env['GOOGLE_CLIENT_SECRET'],
+    MICROSOFT_CLIENT_ID: process.env['MICROSOFT_CLIENT_ID'],
+    MICROSOFT_CLIENT_SECRET: process.env['MICROSOFT_CLIENT_SECRET'],
+    MICROSOFT_REDIRECT_URI: process.env['MICROSOFT_REDIRECT_URI'],
+    MICROSOFT_TENANT: process.env['MICROSOFT_TENANT'],
+    SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID: process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'],
   };
 
   beforeEach(() => {
@@ -79,6 +84,11 @@ describe('ServiceManager.getEnv()', () => {
     delete process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'];
     delete process.env['GOOGLE_CLIENT_ID'];
     delete process.env['GOOGLE_CLIENT_SECRET'];
+    delete process.env['MICROSOFT_CLIENT_ID'];
+    delete process.env['MICROSOFT_CLIENT_SECRET'];
+    delete process.env['MICROSOFT_REDIRECT_URI'];
+    delete process.env['MICROSOFT_TENANT'];
+    delete process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'];
     rmSync(join(userDataDir, 'secrets'), { recursive: true, force: true });
   });
 
@@ -142,6 +152,11 @@ describe('ServiceManager.getEnv()', () => {
     process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] = 'launcher-default-client';
     process.env['GOOGLE_CLIENT_ID'] = 'launcher-client';
     process.env['GOOGLE_CLIENT_SECRET'] = 'launcher-secret';
+    process.env['MICROSOFT_CLIENT_ID'] = 'launcher-microsoft-client';
+    process.env['MICROSOFT_CLIENT_SECRET'] = 'launcher-microsoft-secret';
+    process.env['MICROSOFT_REDIRECT_URI'] = 'https://launcher.example/microsoft/callback';
+    process.env['MICROSOFT_TENANT'] = 'launcher-tenant';
+    process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'] = 'launcher-microsoft-default';
 
     const env = envOf(new ServiceManager());
 
@@ -151,16 +166,27 @@ describe('ServiceManager.getEnv()', () => {
     // typed mode above is the downstream runtime authority.
     expect(env['GOOGLE_CLIENT_ID']).toBe('launcher-client');
     expect(env['GOOGLE_CLIENT_SECRET']).toBe('launcher-secret');
+    expect(env['MICROSOFT_CLIENT_ID']).toBe('');
+    expect(env['MICROSOFT_CLIENT_SECRET']).toBe('');
+    expect(env['MICROSOFT_REDIRECT_URI']).toBe('');
+    expect(env['MICROSOFT_TENANT']).toBe('');
+    expect(env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID']).toBe('');
   });
 
   it('retains an explicit experimental opt-in for source-development children', () => {
     process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] = 'experimental';
     process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] = 'operator-client';
+    process.env['MICROSOFT_CLIENT_ID'] = 'operator-microsoft-client';
+    process.env['MICROSOFT_CLIENT_SECRET'] = 'operator-microsoft-secret';
+    process.env['MICROSOFT_TENANT'] = 'operator-tenant';
 
     const env = envOf(new ServiceManager());
 
     expect(env['SKYTWIN_GOOGLE_CONNECTION_MODE']).toBe('experimental');
     expect(env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID']).toBe('operator-client');
+    expect(env['MICROSOFT_CLIENT_ID']).toBe('operator-microsoft-client');
+    expect(env['MICROSOFT_CLIENT_SECRET']).toBe('operator-microsoft-secret');
+    expect(env['MICROSOFT_TENANT']).toBe('operator-tenant');
   });
 
   it('keeps renderer-proof authority out of every service child environment', () => {

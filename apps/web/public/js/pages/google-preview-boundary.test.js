@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  isAccountBackedIntegration,
+  isAccountBackedIntegrationIdentifier,
   isGoogleAccountIntegration,
   isGoogleIntegrationIdentifier,
 } from '../google-preview-boundary.js';
@@ -53,9 +55,23 @@ describe('Google preview UI boundary', () => {
     expect(isGoogleAccountIntegration({ key: 'custom:calendar', skills: ['schedule_focus_block'] })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:reader', skills: ['readGmail'] })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:calendar', skills: ['getGoogleCalendarEvents'] })).toBe(true);
+    for (const skill of [
+      'getMessage', 'get_message', 'fetchEmail', 'modifyMessage', 'trashMessage',
+      'createDraft', 'sendDraft', 'sendCalendarInvite',
+    ]) {
+      expect(isAccountBackedIntegration({ key: 'custom', skills: [skill] })).toBe(true);
+    }
     expect(isGoogleAccountIntegration({ adapter: 'gmail-mcp', integration: 'custom' })).toBe(true);
     expect(isGoogleAccountIntegration({ adapter: 'custom', integration: 'google-calendar-mcp' })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:notes', skills: ['create_note'] })).toBe(false);
+    for (const key of [
+      'microsoft', 'openclaw:outlook', 'openclaw:outlook_calendar',
+      'openclaw:microsoft-graph', 'office365', 'azure-mcp',
+    ]) {
+      expect(isAccountBackedIntegrationIdentifier(key) ||
+        isAccountBackedIntegration({ key })).toBe(true);
+    }
+    expect(isAccountBackedIntegration({ key: 'custom', skills: ['outlook.send_mail'] })).toBe(true);
   });
 
   it('does not render credential controls for aliased or skill-shaped Google requirements', () => {
@@ -68,6 +84,10 @@ describe('Google preview UI boundary', () => {
         adapter: 'custom', integration: 'mail', label: 'Peer mail', skills: ['send_email'],
         fields: [{ key: 'token', label: 'Token', secret: true }],
       },
+      'openclaw:outlook': {
+        adapter: 'openclaw', integration: 'outlook', label: 'Outlook', skills: [],
+        fields: [{ key: 'token', label: 'Token', secret: true }],
+      },
       'openclaw:github': {
         adapter: 'openclaw', integration: 'github', label: 'GitHub', skills: ['create_issue'],
         fields: [{ key: 'token', label: 'Token', secret: true }],
@@ -77,6 +97,7 @@ describe('Google preview UI boundary', () => {
     const html = renderDynamicIntegrations(integrations, {});
     expect(html).not.toContain('openclaw:gmail');
     expect(html).not.toContain('custom:mail');
+    expect(html).not.toContain('openclaw:outlook');
     expect(html).toContain('openclaw:github');
     expect(html).toContain('data-save-service="openclaw:github"');
   });

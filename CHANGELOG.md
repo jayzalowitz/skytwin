@@ -4,19 +4,20 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
-- **The supported preview is account-free sample only; Google account access is
-  fail-closed.** The packaged desktop no longer carries a project-owned Google
-  client ID and pins its managed API and worker children to disabled Google
-  mode. Authorization, callback, credential mutation/synchronization, connector
+- **The supported preview is account-free sample only; connected-account access
+  is fail-closed.** The packaged desktop carries no provider client authority
+  and pins its managed API and worker children to disabled account mode. Google
+  and Microsoft authorization, callback, credential mutation/synchronization, connector
   discovery, capability installation or transfer, and account-backed email or
   calendar action vocabularies refuse before provider contact, adapter
-  preparation, or a dispatch lease. Dynamic Google/Gmail/Calendar aliases are
+  preparation, or a dispatch lease. Dynamic Google/Gmail/Calendar and
+  Microsoft/Outlook aliases are
   filtered across credential reads, writes, sync, and UI surfaces; failed
   dynamic credential classification also fails closed. Stale Google capability
   rows cannot be resumed, polled for changelogs, offered as assistant installs,
   or restore reconnect prompts. Existing stored tokens and credentials are
-  retained for a future reviewed migration. Managed Google access is
-  deferred, and an experimental source flag is not a supported operator/BYO
+  retained for a future reviewed migration. Managed account access is
+  deferred, and the exact experimental source flag is not a supported operator/BYO
   path. This correction supersedes current-looking bundled-client and
   five-minute-setup entries below without rewriting their historical record.
 

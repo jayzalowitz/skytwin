@@ -4,10 +4,10 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SkyTwin — a digital twin that learns what you'd want and does it</title>
-  <meta name="description" content="SkyTwin is an open-source, local-first personal assistant project. The supported technical preview is an isolated account-free sample with fictional decisions, explanations, and no external effects; Google connection is unavailable.">
+  <meta name="description" content="SkyTwin is an open-source, local-first personal assistant project. The supported technical preview is an isolated account-free sample with fictional decisions, explanations, and no external effects; Google and Microsoft account connections are unavailable.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/">
   <meta property="og:title" content="SkyTwin — it acts, it doesn't chat">
-  <meta property="og:description" content="Open-source, local-first digital twin technical preview: explore an isolated account-free sample with fictional data and no external effects. Google connection is unavailable.">
+  <meta property="og:description" content="Open-source, local-first digital twin technical preview: explore an isolated account-free sample with fictional data and no external effects. Google and Microsoft account connections are unavailable.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://jayzalowitz.github.io/skytwin/">
   <!-- No external font fetch: the --font-* vars fall back to the system stack,
@@ -138,7 +138,7 @@
     <section class="hero wrap">
       <p class="eyebrow">Open source · local-first · Apache 2.0</p>
       <h1>A digital twin that learns what you'd want — and does it.</h1>
-      <p class="lede">The supported technical preview is an isolated, account-free sample with fictional decisions and no external effects. It demonstrates SkyTwin's preference, policy, approval, and explanation model without connecting a private account. Google connection is unavailable; managed and operator/BYO Google access remain deferred.</p>
+      <p class="lede">The supported technical preview is an isolated, account-free sample with fictional decisions and no external effects. It demonstrates SkyTwin's preference, policy, approval, and explanation model without connecting a private account. Google and Microsoft account connections are unavailable; supported real-account access remains deferred.</p>
       <div class="actions">
         <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download technical preview</a>
         <a class="button" href="demo.html">See the 5-minute demo</a>
@@ -197,7 +197,7 @@
           <tr><td><code>calendar.readonly</code><br><small>future explicit Calendar grant</small></td><td>Would read calendar context after the reviewed real-account gates land.</td></tr>
           <tr><td><code>calendar.events</code><br><small>future explicit Calendar grant</small></td><td>Would support policy-gated Calendar changes only with the exact granted capability.</td></tr>
           <tr><td><code>openid</code>, <code>email</code>, <code>profile</code><br><small>future identity baseline</small></td><td>Would identify the account associated with an owner-bound connection.</td></tr>
-          <tr><td><code>User.Read</code>, <code>Mail.Read</code>, <code>Calendars.Read</code>, <code>offline_access</code><br><small>source-development Microsoft capability</small></td><td>Implemented as a read-only BYO source path, but outside the supported sample-only preview.</td></tr>
+          <tr><td><code>User.Read</code>, <code>Mail.Read</code>, <code>Calendars.Read</code>, <code>offline_access</code><br><small>source-development Microsoft capability</small></td><td>Implemented as a read-only source path behind the exact experimental account opt-in, but outside the supported sample-only preview.</td></tr>
         </tbody>
       </table>
       <p style="margin-top:1rem;color:var(--text-muted);font-size:.95rem;">See the <a href="privacy.html">privacy policy</a>, <a href="connect-gmail.html">current Google status</a>, and <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/google-verification.md">deferred integration plan</a>. Do not create or paste Google credentials for this preview.</p>

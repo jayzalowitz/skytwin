@@ -78,18 +78,29 @@ describe('disabled Google OAuth boundary', () => {
   });
 
   it.each([
-    ['GET', '/api/oauth/google/authorize?newUser=true&include=gmail'],
-    ['GET', '/api/oauth/google/callback?code=plausible-code&state=plausible-state'],
-    ['GET', '/api/oauth/google/pending/550e8400-e29b-41d4-a716-446655440000'],
-    ['GET', '/api/oauth/google/status?userId=owner-1'],
-    ['GET', '/api/oauth/google/accounts/owner-1'],
-    ['DELETE', '/api/oauth/google/owner-1/user%40example.com'],
-    ['DELETE', '/api/oauth/google/disconnect'],
-    ['GET', '/api/oauth/%67oogle/status?userId=owner-1'],
-    ['GET', '/api/oauth/%67oogle/accounts/owner-1'],
-    ['DELETE', '/api/oauth/%67oogle/owner-1/user%40example.com'],
-    ['DELETE', '/api/oauth/%67oogle/disconnect'],
-  ])('rejects %s %s before token, config, or network effects', async (method, path) => {
+    ['GET', '/api/oauth/google/authorize?newUser=true&include=gmail', 'GOOGLE_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/google/callback?code=plausible-code&state=plausible-state', 'GOOGLE_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/google/pending/550e8400-e29b-41d4-a716-446655440000', 'GOOGLE_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/google/status?userId=owner-1', 'GOOGLE_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/google/accounts/owner-1', 'GOOGLE_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/google/owner-1/user%40example.com', 'GOOGLE_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/google/disconnect', 'GOOGLE_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/%67oogle/status?userId=owner-1', 'GOOGLE_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/%67oogle/accounts/owner-1', 'GOOGLE_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/%67oogle/owner-1/user%40example.com', 'GOOGLE_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/%67oogle/disconnect', 'GOOGLE_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/microsoft/authorize?userId=owner-1', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/microsoft/callback?code=plausible-code&state=plausible-state', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/microsoft/status?userId=owner-1', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/microsoft/accounts/owner-1', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/microsoft/owner-1/user%40example.com', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/microsoft/disconnect', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/%6dicrosoft/status?userId=owner-1', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/%6dicrosoft/accounts/owner-1', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/%6dicrosoft/owner-1/user%40example.com', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['DELETE', '/api/oauth/%6dicrosoft/disconnect', 'MICROSOFT_CONNECTION_DISABLED'],
+    ['GET', '/api/oauth/outlook/status?userId=owner-1', 'MICROSOFT_CONNECTION_DISABLED'],
+  ])('rejects %s %s before token, config, or network effects', async (method, path, expectedCode) => {
     const providerFetch = vi.fn();
     vi.stubGlobal('fetch', providerFetch);
     const configRead = vi.spyOn(serviceCredentialRepository, 'getAsMap');
@@ -103,7 +114,7 @@ describe('disabled Google OAuth boundary', () => {
 
     expect(response.status).toBe(503);
     expect(response.body).toMatchObject({
-      code: 'GOOGLE_CONNECTION_DISABLED',
+      code: expectedCode,
       available: false,
       mode: 'disabled',
     });

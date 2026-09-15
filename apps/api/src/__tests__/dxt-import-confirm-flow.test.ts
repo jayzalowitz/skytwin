@@ -254,6 +254,21 @@ describe('POST /api/dxt/import', () => {
     expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
   });
 
+  it.each(['azure-mcp', 'outlook-mcp'])
+  ('rejects the Microsoft account capability %s before pending-import effects', async (registryId) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob } = await buildArtifact(registryId);
+
+    const result = await req(buildApp(), 'POST', '/api/dxt/import', {
+      blob: blob.toString('base64'),
+    });
+
+    expect(result.status).toBe(503);
+    expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   it('rejects a custom DXT that declares account-backed skills while disabled', async () => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
     const { blob } = await buildArtifact('custom-productivity', ['read_email']);
@@ -268,7 +283,7 @@ describe('POST /api/dxt/import', () => {
     expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
   });
 
-  it.each(['sendEmail', 'schedule_focus_block'])
+  it.each(['sendEmail', 'schedule_focus_block', 'outlook.send_mail', 'microsoft_graph.list_events'])
   ('rejects the account-backed skill %s before pending-import effects', async (skill) => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
     const { blob } = await buildArtifact('custom-productivity', [skill]);
@@ -443,7 +458,25 @@ describe('POST /api/dxt/imports/:id/confirm', () => {
     expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
   });
 
-  it.each(['respondToEvent', 'schedule_focus_block'])
+  it('rejects a pending Microsoft import before install effects when disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob, sha256 } = await buildArtifact('azure-mcp');
+    mockDxtImportRepo.findById.mockResolvedValueOnce(makePendingImportRow({
+      artifact_blob: blob,
+      artifact_sha256: sha256,
+      registry_id: 'azure-mcp',
+    }));
+
+    const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
+
+    expect(result.status).toBe(503);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markFailed).not.toHaveBeenCalled();
+    expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
+  });
+
+  it.each(['respondToEvent', 'schedule_focus_block', 'outlook.send_mail'])
   ('rejects the account-backed skill %s before confirm install effects', async (skill) => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
     const { blob, sha256 } = await buildArtifact('custom-productivity', [skill]);

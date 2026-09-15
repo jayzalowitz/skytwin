@@ -533,6 +533,34 @@ describe('Credentials API routes', () => {
     });
 
     it.each([
+      ['PUT', '/api/credentials/microsoft', { credentials: { client_id: 'inert-id' } }],
+      ['POST', '/api/credentials/microsoft/sync', undefined],
+      ['DELETE', '/api/credentials/microsoft/client_id', undefined],
+      ['GET', '/api/credentials/microsoft', undefined],
+      ['PUT', '/api/credentials/openclaw%3Aoutlook', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/openclaw%3Amicrosoft_graph/sync', undefined],
+      ['DELETE', '/api/credentials/outlook%3Acalendar/token', undefined],
+      ['GET', '/api/credentials/azure-mcp', undefined],
+    ])('rejects account provider %s %s before credential or adapter effects', async (method, path, body) => {
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({
+        code: 'ACCOUNT_CONNECTION_DISABLED',
+        available: false,
+        mode: 'disabled',
+      });
+      expect(mockCredentialRequirementRepository.getByAdapter).not.toHaveBeenCalled();
+      expect(mockCredentialRequirementRepository.getByIntegration).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
+    it.each([
       ['PUT', '/api/credentials/google', { credentials: { client_id: 'inert-id' } }],
       ['POST', '/api/credentials/google/sync', undefined],
       ['DELETE', '/api/credentials/google/client_id', undefined],
@@ -576,7 +604,7 @@ describe('Credentials API routes', () => {
       const res = await request(app, method, path, body);
 
       expect(res.status).toBe(503);
-      expect(res.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+      expect(res.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
       expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
       expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
       expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
@@ -598,7 +626,27 @@ describe('Credentials API routes', () => {
       const res = await request(app, method, path, body);
 
       expect(res.status).toBe(503);
-      expect(res.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+      expect(res.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['PUT', '/api/credentials/custom%3Aneutral', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/custom%3Aneutral/sync', undefined],
+      ['DELETE', '/api/credentials/custom%3Aneutral/token', undefined],
+      ['GET', '/api/credentials/custom%3Aneutral', undefined],
+    ])('fails closed for an unregistered dynamic service via %s %s', async (method, path, body) => {
+      mockCredentialRequirementRepository.getByAdapter.mockResolvedValue([]);
+
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ code: 'ACCOUNT_CONNECTION_DISABLED' });
       expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
       expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
       expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
@@ -617,7 +665,9 @@ describe('Credentials API routes', () => {
       mockServiceCredentialRepository.getAll.mockResolvedValue([
         makeCredentialRow({ service: 'openclaw:gmail' }),
         makeCredentialRow({ id: 'cred-2', service: 'custom:mail' }),
-        makeCredentialRow({ id: 'cred-3', service: 'github' }),
+        makeCredentialRow({ id: 'cred-3', service: 'microsoft' }),
+        makeCredentialRow({ id: 'cred-4', service: 'openclaw:outlook' }),
+        makeCredentialRow({ id: 'cred-5', service: 'github' }),
       ]);
 
       const res = await request(app, 'GET', '/api/credentials');
@@ -636,6 +686,10 @@ describe('Credentials API routes', () => {
         ['custom:mail', {
           label: 'Peer mail', description: null, adapter: 'custom',
           fields: [makeRequirementRow({ adapter: 'custom', integration: 'mail', skills: ['send_email'] })],
+        }],
+        ['openclaw:outlook', {
+          label: 'Outlook', description: null, adapter: 'openclaw',
+          fields: [makeRequirementRow({ integration: 'outlook', skills: ['outlook.read_mail'] })],
         }],
         ['openclaw:github', {
           label: 'GitHub', description: null, adapter: 'openclaw',

@@ -635,6 +635,16 @@ export class ServiceManager {
       SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: app.isPackaged
         ? ''
         : process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '',
+      // Microsoft/Outlook is under the same account-free preview boundary.
+      // Clear every credential-bearing input in packaged children; source
+      // development retains the exact experimental opt-in above.
+      MICROSOFT_CLIENT_ID: app.isPackaged ? '' : process.env['MICROSOFT_CLIENT_ID'] ?? '',
+      MICROSOFT_CLIENT_SECRET: app.isPackaged ? '' : process.env['MICROSOFT_CLIENT_SECRET'] ?? '',
+      MICROSOFT_REDIRECT_URI: app.isPackaged ? '' : process.env['MICROSOFT_REDIRECT_URI'] ?? '',
+      MICROSOFT_TENANT: app.isPackaged ? '' : process.env['MICROSOFT_TENANT'] ?? '',
+      SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID: app.isPackaged
+        ? ''
+        : process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'] ?? '',
       API_PORT: '3100',
       WORKER_PORT: '3101',
       API_BASE_URL: 'http://127.0.0.1:3100',

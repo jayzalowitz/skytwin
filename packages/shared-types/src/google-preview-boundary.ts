@@ -1,5 +1,5 @@
 /**
- * Account-backed Google integrations are outside the supported preview.
+ * Account-backed integrations are outside the supported preview.
  *
  * Identifiers are deliberately matched by stable adapter/integration tokens,
  * never by peer-authored labels or descriptions. Separators are ignored so a
@@ -23,6 +23,27 @@ const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
   'google-calendar-mcp',
   'youtube-mcp',
   'gcp-mcp',
+]);
+
+const MICROSOFT_INTEGRATION_TOKENS = new Set([
+  'microsoft',
+  'microsoft365',
+  'microsoftgraph',
+  'msgraph',
+  'office365',
+  'outlook',
+  'outlookcalendar',
+  'outlookmail',
+  'azure',
+  'entra',
+]);
+
+const MICROSOFT_ACCOUNT_REGISTRY_IDS = new Set([
+  'azure-mcp',
+  'microsoft-365-mcp',
+  'microsoft-graph-mcp',
+  'office365-mcp',
+  'outlook-mcp',
 ]);
 
 const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
@@ -61,6 +82,13 @@ const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'block_focus_time',
   'schedule_focus_block',
   'find_meeting_time',
+  'get_message',
+  'fetch_email',
+  'modify_message',
+  'trash_message',
+  'create_draft',
+  'send_draft',
+  'send_calendar_invite',
 ]);
 
 function normalizeIntegrationToken(value: string): string {
@@ -79,6 +107,16 @@ export function isGoogleIntegrationIdentifier(value: string): boolean {
   return value
     .split(':')
     .some((segment) => GOOGLE_INTEGRATION_TOKENS.has(normalizeIntegrationToken(segment)));
+}
+
+export function isMicrosoftIntegrationIdentifier(value: string): boolean {
+  return value
+    .split(':')
+    .some((segment) => MICROSOFT_INTEGRATION_TOKENS.has(normalizeIntegrationToken(segment)));
+}
+
+export function isAccountBackedIntegrationIdentifier(value: string): boolean {
+  return isGoogleIntegrationIdentifier(value) || isMicrosoftIntegrationIdentifier(value);
 }
 
 export function isGoogleAccountActionType(actionType: string): boolean {
@@ -106,6 +144,14 @@ export function isGoogleAccountActionType(actionType: string): boolean {
   return /^(?:rsvp|calendar|email|mail|gmail|gcal|google_calendar|google_mail)_/.test(normalized);
 }
 
+/** Provider-neutral name for the account-backed action vocabulary. */
+export function isAccountBackedActionType(actionType: string): boolean {
+  if (isGoogleAccountActionType(actionType)) return true;
+  const normalized = normalizeActionType(actionType);
+  return /(?:^|_)(?:microsoft|microsoft_graph|ms_graph|office_?365|outlook|azure|entra)(?:_|$)/
+    .test(normalized);
+}
+
 export interface AccountActionBoundaryInput {
   actionType: string;
   domain?: string;
@@ -121,18 +167,32 @@ export interface AccountActionBoundaryInput {
 export function isAccountBackedEmailOrCalendarAction(
   input: AccountActionBoundaryInput,
 ): boolean {
-  if (isGoogleAccountActionType(input.actionType)) return true;
+  if (isAccountBackedActionType(input.actionType)) return true;
   const domain = normalizeIntegrationToken(input.domain ?? '');
   if (domain === 'email' || domain === 'mail' || domain === 'calendar' ||
-      isGoogleIntegrationIdentifier(input.domain ?? '')) {
+      isAccountBackedIntegrationIdentifier(input.domain ?? '')) {
     return true;
   }
   const mcpToolName = input.parameters?.['mcpToolName'];
-  return typeof mcpToolName === 'string' && isGoogleAccountActionType(mcpToolName);
+  return typeof mcpToolName === 'string' && isAccountBackedActionType(mcpToolName);
 }
 
-export function isGoogleAccountRegistryIdentifier(registryId: string): boolean {
+function isGoogleAccountRegistryIdentifierOnly(registryId: string): boolean {
   return GOOGLE_ACCOUNT_REGISTRY_IDS.has(registryId.trim().toLowerCase());
+}
+
+export function isMicrosoftAccountRegistryIdentifier(registryId: string): boolean {
+  return MICROSOFT_ACCOUNT_REGISTRY_IDS.has(registryId.trim().toLowerCase());
+}
+
+export function isAccountBackedRegistryIdentifier(registryId: string): boolean {
+  return isGoogleAccountRegistryIdentifierOnly(registryId) ||
+    isMicrosoftAccountRegistryIdentifier(registryId);
+}
+
+/** @deprecated Use the provider-neutral account-backed classifier. */
+export function isGoogleAccountRegistryIdentifier(registryId: string): boolean {
+  return isAccountBackedRegistryIdentifier(registryId);
 }
 
 export interface IntegrationBoundaryInput {
@@ -143,9 +203,13 @@ export interface IntegrationBoundaryInput {
 }
 
 export function isGoogleAccountIntegration(input: IntegrationBoundaryInput): boolean {
+  return isAccountBackedIntegration(input);
+}
+
+export function isAccountBackedIntegration(input: IntegrationBoundaryInput): boolean {
   return [input.key, input.adapter, input.integration]
     .some((value) => typeof value === 'string' && (
-      isGoogleIntegrationIdentifier(value) || isGoogleAccountRegistryIdentifier(value)
+      isAccountBackedIntegrationIdentifier(value) || isAccountBackedRegistryIdentifier(value)
     )) ||
-    (input.skills?.some(isGoogleAccountActionType) ?? false);
+    (input.skills?.some(isAccountBackedActionType) ?? false);
 }

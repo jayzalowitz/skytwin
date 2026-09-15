@@ -173,7 +173,7 @@ describe('GET /connectors/:userId/status', () => {
     expect(body['anyNeedsReauth']).toBe(false);
   });
 
-  it('preserves non-Google connector health while filtering disabled Google rows', async () => {
+  it('hides stale account connector health while preserving local neighbors', async () => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
     const successAt = new Date('2026-05-25T12:00:00Z');
     mockConnectorHealthRepository.findByUser.mockResolvedValue([
@@ -189,6 +189,15 @@ describe('GET /connectors/:userId/status', () => {
       {
         user_id: USER_ID,
         connector_name: 'outlook_mail',
+        status: 'needs_reauth',
+        error_code: 'invalid_grant',
+        last_success_at: null,
+        last_failure_at: new Date('2026-05-25T13:00:00Z'),
+        updated_at: new Date('2026-05-25T13:00:00Z'),
+      },
+      {
+        user_id: USER_ID,
+        connector_name: 'mock-email',
         status: 'connected',
         error_code: null,
         last_success_at: successAt,
@@ -202,7 +211,7 @@ describe('GET /connectors/:userId/status', () => {
 
     expect(status).toBe(200);
     expect(body['connectors']).toEqual({
-      outlook_mail: {
+      'mock-email': {
         status: 'connected',
         errorCode: null,
         lastSuccessAt: successAt.toISOString(),

@@ -3,7 +3,9 @@ import { loadConfig } from '@skytwin/config';
 import { serviceCredentialRepository, credentialRequirementRepository } from '@skytwin/db';
 import {
   getExecutionRuntimeVersionInfo,
-  isGoogleAccountIntegration,
+  isAccountBackedIntegration,
+  isAccountBackedIntegrationIdentifier,
+  isAccountBackedRegistryIdentifier,
   isGoogleIntegrationIdentifier,
   type ExecutionRuntimeName,
 } from '@skytwin/shared-types';
@@ -94,18 +96,18 @@ interface AdapterStatus {
   installHint?: string;
 }
 
-function googleConnectionsAvailable(): boolean {
+function accountConnectionsAvailable(): boolean {
   return loadConfig().googleConnectionMode === 'experimental';
 }
 
-function isBlockedGoogleRequirement(
+function isBlockedAccountRequirement(
   key: string,
   group: {
     adapter: string;
     fields: Array<{ skills: string[] }>;
   },
 ): boolean {
-  return !googleConnectionsAvailable() && isGoogleAccountIntegration({
+  return !accountConnectionsAvailable() && isAccountBackedIntegration({
     key,
     adapter: group.adapter,
     integration: key.split(':')[1] ?? key,
@@ -113,9 +115,10 @@ function isBlockedGoogleRequirement(
   });
 }
 
-async function isBlockedGoogleService(service: string): Promise<boolean> {
-  if (googleConnectionsAvailable()) return false;
-  if (isGoogleIntegrationIdentifier(service)) return true;
+async function isBlockedAccountService(service: string): Promise<boolean> {
+  if (accountConnectionsAvailable()) return false;
+  if (isAccountBackedIntegrationIdentifier(service) ||
+      isAccountBackedRegistryIdentifier(service)) return true;
 
   const parts = service.includes(':') ? service.split(':') : ['', service];
   const adapter = parts[0] ?? '';
@@ -127,7 +130,8 @@ async function isBlockedGoogleService(service: string): Promise<boolean> {
     const matching = requirements.filter((requirement) =>
       adapter ? requirement.integration === integration : true,
     );
-    return isGoogleAccountIntegration({
+    if (service.includes(':') && matching.length === 0) return true;
+    return isAccountBackedIntegration({
       key: service,
       adapter,
       integration,
@@ -143,10 +147,10 @@ async function isBlockedGoogleService(service: string): Promise<boolean> {
 }
 
 async function filterVisibleCredentialRows<T extends { service: string }>(rows: T[]): Promise<T[]> {
-  if (googleConnectionsAvailable()) return rows;
+  if (accountConnectionsAvailable()) return rows;
   const blocked = new Map<string, boolean>();
   await Promise.all(Array.from(new Set(rows.map((row) => row.service))).map(async (service) => {
-    blocked.set(service, await isBlockedGoogleService(service));
+    blocked.set(service, await isBlockedAccountService(service));
   }));
   return rows.filter((row) => !blocked.get(row.service));
 }
@@ -177,7 +181,7 @@ export function createCredentialsRouter(): Router {
   // re-authentication migration, but do not expose a mutation or sync surface
   // while the account-free preview boundary is active.
   router.use('/google', (_req, res, next) => {
-    if (googleConnectionsAvailable()) {
+    if (accountConnectionsAvailable()) {
       next();
       return;
     }
@@ -199,7 +203,7 @@ export function createCredentialsRouter(): Router {
   router.get('/schema', async (_req, res, next) => {
     try {
       const grouped = await credentialRequirementRepository.getAllGrouped();
-      const googleAvailable = googleConnectionsAvailable();
+      const googleAvailable = accountConnectionsAvailable();
 
       // Convert dynamic requirements into the same shape as static schemas
       const dynamic: Record<string, {
@@ -212,7 +216,7 @@ export function createCredentialsRouter(): Router {
       }> = {};
 
       for (const [key, group] of grouped) {
-        if (isBlockedGoogleRequirement(key, group)) {
+        if (isBlockedAccountRequirement(key, group)) {
           continue;
         }
         dynamic[key] = {
@@ -352,7 +356,7 @@ export function createCredentialsRouter(): Router {
       }> = [];
 
       for (const [key, group] of grouped) {
-        if (isBlockedGoogleRequirement(key, group)) continue;
+        if (isBlockedAccountRequirement(key, group)) continue;
         result.push({
           key,
           adapter: group.adapter,
@@ -470,13 +474,16 @@ export function createCredentialsRouter(): Router {
   router.use('/:service', async (req, res, next) => {
     const service = req.params['service'];
     try {
-      if (!service || !(await isBlockedGoogleService(service))) {
+      if (!service || !(await isBlockedAccountService(service))) {
         next();
         return;
       }
+      const google = isGoogleIntegrationIdentifier(service);
       res.status(503).json({
-        error: 'Google connection is unavailable in this preview.',
-        code: 'GOOGLE_CONNECTION_DISABLED',
+        error: google
+          ? 'Google connection is unavailable in this preview.'
+          : 'Account connection is unavailable in this preview.',
+        code: google ? 'GOOGLE_CONNECTION_DISABLED' : 'ACCOUNT_CONNECTION_DISABLED',
         available: false,
         mode: 'disabled',
       });
@@ -684,7 +691,7 @@ async function getUnmetRequirements(): Promise<
     }> = [];
 
     for (const [key, group] of grouped) {
-      if (isBlockedGoogleRequirement(key, group)) continue;
+      if (isBlockedAccountRequirement(key, group)) continue;
       const serviceKey = key; // adapter:integration
       const creds = await serviceCredentialRepository.getAsMap(serviceKey);
       const requiredFields = group.fields.filter((f) => !f.is_optional);

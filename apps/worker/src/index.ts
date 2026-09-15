@@ -421,6 +421,8 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
  * the bundled PKCE-only default. Returns null when no client is configured.
  */
 async function resolveMicrosoftConfig(): Promise<MicrosoftOAuthConfig | null> {
+  if (config.googleConnectionMode !== 'experimental') return null;
+
   const DEFAULT_REDIRECT = 'http://localhost:3100/api/oauth/microsoft/callback';
   let clientId = process.env['MICROSOFT_CLIENT_ID'] ?? '';
   let clientSecret = process.env['MICROSOFT_CLIENT_SECRET'] ?? '';

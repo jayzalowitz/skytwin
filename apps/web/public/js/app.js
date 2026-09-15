@@ -25,7 +25,7 @@ import { renderLifebook } from './pages/lifebook.js';
 import { initSampleGlobals, renderSample } from './pages/sample.js';
 import { renderGlobalPauseButton } from './components/global-pause-button.js';
 import { wireDesktopUpdateBanner } from './components/desktop-update-banner.js';
-import { isGoogleIntegrationIdentifier } from './google-preview-boundary.js';
+import { isAccountBackedIntegrationIdentifier } from './google-preview-boundary.js';
 import { DEMO_USER_ID, fetchPendingApprovals, fetchHealth, fetchUser, listUsers, escapeHtml, isApiKnownOffline, fetchJSON } from './api-client.js';
 import { initTheme } from './theme-switcher.js';
 import { initA11y } from './a11y.js';
@@ -416,7 +416,7 @@ async function updateConnectorsBanner() {
   // refreshing reveals the next.
   const broken = Object.entries(state.connectors ?? {})
     .find(([name, c]) => c?.status === 'needs_reauth' &&
-      !isGoogleIntegrationIdentifier(name));
+      !isAccountBackedIntegrationIdentifier(name));
   if (!broken) {
     banner.hidden = true;
     document.body.classList.remove('has-connectors-banner');

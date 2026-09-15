@@ -95,19 +95,25 @@ describe('buildDeltaPayload', () => {
     mockMcpServerRepository.listForUser.mockResolvedValue([
       { id: 'drive', registry_id: '@modelcontextprotocol/server-google-drive', oauth_provider: null, display_name: 'Drive', trust_tier: 'observer', status: 'active' },
       { id: 'provider', registry_id: 'custom-provider', oauth_provider: 'google', display_name: 'Provider Alias', trust_tier: 'observer', status: 'active' },
+      { id: 'microsoft-provider', registry_id: 'custom-provider', oauth_provider: 'microsoft', display_name: 'Microsoft Provider', trust_tier: 'observer', status: 'active' },
+      { id: 'outlook', registry_id: 'outlook-mcp', oauth_provider: null, display_name: 'Outlook', trust_tier: 'observer', status: 'active' },
       { id: 'skill', registry_id: 'custom-tools', oauth_provider: null, display_name: 'Custom', trust_tier: 'observer', status: 'active' },
-      { id: 'notion', registry_id: 'notion-mcp', oauth_provider: 'notion', display_name: 'Notion', trust_tier: 'observer', status: 'active' },
+      { id: 'outlook-skill', registry_id: 'custom-outlook-tools', oauth_provider: null, display_name: 'Custom Outlook', trust_tier: 'observer', status: 'active' },
+      { id: 'notion', registry_id: '@notionhq/notion-mcp-server', oauth_provider: 'notion', display_name: 'Notion', trust_tier: 'observer', status: 'active' },
     ]);
     mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
-      serverId === 'skill' ? ['read_email'] : ['notion.search']);
+      serverId === 'skill' ? ['read_email']
+        : serverId === 'outlook-skill' ? ['outlook.read_mail'] : ['notion.search']);
     const network = vi.spyOn(globalThis, 'fetch');
 
     const payload = await buildDeltaPayload('user-1', 'disabled');
 
-    expect(payload.installedServers.map((server) => server.registryId)).toEqual(['notion-mcp']);
+    expect(payload.installedServers.map((server) => server.registryId)).toEqual(['@notionhq/notion-mcp-server']);
     expect(network).not.toHaveBeenCalled();
     expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('drive');
     expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('provider');
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('microsoft-provider');
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalledWith('outlook');
     network.mockRestore();
   });
 
@@ -116,6 +122,17 @@ describe('buildDeltaPayload', () => {
       { id: 'unknown', registry_id: 'custom-tools', oauth_provider: null, display_name: 'Custom', trust_tier: 'observer', status: 'active' },
     ]);
     mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(new Error('DB unavailable'));
+
+    const payload = await buildDeltaPayload('user-1', 'disabled');
+
+    expect(payload.installedServers).toEqual([]);
+  });
+
+  it('omits an unknown neutral server when its cached-skill inventory is empty', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      { id: 'unknown', registry_id: 'custom-neutral-tools', oauth_provider: null, display_name: 'Custom', trust_tier: 'observer', status: 'active' },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
 
     const payload = await buildDeltaPayload('user-1', 'disabled');
 
@@ -190,7 +207,7 @@ describe('runFederationSyncJob', () => {
     const fetcher = vi.fn().mockResolvedValue({ ok: true, status: 200, text: async () => '' });
     mockMcpServerRepository.listForUser.mockResolvedValue([
       { id: 'gmail', registry_id: 'gmail-mcp', oauth_provider: 'google', display_name: 'Gmail', trust_tier: 'observer', status: 'active' },
-      { id: 'notion', registry_id: 'notion-mcp', oauth_provider: 'notion', display_name: 'Notion', trust_tier: 'observer', status: 'active' },
+      { id: 'notion', registry_id: '@notionhq/notion-mcp-server', oauth_provider: 'notion', display_name: 'Notion', trust_tier: 'observer', status: 'active' },
     ]);
 
     await runFederationSyncJob({
@@ -214,7 +231,7 @@ describe('runFederationSyncJob', () => {
     );
     expect(opened).not.toBeNull();
     const payload = JSON.parse(Buffer.from(opened!).toString('utf8')) as DeltaPayload;
-    expect(payload.installedServers.map((server) => server.registryId)).toEqual(['notion-mcp']);
+    expect(payload.installedServers.map((server) => server.registryId)).toEqual(['@notionhq/notion-mcp-server']);
     expect(JSON.stringify(payload)).not.toContain('gmail-mcp');
   });
 

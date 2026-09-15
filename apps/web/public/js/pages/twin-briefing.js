@@ -14,7 +14,7 @@ import {
 } from '../api-client.js';
 import { showToast } from '../toast.js';
 import { getEffectiveUserId } from '../sample-session.js';
-import { isGoogleIntegrationIdentifier } from '../google-preview-boundary.js';
+import { isAccountBackedIntegrationIdentifier } from '../google-preview-boundary.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Singleton delegator guard — see CLAUDE.md "Frontend Event Handling".
@@ -307,10 +307,10 @@ function renderWatchRuns(list) {
 function renderCoveragePanel(coverage) {
   if (!coverage || !Array.isArray(coverage.capabilityStatus)) return '';
   const status = coverage.capabilityStatus
-    .filter(c => !isGoogleIntegrationIdentifier(c.capability))
+    .filter(c => !isAccountBackedIntegrationIdentifier(c.capability))
     .map((c) => {
       const safeUnlockers = (c.unlockedBy ?? []).filter(
-        source => !isGoogleIntegrationIdentifier(source),
+        source => !isAccountBackedIntegrationIdentifier(source),
       );
       return `<li><span class="cov-dot cov-${escapeHtml(c.status)}"></span>${escapeHtml(c.capability)}${
           c.status !== 'available' && safeUnlockers.length

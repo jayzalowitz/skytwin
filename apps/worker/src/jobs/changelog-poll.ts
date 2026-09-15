@@ -4,10 +4,12 @@ import { McpHost, isDestructiveSkill } from '@skytwin/mcp-host';
 import { mcpServerChangelogRepository, mcpServerRepository } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
 import type { McpServerConfig } from '@skytwin/mcp-host';
-import { isGoogleAccountIntegration } from '@skytwin/shared-types';
+import { isAccountBackedIntegration } from '@skytwin/shared-types';
+import { RegistryClient } from '@skytwin/registry-client';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
 
 const log = createLogger('worker:changelog-poll');
+const accountBoundaryRegistry = new RegistryClient({ smitheryEnabled: false });
 
 /** 12-hour rate limit: skip if fetched within this window. */
 const CHANGELOG_REFRESH_MIN_MS = 12 * 60 * 60 * 1000;
@@ -91,7 +93,7 @@ async function isBlockedAccountServer(
   serverRepo: typeof mcpServerRepository,
   signal?: AbortSignal,
 ): Promise<boolean> {
-  if (isGoogleAccountIntegration({
+  if (isAccountBackedIntegration({
     key: server.registry_id ?? undefined,
     integration: server.oauth_provider ?? undefined,
   })) return true;
@@ -99,7 +101,20 @@ async function isBlockedAccountServer(
   try {
     const skills = await runAdmitted(signal, () =>
       serverRepo.listSkillNamesForServer(server.id));
-    return isGoogleAccountIntegration({
+    if (skills.length === 0) {
+      const trustedEntry = server.registry_id
+        ? await accountBoundaryRegistry.getById(server.registry_id)
+        : null;
+      // An empty cache is not evidence that an unknown capability is
+      // account-free. Only a bundled, locally classified registry neighbor
+      // may proceed without cached tool names.
+      if (!trustedEntry) return true;
+      return isAccountBackedIntegration({
+        key: trustedEntry.id,
+        integration: trustedEntry.oauthProvider ?? undefined,
+      });
+    }
+    return isAccountBackedIntegration({
       key: server.registry_id ?? undefined,
       integration: server.oauth_provider ?? undefined,
       skills,

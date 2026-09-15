@@ -8,10 +8,12 @@ import {
   type FederationPeerRow,
 } from '@skytwin/db';
 import type { McpServerRow } from '@skytwin/db';
-import { isGoogleAccountIntegration } from '@skytwin/shared-types';
+import { isAccountBackedIntegration } from '@skytwin/shared-types';
+import { RegistryClient } from '@skytwin/registry-client';
 import nacl from 'tweetnacl';
 
 const log = createLogger('worker:federation-sync');
+const accountBoundaryRegistry = new RegistryClient({ smitheryEnabled: false });
 
 /**
  * Federation delta sync (#194 Child 1).
@@ -126,7 +128,7 @@ export async function buildDeltaPayload(
 async function filterAccountFreeServers(servers: McpServerRow[]): Promise<McpServerRow[]> {
   const exportable: McpServerRow[] = [];
   for (const server of servers) {
-    if (isGoogleAccountIntegration({
+    if (isAccountBackedIntegration({
       key: server.registry_id ?? undefined,
       integration: server.oauth_provider ?? undefined,
     })) {
@@ -135,7 +137,20 @@ async function filterAccountFreeServers(servers: McpServerRow[]): Promise<McpSer
 
     try {
       const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
-      if (isGoogleAccountIntegration({
+      if (skills.length === 0) {
+        const trustedEntry = server.registry_id
+          ? await accountBoundaryRegistry.getById(server.registry_id)
+          : null;
+        // Unknown + empty cannot establish an account-free classification for
+        // an outbound disclosure. Bundled neighbors remain exportable.
+        if (!trustedEntry || isAccountBackedIntegration({
+          key: trustedEntry.id,
+          integration: trustedEntry.oauthProvider ?? undefined,
+        })) {
+          continue;
+        }
+      }
+      if (isAccountBackedIntegration({
         key: server.registry_id ?? undefined,
         integration: server.oauth_provider ?? undefined,
         skills,

@@ -21,19 +21,19 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
 **The core principle: ask the twin before asking the user.**
 
 > **Current supported preview:** use the isolated, account-free sample. Google
-> connection is unavailable on this surface. SkyTwin does not ship a managed
+> and Microsoft account connections are unavailable on this surface. SkyTwin does not ship a managed
 > Google OAuth client, and operator/BYO Google remains unsupported until its
 > callback, client-generation, capability, ownership, and secret-custody gates
 > are complete. Known account-backed email/calendar actions are denied before
-> adapter preparation or dispatch while this boundary is active. Stale Google
+> adapter preparation or dispatch while this boundary is active. Stale account
 > capability rows and imported account-backed tool bundles are also withheld
 > from activation. Connector code in the source tree is not a support claim.
 
 ## How It Works
 
 This is the source architecture and intended connected-account pipeline. The
-supported preview feeds it only isolated fictional sample data; Google
-connection is unavailable.
+supported preview feeds it only isolated fictional sample data; Google and
+Microsoft account connections are unavailable.
 
 ```
   Gmail, Calendar, etc.
@@ -203,7 +203,7 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the packaged build's read-only data authority and isolated, non-persistent simulation.
 3. The welcome screen recommends a local model from the machine's RAM, architecture, and free disk. The current maintained catalog contains one pinned Qwen2.5 1.5B Instruct Q4_K_M artifact (about 1.0 GiB). The artifact is downloaded on request and must pass exact-size, SHA-256, registry, and runtime-compatibility checks before automatic discovery will load it. A compatible llama.cpp binary remains a separate prerequisite. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
-5. Google connection controls are intentionally unavailable in this preview.
+5. Google and Microsoft account connection controls are intentionally unavailable in this preview.
    Real-account setup is not supported; use the isolated sample while the OAuth
    and credential-custody boundaries are completed.
 
@@ -323,7 +323,7 @@ packages/
   llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
-  connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors; Google disabled in supported preview
+  connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors; account providers disabled in supported preview
   assistant/                      Stateless chat service wrapping LlmClient with context enrichment
   capability-engine/              Infers user app capabilities from signals (keyword v1 + LLM verification)
   credential-vault/               AES-256-GCM + scrypt primitives for the experimental token vault (not production-default encryption)

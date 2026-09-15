@@ -29,6 +29,7 @@ import {
   MICROSOFT_GRAPH_SCOPES,
 } from '@skytwin/connectors';
 import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connectors';
+import { isAccountBackedIntegrationIdentifier } from '@skytwin/shared-types';
 import { sessionAuth } from '../middleware/session-auth.js';
 import { requireOwnership } from '../middleware/require-ownership.js';
 import { sharedKeyCache } from './credential-vault.js';
@@ -751,10 +752,10 @@ export function createOAuthRouter(): Router {
   const router = Router();
 
   // The release-candidate surface is account-free by default. Keep this
-  // guard ahead of both authentication and every Google-specific handler so
+  // guard ahead of both authentication and every provider-specific handler so
   // stale callbacks, pending handoffs, and stored token rows cannot revive a
   // disabled integration. Source developers must opt in explicitly; client
-  // credentials alone are never treated as authority to enable Google.
+  // credentials alone are never treated as authority to enable an account.
   router.use((req, res, next) => {
     const rawProvider = req.path.split('/').find((segment) => segment.length > 0);
     let provider = rawProvider;
@@ -764,7 +765,7 @@ export function createOAuthRouter(): Router {
       // Leave malformed encoding to Express's route handling. It cannot equal
       // the blocked provider token without first decoding successfully.
     }
-    if (provider?.toLowerCase() !== 'google') {
+    if (!provider || !isAccountBackedIntegrationIdentifier(provider)) {
       next();
       return;
     }
@@ -772,9 +773,10 @@ export function createOAuthRouter(): Router {
       next();
       return;
     }
+    const microsoft = provider.toLowerCase() !== 'google';
     res.status(503).json({
-      error: 'Google connection is unavailable in this preview.',
-      code: 'GOOGLE_CONNECTION_DISABLED',
+      error: `${microsoft ? 'Microsoft account' : 'Google'} connection is unavailable in this preview.`,
+      code: microsoft ? 'MICROSOFT_CONNECTION_DISABLED' : 'GOOGLE_CONNECTION_DISABLED',
       available: false,
       mode: 'disabled',
     });

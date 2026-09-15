@@ -96,6 +96,30 @@ describe('DbCredentialProvider', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each(['microsoft', 'outlook'])
+  ('rejects %s before reading, refreshing, or binding account credentials', async (accountProvider) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+
+    const read = await provider.getAccessToken('user_1', accountProvider);
+    const dispatch = await provider.startDispatch({
+      userId: 'user_1', provider: accountProvider, decisionId: 'decision_1',
+      actionId: 'action_1', executionPlanId: 'plan_1', authorityRevision: 'authority-1',
+      policyAuthorityRevision: 'policy-authority-1',
+      dispatchCapability: 'dispatch-capability', dispatchLeaseGeneration: 'dispatch-generation',
+    });
+
+    expect(read).toEqual({
+      success: false,
+      error: 'Microsoft account connection is unavailable in this preview.',
+    });
+    expect(dispatch).toEqual(read);
+    expect(mockOauthRepository.getToken).not.toHaveBeenCalled();
+    expect(mockOauthRepository.getTokenByAccount).not.toHaveBeenCalled();
+    expect(mockCredentialVaultMetaRepository.getForUser).not.toHaveBeenCalled();
+    expect(mockCredentialDispatchLeaseRepository.bindCredential).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     vi.restoreAllMocks();
     fetchMock.mockReset();

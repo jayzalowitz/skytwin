@@ -53,7 +53,7 @@ describe('buildUserOAuthConnectors', () => {
     expect(deps.createOutlookCalendarConnector).not.toHaveBeenCalled();
   });
 
-  it('keeps Microsoft discovery active while Google is disabled', async () => {
+  it('does not resolve or construct Microsoft connectors from a stale token while disabled', async () => {
     const deps = dependencies({
       googleConnectionMode: 'disabled',
       hasGoogleToken: true,
@@ -62,12 +62,28 @@ describe('buildUserOAuthConnectors', () => {
 
     const connectors = await buildUserOAuthConnectors({ ...deps.input, ...deps });
 
-    expect(connectors).toEqual(['outlook-mail', 'outlook-calendar']);
+    expect(connectors).toEqual([]);
     expect(deps.resolveGoogleConfig).not.toHaveBeenCalled();
-    expect(deps.resolveMicrosoftConfig).toHaveBeenCalledOnce();
-    expect(deps.createTokenStore).toHaveBeenCalledWith(undefined, microsoftConfig);
+    expect(deps.resolveMicrosoftConfig).not.toHaveBeenCalled();
+    expect(deps.createTokenStore).not.toHaveBeenCalled();
     expect(deps.createGmailConnector).not.toHaveBeenCalled();
     expect(deps.createGoogleCalendarConnector).not.toHaveBeenCalled();
+    expect(deps.createOutlookMailConnector).not.toHaveBeenCalled();
+    expect(deps.createOutlookCalendarConnector).not.toHaveBeenCalled();
+  });
+
+  it('admits Microsoft connectors only after exact experimental opt-in', async () => {
+    const deps = dependencies({
+      googleConnectionMode: 'experimental',
+      hasGoogleToken: false,
+      hasMicrosoftToken: true,
+    });
+
+    const connectors = await buildUserOAuthConnectors({ ...deps.input, ...deps });
+
+    expect(connectors).toEqual(['outlook-mail', 'outlook-calendar']);
+    expect(deps.resolveMicrosoftConfig).toHaveBeenCalledOnce();
+    expect(deps.createTokenStore).toHaveBeenCalledWith(undefined, microsoftConfig);
     expect(deps.createOutlookMailConnector).toHaveBeenCalledWith(deps.tokenStore);
     expect(deps.createOutlookCalendarConnector).toHaveBeenCalledWith(deps.tokenStore);
   });

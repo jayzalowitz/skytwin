@@ -1,4 +1,4 @@
-import { isGoogleAccountIntegration } from '@skytwin/shared-types';
+import { isAccountBackedIntegration } from '@skytwin/shared-types';
 
 export interface GoogleCapabilityDescriptor {
   registryId?: string | null;
@@ -25,7 +25,7 @@ export function isGoogleCapabilityBlocked(
   descriptor: GoogleCapabilityDescriptor,
 ): boolean {
   if (googleConnectionMode === 'experimental') return false;
-  return isGoogleAccountIntegration({
+  return isAccountBackedIntegration({
     key: descriptor.registryId ?? undefined,
     integration: descriptor.oauthProvider ?? undefined,
     skills: descriptor.skills,

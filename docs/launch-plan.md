@@ -8,12 +8,12 @@ The plan is intentionally specific about **what's done**, **what blocks launch**
 
 ## Current preview decision — sample only
 
-The supported preview is the isolated, account-free sample. Google connection is
-unavailable: no managed Google client ships, and operator/BYO Google is not a
-supported workaround. Existing OAuth and connector components remain in source,
+The supported preview is the isolated, account-free sample. Google and Microsoft
+account connections are unavailable: no managed provider client ships, and
+operator/BYO account setup is not a supported workaround. Existing OAuth and connector components remain in source,
 but packaged mode fails closed before authorization, callback exchange,
 credential mutation/synchronization, connector startup, refresh, or direct
-Google credential use. Existing stored credentials and tokens are retained.
+provider credential use. Existing stored credentials and tokens are retained.
 
 Managed Google identity and Calendar are deferred. Before any real-account
 claim, operator/BYO must complete the shared client-generation, callback/session,

@@ -213,6 +213,9 @@ describe('POST /api/dxt/export/:serverId', () => {
     ['stable registry id', { registry_id: 'gmail-mcp', oauth_provider: null }, []],
     ['persisted OAuth provider', { registry_id: 'custom-provider', oauth_provider: 'google' }, []],
     ['cached account skill', { registry_id: 'custom-tools', oauth_provider: null }, ['read_email']],
+    ['Microsoft registry id', { registry_id: 'azure-mcp', oauth_provider: null }, []],
+    ['Microsoft OAuth provider', { registry_id: 'custom-provider', oauth_provider: 'microsoft' }, []],
+    ['Outlook cached skill', { registry_id: 'custom-tools', oauth_provider: null }, ['outlook.read_mail']],
   ])('rejects a disabled %s before serialization or persistence', async (_label, overrides, skills) => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
     mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow(overrides));

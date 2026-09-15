@@ -55,7 +55,7 @@ import {
   ConfidenceLevel,
   isPassiveAwarenessShape,
   isAccountBackedEmailOrCalendarAction,
-  isGoogleAccountIntegration,
+  isAccountBackedIntegration,
   normalizeAdapterOutput,
   normalizeExecutionError,
   parseAutonomySettings,
@@ -1296,7 +1296,7 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
         apiUrl: openclawApiUrl,
         apiKey: openclawCreds['api_key'] || config.openclawApiKey || undefined,
         onCredentialNeeded: async (req) => {
-          if (config.googleConnectionMode !== 'experimental' && isGoogleAccountIntegration({
+          if (config.googleConnectionMode !== 'experimental' && isAccountBackedIntegration({
             adapter: 'openclaw',
             integration: req.integration,
             skills: req.skills,

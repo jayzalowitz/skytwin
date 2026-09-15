@@ -3,6 +3,11 @@ const GOOGLE_INTEGRATION_TOKENS = new Set([
   'youtube', 'gcp',
 ]);
 
+const MICROSOFT_INTEGRATION_TOKENS = new Set([
+  'microsoft', 'microsoft365', 'microsoftgraph', 'msgraph', 'office365',
+  'outlook', 'outlookcalendar', 'outlookmail', 'azure', 'entra',
+]);
+
 const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'archive_email', 'label_email', 'send_reply', 'reply_email', 'draft_email',
   'send_email', 'delete_email', 'delete_emails', 'forward_email', 'read_email',
@@ -13,6 +18,8 @@ const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'create_calendar_event', 'update_calendar_event', 'delete_calendar_event',
   'reschedule_event', 'set_out_of_office', 'block_focus_time', 'find_meeting_time',
   'schedule_focus_block',
+  'get_message', 'fetch_email', 'modify_message', 'trash_message',
+  'create_draft', 'send_draft', 'send_calendar_invite',
 ]);
 
 const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
@@ -21,6 +28,11 @@ const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
   'google-calendar-mcp',
   'youtube-mcp',
   'gcp-mcp',
+]);
+
+const MICROSOFT_ACCOUNT_REGISTRY_IDS = new Set([
+  'azure-mcp', 'microsoft-365-mcp', 'microsoft-graph-mcp', 'office365-mcp',
+  'outlook-mcp',
 ]);
 
 function normalizeToken(value) {
@@ -42,15 +54,40 @@ function isGoogleAccountActionType(value) {
   return /^(?:rsvp|calendar|email|mail|gmail|gcal|google_calendar|google_mail)_/.test(normalized);
 }
 
+function isAccountBackedActionType(value) {
+  if (isGoogleAccountActionType(value)) return true;
+  const normalized = String(value ?? '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[.\-:/\s]+/g, '_');
+  return /(?:^|_)(?:microsoft|microsoft_graph|ms_graph|office_?365|outlook|azure|entra)(?:_|$)/
+    .test(normalized);
+}
+
 export function isGoogleIntegrationIdentifier(value) {
   return String(value ?? '').split(':')
     .some(segment => GOOGLE_INTEGRATION_TOKENS.has(normalizeToken(segment)));
 }
 
-export function isGoogleAccountIntegration(input = {}) {
+export function isMicrosoftIntegrationIdentifier(value) {
+  return String(value ?? '').split(':')
+    .some(segment => MICROSOFT_INTEGRATION_TOKENS.has(normalizeToken(segment)));
+}
+
+export function isAccountBackedIntegrationIdentifier(value) {
+  return isGoogleIntegrationIdentifier(value) || isMicrosoftIntegrationIdentifier(value);
+}
+
+export function isAccountBackedIntegration(input = {}) {
   const identifiers = [input.key, input.adapter, input.integration];
   return identifiers.some(value =>
-    isGoogleIntegrationIdentifier(value) ||
-    GOOGLE_ACCOUNT_REGISTRY_IDS.has(String(value ?? '').trim().toLowerCase())) ||
-    (input.skills ?? []).some(isGoogleAccountActionType);
+    isAccountBackedIntegrationIdentifier(value) ||
+    GOOGLE_ACCOUNT_REGISTRY_IDS.has(String(value ?? '').trim().toLowerCase()) ||
+    MICROSOFT_ACCOUNT_REGISTRY_IDS.has(String(value ?? '').trim().toLowerCase())) ||
+    (input.skills ?? []).some(isAccountBackedActionType);
+}
+
+export function isGoogleAccountIntegration(input = {}) {
+  return isAccountBackedIntegration(input);
 }

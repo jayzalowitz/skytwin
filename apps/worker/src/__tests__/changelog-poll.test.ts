@@ -94,11 +94,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockChangelogRepo.upsert.mockResolvedValue(undefined);
   mockChangelogRepo.addPendingOptIn.mockResolvedValue(undefined);
-  mockServerRepo.listSkillNamesForServer.mockResolvedValue([]);
+  mockServerRepo.listSkillNamesForServer.mockResolvedValue(['read_data']);
 });
 
 describe('runChangelogPollJob', () => {
-  it('never starts stale Google servers while disabled and still polls a neighbor', async () => {
+  it('never starts stale account servers while disabled and still polls a neighbor', async () => {
     const googleServer = makeServer({
       id: 'google-server',
       display_name: 'Account server',
@@ -110,7 +110,13 @@ describe('runChangelogPollJob', () => {
       display_name: 'GitHub',
       registry_id: '@modelcontextprotocol/server-github',
     });
-    mockServerRepo.listActive.mockResolvedValue([googleServer, neighboringServer]);
+    const microsoftServer = makeServer({
+      id: 'microsoft-server',
+      display_name: 'Outlook',
+      registry_id: 'custom-provider',
+      oauth_provider: 'microsoft',
+    });
+    mockServerRepo.listActive.mockResolvedValue([googleServer, microsoftServer, neighboringServer]);
     mockChangelogRepo.getForServer.mockResolvedValue(null);
     const neighborHost = {
       installServer: vi.fn().mockResolvedValue({ success: true }),
@@ -133,6 +139,7 @@ describe('runChangelogPollJob', () => {
     expect(neighborHost.fetchChangelog).toHaveBeenCalledWith('github-server');
     expect(neighborHost.listSkills).toHaveBeenCalledWith('github-server');
     expect(mockChangelogRepo.getForServer).not.toHaveBeenCalledWith('google-server');
+    expect(mockChangelogRepo.getForServer).not.toHaveBeenCalledWith('microsoft-server');
   });
 
   it('skips a generic stale server whose cached skills are account-backed', async () => {
@@ -157,6 +164,24 @@ describe('runChangelogPollJob', () => {
       makeServer({ id: 'unknown-server', registry_id: 'custom-tools' }),
     ]);
     mockServerRepo.listSkillNamesForServer.mockRejectedValue(new Error('DB unavailable'));
+    const factory = vi.fn();
+
+    await runChangelogPollJob({
+      changelogRepo: mockChangelogRepo,
+      serverRepo: mockServerRepo as unknown as typeof import('@skytwin/db').mcpServerRepository,
+      mcpHostFactory: factory,
+      googleConnectionMode: 'disabled',
+    });
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(mockChangelogRepo.getForServer).not.toHaveBeenCalled();
+  });
+
+  it('does not contact an unknown neutral server with an empty cached-skill inventory', async () => {
+    mockServerRepo.listActive.mockResolvedValue([
+      makeServer({ id: 'unknown-server', registry_id: 'custom-neutral-tools' }),
+    ]);
+    mockServerRepo.listSkillNamesForServer.mockResolvedValue([]);
     const factory = vi.fn();
 
     await runChangelogPollJob({

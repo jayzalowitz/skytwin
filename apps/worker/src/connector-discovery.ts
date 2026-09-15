@@ -19,8 +19,9 @@ export interface UserOAuthConnectorDiscovery<TTokenStore, TConnector> {
 
 /**
  * Resolve provider admission before constructing anything that can read or
- * refresh a credential. Google requires the explicit experimental mode; old
- * token rows alone never activate its resolver, token store, or connectors.
+ * refresh a credential. Account-backed providers require the explicit
+ * experimental mode; old token rows alone never activate a resolver, token
+ * store, or connector.
  */
 export async function buildUserOAuthConnectors<TTokenStore, TConnector>(
   input: UserOAuthConnectorDiscovery<TTokenStore, TConnector>,
@@ -28,7 +29,7 @@ export async function buildUserOAuthConnectors<TTokenStore, TConnector>(
   const googleConfig = input.hasGoogleToken && input.googleConnectionMode === 'experimental'
     ? await input.resolveGoogleConfig()
     : null;
-  const microsoftConfig = input.hasMicrosoftToken
+  const microsoftConfig = input.hasMicrosoftToken && input.googleConnectionMode === 'experimental'
     ? await input.resolveMicrosoftConfig()
     : null;
 

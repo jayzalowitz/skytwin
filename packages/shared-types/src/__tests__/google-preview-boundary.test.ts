@@ -1,10 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isAccountBackedActionType,
   isAccountBackedEmailOrCalendarAction,
+  isAccountBackedIntegration,
+  isAccountBackedIntegrationIdentifier,
+  isAccountBackedRegistryIdentifier,
   isGoogleAccountActionType,
   isGoogleAccountIntegration,
   isGoogleAccountRegistryIdentifier,
   isGoogleIntegrationIdentifier,
+  isMicrosoftAccountRegistryIdentifier,
+  isMicrosoftIntegrationIdentifier,
 } from '../google-preview-boundary.js';
 
 describe('Google preview boundary', () => {
@@ -30,6 +36,27 @@ describe('Google preview boundary', () => {
       expect(isGoogleIntegrationIdentifier(identifier)).toBe(false);
     });
 
+  it.each([
+    'microsoft', 'openclaw:outlook', 'openclaw:outlook_calendar',
+    'openclaw:microsoft-graph', 'office365', 'azure', 'entra',
+  ])('recognizes the Microsoft account integration alias %s', (identifier) => {
+    expect(isMicrosoftIntegrationIdentifier(identifier)).toBe(true);
+    expect(isAccountBackedIntegrationIdentifier(identifier)).toBe(true);
+  });
+
+  it.each(['github', 'calendar-tools', 'microsoft-proxy'])
+    ('does not infer Microsoft account access from the unrelated identifier %s', (identifier) => {
+      expect(isMicrosoftIntegrationIdentifier(identifier)).toBe(false);
+    });
+
+  it('recognizes Microsoft account metadata and cached skills', () => {
+    expect(isAccountBackedIntegration({ integration: 'outlook' })).toBe(true);
+    expect(isAccountBackedIntegration({ integration: 'microsoft' })).toBe(true);
+    expect(isAccountBackedIntegration({ key: 'azure-mcp' })).toBe(true);
+    expect(isAccountBackedIntegration({ key: 'custom', skills: ['outlook.send_mail'] })).toBe(true);
+    expect(isAccountBackedIntegration({ key: 'custom', skills: ['create_note'] })).toBe(false);
+  });
+
   it('recognizes dynamic requirements by stable identifiers or account-backed skills', () => {
     expect(isGoogleAccountIntegration({ adapter: 'openclaw', integration: 'gmail' })).toBe(true);
     expect(isGoogleAccountIntegration({ adapter: 'gmail-mcp', integration: 'custom' })).toBe(true);
@@ -51,6 +78,8 @@ describe('Google preview boundary', () => {
     'gmail.batch_modify', 'messages.trash', 'events.insert', 'sendEmail',
     'readEmail', 'respondToEvent', 'deleteEmails', 'schedule_focus_block',
     'readGmail', 'sendGoogleMail', 'getGoogleCalendarEvents',
+    'getMessage', 'get_message', 'fetchEmail', 'modifyMessage', 'trashMessage',
+    'createDraft', 'sendDraft', 'sendCalendarInvite',
   ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);
@@ -59,6 +88,11 @@ describe('Google preview boundary', () => {
   it.each(['acknowledge', 'dismiss', 'create_note'])
     ('keeps the local action %s outside the account boundary', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(false);
+    });
+
+  it.each(['outlook.send_mail', 'read_outlook_mail', 'microsoft_graph.list_events', 'azure.list_storage'])
+    ('recognizes the provider-qualified account-backed action %s', (actionType) => {
+      expect(isAccountBackedActionType(actionType)).toBe(true);
     });
 
   it.each([
@@ -71,9 +105,16 @@ describe('Google preview boundary', () => {
     expect(isGoogleAccountRegistryIdentifier(registryId)).toBe(true);
   });
 
+  it.each(['azure-mcp', 'microsoft-365-mcp', 'microsoft-graph-mcp', 'office365-mcp', 'outlook-mcp'])
+    ('recognizes the Microsoft account registry entry %s', (registryId) => {
+      expect(isMicrosoftAccountRegistryIdentifier(registryId)).toBe(true);
+      expect(isAccountBackedRegistryIdentifier(registryId)).toBe(true);
+    });
+
   it('uses provider-agnostic account domains and MCP tool identity as deny signals', () => {
     expect(isAccountBackedEmailOrCalendarAction({ actionType: 'accept', domain: 'calendar' })).toBe(true);
     expect(isAccountBackedEmailOrCalendarAction({ actionType: 'accept', domain: 'google:calendar' })).toBe(true);
+    expect(isAccountBackedEmailOrCalendarAction({ actionType: 'invoke_tool', domain: 'outlook' })).toBe(true);
     expect(isAccountBackedEmailOrCalendarAction({
       actionType: 'invoke_tool',
       domain: 'developer',
