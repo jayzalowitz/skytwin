@@ -1045,7 +1045,7 @@
         {
           "path": "packages/shared-types/src/google-preview-boundary.ts",
           "sha256": "0a24967292e76abb7b782aa84ffc486d10ddba230d3f5b9c551da16ed46c408e",
-          "why": "Shared account-backed integration and action classification fails closed unless the exact experimental mode is selected"
+          "why": "Defines the shared provider-neutral classification used by disabled-mode account and execution boundaries"
         },
         {
           "path": "apps/api/src/routes/oauth.ts",
@@ -1060,7 +1060,7 @@
         {
           "path": "apps/desktop/src/service-manager.ts",
           "sha256": "c61488f17f07caeab355af356fef169f3382264f9ed255829a9eccbd6357f668",
-          "why": "Packaged desktop children pin the disabled mode and withhold provider credentials"
+          "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, and clear filesystem plugin authority"
         }
       ],
       "verification": [
