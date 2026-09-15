@@ -1184,7 +1184,7 @@
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "ee2ed1a6b9c98ea59b2afefb82a3fd2f2848b1baed1d26750ea1856ef6e1cd07",
+          "sha256": "3acaa46876dc40999a175abf649104a11e032229ed9d86863d089898bb533fa3",
           "why": "Defines contained report writes and fail-closed native macOS and Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
         }
       ],
@@ -1255,7 +1255,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "f191750ad6c9dce5b59de83e0d305a8572bf1cc73e9f52c9532f81657290df9b",
+          "sha256": "097a45e8c66193c0c5a5d864041e9d97aa932edd2a4f0acc12d43dd94c3d6871",
           "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],

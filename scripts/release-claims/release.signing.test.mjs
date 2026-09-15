@@ -20,6 +20,7 @@ import {
   parseCanonicalArgs,
   parseMacCodeSignature,
   parseMacGatekeeper,
+  parseMacZipListing,
   parseSevenZipListing,
   parseWindowsSignature,
   readRunIdentity,
@@ -212,6 +213,7 @@ function macReportObservation(artifactName, overrides = {}) {
     signedIdentifier: "com.skytwin.desktop",
     signedContentCdHash: cdHash,
     signedBundleVersion: identity.appVersion,
+    signedBundleBuildVersion: identity.appVersion,
     executableArchitecture: "arm64",
     ...overrides,
   };
@@ -223,6 +225,27 @@ function createMacApp(root) {
   writeFileSync(join(executable, "SkyTwin"), "mach-o");
 }
 
+function macZipListing(records = null) {
+  const entries = records ?? [
+    { permissions: "drwxr-xr-x", sizeBytes: 0, path: "SkyTwin.app/" },
+    {
+      permissions: "-rwxr-xr-x",
+      sizeBytes: 6,
+      path: "SkyTwin.app/Contents/MacOS/SkyTwin",
+    },
+  ];
+  const expanded = entries.reduce((total, entry) => total + entry.sizeBytes, 0);
+  return [
+    "Archive:  SkyTwin.zip",
+    `Zip file size: 100 bytes, number of entries: ${entries.length}`,
+    ...entries.map(
+      ({ permissions, sizeBytes, path }) =>
+        `${permissions}  3.0 unx ${String(sizeBytes).padStart(8)} bx        1 stor 26-Sep-14 00:00 ${path}`,
+    ),
+    `${entries.length} files, ${expanded} bytes uncompressed, 1 bytes compressed:  0.0%`,
+  ].join("\n");
+}
+
 function macExecutor(overrides = {}) {
   let appIndex = 0;
   return vi.fn((file, args) => {
@@ -232,7 +255,16 @@ function macExecutor(overrides = {}) {
     }
     if (file === "/usr/bin/ditto") {
       createMacApp(args.at(-1));
+      overrides.afterExtract?.(args.at(-1));
       return { exitCode: 0, signal: null, stdout: "", stderr: "" };
+    }
+    if (file === "/usr/bin/unzip") {
+      return {
+        exitCode: 0,
+        signal: null,
+        stdout: overrides.zipListing ?? macZipListing(),
+        stderr: "",
+      };
     }
     if (file === "/usr/bin/codesign" && args[0] === "--display") {
       const path = args.at(-1);
@@ -249,10 +281,14 @@ function macExecutor(overrides = {}) {
       return { exitCode: 0, signal: null, stdout: value, stderr: "" };
     }
     if (file === "/usr/bin/plutil") {
+      const configured =
+        args[1] === "CFBundleVersion"
+          ? (overrides.bundleBuildVersion ?? overrides.bundleVersion)
+          : (overrides.bundleShortVersion ?? overrides.bundleVersion);
       const value =
-        typeof overrides.bundleVersion === "function"
-          ? overrides.bundleVersion(args.at(-1), { appIndex })
-          : (overrides.bundleVersion ?? identity.appVersion);
+        typeof configured === "function"
+          ? configured(args.at(-1), { appIndex })
+          : (configured ?? identity.appVersion);
       return { exitCode: 0, signal: null, stdout: value, stderr: "" };
     }
     if (file === "/usr/sbin/spctl") {
@@ -678,6 +714,7 @@ describe("release.signing canonical verifier", () => {
         signerTeamId: teamId,
         signedContentCdHash: cdHash,
         signedBundleVersion: identity.appVersion,
+        signedBundleBuildVersion: identity.appVersion,
         executableArchitecture: "arm64",
       }),
       expect.objectContaining({
@@ -686,6 +723,7 @@ describe("release.signing canonical verifier", () => {
         signerTeamId: teamId,
         signedContentCdHash: cdHash,
         signedBundleVersion: identity.appVersion,
+        signedBundleBuildVersion: identity.appVersion,
         executableArchitecture: "arm64",
       }),
     ]);
@@ -716,7 +754,7 @@ describe("release.signing canonical verifier", () => {
     ).toHaveLength(2);
     expect(
       execute.mock.calls.filter(([file]) => file === "/usr/bin/plutil"),
-    ).toHaveLength(2);
+    ).toHaveLength(4);
     expect(result.get("SkyTwin-macOS-dmg").verificationMethod).toBe(
       "gatekeeper+stapler+dmg-contained-app-codesign",
     );
@@ -728,6 +766,7 @@ describe("release.signing canonical verifier", () => {
           "/usr/bin/xcrun",
           "/usr/bin/hdiutil",
           "/usr/bin/ditto",
+          "/usr/bin/unzip",
           "/usr/bin/lipo",
           "/usr/bin/plutil",
         ].includes(file),
@@ -858,7 +897,54 @@ describe("release.signing canonical verifier", () => {
           appVersion: identity.appVersion,
         },
       ),
-    ).toThrow("signed bundle version does not match the release tag");
+    ).toThrow("signed bundle short version does not match the release tag");
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute: macExecutor({ bundleBuildVersion: "0.6.99" }),
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("signed bundle build version does not match the release tag");
+  });
+
+  it("preflights macOS ZIP member paths, types, counts, and expanded size", () => {
+    expect(parseMacZipListing(macZipListing(), "macOS ZIP")).toHaveLength(2);
+    expect(() =>
+      parseMacZipListing(
+        macZipListing([
+          { permissions: "drwxr-xr-x", sizeBytes: 0, path: "SkyTwin.app/" },
+          {
+            permissions: "-rw-r--r--",
+            sizeBytes: 1,
+            path: "../outside",
+          },
+        ]),
+        "macOS ZIP",
+      ),
+    ).toThrow("unsafe path component");
+    expect(() =>
+      parseMacZipListing(
+        macZipListing([
+          { permissions: "drwxr-xr-x", sizeBytes: 0, path: "SkyTwin.app/" },
+          {
+            permissions: "lrwxr-xr-x",
+            sizeBytes: 4097,
+            path: "SkyTwin.app/Contents/link",
+          },
+        ]),
+        "macOS ZIP",
+      ),
+    ).toThrow("invalid symbolic-link member");
+    const zipBomb = macZipListing().replace(
+      "2 files, 6 bytes uncompressed,",
+      "2 files, 4294967297 bytes uncompressed,",
+    );
+    expect(() => parseMacZipListing(zipBomb, "macOS ZIP")).toThrow(
+      "expanded size is outside",
+    );
   });
 
   it("rejects a packaged macOS executable changed during native verification", () => {
@@ -890,6 +976,32 @@ describe("release.signing canonical verifier", () => {
         },
       ),
     ).toThrow("packaged executable changed during native verification");
+  });
+
+  it("rejects a macOS ZIP whose extracted app contains an escaping link", () => {
+    const root = makeRoot();
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute: macExecutor({
+            afterExtract: (extracted) =>
+              symlinkSync(
+                "/tmp",
+                join(extracted, "SkyTwin.app", "Contents", "escaping-link"),
+              ),
+          }),
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("symbolic link outside extraction");
   });
 
   it("requires valid pinned Authenticode, code-signing EKU, and a timestamp", () => {
@@ -960,6 +1072,11 @@ describe("release.signing canonical verifier", () => {
       timestampSignerCertificateSha256: timestampSha256,
       timestampCertificateValidation:
         "presence-and-fingerprint-recorded-not-independently-validated",
+      productVersion: identity.appVersion,
+      fileVersionMajor: 0,
+      fileVersionMinor: 7,
+      fileVersionBuild: 0,
+      fileVersionPrivate: 0,
       containedExecutable: expect.objectContaining({
         derivationMethod: "nsis-7zip",
         derivationPath: "app-64.7z!/SkyTwin.exe",
@@ -1079,6 +1196,28 @@ describe("release.signing canonical verifier", () => {
       env: { SystemRoot: "C:\\Windows" },
       appVersion: identity.appVersion,
     });
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        options(
+          windowsExecutor({
+            outerSignature: windowsSignature({ productVersion: "0.6.0" }),
+          }),
+        ),
+      ),
+    ).toThrow("Windows installer ProductVersion");
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        options(
+          windowsExecutor({
+            outerSignature: windowsSignature({ fileVersionBuild: 99 }),
+          }),
+        ),
+      ),
+    ).toThrow("Windows installer FileVersionInfo");
     expect(() =>
       verifyWindowsSubjects(
         subjects,

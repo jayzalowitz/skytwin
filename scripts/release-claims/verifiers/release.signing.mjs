@@ -18,7 +18,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  isAbsolute,
+  join,
+  posix,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   machineProducerJobName,
@@ -42,6 +50,7 @@ const MACOS_NATIVE_TOOLS = Object.freeze({
   xcrun: "/usr/bin/xcrun",
   hdiutil: "/usr/bin/hdiutil",
   ditto: "/usr/bin/ditto",
+  unzip: "/usr/bin/unzip",
   lipo: "/usr/bin/lipo",
   plutil: "/usr/bin/plutil",
 });
@@ -55,6 +64,9 @@ const WINDOWS_TIMESTAMP_VALIDATION =
   "presence-and-fingerprint-recorded-not-independently-validated";
 const WINDOWS_NSIS_PAYLOAD = "$PLUGINSDIR/app-64.7z";
 const WINDOWS_EXECUTABLE_MEMBER = "SkyTwin.exe";
+const MAX_MAC_ZIP_MEMBERS = 100_000;
+const MAX_MAC_ZIP_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;
+const MAX_MAC_ZIP_SYMLINK_BYTES = 4096;
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
   `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})$`,
@@ -727,6 +739,130 @@ export function parseMacGatekeeper(output, description) {
   );
 }
 
+function normalizeMacZipMemberPath(value, description) {
+  assert(
+    typeof value === "string" &&
+      value.length > 0 &&
+      value.trim() === value &&
+      !value.includes("\\") &&
+      !value.includes("\0"),
+    `${description} contains an unsafe member name`,
+  );
+  const directory = value.endsWith("/");
+  const normalized = directory ? value.slice(0, -1) : value;
+  assert(
+    normalized.length > 0 &&
+      !normalized.startsWith("/") &&
+      !normalized.startsWith("-") &&
+      !normalized.startsWith("@") &&
+      !normalized.includes(":"),
+    `${description} contains an unsafe member name`,
+  );
+  const components = normalized.split("/");
+  assert(
+    components.every(
+      (component) =>
+        component.length > 0 && component !== "." && component !== "..",
+    ),
+    `${description} contains an unsafe path component`,
+  );
+  assert(
+    components[0] === "SkyTwin.app" || components[0] === "__MACOSX",
+    `${description} contains a member outside SkyTwin.app`,
+  );
+  return normalized;
+}
+
+export function parseMacZipListing(output, description = "macOS ZIP") {
+  assert(
+    typeof output === "string" && output.length <= MAX_TOOL_OUTPUT_BYTES,
+    `${description} listing is missing or too large`,
+  );
+  const declaredCount = output.match(/number of entries: ([0-9]+)$/mu);
+  const summary = output.match(
+    /^([0-9]+) files, ([0-9]+) bytes uncompressed,/mu,
+  );
+  assert(declaredCount && summary, `${description} listing is incomplete`);
+  const records = [];
+  for (const line of output.split(/\r?\n/u)) {
+    const match = line.match(
+      /^([dl-][rwxstST-]{9})\s+\S+\s+\S+\s+([0-9]+)\s+\S+\s+[0-9]+\s+\S+\s+\S+\s+\S+\s+(.+)$/u,
+    );
+    if (!match) continue;
+    const [, permissions, sizeText, rawPath] = match;
+    const path = normalizeMacZipMemberPath(rawPath, description);
+    const sizeBytes = Number(sizeText);
+    assert(
+      Number.isSafeInteger(sizeBytes) && sizeBytes >= 0,
+      `${description} has an invalid member size`,
+    );
+    const kind = permissions[0];
+    assert(
+      kind === "-" || kind === "d" || kind === "l",
+      `${description} contains a special member`,
+    );
+    assert(
+      kind !== "l" || (sizeBytes > 0 && sizeBytes <= MAX_MAC_ZIP_SYMLINK_BYTES),
+      `${description} contains an invalid symbolic-link member`,
+    );
+    records.push({ path, kind, sizeBytes });
+  }
+  const expectedCount = Number(declaredCount[1]);
+  const summaryCount = Number(summary[1]);
+  const expandedBytes = Number(summary[2]);
+  assert(
+    Number.isSafeInteger(expectedCount) &&
+      expectedCount > 0 &&
+      expectedCount <= MAX_MAC_ZIP_MEMBERS &&
+      expectedCount === summaryCount &&
+      records.length === expectedCount,
+    `${description} member count is outside the release bound`,
+  );
+  assert(
+    Number.isSafeInteger(expandedBytes) &&
+      expandedBytes > 0 &&
+      expandedBytes <= MAX_MAC_ZIP_EXPANDED_BYTES &&
+      records.reduce((total, record) => total + record.sizeBytes, 0) ===
+        expandedBytes,
+    `${description} expanded size is outside the release bound`,
+  );
+  const seen = new Set();
+  for (const record of records) {
+    const folded = record.path.toLowerCase();
+    assert(!seen.has(folded), `${description} has a case-colliding member`);
+    seen.add(folded);
+  }
+  assert(
+    records.some(({ path, kind }) => path === "SkyTwin.app" && kind === "d"),
+    `${description} does not contain the canonical app root`,
+  );
+  return records;
+}
+
+function assertContainedMacAppLinks(extractionRoot, appPath, description) {
+  const canonicalRoot = realpathSync(extractionRoot);
+  const pending = [appPath];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const stat = lstatSync(path);
+      if (stat.isSymbolicLink()) {
+        const target = realpathSync(path);
+        assert(
+          within(canonicalRoot, target),
+          `${description} contains a symbolic link outside extraction`,
+        );
+      } else if (stat.isDirectory()) pending.push(path);
+      else
+        assert(
+          stat.isFile(),
+          `${description} contains a special filesystem entry`,
+        );
+    }
+  }
+}
+
 function inspectMacApp(extractionRoot, appPath, description) {
   const lexicalRoot = resolve(extractionRoot);
   const requested = resolve(appPath);
@@ -741,6 +877,7 @@ function inspectMacApp(extractionRoot, appPath, description) {
     within(realpathSync(lexicalRoot), realpathSync(requested)),
     `${description} resolves outside extraction`,
   );
+  assertContainedMacAppLinks(lexicalRoot, requested, description);
   const executable = join(requested, "Contents", "MacOS", "SkyTwin");
   const packagedExecutable = inspectStableRegularFile(
     lexicalRoot,
@@ -794,7 +931,7 @@ function verifyMacApp(
     architectures.length === 1 && architectures[0] === "arm64",
     `${description} packaged executable is not the canonical arm64 architecture`,
   );
-  const bundleVersion = checkedCommand(
+  const bundleShortVersion = checkedCommand(
     execute,
     MACOS_NATIVE_TOOLS.plutil,
     [
@@ -809,8 +946,26 @@ function verifyMacApp(
     `${description} signed bundle version inspection`,
   ).trim();
   assert(
-    bundleVersion === expectedAppVersion,
-    `${description} signed bundle version does not match the release tag`,
+    bundleShortVersion === expectedAppVersion,
+    `${description} signed bundle short version does not match the release tag`,
+  );
+  const bundleBuildVersion = checkedCommand(
+    execute,
+    MACOS_NATIVE_TOOLS.plutil,
+    [
+      "-extract",
+      "CFBundleVersion",
+      "raw",
+      "-o",
+      "-",
+      join(appPath, "Contents", "Info.plist"),
+    ],
+    { env },
+    `${description} signed bundle build version inspection`,
+  ).trim();
+  assert(
+    bundleBuildVersion === expectedAppVersion,
+    `${description} signed bundle build version does not match the release tag`,
   );
   parseMacGatekeeper(
     checkedCommand(
@@ -835,7 +990,8 @@ function verifyMacApp(
   );
   return {
     ...signature,
-    bundleVersion,
+    bundleShortVersion,
+    bundleBuildVersion,
     executableArchitecture: architectures[0],
   };
 }
@@ -918,6 +1074,16 @@ export function verifyMacSubjects(
         detachMount = mount;
         appPath = inspectMacApp(mount, join(mount, "SkyTwin.app"), "macOS DMG");
       } else {
+        parseMacZipListing(
+          checkedCommand(
+            execute,
+            MACOS_NATIVE_TOOLS.unzip,
+            ["-Z", "-l", subject.path],
+            { env: commandEnv },
+            "macOS ZIP inventory preflight",
+          ),
+          "macOS ZIP",
+        );
         const extracted = join(extractionRoot, "unzipped");
         mkdirSync(extracted);
         checkedCommand(
@@ -969,7 +1135,10 @@ export function verifyMacSubjects(
           appSignature.signer === canonicalAppIdentity.signer &&
           appSignature.identifier === canonicalAppIdentity.identifier &&
           appSignature.cdHash === canonicalAppIdentity.cdHash &&
-          appSignature.bundleVersion === canonicalAppIdentity.bundleVersion &&
+          appSignature.bundleShortVersion ===
+            canonicalAppIdentity.bundleShortVersion &&
+          appSignature.bundleBuildVersion ===
+            canonicalAppIdentity.bundleBuildVersion &&
           appSignature.executableArchitecture ===
             canonicalAppIdentity.executableArchitecture,
         "macOS packaged subjects have different signed application identities",
@@ -982,7 +1151,8 @@ export function verifyMacSubjects(
         signerTeamId: appSignature.teamId,
         signedIdentifier: appSignature.identifier,
         signedContentCdHash: appSignature.cdHash,
-        signedBundleVersion: appSignature.bundleVersion,
+        signedBundleVersion: appSignature.bundleShortVersion,
+        signedBundleBuildVersion: appSignature.bundleBuildVersion,
         executableArchitecture: appSignature.executableArchitecture,
       });
     } finally {
@@ -1451,6 +1621,20 @@ export function verifyWindowsSubjects(
     policy,
     execute,
   );
+  const expectedVersionParts = appVersion.split(".").map(Number);
+  assert(
+    signature.productVersion === appVersion,
+    "Windows installer ProductVersion does not match the release app version",
+  );
+  assert(
+    expectedVersionParts.length === 3 &&
+      expectedVersionParts.every(Number.isSafeInteger) &&
+      signature.fileVersionMajor === expectedVersionParts[0] &&
+      signature.fileVersionMinor === expectedVersionParts[1] &&
+      signature.fileVersionBuild === expectedVersionParts[2] &&
+      signature.fileVersionPrivate === 0,
+    "Windows installer FileVersionInfo does not match the release app version",
+  );
   const extractionRoot = mkdtempSync(
     join(tmpdir(), "skytwin-signing-windows-"),
   );
@@ -1481,7 +1665,6 @@ export function verifyWindowsSubjects(
       executableSignature.productVersion === appVersion,
       "contained Windows executable ProductVersion does not match the release app version",
     );
-    const expectedVersionParts = appVersion.split(".").map(Number);
     assert(
       expectedVersionParts.length === 3 &&
         expectedVersionParts.every(Number.isSafeInteger) &&
@@ -1533,6 +1716,11 @@ export function verifyWindowsSubjects(
           timestampCertificatePresent: signature.timestampPresent,
           timestampSignerCertificateSha256: signature.timestampSignerSha256,
           timestampCertificateValidation: WINDOWS_TIMESTAMP_VALIDATION,
+          productVersion: signature.productVersion,
+          fileVersionMajor: signature.fileVersionMajor,
+          fileVersionMinor: signature.fileVersionMinor,
+          fileVersionBuild: signature.fileVersionBuild,
+          fileVersionPrivate: signature.fileVersionPrivate,
           containedExecutable: {
             derivationMethod: "nsis-7zip",
             derivationPath:
@@ -1605,6 +1793,7 @@ function assertMacReportObservation(result, artifactName, appVersion) {
       "signedIdentifier",
       "signedContentCdHash",
       "signedBundleVersion",
+      "signedBundleBuildVersion",
       "executableArchitecture",
     ],
     `${artifactName} signing observation`,
@@ -1621,6 +1810,7 @@ function assertMacReportObservation(result, artifactName, appVersion) {
       result.signedIdentifier === "com.skytwin.desktop" &&
       /^[0-9a-f]{40}$/u.test(result.signedContentCdHash) &&
       result.signedBundleVersion === appVersion &&
+      result.signedBundleBuildVersion === appVersion &&
       result.executableArchitecture === "arm64",
     `${artifactName} has incomplete or inconsistent macOS signing observations`,
   );
@@ -1642,6 +1832,11 @@ function assertWindowsReportObservation(result, artifactName, appVersion) {
       "timestampCertificatePresent",
       "timestampSignerCertificateSha256",
       "timestampCertificateValidation",
+      "productVersion",
+      "fileVersionMajor",
+      "fileVersionMinor",
+      "fileVersionBuild",
+      "fileVersionPrivate",
       "containedExecutable",
     ],
     `${artifactName} signing observation`,
@@ -1662,6 +1857,11 @@ function assertWindowsReportObservation(result, artifactName, appVersion) {
       result.timestampCertificatePresent === true &&
       /^[0-9a-f]{64}$/u.test(result.timestampSignerCertificateSha256) &&
       result.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION &&
+      result.productVersion === appVersion &&
+      result.fileVersionMajor === Number(appVersion.split(".")[0]) &&
+      result.fileVersionMinor === Number(appVersion.split(".")[1]) &&
+      result.fileVersionBuild === Number(appVersion.split(".")[2]) &&
+      result.fileVersionPrivate === 0 &&
       isRecord(result.containedExecutable),
     `${artifactName} has incomplete or inconsistent Windows signing observations`,
   );
@@ -1799,6 +1999,8 @@ export function buildReport({
         canonical.signedIdentifier === comparison.signedIdentifier &&
         canonical.signedContentCdHash === comparison.signedContentCdHash &&
         canonical.signedBundleVersion === comparison.signedBundleVersion &&
+        canonical.signedBundleBuildVersion ===
+          comparison.signedBundleBuildVersion &&
         canonical.executableArchitecture === comparison.executableArchitecture,
       "macOS signing report subjects have different signed application identities",
     );

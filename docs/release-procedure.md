@@ -161,6 +161,12 @@ above, but source availability alone cannot move the ledger to ready. A tagged
 clean run must still produce the immutable report and materials, and platform
 signing/notarization remains a separate stop-ship.
 
+For macOS, the signing report binds both signed bundle version keys and checks
+the ZIP member inventory, expanded-size ceiling, and extracted link containment
+before trusting the contained app. For Windows, it binds the Authenticode and
+version metadata of both the NSIS installer and its exact contained
+`SkyTwin.exe`; a correctly signed but stale wrapper is not acceptable.
+
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
 The packaged-sample verifier implements three of the twelve matrix reports; see
 [`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane

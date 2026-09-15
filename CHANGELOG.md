@@ -202,11 +202,14 @@ All notable changes to SkyTwin will be documented in this file.
 
 - **Signing evidence observations are now load-bearing.** The macOS verifier
   requires exact contained-app signer/team, bundle identifier, CDHash, release
-  version, arm64 architecture, hardened-runtime, Gatekeeper, and notarization
-  observations for both DMG and ZIP. Windows reports must carry the exact
-  Authenticode method, pinned signer fingerprint, code-signing EKU, and
-  timestamp-certificate observation. Report construction and the independent
-  publisher reject omitted, altered, or wrong-method fields. Linux remains
+  marketing and build versions, arm64 architecture, hardened-runtime,
+  Gatekeeper, and notarization observations for both DMG and ZIP. ZIP members,
+  expanded size, and extracted link containment are checked before the signed
+  app is trusted. Windows reports bind both installer and contained executable
+  version metadata alongside the exact Authenticode method, pinned signer
+  fingerprint, code-signing EKU, and timestamp-certificate observation. Report
+  construction and the independent publisher reject omitted, altered, stale,
+  or wrong-method fields. Linux remains
   fail-closed until package-format verification methods and trust roots exist;
   verifier source and tests do not claim signed release artifacts.
 

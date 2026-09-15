@@ -4043,6 +4043,7 @@ function hasCompleteMacSigningObservation(
     "signedIdentifier",
     "signedContentCdHash",
     "signedBundleVersion",
+    "signedBundleBuildVersion",
     "executableArchitecture",
   ];
   const expectedMethod = MACOS_SIGNING_METHODS.get(expectedArtifactName);
@@ -4062,6 +4063,7 @@ function hasCompleteMacSigningObservation(
     subject?.signedIdentifier === "com.skytwin.desktop" &&
     /^[0-9a-f]{40}$/u.test(subject?.signedContentCdHash ?? "") &&
     subject?.signedBundleVersion === expectedAppVersion &&
+    subject?.signedBundleBuildVersion === expectedAppVersion &&
     subject?.executableArchitecture === "arm64"
   );
 }
@@ -4093,6 +4095,11 @@ function hasCompleteWindowsSigningObservation(
     "timestampCertificatePresent",
     "timestampSignerCertificateSha256",
     "timestampCertificateValidation",
+    "productVersion",
+    "fileVersionMajor",
+    "fileVersionMinor",
+    "fileVersionBuild",
+    "fileVersionPrivate",
     "containedExecutable",
   ];
   const executableKeys = [
@@ -4139,6 +4146,11 @@ function hasCompleteWindowsSigningObservation(
     subject?.timestampCertificatePresent === true &&
     SOURCE_DIGEST.test(subject?.timestampSignerCertificateSha256 ?? "") &&
     subject?.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION &&
+    subject?.productVersion === expectedAppVersion &&
+    subject?.fileVersionMajor === Number(expectedAppVersion.split(".")[0]) &&
+    subject?.fileVersionMinor === Number(expectedAppVersion.split(".")[1]) &&
+    subject?.fileVersionBuild === Number(expectedAppVersion.split(".")[2]) &&
+    subject?.fileVersionPrivate === 0 &&
     isPlainRecord(executable) &&
     Object.keys(executable).length === executableKeys.length &&
     executableKeys.every((key) => Object.hasOwn(executable, key)) &&
@@ -4279,6 +4291,7 @@ export function verifyMachineEvidenceApplicability(
           subject?.signedIdentifier,
           subject?.signedContentCdHash,
           subject?.signedBundleVersion,
+          subject?.signedBundleBuildVersion,
           subject?.executableArchitecture,
         ].join("\u0000"),
       ),
