@@ -84,6 +84,8 @@ describe('Google preview UI boundary', () => {
       'teams.messages.send', 'gdrive.files.list', 'youtube.videos.upload',
       'gcp.compute.instances.list', 'google.youtube.videos.list',
       'me.events.list', 'me.drive.root.children', 'users.list',
+      'groups.events.list', 'groups.calendar.get', 'groups.threads.list',
+      'groups.conversations.list', 'group.members.list',
     ]) {
       expect(isAccountBackedIntegration({ key: 'custom', skills: [skill] })).toBe(true);
     }

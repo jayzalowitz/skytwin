@@ -663,8 +663,10 @@ describe('execution-setup', () => {
         'gdrive.files.list', 'youtube.videos.upload', 'gcp.compute.instances.list',
         'google.youtube.videos.list',
         'me.events.list', 'me.drive.root.children', 'users.list',
+        'groups.events.list', 'groups.calendar.get', 'groups.threads.list',
+        'groups.conversations.list', 'group.members.list',
       ]) {
-        await expect(guard?.({ actionType, domain: 'generic' }, 'owner-1'))
+        await expect(guard?.({ actionType }, 'owner-1'))
           .resolves.toMatchObject({ allowed: false });
       }
       await expect(guard?.({ actionType: 'accept', domain: 'calendar' }, 'owner-1'))

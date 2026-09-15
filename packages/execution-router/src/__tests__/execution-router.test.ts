@@ -271,6 +271,11 @@ describe('ExecutionRouter', () => {
     'me.events.list',
     'me.drive.root.children',
     'users.list',
+    'groups.events.list',
+    'groups.calendar.get',
+    'groups.threads.list',
+    'groups.conversations.list',
+    'group.members.list',
   ])
     ('denies disabled account action %s before any adapter or dispatch call', async (actionType) => {
       const authority = createDispatchAuthority();
@@ -308,6 +313,49 @@ describe('ExecutionRouter', () => {
       expect(authority.start).not.toHaveBeenCalled();
       expect(authority.terminalize).not.toHaveBeenCalled();
     });
+
+  it('re-checks a group namespace before dispatch without server or domain identity', async () => {
+    const authority = createDispatchAuthority();
+    const adapter = createMockAdapter('ironclaw');
+    const buildPlan = vi.spyOn(adapter, 'buildPlan');
+    const execute = vi.spyOn(adapter, 'execute');
+    registry.register('ironclaw', adapter, IRONCLAW_TRUST_PROFILE);
+    let accountBoundaryEnabled = false;
+    const guard = vi.fn((action: Readonly<CandidateAction>) =>
+      accountBoundaryEnabled && isAccountBackedActionType(action.actionType)
+        ? { allowed: false as const, reason: 'Account-backed actions are unavailable in this preview.' }
+        : { allowed: true as const });
+    const action = makeAction({
+      actionType: 'groups.events.list',
+      domain: '',
+      parameters: {},
+    });
+    const risk = makeRiskAssessment();
+    const preparedRouter = new ExecutionRouter(registry, authority, guard);
+    const prepared = await preparedRouter.prepareExecution(
+      action,
+      risk,
+      'user-1',
+      { approved: true },
+    );
+    accountBoundaryEnabled = true;
+    await expect(preparedRouter.executePrepared(
+      prepared,
+      { ...action, parameters: { ...action.parameters, executionPlanId: prepared.planId } },
+      prepared.riskAssessment,
+      'user-1',
+      { approved: true },
+    )).rejects.toBeInstanceOf(NoRequestExecutionError);
+
+    expect(buildPlan).toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+    expect(authority.start).not.toHaveBeenCalled();
+    expect(authority.terminalize).not.toHaveBeenCalled();
+    expect(guard).toHaveBeenLastCalledWith(
+      expect.objectContaining({ actionType: 'groups.events.list', domain: '' }),
+      'user-1',
+    );
+  });
 
   it('awaits user-bound admission before adapter preparation', async () => {
     const authority = createDispatchAuthority();

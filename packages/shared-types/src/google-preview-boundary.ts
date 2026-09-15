@@ -165,7 +165,11 @@ export function isGoogleAccountActionType(actionType: string): boolean {
   // than SkyTwin's verb-first action vocabulary. Deny the stable Gmail /
   // Microsoft Graph mailbox roots and explicit Google Drive namespace before
   // an adapter can treat them as generic remote actions.
-  if (/^(?:users?|me)(?:_|$)/.test(normalized)) {
+  // Microsoft Graph exposes mailbox, calendar, conversation, and group data
+  // beneath account-bearing `me`, `user(s)`, and `group(s)` resource roots.
+  // Without a provider-bound server identity, treat the whole namespace as
+  // unavailable rather than trying to maintain a partial method allowlist.
+  if (/^(?:users?|me|groups?)(?:_|$)/.test(normalized)) {
     return true;
   }
   if (actionContainsIntegrationToken(normalized, GOOGLE_INTEGRATION_TOKENS)) {
