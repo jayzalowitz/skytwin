@@ -48,6 +48,14 @@ function getCurrentUserId() {
   return getEffectiveUserId();
 }
 
+export function isVisiblePreviewCapability(row = {}) {
+  return !isGoogleAccountIntegration({
+    key: row.registry_id ?? row.server_registry_id,
+    integration: row.oauth_provider ?? row.server_oauth_provider,
+    skills: row.skill_name ? [row.skill_name] : [],
+  });
+}
+
 function ensureCapabilitiesListener() {
   if (_capabilitiesListenerWired || typeof document === 'undefined') return;
   _capabilitiesListenerWired = true;
@@ -198,16 +206,13 @@ export async function renderCapabilities(container, userId) {
     lifebooksData = { lifebooks: [] };
   }
 
-  _cachedInstalled = (capData.installed ?? []).filter(server =>
-    !isGoogleAccountIntegration({ key: server.registry_id }));
-  _cachedSuggestions = (capData.suggestions ?? []).filter(suggestion =>
-    !isGoogleAccountIntegration({ key: suggestion.registry_id }));
-  _cachedDormant = (capData.dormant ?? []).filter(server =>
-    !isGoogleAccountIntegration({ key: server.registry_id }));
+  _cachedInstalled = (capData.installed ?? []).filter(isVisiblePreviewCapability);
+  _cachedSuggestions = (capData.suggestions ?? []).filter(isVisiblePreviewCapability);
+  _cachedDormant = (capData.dormant ?? []).filter(isVisiblePreviewCapability);
   _cachedRecipes = (recipesData.recipes ?? []).filter(recipe =>
     !(recipe.registryIds ?? []).some(registryId =>
       isGoogleAccountIntegration({ key: registryId })));
-  _cachedPendingOptIns = optInsData.optIns ?? [];
+  _cachedPendingOptIns = (optInsData.optIns ?? []).filter(isVisiblePreviewCapability);
   // `GET /api/lifebooks/:userId` already calls `listVisible()` server-side,
   // so the response is hidden-filtered. Defensive client-side filter uses
   // the actual API field (`hidden: boolean`) — Copilot caught that the

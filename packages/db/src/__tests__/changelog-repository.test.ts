@@ -137,18 +137,21 @@ describe('mcpServerChangelogRepository.listPendingOptInsForUser', () => {
       rejected_at: null,
       server_display_name: 'Notion',
       server_registry_id: '@notionhq/notion-mcp-server',
+      server_oauth_provider: null,
     });
 
     const results = await mcpServerChangelogRepository.listPendingOptInsForUser(USER_ID);
     expect(results).toHaveLength(1);
     expect(results[0]?.skill_name).toBe('create_database');
     expect(results[0]?.server_display_name).toBe('Notion');
+    expect(results[0]?.server_oauth_provider).toBeNull();
     expect(results[0]?.accepted_at).toBeNull();
     expect(results[0]?.rejected_at).toBeNull();
 
     const [sql, params] = mockQuery.mock.calls[0] as [string, unknown[]];
     expect(sql).toContain('accepted_at IS NULL');
     expect(sql).toContain('rejected_at IS NULL');
+    expect(sql).toContain('ms.oauth_provider AS server_oauth_provider');
     expect(params[0]).toBe(USER_ID);
   });
 

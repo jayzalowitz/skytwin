@@ -16,10 +16,13 @@ import type { Express } from 'express';
 
 // ── Hoist mocks ──────────────────────────────────────────────────────────────
 
-const { mockGetLlmClient, mockRunPrompt } = vi.hoisted(() => ({
+const { mockGetLlmClient, mockRunPrompt, mockLoadConfig } = vi.hoisted(() => ({
   mockGetLlmClient: vi.fn(),
   mockRunPrompt: vi.fn(),
+  mockLoadConfig: vi.fn(() => ({ googleConnectionMode: 'experimental' })),
 }));
+
+vi.mock('@skytwin/config', () => ({ loadConfig: mockLoadConfig }));
 
 vi.mock('../lib/user-llm-client.js', () => ({ buildUserLlmClient: mockGetLlmClient }));
 
@@ -112,6 +115,7 @@ async function request(
 describe('GET /api/onboarding/state', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
     mockGetLlmClient.mockReturnValue(null);
     // No episodic memories
     mockQuery.mockResolvedValue({ rows: [{ count: '0' }] });
@@ -150,6 +154,7 @@ describe('GET /api/onboarding/state', () => {
 describe('POST /api/onboarding/dialogue', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
   });
 
   it('returns a question when LLM is available and prompt succeeds', async () => {
@@ -202,6 +207,34 @@ describe('POST /api/onboarding/dialogue', () => {
     expect(b.recipeSlug).toBe('developer-pack');
   });
 
+  it('filters account-backed IDs from an LLM recommendation while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockGetLlmClient.mockReturnValue({ hasProviders: true });
+    mockRunPrompt.mockResolvedValue({
+      output: {
+        type: 'recommendation',
+        recipeSlug: 'productivity-pack',
+        recommendedRegistryIds: [
+          'gmail-mcp',
+          'google-calendar-mcp',
+          '@notionhq/notion-mcp-server',
+        ],
+        summary: 'A useful starting point',
+      },
+      fellBackToDeterministic: false,
+      cached: false,
+      latencyMs: 120,
+    });
+
+    const { status, body } = await request(buildApp(), 'post', '/api/onboarding/dialogue', {
+      history: [],
+    });
+
+    expect(status).toBe(200);
+    expect((body as { recommendedRegistryIds: string[] }).recommendedRegistryIds)
+      .toEqual(['@notionhq/notion-mcp-server']);
+  });
+
   it('falls back to deterministic first question when no LLM configured', async () => {
     mockGetLlmClient.mockReturnValue(null);
 
@@ -234,7 +267,10 @@ describe('POST /api/onboarding/dialogue', () => {
 });
 
 describe('POST /api/onboarding/deterministic-pick', () => {
-  beforeEach(() => { vi.clearAllMocks(); });
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+  });
 
   it('returns developer-pack for software_engineer + notion + github', async () => {
     const app = buildApp();
@@ -257,6 +293,19 @@ describe('POST /api/onboarding/deterministic-pick', () => {
     expect((body as { recipeSlug: string }).recipeSlug).toBe('productivity-pack');
   });
 
+  it('returns an account-free productivity pack while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { status, body } = await request(buildApp(), 'post', '/api/onboarding/deterministic-pick', {
+      answers: { work: 'designer', notes_app: 'notion', primary_tool: 'slack' },
+    });
+
+    expect(status).toBe(200);
+    expect((body as { recommendedRegistryIds: string[] }).recommendedRegistryIds).toEqual([
+      '@notionhq/notion-mcp-server',
+      '@modelcontextprotocol/server-slack',
+    ]);
+  });
+
   it('returns productivity-pack as default when work is unrecognised', async () => {
     const app = buildApp();
     const { status, body } = await request(app, 'post', '/api/onboarding/deterministic-pick', {
@@ -270,6 +319,7 @@ describe('POST /api/onboarding/deterministic-pick', () => {
 describe('POST /api/onboarding/complete', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
     mockOnboardingRepository.markComplete.mockResolvedValue({
       user_id: USER_ID,
       is_first_run: false,

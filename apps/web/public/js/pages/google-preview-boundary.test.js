@@ -7,6 +7,7 @@ import {
 } from '../google-preview-boundary.js';
 import { renderDynamicIntegrations } from './setup.js';
 import { renderUnmetCredentials } from './dashboard-view.js';
+import { isVisiblePreviewCapability } from './capabilities.js';
 
 function pageSource(name) {
   return readFileSync(resolve(process.cwd(), `public/js/pages/${name}.js`), 'utf8');
@@ -32,6 +33,8 @@ describe('Google preview UI boundary', () => {
     expect(welcome).not.toContain('data-action="onb-choose-about-me"');
     expect(staleEmailStep).toContain('Gmail and Google Calendar are unavailable');
     expect(staleEmailStep).not.toContain('data-action="onb-email-google"');
+    expect(source).not.toContain("description: 'Gmail, Google Calendar");
+    expect(source).toContain("description: 'Notion and Slack capabilities available in this preview.'");
   });
 
   it('recognizes hostile integration aliases and account-backed skills', () => {
@@ -88,6 +91,22 @@ describe('Google preview UI boundary', () => {
     });
     expect(html).not.toContain('Mail');
     expect(html).toContain('GitHub');
+  });
+
+  it('filters stale capability payloads by registry, provider, and skill', () => {
+    expect(isVisiblePreviewCapability({ registry_id: 'gmail-mcp' })).toBe(false);
+    expect(isVisiblePreviewCapability({
+      registry_id: 'custom-drive',
+      oauth_provider: 'google',
+    })).toBe(false);
+    expect(isVisiblePreviewCapability({
+      server_registry_id: 'custom-productivity',
+      skill_name: 'sendEmail',
+    })).toBe(false);
+    expect(isVisiblePreviewCapability({
+      registry_id: '@modelcontextprotocol/server-github',
+      oauth_provider: 'github',
+    })).toBe(true);
   });
 
   it('does not render Google credential, connect, or sync controls in setup', () => {

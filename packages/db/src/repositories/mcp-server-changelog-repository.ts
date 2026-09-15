@@ -107,14 +107,23 @@ export const mcpServerChangelogRepository = {
    */
   async listPendingOptInsForUser(
     userId: string,
-  ): Promise<Array<PendingSkillOptInRow & { server_display_name: string; server_registry_id: string | null }>> {
+  ): Promise<Array<PendingSkillOptInRow & {
+    server_display_name: string;
+    server_registry_id: string | null;
+    server_oauth_provider: string | null;
+  }>> {
     const result = await query<
-      PendingSkillOptInRow & { server_display_name: string; server_registry_id: string | null }
+      PendingSkillOptInRow & {
+        server_display_name: string;
+        server_registry_id: string | null;
+        server_oauth_provider: string | null;
+      }
     >(
       `SELECT p.id, p.server_id, p.skill_name, p.changelog_version,
               p.detected_at, p.accepted_at, p.rejected_at,
               ms.display_name AS server_display_name,
-              ms.registry_id  AS server_registry_id
+              ms.registry_id  AS server_registry_id,
+              ms.oauth_provider AS server_oauth_provider
        FROM pending_skill_opt_ins p
        JOIN mcp_servers ms ON ms.id = p.server_id
        WHERE ms.user_id = $1

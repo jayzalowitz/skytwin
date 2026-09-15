@@ -14,6 +14,8 @@ import { onboardingRepository, mcpServerRepository, query } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { createLogger } from '@skytwin/core';
 import { buildUserLlmClient } from '../lib/user-llm-client.js';
+import { loadConfig } from '@skytwin/config';
+import { isGoogleAccountIntegration } from '@skytwin/shared-types';
 
 const log = createLogger('api:onboarding');
 
@@ -120,6 +122,11 @@ const RECIPE_REGISTRY_IDS: Record<string, string[]> = {
     '@modelcontextprotocol/server-slack',
   ],
 };
+
+function availableRegistryIds(registryIds: readonly string[]): string[] {
+  if (loadConfig().googleConnectionMode === 'experimental') return [...registryIds];
+  return registryIds.filter((registryId) => !isGoogleAccountIntegration({ key: registryId }));
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper to extract userId from request (mirrors pattern in capabilities.ts)
@@ -230,7 +237,9 @@ export function createOnboardingRouter(): Router {
               const response: DialogueResponse = {
                 kind: 'final',
                 recipeSlug: out.recipeSlug,
-                recommendedRegistryIds: out.recommendedRegistryIds ?? RECIPE_REGISTRY_IDS[out.recipeSlug] ?? [],
+                recommendedRegistryIds: availableRegistryIds(
+                  out.recommendedRegistryIds ?? RECIPE_REGISTRY_IDS[out.recipeSlug] ?? [],
+                ),
                 rationale: out.summary ?? '',
               };
               res.json(response);
@@ -301,7 +310,7 @@ export function createOnboardingRouter(): Router {
       const response: DialogueResponse = {
         kind: 'final',
         recipeSlug: slug,
-        recommendedRegistryIds: RECIPE_REGISTRY_IDS[slug] ?? [],
+        recommendedRegistryIds: availableRegistryIds(RECIPE_REGISTRY_IDS[slug] ?? []),
         rationale: `Based on your answers, ${slug.replace('-', ' ')} is a good starting point.`,
       };
       res.json(response);
@@ -327,7 +336,7 @@ export function createOnboardingRouter(): Router {
       const answers = body?.answers ?? {};
 
       const recipeSlug = deterministicRecipeSlug(answers);
-      const recommendedRegistryIds = RECIPE_REGISTRY_IDS[recipeSlug] ?? [];
+      const recommendedRegistryIds = availableRegistryIds(RECIPE_REGISTRY_IDS[recipeSlug] ?? []);
 
       res.json({ recipeSlug, recommendedRegistryIds });
     } catch (err) {

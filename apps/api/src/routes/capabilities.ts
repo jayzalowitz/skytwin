@@ -335,6 +335,21 @@ function isBlockedGoogleServer(
   });
 }
 
+function isBlockedGoogleOptIn(
+  optIn: {
+    server_registry_id: string | null;
+    server_oauth_provider?: string | null;
+    skill_name: string;
+  },
+  googleConnectionMode = loadConfig().googleConnectionMode,
+): boolean {
+  return isGoogleCapabilityBlocked(googleConnectionMode, {
+    registryId: optIn.server_registry_id,
+    oauthProvider: optIn.server_oauth_provider,
+    skills: [optIn.skill_name],
+  });
+}
+
 function filterRecipeForGoogleBoundary(
   recipe: CapabilityRecipe,
   additionallyBlockedIds: ReadonlySet<string> = new Set(),
@@ -1352,9 +1367,12 @@ export function createCapabilitiesRouter(): Router {
 
       try {
         const installedServers = await mcpServerRepository.listForUser(userId);
+        const googleConnectionMode = loadConfig().googleConnectionMode;
         const installedIds = new Set(
           installedServers
-            .filter((s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized')
+            .filter((s) =>
+              (s.status === 'active' || s.status === 'installed' || s.status === 'authorized') &&
+              !isBlockedGoogleServer(s, googleConnectionMode))
             .map((s) => s.id),
         );
 
@@ -1374,6 +1392,9 @@ export function createCapabilitiesRouter(): Router {
         const skillNodes = new Map<string, { id: string; label: string; installed: boolean }>();
 
         for (const row of skillResult.rows) {
+          if (!installedIds.has(row.server_id) || isGoogleCapabilityBlocked(googleConnectionMode, {
+            skills: [row.skill_name],
+          })) continue;
           const serverId = `server:${row.server_id}`;
           const skillId = `skill:${row.skill_name}`;
 
@@ -1402,7 +1423,7 @@ export function createCapabilitiesRouter(): Router {
       // If we have nothing (no mcp_server_skills rows yet), return a
       // deterministic example shape so the D3 vis always renders.
       if (nodes.length === 0) {
-        nodes = [
+        const fallbackNodes = [
           { id: 'server:github', label: 'GitHub', installed: false },
           { id: 'server:gmail', label: 'Gmail', installed: false },
           { id: 'server:notion', label: 'Notion', installed: false },
@@ -1410,11 +1431,19 @@ export function createCapabilitiesRouter(): Router {
           { id: 'skill:read_email', label: 'Read email', installed: false },
           { id: 'skill:write_page', label: 'Write page', installed: false },
         ];
-        edges = [
+        const fallbackEdges = [
           { from: 'server:github', to: 'skill:create_issue' },
           { from: 'server:gmail', to: 'skill:read_email' },
           { from: 'server:notion', to: 'skill:write_page' },
         ];
+        if (googleCapabilitySurfaceAvailable()) {
+          nodes = fallbackNodes;
+          edges = fallbackEdges;
+        } else {
+          nodes = fallbackNodes.filter((node) =>
+            node.id !== 'server:gmail' && node.id !== 'skill:read_email');
+          edges = fallbackEdges.filter((edge) => edge.from !== 'server:gmail');
+        }
       }
 
       res.json({ nodes, edges });
@@ -2160,7 +2189,9 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const optIns = await mcpServerChangelogRepository.listPendingOptInsForUser(userId);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const optIns = (await mcpServerChangelogRepository.listPendingOptInsForUser(userId))
+        .filter((optIn) => !isBlockedGoogleOptIn(optIn, googleConnectionMode));
       res.json({ optIns });
     } catch (err) {
       next(err);
@@ -2196,6 +2227,16 @@ export function createCapabilitiesRouter(): Router {
       const optIn = userOptIns.find((o) => o.id === id);
       if (!optIn) {
         res.status(404).json({ error: 'Pending opt-in not found or already resolved' });
+        return;
+      }
+
+      if (isBlockedGoogleOptIn(optIn)) {
+        res.status(503).json({
+          error: 'This capability is unavailable while Google connections are disabled.',
+          code: 'GOOGLE_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
         return;
       }
 

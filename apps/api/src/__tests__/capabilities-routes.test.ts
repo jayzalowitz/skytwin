@@ -1324,5 +1324,68 @@ describe('Capabilities API routes', () => {
       expect(body.nodes.length).toBeGreaterThanOrEqual(5);
       expect(body.edges.length).toBeGreaterThan(0);
     });
+
+    it('removes account-backed nodes and fallback examples while disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const googleServer = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000030',
+        registry_id: 'custom-calendar',
+        oauth_provider: 'google',
+        display_name: 'Calendar alias',
+      });
+      const githubServer = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000031',
+        registry_id: '@modelcontextprotocol/server-github',
+        display_name: 'GitHub',
+      });
+      mockMcpServerRepository.listForUser.mockResolvedValue([googleServer, githubServer]);
+      mockQuery.mockResolvedValue({
+        rows: [
+          { server_id: googleServer.id, skill_name: 'list_events', server_display_name: 'Calendar alias' },
+          { server_id: githubServer.id, skill_name: 'create_issue', server_display_name: 'GitHub' },
+          { server_id: githubServer.id, skill_name: 'sendEmail', server_display_name: 'GitHub' },
+        ],
+        rowCount: 3,
+      });
+
+      const res = await request(
+        buildApp(USER_ID),
+        'GET',
+        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        nodes: Array<{ id: string; label: string }>;
+        edges: Array<{ from: string; to: string }>;
+      };
+      expect(body.nodes.map((node) => node.id)).toEqual([
+        `server:${githubServer.id}`,
+        'skill:create_issue',
+      ]);
+      expect(body.edges).toEqual([{
+        from: `server:${githubServer.id}`,
+        to: 'skill:create_issue',
+      }]);
+    });
+
+    it('keeps the disabled empty-state graph account-free', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockMcpServerRepository.listForUser.mockResolvedValue([]);
+      mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+      const res = await request(
+        buildApp(USER_ID),
+        'GET',
+        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
+      );
+
+      const serialized = JSON.stringify(res.body);
+      expect(res.status).toBe(200);
+      expect(serialized).not.toContain('gmail');
+      expect(serialized).not.toContain('read_email');
+      expect(serialized).toContain('github');
+      expect(serialized).toContain('notion');
+    });
   });
 });

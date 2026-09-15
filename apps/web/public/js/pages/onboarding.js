@@ -874,7 +874,7 @@ const RECIPE_META = {
   },
   'productivity-pack': {
     displayName: 'Productivity pack',
-    description: 'Gmail, Google Calendar, Notion, and Slack.',
+    description: 'Notion and Slack capabilities available in this preview.',
     category: 'productivity',
   },
   'travel-pack': {

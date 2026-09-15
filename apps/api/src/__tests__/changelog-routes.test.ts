@@ -17,6 +17,7 @@ const {
   mockQuery,
   mockProvenanceRepo,
   mockMetricsRepo,
+  mockLoadConfig,
 } = vi.hoisted(() => ({
   mockMcpServerRepo: {
     getById: vi.fn(),
@@ -57,6 +58,11 @@ const {
     getSparkline: vi.fn().mockResolvedValue([]),
     getRecent: vi.fn().mockResolvedValue([]),
   },
+  mockLoadConfig: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -164,6 +170,7 @@ let app: Express;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
   mockQuery.mockResolvedValue({ rows: [] });
   app = buildApp();
 });
@@ -242,6 +249,7 @@ describe('GET /api/capabilities/pending-opt-ins', () => {
         rejected_at: null,
         server_display_name: 'Notion',
         server_registry_id: '@notionhq/notion-mcp-server',
+        server_oauth_provider: null,
       },
     ]);
 
@@ -266,6 +274,53 @@ describe('GET /api/capabilities/pending-opt-ins', () => {
 
     expect(status).toBe(200);
     expect((body as { optIns: unknown[] }).optIns).toHaveLength(0);
+  });
+
+  it('hides account-backed opt-ins by registry, provider, or skill while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockChangelogRepo.listPendingOptInsForUser.mockResolvedValue([
+      {
+        id: 'aaaaaaaa-0000-0000-0000-000000000001',
+        server_id: SERVER_ID,
+        skill_name: 'create_note',
+        server_display_name: 'Mail',
+        server_registry_id: 'gmail-mcp',
+        server_oauth_provider: null,
+      },
+      {
+        id: 'aaaaaaaa-0000-0000-0000-000000000002',
+        server_id: SERVER_ID,
+        skill_name: 'create_note',
+        server_display_name: 'Calendar alias',
+        server_registry_id: 'custom-calendar',
+        server_oauth_provider: 'google',
+      },
+      {
+        id: 'aaaaaaaa-0000-0000-0000-000000000003',
+        server_id: SERVER_ID,
+        skill_name: 'sendEmail',
+        server_display_name: 'Custom mail',
+        server_registry_id: 'custom-productivity',
+        server_oauth_provider: null,
+      },
+      {
+        id: OPT_IN_ID,
+        server_id: SERVER_ID,
+        skill_name: 'create_database',
+        server_display_name: 'Notion',
+        server_registry_id: '@notionhq/notion-mcp-server',
+        server_oauth_provider: null,
+      },
+    ]);
+
+    const { status, body } = await httpRequest(
+      app, 'GET',
+      `/api/capabilities/pending-opt-ins?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect((body as { optIns: Array<{ id: string }> }).optIns.map((row) => row.id))
+      .toEqual([OPT_IN_ID]);
   });
 
   it('returns 400 when userId is missing', async () => {
@@ -294,6 +349,7 @@ describe('POST /api/capabilities/pending-opt-ins/:id/accept', () => {
         rejected_at: null,
         server_display_name: 'Notion',
         server_registry_id: null,
+        server_oauth_provider: null,
       },
     ]);
     mockChangelogRepo.acceptOptIn.mockResolvedValue({ found: true });
@@ -316,6 +372,27 @@ describe('POST /api/capabilities/pending-opt-ins/:id/accept', () => {
     );
     expect(status).toBe(404);
   });
+
+  it('refuses an account-backed opt-in before granting the skill', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockChangelogRepo.listPendingOptInsForUser.mockResolvedValue([{
+      id: OPT_IN_ID,
+      server_id: SERVER_ID,
+      skill_name: 'schedule_focus_block',
+      server_display_name: 'Custom calendar',
+      server_registry_id: 'custom-productivity',
+      server_oauth_provider: null,
+    }]);
+
+    const { status, body } = await httpRequest(
+      app, 'POST',
+      `/api/capabilities/pending-opt-ins/${OPT_IN_ID}/accept?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(503);
+    expect(body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(mockChangelogRepo.acceptOptIn).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -335,6 +412,7 @@ describe('POST /api/capabilities/pending-opt-ins/:id/reject', () => {
         rejected_at: null,
         server_display_name: 'Notion',
         server_registry_id: null,
+        server_oauth_provider: null,
       },
     ]);
     mockChangelogRepo.rejectOptIn.mockResolvedValue({ found: true });
