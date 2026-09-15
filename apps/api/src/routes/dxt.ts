@@ -51,6 +51,10 @@ async function isBlockedGoogleDxtCapability(
 ): Promise<boolean> {
   const googleConnectionMode = loadConfig().googleConnectionMode;
   if (googleConnectionMode === 'experimental') return false;
+  // In the account-free preview, an empty inventory cannot prove that a DXT
+  // artifact or its source server is free of account-backed tools. Treat
+  // missing capability evidence as blocked on every transfer path.
+  if (skills.length === 0) return true;
   const trustedEntry = await dxtRegistryClient.getById(registryId);
   return isGoogleCapabilityBlocked(googleConnectionMode, {
     registryId,

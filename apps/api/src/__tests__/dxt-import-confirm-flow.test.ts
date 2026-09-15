@@ -283,6 +283,22 @@ describe('POST /api/dxt/import', () => {
     expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
     expect(mockQuery).not.toHaveBeenCalled();
   });
+
+  it('rejects an empty capability inventory before pending-import effects', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob } = await buildArtifact('notion-mcp', []);
+
+    const result = await req(buildApp(), 'POST', '/api/dxt/import', {
+      blob: blob.toString('base64'),
+    });
+
+    expect(result.status).toBe(503);
+    expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
+    expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -463,6 +479,24 @@ describe('POST /api/dxt/imports/:id/confirm', () => {
     expect(result.status).toBe(201);
     expect(mockQuery).toHaveBeenCalledTimes(1);
     expect(mockDxtImportRepo.markInstalled).toHaveBeenCalledWith(IMPORT_ID, SERVER_ID);
+  });
+
+  it('rejects an empty stored capability inventory before confirm install effects', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob, sha256 } = await buildArtifact('notion-mcp', []);
+    mockDxtImportRepo.findById.mockResolvedValueOnce(makePendingImportRow({
+      artifact_blob: blob,
+      artifact_sha256: sha256,
+      registry_id: 'notion-mcp',
+    }));
+
+    const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
+
+    expect(result.status).toBe(503);
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markFailed).not.toHaveBeenCalled();
+    expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
   });
 });
 

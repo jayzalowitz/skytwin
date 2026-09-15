@@ -231,6 +231,20 @@ describe('POST /api/dxt/export/:serverId', () => {
     expect(mockDxtExportRepo.create).not.toHaveBeenCalled();
   });
 
+  it('rejects an empty capability inventory before serialization or persistence', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow());
+    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce([]);
+    const serializeArtifact = vi.fn();
+    const app = buildApp(USER_ID, { serializeArtifact });
+
+    const result = await req(app, 'POST', `/api/dxt/export/${SERVER_ID}`);
+
+    expect(result.status).toBe(503);
+    expect(serializeArtifact).not.toHaveBeenCalled();
+    expect(mockDxtExportRepo.create).not.toHaveBeenCalled();
+  });
+
   it('preserves the exact experimental opt-in for account-backed export', async () => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
     mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow({
@@ -308,6 +322,9 @@ describe('GET /api/dxt/exports', () => {
       serverId === SERVER_ID
         ? makeMcpServerRow({ registry_id: 'custom-mail', oauth_provider: 'google' })
         : makeMcpServerRow({ id: NEIGHBOR_SERVER_ID, registry_id: 'notion-mcp', oauth_provider: 'notion' }));
+    mockMcpServerRepo.listSkillNamesForServer
+      .mockResolvedValueOnce(['read_email'])
+      .mockResolvedValueOnce(['notion.search']);
     const app = buildApp();
 
     const result = await req(app, 'GET', '/api/dxt/exports');
@@ -316,6 +333,27 @@ describe('GET /api/dxt/exports', () => {
     const body = result.body as { exports: Array<{ id: string }> };
     expect(body.exports.map((row) => row.id)).toEqual([NEIGHBOR_EXPORT_ID]);
     expect(mockDxtExportRepo.listForUser).not.toHaveBeenCalled();
+  });
+
+  it('omits exports whose source has no capability inventory', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockDxtExportRepo.listMetadataForUser.mockResolvedValueOnce([{
+      id: EXPORT_ID,
+      user_id: USER_ID,
+      server_id: SERVER_ID,
+      exported_at: new Date(),
+      artifact_sha256: Buffer.alloc(32, 0xaa),
+      blob_bytes: 100,
+    }]);
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow());
+    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce([]);
+
+    const result = await req(buildApp(), 'GET', '/api/dxt/exports');
+
+    expect(result.status).toBe(200);
+    expect((result.body as { exports: unknown[] }).exports).toEqual([]);
+    expect(mockDxtExportRepo.listForUser).not.toHaveBeenCalled();
+    expect(mockDxtExportRepo.findById).not.toHaveBeenCalled();
   });
 });
 
@@ -368,6 +406,59 @@ describe('GET /api/dxt/exports/:id/blob', () => {
     expect(JSON.stringify(result.body)).not.toContain(artifact.blob.toString('base64'));
     expect(mockMcpServerRepo.getById).not.toHaveBeenCalled();
     expect(mockMcpServerRepo.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it('refuses an artifact with no capability inventory before emitting blob bytes', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const artifact = await serialize({
+      sourceInstanceId: SERVER_ID,
+      registryId: 'notion-mcp',
+      transport: 'stdio',
+      command: 'npx',
+      skills: [],
+    });
+    mockDxtExportRepo.findById.mockResolvedValueOnce({
+      id: EXPORT_ID,
+      user_id: USER_ID,
+      server_id: SERVER_ID,
+      exported_at: new Date(),
+      artifact_blob: artifact.blob,
+      artifact_sha256: artifact.sha256,
+    });
+
+    const result = await req(buildApp(), 'GET', `/api/dxt/exports/${EXPORT_ID}/blob`);
+
+    expect(result.status).toBe(503);
+    expect(JSON.stringify(result.body)).not.toContain(artifact.blob.toString('base64'));
+    expect(mockMcpServerRepo.getById).not.toHaveBeenCalled();
+    expect(mockMcpServerRepo.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it('allows an empty-inventory download behind the exact experimental opt-in', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    const artifact = await serialize({
+      sourceInstanceId: SERVER_ID,
+      registryId: 'notion-mcp',
+      transport: 'stdio',
+      command: 'npx',
+      skills: [],
+    });
+    mockDxtExportRepo.findById.mockResolvedValueOnce({
+      id: EXPORT_ID,
+      user_id: USER_ID,
+      server_id: SERVER_ID,
+      exported_at: new Date(),
+      artifact_blob: artifact.blob,
+      artifact_sha256: artifact.sha256,
+    });
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow());
+    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce([]);
+
+    const result = await req(buildApp(), 'GET', `/api/dxt/exports/${EXPORT_ID}/blob`);
+
+    expect(result.status).toBe(200);
+    expect(mockMcpServerRepo.getById).toHaveBeenCalledWith(SERVER_ID);
+    expect(mockMcpServerRepo.listSkillNamesForServer).toHaveBeenCalledWith(SERVER_ID);
   });
 
   it('fails closed on a stored export digest mismatch', async () => {
