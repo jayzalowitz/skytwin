@@ -1,0 +1,1296 @@
+#!/usr/bin/env node
+
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  readSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
+import {
+  machineProducerJobName,
+  machineVerifierCommand,
+  machineVerifierPath,
+} from "../release-constants.mjs";
+
+export const CLAIM_ID = "release.signing";
+export const CHECK_IDS = Object.freeze([
+  "release.platform-signature-validation",
+]);
+
+const WORKFLOW_PATH = ".github/workflows/build.yml";
+const MAX_API_BYTES = 16 * 1024 * 1024;
+const MAX_SUBJECT_BYTES = 8 * 1024 * 1024 * 1024;
+const MAX_TOOL_OUTPUT_BYTES = 1024 * 1024;
+const MACOS_NATIVE_TOOLS = Object.freeze({
+  codesign: "/usr/bin/codesign",
+  spctl: "/usr/sbin/spctl",
+  xcrun: "/usr/bin/xcrun",
+  hdiutil: "/usr/bin/hdiutil",
+  ditto: "/usr/bin/ditto",
+});
+const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
+const FOUR_SEGMENT_TAG = new RegExp(
+  `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})$`,
+);
+const BETA_TAG = new RegExp(
+  `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})-beta(?:\\.([1-9][0-9]{0,8}))?$`,
+);
+
+const PLATFORM_CONFIG = Object.freeze({
+  macos: Object.freeze({
+    nodePlatform: "darwin",
+    runnerOs: "macOS",
+    runnerArch: "ARM64",
+    primaryArtifactName: "SkyTwin-macOS-dmg",
+    artifacts: Object.freeze([
+      Object.freeze({
+        artifactName: "SkyTwin-macOS-dmg",
+        kind: "desktop-installer",
+        pattern: /^SkyTwin-APP_VERSION-(?:arm64|x64)\.dmg$/u,
+      }),
+      Object.freeze({
+        artifactName: "SkyTwin-macOS-zip",
+        kind: "desktop-archive",
+        pattern: /^SkyTwin-APP_VERSION-(?:arm64|x64)-mac\.zip$/u,
+      }),
+    ]),
+  }),
+  windows: Object.freeze({
+    nodePlatform: "win32",
+    runnerOs: "Windows",
+    runnerArch: "X64",
+    primaryArtifactName: "SkyTwin-Windows-installer",
+    artifacts: Object.freeze([
+      Object.freeze({
+        artifactName: "SkyTwin-Windows-installer",
+        kind: "desktop-installer",
+        pattern: /^SkyTwin-Setup-APP_VERSION\.exe$/u,
+      }),
+    ]),
+  }),
+  linux: Object.freeze({
+    nodePlatform: "linux",
+    runnerOs: "Linux",
+    runnerArch: "X64",
+    primaryArtifactName: "SkyTwin-Linux-AppImage",
+    artifacts: Object.freeze([
+      Object.freeze({
+        artifactName: "SkyTwin-Linux-AppImage",
+        kind: "desktop-installer",
+        pattern: /^SkyTwin-APP_VERSION\.AppImage$/u,
+      }),
+      Object.freeze({
+        artifactName: "SkyTwin-Linux-deb",
+        kind: "desktop-installer",
+        pattern: /^skytwin-desktop_APP_VERSION_(?:amd64|arm64)\.deb$/u,
+      }),
+      Object.freeze({
+        artifactName: "SkyTwin-Linux-rpm",
+        kind: "desktop-installer",
+        pattern: /^skytwin-desktop-APP_VERSION\.(?:x86_64|aarch64)\.rpm$/u,
+      }),
+    ]),
+  }),
+});
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function exactKeys(value, expected, description) {
+  assert(isRecord(value), `${description} must be an object`);
+  assert(
+    JSON.stringify(Object.keys(value).sort()) ===
+      JSON.stringify([...expected].sort()),
+    `${description} has unexpected or missing fields`,
+  );
+}
+
+function within(root, candidate) {
+  const path = relative(root, candidate);
+  return (
+    path !== "" &&
+    path !== ".." &&
+    !path.startsWith(`..${sep}`) &&
+    !isAbsolute(path)
+  );
+}
+
+function sameFileIdentity(left, right) {
+  return ["dev", "ino", "size", "mtimeNs", "ctimeNs"].every(
+    (field) => left[field] === right[field],
+  );
+}
+
+function assertNoSymlinkComponents(root, candidate, description) {
+  const path = relative(root, candidate);
+  assert(within(root, candidate), `${description} escapes its root`);
+  let current = root;
+  for (const component of path.split(sep)) {
+    current = join(current, component);
+    assert(
+      !lstatSync(current).isSymbolicLink(),
+      `${description} contains a symlink component`,
+    );
+  }
+}
+
+export function inspectStableRegularFile(
+  rootPath,
+  requestedPath,
+  description,
+  maximumBytes = MAX_SUBJECT_BYTES,
+  testHooks = {},
+) {
+  const lexicalRoot = resolve(rootPath);
+  const requested = resolve(requestedPath);
+  assert(within(lexicalRoot, requested), `${description} escapes its root`);
+  assertNoSymlinkComponents(lexicalRoot, requested, description);
+  const beforePath = lstatSync(requested, { bigint: true });
+  assert(
+    beforePath.isFile() && !beforePath.isSymbolicLink(),
+    `${description} must be a direct regular non-symlink file`,
+  );
+  assert(
+    beforePath.size > 0n && beforePath.size <= BigInt(maximumBytes),
+    `${description} size is outside the release bound`,
+  );
+  const canonicalRoot = realpathSync(lexicalRoot);
+  const canonical = realpathSync(requested);
+  assert(
+    within(canonicalRoot, canonical),
+    `${description} resolves outside its root`,
+  );
+  const descriptor = openSync(
+    requested,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    assert(
+      before.isFile() && sameFileIdentity(before, beforePath),
+      `${description} changed before hashing`,
+    );
+    testHooks.afterOpen?.({ descriptor, requested });
+    const digest = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    for (;;) {
+      const count = readSync(descriptor, buffer, 0, buffer.length, position);
+      if (count === 0) break;
+      position += count;
+      assert(
+        position <= maximumBytes,
+        `${description} exceeded the release size bound while hashing`,
+      );
+      digest.update(buffer.subarray(0, count));
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const afterPath = lstatSync(requested, { bigint: true });
+    assert(
+      afterPath.isFile() && !afterPath.isSymbolicLink(),
+      `${description} was replaced while hashing`,
+    );
+    assert(
+      sameFileIdentity(before, after) && sameFileIdentity(after, afterPath),
+      `${description} changed while hashing`,
+    );
+    assert(
+      BigInt(position) === after.size,
+      `${description} size changed while hashing`,
+    );
+    return {
+      path: requested,
+      name: basename(requested),
+      sizeBytes: position,
+      sha256: digest.digest("hex"),
+      device: after.dev.toString(),
+      inode: after.ino.toString(),
+    };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function escapedPattern(pattern, appVersion) {
+  const escaped = appVersion.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  return new RegExp(
+    pattern.source.replace("APP_VERSION", escaped),
+    pattern.flags,
+  );
+}
+
+export function normalizeReleaseVersion(releaseTag) {
+  const match =
+    releaseTag.match(FOUR_SEGMENT_TAG) ?? releaseTag.match(BETA_TAG);
+  assert(match, "release tag is not a canonical four-segment or beta tag");
+  const [, major, minor, patch, rawBuild] = match;
+  const build = rawBuild ?? "0";
+  assert(
+    Number(build) < 100 && Number(patch) <= 999999,
+    "release tag cannot be represented as an app version",
+  );
+  return {
+    repositoryVersion: `${major}.${minor}.${patch}.${build}`,
+    appVersion: `${major}.${minor}.${Number(patch) * 100 + Number(build)}`,
+  };
+}
+
+export function assertSourceCheckout({
+  root,
+  sourceCommit,
+  releaseTag,
+  executeGit,
+}) {
+  assert(
+    /^[0-9a-f]{40}$/u.test(sourceCommit),
+    "source commit must be a full lowercase Git SHA",
+  );
+  assert(
+    executeGit(["rev-parse", "HEAD"], root).trim() === sourceCommit,
+    "source commit does not match checked-out HEAD",
+  );
+  assert(
+    executeGit(["status", "--porcelain=v1", "--untracked-files=no"], root) ===
+      "",
+    "release verifier requires an unmodified tracked source checkout",
+  );
+  const versions = normalizeReleaseVersion(releaseTag);
+  assert(
+    readFileSync(join(root, "VERSION"), "utf8").trim() ===
+      versions.repositoryVersion,
+    "VERSION does not match the release tag",
+  );
+  assert(
+    JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version ===
+      versions.repositoryVersion,
+    "package.json version does not match the release tag",
+  );
+  return versions;
+}
+
+function defaultExecuteGit(args, cwd) {
+  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  const git =
+    process.platform === "win32"
+      ? "C:\\Program Files\\Git\\cmd\\git.exe"
+      : "/usr/bin/git";
+  const env = Object.fromEntries(
+    ["SystemRoot", "WINDIR", "TMPDIR", "TEMP", "TMP"]
+      .filter((name) => typeof process.env[name] === "string")
+      .map((name) => [name, process.env[name]]),
+  );
+  Object.assign(env, {
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: nullDevice,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+    LC_ALL: "C",
+  });
+  const result = spawnSync(
+    git,
+    [
+      "--no-pager",
+      "--literal-pathspecs",
+      "-c",
+      `core.hooksPath=${nullDevice}`,
+      "-c",
+      "core.fsmonitor=false",
+      "-c",
+      "core.untrackedCache=false",
+      "-c",
+      `core.excludesFile=${nullDevice}`,
+      ...args,
+    ],
+    {
+      cwd,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 30_000,
+      maxBuffer: MAX_TOOL_OUTPUT_BYTES,
+      windowsHide: true,
+    },
+  );
+  if (result.error) throw result.error;
+  assert(
+    result.status === 0 && result.signal === null,
+    `git ${args[0]} failed while establishing source identity`,
+  );
+  return result.stdout;
+}
+
+export function readRunIdentity(platform, env = process.env) {
+  const config = PLATFORM_CONFIG[platform];
+  assert(config, `unsupported release signing platform: ${platform}`);
+  assert(
+    env.RUNNER_OS === config.runnerOs,
+    `RUNNER_OS does not match ${platform}`,
+  );
+  assert(
+    env.RUNNER_ARCH === config.runnerArch,
+    `RUNNER_ARCH does not match the canonical ${platform} runner`,
+  );
+  const sourceCommit = env.GITHUB_SHA;
+  const repository = env.GITHUB_REPOSITORY;
+  const releaseTag = env.GITHUB_REF_NAME;
+  const ref = env.GITHUB_REF;
+  const runId = Number(env.GITHUB_RUN_ID);
+  assert(/^[0-9a-f]{40}$/u.test(sourceCommit ?? ""), "GITHUB_SHA is invalid");
+  assert(
+    /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/u.test(repository ?? ""),
+    "GITHUB_REPOSITORY is invalid",
+  );
+  assert(typeof releaseTag === "string", "GITHUB_REF_NAME is missing");
+  normalizeReleaseVersion(releaseTag);
+  assert(
+    ref === `refs/tags/${releaseTag}`,
+    "GITHUB_REF does not identify the release tag exactly",
+  );
+  assert(
+    Number.isSafeInteger(runId) && runId > 0,
+    "GITHUB_RUN_ID must be a positive integer",
+  );
+  assert(
+    typeof env.GITHUB_TOKEN === "string" && env.GITHUB_TOKEN.length >= 20,
+    "GITHUB_TOKEN is required",
+  );
+  return {
+    sourceCommit,
+    repository,
+    releaseTag,
+    ref,
+    runId,
+    token: env.GITHUB_TOKEN,
+  };
+}
+
+async function responseJson(response, description) {
+  assert(
+    response?.ok === true,
+    `${description} returned HTTP ${response?.status ?? "unknown"}`,
+  );
+  const reader = response.body?.getReader();
+  assert(reader, `${description} returned an empty response body`);
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_API_BYTES) {
+      await reader.cancel();
+      throw new Error(`${description} response exceeds the release bound`);
+    }
+    chunks.push(value);
+  }
+  assert(size > 0, `${description} returned an empty response body`);
+  try {
+    return JSON.parse(new TextDecoder().decode(Buffer.concat(chunks, size)));
+  } catch {
+    throw new Error(`${description} returned invalid JSON`);
+  }
+}
+
+async function githubJson(repository, path, token, fetchImpl) {
+  const response = await fetchImpl(
+    `https://api.github.com/repos/${repository}${path}`,
+    {
+      headers: {
+        Accept: "application/vnd.github+json",
+        Authorization: `Bearer ${token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "skytwin-release-signing-verifier",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    },
+  );
+  return responseJson(response, `GitHub API ${path}`);
+}
+
+export async function resolveCurrentRunArtifacts(
+  identity,
+  platform,
+  fetchImpl = globalThis.fetch,
+) {
+  const config = PLATFORM_CONFIG[platform];
+  assert(config, `unsupported release signing platform: ${platform}`);
+  const run = await githubJson(
+    identity.repository,
+    `/actions/runs/${identity.runId}`,
+    identity.token,
+    fetchImpl,
+  );
+  assert(
+    run.id === identity.runId &&
+      run.repository?.full_name === identity.repository &&
+      run.head_sha === identity.sourceCommit &&
+      run.head_branch === identity.releaseTag &&
+      run.event === "push" &&
+      run.path === WORKFLOW_PATH,
+    "current workflow run is not the canonical tag-push build for this repository and commit",
+  );
+  const page = await githubJson(
+    identity.repository,
+    `/actions/runs/${identity.runId}/artifacts?per_page=100&page=1`,
+    identity.token,
+    fetchImpl,
+  );
+  assert(
+    Array.isArray(page?.artifacts) && Number.isSafeInteger(page.total_count),
+    "GitHub artifact inventory is malformed",
+  );
+  assert(
+    page.total_count <= 100 && page.artifacts.length === page.total_count,
+    "GitHub artifact inventory is paginated or incomplete",
+  );
+  const resolved = new Map();
+  for (const expected of config.artifacts) {
+    const matches = page.artifacts.filter(
+      (artifact) => artifact?.name === expected.artifactName,
+    );
+    assert(
+      matches.length === 1,
+      `expected exactly one current-run ${expected.artifactName} artifact, found ${matches.length}`,
+    );
+    const artifact = matches[0];
+    const digest = String(artifact.digest ?? "").replace(/^sha256:/u, "");
+    assert(
+      Number.isSafeInteger(artifact.id) &&
+        artifact.id > 0 &&
+        artifact.expired === false &&
+        /^[0-9a-f]{64}$/u.test(digest) &&
+        artifact.workflow_run?.id === identity.runId &&
+        artifact.workflow_run?.head_sha === identity.sourceCommit,
+      `${expected.artifactName} artifact is not an unexpired digest-bound artifact from the current run`,
+    );
+    const detail = await githubJson(
+      identity.repository,
+      `/actions/artifacts/${artifact.id}`,
+      identity.token,
+      fetchImpl,
+    );
+    assert(
+      detail.id === artifact.id &&
+        detail.name === expected.artifactName &&
+        detail.expired === false &&
+        detail.digest === `sha256:${digest}` &&
+        detail.workflow_run?.id === identity.runId &&
+        detail.workflow_run?.head_sha === identity.sourceCommit,
+      `${expected.artifactName} artifact detail disagrees with the current-run inventory`,
+    );
+    resolved.set(expected.artifactName, {
+      artifactId: artifact.id,
+      artifactName: expected.artifactName,
+      artifactSha256: digest,
+      kind: expected.kind,
+    });
+  }
+  return resolved;
+}
+
+export function inspectPlatformSubjects(rootPath, platform, appVersion) {
+  const config = PLATFORM_CONFIG[platform];
+  assert(config, `unsupported release signing platform: ${platform}`);
+  const root = realpathSync(resolve(rootPath));
+  const seenNames = new Set();
+  const subjects = new Map();
+  for (const expected of config.artifacts) {
+    const directory = resolve(root, "artifacts", expected.artifactName);
+    assert(
+      within(root, directory),
+      `${expected.artifactName} escapes checkout`,
+    );
+    const directoryStat = lstatSync(directory);
+    assert(
+      directoryStat.isDirectory() && !directoryStat.isSymbolicLink(),
+      `${expected.artifactName} must be a direct real directory`,
+    );
+    assert(
+      within(root, realpathSync(directory)),
+      `${expected.artifactName} resolves outside checkout`,
+    );
+    const entries = readdirSync(directory, { withFileTypes: true });
+    assert(
+      entries.length === 1,
+      `${expected.artifactName} must contain exactly one direct subject`,
+    );
+    const entry = entries[0];
+    assert(
+      entry.isFile() &&
+        !entry.isSymbolicLink() &&
+        basename(entry.name) === entry.name,
+      `${expected.artifactName} subject must be a direct regular non-symlink file`,
+    );
+    assert(
+      escapedPattern(expected.pattern, appVersion).test(entry.name),
+      `${expected.artifactName} has unexpected filename ${entry.name}`,
+    );
+    assert(
+      !seenNames.has(entry.name),
+      `duplicate release subject filename ${entry.name}`,
+    );
+    seenNames.add(entry.name);
+    const subject = inspectStableRegularFile(
+      root,
+      join(directory, entry.name),
+      `${expected.artifactName} subject`,
+    );
+    subjects.set(expected.artifactName, {
+      ...subject,
+      artifactName: expected.artifactName,
+      kind: expected.kind,
+      relativePath: `artifacts/${expected.artifactName}/${entry.name}`,
+    });
+  }
+  return subjects;
+}
+
+export function readTrustPolicy(platform, env = process.env) {
+  // These pins are operator assertions, not facts this code can derive. Future
+  // workflow wiring must inject both from protected operator/environment
+  // configuration—never tagged-workflow literals or artifact-derived values.
+  // This verifier proves only that the supplied pin has the expected form and
+  // matches the native signature observation; it cannot prove pin provenance.
+  if (platform === "macos") {
+    const teamId = env.SKYTWIN_MACOS_TEAM_ID;
+    assert(
+      /^[A-Z0-9]{10}$/u.test(teamId ?? ""),
+      "SKYTWIN_MACOS_TEAM_ID must pin the expected 10-character Apple Team ID",
+    );
+    return { teamId };
+  }
+  if (platform === "windows") {
+    const signerSha256 = env.SKYTWIN_WINDOWS_SIGNER_SHA256;
+    assert(
+      /^[0-9a-fA-F]{64}$/u.test(signerSha256 ?? ""),
+      "SKYTWIN_WINDOWS_SIGNER_SHA256 must pin the expected signer certificate SHA-256 fingerprint",
+    );
+    return { signerSha256: signerSha256.toLowerCase() };
+  }
+  throw new Error(
+    "Linux release signing policy is not configured: AppImage, deb, and rpm require explicit verification methods and pinned trust roots before release.signing can pass",
+  );
+}
+
+export function executeNativeCommand(
+  file,
+  args,
+  { env = process.env, cwd } = {},
+) {
+  const result = spawnSync(file, args, {
+    cwd,
+    env,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
+    maxBuffer: MAX_TOOL_OUTPUT_BYTES,
+    windowsHide: true,
+  });
+  if (result.error) throw result.error;
+  return {
+    exitCode: result.status,
+    signal: result.signal,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
+}
+
+function checkedCommand(execute, file, args, options, description) {
+  const result = execute(file, args, options);
+  assert(
+    isRecord(result) &&
+      result.exitCode === 0 &&
+      result.signal == null &&
+      typeof result.stdout === "string" &&
+      typeof result.stderr === "string" &&
+      Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <=
+        MAX_TOOL_OUTPUT_BYTES,
+    `${description} failed`,
+  );
+  return `${result.stdout}\n${result.stderr}`;
+}
+
+function uniqueMetadata(output, key, description) {
+  const values = [...output.matchAll(new RegExp(`^${key}=(.+)$`, "gmu"))].map(
+    (match) => match[1].trim(),
+  );
+  assert(
+    values.length === 1 && values[0].length > 0,
+    `${description} has missing or ambiguous ${key}`,
+  );
+  return values[0];
+}
+
+export function parseMacCodeSignature(
+  output,
+  expectedTeamId,
+  description,
+  { requireRuntime = true } = {},
+) {
+  const identifier = uniqueMetadata(output, "Identifier", description);
+  const teamId = uniqueMetadata(output, "TeamIdentifier", description);
+  const authorities = [...output.matchAll(/^Authority=(.+)$/gmu)].map((match) =>
+    match[1].trim(),
+  );
+  assert(
+    teamId === expectedTeamId,
+    `${description} Apple Team ID is untrusted`,
+  );
+  assert(
+    authorities.length >= 3 &&
+      new Set(authorities).size === authorities.length &&
+      authorities.filter((value) =>
+        value.startsWith("Developer ID Application:"),
+      ).length === 1 &&
+      authorities.includes("Developer ID Certification Authority") &&
+      authorities.includes("Apple Root CA"),
+    `${description} Developer ID authority chain is missing or ambiguous`,
+  );
+  if (requireRuntime)
+    assert(
+      /^CodeDirectory .*flags=.*\(runtime\)/mu.test(output),
+      `${description} does not enable the hardened runtime`,
+    );
+  return {
+    identifier,
+    teamId,
+    signer: authorities.find((value) =>
+      value.startsWith("Developer ID Application:"),
+    ),
+  };
+}
+
+export function parseMacGatekeeper(output, description) {
+  const accepted = output
+    .split(/\r?\n/u)
+    .filter((line) => /^(?:[^\r\n]+: )?accepted$/u.test(line.trim()));
+  const source = [...output.matchAll(/^source=(.+)$/gmu)].map((match) =>
+    match[1].trim(),
+  );
+  assert(
+    accepted.length === 1 &&
+      source.length === 1 &&
+      source[0] === "Notarized Developer ID",
+    `${description} is not accepted as a notarized Developer ID subject`,
+  );
+}
+
+function inspectMacApp(extractionRoot, appPath, description) {
+  const lexicalRoot = resolve(extractionRoot);
+  const requested = resolve(appPath);
+  assert(within(lexicalRoot, requested), `${description} escapes extraction`);
+  assertNoSymlinkComponents(lexicalRoot, requested, description);
+  const appStat = lstatSync(requested);
+  assert(
+    appStat.isDirectory() && !appStat.isSymbolicLink(),
+    `${description} must contain a direct SkyTwin.app bundle`,
+  );
+  assert(
+    within(realpathSync(lexicalRoot), realpathSync(requested)),
+    `${description} resolves outside extraction`,
+  );
+  const executable = join(requested, "Contents", "MacOS", "SkyTwin");
+  const packagedExecutable = inspectStableRegularFile(
+    lexicalRoot,
+    executable,
+    `${description} packaged executable`,
+    MAX_SUBJECT_BYTES,
+  );
+  return { path: requested, packagedExecutable };
+}
+
+function verifyMacApp(appPath, expectedTeamId, execute, env, description) {
+  checkedCommand(
+    execute,
+    MACOS_NATIVE_TOOLS.codesign,
+    ["--verify", "--deep", "--strict", "--verbose=4", appPath],
+    { env },
+    `${description} code-signature verification`,
+  );
+  const signature = parseMacCodeSignature(
+    checkedCommand(
+      execute,
+      MACOS_NATIVE_TOOLS.codesign,
+      ["--display", "--verbose=4", appPath],
+      { env },
+      `${description} signature inspection`,
+    ),
+    expectedTeamId,
+    description,
+  );
+  assert(
+    signature.identifier === "com.skytwin.desktop",
+    `${description} has an unexpected signed application identifier`,
+  );
+  parseMacGatekeeper(
+    checkedCommand(
+      execute,
+      MACOS_NATIVE_TOOLS.spctl,
+      ["--assess", "--type", "execute", "--verbose=4", appPath],
+      { env },
+      `${description} Gatekeeper assessment`,
+    ),
+    description,
+  );
+  const stapler = checkedCommand(
+    execute,
+    MACOS_NATIVE_TOOLS.xcrun,
+    ["stapler", "validate", appPath],
+    { env },
+    `${description} notarization ticket validation`,
+  );
+  assert(
+    /The validate action worked!/u.test(stapler),
+    `${description} has no valid stapled notarization ticket`,
+  );
+  return signature;
+}
+
+export function verifyMacSubjects(
+  subjects,
+  policy,
+  { execute = executeNativeCommand } = {},
+) {
+  assert(
+    subjects.size === 2 &&
+      subjects.has("SkyTwin-macOS-dmg") &&
+      subjects.has("SkyTwin-macOS-zip"),
+    "macOS signing verification requires the exact DMG and ZIP subject set",
+  );
+  const commandEnv = {
+    PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+    LANG: "C",
+    LC_ALL: "C",
+  };
+  const results = new Map();
+  let canonicalSigner = null;
+  for (const artifactName of ["SkyTwin-macOS-dmg", "SkyTwin-macOS-zip"]) {
+    const subject = subjects.get(artifactName);
+    const extractionRoot = mkdtempSync(join(tmpdir(), "skytwin-signing-"));
+    let detachMount = null;
+    try {
+      let appPath;
+      if (artifactName === "SkyTwin-macOS-dmg") {
+        parseMacGatekeeper(
+          checkedCommand(
+            execute,
+            MACOS_NATIVE_TOOLS.spctl,
+            [
+              "--assess",
+              "--type",
+              "open",
+              "--context",
+              "context:primary-signature",
+              "--verbose=4",
+              subject.path,
+            ],
+            { env: commandEnv },
+            "macOS DMG Gatekeeper assessment",
+          ),
+          "macOS DMG",
+        );
+        const dmgStapler = checkedCommand(
+          execute,
+          MACOS_NATIVE_TOOLS.xcrun,
+          ["stapler", "validate", subject.path],
+          { env: commandEnv },
+          "macOS DMG notarization ticket validation",
+        );
+        assert(
+          /The validate action worked!/u.test(dmgStapler),
+          "macOS DMG has no valid stapled notarization ticket",
+        );
+        const mount = join(extractionRoot, "mounted");
+        mkdirSync(mount);
+        checkedCommand(
+          execute,
+          MACOS_NATIVE_TOOLS.hdiutil,
+          [
+            "attach",
+            "-readonly",
+            "-nobrowse",
+            "-noautoopen",
+            "-mountpoint",
+            mount,
+            subject.path,
+          ],
+          { env: commandEnv },
+          "macOS DMG mount",
+        );
+        detachMount = mount;
+        appPath = inspectMacApp(mount, join(mount, "SkyTwin.app"), "macOS DMG");
+      } else {
+        const extracted = join(extractionRoot, "unzipped");
+        mkdirSync(extracted);
+        checkedCommand(
+          execute,
+          MACOS_NATIVE_TOOLS.ditto,
+          ["-x", "-k", "--sequesterRsrc", subject.path, extracted],
+          { env: commandEnv },
+          "macOS ZIP extraction",
+        );
+        const entries = readdirSync(extracted, { withFileTypes: true });
+        assert(
+          entries.length === 1 &&
+            entries[0].name === "SkyTwin.app" &&
+            entries[0].isDirectory() &&
+            !entries[0].isSymbolicLink(),
+          "macOS ZIP must contain only one direct real SkyTwin.app bundle",
+        );
+        appPath = inspectMacApp(
+          extracted,
+          join(extracted, "SkyTwin.app"),
+          "macOS ZIP",
+        );
+      }
+      const appSignature = verifyMacApp(
+        appPath.path,
+        policy.teamId,
+        execute,
+        commandEnv,
+        artifactName,
+      );
+      const observedExecutable = inspectStableRegularFile(
+        extractionRoot,
+        appPath.packagedExecutable.path,
+        `${artifactName} packaged executable after native verification`,
+        MAX_SUBJECT_BYTES,
+      );
+      assert(
+        observedExecutable.sha256 === appPath.packagedExecutable.sha256 &&
+          observedExecutable.sizeBytes ===
+            appPath.packagedExecutable.sizeBytes &&
+          observedExecutable.device === appPath.packagedExecutable.device &&
+          observedExecutable.inode === appPath.packagedExecutable.inode,
+        `${artifactName} packaged executable changed during native verification`,
+      );
+      canonicalSigner = canonicalSigner ?? appSignature;
+      assert(
+        appSignature.teamId === canonicalSigner.teamId &&
+          appSignature.signer === canonicalSigner.signer,
+        "macOS packaged subjects have different signer identities",
+      );
+      results.set(artifactName, {
+        signatureResult: "pass",
+        notarizationResult: "pass",
+        verificationMethod:
+          artifactName === "SkyTwin-macOS-dmg"
+            ? "gatekeeper+stapler+dmg-contained-app-codesign"
+            : "ditto-contained-app+codesign+gatekeeper+stapler",
+        signer: appSignature.signer,
+        signerTeamId: appSignature.teamId,
+        signedIdentifier: appSignature.identifier,
+      });
+    } finally {
+      try {
+        if (detachMount !== null)
+          checkedCommand(
+            execute,
+            MACOS_NATIVE_TOOLS.hdiutil,
+            ["detach", detachMount],
+            { env: commandEnv },
+            "macOS DMG detach",
+          );
+      } finally {
+        rmSync(extractionRoot, { recursive: true, force: true });
+      }
+    }
+  }
+  return results;
+}
+
+const WINDOWS_SIGNATURE_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$signature = Get-AuthenticodeSignature -LiteralPath $env:SKYTWIN_SIGNATURE_SUBJECT
+if ($null -eq $signature -or $null -eq $signature.SignerCertificate) { throw 'missing Authenticode signer' }
+$certificate = $signature.SignerCertificate
+$timestamp = $signature.TimeStamperCertificate
+$ekuExtension = $certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.37' }
+if ($null -eq $ekuExtension) { throw 'missing enhanced key usage' }
+$eku = [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($ekuExtension, $ekuExtension.Critical)
+$ekuOids = @($eku.EnhancedKeyUsages | ForEach-Object { $_.Value })
+[ordered]@{
+  status = [string]$signature.Status
+  signatureType = [string]$signature.SignatureType
+  signerSubject = [string]$certificate.Subject
+  signerIssuer = [string]$certificate.Issuer
+  signerSha256 = $certificate.GetCertHashString([Security.Cryptography.HashAlgorithmName]::SHA256).ToLowerInvariant()
+  codeSigningEku = $ekuOids -contains '1.3.6.1.5.5.7.3.3'
+  timestampPresent = $null -ne $timestamp
+  timestampSignerSha256 = if ($null -eq $timestamp) { '' } else { $timestamp.GetCertHashString([Security.Cryptography.HashAlgorithmName]::SHA256).ToLowerInvariant() }
+} | ConvertTo-Json -Compress
+`;
+
+export function parseWindowsSignature(output, expectedSignerSha256) {
+  let value;
+  try {
+    value = JSON.parse(output.trim());
+  } catch {
+    throw new Error("Windows Authenticode verifier returned invalid JSON");
+  }
+  exactKeys(
+    value,
+    [
+      "status",
+      "signatureType",
+      "signerSubject",
+      "signerIssuer",
+      "signerSha256",
+      "codeSigningEku",
+      "timestampPresent",
+      "timestampSignerSha256",
+    ],
+    "Windows Authenticode result",
+  );
+  assert(value.status === "Valid", "Windows Authenticode status is not Valid");
+  assert(
+    value.signatureType === "Authenticode",
+    "Windows subject does not carry an Authenticode signature",
+  );
+  assert(
+    typeof value.signerSubject === "string" &&
+      value.signerSubject.length > 0 &&
+      typeof value.signerIssuer === "string" &&
+      value.signerIssuer.length > 0 &&
+      value.signerSubject !== value.signerIssuer,
+    "Windows signer certificate identity is missing or self-issued",
+  );
+  assert(
+    value.signerSha256 === expectedSignerSha256,
+    "Windows signer certificate fingerprint is untrusted",
+  );
+  assert(
+    value.codeSigningEku === true,
+    "Windows signer certificate lacks the code-signing EKU",
+  );
+  assert(
+    value.timestampPresent === true &&
+      /^[0-9a-f]{64}$/u.test(value.timestampSignerSha256),
+    "Windows Authenticode signature lacks a timestamp certificate identity",
+  );
+  return value;
+}
+
+export function verifyWindowsSubjects(
+  subjects,
+  policy,
+  { execute = executeNativeCommand, env = process.env } = {},
+) {
+  assert(
+    subjects.size === 1 && subjects.has("SkyTwin-Windows-installer"),
+    "Windows signing verification requires the exact installer subject set",
+  );
+  const subject = subjects.get("SkyTwin-Windows-installer");
+  const systemRoot = env.SystemRoot ?? env.WINDIR;
+  assert(
+    /^[a-z]:\\Windows$/iu.test(systemRoot ?? ""),
+    "Windows signing verification requires a canonical local SystemRoot",
+  );
+  if (typeof env.SystemRoot === "string" && typeof env.WINDIR === "string")
+    assert(
+      env.SystemRoot.toLowerCase() === env.WINDIR.toLowerCase(),
+      "Windows SystemRoot and WINDIR disagree",
+    );
+  const powershell = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  const commandEnv = {
+    SystemRoot: systemRoot,
+    WINDIR: systemRoot,
+    SKYTWIN_SIGNATURE_SUBJECT: subject.path,
+  };
+  const result = checkedCommand(
+    execute,
+    powershell,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      WINDOWS_SIGNATURE_SCRIPT,
+    ],
+    { env: commandEnv },
+    "Windows Authenticode verification",
+  );
+  const signature = parseWindowsSignature(result.trim(), policy.signerSha256);
+  return new Map([
+    [
+      "SkyTwin-Windows-installer",
+      {
+        signatureResult: "pass",
+        verificationMethod:
+          "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+        authenticodeStatus: signature.status,
+        signer: signature.signerSubject,
+        signerIssuer: signature.signerIssuer,
+        signerCertificateSha256: signature.signerSha256,
+        signerCertificatePinned: true,
+        timestampCertificatePresent: signature.timestampPresent,
+        timestampSignerCertificateSha256: signature.timestampSignerSha256,
+        timestampCertificateValidation:
+          "presence-and-fingerprint-recorded-not-independently-validated",
+      },
+    ],
+  ]);
+}
+
+export function verifyLinuxSubjects() {
+  throw new Error(
+    "Linux release signing policy is not configured: checksum/provenance evidence cannot substitute for AppImage, deb, and rpm package-signature trust",
+  );
+}
+
+function passingCheck(assertion, measurement) {
+  return {
+    id: CHECK_IDS[0],
+    testId: CHECK_IDS[0],
+    result: "pass",
+    observed: { assertion, measurement, exitCode: 0 },
+  };
+}
+
+export function buildReport({
+  root,
+  platform,
+  identity,
+  apiArtifacts,
+  subjects,
+  verification,
+  runtime = process,
+}) {
+  const config = PLATFORM_CONFIG[platform];
+  assert(config && platform !== "linux", "unsupported passing signing report");
+  assert(
+    apiArtifacts.size === config.artifacts.length &&
+      subjects.size === config.artifacts.length &&
+      verification.size === config.artifacts.length,
+    "signing report inputs do not cover the exact platform subject set",
+  );
+  const primarySubject = subjects.get(config.primaryArtifactName);
+  const primaryArtifact = apiArtifacts.get(config.primaryArtifactName);
+  assert(
+    primarySubject && primaryArtifact,
+    "primary signing subject is missing",
+  );
+  const verifierPath = machineVerifierPath(CLAIM_ID);
+  const verifierCommand = machineVerifierCommand(CLAIM_ID, platform);
+  assert(
+    verifierPath && verifierCommand,
+    "canonical verifier metadata is missing",
+  );
+  const verifier = inspectStableRegularFile(
+    root,
+    resolve(root, verifierPath),
+    "canonical release signing verifier",
+    4 * 1024 * 1024,
+  );
+  const coveredSubjects = config.artifacts
+    .map(({ artifactName }) => {
+      const subject = subjects.get(artifactName);
+      const artifact = apiArtifacts.get(artifactName);
+      const result = verification.get(artifactName);
+      assert(
+        subject && artifact && result?.signatureResult === "pass",
+        `${artifactName} lacks passing signature verification`,
+      );
+      if (platform === "macos")
+        assert(
+          result.notarizationResult === "pass",
+          `${artifactName} lacks passing notarization verification`,
+        );
+      return {
+        artifactId: artifact.artifactId,
+        artifactName,
+        artifactSha256: artifact.artifactSha256,
+        kind: artifact.kind,
+        path: subject.relativePath,
+        name: subject.name,
+        sha256: subject.sha256,
+        sizeBytes: subject.sizeBytes,
+        platform: `${platform}-${runtime.arch}`,
+        ...result,
+      };
+    })
+    .sort((left, right) => left.path.localeCompare(right.path));
+  return {
+    releaseTag: identity.releaseTag,
+    runId: identity.runId,
+    repository: identity.repository,
+    ref: identity.ref,
+    releaseArtifactKind: primaryArtifact.kind,
+    releaseArtifactId: primaryArtifact.artifactId,
+    releaseArtifactName: primaryArtifact.artifactName,
+    releaseArtifactSha256: primaryArtifact.artifactSha256,
+    subjectName: primarySubject.name,
+    subjectPath: primarySubject.relativePath,
+    subjectSha256: primarySubject.sha256,
+    producerJobName: machineProducerJobName(CLAIM_ID, platform),
+    verifierPath,
+    verifierCommand,
+    verifierSha256: verifier.sha256,
+    schemaVersion: 1,
+    generatedBy: "release-machine-verifier",
+    claimId: CLAIM_ID,
+    result: "pass",
+    sourceCommit: identity.sourceCommit,
+    platform,
+    runnerPlatform: `${runtime.platform}-${runtime.arch}`,
+    coveredSubjects,
+    checks: [
+      passingCheck(
+        platform === "windows"
+          ? "Windows Get-AuthenticodeSignature reported Status=Valid for the exact installer and its signer certificate matched the operator-supplied pin"
+          : "Every canonical macOS package subject passed Developer ID signature trust and notarization validation",
+        platform === "windows"
+          ? `${coveredSubjects.length} exact subject byte identity from ${apiArtifacts.size} current-run ID/name/digest-bound artifact; timestamp certificate presence and SHA-256 fingerprint recorded without an independent timestamp trust assertion`
+          : `${coveredSubjects.length} exact subject byte identities from ${apiArtifacts.size} current-run ID/name/digest-bound artifacts`,
+      ),
+    ],
+  };
+}
+
+export function parseCanonicalArgs(argv) {
+  const platform = argv[1];
+  const expected = machineVerifierCommand(CLAIM_ID, platform);
+  assert(
+    argv.length === 4 &&
+      argv[0] === "--platform" &&
+      PLATFORM_CONFIG[platform] &&
+      argv[2] === "--output" &&
+      expected &&
+      argv[3] === `.release-evidence/reports/${CLAIM_ID}.${platform}.json`,
+    `usage: node ${machineVerifierPath(CLAIM_ID)} --platform <macos|windows|linux> --output .release-evidence/reports/${CLAIM_ID}.<platform>.json`,
+  );
+  return { platform, output: argv[3] };
+}
+
+function writeReport(root, relativePath, report) {
+  const output = resolve(root, relativePath);
+  const reportsRoot = resolve(root, ".release-evidence", "reports");
+  assert(
+    within(reportsRoot, output),
+    "report output escapes reports directory",
+  );
+  mkdirSync(reportsRoot, { recursive: true });
+  assertNoSymlinkComponents(root, reportsRoot, "release evidence reports");
+  const stat = lstatSync(reportsRoot);
+  assert(
+    stat.isDirectory() &&
+      !stat.isSymbolicLink() &&
+      within(root, realpathSync(reportsRoot)),
+    "release evidence reports must be a real directory inside checkout",
+  );
+  writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
+}
+
+export async function runCanonicalVerifier(
+  argv = process.argv.slice(2),
+  {
+    env = process.env,
+    root = process.cwd(),
+    runtime = process,
+    fetchImpl = globalThis.fetch,
+    executeGit = defaultExecuteGit,
+    executeNative = executeNativeCommand,
+  } = {},
+) {
+  const args = parseCanonicalArgs(argv);
+  const config = PLATFORM_CONFIG[args.platform];
+  assert(
+    runtime.platform === config.nodePlatform &&
+      runtime.arch === config.runnerArch.toLowerCase(),
+    `release signing verifier must execute natively on canonical ${args.platform}-${config.runnerArch.toLowerCase()}`,
+  );
+  const canonicalRoot = realpathSync(resolve(root));
+  const runIdentity = readRunIdentity(args.platform, env);
+  const versions = assertSourceCheckout({
+    root: canonicalRoot,
+    sourceCommit: runIdentity.sourceCommit,
+    releaseTag: runIdentity.releaseTag,
+    executeGit,
+  });
+  const identity = { ...runIdentity, ...versions };
+  const apiArtifacts = await resolveCurrentRunArtifacts(
+    identity,
+    args.platform,
+    fetchImpl,
+  );
+  const subjects = inspectPlatformSubjects(
+    canonicalRoot,
+    args.platform,
+    versions.appVersion,
+  );
+  const policy = readTrustPolicy(args.platform, env);
+  const verification =
+    args.platform === "macos"
+      ? verifyMacSubjects(subjects, policy, {
+          execute: executeNative,
+          env,
+        })
+      : args.platform === "windows"
+        ? verifyWindowsSubjects(subjects, policy, {
+            execute: executeNative,
+            env,
+          })
+        : verifyLinuxSubjects(subjects, policy);
+  const report = buildReport({
+    root: canonicalRoot,
+    platform: args.platform,
+    identity,
+    apiArtifacts,
+    subjects,
+    verification,
+    runtime,
+  });
+  const after = inspectPlatformSubjects(
+    canonicalRoot,
+    args.platform,
+    versions.appVersion,
+  );
+  for (const [artifactName, subject] of subjects) {
+    const observed = after.get(artifactName);
+    assert(
+      observed.sha256 === subject.sha256 &&
+        observed.sizeBytes === subject.sizeBytes &&
+        observed.device === subject.device &&
+        observed.inode === subject.inode,
+      `${artifactName} subject changed while signing evidence was collected`,
+    );
+  }
+  writeReport(canonicalRoot, args.output, report);
+  return report;
+}
+
+if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
+  runCanonicalVerifier().catch((error) => {
+    console.error(
+      `[${CLAIM_ID}] FAILED: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    process.exitCode = 1;
+  });
+}
