@@ -8,12 +8,12 @@ import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
 import {
-  isGoogleAccountIntegration,
   isGoogleAccountRegistryIdentifier,
   PROMOTION_THRESHOLDS,
 } from '@skytwin/shared-types';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
+import { isGoogleCapabilityBlocked } from '../lib/google-capability-boundary.js';
 // SSE event constants — imported for re-export and for use in callers that
 // wire the promotion ceremony (e.g. promotion-eligibility-check.ts).
 // sseManager and SSE_CAPABILITY_PROMOTION_OFFERED are imported here so they
@@ -319,9 +319,19 @@ function isBlockedGoogleRegistryEntry(entry: {
   id: string;
   oauthProvider?: string | null;
 }): boolean {
-  return !googleCapabilitySurfaceAvailable() && isGoogleAccountIntegration({
-    key: entry.id,
-    integration: entry.oauthProvider ?? undefined,
+  return isGoogleCapabilityBlocked(loadConfig().googleConnectionMode, {
+    registryId: entry.id,
+    oauthProvider: entry.oauthProvider,
+  });
+}
+
+function isBlockedGoogleServer(
+  server: Pick<McpServerRow, 'registry_id' | 'oauth_provider'>,
+  googleConnectionMode = loadConfig().googleConnectionMode,
+): boolean {
+  return isGoogleCapabilityBlocked(googleConnectionMode, {
+    registryId: server.registry_id,
+    oauthProvider: server.oauth_provider,
   });
 }
 
@@ -891,13 +901,21 @@ export function createCapabilitiesRouter(): Router {
         mcpServerRepository.listForUser(userId),
         appSuggestionRepository.getPendingForUser(userId),
       ]);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
 
-      const installed = allServers.filter(
+      const visibleServers = allServers.filter((server) =>
+        !isBlockedGoogleServer(server, googleConnectionMode));
+      const visibleSuggestions = suggestions.filter((suggestion) =>
+        !isGoogleCapabilityBlocked(googleConnectionMode, {
+          registryId: suggestion.registry_id,
+        }));
+
+      const installed = visibleServers.filter(
         (s) => s.status === 'active' || s.status === 'installed' || s.status === 'authorized',
       );
-      const dormant = allServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
+      const dormant = visibleServers.filter((s) => s.status === 'dormant' || s.status === 'paused');
 
-      res.json({ installed, suggestions, dormant });
+      res.json({ installed, suggestions: visibleSuggestions, dormant });
     } catch (err) {
       next(err);
     }
@@ -918,7 +936,11 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const suggestions = await appSuggestionRepository.getPendingForUser(userId);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const suggestions = (await appSuggestionRepository.getPendingForUser(userId))
+        .filter((suggestion) => !isGoogleCapabilityBlocked(googleConnectionMode, {
+          registryId: suggestion.registry_id,
+        }));
 
       // Project safe fields explicitly — never spread the row, because
       // `evidence_sources` is the JSONB array of raw signals (with PII) and
@@ -1453,7 +1475,23 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const resumedServers = await mcpServerRepository.markAllResumedForUser(userId);
+      let resumedServers: McpServerRow[];
+      if (googleCapabilitySurfaceAvailable()) {
+        resumedServers = await mcpServerRepository.markAllResumedForUser(userId);
+      } else {
+        const googleConnectionMode = loadConfig().googleConnectionMode;
+        const pausedServers = (await mcpServerRepository.listForUser(userId))
+          .filter((server) => server.status === 'paused' &&
+            !isBlockedGoogleServer(server, googleConnectionMode));
+        if (pausedServers.length === 0) {
+          resumedServers = [];
+        } else {
+          resumedServers = await mcpServerRepository.markResumedForUserByIds(
+            userId,
+            pausedServers.map((server) => server.id),
+          );
+        }
+      }
 
       log.info('Resumed all capability servers', { userId, count: resumedServers.length });
       res.json({ resumedCount: resumedServers.length });

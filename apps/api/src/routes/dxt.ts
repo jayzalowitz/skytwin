@@ -13,14 +13,20 @@
  */
 
 import { Router } from 'express';
-import type { Request } from 'express';
+import type { Request, Response } from 'express';
 import { mcpServerRepository, dxtExportRepository, dxtImportRepository, provenanceRepository, query } from '@skytwin/db';
 import type { McpServerRow, DxtExportMetadataRow } from '@skytwin/db';
 import { createLogger } from '@skytwin/core';
 import { serialize, deserialize, redactCommand } from '@skytwin/dxt';
 import type { DxtArtifactInput, DxtJsonPayload } from '@skytwin/dxt';
+import { loadConfig } from '@skytwin/config';
+import { RegistryClient } from '@skytwin/registry-client';
+import { isGoogleCapabilityBlocked } from '../lib/google-capability-boundary.js';
 
 const log = createLogger('api:dxt');
+// This instance reads only SkyTwin's bundled registry. Disabling Smithery
+// makes the no-network trust boundary explicit for import admission.
+const dxtRegistryClient = new RegistryClient({ smitheryEnabled: false });
 
 import { UUID_REGEX } from '../middleware/validate-uuid.js';
 
@@ -36,6 +42,29 @@ function getUserId(req: Request): string | undefined {
   const fromQuery = typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
   const fromLegacy = (req as unknown as { user?: { id?: string } }).user?.id;
   return fromAuth ?? fromQuery ?? fromLegacy;
+}
+
+async function isBlockedGoogleDxtCapability(
+  registryId: string,
+  skills: readonly string[],
+): Promise<boolean> {
+  const googleConnectionMode = loadConfig().googleConnectionMode;
+  if (googleConnectionMode === 'experimental') return false;
+  const trustedEntry = await dxtRegistryClient.getById(registryId);
+  return isGoogleCapabilityBlocked(googleConnectionMode, {
+    registryId,
+    oauthProvider: trustedEntry?.oauthProvider,
+    skills,
+  });
+}
+
+function sendGoogleCapabilityUnavailable(res: Response): void {
+  res.status(503).json({
+    error: 'Google account capabilities are unavailable in this preview.',
+    code: 'GOOGLE_CONNECTION_DISABLED',
+    available: false,
+    mode: 'disabled',
+  });
 }
 
 /**
@@ -250,6 +279,14 @@ export function createDxtRouter(): Router {
       const payload: DxtJsonPayload = result.data.payload;
       const sha256 = result.data.computedSha256;
 
+      if (await isBlockedGoogleDxtCapability(
+        payload.capability.registryId,
+        payload.capability.skills,
+      )) {
+        sendGoogleCapabilityUnavailable(res);
+        return;
+      }
+
       // Detect if this capability is already installed for this user
       let alreadyInstalled = false;
       try {
@@ -365,6 +402,11 @@ export function createDxtRouter(): Router {
 
       const payload: DxtJsonPayload = reResult.data.payload;
       const cap = payload.capability;
+
+      if (await isBlockedGoogleDxtCapability(cap.registryId, cap.skills)) {
+        sendGoogleCapabilityUnavailable(res);
+        return;
+      }
 
       // Build mcp_servers insert. Transport determines which fields are set.
       // args and env are JSONB — pass as JSON strings.

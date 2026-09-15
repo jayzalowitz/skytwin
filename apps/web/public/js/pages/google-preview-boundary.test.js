@@ -37,11 +37,15 @@ describe('Google preview UI boundary', () => {
   it('recognizes hostile integration aliases and account-backed skills', () => {
     for (const key of [
       'google', 'openclaw:google', 'openclaw:gmail',
-      'openclaw:google_calendar', 'google:calendar',
+      'openclaw:google_calendar', 'openclaw:google-drive',
+      'openclaw:google/drive', 'openclaw:google drive',
+      'openclaw:youtube', 'openclaw:gcp', 'google:calendar',
     ]) {
       expect(isGoogleIntegrationIdentifier(key)).toBe(true);
     }
     expect(isGoogleAccountIntegration({ key: 'custom:mail', skills: ['send_email'] })).toBe(true);
+    expect(isGoogleAccountIntegration({ key: 'custom:reader', skills: ['read_email'] })).toBe(true);
+    expect(isGoogleAccountIntegration({ key: 'custom:calendar', skills: ['calendar.create'] })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:notes', skills: ['create_note'] })).toBe(false);
   });
 

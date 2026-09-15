@@ -25,8 +25,9 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
 > Google OAuth client, and operator/BYO Google remains unsupported until its
 > callback, client-generation, capability, ownership, and secret-custody gates
 > are complete. Known account-backed email/calendar actions are denied before
-> adapter preparation or dispatch while this boundary is active. Connector
-> code in the source tree is not a support claim.
+> adapter preparation or dispatch while this boundary is active. Stale Google
+> capability rows and imported account-backed tool bundles are also withheld
+> from activation. Connector code in the source tree is not a support claim.
 
 ## How It Works
 

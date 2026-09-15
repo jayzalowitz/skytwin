@@ -28,6 +28,8 @@ const {
     markDormant: vi.fn(),
     markPaused: vi.fn(),
     markActive: vi.fn(),
+    markAllResumedForUser: vi.fn(),
+    markResumedForUserByIds: vi.fn(),
     softDelete: vi.fn(),
     updateLastActive: vi.fn(),
     getInactiveSince: vi.fn(),
@@ -166,6 +168,7 @@ function makeMcpServer(overrides: Partial<{
   display_name: string;
   status: string;
   oauth_token_id: string | null;
+  oauth_provider: string | null;
   trust_tier: string;
   last_active_at: Date | null;
   created_at: Date;
@@ -181,7 +184,7 @@ function makeMcpServer(overrides: Partial<{
     args: [],
     env: {},
     url: null,
-    oauth_provider: null,
+    oauth_provider: overrides.oauth_provider ?? null,
     oauth_token_id: overrides.oauth_token_id ?? null,
     trust_tier: overrides.trust_tier ?? 'observer',
     per_app_spend_per_action_cents: null,
@@ -232,6 +235,7 @@ describe('Capabilities API routes', () => {
     mockAppSuggestionRepository.markSnoozed.mockResolvedValue(null);
     // Default: listForUser returns empty array
     mockMcpServerRepository.listForUser.mockResolvedValue([]);
+    mockMcpServerRepository.markAllResumedForUser.mockResolvedValue([]);
     // #324: default router resolves with a rollback() that succeeds.
     mockRouterRollback.mockResolvedValue({
       result: { success: true, message: 'Rolled back by ironclaw' },
@@ -763,6 +767,184 @@ describe('Capabilities API routes', () => {
       appNoUser.use('/api/capabilities', createCapabilitiesRouter());
       const res = await request(appNoUser, 'GET', '/api/capabilities');
       expect(res.status).toBe(400);
+    });
+
+    it('hides stale Google servers by registry id or OAuth provider while disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const gmail = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000010',
+        registry_id: 'gmail-mcp',
+        display_name: 'Gmail',
+      });
+      const googleOauthAlias = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000011',
+        registry_id: 'custom-drive',
+        display_name: 'Drive alias',
+        oauth_provider: 'google',
+        status: 'dormant',
+      });
+      const github = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000012',
+        registry_id: '@modelcontextprotocol/server-github',
+        display_name: 'GitHub',
+      });
+      mockMcpServerRepository.listForUser.mockResolvedValue([gmail, googleOauthAlias, github]);
+      mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
+        { registry_id: 'google-calendar-mcp' },
+        { registry_id: 'linear-mcp' },
+      ]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'GET',
+        `/api/capabilities?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      const body = res.body as {
+        installed: Array<{ registry_id: string }>;
+        dormant: Array<{ registry_id: string }>;
+        suggestions: Array<{ registry_id: string }>;
+      };
+      expect(body.installed.map((server) => server.registry_id))
+        .toEqual(['@modelcontextprotocol/server-github']);
+      expect(body.dormant).toEqual([]);
+      expect(body.suggestions.map((suggestion) => suggestion.registry_id)).toEqual(['linear-mcp']);
+    });
+
+    it('preserves Google capability rows behind the exact experimental opt-in', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+      mockMcpServerRepository.listForUser.mockResolvedValue([
+        makeMcpServer({ registry_id: 'gmail-mcp', display_name: 'Gmail' }),
+      ]);
+      mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
+        { registry_id: 'google-calendar-mcp' },
+      ]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'GET',
+        `/api/capabilities?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      const body = res.body as { installed: unknown[]; suggestions: unknown[] };
+      expect(body.installed).toHaveLength(1);
+      expect(body.suggestions).toHaveLength(1);
+    });
+  });
+
+  describe('POST /resume-all', () => {
+    it('resumes only non-Google paused servers while disabled', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const gmail = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000020',
+        registry_id: 'gmail-mcp',
+        status: 'paused',
+      });
+      const googleOauthAlias = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000021',
+        registry_id: 'custom-drive',
+        oauth_provider: 'google',
+        status: 'paused',
+      });
+      const github = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000022',
+        registry_id: '@modelcontextprotocol/server-github',
+        status: 'paused',
+      });
+      mockMcpServerRepository.listForUser.mockResolvedValue([gmail, googleOauthAlias, github]);
+      mockMcpServerRepository.markResumedForUserByIds.mockResolvedValueOnce([
+        { ...github, status: 'active' },
+      ]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'POST',
+        `/api/capabilities/resume-all?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ resumedCount: 1 });
+      expect(mockMcpServerRepository.markAllResumedForUser).not.toHaveBeenCalled();
+      expect(mockMcpServerRepository.markResumedForUserByIds)
+        .toHaveBeenCalledWith(USER_ID, [github.id]);
+    });
+
+    it('does not issue an update when only Google servers are paused', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockMcpServerRepository.listForUser.mockResolvedValue([
+        makeMcpServer({ registry_id: 'gmail-mcp', status: 'paused' }),
+      ]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'POST',
+        `/api/capabilities/resume-all?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ resumedCount: 0 });
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockMcpServerRepository.markAllResumedForUser).not.toHaveBeenCalled();
+      expect(mockMcpServerRepository.markResumedForUserByIds).not.toHaveBeenCalled();
+    });
+
+    it('preserves bulk resume behind the exact experimental opt-in', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+      const gmail = makeMcpServer({ registry_id: 'gmail-mcp', status: 'active' });
+      mockMcpServerRepository.markAllResumedForUser.mockResolvedValue([gmail]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'POST',
+        `/api/capabilities/resume-all?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ resumedCount: 1 });
+      expect(mockMcpServerRepository.markAllResumedForUser).toHaveBeenCalledWith(USER_ID);
+      expect(mockMcpServerRepository.markResumedForUserByIds).not.toHaveBeenCalled();
+      expect(mockMcpServerRepository.listForUser).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('GET /suggestions', () => {
+    it('filters stale Google suggestions while disabled and preserves neighbors', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const suggestion = (registryId: string, id: string) => ({
+        id,
+        user_id: USER_ID,
+        registry_id: registryId,
+        display_name: registryId,
+        evidence_count: 1,
+        evidence_sources: [],
+        evidence_kinds_distinct: 1,
+        first_evidence_at: new Date(),
+        last_evidence_at: new Date(),
+        confidence_score: '0.8',
+        status: 'pending' as const,
+        snoozed_until: null,
+        reason_summary: null,
+        push_notified_at: null,
+        created_at: new Date(),
+        updated_at: new Date(),
+      });
+      mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
+        suggestion('gmail-mcp', 'suggestion-google'),
+        suggestion('linear-mcp', 'suggestion-linear'),
+      ]);
+
+      const res = await request(
+        buildApp(USER_ID),
+        'GET',
+        `/api/capabilities/suggestions?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      expect((res.body as { suggestions: Array<{ registry_id: string }> }).suggestions
+        .map((entry) => entry.registry_id)).toEqual(['linear-mcp']);
     });
   });
 

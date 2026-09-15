@@ -16,6 +16,7 @@ const {
   mockDxtImportRepo,
   mockProvenanceRepo,
   mockQuery,
+  mockLoadConfig,
 } = vi.hoisted(() => ({
   mockMcpServerRepo: {
     getById: vi.fn(),
@@ -40,6 +41,11 @@ const {
     writeNode: vi.fn(),
   },
   mockQuery: vi.fn(),
+  mockLoadConfig: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -51,6 +57,7 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 import { createDxtRouter } from '../routes/dxt.js';
+import { serialize } from '@skytwin/dxt';
 
 const USER_ID = 'ffffffff-eeee-dddd-cccc-111111111111';
 const OTHER_USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
@@ -158,8 +165,23 @@ function makePendingImportRow(overrides: Record<string, unknown> = {}): Record<s
   };
 }
 
+async function buildArtifact(
+  registryId: string,
+  skills: string[] = [],
+): Promise<{ blob: Buffer; sha256: Buffer }> {
+  return serialize({
+    sourceInstanceId: SERVER_ID,
+    registryId,
+    transport: 'stdio',
+    command: 'npx',
+    args: ['-y', registryId],
+    skills,
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
   // Default: query succeeds with inserted server row
   mockQuery.mockResolvedValue({ rows: [{ id: SERVER_ID }], rowCount: 1 });
 });
@@ -213,6 +235,37 @@ describe('POST /api/dxt/import', () => {
     expect(result.status).toBe(400);
     const body = result.body as { code?: string };
     expect(body.code).toBe('MAGIC_MISMATCH');
+  });
+
+  it('rejects a known Google capability before pending-import or lookup effects when disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob } = await buildArtifact('gmail-mcp');
+
+    const result = await req(buildApp(), 'POST', '/api/dxt/import', {
+      blob: blob.toString('base64'),
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
+    expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
+  });
+
+  it('rejects a custom DXT that declares account-backed skills while disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob } = await buildArtifact('custom-productivity', ['read_email']);
+
+    const result = await req(buildApp(), 'POST', '/api/dxt/import', {
+      blob: blob.toString('base64'),
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
   });
 });
 
@@ -337,6 +390,43 @@ describe('POST /api/dxt/imports/:id/confirm', () => {
     const result = await req(app, 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
     expect(result.status).toBe(500);
     expect(mockDxtImportRepo.markFailed).toHaveBeenCalled();
+  });
+
+  it('rejects a pending Google import before install effects when disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob, sha256 } = await buildArtifact('@modelcontextprotocol/server-google-drive');
+    mockDxtImportRepo.findById.mockResolvedValueOnce(makePendingImportRow({
+      artifact_blob: blob,
+      artifact_sha256: sha256,
+      registry_id: '@modelcontextprotocol/server-google-drive',
+    }));
+
+    const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
+
+    expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markFailed).not.toHaveBeenCalled();
+    expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
+  });
+
+  it('preserves Google DXT imports behind the exact experimental opt-in', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    const { blob, sha256 } = await buildArtifact('gmail-mcp');
+    mockDxtImportRepo.findById.mockResolvedValueOnce(makePendingImportRow({
+      artifact_blob: blob,
+      artifact_sha256: sha256,
+      registry_id: 'gmail-mcp',
+    }));
+    mockDxtImportRepo.markInstalled.mockResolvedValueOnce(undefined);
+    mockProvenanceRepo.writeNode.mockResolvedValueOnce({ id: 'prov-google' });
+
+    const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
+
+    expect(result.status).toBe(201);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockDxtImportRepo.markInstalled).toHaveBeenCalledWith(IMPORT_ID, SERVER_ID);
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isGoogleAccountAction,
   isGoogleAccountActionType,
   isGoogleAccountIntegration,
   isGoogleAccountRegistryIdentifier,
@@ -13,6 +14,11 @@ describe('Google preview boundary', () => {
     'openclaw:gmail',
     'openclaw:google_calendar',
     'openclaw:google-calendar',
+    'openclaw:google-drive',
+    'openclaw:google/drive',
+    'openclaw:google drive',
+    'openclaw:youtube',
+    'openclaw:gcp',
     'google:calendar',
     'GCAL',
   ])('recognizes the account integration alias %s', (identifier) => {
@@ -35,7 +41,13 @@ describe('Google preview boundary', () => {
     })).toBe(false);
   });
 
-  it.each(['send_email', 'forward_email', 'accept_invite', 'create_calendar_event'])
+  it.each([
+    'send_email', 'forward_email', 'accept_invite', 'create_calendar_event',
+    'respond_to_event', 'delete_emails', 'read_email', 'search_emails',
+    'create_event', 'update_event', 'schedule_meeting', 'calendar.create',
+    'calendar_update', 'rsvp_yes', 'get_calendar_events', 'email.search',
+    'gmail.batch_modify', 'messages.trash', 'events.insert',
+  ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);
     });
@@ -53,6 +65,17 @@ describe('Google preview boundary', () => {
     'gcp-mcp',
   ])('recognizes the Google account registry entry %s', (registryId) => {
     expect(isGoogleAccountRegistryIdentifier(registryId)).toBe(true);
+  });
+
+  it('uses action domain and MCP tool identity as independent deny signals', () => {
+    expect(isGoogleAccountAction({ actionType: 'accept', domain: 'calendar' })).toBe(true);
+    expect(isGoogleAccountAction({ actionType: 'accept', domain: 'google:calendar' })).toBe(true);
+    expect(isGoogleAccountAction({
+      actionType: 'invoke_tool',
+      domain: 'developer',
+      parameters: { mcpToolName: 'read_email' },
+    })).toBe(true);
+    expect(isGoogleAccountAction({ actionType: 'create_issue', domain: 'developer' })).toBe(false);
   });
 
   it('keeps a neighboring registry entry available', () => {

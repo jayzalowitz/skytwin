@@ -585,6 +585,28 @@ describe('Credentials API routes', () => {
       expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['PUT', '/api/credentials/custom%3Amail', { credentials: { token: 'inert' } }],
+      ['POST', '/api/credentials/custom%3Amail/sync', undefined],
+      ['DELETE', '/api/credentials/custom%3Amail/token', undefined],
+      ['GET', '/api/credentials/custom%3Amail', undefined],
+    ])('fails closed for unresolved dynamic service via %s %s', async (method, path, body) => {
+      mockCredentialRequirementRepository.getByAdapter.mockRejectedValue(
+        new Error('requirement lookup unavailable'),
+      );
+
+      const res = await request(app, method, path, body);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+      expect(mockServiceCredentialRepository.getByService).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.upsert).not.toHaveBeenCalled();
+      expect(mockServiceCredentialRepository.delete).not.toHaveBeenCalled();
+      expect(mockGetIronClawEnhancedAdapter).not.toHaveBeenCalled();
+      expect(mockSyncCredentialToIronClaw).not.toHaveBeenCalled();
+      expect(mockRevokeCredentialFromIronClaw).not.toHaveBeenCalled();
+    });
+
     it('hides aliased and skill-shaped rows while preserving a neighboring service', async () => {
       mockCredentialRequirementRepository.getByAdapter.mockImplementation(async (adapter: string) =>
         adapter === 'custom'

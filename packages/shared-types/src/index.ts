@@ -314,10 +314,11 @@ export type {
 } from './capability-acquisition.js';
 
 export {
-  GOOGLE_ACCOUNT_ACTION_TYPES,
+  isGoogleAccountAction,
   isGoogleAccountActionType,
   isGoogleAccountIntegration,
   isGoogleAccountRegistryIdentifier,
   isGoogleIntegrationIdentifier,
 } from './google-preview-boundary.js';
+export type { AccountActionBoundaryInput } from './google-preview-boundary.js';
 export type { IntegrationBoundaryInput } from './google-preview-boundary.js';

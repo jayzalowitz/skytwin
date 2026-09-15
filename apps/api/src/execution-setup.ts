@@ -30,7 +30,7 @@ import {
 import { McpHost } from '@skytwin/mcp-host';
 import { sharedMetricsCollector } from '@skytwin/observability';
 import {
-  isGoogleAccountActionType,
+  isGoogleAccountAction,
   isGoogleAccountIntegration,
   isGoogleIntegrationIdentifier,
 } from '@skytwin/shared-types';
@@ -202,7 +202,7 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
     registry,
     executionDispatchLeaseRepository,
     (action) => config.googleConnectionMode !== 'experimental' &&
-        isGoogleAccountActionType(action.actionType)
+        isGoogleAccountAction(action)
       ? {
           allowed: false,
           reason: 'Account-backed email and calendar actions are unavailable in this preview.',

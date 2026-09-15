@@ -19,6 +19,7 @@ const {
   },
   mockServerRepo: {
     listActive: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
     getById: vi.fn(),
     markDormant: vi.fn(),
     markActive: vi.fn(),
@@ -51,6 +52,8 @@ function makeServer(overrides: {
   args?: unknown;
   env?: unknown;
   url?: string | null;
+  registry_id?: string | null;
+  oauth_provider?: string | null;
 } = {}) {
   return {
     id: overrides.id ?? 'server-1',
@@ -62,7 +65,7 @@ function makeServer(overrides: {
     args: overrides.args ?? null,
     env: overrides.env ?? null,
     url: overrides.url ?? null,
-    registry_id: null,
+    registry_id: overrides.registry_id ?? null,
     trust_tier: 'observer' as const,
     per_app_spend_per_action_cents: null,
     per_app_daily_spend_cents: null,
@@ -78,7 +81,7 @@ function makeServer(overrides: {
     auto_promote_paused_until: null,
     created_at: new Date('2026-01-01'),
     updated_at: new Date('2026-01-01'),
-    oauth_provider: null,
+    oauth_provider: overrides.oauth_provider ?? null,
     oauth_token_id: null,
   };
 }
@@ -91,9 +94,105 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockChangelogRepo.upsert.mockResolvedValue(undefined);
   mockChangelogRepo.addPendingOptIn.mockResolvedValue(undefined);
+  mockServerRepo.listSkillNamesForServer.mockResolvedValue([]);
 });
 
 describe('runChangelogPollJob', () => {
+  it('never starts stale Google servers while disabled and still polls a neighbor', async () => {
+    const googleServer = makeServer({
+      id: 'google-server',
+      display_name: 'Account server',
+      registry_id: 'gmail-mcp',
+      oauth_provider: 'google',
+    });
+    const neighboringServer = makeServer({
+      id: 'github-server',
+      display_name: 'GitHub',
+      registry_id: '@modelcontextprotocol/server-github',
+    });
+    mockServerRepo.listActive.mockResolvedValue([googleServer, neighboringServer]);
+    mockChangelogRepo.getForServer.mockResolvedValue(null);
+    const neighborHost = {
+      installServer: vi.fn().mockResolvedValue({ success: true }),
+      fetchChangelog: vi.fn().mockResolvedValue(null),
+      listSkills: vi.fn().mockResolvedValue({ success: true, skills: [] }),
+      uninstallServer: vi.fn().mockResolvedValue({ success: true }),
+    };
+    const factory = vi.fn(() => neighborHost as unknown as McpHost);
+
+    await runChangelogPollJob({
+      changelogRepo: mockChangelogRepo,
+      serverRepo: mockServerRepo as unknown as typeof import('@skytwin/db').mcpServerRepository,
+      mcpHostFactory: factory,
+      googleConnectionMode: 'disabled',
+    });
+
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledWith(expect.objectContaining({ id: 'github-server' }));
+    expect(neighborHost.installServer).toHaveBeenCalledOnce();
+    expect(neighborHost.fetchChangelog).toHaveBeenCalledWith('github-server');
+    expect(neighborHost.listSkills).toHaveBeenCalledWith('github-server');
+    expect(mockChangelogRepo.getForServer).not.toHaveBeenCalledWith('google-server');
+  });
+
+  it('skips a generic stale server whose cached skills are account-backed', async () => {
+    const server = makeServer({ id: 'custom-mail', registry_id: 'custom-tools' });
+    mockServerRepo.listActive.mockResolvedValue([server]);
+    mockServerRepo.listSkillNamesForServer.mockResolvedValue(['read_email']);
+    const factory = vi.fn();
+
+    await runChangelogPollJob({
+      changelogRepo: mockChangelogRepo,
+      serverRepo: mockServerRepo as unknown as typeof import('@skytwin/db').mcpServerRepository,
+      mcpHostFactory: factory,
+      googleConnectionMode: 'disabled',
+    });
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(mockChangelogRepo.getForServer).not.toHaveBeenCalled();
+  });
+
+  it('does not contact an unclassified server when its cached-skill lookup fails', async () => {
+    mockServerRepo.listActive.mockResolvedValue([
+      makeServer({ id: 'unknown-server', registry_id: 'custom-tools' }),
+    ]);
+    mockServerRepo.listSkillNamesForServer.mockRejectedValue(new Error('DB unavailable'));
+    const factory = vi.fn();
+
+    await runChangelogPollJob({
+      changelogRepo: mockChangelogRepo,
+      serverRepo: mockServerRepo as unknown as typeof import('@skytwin/db').mcpServerRepository,
+      mcpHostFactory: factory,
+      googleConnectionMode: 'disabled',
+    });
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(mockChangelogRepo.getForServer).not.toHaveBeenCalled();
+  });
+
+  it('keeps the explicitly experimental server polling path available', async () => {
+    const server = makeServer({ registry_id: 'gmail-mcp', oauth_provider: 'google' });
+    mockServerRepo.listActive.mockResolvedValue([server]);
+    mockChangelogRepo.getForServer.mockResolvedValue(null);
+    const host = {
+      installServer: vi.fn().mockResolvedValue({ success: false, error: 'offline' }),
+      fetchChangelog: vi.fn(),
+      listSkills: vi.fn(),
+      uninstallServer: vi.fn().mockResolvedValue({ success: true }),
+    };
+    const factory = vi.fn(() => host as unknown as McpHost);
+
+    await runChangelogPollJob({
+      changelogRepo: mockChangelogRepo,
+      serverRepo: mockServerRepo as unknown as typeof import('@skytwin/db').mcpServerRepository,
+      mcpHostFactory: factory,
+      googleConnectionMode: 'experimental',
+    });
+
+    expect(factory).toHaveBeenCalledOnce();
+    expect(host.installServer).toHaveBeenCalledOnce();
+  });
+
   it('handles empty server list gracefully', async () => {
     mockServerRepo.listActive.mockResolvedValue([]);
 

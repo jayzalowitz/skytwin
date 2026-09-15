@@ -824,7 +824,10 @@ async function main(): Promise<void> {
       nowMs - lastChangelogPollAt >= CHANGELOG_POLL_INTERVAL_MS
     ) {
       await deadLetterTracker.run('changelog-poll', () =>
-        runChangelogPollJob({ signal: generationAdmission.signal }));
+        runChangelogPollJob({
+          googleConnectionMode: config.googleConnectionMode,
+          signal: generationAdmission.signal,
+        }));
       lastChangelogPollAt = nowMs;
     }
     if (!generationAdmission.isActive()) break;

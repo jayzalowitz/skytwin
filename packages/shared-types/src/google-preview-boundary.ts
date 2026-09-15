@@ -11,7 +11,10 @@ const GOOGLE_INTEGRATION_TOKENS = new Set([
   'gmail',
   'googlemail',
   'googlecalendar',
+  'googledrive',
   'gcal',
+  'youtube',
+  'gcp',
 ]);
 
 const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
@@ -22,7 +25,7 @@ const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
   'gcp-mcp',
 ]);
 
-export const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
+const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'archive_email',
   'label_email',
   'send_reply',
@@ -30,7 +33,12 @@ export const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'draft_email',
   'send_email',
   'delete_email',
+  'delete_emails',
   'forward_email',
+  'read_email',
+  'read_emails',
+  'search_email',
+  'search_emails',
   'snooze_email',
   'unsubscribe_email',
   'create_filter',
@@ -40,6 +48,11 @@ export const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'decline_event',
   'propose_alternative',
   'tentative_accept',
+  'respond_to_event',
+  'create_event',
+  'update_event',
+  'delete_event',
+  'schedule_meeting',
   'create_calendar_event',
   'update_calendar_event',
   'delete_calendar_event',
@@ -50,7 +63,11 @@ export const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
 ]);
 
 function normalizeIntegrationToken(value: string): string {
-  return value.trim().toLowerCase().replace(/[._-]/g, '');
+  return value.trim().toLowerCase().replace(/[._\-/\s]+/g, '');
+}
+
+function normalizeActionType(value: string): string {
+  return value.trim().toLowerCase().replace(/[.\-:/\s]+/g, '_');
 }
 
 export function isGoogleIntegrationIdentifier(value: string): boolean {
@@ -60,7 +77,51 @@ export function isGoogleIntegrationIdentifier(value: string): boolean {
 }
 
 export function isGoogleAccountActionType(actionType: string): boolean {
-  return GOOGLE_ACCOUNT_ACTION_TYPES.has(actionType.trim().toLowerCase());
+  const normalized = normalizeActionType(actionType);
+  if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
+
+  // MCP and legacy adapters are allowed to advertise action names that are
+  // not in the built-in catalogs. Cover stable email/calendar write and read
+  // vocabularies without relying on peer-authored labels or descriptions.
+  if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|message|messages)$/.test(normalized)) {
+    return true;
+  }
+  if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) {
+    return true;
+  }
+  if (/^(?:read|get|search|list)_(?:calendar_)?(?:event|events|invite|invites|meeting|meetings)$/.test(normalized)) {
+    return true;
+  }
+  if (/^(?:email|emails|mail|message|messages)_(?:read|search|list|archive|label|send|reply|draft|delete|trash|forward|snooze|unsubscribe|move|modify)$/.test(normalized)) {
+    return true;
+  }
+  if (/^(?:event|events|invite|invites|meeting|meetings)_(?:read|get|search|list|insert|create|update|patch|delete|remove|move|cancel|respond)$/.test(normalized)) {
+    return true;
+  }
+  return /^(?:rsvp|calendar|email|mail|gmail|gcal|google_calendar|google_mail)_/.test(normalized);
+}
+
+export interface AccountActionBoundaryInput {
+  actionType: string;
+  domain?: string;
+  parameters?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Conservatively identify account-backed email/calendar work while provider
+ * identity is not cryptographically bound into execution authority. Domain is
+ * only an additional deny signal; known action/tool names remain independently
+ * denied so a peer cannot bypass the boundary by relabeling the domain.
+ */
+export function isGoogleAccountAction(input: AccountActionBoundaryInput): boolean {
+  if (isGoogleAccountActionType(input.actionType)) return true;
+  const domain = normalizeIntegrationToken(input.domain ?? '');
+  if (domain === 'email' || domain === 'mail' || domain === 'calendar' ||
+      isGoogleIntegrationIdentifier(input.domain ?? '')) {
+    return true;
+  }
+  const mcpToolName = input.parameters?.['mcpToolName'];
+  return typeof mcpToolName === 'string' && isGoogleAccountActionType(mcpToolName);
 }
 
 export function isGoogleAccountRegistryIdentifier(registryId: string): boolean {

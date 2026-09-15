@@ -12,7 +12,7 @@ const {
   mockIsIronClawEnhancedAdapter,
   mockRealIronClawAdapter,
   mockAdapterRegistry,
-  mockExecutionRouter,
+  mockExecutionRouterConstructor,
   mockOpenClawAdapter,
   mockCredentialRequirementRepository,
   mockSseManager,
@@ -27,6 +27,13 @@ const {
   const mockRouter = {
     getRegistry: vi.fn(() => mockRegistry),
   };
+  const mockRouterConstructor = vi.fn(function ExecutionRouter(
+    _registry: unknown,
+    _dispatchAuthority: unknown,
+    _admissionGuard?: unknown,
+  ) {
+    return mockRouter;
+  });
 
   return {
     mockServiceCredentialRepository: {
@@ -42,7 +49,7 @@ const {
     mockIsIronClawEnhancedAdapter: vi.fn(),
     mockRealIronClawAdapter: vi.fn(),
     mockAdapterRegistry: mockRegistry,
-    mockExecutionRouter: mockRouter,
+    mockExecutionRouterConstructor: mockRouterConstructor,
     mockOpenClawAdapter: vi.fn(),
     mockCredentialRequirementRepository: { register: vi.fn(), getAllGrouped: vi.fn() },
     mockSseManager: { emit: vi.fn(), emitAll: vi.fn() },
@@ -79,9 +86,7 @@ vi.mock('@skytwin/ironclaw-adapter', () => ({
 }));
 
 vi.mock('@skytwin/execution-router', () => ({
-  ExecutionRouter: vi.fn(function ExecutionRouter() {
-    return mockExecutionRouter;
-  }),
+  ExecutionRouter: mockExecutionRouterConstructor,
   AdapterRegistry: vi.fn(function AdapterRegistry() {
     return mockAdapterRegistry;
   }),
@@ -565,6 +570,44 @@ describe('execution-setup', () => {
 
       expect(mockCredentialRequirementRepository.register).not.toHaveBeenCalled();
       expect(mockSseManager.emit).not.toHaveBeenCalled();
+    });
+
+    it('wires the disabled production admission guard for legacy, dynamic, domain, and MCP aliases', async () => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'disabled',
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: '',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+
+      await createExecutionRouter();
+
+      const guard = mockExecutionRouterConstructor.mock.calls.at(-1)?.[2] as
+        ((action: {
+          actionType: string;
+          domain?: string;
+          parameters?: Record<string, unknown>;
+        }) => { allowed: boolean }) | undefined;
+      expect(guard).toBeTypeOf('function');
+
+      for (const actionType of [
+        'respond_to_event', 'delete_emails', 'read_email', 'search_emails',
+        'create_event', 'update_event', 'schedule_meeting', 'calendar.create',
+        'calendar_update', 'rsvp_yes', 'get_calendar_events',
+      ]) {
+        expect(guard?.({ actionType, domain: 'generic' })).toMatchObject({ allowed: false });
+      }
+      expect(guard?.({ actionType: 'accept', domain: 'calendar' }))
+        .toMatchObject({ allowed: false });
+      expect(guard?.({
+        actionType: 'invoke_tool',
+        domain: 'developer',
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'read_email' },
+      })).toMatchObject({ allowed: false });
+      expect(guard?.({ actionType: 'create_issue', domain: 'developer' }))
+        .toEqual({ allowed: true });
     });
   });
 

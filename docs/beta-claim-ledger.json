@@ -831,7 +831,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "804a91e01898fe0ddf5e89e41ff6f5e470c47f6b7cd081d860962328d6001130",
+          "sha256": "4a1fa97cb6665d699179ccff2cc9eadf85404c7f2d3da698cc1652ecbf75849d",
           "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
         }
       ],
@@ -919,7 +919,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "7ec14592f741274aaf2eda2e034d4b4ad2f4609022aa86d4130930c3ec21f2e1",
+          "sha256": "a71170746a91baac214c6a7fd7980e59e278bb80a8eb60c4ed6e0a670962ef15",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         }
       ],

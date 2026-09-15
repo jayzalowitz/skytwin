@@ -217,6 +217,25 @@ export const mcpServerRepository = {
   },
 
   /**
+   * Resume an already classified subset of a user's paused servers.
+   * Owner and status predicates are repeated here so stale callers cannot
+   * activate a different user's server or overwrite a concurrent transition.
+   */
+  async markResumedForUserByIds(userId: string, serverIds: readonly string[]): Promise<McpServerRow[]> {
+    if (serverIds.length === 0) return [];
+    const result = await query<McpServerRow>(
+      `UPDATE mcp_servers
+       SET status = 'active', updated_at = now()
+       WHERE user_id = $1
+         AND status = 'paused'
+         AND id = ANY($2::uuid[])
+       RETURNING *`,
+      [userId, serverIds],
+    );
+    return result.rows;
+  },
+
+  /**
    * Toggle zero-trust mode for a single MCP server (#183 AC#4).
    *
    * When enabled, the policy engine applies an additional +1 riskModifier

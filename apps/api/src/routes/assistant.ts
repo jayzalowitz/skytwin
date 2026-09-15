@@ -35,6 +35,7 @@ import {
 } from '@skytwin/db';
 import { runPrompt } from '@skytwin/policy-prompts';
 import { RegistryClient } from '@skytwin/registry-client';
+import { loadConfig } from '@skytwin/config';
 import { createLogger } from '@skytwin/core';
 
 import { sseManager } from '../sse.js';
@@ -42,6 +43,7 @@ import { validateAssistantMessage } from '../validators/assistant-message.js';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import { resolveUserLlmClient } from '../lib/user-llm-client.js';
 import { readAutonomy } from '../cost-gate.js';
+import { isGoogleCapabilityBlocked } from '../lib/google-capability-boundary.js';
 
 const log = createLogger('api:assistant');
 
@@ -1325,6 +1327,15 @@ export function createAssistantRouter(): Router {
         mcpServerRepository.listForUser(userId),
         registry.getAll(),
       ]);
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const visibleRows = allRows.filter((row) => !isGoogleCapabilityBlocked(
+        googleConnectionMode,
+        { registryId: row.registry_id, oauthProvider: row.oauth_provider },
+      ));
+      const visibleRegistryEntries = registryEntries.filter((entry) => !isGoogleCapabilityBlocked(
+        googleConnectionMode,
+        { registryId: entry.id, oauthProvider: entry.oauthProvider },
+      ));
 
       // "Installed" for the purpose of the prompt = the user could
       // actually invoke the tool right now. Anything paused/dormant
@@ -1332,7 +1343,7 @@ export function createAssistantRouter(): Router {
       // explicitly uninstalled / never installed / failed does NOT
       // count — the user might want to re-try those.
       const NON_INSTALLED_STATUSES = new Set(['uninstalled', 'failed', 'discovered']);
-      const installedRows = allRows.filter((row) => !NON_INSTALLED_STATUSES.has(row.status));
+      const installedRows = visibleRows.filter((row) => !NON_INSTALLED_STATUSES.has(row.status));
       const installedRegistryIds = new Set(
         installedRows
           .map((row) => row.registry_id)
@@ -1344,7 +1355,7 @@ export function createAssistantRouter(): Router {
         id: row.registry_id ?? '',
         name: row.display_name,
       }));
-      const available = registryEntries
+      const available = visibleRegistryEntries
         // Don't include already-installed in the available set — the
         // prompt's constraints already say "don't suggest installed"
         // but giving the LLM only the eligible set keeps it focused

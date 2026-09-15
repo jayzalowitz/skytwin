@@ -134,10 +134,11 @@ async function isBlockedGoogleService(service: string): Promise<boolean> {
       skills: matching.flatMap((requirement) => requirement.skills),
     });
   } catch {
-    // Identifier aliases are already denied without a repository read. If an
-    // unrelated dynamic requirement cannot be resolved, leave its normal
-    // route-level error handling in control.
-    return false;
+    // Dynamic adapter service keys cannot be classified safely without their
+    // registered requirement. Fail closed before generic reads, mutations, or
+    // credential synchronization; static neighboring services keep their
+    // normal route behavior.
+    return service.includes(':');
   }
 }
 
