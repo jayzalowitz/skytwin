@@ -1255,8 +1255,8 @@
         },
         {
           "path": "scripts/release-claims/capture-release-claim-ci-runtime.mjs",
-          "sha256": "8dc76b388c4bdd464cd96698265801e2ee3b0d799d1fb67454756c2e8b1afd6a",
-          "why": "Captures safe canonical Node and delegated pnpm CLI bundle paths and digests before dependency installation can alter the job environment"
+          "sha256": "a2de445b453bdcf0be6aaef4c8c84dc0b81007249368cf83bc6842c5bf13df4b",
+          "why": "Captures safe canonical Node and delegated pnpm CLI bundle paths and digests, including the exact pnpm/action-setup package shim shape, before dependency installation can alter the job environment"
         },
         {
           "path": "scripts/release-claims/run-release-claim-ci.mjs",

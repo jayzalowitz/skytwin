@@ -132,6 +132,12 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **Hosted release-claim evidence resolves pnpm/action-setup without relaxing
+  runtime identity.** Runtime capture accepts only the generated POSIX shim's
+  exact two-branch delegation into one canonical pnpm package launcher, then
+  binds the delegated CLI bundle as before. Duplicate, divergent, out-of-tree,
+  linked, and non-shell launchers fail closed.
+
 - **Release signing evidence matches the actual native package metadata and
   fails closed on incomplete provenance.** Windows ProductVersion checks now
   require electron-builder's four-field value for both the installer and its

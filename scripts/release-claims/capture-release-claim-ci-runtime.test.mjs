@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import {
+  appendFileSync,
   chmodSync,
   linkSync,
   mkdtempSync,
@@ -34,6 +35,36 @@ function pnpmRuntime(root, content = "// pnpm CLI bundle\n") {
   mkdirSync(dirname(entryPath), { recursive: true });
   writeFileSync(entryPath, content);
   return { launcherPath, entryPath };
+}
+
+function pnpmActionSetupRuntime(root, { alternatePathNodeTarget } = {}) {
+  const relativePackageLauncher =
+    "../.pnpm/pnpm@9.1.0/node_modules/pnpm/bin/pnpm.cjs";
+  const packageRoot = join(
+    root,
+    "node_modules/.pnpm/pnpm@9.1.0/node_modules/pnpm",
+  );
+  const packageLauncherPath = executable(
+    packageRoot,
+    "bin/pnpm.cjs",
+    "#!/usr/bin/env node\nrequire('../dist/pnpm.cjs')\n",
+  );
+  const entryPath = join(packageRoot, "dist/pnpm.cjs");
+  mkdirSync(dirname(entryPath), { recursive: true });
+  writeFileSync(entryPath, "// action-setup pnpm CLI bundle\n");
+  const launcherPath = executable(
+    root,
+    "node_modules/.bin/pnpm",
+    `#!/bin/sh
+basedir=$(dirname "$0")
+if [ -x "$basedir/node" ]; then
+  exec "$basedir/node"  "$basedir/${relativePackageLauncher}" "$@"
+else
+  exec node  "$basedir/${alternatePathNodeTarget ?? relativePackageLauncher}" "$@"
+fi
+`,
+  );
+  return { launcherPath, packageLauncherPath, entryPath };
 }
 
 afterEach(() => {
@@ -93,6 +124,133 @@ describe("release claim CI runtime capture", () => {
     expect(runtime.pnpmEntrySha256).not.toBe(
       createHash("sha256").update(readFileSync(entryPath)).digest("hex"),
     );
+  });
+
+  it("resolves the canonical CLI bundle through pnpm/action-setup's PATH shim", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath, entryPath } = pnpmActionSetupRuntime(root);
+
+    expect(
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toMatchObject({
+      pnpmEntryPath: realpathSync(entryPath),
+      pnpmEntrySha256: createHash("sha256")
+        .update(readFileSync(entryPath))
+        .digest("hex"),
+    });
+  });
+
+  it("rejects a PATH shim whose node branches delegate differently", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath } = pnpmActionSetupRuntime(root, {
+      alternatePathNodeTarget:
+        "../.pnpm/pnpm@9.1.1/node_modules/pnpm/bin/pnpm.cjs",
+    });
+
+    expect(() =>
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toThrow("one canonical package launcher");
+  });
+
+  it("rejects a PATH shim with duplicate delegation lines", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath } = pnpmActionSetupRuntime(root);
+    appendFileSync(
+      launcherPath,
+      'exec node "$basedir/../.pnpm/pnpm@9.1.0/node_modules/pnpm/bin/pnpm.cjs" "$@"\n',
+    );
+
+    expect(() =>
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toThrow("one canonical package launcher");
+  });
+
+  it("rejects delegation text that is not a POSIX shell shim", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath } = pnpmActionSetupRuntime(root);
+    const launcher = readFileSync(launcherPath, "utf8").replace(
+      "#!/bin/sh\n",
+      "not a shell shim\n",
+    );
+    writeFileSync(launcherPath, launcher, { mode: 0o755 });
+
+    expect(() =>
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toThrow("one canonical package launcher");
+  });
+
+  it("rejects a PATH shim that delegates outside the pnpm package layout", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const launcherPath = executable(
+      root,
+      "node_modules/.bin/pnpm",
+      `#!/bin/sh
+exec "$basedir/node" "$basedir/../../attacker/pnpm.cjs" "$@"
+exec node "$basedir/../../attacker/pnpm.cjs" "$@"
+`,
+    );
+
+    expect(() =>
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toThrow("one canonical package launcher");
+  });
+
+  it("rejects a hard-linked package launcher behind a valid PATH shim", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath, packageLauncherPath } = pnpmActionSetupRuntime(root);
+    linkSync(packageLauncherPath, `${packageLauncherPath}.hardlink`);
+
+    expect(() =>
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toThrow("single-link regular file");
   });
 
   it.each(["node", "pnpm entry"])(
