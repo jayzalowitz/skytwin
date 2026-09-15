@@ -85,6 +85,10 @@ describe('disabled Google OAuth boundary', () => {
     ['GET', '/api/oauth/google/accounts/owner-1'],
     ['DELETE', '/api/oauth/google/owner-1/user%40example.com'],
     ['DELETE', '/api/oauth/google/disconnect'],
+    ['GET', '/api/oauth/%67oogle/status?userId=owner-1'],
+    ['GET', '/api/oauth/%67oogle/accounts/owner-1'],
+    ['DELETE', '/api/oauth/%67oogle/owner-1/user%40example.com'],
+    ['DELETE', '/api/oauth/%67oogle/disconnect'],
   ])('rejects %s %s before token, config, or network effects', async (method, path) => {
     const providerFetch = vi.fn();
     vi.stubGlobal('fetch', providerFetch);

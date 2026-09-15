@@ -755,7 +755,19 @@ export function createOAuthRouter(): Router {
   // stale callbacks, pending handoffs, and stored token rows cannot revive a
   // disabled integration. Source developers must opt in explicitly; client
   // credentials alone are never treated as authority to enable Google.
-  router.use('/google', (_req, res, next) => {
+  router.use((req, res, next) => {
+    const rawProvider = req.path.split('/').find((segment) => segment.length > 0);
+    let provider = rawProvider;
+    try {
+      provider = rawProvider === undefined ? undefined : decodeURIComponent(rawProvider);
+    } catch {
+      // Leave malformed encoding to Express's route handling. It cannot equal
+      // the blocked provider token without first decoding successfully.
+    }
+    if (provider?.toLowerCase() !== 'google') {
+      next();
+      return;
+    }
     if (loadConfig().googleConnectionMode === 'experimental') {
       next();
       return;

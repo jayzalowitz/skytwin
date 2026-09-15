@@ -32,6 +32,8 @@ describe('Google preview boundary', () => {
 
   it('recognizes dynamic requirements by stable identifiers or account-backed skills', () => {
     expect(isGoogleAccountIntegration({ adapter: 'openclaw', integration: 'gmail' })).toBe(true);
+    expect(isGoogleAccountIntegration({ adapter: 'gmail-mcp', integration: 'custom' })).toBe(true);
+    expect(isGoogleAccountIntegration({ adapter: 'custom', integration: 'google-calendar-mcp' })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:mail', skills: ['send_email'] })).toBe(true);
     expect(isGoogleAccountIntegration({
       key: 'custom:notes',
@@ -46,7 +48,8 @@ describe('Google preview boundary', () => {
     'respond_to_event', 'delete_emails', 'read_email', 'search_emails',
     'create_event', 'update_event', 'schedule_meeting', 'calendar.create',
     'calendar_update', 'rsvp_yes', 'get_calendar_events', 'email.search',
-    'gmail.batch_modify', 'messages.trash', 'events.insert',
+    'gmail.batch_modify', 'messages.trash', 'events.insert', 'sendEmail',
+    'readEmail', 'respondToEvent', 'deleteEmails', 'schedule_focus_block',
   ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);

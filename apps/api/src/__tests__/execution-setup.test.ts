@@ -572,6 +572,40 @@ describe('execution-setup', () => {
       expect(mockSseManager.emit).not.toHaveBeenCalled();
     });
 
+    it.each(['gmail-mcp', 'google-calendar-mcp'])
+    ('drops the stable registry ID %s when supplied as a dynamic integration', async (integration) => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode: 'disabled',
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: 'http://localhost:9000',
+        openclawApiKey: '',
+        adapterPluginDir: '',
+      });
+
+      await createExecutionRouter();
+
+      const options = mockOpenClawAdapter.mock.calls[0]?.[0] as {
+        onCredentialNeeded: (requirement: {
+          userId: string;
+          integration: string;
+          integrationLabel: string;
+          fields: Array<{ key: string; label: string }>;
+          skills: string[];
+        }) => Promise<void>;
+      };
+      await options.onCredentialNeeded({
+        userId: 'owner-1',
+        integration,
+        integrationLabel: 'Peer integration',
+        fields: [{ key: 'token', label: 'Token' }],
+        skills: [],
+      });
+
+      expect(mockCredentialRequirementRepository.register).not.toHaveBeenCalled();
+      expect(mockSseManager.emit).not.toHaveBeenCalled();
+    });
+
     it('wires the disabled production admission guard for legacy, dynamic, domain, and MCP aliases', async () => {
       mockLoadConfig.mockReturnValue({
         googleConnectionMode: 'disabled',
@@ -595,7 +629,8 @@ describe('execution-setup', () => {
       for (const actionType of [
         'respond_to_event', 'delete_emails', 'read_email', 'search_emails',
         'create_event', 'update_event', 'schedule_meeting', 'calendar.create',
-        'calendar_update', 'rsvp_yes', 'get_calendar_events',
+        'calendar_update', 'rsvp_yes', 'get_calendar_events', 'sendEmail',
+        'readEmail', 'respondToEvent', 'deleteEmails', 'schedule_focus_block',
       ]) {
         expect(guard?.({ actionType, domain: 'generic' })).toMatchObject({ allowed: false });
       }

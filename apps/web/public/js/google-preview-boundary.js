@@ -12,6 +12,7 @@ const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'respond_to_event', 'create_event', 'update_event', 'delete_event', 'schedule_meeting',
   'create_calendar_event', 'update_calendar_event', 'delete_calendar_event',
   'reschedule_event', 'set_out_of_office', 'block_focus_time', 'find_meeting_time',
+  'schedule_focus_block',
 ]);
 
 const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
@@ -27,7 +28,11 @@ function normalizeToken(value) {
 }
 
 function isGoogleAccountActionType(value) {
-  const normalized = String(value ?? '').trim().toLowerCase().replace(/[.\-:/\s]+/g, '_');
+  const normalized = String(value ?? '')
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[.\-:/\s]+/g, '_');
   if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
   if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|message|messages)$/.test(normalized)) return true;
   if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) return true;
@@ -44,7 +49,8 @@ export function isGoogleIntegrationIdentifier(value) {
 
 export function isGoogleAccountIntegration(input = {}) {
   const identifiers = [input.key, input.adapter, input.integration];
-  return identifiers.some(value => isGoogleIntegrationIdentifier(value)) ||
-    GOOGLE_ACCOUNT_REGISTRY_IDS.has(String(input.key ?? '').trim().toLowerCase()) ||
+  return identifiers.some(value =>
+    isGoogleIntegrationIdentifier(value) ||
+    GOOGLE_ACCOUNT_REGISTRY_IDS.has(String(value ?? '').trim().toLowerCase())) ||
     (input.skills ?? []).some(isGoogleAccountActionType);
 }

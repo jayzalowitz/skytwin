@@ -59,6 +59,7 @@ const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
   'reschedule_event',
   'set_out_of_office',
   'block_focus_time',
+  'schedule_focus_block',
   'find_meeting_time',
 ]);
 
@@ -67,7 +68,11 @@ function normalizeIntegrationToken(value: string): string {
 }
 
 function normalizeActionType(value: string): string {
-  return value.trim().toLowerCase().replace(/[.\-:/\s]+/g, '_');
+  return value
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[.\-:/\s]+/g, '_');
 }
 
 export function isGoogleIntegrationIdentifier(value: string): boolean {
@@ -139,7 +144,8 @@ export interface IntegrationBoundaryInput {
 
 export function isGoogleAccountIntegration(input: IntegrationBoundaryInput): boolean {
   return [input.key, input.adapter, input.integration]
-    .some((value) => typeof value === 'string' && isGoogleIntegrationIdentifier(value)) ||
-    (typeof input.key === 'string' && isGoogleAccountRegistryIdentifier(input.key)) ||
+    .some((value) => typeof value === 'string' && (
+      isGoogleIntegrationIdentifier(value) || isGoogleAccountRegistryIdentifier(value)
+    )) ||
     (input.skills?.some(isGoogleAccountActionType) ?? false);
 }

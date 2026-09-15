@@ -267,6 +267,22 @@ describe('POST /api/dxt/import', () => {
     expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
     expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
   });
+
+  it.each(['sendEmail', 'schedule_focus_block'])
+  ('rejects the account-backed skill %s before pending-import effects', async (skill) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob } = await buildArtifact('custom-productivity', [skill]);
+
+    const result = await req(buildApp(), 'POST', '/api/dxt/import', {
+      blob: blob.toString('base64'),
+    });
+
+    expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(mockMcpServerRepo.getByUserAndRegistry).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.create).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -399,6 +415,26 @@ describe('POST /api/dxt/imports/:id/confirm', () => {
       artifact_blob: blob,
       artifact_sha256: sha256,
       registry_id: '@modelcontextprotocol/server-google-drive',
+    }));
+
+    const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
+
+    expect(result.status).toBe(503);
+    expect(result.body).toMatchObject({ code: 'GOOGLE_CONNECTION_DISABLED' });
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markInstalled).not.toHaveBeenCalled();
+    expect(mockDxtImportRepo.markFailed).not.toHaveBeenCalled();
+    expect(mockProvenanceRepo.writeNode).not.toHaveBeenCalled();
+  });
+
+  it.each(['respondToEvent', 'schedule_focus_block'])
+  ('rejects the account-backed skill %s before confirm install effects', async (skill) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const { blob, sha256 } = await buildArtifact('custom-productivity', [skill]);
+    mockDxtImportRepo.findById.mockResolvedValueOnce(makePendingImportRow({
+      artifact_blob: blob,
+      artifact_sha256: sha256,
+      registry_id: 'custom-productivity',
     }));
 
     const result = await req(buildApp(), 'POST', `/api/dxt/imports/${IMPORT_ID}/confirm`);
