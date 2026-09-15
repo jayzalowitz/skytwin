@@ -34,6 +34,7 @@ import {
   RELEASE_CLAIM_CI_RESULT_PATH,
   RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
   RELEASE_CLAIM_CI_SOURCE_PATHS,
+  RELEASE_SAFETY_EVIDENCE_STEP,
   RELEASE_ARTIFACT_GENERATOR_PATH,
   RELEASE_ARTIFACT_MANIFEST_PATH,
   RELEASE_ARTIFACT_MATERIALS_ARTIFACT,
@@ -74,6 +75,7 @@ export {
   RELEASE_CLAIM_CI_RESULT_PATH,
   RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
   RELEASE_CLAIM_CI_SOURCE_PATHS,
+  RELEASE_SAFETY_EVIDENCE_STEP,
   RELEASE_CLAIM_CI_UPLOAD_STEP,
   canonicalReleaseClaimCiJobSteps,
   RELEASE_ARTIFACT_GENERATOR_PATH,
@@ -1274,6 +1276,7 @@ export function isAllowlistedVerificationCommand(command) {
       "scripts/release-claims/storage.desktop-crdb-verifier.test.mjs",
       "scripts/release-claims/inference.on-device-availability-verifier.test.mjs",
       "scripts/release-claims/network.explicit-boundaries-verifier.test.mjs",
+      "scripts/release-evidence/release-safety-evidence.test.mjs",
     ].includes(tokens[4])
   )
     return true;
@@ -2359,6 +2362,9 @@ export function verifyCanonicalReleasePublisher(root) {
   const ciProducerIndexes = ciSteps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === RELEASE_CLAIM_CI_PRODUCER_STEP);
+  const ciSafetyIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) => step?.name === RELEASE_SAFETY_EVIDENCE_STEP);
   const ciUploadIndexes = ciSteps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === "Upload release claim CI result");
@@ -2366,6 +2372,7 @@ export function verifyCanonicalReleasePublisher(root) {
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === "Enforce beta release readiness");
   const ciProducer = ciProducerIndexes[0]?.step;
+  const ciSafety = ciSafetyIndexes[0]?.step;
   const ciArtifactTest = ciArtifactTestIndexes[0]?.step;
   const ciRuntimeCapture = ciRuntimeCaptureIndexes[0]?.step;
   const ciUpload = ciUploadIndexes[0]?.step;
@@ -2420,6 +2427,20 @@ fi
 /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
 exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" SKYTWIN_RELEASE_CI_NODE_PATH="$SKYTWIN_RELEASE_CI_NODE_PATH" SKYTWIN_RELEASE_CI_NODE_SHA256="$SKYTWIN_RELEASE_CI_NODE_SHA256" SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" ${RELEASE_CLAIM_CI_HARNESS_PATH} --output ${RELEASE_CLAIM_CI_RESULT_PATH}
 `;
+  const ciSafetyRun = `SKYTWIN_RELEASE_CI_NODE_BIN="\${SKYTWIN_RELEASE_CI_NODE_PATH%/*}"
+/usr/bin/test "$SKYTWIN_RELEASE_CI_NODE_BIN/node" -ef "$SKYTWIN_RELEASE_CI_NODE_PATH"
+/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
+`;
+  const ciUploadPaths = `release-claims-ci/result.json
+release-claims-ci/adversarial-evidence.json
+release-claims-ci/adversarial-evidence.json.sha256
+release-claims-ci/release-safety-evidence.json
+`;
   const artifactNameCanResolveTo = (value, expected) => {
     if (typeof value !== "string") return false;
     const expressionPattern = /\$\{\{[\s\S]*?\}\}/gu;
@@ -2463,6 +2484,7 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
     ciRuntimeCaptureIndexes.length !== 1 ||
     ciInstallIndexes.length !== 1 ||
     ciArtifactTestIndexes.length !== 1 ||
+    ciSafetyIndexes.length !== 1 ||
     ciProducerIndexes.length !== 1 ||
     ciUploadIndexes.length !== 1 ||
     ciReadinessIndexes.length !== 1 ||
@@ -2473,6 +2495,24 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
       (ciArtifactTestIndexes[0]?.index ?? -1) ||
     (ciArtifactTestIndexes[0]?.index ?? -1) >=
       (ciProducerIndexes[0]?.index ?? -1) ||
+    (ciSafetyIndexes[0]?.index ?? -1) !==
+      (ciProducerIndexes[0]?.index ?? -1) - 1 ||
+    !hasExactKeys(ciSafety, [
+      "name",
+      "if",
+      "timeout-minutes",
+      "env",
+      "shell",
+      "run",
+    ]) ||
+    ciSafety.if !== ciTagCondition ||
+    ciSafety["timeout-minutes"] !== 15 ||
+    !hasExactKeys(ciSafety.env, Object.keys(ciProducerRuntimeEnv)) ||
+    Object.entries(ciProducerRuntimeEnv).some(
+      ([name, value]) => ciSafety.env[name] !== value,
+    ) ||
+    ciSafety.shell !== ciShell ||
+    ciSafety.run !== ciSafetyRun ||
     !hasExactKeys(ciArtifactTest, ["name", "env", "shell", "run"]) ||
     !hasExactKeys(ciArtifactTest.env, Object.keys(ciArtifactTestEnv)) ||
     Object.entries(ciArtifactTestEnv).some(
@@ -2521,7 +2561,7 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
       "compression-level",
     ]) ||
     ciUpload.with.name !== CI_EVIDENCE_ARTIFACT_NAME ||
-    ciUpload.with.path !== RELEASE_CLAIM_CI_RESULT_PATH ||
+    ciUpload.with.path !== ciUploadPaths ||
     ciUpload.with["if-no-files-found"] !== "error" ||
     ciUpload.with["compression-level"] !== 0 ||
     !hasExactKeys(ciReadiness, ["name", "if", "env", "run"]) ||

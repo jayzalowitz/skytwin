@@ -23,6 +23,7 @@ import {
   RELEASE_CLAIM_CI_LEDGER_PATH,
   RELEASE_CLAIM_CI_RESULT_PATH,
   RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
+  RELEASE_CLAIM_CI_SOURCE_PATHS,
 } from "./release-constants.mjs";
 import {
   releaseClaimCommandEnvironment,
@@ -82,6 +83,12 @@ function fixtureRoot() {
     RELEASE_CLAIM_CI_HARNESS_PATH,
     readFileSync(new URL("./run-release-claim-ci.mjs", import.meta.url)),
   );
+  for (const path of RELEASE_CLAIM_CI_SOURCE_PATHS.slice(4))
+    write(
+      root,
+      path,
+      readFileSync(new URL(`../../${path}`, import.meta.url)),
+    );
   write(root, ".gitignore", "/release-claims-ci/\n");
   write(root, "package.json", '{"scripts":{"test":"vitest run"}}\n');
   write(root, "tracked-link-target.txt", "tracked symlink target\n");
@@ -160,6 +167,14 @@ afterEach(() => {
 });
 
 describe("release claim CI result producer", () => {
+  it("tracks every frozen release claim source in the synthetic repository", () => {
+    const root = fixtureRoot();
+    for (const path of RELEASE_CLAIM_CI_SOURCE_PATHS)
+      expect(git(root, ["ls-files", "--error-unmatch", "--", path])).toBe(
+        path,
+      );
+  });
+
   it("uses the exact focused account-free proof commands from the ledger", () => {
     expect(
       CANONICAL_CI_EVIDENCE_COMMANDS.get("connectors.account-free-api-disabled")

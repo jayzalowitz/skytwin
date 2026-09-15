@@ -1,5 +1,5 @@
 import { existsSync, readdirSync } from 'node:fs';
-import { join, resolve, sep } from 'node:path';
+import { delimiter, dirname, join, resolve, sep } from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readStableRegularFile } from '../../../scripts/release-artifacts/file-integrity.mjs';
 import type {
@@ -16,8 +16,18 @@ export interface ExecutableTestResult {
 export type TestProcessRunner = (
   command: string,
   args: string[],
-  options: { cwd: string; encoding: 'utf8'; env: NodeJS.ProcessEnv },
+  options: {
+    cwd: string;
+    encoding: 'utf8';
+    env: NodeJS.ProcessEnv;
+    timeout: number;
+    killSignal: 'SIGKILL';
+    maxBuffer: number;
+  },
 ) => SpawnSyncReturns<string>;
+
+export const MAPPED_TEST_TIMEOUT_MS = 60_000;
+const MAPPED_TEST_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 
 interface ParsedTestId {
   packageName: string;
@@ -117,11 +127,25 @@ export function executeMappedAdversarialTests(
     const vitest = join(packagePath, 'node_modules', '.bin', 'vitest');
     if (!existsSync(vitest)) throw new Error(`vitest is unavailable for ${first.packageName}`);
     const namePattern = `^(?:${items.map(({ fullName }) => escapeRegex(fullName)).join('|')})$`;
+    const trustedNodeDirectory = dirname(process.execPath);
     const child = run(vitest, ['run', first.file, '-t', namePattern, '--reporter=json'], {
       cwd: packagePath,
       encoding: 'utf8',
-      env: { ...process.env, CI: 'true', NO_COLOR: '1' },
+      env: {
+        PATH: [trustedNodeDirectory, '/usr/bin', '/bin'].join(delimiter),
+        CI: 'true',
+        NO_COLOR: '1',
+        LANG: 'C.UTF-8',
+        LC_ALL: 'C.UTF-8',
+        TZ: 'UTC',
+      },
+      timeout: MAPPED_TEST_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      maxBuffer: MAPPED_TEST_MAX_BUFFER_BYTES,
     });
+    if ((child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+      throw new Error(`test subprocess timed out for ${first.packageName}`);
+    }
     if (child.error) throw new Error(`test subprocess could not start for ${first.packageName}`);
     let report: unknown;
     try {

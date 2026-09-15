@@ -60,9 +60,10 @@ manual workflow runs never enter the publisher. The latter
 contains the canonical `reports/<claim-id>[.<platform>].json` results for every required machine claim
 and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
 `release.spdx.json`, `VERIFY.md`, and digest-named provenance bundles.
-The CI artifact contains `result.json`, bound to the repository, source commit,
-actual ref, event, run ID and attempt, plus the ledger, harness, and
-frozen-command source digests. Its checks are frozen argv arrays launched
+The CI artifact contains `result.json`, the verified adversarial report and
+checksum, and the bounded release-safety sidecar. `result.json` is bound to the
+repository, source commit, actual ref, event, run ID and attempt, plus the
+ledger, harness, and frozen-command source digests. Its checks are frozen argv arrays launched
 without a shell and record observed exit codes. Before and after every command,
 the harness requires `HEAD` to equal the triggering commit, compares every
 tracked path and executable/symlink mode with the content-addressed `HEAD`
@@ -74,6 +75,17 @@ claim runs the ledger's exact focused API, worker, shared-classifier,
 execution-router, and desktop test paths, not a broad suite whose success
 could outlive those assertions. The final checker hashes and validates the
 downloaded file as well as its GitHub artifact metadata.
+
+The safety sidecar is produced and independently verified before upload, but
+its producer first revalidates the captured Node and pnpm entry points and runs
+them in a closed environment under a no-profile shell. The step has a
+15-minute ceiling and every mapped test subprocess has a 60-second hard-kill
+timeout. Despite those producer controls,
+the final publication consumer does not yet bind that sidecar to the downloaded
+artifact ID and digest. Until that consumer exists and an immutable tag run
+passes it, treat the sidecar as source/producer evidence only: its current
+10/10 cataloged safety result and 3/10 explanation-boundary result leave
+`safety.explanation-coverage` limited and the release blocked.
 
 The CI-result producer runs on a fresh GitHub-hosted runner. Its filesystem
 checks reject synchronous source, runtime, output-directory, symlink, and
@@ -171,7 +183,7 @@ constraints for this candidate.
 
 `build.yml` triggers on `push: tags: ['v*']`. The relevant jobs:
 
-1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The eval suite is a **separate** workflow (`.github/workflows/evals.yml`) and does **not** run on `v*` tag pushes, so don't assume evals ran as part of cutting a release.
+1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The general eval workflow remains separate, but a `v*` tag now reruns the exact v1 adversarial catalog, independently verifies it, and adds a bounded release-safety sidecar to `release-claims-ci`. That sidecar currently discloses seven explanation-coverage gaps and is not yet consumed by the final publication verifier, so it does not close the release-evals stop-ship.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
 4. **`release`** (`needs:` `test`, the three desktop jobs, and the verified evidence aggregator) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus twelve machine reports (thirteen durable report files total), checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public.

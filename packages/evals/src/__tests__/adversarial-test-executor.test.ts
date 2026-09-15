@@ -1,11 +1,15 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { SpawnSyncReturns } from 'node:child_process';
 import type { AdversarialCatalog, AdversarialScenario } from '../adversarial-evidence.js';
-import { executeMappedAdversarialTests, type TestProcessRunner } from '../adversarial-test-executor.js';
+import {
+  executeMappedAdversarialTests,
+  MAPPED_TEST_TIMEOUT_MS,
+  type TestProcessRunner,
+} from '../adversarial-test-executor.js';
 
 const roots: string[] = [];
 
@@ -169,6 +173,47 @@ describe('exact mapped adversarial test execution', () => {
       root,
       runner([{ fullName: catalog.scenarios[0]!.executableTestId.split('::')[2]!, status: 'passed' }], 1),
     )).toThrow('failed outside the mapped assertions');
+  });
+
+  it('bounds every mapped test subprocess with a hard kill', () => {
+    const { root, catalog } = fixture();
+    let observedOptions: Parameters<TestProcessRunner>[2] | undefined;
+    const boundedRunner: TestProcessRunner = (_command, _args, options) => {
+      observedOptions = options;
+      return runner([{
+        fullName: catalog.scenarios[0]!.executableTestId.split('::')[2]!,
+        status: 'passed',
+      }])('', [], options);
+    };
+    executeMappedAdversarialTests(catalog, root, boundedRunner);
+    expect(observedOptions).toMatchObject({
+      timeout: MAPPED_TEST_TIMEOUT_MS,
+      killSignal: 'SIGKILL',
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    expect(observedOptions?.env).toEqual({
+      PATH: [dirname(process.execPath), '/usr/bin', '/bin'].join(delimiter),
+      CI: 'true',
+      NO_COLOR: '1',
+      LANG: 'C.UTF-8',
+      LC_ALL: 'C.UTF-8',
+      TZ: 'UTC',
+    });
+  });
+
+  it('fails closed when a mapped test reaches its timeout', () => {
+    const { root, catalog } = fixture();
+    const timedOut: TestProcessRunner = () => ({
+      pid: 1,
+      output: [null, ''],
+      stdout: '',
+      stderr: '',
+      status: null,
+      signal: 'SIGKILL',
+      error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }),
+    } as SpawnSyncReturns<string>);
+    expect(() => executeMappedAdversarialTests(catalog, root, timedOut))
+      .toThrow('test subprocess timed out');
   });
 
   it('accepts an ordinary mapped title without treating it as semantic data', () => {

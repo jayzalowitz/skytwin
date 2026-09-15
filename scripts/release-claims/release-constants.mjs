@@ -40,6 +40,8 @@ export const MAX_RELEASE_CLAIM_OBSERVED_CODE_UNITS = 4096;
 export const RELEASE_CLAIM_CI_PRODUCER_STEP = "Produce release claim CI result";
 export const RELEASE_CLAIM_CI_UPLOAD_STEP = "Upload release claim CI result";
 export const RELEASE_CLAIM_CI_READINESS_STEP = "Enforce beta release readiness";
+export const RELEASE_SAFETY_EVIDENCE_STEP =
+  "Produce and verify release safety evidence";
 
 export function canonicalReleaseClaimCiJobSteps(job) {
   const steps = Array.isArray(job?.steps) ? job.steps : [];
@@ -50,6 +52,7 @@ export function canonicalReleaseClaimCiJobSteps(job) {
     return matches[0];
   };
   const producerStep = exactlyOneSuccessful(RELEASE_CLAIM_CI_PRODUCER_STEP);
+  const safetyStep = exactlyOneSuccessful(RELEASE_SAFETY_EVIDENCE_STEP);
   const uploadStep = exactlyOneSuccessful(RELEASE_CLAIM_CI_UPLOAD_STEP);
   const readinessSteps = steps.filter(
     (step) => step?.name === RELEASE_CLAIM_CI_READINESS_STEP,
@@ -66,13 +69,21 @@ export function canonicalReleaseClaimCiJobSteps(job) {
     throw new Error(
       "release claim CI job failure is admissible only when the canonical readiness step also failed",
     );
-  return { producerStep, uploadStep, readinessStep: readinessSteps[0] };
+  return {
+    producerStep,
+    safetyStep,
+    uploadStep,
+    readinessStep: readinessSteps[0],
+  };
 }
 export const RELEASE_CLAIM_CI_SOURCE_PATHS = Object.freeze([
   RELEASE_CLAIM_CI_LEDGER_PATH,
   RELEASE_CLAIM_CI_CONSTANTS_PATH,
   RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
   RELEASE_CLAIM_CI_HARNESS_PATH,
+  "scripts/release-evidence/release-safety-entry-paths.json",
+  "scripts/release-evidence/generate-release-safety-evidence.mjs",
+  "scripts/release-evidence/verify-release-safety-evidence.mjs",
 ]);
 
 export const CANONICAL_CI_EVIDENCE_COMMANDS = new Map(
