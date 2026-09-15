@@ -1269,8 +1269,10 @@ export function isAllowlistedVerificationCommand(command) {
     tokens[1] === "exec" &&
     tokens[2] === "vitest" &&
     tokens[3] === "run" &&
-    tokens[4] ===
-      "scripts/release-claims/release.artifact-verification.test.mjs"
+    [
+      "scripts/release-claims/release.artifact-verification.test.mjs",
+      "scripts/release-claims/storage.desktop-crdb-verifier.test.mjs",
+    ].includes(tokens[4])
   )
     return true;
 
@@ -5123,6 +5125,92 @@ function hasCompleteWindowsSigningObservation(
   );
 }
 
+function hasCompleteDesktopStorageObservation(report) {
+  const executable = report?.executedBinary;
+  const databaseBinary = report?.databaseBinary;
+  const storage = report?.storageObservation;
+  const executableKeys = [
+    "name",
+    "sizeBytes",
+    "sha256",
+    "device",
+    "inode",
+    "identityResult",
+    "derivationMethod",
+    "derivationPath",
+  ];
+  const databaseBinaryKeys = [
+    "name",
+    "sizeBytes",
+    "sha256",
+    "identityResult",
+    "derivationPath",
+  ];
+  const storageKeys = [
+    "userDataRelativePath",
+    "storeRelativePath",
+    "sqlListener",
+    "httpListener",
+    "processOwnership",
+    "launchCount",
+    "markerWriteResult",
+    "markerReadAfterRestartResult",
+    "markerSha256",
+    "sameStoreIdentity",
+    "storeNonEmpty",
+    "unexpectedStoreCount",
+    "gracefulShutdownCount",
+    "listenersReleased",
+  ];
+  const listenerKeys = ["host", "port"];
+  return (
+    report?.platform === "macos" &&
+    report?.runnerPlatform === "darwin-arm64" &&
+    isPlainRecord(executable) &&
+    sameStringSet(Object.keys(executable), executableKeys) &&
+    isNonEmptyString(executable.name) &&
+    Number.isSafeInteger(executable.sizeBytes) &&
+    executable.sizeBytes > 0 &&
+    SOURCE_DIGEST.test(executable.sha256 ?? "") &&
+    Number.isSafeInteger(executable.device) &&
+    Number.isSafeInteger(executable.inode) &&
+    executable.identityResult === "pass" &&
+    executable.derivationMethod === "zip-ditto" &&
+    executable.derivationPath === "SkyTwin.app/Contents/MacOS/SkyTwin" &&
+    isPlainRecord(databaseBinary) &&
+    sameStringSet(Object.keys(databaseBinary), databaseBinaryKeys) &&
+    databaseBinary.name === "cockroach" &&
+    Number.isSafeInteger(databaseBinary.sizeBytes) &&
+    databaseBinary.sizeBytes > 0 &&
+    SOURCE_DIGEST.test(databaseBinary.sha256 ?? "") &&
+    databaseBinary.identityResult === "pass" &&
+    databaseBinary.derivationPath ===
+      "SkyTwin.app/Contents/Resources/cockroach/darwin-arm64/cockroach" &&
+    isPlainRecord(storage) &&
+    sameStringSet(Object.keys(storage), storageKeys) &&
+    storage.userDataRelativePath === "electron" &&
+    storage.storeRelativePath === "electron/crdb-data" &&
+    isPlainRecord(storage.sqlListener) &&
+    sameStringSet(Object.keys(storage.sqlListener), listenerKeys) &&
+    storage.sqlListener.host === "127.0.0.1" &&
+    storage.sqlListener.port === 26257 &&
+    isPlainRecord(storage.httpListener) &&
+    sameStringSet(Object.keys(storage.httpListener), listenerKeys) &&
+    storage.httpListener.host === "127.0.0.1" &&
+    storage.httpListener.port === 26258 &&
+    storage.processOwnership === "descendant" &&
+    storage.launchCount === 2 &&
+    storage.markerWriteResult === "pass" &&
+    storage.markerReadAfterRestartResult === "pass" &&
+    SOURCE_DIGEST.test(storage.markerSha256 ?? "") &&
+    storage.sameStoreIdentity === true &&
+    storage.storeNonEmpty === true &&
+    storage.unexpectedStoreCount === 0 &&
+    storage.gracefulShutdownCount === 2 &&
+    storage.listenersReleased === true
+  );
+}
+
 export function verifyMachineEvidenceApplicability(
   claimId,
   report,
@@ -5130,6 +5218,14 @@ export function verifyMachineEvidenceApplicability(
   verificationAssets = [],
 ) {
   const errors = [];
+  if (
+    claimId === "storage.desktop-crdb" &&
+    !hasCompleteDesktopStorageObservation(report)
+  ) {
+    errors.push(
+      "storage.desktop-crdb machine evidence must identify stable packaged app and database binaries and prove a contained user-data store, exact loopback listeners, owned process ancestry, restart persistence, and graceful listener release",
+    );
+  }
   if (claimId === "sample.packaged-account-free") {
     const binary = report?.executedBinary;
     const expectedDerivations = new Map([

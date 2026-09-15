@@ -4,6 +4,18 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **Packaged desktop storage now has a fail-closed macOS evidence verifier in
+  source.** The verifier derives the exact application from the release ZIP,
+  launches it twice with an isolated user-data directory and credential-free
+  child environment, and requires its bundled CockroachDB process to be an
+  owned descendant with literal IPv4-loopback SQL and HTTP listeners. It
+  verifies one contained non-empty store, writes and reads an opaque marker
+  across a graceful restart, rechecks stable artifact and executable identity,
+  and refuses residual listeners or forced cleanup. The publication consumer
+  requires the complete structured observation. No tagged run has produced
+  this machine evidence, so the storage claim remains limited and the release
+  remains blocked.
+
 - **Source-key IPC clients now fail closed without activating encryption.** The
   API and worker compose fixed-role clients that strictly validate the versioned
   broker protocol, bind responses to the exact request context and generation,

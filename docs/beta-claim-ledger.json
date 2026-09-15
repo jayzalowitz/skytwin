@@ -809,18 +809,32 @@
       "scope": "SkyTwin's persistent application database in the desktop topology; this does not mean connectors or configured providers avoid network requests, and it does not assert application-level encryption.",
       "owner": "desktop-runtime",
       "state": "limited",
-      "limitation": "Source evidence exists, but the final tagged artifact still needs clean-machine filesystem and listener verification on each supported platform.",
+      "limitation": "The canonical macOS verifier exists in source, but no final tagged artifact has produced clean-machine filesystem, listener, restart-persistence, and shutdown evidence. Other release platforms are not covered by this machine report.",
       "evidence": [
         {
           "path": "apps/desktop/src/cockroach-manager.ts",
           "sha256": "2bec8ca9ee01e906194726c6c64de2d5eb0683ae0168be3eb13e10df571c7f41",
           "why": "Defines userData/crdb-data and 127.0.0.1 listener defaults"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/storage.desktop-crdb.mjs",
+          "sha256": "59c0eebd3d8b148cfd763c4f32ffd8e98428a9ade860dc9a0ac896309dfc40f2",
+          "why": "Runs the exact packaged macOS application twice in an isolated profile and records owned loopback listeners, contained storage, marker persistence, stable binaries, and graceful shutdown"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/sample.packaged-account-free.mjs",
+          "sha256": "82217eda3398e650958c8d1af98645fc74eadf8d434dbf4f649df770ead3d37e",
+          "why": "Provides the reviewed archive-selection, safe executable derivation, and process-tree shutdown primitives reused by the storage verifier"
         }
       ],
       "verification": [
         {
           "command": "pnpm --filter skytwin-desktop test -- src/__tests__/cockroach-manager.test.ts",
           "expected": "Desktop Cockroach manager path, lifecycle, and listener tests pass"
+        },
+        {
+          "command": "pnpm exec vitest run scripts/release-claims/storage.desktop-crdb-verifier.test.mjs",
+          "expected": "Storage-verifier input, process ownership, path containment, listener, persistence-response, environment isolation, and report-schema mutation tests pass"
         }
       ]
     },
@@ -1300,8 +1314,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "c5cbd0a2b5d512dacca61ba83b9983c61bf740f69f2bd4a89df28b0a2edf44e8",
-          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material and source report binding at publication"
+          "sha256": "c377c45a3a00e15c8324f3036f36116edb9b0fd12e0b7b98ed289eaffa9672aa",
+          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, and structured desktop-storage observation at publication"
         }
       ],
       "verification": [
