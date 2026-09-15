@@ -21,6 +21,7 @@ import { MODEL_REGISTRY } from "../../packages/embedded-llm/src/model-registry.t
 import {
   CANONICAL_MODEL,
   CHECK_IDS,
+  RELEASE_SUBJECT_DIRECTORY,
   assertSourceCheckout,
   buildReport,
   downloadAndVerifyModel,
@@ -139,6 +140,8 @@ function identity(overrides = {}) {
     token: "token-that-is-long-enough",
     releaseArtifactId: 456,
     releaseArtifactSha256: "b".repeat(64),
+    releaseArtifactDownloadPath:
+      "/home/runner/work/skytwin/skytwin/.release-evidence/model-delivery-subject",
     ...overrides,
   };
 }
@@ -158,6 +161,8 @@ function attemptProvenance(overrides = {}) {
       "release-machine-evidence / models.verified-delivery / linux",
     verifierJobRunAttempt: 2,
     verifierJobStatus: "in_progress",
+    downloadStepName: "Download exact Linux AppImage for model delivery",
+    downloadStepConclusion: "success",
     ...overrides,
   };
 }
@@ -376,6 +381,8 @@ describe("canonical invocation and run identity", () => {
       GITHUB_TOKEN: "token-that-is-long-enough",
       SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID: "456",
       SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST: `sha256:${"b".repeat(64)}`,
+      SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH:
+        "/home/runner/work/skytwin/skytwin/.release-evidence/model-delivery-subject",
     };
     expect(readRunIdentity(env)).toEqual(identity());
     expect(() =>
@@ -451,6 +458,11 @@ describe("current-run release artifact identity", () => {
         conclusion: null,
         steps: [
           {
+            name: "Download exact Linux AppImage for model delivery",
+            status: "completed",
+            conclusion: "success",
+          },
+          {
             name: "Run canonical machine verifier",
             status: "in_progress",
             conclusion: null,
@@ -472,6 +484,27 @@ describe("current-run release artifact identity", () => {
         jsonResponse({ total_count: staleJobs.length, jobs: staleJobs }),
       ),
     ).rejects.toThrow(/exact workflow attempt/);
+
+    const missingExactDownload = jobs.map((job) =>
+      job.id === 42
+        ? {
+            ...job,
+            steps: job.steps.filter(
+              (step) =>
+                step.name !==
+                "Download exact Linux AppImage for model delivery",
+            ),
+          }
+        : job,
+    );
+    await expect(
+      resolveAttemptProvenance(identity(), async () =>
+        jsonResponse({
+          total_count: missingExactDownload.length,
+          jobs: missingExactDownload,
+        }),
+      ),
+    ).rejects.toThrow(/exact-ID Linux AppImage download/);
   });
 
   it("requires exactly one unexpired digest-bound AppImage artifact and matching detail", async () => {
@@ -521,18 +554,25 @@ describe("current-run release artifact identity", () => {
   it("accepts only the exact derived-version AppImage subject", () => {
     const root = temporaryRoot();
     writeFileSync(join(root, "VERSION"), "0.6.102.0\n");
-    const directory = join(root, "artifacts", "SkyTwin-Linux-AppImage");
-    mkdirSync(directory, { recursive: true });
+    const directory = join(root, RELEASE_SUBJECT_DIRECTORY);
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
     const bytes = Buffer.from("release subject");
     writeFileSync(join(directory, "SkyTwin-0.6.10200.AppImage"), bytes);
     expect(
-      inspectReleaseSubject(root, "v0.6.102.0", {
-        artifactName: "SkyTwin-Linux-AppImage",
-      }),
+      inspectReleaseSubject(
+        root,
+        "v0.6.102.0",
+        {
+          artifactName: "SkyTwin-Linux-AppImage",
+        },
+        directory,
+      ),
     ).toMatchObject({
       name: "SkyTwin-0.6.10200.AppImage",
       relativePath:
         "artifacts/SkyTwin-Linux-AppImage/SkyTwin-0.6.10200.AppImage",
+      downloadPath:
+        ".release-evidence/model-delivery-subject/SkyTwin-0.6.10200.AppImage",
       sha256: digest(bytes),
     });
     renameSync(
@@ -540,10 +580,55 @@ describe("current-run release artifact identity", () => {
       join(directory, "SkyTwin-latest.AppImage"),
     );
     expect(() =>
-      inspectReleaseSubject(root, "v0.6.102.0", {
-        artifactName: "SkyTwin-Linux-AppImage",
-      }),
+      inspectReleaseSubject(
+        root,
+        "v0.6.102.0",
+        {
+          artifactName: "SkyTwin-Linux-AppImage",
+        },
+        directory,
+      ),
     ).toThrow(/canonical/);
+  });
+
+  it("ignores a stale same-name rerun artifact outside the exact-ID download path", () => {
+    const root = temporaryRoot();
+    writeFileSync(join(root, "VERSION"), "0.6.102.0\n");
+    const exactDirectory = join(root, RELEASE_SUBJECT_DIRECTORY);
+    const staleDirectory = join(root, "artifacts", "SkyTwin-Linux-AppImage");
+    mkdirSync(exactDirectory, { recursive: true, mode: 0o700 });
+    mkdirSync(staleDirectory, { recursive: true });
+    const name = "SkyTwin-0.6.10200.AppImage";
+    const exactBytes = Buffer.from("current exact-ID artifact");
+    const staleBytes = Buffer.from("stale same-name rerun artifact");
+    writeFileSync(join(exactDirectory, name), exactBytes);
+    writeFileSync(join(staleDirectory, name), staleBytes);
+
+    const observed = inspectReleaseSubject(
+      root,
+      "v0.6.102.0",
+      { artifactName: "SkyTwin-Linux-AppImage" },
+      exactDirectory,
+    );
+    expect(observed.sha256).toBe(digest(exactBytes));
+    expect(observed.sha256).not.toBe(digest(staleBytes));
+    expect(() =>
+      inspectReleaseSubject(
+        root,
+        "v0.6.102.0",
+        { artifactName: "SkyTwin-Linux-AppImage" },
+        staleDirectory,
+      ),
+    ).toThrow(/download path/);
+    chmodSync(exactDirectory, 0o755);
+    expect(() =>
+      inspectReleaseSubject(
+        root,
+        "v0.6.102.0",
+        { artifactName: "SkyTwin-Linux-AppImage" },
+        exactDirectory,
+      ),
+    ).toThrow(/unsafe/);
   });
 });
 
@@ -829,6 +914,8 @@ describe("machine report", () => {
         name: "SkyTwin-0.6.10200.AppImage",
         relativePath:
           "artifacts/SkyTwin-Linux-AppImage/SkyTwin-0.6.10200.AppImage",
+        downloadPath:
+          ".release-evidence/model-delivery-subject/SkyTwin-0.6.10200.AppImage",
         sha256: "c".repeat(64),
       },
       modelArtifact: canonicalModelArtifact(),
@@ -847,6 +934,11 @@ describe("machine report", () => {
       desktopProducerJobRunAttempt: 2,
       verifierJobId: 42,
       verifierJobRunAttempt: 2,
+      releaseArtifactDownloadPath:
+        ".release-evidence/model-delivery-subject/SkyTwin-0.6.10200.AppImage",
+      releaseArtifactDownloadStepConclusion: "success",
+      releaseArtifactDownloadBindingResult:
+        "exact-artifact-id-action-download-pass",
       subjectSha256: "c".repeat(64),
       verifierSha256: digest(Buffer.from("reviewed verifier\n")),
     });

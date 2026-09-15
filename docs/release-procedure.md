@@ -32,9 +32,10 @@
 > repository metadata, exact LFS sibling, card license, revision-pinned LICENSE
 > bytes, delivery, stable file identity, and deletion. It also binds the
 > AppImage artifact to the exact workflow attempt through the upload action's
-> ID/digest outputs and the exact-attempt producer/upload-step time window, but
-> it likewise has no tagged release evidence. The other five machine reports
-> (including Linux signing) and the CI result producer are still absent.
+> ID/digest outputs, an exact-ID download into a private lane directory, and the
+> exact-attempt producer/upload-step time window, but it likewise has no tagged
+> release evidence. The other five machine reports (including Linux signing)
+> and the CI result producer are still absent.
 > The final gate therefore fails closed and the ledger remains blocked until the
 > complete proof pipeline ships.
 
@@ -238,9 +239,10 @@ closed.
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
 The packaged-sample verifier implements three of the twelve matrix reports; see
 [`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
-implements one more, and the signing source implements macOS and Windows while
-failing closed on Linux until package-format methods and trust roots exist. Five
-verifier sources (five matrix reports), the Linux signing implementation, and
+and model-delivery lanes implement one more each, and the signing source
+implements macOS and Windows while failing closed on Linux until package-format
+methods and trust roots exist. Four verifier sources (four matrix reports), the
+Linux signing implementation, and
 the separate `release-claims-ci` artifact producer are absent today. The
 signing matrix entries cannot pass until credentialed package jobs produce
 signed artifacts, protected operator configuration supplies the expected

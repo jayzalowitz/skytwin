@@ -77,6 +77,10 @@ const RELEASE_ARTIFACT_KIND = "desktop-installer";
 const RELEASE_ARTIFACT_PRODUCER_JOB = "Desktop — Linux (AppImage + deb + rpm)";
 const RELEASE_ARTIFACT_UPLOAD_STEP = "Upload Linux AppImage";
 const RELEASE_ARTIFACT_PACKAGE_STEP = "Package Linux desktop app";
+const RELEASE_ARTIFACT_DOWNLOAD_STEP =
+  "Download exact Linux AppImage for model delivery";
+export const RELEASE_SUBJECT_DIRECTORY =
+  ".release-evidence/model-delivery-subject";
 const MAX_API_BYTES = 4 * 1024 * 1024;
 const MAX_LICENSE_BYTES = 256 * 1024;
 const MAX_RELEASE_SUBJECT_BYTES = 8 * 1024 * 1024 * 1024;
@@ -295,6 +299,11 @@ export function readRunIdentity(env = process.env) {
     "SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST",
     /^(?:sha256:)?[0-9a-f]{64}$/u,
   ).replace(/^sha256:/u, "");
+  const releaseArtifactDownloadPath = requiredEnvironment(
+    env,
+    "SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH",
+    /^\/[\S]+$/u,
+  );
   return {
     sourceCommit,
     repository,
@@ -305,6 +314,7 @@ export function readRunIdentity(env = process.env) {
     token,
     releaseArtifactId,
     releaseArtifactSha256,
+    releaseArtifactDownloadPath,
   };
 }
 
@@ -483,6 +493,11 @@ export async function resolveAttemptProvenance(
     currentVerifierSteps.length === 1,
     "canonical model delivery verifier step is not active",
   );
+  const downloadStep = exactSuccessfulStep(
+    verifier,
+    RELEASE_ARTIFACT_DOWNLOAD_STEP,
+    "exact-ID Linux AppImage download",
+  );
   return {
     producerJobId: producer.id,
     producerJobName: producer.name,
@@ -496,6 +511,8 @@ export async function resolveAttemptProvenance(
     verifierJobName: verifier.name,
     verifierJobRunAttempt: verifier.run_attempt,
     verifierJobStatus: verifier.status,
+    downloadStepName: downloadStep.name,
+    downloadStepConclusion: downloadStep.conclusion,
   };
 }
 
@@ -888,7 +905,12 @@ export function assertSourceCheckout(rootPath, identity) {
   }
 }
 
-export function inspectReleaseSubject(root, releaseTag, artifact) {
+export function inspectReleaseSubject(
+  root,
+  releaseTag,
+  artifact,
+  actionDownloadPath,
+) {
   const version = readFileSync(join(root, "VERSION"), "utf8").trim();
   const tagMatch =
     releaseTag.match(
@@ -904,10 +926,22 @@ export function inspectReleaseSubject(root, releaseTag, artifact) {
   const repositoryVersion = `${major}.${minor}.${patch}.${build}`;
   const appVersion = `${major}.${minor}.${Number(patch) * 100 + Number(build)}`;
   assert(version === repositoryVersion, "release tag does not match VERSION");
-  const directory = resolve(root, "artifacts", RELEASE_ARTIFACT_NAME);
-  const directoryStat = lstatSync(directory);
+  const lexicalRoot = resolve(root);
+  const directory = resolve(lexicalRoot, RELEASE_SUBJECT_DIRECTORY);
   assert(
-    directoryStat.isDirectory() && !directoryStat.isSymbolicLink(),
+    isAbsolute(actionDownloadPath) && resolve(actionDownloadPath) === directory,
+    "Linux AppImage action download path is not canonical",
+  );
+  assertNoSymlinkComponents(
+    lexicalRoot,
+    directory,
+    "Linux AppImage artifact directory",
+  );
+  const directoryStat = lstatSync(directory, { bigint: true });
+  assert(
+    directoryStat.isDirectory() &&
+      !directoryStat.isSymbolicLink() &&
+      (directoryStat.mode & 0o777n) === 0o700n,
     "Linux AppImage artifact directory is unsafe",
   );
   assert(
@@ -942,6 +976,7 @@ export function inspectReleaseSubject(root, releaseTag, artifact) {
   return {
     ...observed,
     relativePath: `artifacts/${artifact.artifactName}/${entry.name}`,
+    downloadPath: `${RELEASE_SUBJECT_DIRECTORY}/${entry.name}`,
   };
 }
 
@@ -1430,6 +1465,12 @@ export function buildReport({
     releaseArtifactSha256: artifact.artifactSha256,
     releaseArtifactCreatedAt: artifact.artifactCreatedAt,
     releaseArtifactAttemptBindingResult: artifact.attemptBindingResult,
+    releaseArtifactDownloadPath: releaseSubject.downloadPath,
+    releaseArtifactDownloadStepName: attemptProvenance.downloadStepName,
+    releaseArtifactDownloadStepConclusion:
+      attemptProvenance.downloadStepConclusion,
+    releaseArtifactDownloadBindingResult:
+      "exact-artifact-id-action-download-pass",
     subjectName: releaseSubject.name,
     subjectPath: releaseSubject.relativePath,
     subjectSha256: releaseSubject.sha256,
@@ -1547,6 +1588,7 @@ export async function main({
     root,
     identity.releaseTag,
     artifact,
+    identity.releaseArtifactDownloadPath,
   );
   const modelArtifact = await downloadAndVerifyModel(CANONICAL_MODEL, {
     fetchImpl,
