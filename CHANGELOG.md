@@ -206,17 +206,23 @@ All notable changes to SkyTwin will be documented in this file.
   marketing and build versions, arm64 architecture, hardened-runtime,
   Gatekeeper, and notarization observations for both DMG and ZIP. ZIP members,
   declared expanded size, and extracted link containment are checked before the
-  signed app is trusted; ZIP extraction also runs on a fixed-capacity sparse
-  volume sized for the content ceiling, worst-case allocation-block slack, and
-  filesystem metadata so dishonest archive size metadata cannot exhaust the
-  runner disk without rejecting an otherwise admissible member set. Extraction
-  begins only when the host can retain a separate fixed free-space reserve even
-  if the sparse image grows to its full virtual capacity.
-  Windows reports bind both installer and contained executable
+  signed app is trusted; ZIP extraction also runs on a fully allocated
+  fixed-capacity HFS+ image sized for the content ceiling, worst-case
+  allocation-block slack, and filesystem metadata. Host capacity is checked
+  both before and after allocation, eliminating sparse-image growth against the
+  runner reserve. Windows extraction runs on an attached fixed-capacity VHDX,
+  so dishonest archive size metadata is bounded by the extraction volume rather
+  than runner free space. Windows reports bind both installer and contained executable
   version metadata alongside the exact Authenticode method, pinned signer
   fingerprint, code-signing EKU, and timestamp-certificate observation. Report
   construction and the independent publisher reject omitted, altered, stale,
-  or wrong-method fields. Linux remains
+  or wrong-method fields. Native commands operate only on private staged copies
+  whose bytes and file identity are checked against the release subject before
+  and after verification. The producer downloads its uploaded signing report
+  by exact artifact ID and compares its bytes with the verifier-emitted digest;
+  the upload archive digest remains a separate API-bound value. These checks
+  cover in-workflow mutation windows, not arbitrary same-user control of the
+  hosted runner. Linux remains
   fail-closed until package-format verification methods and trust roots exist;
   final-DMG notarization is still not wired, and verifier source and tests do
   not claim signed release artifacts.

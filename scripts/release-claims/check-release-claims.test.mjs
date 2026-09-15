@@ -38,6 +38,7 @@ import {
   REQUIRED_STOP_SHIP_IDS,
   REQUIRED_SURFACE_CLASSES,
   buildCanonicalVerificationInstructions,
+  hasCanonicalSuccessfulMachineSteps,
   isAllowlistedVerificationCommand,
   isValidSpdx23Document,
   normalizeReleaseTagToRepositoryVersion,
@@ -556,17 +557,33 @@ ${machineMatrix}
           SKYTWIN_RELEASE_PROVENANCE_SHA256: \${{ steps.sample-provenance.outputs.descriptor_sha256 }}
         run: node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform \${{ matrix.platform }} --descriptor .release-evidence/provenance/\${{ matrix.reportName }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Run canonical machine verifier
+        id: machine-verifier
         if: matrix.claimId != 'sample.packaged-account-free'
         env:
           GITHUB_TOKEN: \${{ github.token }}
         run: node scripts/release-claims/verifiers/\${{ matrix.claimId }}.mjs --platform \${{ matrix.platform }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Upload machine evidence report
+        id: upload-machine-evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-machine-evidence-\${{ matrix.claimId }}-\${{ matrix.platform }}
           path: .release-evidence/reports/\${{ matrix.reportName }}
           if-no-files-found: error
           compression-level: 0
+      - name: Download exact uploaded signing report
+        if: matrix.claimId == 'release.signing'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: \${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          path: .release-evidence/upload-confirmation
+          merge-multiple: true
+      - name: Verify exact uploaded signing report binding
+        if: matrix.claimId == 'release.signing'
+        env:
+          SKYTWIN_EXPECTED_REPORT_SHA256: \${{ steps.machine-verifier.outputs.report_sha256 }}
+          SKYTWIN_UPLOADED_ARTIFACT_ID: \${{ steps.upload-machine-evidence.outputs.artifact-id }}
+          SKYTWIN_UPLOADED_ARTIFACT_SHA256: \${{ steps.upload-machine-evidence.outputs.artifact-digest }}
+        run: node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform \${{ matrix.platform }} --report .release-evidence/upload-confirmation/\${{ matrix.reportName }}
   aggregate-release-evidence:
     name: Aggregate release machine evidence
     if: startsWith(github.ref, 'refs/tags/v')
@@ -1103,6 +1120,51 @@ ${step}`,
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
     );
+  });
+
+  it("requires exact-ID post-upload signing report verification in the producer job", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "          artifact-ids: ${{ steps.upload-machine-evidence.outputs.artifact-id }}",
+        "          artifact-ids: 999",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+    );
+  });
+
+  it("requires the exact signing upload-verification step to succeed before publication", () => {
+    const verifierStep = {
+      name: CANONICAL_MACHINE_VERIFIER_STEP,
+      conclusion: "success",
+    };
+    const uploadVerificationStep = {
+      name: "Verify exact uploaded signing report binding",
+      conclusion: "success",
+    };
+    expect(
+      hasCanonicalSuccessfulMachineSteps("release.signing", {
+        steps: [verifierStep],
+      }),
+    ).toBe(false);
+    expect(
+      hasCanonicalSuccessfulMachineSteps("release.signing", {
+        steps: [
+          verifierStep,
+          { ...uploadVerificationStep, conclusion: "failure" },
+        ],
+      }),
+    ).toBe(false);
+    expect(
+      hasCanonicalSuccessfulMachineSteps("release.signing", {
+        steps: [verifierStep, uploadVerificationStep],
+      }),
+    ).toBe(true);
   });
 
   it("requires machine verification to depend on the materials producer", () => {

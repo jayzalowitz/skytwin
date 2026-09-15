@@ -164,12 +164,20 @@ signing/notarization remains a separate stop-ship.
 For macOS, the signing report requires the DMG's own Developer ID signer and
 team to match its contained app, binds both signed bundle version keys, and
 checks the ZIP member inventory and declared expanded-size ceiling, extracts on
-a fixed-capacity sparse volume with allocation and filesystem-metadata
-headroom, requires a separate host free-space reserve beyond that volume's
-maximum growth, and checks extracted link containment before trusting the
-contained app. For Windows, it binds the
+a fully allocated fixed-capacity HFS+ image with allocation and
+filesystem-metadata headroom, requires a separate host free-space reserve both
+before and after allocating that image, and checks extracted link containment
+before trusting the contained app. For Windows, extraction runs on an attached
+fixed-capacity VHDX rather than the runner filesystem, and the report binds the
 Authenticode and version metadata of both the NSIS installer and its exact contained
 `SkyTwin.exe`; a correctly signed but stale wrapper is not acceptable.
+Both platforms verify native tools only against a private digest-bound staged
+copy. The producer then downloads the uploaded report by its exact artifact ID
+and checks the downloaded report bytes against the verifier-emitted SHA-256;
+the artifact service's separate archive digest is retained as API-bound
+publication evidence. These controls fail closed against mutations within the
+workflow's processes and handoff windows; arbitrary same-user control of the
+hosted runner itself remains outside the evidence threat boundary.
 
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
 The packaged-sample verifier implements three of the twelve matrix reports; see

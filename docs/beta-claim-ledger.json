@@ -1174,7 +1174,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "31bf0370fcd626cdeb9b3ae816ce95fda9fb2ce92e433d5f685b5666fecf2a96",
+          "sha256": "946135f60b7075c4d81a830b9724bbc1c913039c1cd7859f5e9e1d31fe0d089f",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
@@ -1184,7 +1184,7 @@
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "fca08990abba4f41da4bf3c48ce7de053aa06cf815cb075320cc45c7697cebc4",
+          "sha256": "1b541d5005eba3510af2bbe87b7d8b0953bb5d6bec8c298f2a2cf9f169b63677",
           "why": "Defines contained report writes, fail-closed native macOS DMG and contained-app signature observations, and Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
         }
       ],
@@ -1215,7 +1215,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "31bf0370fcd626cdeb9b3ae816ce95fda9fb2ce92e433d5f685b5666fecf2a96",
+          "sha256": "946135f60b7075c4d81a830b9724bbc1c913039c1cd7859f5e9e1d31fe0d089f",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
@@ -1255,7 +1255,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "1145dbd0005aa701709792db4f9fa247efca422dcf5405d09c6f8a474a3bda6c",
+          "sha256": "aed43a8fb24cb1c939d2d23936984d1152e7c472aa9e69a4a67bdc63fbc03349",
           "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],

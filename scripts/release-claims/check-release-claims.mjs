@@ -2162,7 +2162,7 @@ export function verifyCanonicalReleasePublisher(root) {
     JSON.stringify(machineProducerJob.strategy.matrix.include) !==
       JSON.stringify(expectedMachineMatrix) ||
     !Array.isArray(producerSteps) ||
-    producerSteps.length !== 7 ||
+    producerSteps.length !== 9 ||
     !isRecord(producerSteps[0]) ||
     !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
     producerSteps[0].uses !==
@@ -2210,8 +2210,9 @@ export function verifyCanonicalReleasePublisher(root) {
     producerSteps[4].run !==
       "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[5]) ||
-    !hasExactKeys(producerSteps[5], ["name", "if", "env", "run"]) ||
+    !hasExactKeys(producerSteps[5], ["name", "id", "if", "env", "run"]) ||
     producerSteps[5].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    producerSteps[5].id !== "machine-verifier" ||
     producerSteps[5].if !==
       "matrix.claimId != 'sample.packaged-account-free'" ||
     !hasExactKeys(producerSteps[5].env, ["GITHUB_TOKEN"]) ||
@@ -2219,8 +2220,9 @@ export function verifyCanonicalReleasePublisher(root) {
     producerSteps[5].run !==
       "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
     !isRecord(producerSteps[6]) ||
-    !hasExactKeys(producerSteps[6], ["name", "uses", "with"]) ||
+    !hasExactKeys(producerSteps[6], ["name", "id", "uses", "with"]) ||
     producerSteps[6].name !== "Upload machine evidence report" ||
+    producerSteps[6].id !== "upload-machine-evidence" ||
     producerSteps[6].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
     !hasExactKeys(producerSteps[6].with, [
@@ -2234,7 +2236,39 @@ export function verifyCanonicalReleasePublisher(root) {
     producerSteps[6].with.path !==
       ".release-evidence/reports/${{ matrix.reportName }}" ||
     producerSteps[6].with["if-no-files-found"] !== "error" ||
-    producerSteps[6].with["compression-level"] !== 0
+    producerSteps[6].with["compression-level"] !== 0 ||
+    !isRecord(producerSteps[7]) ||
+    !hasExactKeys(producerSteps[7], ["name", "if", "uses", "with"]) ||
+    producerSteps[7].name !== "Download exact uploaded signing report" ||
+    producerSteps[7].if !== "matrix.claimId == 'release.signing'" ||
+    producerSteps[7].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(producerSteps[7].with, [
+      "artifact-ids",
+      "path",
+      "merge-multiple",
+    ]) ||
+    producerSteps[7].with["artifact-ids"] !==
+      "${{ steps.upload-machine-evidence.outputs.artifact-id }}" ||
+    producerSteps[7].with.path !== ".release-evidence/upload-confirmation" ||
+    producerSteps[7].with["merge-multiple"] !== true ||
+    !isRecord(producerSteps[8]) ||
+    !hasExactKeys(producerSteps[8], ["name", "if", "env", "run"]) ||
+    producerSteps[8].name !== "Verify exact uploaded signing report binding" ||
+    producerSteps[8].if !== "matrix.claimId == 'release.signing'" ||
+    !hasExactKeys(producerSteps[8].env, [
+      "SKYTWIN_EXPECTED_REPORT_SHA256",
+      "SKYTWIN_UPLOADED_ARTIFACT_ID",
+      "SKYTWIN_UPLOADED_ARTIFACT_SHA256",
+    ]) ||
+    producerSteps[8].env.SKYTWIN_EXPECTED_REPORT_SHA256 !==
+      "${{ steps.machine-verifier.outputs.report_sha256 }}" ||
+    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_ID !==
+      "${{ steps.upload-machine-evidence.outputs.artifact-id }}" ||
+    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_SHA256 !==
+      "${{ steps.upload-machine-evidence.outputs.artifact-digest }}" ||
+    producerSteps[8].run !==
+      "node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }}"
   )
     addError(
       errors,
@@ -4938,6 +4972,26 @@ export async function verifyArtifactVerificationMaterials(
   return errors;
 }
 
+export function hasCanonicalSuccessfulMachineSteps(claimId, producerJob) {
+  const steps = asArray(producerJob?.steps);
+  const verifierStepName =
+    claimId === "sample.packaged-account-free"
+      ? "Run canonical packaged sample verifier without GitHub API token"
+      : CANONICAL_MACHINE_VERIFIER_STEP;
+  return (
+    steps.some(
+      (step) =>
+        step?.name === verifierStepName && step?.conclusion === "success",
+    ) &&
+    (claimId !== "release.signing" ||
+      steps.some(
+        (step) =>
+          step?.name === "Verify exact uploaded signing report binding" &&
+          step?.conclusion === "success",
+      ))
+  );
+}
+
 export async function verifyPublicationEvidence(
   ledger,
   manifest,
@@ -5412,14 +5466,7 @@ export async function verifyPublicationEvidence(
         `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
       (producerJob.head_sha !== undefined &&
         producerJob.head_sha !== releaseCommit) ||
-      !asArray(producerJob.steps).some(
-        (step) =>
-          step?.name ===
-            (claimId === "sample.packaged-account-free"
-              ? "Run canonical packaged sample verifier without GitHub API token"
-              : CANONICAL_MACHINE_VERIFIER_STEP) &&
-          step?.conclusion === "success",
-      )
+      !hasCanonicalSuccessfulMachineSteps(claimId, producerJob)
     )
       addError(
         errors,

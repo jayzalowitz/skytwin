@@ -15,8 +15,10 @@ import {
   readSync,
   realpathSync,
   rmSync,
+  statSync,
   statfsSync,
   writeFileSync,
+  writeSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import {
@@ -75,6 +77,10 @@ const MAC_ZIP_FILESYSTEM_HEADROOM_BYTES = 1024 * 1024 * 1024;
 const MAC_ZIP_IMAGE_KIB_BYTES = 1024;
 const MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MAC_ZIP_SYMLINK_BYTES = 4096;
+const WINDOWS_QUOTA_MEMBER_LIMIT = 100_000;
+const WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES = 4096;
+const WINDOWS_QUOTA_FILESYSTEM_HEADROOM_BYTES = 1024 * 1024 * 1024;
+const WINDOWS_QUOTA_HOST_FREE_SPACE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024;
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
   `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})$`,
@@ -185,15 +191,53 @@ export function macZipExtractionVolumeSize(
 }
 
 const MAC_ZIP_EXTRACTION_VOLUME_SIZE = macZipExtractionVolumeSize();
+const MAC_ZIP_EXTRACTION_VOLUME_BYTES = macZipExtractionVolumeBytes();
 const MAC_ZIP_MINIMUM_HOST_FREE_BYTES =
-  macZipExtractionVolumeBytes() + MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES;
+  MAC_ZIP_EXTRACTION_VOLUME_BYTES + MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES;
+const WINDOWS_EXTRACTION_VOLUME_BYTES =
+  MAX_SUBJECT_BYTES * 2 +
+  WINDOWS_QUOTA_MEMBER_LIMIT * WINDOWS_QUOTA_ALLOCATION_BLOCK_BYTES +
+  WINDOWS_QUOTA_FILESYSTEM_HEADROOM_BYTES;
+const WINDOWS_EXTRACTION_VOLUME_MIB = Math.ceil(
+  WINDOWS_EXTRACTION_VOLUME_BYTES / (1024 * 1024),
+);
+const WINDOWS_MINIMUM_HOST_FREE_BYTES =
+  WINDOWS_EXTRACTION_VOLUME_BYTES + WINDOWS_QUOTA_HOST_FREE_SPACE_RESERVE_BYTES;
 
-function assertMacZipHostCapacity(extractionRoot, inspectFilesystem) {
+function filesystemBytes(filesystem, field, description) {
+  const blocks = BigInt(filesystem?.[field]);
+  const blockSize = BigInt(filesystem?.bsize);
+  assert(blocks >= 0n && blockSize > 0n, `${description} is invalid`);
+  return blocks * blockSize;
+}
+
+function assertMacZipHostCapacity(
+  extractionRoot,
+  inspectFilesystem,
+  minimumBytes = MAC_ZIP_MINIMUM_HOST_FREE_BYTES,
+) {
   const filesystem = inspectFilesystem(extractionRoot, { bigint: true });
-  const availableBytes = BigInt(filesystem.bavail) * BigInt(filesystem.bsize);
+  const availableBytes = filesystemBytes(
+    filesystem,
+    "bavail",
+    "macOS ZIP verification host capacity",
+  );
   assert(
-    availableBytes >= BigInt(MAC_ZIP_MINIMUM_HOST_FREE_BYTES),
+    availableBytes >= BigInt(minimumBytes),
     "macOS ZIP verification host has insufficient reserved free space",
+  );
+}
+
+function assertWindowsHostCapacity(extractionRoot, inspectFilesystem) {
+  const filesystem = inspectFilesystem(extractionRoot, { bigint: true });
+  const availableBytes = filesystemBytes(
+    filesystem,
+    "bavail",
+    "Windows verification host capacity",
+  );
+  assert(
+    availableBytes >= BigInt(WINDOWS_MINIMUM_HOST_FREE_BYTES),
+    "Windows verification host has insufficient reserved free space",
   );
 }
 
@@ -321,6 +365,100 @@ export function inspectStableRegularFile(
   } finally {
     closeSync(descriptor);
   }
+}
+
+function assertObservedSubject(observed, expected, description) {
+  assert(
+    observed.sha256 === expected.sha256 &&
+      observed.sizeBytes === expected.sizeBytes &&
+      observed.device === expected.device &&
+      observed.inode === expected.inode,
+    `${description} changed while signing evidence was collected`,
+  );
+}
+
+export function stageStableSubject(subject, stagingRoot, description) {
+  const sourcePath = resolve(subject.path);
+  const stageDirectory = join(stagingRoot, "staged-subject");
+  mkdirSync(stageDirectory, { mode: 0o700 });
+  const destinationPath = join(stageDirectory, subject.name);
+  const beforePath = lstatSync(sourcePath, { bigint: true });
+  const source = openSync(
+    sourcePath,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  let destination;
+  try {
+    const before = fstatSync(source, { bigint: true });
+    assert(
+      before.isFile() &&
+        before.nlink === 1n &&
+        beforePath.isFile() &&
+        beforePath.nlink === 1n &&
+        sameFileIdentity(before, beforePath) &&
+        before.dev.toString() === subject.device &&
+        before.ino.toString() === subject.inode &&
+        before.size === BigInt(subject.sizeBytes),
+      `${description} changed before private staging`,
+    );
+    destination = openSync(
+      destinationPath,
+      constants.O_WRONLY |
+        constants.O_CREAT |
+        constants.O_EXCL |
+        (constants.O_NOFOLLOW ?? 0),
+      0o400,
+    );
+    const digest = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    for (;;) {
+      const count = readSync(source, buffer, 0, buffer.length, position);
+      if (count === 0) break;
+      digest.update(buffer.subarray(0, count));
+      let written = 0;
+      while (written < count) {
+        const writeCount = writeSync(
+          destination,
+          buffer,
+          written,
+          count - written,
+          position + written,
+        );
+        assert(writeCount > 0, `${description} staging write made no progress`);
+        written += writeCount;
+      }
+      position += count;
+      assert(
+        position <= MAX_SUBJECT_BYTES,
+        `${description} exceeded the release size bound during private staging`,
+      );
+    }
+    const after = fstatSync(source, { bigint: true });
+    const afterPath = lstatSync(sourcePath, { bigint: true });
+    assert(
+      sameFileIdentity(before, after) && sameFileIdentity(after, afterPath),
+      `${description} changed during private staging`,
+    );
+    assert(
+      position === subject.sizeBytes && digest.digest("hex") === subject.sha256,
+      `${description} private staging digest disagrees with the release subject`,
+    );
+  } finally {
+    if (destination !== undefined) closeSync(destination);
+    closeSync(source);
+  }
+  const staged = inspectStableRegularFile(
+    stagingRoot,
+    destinationPath,
+    `${description} private staged copy`,
+    MAX_SUBJECT_BYTES,
+  );
+  assert(
+    staged.sha256 === subject.sha256 && staged.sizeBytes === subject.sizeBytes,
+    `${description} private staged copy disagrees with the release subject`,
+  );
+  return staged;
 }
 
 function escapedPattern(pattern, appVersion) {
@@ -697,7 +835,7 @@ export function executeNativeCommand(
     env,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
-    timeout: 120_000,
+    timeout: 300_000,
     maxBuffer: MAX_TOOL_OUTPUT_BYTES,
     windowsHide: true,
   });
@@ -1110,11 +1248,16 @@ export function verifyMacSubjects(
     const extractionRoot = mkdtempSync(join(tmpdir(), "skytwin-signing-"));
     let detachMount = null;
     try {
+      const stagedSubject = stageStableSubject(
+        subject,
+        extractionRoot,
+        artifactName,
+      );
       let appPath;
       let containerSignature = null;
       if (artifactName === "SkyTwin-macOS-dmg") {
         containerSignature = verifyMacDmg(
-          subject.path,
+          stagedSubject.path,
           policy.teamId,
           execute,
           commandEnv,
@@ -1130,7 +1273,7 @@ export function verifyMacSubjects(
               "--context",
               "context:primary-signature",
               "--verbose=4",
-              subject.path,
+              stagedSubject.path,
             ],
             { env: commandEnv },
             "macOS DMG Gatekeeper assessment",
@@ -1140,7 +1283,7 @@ export function verifyMacSubjects(
         const dmgStapler = checkedCommand(
           execute,
           MACOS_NATIVE_TOOLS.xcrun,
-          ["stapler", "validate", subject.path],
+          ["stapler", "validate", stagedSubject.path],
           { env: commandEnv },
           "macOS DMG notarization ticket validation",
         );
@@ -1160,7 +1303,7 @@ export function verifyMacSubjects(
             "-noautoopen",
             "-mountpoint",
             mount,
-            subject.path,
+            stagedSubject.path,
           ],
           { env: commandEnv },
           "macOS DMG mount",
@@ -1172,14 +1315,14 @@ export function verifyMacSubjects(
           checkedCommand(
             execute,
             MACOS_NATIVE_TOOLS.unzip,
-            ["-Z", "-l", subject.path],
+            ["-Z", "-l", stagedSubject.path],
             { env: commandEnv },
             "macOS ZIP inventory preflight",
           ),
           "macOS ZIP",
         );
         assertMacZipHostCapacity(extractionRoot, inspectFilesystem);
-        const extractionImage = join(extractionRoot, "zip-quota.sparseimage");
+        const extractionImage = join(extractionRoot, "zip-quota.dmg");
         checkedCommand(
           execute,
           MACOS_NATIVE_TOOLS.hdiutil,
@@ -1192,12 +1335,21 @@ export function verifyMacSubjects(
             "-volname",
             "SkyTwinVerification",
             "-type",
-            "SPARSE",
+            "UDIF",
             "-quiet",
             extractionImage,
           ],
           { env: commandEnv },
           "macOS ZIP bounded extraction volume creation",
+        );
+        // UDIF creation fully allocates the backing image. Rechecking after
+        // that allocation closes the admission-to-reservation window: a race
+        // can make creation or this check fail, but cannot let extraction
+        // consume the separately required host reserve.
+        assertMacZipHostCapacity(
+          extractionRoot,
+          inspectFilesystem,
+          MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES,
         );
         const extracted = join(extractionRoot, "unzipped");
         mkdirSync(extracted);
@@ -1219,7 +1371,7 @@ export function verifyMacSubjects(
         checkedCommand(
           execute,
           MACOS_NATIVE_TOOLS.ditto,
-          ["-x", "-k", "--sequesterRsrc", subject.path, extracted],
+          ["-x", "-k", "--sequesterRsrc", stagedSubject.path, extracted],
           { env: commandEnv },
           "macOS ZIP extraction",
         );
@@ -1265,19 +1417,24 @@ export function verifyMacSubjects(
           observedExecutable.inode === appPath.packagedExecutable.inode,
         `${artifactName} packaged executable changed during native verification`,
       );
+      const observedStagedSubject = inspectStableRegularFile(
+        extractionRoot,
+        stagedSubject.path,
+        `${artifactName} private staged subject after native verification`,
+        MAX_SUBJECT_BYTES,
+      );
+      assertObservedSubject(
+        observedStagedSubject,
+        stagedSubject,
+        `${artifactName} private staged subject`,
+      );
       const observedSubject = inspectStableRegularFile(
         dirname(subject.path),
         subject.path,
-        `${artifactName} subject after native verification`,
+        `${artifactName} original subject after native verification`,
         MAX_SUBJECT_BYTES,
       );
-      assert(
-        observedSubject.sha256 === subject.sha256 &&
-          observedSubject.sizeBytes === subject.sizeBytes &&
-          observedSubject.device === subject.device &&
-          observedSubject.inode === subject.inode,
-        `${artifactName} subject changed while signing evidence was collected`,
-      );
+      assertObservedSubject(observedSubject, subject, artifactName);
       canonicalAppIdentity = canonicalAppIdentity ?? appSignature;
       assert(
         appSignature.teamId === canonicalAppIdentity.teamId &&
@@ -1463,6 +1620,125 @@ function executeSevenZip(execute, sevenZip, args, commandEnv, description) {
     args,
     { env: commandEnv },
     description,
+  );
+}
+
+function writeDiskpartScript(extractionRoot, name, lines) {
+  assert(
+    lines.every(
+      (line) =>
+        typeof line === "string" &&
+        line.length > 0 &&
+        !line.includes("\r") &&
+        !line.includes("\n"),
+    ),
+    "Windows quota volume command is unsafe",
+  );
+  const path = join(extractionRoot, name);
+  writeFileSync(path, `${lines.join("\r\n")}\r\n`, {
+    flag: "wx",
+    mode: 0o600,
+  });
+  return path;
+}
+
+function diskpartPathLiteral(path) {
+  assert(
+    typeof path === "string" &&
+      path.length > 0 &&
+      !path.includes('"') &&
+      !path.includes("\r") &&
+      !path.includes("\n"),
+    "Windows quota volume path is unsafe",
+  );
+  return `"${path}"`;
+}
+
+function createWindowsQuotaVolume({
+  extractionRoot,
+  diskpart,
+  execute,
+  commandEnv,
+  inspectFilesystem,
+  inspectPath,
+}) {
+  assertWindowsHostCapacity(extractionRoot, inspectFilesystem);
+  const hostDevice = inspectPath(extractionRoot, { bigint: true }).dev;
+  const imagePath = join(extractionRoot, "extraction-quota.vhdx");
+  const volumeRoot = join(extractionRoot, "extraction-volume");
+  mkdirSync(volumeRoot, { mode: 0o700 });
+  const scriptPath = writeDiskpartScript(extractionRoot, "attach-volume.txt", [
+    `create vdisk file=${diskpartPathLiteral(imagePath)} maximum=${WINDOWS_EXTRACTION_VOLUME_MIB} type=fixed`,
+    `select vdisk file=${diskpartPathLiteral(imagePath)}`,
+    "attach vdisk",
+    "create partition primary",
+    'format fs=ntfs label="SkyTwinVerification" quick',
+    `assign mount=${diskpartPathLiteral(volumeRoot)}`,
+    "exit",
+  ]);
+  checkedCommand(
+    execute,
+    diskpart,
+    ["/s", scriptPath],
+    { env: commandEnv },
+    "Windows fixed-capacity extraction volume creation",
+  );
+  const volumeStat = inspectPath(volumeRoot, { bigint: true });
+  const filesystem = inspectFilesystem(volumeRoot, { bigint: true });
+  const totalBytes = filesystemBytes(
+    filesystem,
+    "blocks",
+    "Windows extraction volume capacity",
+  );
+  assert(
+    volumeStat.isDirectory() &&
+      volumeStat.dev !== hostDevice &&
+      totalBytes > BigInt(MAX_SUBJECT_BYTES * 2) &&
+      totalBytes <= BigInt(WINDOWS_EXTRACTION_VOLUME_MIB * 1024 * 1024),
+    "Windows extraction volume is not a distinct capacity-enforced filesystem",
+  );
+  // A fixed VHDX consumes its full maximum at creation. This post-allocation
+  // check proves that the separate host reserve still exists before any
+  // attacker-controlled archive is tested or extracted.
+  const hostAfterAllocation = inspectFilesystem(extractionRoot, {
+    bigint: true,
+  });
+  assert(
+    filesystemBytes(
+      hostAfterAllocation,
+      "bavail",
+      "Windows verification host reserve",
+    ) >= BigInt(WINDOWS_QUOTA_HOST_FREE_SPACE_RESERVE_BYTES),
+    "Windows verification host has insufficient reserved free space after quota allocation",
+  );
+  return { imagePath, volumeRoot };
+}
+
+function detachWindowsQuotaVolume({
+  extractionRoot,
+  imagePath,
+  volumeRoot,
+  diskpart,
+  execute,
+  commandEnv,
+  inspectPath,
+}) {
+  const scriptPath = writeDiskpartScript(extractionRoot, "detach-volume.txt", [
+    `select vdisk file=${diskpartPathLiteral(imagePath)}`,
+    "detach vdisk",
+    "exit",
+  ]);
+  checkedCommand(
+    execute,
+    diskpart,
+    ["/s", scriptPath],
+    { env: commandEnv },
+    "Windows extraction volume detach",
+  );
+  assert(
+    inspectPath(volumeRoot, { bigint: true }).dev ===
+      inspectPath(extractionRoot, { bigint: true }).dev,
+    "Windows extraction volume remained attached after cleanup",
   );
 }
 
@@ -1740,7 +2016,13 @@ function verifyWindowsSignature(path, powershell, commandEnv, policy, execute) {
 export function verifyWindowsSubjects(
   subjects,
   policy,
-  { execute = executeNativeCommand, env = process.env, appVersion } = {},
+  {
+    execute = executeNativeCommand,
+    env = process.env,
+    appVersion,
+    inspectFilesystem = statfsSync,
+    inspectPath = statSync,
+  } = {},
 ) {
   assert(
     subjects.size === 1 && subjects.has("SkyTwin-Windows-installer"),
@@ -1759,6 +2041,7 @@ export function verifyWindowsSubjects(
     );
   const powershell = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   const sevenZip = `${systemRoot.slice(0, 2)}\\Program Files\\7-Zip\\7z.exe`;
+  const diskpart = `${systemRoot}\\System32\\diskpart.exe`;
   assert(
     typeof appVersion === "string" && appVersion.length > 0,
     "Windows signing verification requires the release app version",
@@ -1767,41 +2050,60 @@ export function verifyWindowsSubjects(
     SystemRoot: systemRoot,
     WINDIR: systemRoot,
   };
-  const installerBefore = inspectStableRegularFile(
-    join(subject.path, ".."),
-    subject.path,
-    "Windows installer",
-    MAX_SUBJECT_BYTES,
-  );
-  const signature = verifyWindowsSignature(
-    subject.path,
-    powershell,
-    commandEnv,
-    policy,
-    execute,
-  );
-  const expectedVersionParts = appVersion.split(".").map(Number);
-  assert(
-    signature.productVersion === appVersion,
-    "Windows installer ProductVersion does not match the release app version",
-  );
-  assert(
-    expectedVersionParts.length === 3 &&
-      expectedVersionParts.every(Number.isSafeInteger) &&
-      signature.fileVersionMajor === expectedVersionParts[0] &&
-      signature.fileVersionMinor === expectedVersionParts[1] &&
-      signature.fileVersionBuild === expectedVersionParts[2] &&
-      signature.fileVersionPrivate === 0,
-    "Windows installer FileVersionInfo does not match the release app version",
-  );
   const extractionRoot = mkdtempSync(
     join(tmpdir(), "skytwin-signing-windows-"),
   );
   let primaryError;
+  let quotaCreationAttempted = false;
+  const quota = {
+    imagePath: join(extractionRoot, "extraction-quota.vhdx"),
+    volumeRoot: join(extractionRoot, "extraction-volume"),
+  };
   try {
-    const derived = deriveWindowsExecutable(
-      subject.path,
+    const stagedSubject = stageStableSubject(
+      subject,
       extractionRoot,
+      "Windows installer",
+    );
+    const installerBefore = inspectStableRegularFile(
+      extractionRoot,
+      stagedSubject.path,
+      "private staged Windows installer",
+      MAX_SUBJECT_BYTES,
+    );
+    const signature = verifyWindowsSignature(
+      stagedSubject.path,
+      powershell,
+      commandEnv,
+      policy,
+      execute,
+    );
+    const expectedVersionParts = appVersion.split(".").map(Number);
+    assert(
+      signature.productVersion === appVersion,
+      "Windows installer ProductVersion does not match the release app version",
+    );
+    assert(
+      expectedVersionParts.length === 3 &&
+        expectedVersionParts.every(Number.isSafeInteger) &&
+        signature.fileVersionMajor === expectedVersionParts[0] &&
+        signature.fileVersionMinor === expectedVersionParts[1] &&
+        signature.fileVersionBuild === expectedVersionParts[2] &&
+        signature.fileVersionPrivate === 0,
+      "Windows installer FileVersionInfo does not match the release app version",
+    );
+    quotaCreationAttempted = true;
+    createWindowsQuotaVolume({
+      extractionRoot,
+      diskpart,
+      execute,
+      commandEnv,
+      inspectFilesystem,
+      inspectPath,
+    });
+    const derived = deriveWindowsExecutable(
+      stagedSubject.path,
+      quota.volumeRoot,
       sevenZip,
       execute,
       commandEnv,
@@ -1847,18 +2149,23 @@ export function verifyWindowsSubjects(
       "contained Windows executable changed during signature verification",
     );
     const installerAfter = inspectStableRegularFile(
-      join(subject.path, ".."),
-      subject.path,
-      "Windows installer",
+      extractionRoot,
+      stagedSubject.path,
+      "private staged Windows installer",
       MAX_SUBJECT_BYTES,
     );
-    assert(
-      installerBefore.sha256 === installerAfter.sha256 &&
-        installerBefore.sizeBytes === installerAfter.sizeBytes &&
-        installerBefore.device === installerAfter.device &&
-        installerBefore.inode === installerAfter.inode,
-      "Windows installer changed during verification",
+    assertObservedSubject(
+      installerAfter,
+      installerBefore,
+      "private staged Windows installer",
     );
+    const originalAfter = inspectStableRegularFile(
+      dirname(subject.path),
+      subject.path,
+      "original Windows installer",
+      MAX_SUBJECT_BYTES,
+    );
+    assertObservedSubject(originalAfter, subject, "Windows installer");
     return new Map([
       [
         "SkyTwin-Windows-installer",
@@ -1918,9 +2225,23 @@ export function verifyWindowsSubjects(
     throw error;
   } finally {
     try {
-      rmSync(extractionRoot, { recursive: true, force: true });
+      if (quotaCreationAttempted)
+        detachWindowsQuotaVolume({
+          extractionRoot,
+          ...quota,
+          diskpart,
+          execute,
+          commandEnv,
+          inspectPath,
+        });
     } catch (cleanupError) {
       if (!primaryError) throw cleanupError;
+    } finally {
+      try {
+        rmSync(extractionRoot, { recursive: true, force: true });
+      } catch (cleanupError) {
+        if (!primaryError) throw cleanupError;
+      }
     }
   }
 }
@@ -2270,10 +2591,110 @@ function writeReport(root, relativePath, report) {
       `${description} must be a direct real directory inside checkout`,
     );
   }
-  writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`, {
+  const bytes = Buffer.from(`${JSON.stringify(report, null, 2)}\n`);
+  writeFileSync(output, bytes, {
     flag: "wx",
     mode: 0o600,
   });
+  const observed = inspectStableRegularFile(
+    reportsRoot,
+    output,
+    "release signing report",
+    4 * 1024 * 1024,
+  );
+  const expectedSha256 = createHash("sha256").update(bytes).digest("hex");
+  assert(
+    observed.sha256 === expectedSha256 && observed.sizeBytes === bytes.length,
+    "release signing report changed while it was written",
+  );
+  return observed;
+}
+
+function appendWorkflowOutput(outputPath, name, value) {
+  assert(
+    isAbsolute(outputPath) && /^[a-z_][a-z0-9_]*$/u.test(name),
+    "GitHub workflow output target is invalid",
+  );
+  const beforePath = lstatSync(outputPath, { bigint: true });
+  assert(
+    beforePath.isFile() &&
+      !beforePath.isSymbolicLink() &&
+      beforePath.nlink === 1n,
+    "GitHub workflow output must be a direct regular file",
+  );
+  const descriptor = openSync(
+    outputPath,
+    constants.O_WRONLY | constants.O_APPEND | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    assert(
+      sameFileIdentity(before, beforePath),
+      "GitHub workflow output changed before report binding",
+    );
+    const bytes = Buffer.from(`${name}=${value}\n`);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = writeSync(descriptor, bytes, offset, bytes.length - offset);
+      assert(count > 0, "GitHub workflow output write made no progress");
+      offset += count;
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const afterPath = lstatSync(outputPath, { bigint: true });
+    assert(
+      after.size === before.size + BigInt(bytes.length) &&
+        after.dev === before.dev &&
+        after.ino === before.ino &&
+        afterPath.dev === after.dev &&
+        afterPath.ino === after.ino,
+      "GitHub workflow output changed during report binding",
+    );
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+export function verifyUploadedReport(
+  argv,
+  { root = process.cwd(), env = process.env } = {},
+) {
+  const platform = argv[1];
+  const expectedReportName = `release.signing.${platform}.json`;
+  const expectedRelativePath = `.release-evidence/upload-confirmation/${expectedReportName}`;
+  assert(
+    argv.length === 4 &&
+      argv[0] === "--platform" &&
+      ["macos", "windows"].includes(platform) &&
+      argv[2] === "--report" &&
+      argv[3] === expectedRelativePath,
+    "usage: --verify-upload --platform <macos|windows> --report .release-evidence/upload-confirmation/release.signing.<platform>.json",
+  );
+  const expectedSha256 = env.SKYTWIN_EXPECTED_REPORT_SHA256;
+  const artifactId = Number(env.SKYTWIN_UPLOADED_ARTIFACT_ID);
+  const artifactSha256 = env.SKYTWIN_UPLOADED_ARTIFACT_SHA256;
+  assert(
+    SHA256_DIGEST.test(expectedSha256 ?? "") &&
+      Number.isSafeInteger(artifactId) &&
+      artifactId > 0 &&
+      SHA256_DIGEST.test(artifactSha256 ?? ""),
+    "uploaded report binding outputs are missing or malformed",
+  );
+  const canonicalRoot = realpathSync(resolve(root));
+  const report = inspectStableRegularFile(
+    canonicalRoot,
+    resolve(canonicalRoot, expectedRelativePath),
+    "exact-ID downloaded release signing report",
+    4 * 1024 * 1024,
+  );
+  assert(
+    report.sha256 === expectedSha256,
+    "exact-ID downloaded release signing report does not match verifier output",
+  );
+  return {
+    artifactId,
+    artifactSha256,
+    reportSha256: report.sha256,
+  };
 }
 
 export async function runCanonicalVerifier(
@@ -2352,12 +2773,32 @@ export async function runCanonicalVerifier(
       `${artifactName} subject changed while signing evidence was collected`,
     );
   }
-  writeReport(canonicalRoot, args.output, report);
+  const writtenReport = writeReport(canonicalRoot, args.output, report);
+  if (env.GITHUB_ACTIONS === "true")
+    assert(
+      typeof env.GITHUB_OUTPUT === "string" && env.GITHUB_OUTPUT.length > 0,
+      "GITHUB_OUTPUT is required for report upload binding",
+    );
+  if (typeof env.GITHUB_OUTPUT === "string" && env.GITHUB_OUTPUT.length > 0)
+    appendWorkflowOutput(
+      env.GITHUB_OUTPUT,
+      "report_sha256",
+      writtenReport.sha256,
+    );
   return report;
 }
 
 if (resolve(process.argv[1] ?? "") === fileURLToPath(import.meta.url)) {
-  runCanonicalVerifier().catch((error) => {
+  const operation =
+    process.argv[2] === "--verify-upload"
+      ? Promise.resolve().then(() =>
+          verifyUploadedReport(process.argv.slice(3), {
+            root: process.cwd(),
+            env: process.env,
+          }),
+        )
+      : runCanonicalVerifier();
+  operation.catch((error) => {
     console.error(
       `[${CLAIM_ID}] FAILED: ${error instanceof Error ? error.message : String(error)}`,
     );

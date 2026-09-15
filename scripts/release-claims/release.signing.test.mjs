@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
@@ -8,6 +9,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  renameSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -30,6 +32,7 @@ import {
   runCanonicalVerifier,
   verifyLinuxSubjects,
   verifyMacSubjects,
+  verifyUploadedReport,
   verifyWindowsSubjects,
 } from "./verifiers/release.signing.mjs";
 import { inspectCanonicalSubjects as inspectArtifactVerificationSubjects } from "./verifiers/release.artifact-verification.mjs";
@@ -371,7 +374,9 @@ function windowsPe(machine = 0x8664) {
 }
 
 function windowsExecutor(overrides = {}) {
-  return vi.fn((file, args, options) => {
+  let quotaAttached = false;
+  const diskpartScripts = [];
+  const execute = vi.fn((file, args, options) => {
     if (file.endsWith("powershell.exe")) {
       const subjectPath = options.env.SKYTWIN_SIGNATURE_SUBJECT;
       const isInner = subjectPath.endsWith("SkyTwin.exe");
@@ -399,6 +404,13 @@ function windowsExecutor(overrides = {}) {
         return { exitCode: 0, signal: null, stdout: listing, stderr: "" };
       }
       if (args[0] === "x") {
+        if (overrides.extractionFailure)
+          return {
+            exitCode: 2,
+            signal: null,
+            stdout: "",
+            stderr: "There is not enough space on the disk",
+          };
         const outputRoot = args.find((arg) => arg.startsWith("-o")).slice(2);
         if (isNsis) {
           const payload = join(outputRoot, "$PLUGINSDIR", "app-64.7z");
@@ -415,8 +427,58 @@ function windowsExecutor(overrides = {}) {
       }
       return { exitCode: 0, signal: null, stdout: "ok", stderr: "" };
     }
+    if (file.endsWith("\\System32\\diskpart.exe")) {
+      const script = readFileSync(args[1], "utf8");
+      diskpartScripts.push(script);
+      const attaching = script.includes("create vdisk");
+      if (attaching && overrides.quotaCreationFailure)
+        return {
+          exitCode: 1,
+          signal: null,
+          stdout: "",
+          stderr: "DiskPart failed",
+        };
+      quotaAttached = attaching;
+      if (script.includes("detach vdisk")) quotaAttached = false;
+      overrides.afterDiskpart?.({ attaching, script });
+      return {
+        exitCode: 0,
+        signal: null,
+        stdout: "DiskPart successfully completed the operation.",
+        stderr: "",
+      };
+    }
     throw new Error(`unexpected native tool ${file}`);
   });
+  execute.inspectFilesystem = (path) =>
+    path.endsWith("extraction-volume")
+      ? {
+          blocks: (17n * 1024n * 1024n * 1024n) / 4096n,
+          bavail: (16n * 1024n * 1024n * 1024n) / 4096n,
+          bsize: 4096n,
+        }
+      : {
+          blocks: (64n * 1024n * 1024n * 1024n) / 4096n,
+          bavail: (64n * 1024n * 1024n * 1024n) / 4096n,
+          bsize: 4096n,
+        };
+  execute.inspectPath = (path) => ({
+    dev: path.endsWith("extraction-volume") && quotaAttached ? 2n : 1n,
+    isDirectory: () => true,
+  });
+  execute.diskpartScripts = diskpartScripts;
+  return execute;
+}
+
+function windowsOptions(execute, overrides = {}) {
+  return {
+    execute,
+    env: { SystemRoot: "C:\\Windows" },
+    appVersion: identity.appVersion,
+    inspectFilesystem: execute.inspectFilesystem,
+    inspectPath: execute.inspectPath,
+    ...overrides,
+  };
 }
 
 describe("release.signing canonical verifier", () => {
@@ -770,8 +832,8 @@ describe("release.signing canonical verifier", () => {
           args[0] === "create" &&
           args.includes("5642880k") &&
           args.includes("HFS+") &&
-          args.includes("SPARSE") &&
-          args.at(-1).endsWith("zip-quota.sparseimage"),
+          args.includes("UDIF") &&
+          args.at(-1).endsWith("zip-quota.dmg"),
       ),
     ).toBe(true);
     const volumeCreateIndex = execute.mock.calls.findIndex(
@@ -810,13 +872,24 @@ describe("release.signing canonical verifier", () => {
       ),
     ).toBe(true);
     const dmgPath = subjects.get("SkyTwin-macOS-dmg").path;
+    const stagedDmgPaths = execute.mock.calls
+      .filter(
+        ([file, args]) =>
+          file === "/usr/bin/codesign" &&
+          ["--verify", "--display"].includes(args[0]) &&
+          args.at(-1).endsWith(".dmg"),
+      )
+      .map(([, args]) => args.at(-1));
+    expect(new Set(stagedDmgPaths).size).toBe(1);
+    expect(stagedDmgPaths[0]).not.toBe(dmgPath);
+    expect(stagedDmgPaths[0]).toContain("staged-subject");
     expect(
       execute.mock.calls.some(
         ([file, args]) =>
           file === "/usr/bin/codesign" &&
           args[0] === "--verify" &&
           args.includes("--strict") &&
-          args.at(-1) === dmgPath,
+          args.at(-1) === stagedDmgPaths[0],
       ),
     ).toBe(true);
     expect(
@@ -824,7 +897,7 @@ describe("release.signing canonical verifier", () => {
         ([file, args]) =>
           file === "/usr/bin/codesign" &&
           args[0] === "--display" &&
-          args.at(-1) === dmgPath,
+          args.at(-1) === stagedDmgPaths[0],
       ),
     ).toBe(true);
     expect(
@@ -1136,6 +1209,86 @@ describe("release.signing canonical verifier", () => {
     ).toBe(false);
   });
 
+  it("fails before mounting when the fixed macOS image consumes the post-allocation reserve", () => {
+    const root = makeRoot();
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+    const execute = macExecutor();
+    let inspections = 0;
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute,
+          appVersion: identity.appVersion,
+          inspectFilesystem: () => {
+            inspections += 1;
+            return inspections === 1
+              ? { bavail: 10_000_000n, bsize: 4096n }
+              : { bavail: 1n, bsize: 4096n };
+          },
+        },
+      ),
+    ).toThrow("insufficient reserved free space");
+    expect(
+      execute.mock.calls.some(
+        ([file, args]) => file === "/usr/bin/hdiutil" && args[0] === "create",
+      ),
+    ).toBe(true);
+    expect(
+      execute.mock.calls.some(
+        ([file, args]) =>
+          file === "/usr/bin/hdiutil" &&
+          args[0] === "attach" &&
+          !args.includes("-readonly"),
+      ),
+    ).toBe(false);
+  });
+
+  it("uses private staged container bytes across an original-path swap and restore", () => {
+    const root = makeRoot();
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+    const original = subjects.get("SkyTwin-macOS-dmg").path;
+    const held = `${original}.held`;
+    const defaultExecute = macExecutor();
+    let swapped = false;
+    const execute = vi.fn((file, args, options) => {
+      expect(JSON.stringify(args)).not.toContain(original);
+      if (!swapped && file === "/usr/bin/codesign") {
+        swapped = true;
+        renameSync(original, held);
+        writeFileSync(original, "transient attacker replacement");
+        const result = defaultExecute(file, args, options);
+        rmSync(original);
+        renameSync(held, original);
+        return result;
+      }
+      return defaultExecute(file, args, options);
+    });
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute,
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).not.toThrow();
+    expect(swapped).toBe(true);
+    expect(readFileSync(original, "utf8")).toBe("signed dmg bytes");
+  });
+
   it("rejects a packaged macOS executable changed during native verification", () => {
     const root = makeRoot();
     populateSubjects(root, "macos");
@@ -1181,8 +1334,10 @@ describe("release.signing canonical verifier", () => {
         { teamId },
         {
           execute: macExecutor({
-            afterContainerSignature: (dmgPath) =>
-              writeFileSync(dmgPath, "replaced after signature inspection"),
+            afterContainerSignature: (dmgPath) => {
+              chmodSync(dmgPath, 0o600);
+              writeFileSync(dmgPath, "replaced after signature inspection");
+            },
           }),
           appVersion: identity.appVersion,
         },
@@ -1333,15 +1488,13 @@ describe("release.signing canonical verifier", () => {
     const result = verifyWindowsSubjects(
       subjects,
       { signerSha256 },
-      {
-        execute,
+      windowsOptions(execute, {
         env: {
           SystemRoot: "C:\\Windows",
           PATH: "C:\\Windows\\System32",
           DATABASE_URL: "secret",
         },
-        appVersion: identity.appVersion,
-      },
+      }),
     );
     expect(result.get("SkyTwin-Windows-installer")).toMatchObject({
       signatureResult: "pass",
@@ -1383,9 +1536,32 @@ describe("release.signing canonical verifier", () => {
         }),
       }),
     );
-    expect(execute.mock.calls[0][2].env.SKYTWIN_SIGNATURE_SUBJECT).toBe(
+    expect(execute.mock.calls[0][2].env.SKYTWIN_SIGNATURE_SUBJECT).not.toBe(
       subjects.get("SkyTwin-Windows-installer").path,
     );
+    expect(execute.mock.calls[0][2].env.SKYTWIN_SIGNATURE_SUBJECT).toContain(
+      "staged-subject",
+    );
+    expect(
+      execute.mock.calls.some(([file]) =>
+        file.endsWith("\\System32\\diskpart.exe"),
+      ),
+    ).toBe(true);
+    expect(execute.diskpartScripts[0]).toContain("type=fixed");
+    expect(
+      execute.mock.calls
+        .filter(([file]) => file.endsWith("\\7-Zip\\7z.exe"))
+        .every(([, args]) =>
+          args
+            .filter((arg) => !arg.startsWith("-"))
+            .every(
+              (arg) =>
+                !arg.endsWith(".exe") ||
+                arg === "SkyTwin.exe" ||
+                arg.includes("staged-subject"),
+            ),
+        ),
+    ).toBe(true);
     const report = buildReport({
       root,
       platform: "windows",
@@ -1473,11 +1649,7 @@ describe("release.signing canonical verifier", () => {
       "windows",
       identity.appVersion,
     );
-    const options = (execute) => ({
-      execute,
-      env: { SystemRoot: "C:\\Windows" },
-      appVersion: identity.appVersion,
-    });
+    const options = (execute) => windowsOptions(execute);
     expect(() =>
       verifyWindowsSubjects(
         subjects,
@@ -1549,6 +1721,74 @@ describe("release.signing canonical verifier", () => {
         ),
       ),
     ).toThrow("changed during signature verification");
+  });
+
+  it("uses the private staged Windows installer across an original-path swap and restore", () => {
+    const root = makeRoot();
+    populateSubjects(root, "windows");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "windows",
+      identity.appVersion,
+    );
+    const original = subjects.get("SkyTwin-Windows-installer").path;
+    const held = `${original}.held`;
+    let swapped = false;
+    const execute = windowsExecutor({
+      afterSignature: (path, { isInner }) => {
+        expect(path).not.toBe(original);
+        if (isInner || swapped) return;
+        swapped = true;
+        renameSync(original, held);
+        writeFileSync(original, "transient attacker replacement");
+        rmSync(original);
+        renameSync(held, original);
+      },
+    });
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        windowsOptions(execute),
+      ),
+    ).not.toThrow();
+    expect(swapped).toBe(true);
+    expect(readFileSync(original, "utf8")).toBe("signed installer bytes");
+  });
+
+  it("contains dishonest Windows expansion on a fixed VHDX and detaches after failure", () => {
+    const root = makeRoot();
+    populateSubjects(root, "windows");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "windows",
+      identity.appVersion,
+    );
+    const execute = windowsExecutor({
+      nsisListing:
+        "Path = installer.exe\nType = Nsis\n\nPath = $PLUGINSDIR/app-64.7z\nSize = 1\n",
+      extractionFailure: true,
+    });
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        windowsOptions(execute),
+      ),
+    ).toThrow("Windows NSIS payload extraction failed");
+    const scripts = execute.diskpartScripts;
+    expect(scripts[0]).toContain("maximum=17799 type=fixed");
+    expect(scripts[0]).toContain("assign mount=");
+    expect(scripts.at(-1)).toContain("detach vdisk");
+    expect(
+      execute.mock.calls
+        .filter(([file]) => file.endsWith("\\7-Zip\\7z.exe"))
+        .every(([, args]) =>
+          args
+            .filter((arg) => arg.startsWith("-o"))
+            .every((arg) => arg.includes("extraction-volume")),
+        ),
+    ).toBe(true);
   });
 
   it("rejects ambiguous or non-canonical Windows native-tool roots", () => {
@@ -1801,6 +2041,8 @@ describe("release.signing canonical verifier", () => {
     prepareSource(root);
     populateSubjects(root, "macos");
     const output = ".release-evidence/reports/release.signing.macos.json";
+    const workflowOutput = join(root, "github-output.txt");
+    writeFileSync(workflowOutput, "");
     const report = await runCanonicalVerifier(
       ["--platform", "macos", "--output", output],
       {
@@ -1816,6 +2058,8 @@ describe("release.signing canonical verifier", () => {
           GITHUB_RUN_ID: String(identity.runId),
           GITHUB_TOKEN: identity.token,
           SKYTWIN_MACOS_TEAM_ID: teamId,
+          GITHUB_ACTIONS: "true",
+          GITHUB_OUTPUT: workflowOutput,
         },
         executeGit: vi.fn((args) =>
           args[0] === "rev-parse" ? `${identity.sourceCommit}\n` : "",
@@ -1829,6 +2073,62 @@ describe("release.signing canonical verifier", () => {
     );
     expect(report.result).toBe("pass");
     expect(report.coveredSubjects).toHaveLength(2);
+    const reportSha256 = sha256(readFileSync(join(root, output)));
+    expect(readFileSync(workflowOutput, "utf8")).toBe(
+      `report_sha256=${reportSha256}\n`,
+    );
+    const confirmationDirectory = join(
+      root,
+      ".release-evidence",
+      "upload-confirmation",
+    );
+    mkdirSync(confirmationDirectory, { recursive: true });
+    const confirmationPath = join(
+      confirmationDirectory,
+      "release.signing.macos.json",
+    );
+    writeFileSync(confirmationPath, readFileSync(join(root, output)));
+    expect(
+      verifyUploadedReport(
+        [
+          "--platform",
+          "macos",
+          "--report",
+          ".release-evidence/upload-confirmation/release.signing.macos.json",
+        ],
+        {
+          root,
+          env: {
+            SKYTWIN_EXPECTED_REPORT_SHA256: reportSha256,
+            SKYTWIN_UPLOADED_ARTIFACT_ID: "321",
+            SKYTWIN_UPLOADED_ARTIFACT_SHA256: "d".repeat(64),
+          },
+        },
+      ),
+    ).toEqual({
+      artifactId: 321,
+      artifactSha256: "d".repeat(64),
+      reportSha256,
+    });
+    writeFileSync(confirmationPath, "swapped during upload");
+    expect(() =>
+      verifyUploadedReport(
+        [
+          "--platform",
+          "macos",
+          "--report",
+          ".release-evidence/upload-confirmation/release.signing.macos.json",
+        ],
+        {
+          root,
+          env: {
+            SKYTWIN_EXPECTED_REPORT_SHA256: reportSha256,
+            SKYTWIN_UPLOADED_ARTIFACT_ID: "321",
+            SKYTWIN_UPLOADED_ARTIFACT_SHA256: "d".repeat(64),
+          },
+        },
+      ),
+    ).toThrow("does not match verifier output");
   });
 
   it.each(["evidence-root", "reports"])(
@@ -1920,7 +2220,7 @@ describe("release.signing canonical verifier", () => {
         }),
       }),
     ).rejects.toThrow(
-      "SkyTwin-macOS-dmg subject changed while signing evidence was collected",
+      "SkyTwin-macOS-dmg changed while signing evidence was collected",
     );
     expect(existsSync(join(root, output))).toBe(false);
   });
