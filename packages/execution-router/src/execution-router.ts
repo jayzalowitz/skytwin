@@ -107,6 +107,7 @@ export type ExecutionAdmissionDecision =
 export type ExecutionAdmissionGuard = (
   action: Readonly<CandidateAction>,
   userId: string,
+  adapterName?: string,
 ) => ExecutionAdmissionDecision | Promise<ExecutionAdmissionDecision>;
 
 /**
@@ -581,8 +582,12 @@ export class ExecutionRouter {
     this.admissionGuard = admissionGuard;
   }
 
-  private async assertAdmitted(action: CandidateAction, userId: string): Promise<void> {
-    const decision = await this.admissionGuard?.(action, userId);
+  private async assertAdmitted(
+    action: CandidateAction,
+    userId: string,
+    adapterName?: string,
+  ): Promise<void> {
+    const decision = await this.admissionGuard?.(action, userId, adapterName);
     if (decision && !decision.allowed) {
       throw new NoRequestExecutionError(decision.reason);
     }
@@ -744,6 +749,11 @@ export class ExecutionRouter {
     const primaryName = sorted[0]!;
     const fallbackChain = sorted.slice(1);
 
+    // The selected adapter is execution authority, not descriptive output.
+    // Bind it into admission before exposing a routing decision so a neutral
+    // action cannot select a retained account-backed plugin by name.
+    await this.assertAdmitted(action, userId, primaryName);
+
     const entry = this.registry.get(primaryName);
     if (!entry) {
       // Shouldn't happen given the earlier check, but satisfy the type system
@@ -817,6 +827,10 @@ export class ExecutionRouter {
       if (!entry) continue;
       const registryRevision = this.registry.getRevision(adapterName);
       if (registryRevision === undefined) continue;
+      // Re-check with the exact selected adapter before invoking any plugin
+      // code. Action-only admission cannot identify a provider-bound adapter
+      // when a neutral action has no persisted MCP target.
+      await this.assertAdmitted(action, userId, adapterName);
       const preparedAction: CandidateAction = bindTrustedDispatchAction({
         ...withoutLateBoundAuthority(action),
         parameters: {
@@ -943,7 +957,7 @@ export class ExecutionRouter {
     this.preparedExecutions.delete(handle);
     // Re-check after consuming the one-shot handle so a boundary tightened
     // after preparation cannot execute a stale plan.
-    await this.assertAdmitted(action, userId);
+    await this.assertAdmitted(action, userId, state?.adapterName);
     const currentEntry = state ? this.registry.get(state.adapterName) : undefined;
     if (!state || currentEntry?.adapter !== state.adapter ||
         this.registry.getRevision(state.adapterName) !== state.registryRevision ||

@@ -196,15 +196,23 @@ export async function createExecutionRouter(): Promise<ExecutionRouter> {
 
   // Discover plugin adapters from filesystem (if configured)
   if (config.adapterPluginDir) {
-    const discovered = await discoverAdapters(config.adapterPluginDir, registry);
+    const discovered = await discoverAdapters(config.adapterPluginDir, registry, {
+      allowAccountBackedIntegrations: config.googleConnectionMode === 'experimental',
+    });
     log.info(`Discovered ${discovered.length} plugin adapter(s) from ${config.adapterPluginDir}`);
   }
 
   return new ExecutionRouter(
     registry,
     executionDispatchLeaseRepository,
-    async (action, userId) => {
+    async (action, userId, adapterName) => {
       if (config.googleConnectionMode === 'experimental') return { allowed: true };
+      if (adapterName && isAccountBackedIntegration({ adapter: adapterName })) {
+        return {
+          allowed: false,
+          reason: 'The selected execution integration is unavailable in this preview.',
+        };
+      }
       if (isAccountBackedEmailOrCalendarAction(action)) {
         return {
           allowed: false,

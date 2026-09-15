@@ -14,6 +14,7 @@ const {
   mockAdapterRegistry,
   mockExecutionRouterConstructor,
   mockOpenClawAdapter,
+  mockDiscoverAdapters,
   mockCredentialRequirementRepository,
   mockMcpServerRepository,
   mockSseManager,
@@ -52,6 +53,7 @@ const {
     mockAdapterRegistry: mockRegistry,
     mockExecutionRouterConstructor: mockRouterConstructor,
     mockOpenClawAdapter: vi.fn(),
+    mockDiscoverAdapters: vi.fn().mockResolvedValue([]),
     mockCredentialRequirementRepository: { register: vi.fn(), getAllGrouped: vi.fn() },
     mockMcpServerRepository: { getById: vi.fn(), listSkillNamesForServer: vi.fn() },
     mockSseManager: { emit: vi.fn(), emitAll: vi.fn() },
@@ -99,7 +101,7 @@ vi.mock('@skytwin/execution-router', () => ({
   DIRECT_TRUST_PROFILE: {},
   MCP_HOST_TRUST_PROFILE: {},
   OPENCLAW_SKILLS: new Set<string>(),
-  discoverAdapters: vi.fn(),
+  discoverAdapters: mockDiscoverAdapters,
 }));
 
 vi.mock('@skytwin/mcp-host', () => ({
@@ -476,6 +478,28 @@ describe('execution-setup', () => {
   });
 
   describe('createExecutionRouter', () => {
+    it.each([
+      ['disabled', false],
+      ['experimental', true],
+    ] as const)('binds %s mode into plugin discovery', async (googleConnectionMode, allowed) => {
+      mockLoadConfig.mockReturnValue({
+        googleConnectionMode,
+        ironclawApiUrl: '',
+        ironclawWebhookSecret: '',
+        openclawApiUrl: '',
+        openclawApiKey: '',
+        adapterPluginDir: '/operator/plugins',
+      });
+
+      await createExecutionRouter();
+
+      expect(mockDiscoverAdapters).toHaveBeenCalledWith(
+        '/operator/plugins',
+        mockAdapterRegistry,
+        { allowAccountBackedIntegrations: allowed },
+      );
+    });
+
     it('uses DB execution engine overrides when constructing adapters', async () => {
       const ironclawAdapter = makeAdapter();
       mockRealIronClawAdapter.mockImplementation(function RealIronClawAdapter() {
@@ -648,7 +672,7 @@ describe('execution-setup', () => {
           actionType: string;
           domain?: string;
           parameters?: Record<string, unknown>;
-        }, userId: string) => Promise<{ allowed: boolean }>) | undefined;
+        }, userId: string, adapterName?: string) => Promise<{ allowed: boolean }>) | undefined;
       expect(guard).toBeTypeOf('function');
 
       for (const actionType of [
@@ -678,6 +702,16 @@ describe('execution-setup', () => {
       }, 'owner-1')).resolves.toMatchObject({ allowed: false });
       await expect(guard?.({ actionType: 'create_issue', domain: 'developer' }, 'owner-1'))
         .resolves.toEqual({ allowed: true });
+      await expect(guard?.(
+        { actionType: 'create_issue', domain: 'developer' },
+        'owner-1',
+        'gmail-mcp',
+      )).resolves.toMatchObject({ allowed: false });
+      await expect(guard?.(
+        { actionType: 'create_issue', domain: 'developer' },
+        'owner-1',
+        'github-plugin',
+      )).resolves.toEqual({ allowed: true });
     });
 
     it('blocks a provider-bound MCP target with a neutral tool before preparation', async () => {
@@ -698,7 +732,7 @@ describe('execution-setup', () => {
 
       await createExecutionRouter();
       const guard = mockExecutionRouterConstructor.mock.calls.at(-1)?.[2] as
-        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string) =>
+        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string, adapterName?: string) =>
           Promise<{ allowed: boolean }>) | undefined;
 
       await expect(guard?.({
@@ -730,7 +764,7 @@ describe('execution-setup', () => {
 
       await createExecutionRouter();
       const guard = mockExecutionRouterConstructor.mock.calls.at(-1)?.[2] as
-        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string) =>
+        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string, adapterName?: string) =>
           Promise<{ allowed: boolean }>) | undefined;
 
       await expect(guard?.({
@@ -751,13 +785,17 @@ describe('execution-setup', () => {
 
       await createExecutionRouter();
       const guard = mockExecutionRouterConstructor.mock.calls.at(-1)?.[2] as
-        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string) =>
+        ((action: { actionType: string; parameters: Record<string, unknown> }, userId: string, adapterName?: string) =>
           Promise<{ allowed: boolean }>) | undefined;
 
       await expect(guard?.({
         actionType: 'invoke_tool',
         parameters: { mcpServerId: 'server-1', mcpToolName: 'read_file' },
       }, 'owner-1')).resolves.toEqual({ allowed: true });
+      await expect(guard?.({
+        actionType: 'create_issue',
+        parameters: {},
+      }, 'owner-1', 'gmail-mcp')).resolves.toEqual({ allowed: true });
       expect(mockMcpServerRepository.getById).not.toHaveBeenCalled();
       expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
     });

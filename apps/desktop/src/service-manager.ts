@@ -632,6 +632,9 @@ export class ServiceManager {
       SKYTWIN_GOOGLE_CONNECTION_MODE: app.isPackaged
         ? 'disabled'
         : process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] ?? 'disabled',
+      // Filesystem plugins are executable authority. Packaged children do not
+      // inherit an operator shell path; source development remains configurable.
+      ...(app.isPackaged ? { ADAPTER_PLUGIN_DIR: '' } : {}),
       SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID: app.isPackaged
         ? ''
         : process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] ?? '',

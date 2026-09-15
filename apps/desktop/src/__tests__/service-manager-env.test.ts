@@ -15,7 +15,8 @@ import { tmpdir } from 'os';
  *     `...process.env` spread, so a developer's shell bypass can never be
  *     inherited into a packaged build.
  *  3. Packaged children are pinned to the account-free connection mode and
- *     receive no Microsoft or bundled/default provider credentials.
+ *     receive no Microsoft, bundled/default provider, or plugin-directory
+ *     authority.
  */
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'skytwin-sm-env-'));
@@ -71,6 +72,7 @@ describe('ServiceManager.getEnv()', () => {
     MICROSOFT_REDIRECT_URI: process.env['MICROSOFT_REDIRECT_URI'],
     MICROSOFT_TENANT: process.env['MICROSOFT_TENANT'],
     SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID: process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'],
+    ADAPTER_PLUGIN_DIR: process.env['ADAPTER_PLUGIN_DIR'],
   };
 
   beforeEach(() => {
@@ -89,6 +91,7 @@ describe('ServiceManager.getEnv()', () => {
     delete process.env['MICROSOFT_REDIRECT_URI'];
     delete process.env['MICROSOFT_TENANT'];
     delete process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'];
+    delete process.env['ADAPTER_PLUGIN_DIR'];
     rmSync(join(userDataDir, 'secrets'), { recursive: true, force: true });
   });
 
@@ -157,6 +160,7 @@ describe('ServiceManager.getEnv()', () => {
     process.env['MICROSOFT_REDIRECT_URI'] = 'https://launcher.example/microsoft/callback';
     process.env['MICROSOFT_TENANT'] = 'launcher-tenant';
     process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'] = 'launcher-microsoft-default';
+    process.env['ADAPTER_PLUGIN_DIR'] = '/launcher/plugins';
 
     const env = envOf(new ServiceManager());
 
@@ -171,6 +175,7 @@ describe('ServiceManager.getEnv()', () => {
     expect(env['MICROSOFT_REDIRECT_URI']).toBe('');
     expect(env['MICROSOFT_TENANT']).toBe('');
     expect(env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID']).toBe('');
+    expect(env['ADAPTER_PLUGIN_DIR']).toBe('');
   });
 
   it('retains an explicit experimental opt-in for source-development children', () => {
@@ -179,6 +184,7 @@ describe('ServiceManager.getEnv()', () => {
     process.env['MICROSOFT_CLIENT_ID'] = 'operator-microsoft-client';
     process.env['MICROSOFT_CLIENT_SECRET'] = 'operator-microsoft-secret';
     process.env['MICROSOFT_TENANT'] = 'operator-tenant';
+    process.env['ADAPTER_PLUGIN_DIR'] = '/operator/plugins';
 
     const env = envOf(new ServiceManager());
 
@@ -187,6 +193,7 @@ describe('ServiceManager.getEnv()', () => {
     expect(env['MICROSOFT_CLIENT_ID']).toBe('operator-microsoft-client');
     expect(env['MICROSOFT_CLIENT_SECRET']).toBe('operator-microsoft-secret');
     expect(env['MICROSOFT_TENANT']).toBe('operator-tenant');
+    expect(env['ADAPTER_PLUGIN_DIR']).toBe('/operator/plugins');
   });
 
   it('leaves optional Microsoft inputs absent in source development when unset', () => {

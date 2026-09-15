@@ -2,7 +2,10 @@ import { readdirSync, readFileSync, existsSync, realpathSync } from 'node:fs';
 import { join, resolve, sep, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { IronClawAdapter } from '@skytwin/ironclaw-adapter';
-import type { AdapterTrustProfile } from '@skytwin/shared-types';
+import {
+  isAccountBackedIntegration,
+  type AdapterTrustProfile,
+} from '@skytwin/shared-types';
 import { validateManifest, isAdapterShape, REQUIRED_ADAPTER_METHODS } from './adapter-manifest.js';
 import type { AdapterManifest } from './adapter-manifest.js';
 import type { AdapterRegistry } from './adapter-registry.js';
@@ -15,6 +18,11 @@ type AdapterFactory = (config: Record<string, unknown>) => IronClawAdapter;
 interface DiscoveredAdapter {
   manifest: AdapterManifest;
   adapter: IronClawAdapter;
+}
+
+export interface AdapterDiscoveryOptions {
+  /** Source-development experimental mode may explicitly load account integrations. */
+  allowAccountBackedIntegrations?: boolean;
 }
 
 export const RESERVED_ADAPTER_NAMES = new Set([
@@ -33,6 +41,7 @@ export const RESERVED_ADAPTER_NAMES = new Set([
 export async function discoverAdapters(
   pluginDir: string,
   registry: AdapterRegistry,
+  options: AdapterDiscoveryOptions = {},
 ): Promise<DiscoveredAdapter[]> {
   if (!pluginDir || !existsSync(pluginDir)) {
     return [];
@@ -73,6 +82,18 @@ export async function discoverAdapters(
       // Block plugins that try to use reserved built-in adapter names
       if (RESERVED_ADAPTER_NAMES.has(manifest.name)) {
         console.warn(`[adapter-discovery] Plugin "${dirName}" tried to use reserved name "${manifest.name}" — skipped`);
+        continue;
+      }
+
+      // A manifest is the last inert boundary before importing peer code.
+      // Reject stable account-provider names and skills here so disabled mode
+      // never evaluates the module, invokes its factory, or registers it.
+      if (options.allowAccountBackedIntegrations === false &&
+          isAccountBackedIntegration({
+            adapter: manifest.name,
+            skills: manifest.skills,
+          })) {
+        console.info(`[adapter-discovery] Skipping unavailable account integration "${manifest.name}"`);
         continue;
       }
 
