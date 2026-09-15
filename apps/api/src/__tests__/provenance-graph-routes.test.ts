@@ -19,10 +19,12 @@ const {
   mockMcpServerRepository,
   mockAppSuggestionRepository,
   mockProvenanceRepository,
+  mockLoadConfig,
   mockQuery,
 } = vi.hoisted(() => ({
   mockMcpServerRepository: {
     getById: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
     listForUser: vi.fn(),
     listActive: vi.fn(),
     softDelete: vi.fn(),
@@ -48,7 +50,12 @@ const {
     writeNode: vi.fn(),
     writeEdge: vi.fn(),
   },
+  mockLoadConfig: vi.fn(),
   mockQuery: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -108,6 +115,8 @@ import { createCapabilitiesRouter, buildEvidencePreview, redactPayload } from '.
 // ── Constants ─────────────────────────────────────────────────────────────
 
 const USER_ID = 'aaaaaaaa-0000-0000-0000-000000000001';
+const SAFE_SERVER_ID = 'bbbbbbbb-0000-0000-0000-000000000001';
+const BLOCKED_SERVER_ID = 'bbbbbbbb-0000-0000-0000-000000000002';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -177,14 +186,32 @@ function makeNode(overrides: Partial<{
   };
 }
 
+function makeServer(overrides: Partial<{
+  id: string;
+  user_id: string;
+  registry_id: string | null;
+  oauth_provider: string | null;
+  status: string;
+}> = {}) {
+  return {
+    id: overrides.id ?? SAFE_SERVER_ID,
+    user_id: overrides.user_id ?? USER_ID,
+    registry_id: overrides.registry_id ?? '@modelcontextprotocol/server-filesystem',
+    oauth_provider: overrides.oauth_provider ?? null,
+    status: overrides.status ?? 'active',
+  };
+}
+
 // ── Tests: GET /api/capabilities/provenance-graph ─────────────────────────
 
 describe('GET /api/capabilities/provenance-graph', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
     mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
     mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
     mockMcpServerRepository.listForUser.mockResolvedValue([]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['read_file']);
   });
 
   it('returns nodes and empty edges when no edges exist', async () => {
@@ -392,6 +419,203 @@ describe('GET /api/capabilities/provenance-graph', () => {
     expect(status).toBe(200);
     const typedBody = body as { nodes: Array<{ wingId: string | null }> };
     expect(typedBody.nodes[0]?.wingId).toBe(wingId);
+  });
+
+  it('filters owner-bound Google and Microsoft servers while retaining neutral nodes and edges', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const googleId = 'bbbbbbbb-0000-0000-0000-000000000010';
+    const microsoftId = 'bbbbbbbb-0000-0000-0000-000000000011';
+    const safeNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000010',
+      server_id: SAFE_SERVER_ID,
+      payload: { displayName: 'Filesystem', toolName: 'read_file' },
+    });
+    const googleNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000011',
+      server_id: googleId,
+      payload: { displayName: 'Provider capability' },
+    });
+    const microsoftNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000012',
+      server_id: microsoftId,
+      payload: { displayName: 'Account capability' },
+    });
+    mockMcpServerRepository.getById.mockImplementation(async (id: string) => {
+      if (id === googleId) return makeServer({ id, registry_id: 'gmail-mcp' });
+      if (id === microsoftId) return makeServer({ id, oauth_provider: 'microsoft' });
+      return makeServer({ id });
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [googleNode, microsoftNode, safeNode], rowCount: 3 })
+      .mockResolvedValueOnce({
+        rows: [{
+          from_node_id: safeNode.id,
+          to_node_id: safeNode.id,
+          edge_type: 'contributed_to',
+        }],
+        rowCount: 1,
+      });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/provenance-graph?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    const typedBody = body as { nodes: Array<{ id: string }>; edges: unknown[] };
+    expect(typedBody.nodes.map((node) => node.id)).toEqual([safeNode.id]);
+    expect(typedBody.edges).toHaveLength(1);
+    expect(mockQuery.mock.calls[1]?.[1]).toEqual([[safeNode.id]]);
+  });
+
+  it.each([
+    'missing',
+    'wrong-owner',
+    'uninstalled',
+    'empty-inventory',
+    'inventory-error',
+  ])('fails closed for a %s server binding while retaining a neutral server', async (state) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const blockedNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000020',
+      server_id: BLOCKED_SERVER_ID,
+      payload: { toolName: 'read_file' },
+    });
+    const safeNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000021',
+      server_id: SAFE_SERVER_ID,
+      payload: { toolName: 'read_file' },
+    });
+    mockMcpServerRepository.getById.mockImplementation(async (id: string) => {
+      if (id === SAFE_SERVER_ID) return makeServer({ id });
+      if (state === 'missing') return null;
+      if (state === 'wrong-owner') return makeServer({ id, user_id: 'other-user' });
+      if (state === 'uninstalled') return makeServer({ id, status: 'uninstalled' });
+      return makeServer({ id });
+    });
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (id: string) => {
+      if (id === SAFE_SERVER_ID) return ['read_file'];
+      if (state === 'inventory-error') throw new Error('inventory unavailable');
+      if (state === 'empty-inventory') return [];
+      return ['read_file'];
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [blockedNode, safeNode], rowCount: 2 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/provenance-graph?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect((body as { nodes: Array<{ id: string }> }).nodes.map((node) => node.id))
+      .toEqual([safeNode.id]);
+    expect(mockQuery.mock.calls[1]?.[1]).toEqual([[safeNode.id]]);
+  });
+
+  it('filters unbound account identifiers without treating display names as authority', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const safeLabelNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000030',
+      payload: { displayName: 'Gmail', tool_name: 'read_file' },
+    });
+    const safeRegistryNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000031',
+      payload: { registry_id: '@modelcontextprotocol/server-filesystem' },
+    });
+    const blockedNodes = [
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000032', payload: { registryId: 'gmail-mcp' } }),
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000033', payload: { oauth_provider: 'microsoft' } }),
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000034', payload: { toolName: 'sendEmail' } }),
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000035', payload: { action_type: 'groups_events_list' } }),
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000036', payload: { adapter: 'outlook' } }),
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000037', payload: { service: 'google-calendar' } }),
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000038', payload: { provider: 'microsoft' } }),
+      makeNode({ id: 'cccccccc-0000-0000-0000-000000000039', payload: { mcp_tool_name: 'users_messages_list' } }),
+    ];
+    mockQuery
+      .mockResolvedValueOnce({
+        rows: [...blockedNodes, safeLabelNode, safeRegistryNode],
+        rowCount: blockedNodes.length + 2,
+      })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/provenance-graph?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    expect((body as { nodes: Array<{ id: string }> }).nodes.map((node) => node.id))
+      .toEqual([safeLabelNode.id, safeRegistryNode.id]);
+    expect(mockMcpServerRepository.getById).not.toHaveBeenCalled();
+  });
+
+  it('preserves exact experimental history without resolving server bindings', async () => {
+    const missingServerNode = makeNode({ server_id: BLOCKED_SERVER_ID });
+    const accountNode = makeNode({
+      id: 'cccccccc-0000-0000-0000-000000000040',
+      payload: { registry_id: 'gmail-mcp' },
+    });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [missingServerNode, accountNode], rowCount: 2 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 });
+
+    const { body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/provenance-graph?userId=${USER_ID}`,
+    );
+
+    expect((body as { nodes: unknown[] }).nodes).toHaveLength(2);
+    expect(mockMcpServerRepository.getById).not.toHaveBeenCalled();
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/capabilities/audit', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['read_file']);
+  });
+
+  it('filters server-bound and unbound account history while retaining neutral audit rows', async () => {
+    const serverNode = makeNode({
+      id: 'dddddddd-0000-0000-0000-000000000010',
+      server_id: BLOCKED_SERVER_ID,
+      payload: { displayName: 'Provider capability' },
+    });
+    const unboundNode = makeNode({
+      id: 'dddddddd-0000-0000-0000-000000000011',
+      payload: { oauthProvider: 'microsoft' },
+    });
+    const safeNode = makeNode({
+      id: 'dddddddd-0000-0000-0000-000000000012',
+      payload: { displayName: 'Outlook archive', actionType: 'read_file' },
+    });
+    mockMcpServerRepository.getById.mockResolvedValue(
+      makeServer({ id: BLOCKED_SERVER_ID, oauth_provider: 'google' }),
+    );
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ count: '3' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [serverNode, unboundNode, safeNode], rowCount: 3 });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/audit?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    const typedBody = body as { nodes: Array<{ id: string }>; total: number };
+    expect(typedBody.nodes.map((node) => node.id))
+      .toEqual([safeNode.id]);
+    expect(typedBody.total).toBe(1);
   });
 });
 

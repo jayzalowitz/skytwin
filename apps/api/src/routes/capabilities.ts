@@ -8,6 +8,7 @@ import { RegistryClient } from '@skytwin/registry-client';
 import { TrustTierEngine } from '@skytwin/policy-engine';
 import type { TrustTier } from '@skytwin/shared-types';
 import {
+  isAccountBackedIntegration,
   isAccountBackedRegistryIdentifier,
   PROMOTION_THRESHOLDS,
 } from '@skytwin/shared-types';
@@ -177,6 +178,77 @@ async function getOwnedCapabilityServer(
     };
   }
   return { status: 200, server };
+}
+
+interface CapabilityHistoryNode {
+  server_id: string | null;
+  payload: unknown;
+}
+
+const HISTORY_REGISTRY_KEYS = ['registryId', 'registry_id'] as const;
+const HISTORY_ADAPTER_KEYS = ['adapter'] as const;
+const HISTORY_PROVIDER_KEYS = [
+  'oauthProvider', 'oauth_provider', 'integration', 'service', 'provider',
+] as const;
+const HISTORY_SKILL_KEYS = [
+  'toolName', 'tool_name', 'mcpToolName', 'mcp_tool_name', 'actionType', 'action_type',
+] as const;
+
+function historyPayloadHasAccountIdentifier(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  const stringsFor = (keys: readonly string[]): string[] => keys
+    .map((key) => record[key])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+
+  return stringsFor(HISTORY_REGISTRY_KEYS)
+    .some((key) => isAccountBackedIntegration({ key })) ||
+    stringsFor(HISTORY_ADAPTER_KEYS)
+      .some((adapter) => isAccountBackedIntegration({ adapter })) ||
+    stringsFor(HISTORY_PROVIDER_KEYS)
+      .some((integration) => isAccountBackedIntegration({ integration })) ||
+    stringsFor(HISTORY_SKILL_KEYS)
+      .some((skill) => isAccountBackedIntegration({ skills: [skill] }));
+}
+
+/**
+ * Hide retained account-backed history before it reaches audit or graph output.
+ * Server-bound nodes use current owned server metadata and cached inventory;
+ * unbound historic nodes use only stable payload identifiers, never labels.
+ */
+async function filterCapabilityHistoryNodes<T extends CapabilityHistoryNode>(
+  nodes: readonly T[],
+  userId: string,
+  googleConnectionMode: string | undefined,
+): Promise<T[]> {
+  if (googleConnectionMode === 'experimental') return [...nodes];
+
+  const serverVisibility = new Map<string, Promise<boolean>>();
+  const isServerVisible = (serverId: string): Promise<boolean> => {
+    const cached = serverVisibility.get(serverId);
+    if (cached) return cached;
+    const resolved = (async () => {
+      try {
+        const server = await mcpServerRepository.getById(serverId);
+        if (!server || server.user_id !== userId || server.status === 'uninstalled') return false;
+        return !await isAccountFreePreviewServerBlocked(
+          googleConnectionMode,
+          server,
+          (id) => mcpServerRepository.listSkillNamesForServer(id),
+        );
+      } catch {
+        return false;
+      }
+    })();
+    serverVisibility.set(serverId, resolved);
+    return resolved;
+  };
+
+  const visible = await Promise.all(nodes.map(async (node) => {
+    if (node.server_id) return isServerVisible(node.server_id);
+    return !historyPayloadHasAccountIdentifier(node.payload);
+  }));
+  return nodes.filter((_node, index) => visible[index]);
 }
 
 function parseOptionalCents(value: unknown): number | null | undefined {
@@ -1929,7 +2001,13 @@ export function createCapabilitiesRouter(): Router {
         params,
       );
 
-      let nodes = dataResult.rows.map((row) => ({
+      const googleConnectionMode = loadConfig().googleConnectionMode;
+      const visibleRows = await filterCapabilityHistoryNodes(
+        dataResult.rows,
+        userId,
+        googleConnectionMode,
+      );
+      let nodes = visibleRows.map((row) => ({
         ...row,
         payload: redactPayload(row.payload as Record<string, unknown> | null),
       }));
@@ -1942,7 +2020,11 @@ export function createCapabilitiesRouter(): Router {
         });
       }
 
-      res.json({ nodes, total, limit, offset });
+      // The database count includes retained rows before the account boundary.
+      // Do not reveal that hidden-record count in disabled mode. The filtered
+      // count is page-local, matching the already post-query free-text filter.
+      const visibleTotal = googleConnectionMode === 'experimental' ? total : nodes.length;
+      res.json({ nodes, total: visibleTotal, limit, offset });
     } catch (err) {
       next(err);
     }
@@ -2086,10 +2168,15 @@ export function createCapabilitiesRouter(): Router {
         params,
       );
 
-      const nodeIds = new Set(nodeResult.rows.map((n) => n.id));
+      const visibleRows = await filterCapabilityHistoryNodes(
+        nodeResult.rows,
+        userId,
+        loadConfig().googleConnectionMode,
+      );
+      const nodeIds = new Set(visibleRows.map((n) => n.id));
 
       // Build nodes with redacted payloads
-      const nodes = nodeResult.rows.map((n) => {
+      const nodes = visibleRows.map((n) => {
         const rawPayload = n.payload !== null && typeof n.payload === 'object' && !Array.isArray(n.payload)
           ? redactPayload(n.payload as Record<string, unknown>)
           : (n.payload as object | null) ?? {};
