@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  linkSync,
   mkdtempSync,
   mkdirSync,
   readFileSync,
@@ -93,6 +94,28 @@ describe("release claim CI runtime capture", () => {
       createHash("sha256").update(readFileSync(entryPath)).digest("hex"),
     );
   });
+
+  it.each(["node", "pnpm entry"])(
+    "rejects a hard-linked %s runtime",
+    (runtimeName) => {
+      const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+      roots.push(root);
+      const nodePath = executable(root, "node", "node runtime\n");
+      const { launcherPath, entryPath } = pnpmRuntime(root);
+      const linkedPath = runtimeName === "node" ? nodePath : entryPath;
+      linkSync(linkedPath, `${linkedPath}.hardlink`);
+
+      expect(() =>
+        captureReleaseClaimCiRuntime({
+          execPath: nodePath,
+          env: {
+            PATH: dirname(launcherPath),
+            GITHUB_OUTPUT: join(root, "github-output"),
+          },
+        }),
+      ).toThrow("single-link regular file");
+    },
+  );
 
   it("rejects relative and non-executable PATH candidates", () => {
     const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));

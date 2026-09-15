@@ -12,6 +12,9 @@ export const CANONICAL_CI_EVIDENCE_CHECKS = new Map([
     "connectors.account-free-boundary",
     [
       "connectors.account-free-api-disabled",
+      "connectors.account-free-worker-disabled",
+      "connectors.account-free-shared-classifier",
+      "connectors.account-free-router-disabled",
       "connectors.account-free-desktop-disabled",
     ],
   ],
@@ -101,6 +104,33 @@ export const CANONICAL_CI_EVIDENCE_COMMANDS = new Map(
         "src/__tests__/oauth-microsoft.test.ts",
         "src/__tests__/credentials-routes.test.ts",
         "src/__tests__/capabilities-routes.test.ts",
+        "src/__tests__/execution-setup.test.ts",
+      ],
+    ],
+    [
+      "connectors.account-free-worker-disabled",
+      "@skytwin/worker",
+      [
+        "src/__tests__/connector-discovery.test.ts",
+        "src/__tests__/execution-account-boundary.test.ts",
+        "src/__tests__/changelog-poll.test.ts",
+        "src/__tests__/federation-sync.test.ts",
+        "src/__tests__/briefing-generator.test.ts",
+        "src/__tests__/briefing-generator-adaptive.test.ts",
+        "src/__tests__/promotion-eligibility-check.test.ts",
+      ],
+    ],
+    [
+      "connectors.account-free-shared-classifier",
+      "@skytwin/shared-types",
+      ["src/__tests__/google-preview-boundary.test.ts"],
+    ],
+    [
+      "connectors.account-free-router-disabled",
+      "@skytwin/execution-router",
+      [
+        "src/__tests__/adapter-discovery.test.ts",
+        "src/__tests__/execution-router.test.ts",
       ],
     ],
     [

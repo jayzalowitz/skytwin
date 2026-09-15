@@ -4,11 +4,16 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import {
   accessSync,
+  closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readlinkSync,
+  readSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
@@ -38,13 +43,37 @@ const RUNTIME_ENV = Object.freeze({
   pnpmEntrySha256: "SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256",
 });
 const GIT = "/usr/bin/git";
+const NULL_DEVICE = "/dev/null";
+const MAX_GIT_OUTPUT_BYTES = 64 * 1024 * 1024;
+const GIT_OBJECT_PATTERN = /^[a-f0-9]{40}$/;
+const CANONICAL_BLOB_MODES = new Set(["100644", "100755", "120000"]);
 const SOURCE_CHECK_ENV = Object.freeze({
   PATH: "/usr/bin:/bin",
   LANG: "C.UTF-8",
   LC_ALL: "C.UTF-8",
   TZ: "UTC",
+  GIT_ATTR_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: NULL_DEVICE,
+  GIT_CONFIG_SYSTEM: NULL_DEVICE,
   GIT_CONFIG_NOSYSTEM: "1",
+  GIT_NO_REPLACE_OBJECTS: "1",
+  GIT_OPTIONAL_LOCKS: "0",
+  GIT_TERMINAL_PROMPT: "0",
 });
+const SOURCE_CHECK_GIT_ARGS = Object.freeze([
+  "--no-pager",
+  "--literal-pathspecs",
+  "-c",
+  `core.attributesFile=${NULL_DEVICE}`,
+  "-c",
+  `core.excludesFile=${NULL_DEVICE}`,
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  `core.hooksPath=${NULL_DEVICE}`,
+  "-c",
+  "core.untrackedCache=false",
+]);
 
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -76,7 +105,7 @@ function containedRegularFile(root, path) {
   )
     throw new Error(`release claim source escapes repository: ${path}`);
   const stat = lstatSync(absolute);
-  if (!stat.isFile() || stat.isSymbolicLink())
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
     throw new Error(`release claim source is not a regular file: ${path}`);
   if (realpathSync(absolute) !== absolute)
     throw new Error(`release claim source traverses a symlink: ${path}`);
@@ -98,6 +127,7 @@ function canonicalRuntimeFile(path, expectedSha256, name, { executable } = {}) {
     canonical !== path ||
     !stat.isFile() ||
     stat.isSymbolicLink() ||
+    stat.nlink !== 1 ||
     sha256(readFileSync(canonical)) !== expectedSha256
   )
     throw new Error(`${name} runtime identity changed after capture`);
@@ -121,13 +151,14 @@ function releaseRuntime(env) {
   return runtime;
 }
 
-function gitOutput(root, args, description) {
-  const result = spawnSync(GIT, args, {
+function gitResult(root, args, description, { encoding = "utf8", input } = {}) {
+  const result = spawnSync(GIT, [...SOURCE_CHECK_GIT_ARGS, ...args], {
     cwd: root,
     env: SOURCE_CHECK_ENV,
     shell: false,
-    encoding: "utf8",
-    maxBuffer: 1024 * 1024,
+    encoding,
+    input,
+    maxBuffer: MAX_GIT_OUTPUT_BYTES,
   });
   if (result.error || result.status !== 0)
     throw new Error(
@@ -136,7 +167,81 @@ function gitOutput(root, args, description) {
   return result.stdout;
 }
 
-function assertExactTaggedSource(root, sourceCommit) {
+function gitOutput(root, args, description) {
+  return gitResult(root, args, description);
+}
+
+function gitBytes(root, args, description, input) {
+  return gitResult(root, args, description, { encoding: null, input });
+}
+
+function decodeGitPath(bytes, description) {
+  const path = bytes.toString("utf8");
+  if (
+    path.length === 0 ||
+    !Buffer.from(path, "utf8").equals(bytes) ||
+    isAbsolute(path) ||
+    path
+      .split("/")
+      .some(
+        (component) =>
+          component.length === 0 || component === "." || component === "..",
+      )
+  )
+    throw new Error(`${description} contains an unsafe path`);
+  return path;
+}
+
+function nullTerminatedRecords(bytes, description) {
+  const records = [];
+  let offset = 0;
+  while (offset < bytes.length) {
+    const end = bytes.indexOf(0, offset);
+    if (end < 0) throw new Error(`${description} is not NUL terminated`);
+    records.push(bytes.subarray(offset, end));
+    offset = end + 1;
+  }
+  return records;
+}
+
+function expectedBlobDigests(root, entries) {
+  const output = gitBytes(
+    root,
+    ["cat-file", "--batch"],
+    "release claim source object read",
+    `${entries.map((entry) => entry.object).join("\n")}\n`,
+  );
+  let offset = 0;
+  for (const entry of entries) {
+    const headerEnd = output.indexOf(10, offset);
+    if (headerEnd < 0)
+      throw new Error("release claim source object output is incomplete");
+    const header = output.subarray(offset, headerEnd).toString("ascii");
+    const match = header.match(/^([a-f0-9]{40}) blob ([0-9]+)$/u);
+    if (!match || match[1] !== entry.object)
+      throw new Error("release claim source object identity is invalid");
+    const size = Number(match[2]);
+    if (!Number.isSafeInteger(size) || size < 0)
+      throw new Error("release claim source object size is invalid");
+    const bodyStart = headerEnd + 1;
+    const bodyEnd = bodyStart + size;
+    if (bodyEnd >= output.length || output[bodyEnd] !== 10)
+      throw new Error("release claim source object body is incomplete");
+    const objectIdentity = createHash("sha1")
+      .update(`blob ${size}\0`)
+      .update(output.subarray(bodyStart, bodyEnd))
+      .digest("hex");
+    if (objectIdentity !== entry.object)
+      throw new Error("release claim source object content is invalid");
+    entry.size = size;
+    entry.sha256 = sha256(output.subarray(bodyStart, bodyEnd));
+    offset = bodyEnd + 1;
+  }
+  if (offset !== output.length)
+    throw new Error("release claim source object output has trailing bytes");
+}
+
+function captureSourceSnapshot(root, sourceCommit) {
   const head = gitOutput(
     root,
     ["rev-parse", "--verify", "HEAD^{commit}"],
@@ -144,17 +249,231 @@ function assertExactTaggedSource(root, sourceCommit) {
   ).trim();
   if (head !== sourceCommit)
     throw new Error("release claim source HEAD is not the triggering commit");
-  const status = gitOutput(
+
+  const tree = gitBytes(
     root,
-    [
-      "status",
-      "--porcelain=v1",
-      "--untracked-files=all",
-      "--ignore-submodules=none",
-    ],
-    "release claim source cleanliness check",
+    ["ls-tree", "-rz", "--full-tree", sourceCommit],
+    "release claim source tree inventory",
   );
-  if (status !== "")
+  const entries = nullTerminatedRecords(
+    tree,
+    "release claim source tree inventory",
+  ).map((record) => {
+    const tab = record.indexOf(9);
+    const header = tab < 0 ? "" : record.subarray(0, tab).toString("ascii");
+    const match = header.match(/^([0-7]{6}) ([a-z]+) ([a-f0-9]{40})$/u);
+    if (
+      !match ||
+      match[2] !== "blob" ||
+      !CANONICAL_BLOB_MODES.has(match[1]) ||
+      !GIT_OBJECT_PATTERN.test(match[3])
+    )
+      throw new Error(
+        "release claim source tree contains an unsupported entry",
+      );
+    return {
+      mode: match[1],
+      object: match[3],
+      path: decodeGitPath(
+        record.subarray(tab + 1),
+        "release claim source tree",
+      ),
+    };
+  });
+  if (
+    entries.length === 0 ||
+    new Set(entries.map((entry) => entry.path)).size !== entries.length
+  )
+    throw new Error(
+      "release claim source tree inventory is empty or ambiguous",
+    );
+  expectedBlobDigests(root, entries);
+  return Object.freeze({
+    sourceCommit,
+    entries: Object.freeze(entries.map((entry) => Object.freeze(entry))),
+    byPath: new Map(entries.map((entry) => [entry.path, entry])),
+  });
+}
+
+function sameFileIdentity(left, right) {
+  return ["dev", "ino", "size", "mtimeNs", "ctimeNs", "mode", "nlink"].every(
+    (field) => left[field] === right[field],
+  );
+}
+
+function assertNoSymlinkParents(root, absolute, description) {
+  const rel = relative(root, absolute);
+  let current = root;
+  const components = rel.split(sep);
+  for (const component of components.slice(0, -1)) {
+    current = resolve(current, component);
+    const stat = lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink())
+      throw new Error(`${description} traverses a symlink or non-directory`);
+  }
+}
+
+function observeRegularFile(root, absolute, description) {
+  assertNoSymlinkParents(root, absolute, description);
+  const beforePath = lstatSync(absolute, { bigint: true });
+  if (
+    !beforePath.isFile() ||
+    beforePath.isSymbolicLink() ||
+    beforePath.nlink !== 1n
+  )
+    throw new Error(`${description} is not a single-link regular file`);
+  const descriptor = openSync(
+    absolute,
+    fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || !sameFileIdentity(before, beforePath))
+      throw new Error(`${description} changed before inspection`);
+    const digest = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    for (;;) {
+      const count = readSync(descriptor, buffer, 0, buffer.length, position);
+      if (count === 0) break;
+      position += count;
+      digest.update(buffer.subarray(0, count));
+    }
+    const after = fstatSync(descriptor, { bigint: true });
+    const afterPath = lstatSync(absolute, { bigint: true });
+    if (
+      !sameFileIdentity(before, after) ||
+      !sameFileIdentity(after, afterPath) ||
+      BigInt(position) !== after.size
+    )
+      throw new Error(`${description} changed during inspection`);
+    return {
+      size: position,
+      sha256: digest.digest("hex"),
+      executable: (after.mode & 0o111n) !== 0n,
+    };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function observeSymlink(root, absolute, description) {
+  assertNoSymlinkParents(root, absolute, description);
+  const before = lstatSync(absolute, { bigint: true });
+  if (!before.isSymbolicLink() || before.nlink !== 1n)
+    throw new Error(`${description} is not a single-link symbolic link`);
+  const target = readlinkSync(absolute, { encoding: "buffer" });
+  const after = lstatSync(absolute, { bigint: true });
+  if (!sameFileIdentity(before, after))
+    throw new Error(`${description} changed during inspection`);
+  return { size: target.length, sha256: sha256(target), executable: false };
+}
+
+function parseIndexEntries(bytes) {
+  return nullTerminatedRecords(bytes, "release claim index inventory").map(
+    (record) => {
+      const tab = record.indexOf(9);
+      const header = tab < 0 ? "" : record.subarray(0, tab).toString("ascii");
+      const match = header.match(/^([0-7]{6}) ([a-f0-9]{40}) ([0-3])$/u);
+      if (!match) throw new Error("release claim index inventory is malformed");
+      return {
+        mode: match[1],
+        object: match[2],
+        stage: match[3],
+        path: decodeGitPath(record.subarray(tab + 1), "release claim index"),
+      };
+    },
+  );
+}
+
+function assertCanonicalIndex(root, snapshot) {
+  const indexEntries = parseIndexEntries(
+    gitBytes(
+      root,
+      ["ls-files", "--stage", "-z"],
+      "release claim index inventory",
+    ),
+  );
+  const expected = snapshot.entries.map(({ mode, object, path }) => ({
+    mode,
+    object,
+    stage: "0",
+    path,
+  }));
+  if (JSON.stringify(indexEntries) !== JSON.stringify(expected))
+    throw new Error("release claim index differs from the triggering commit");
+
+  const flags = nullTerminatedRecords(
+    gitBytes(root, ["ls-files", "-v", "-z"], "release claim index flags"),
+    "release claim index flags",
+  );
+  if (flags.length !== snapshot.entries.length)
+    throw new Error("release claim index flags are incomplete");
+  for (let index = 0; index < flags.length; index += 1) {
+    const record = flags[index];
+    if (record.length < 3 || record[1] !== 32)
+      throw new Error("release claim index flags are malformed");
+    const flag = String.fromCharCode(record[0]);
+    const path = decodeGitPath(record.subarray(2), "release claim index flags");
+    if (
+      path !== snapshot.entries[index].path ||
+      flag === "S" ||
+      flag.toLowerCase() === flag
+    )
+      throw new Error(
+        "release claim index uses skip-worktree or assume-unchanged state",
+      );
+  }
+}
+
+function assertExactTaggedSource(root, sourceCommit, snapshot) {
+  const head = gitOutput(
+    root,
+    ["rev-parse", "--verify", "HEAD^{commit}"],
+    "release claim source identity check",
+  ).trim();
+  if (head !== sourceCommit || snapshot.sourceCommit !== sourceCommit)
+    throw new Error("release claim source HEAD is not the triggering commit");
+  assertCanonicalIndex(root, snapshot);
+
+  for (const entry of snapshot.entries) {
+    const absolute = resolve(root, entry.path);
+    const rel = relative(root, absolute);
+    if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`))
+      throw new Error("release claim source path escapes the repository");
+    let observed;
+    try {
+      observed =
+        entry.mode === "120000"
+          ? observeSymlink(root, absolute, `release claim source ${entry.path}`)
+          : observeRegularFile(
+              root,
+              absolute,
+              `release claim source ${entry.path}`,
+            );
+    } catch (error) {
+      if (isRecord(error) && error.code === "ENOENT")
+        throw new Error(
+          "release claim source tree changed while checks were running",
+        );
+      throw error;
+    }
+    if (
+      observed.size !== entry.size ||
+      observed.sha256 !== entry.sha256 ||
+      observed.executable !== (entry.mode === "100755")
+    )
+      throw new Error(
+        "release claim source tree changed while checks were running",
+      );
+  }
+
+  const untracked = gitBytes(
+    root,
+    ["ls-files", "--others", "--exclude-per-directory=.gitignore", "-z"],
+    "release claim untracked source inventory",
+  );
+  if (untracked.length !== 0)
     throw new Error(
       "release claim source tree changed while checks were running",
     );
@@ -337,7 +656,8 @@ export async function runReleaseClaimCi({
     throw new Error(`output must be ${RELEASE_CLAIM_CI_RESULT_PATH}`);
   const context = releaseContext(env);
   const runtime = releaseRuntime(env);
-  assertExactTaggedSource(root, context.sourceCommit);
+  const sourceSnapshot = captureSourceSnapshot(root, context.sourceCommit);
+  assertExactTaggedSource(root, context.sourceCommit, sourceSnapshot);
   const canonicalCheckIds = [...CANONICAL_CI_EVIDENCE_CHECKS.values()].flat();
   if (
     new Set(canonicalCheckIds).size !== canonicalCheckIds.length ||
@@ -349,13 +669,16 @@ export async function runReleaseClaimCi({
     throw new Error(
       "canonical release claim checks and frozen commands must match exactly",
     );
-  const sourceDigests = RELEASE_CLAIM_CI_SOURCE_PATHS.map((path) => ({
-    path,
-    sha256: sha256(readFileSync(containedRegularFile(root, path))),
-  }));
+  const sourceDigests = RELEASE_CLAIM_CI_SOURCE_PATHS.map((path) => {
+    const entry = sourceSnapshot.byPath.get(path);
+    if (!entry || !["100644", "100755"].includes(entry.mode))
+      throw new Error(`release claim source is not tracked at HEAD: ${path}`);
+    containedRegularFile(root, path);
+    return { path, sha256: entry.sha256 };
+  });
   const observed = new Map();
   for (const [id, command] of CANONICAL_CI_EVIDENCE_COMMANDS) {
-    assertExactTaggedSource(root, context.sourceCommit);
+    assertExactTaggedSource(root, context.sourceCommit, sourceSnapshot);
     releaseRuntime(env);
     let result;
     try {
@@ -373,7 +696,7 @@ export async function runReleaseClaimCi({
       };
     }
     releaseRuntime(env);
-    assertExactTaggedSource(root, context.sourceCommit);
+    assertExactTaggedSource(root, context.sourceCommit, sourceSnapshot);
     const exitCode = Number.isInteger(result?.exitCode)
       ? result.exitCode
       : null;
@@ -400,16 +723,17 @@ export async function runReleaseClaimCi({
       checks: checkIds.map((id) => observed.get(id)),
     }),
   );
-  const finalSourceDigests = RELEASE_CLAIM_CI_SOURCE_PATHS.map((path) => ({
-    path,
-    sha256: sha256(readFileSync(containedRegularFile(root, path))),
-  }));
+  const finalSourceDigests = RELEASE_CLAIM_CI_SOURCE_PATHS.map((path) => {
+    const entry = sourceSnapshot.byPath.get(path);
+    containedRegularFile(root, path);
+    return { path, sha256: entry.sha256 };
+  });
   if (JSON.stringify(finalSourceDigests) !== JSON.stringify(sourceDigests))
     throw new Error(
       "release claim CI sources changed while checks were running",
     );
   releaseRuntime(env);
-  assertExactTaggedSource(root, context.sourceCommit);
+  assertExactTaggedSource(root, context.sourceCommit, sourceSnapshot);
   const report = {
     schemaVersion: 1,
     generatedBy: "release-claim-ci-harness",

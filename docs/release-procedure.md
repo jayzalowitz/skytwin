@@ -55,12 +55,16 @@ The CI artifact contains `result.json`, bound to the repository, source commit,
 actual ref, event, run ID and attempt, plus the ledger, harness, and
 frozen-command source digests. Its checks are frozen argv arrays launched
 without a shell and record observed exit codes. Before and after every command,
-the harness requires `HEAD` to equal the triggering commit, no tracked or
-non-ignored untracked changes, and unchanged captured Node and pnpm bundle
-identities. The account-free claim runs the ledger's exact focused API and
-desktop test paths, not a broad suite whose success could outlive those
-assertions. The final checker hashes and validates the downloaded file as well
-as its GitHub artifact metadata.
+the harness requires `HEAD` to equal the triggering commit, compares every
+tracked path and executable/symlink mode with the content-addressed `HEAD`
+tree, rejects skip-worktree, assume-unchanged, linked source/runtime files,
+and non-ignored untracked changes, and revalidates the captured Node and pnpm
+bundle identities. Git replacement, configuration, fsmonitor, and alternate
+index inputs cannot substitute for that tree comparison. The account-free
+claim runs the ledger's exact focused API, worker, shared-classifier,
+execution-router, and desktop test paths, not a broad suite whose success
+could outlive those assertions. The final checker hashes and validates the
+downloaded file as well as its GitHub artifact metadata.
 
 The CI-result producer runs on a fresh GitHub-hosted runner. Its filesystem
 checks reject synchronous source, runtime, output-directory, symlink, and

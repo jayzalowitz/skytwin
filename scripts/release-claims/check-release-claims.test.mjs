@@ -436,12 +436,21 @@ function validLedger() {
               }))
             : []),
         ],
-        verification: [
-          {
-            command: 'rg -n -- "evidence" evidence.txt',
-            expected: "passes",
-          },
-        ],
+        verification:
+          id === "connectors.account-free-boundary"
+            ? CANONICAL_CI_EVIDENCE_CHECKS.get(id).map((checkId) => {
+                const command = CANONICAL_CI_EVIDENCE_COMMANDS.get(checkId);
+                return {
+                  command: [command.executable, ...command.args].join(" "),
+                  expected: "passes",
+                };
+              })
+            : [
+                {
+                  command: 'rg -n -- "evidence" evidence.txt',
+                  expected: "passes",
+                },
+              ],
       };
     }),
   };
@@ -929,6 +938,23 @@ describe("release claim ledger validation", () => {
     const root = makeRoot();
     writeValidFixture(root);
     expect(runChecks({ root }).errors).toEqual([]);
+  });
+
+  it("requires the account-free ledger verification to match every frozen CI command", () => {
+    const root = makeRoot();
+    const ledger = validLedger();
+    const claim = ledger.claims.find(
+      (candidate) => candidate.id === "connectors.account-free-boundary",
+    );
+    claim.verification.pop();
+    writeValidFixture(root, ledger);
+    expect(
+      validateLedgerShape(ledger, root).some((error) =>
+        error.includes(
+          "verification must exactly map the frozen account-free CI commands",
+        ),
+      ),
+    ).toBe(true);
   });
 
   it("requires every executable CI-result source to be ledger-pinned", () => {

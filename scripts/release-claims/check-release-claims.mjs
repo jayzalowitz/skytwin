@@ -919,6 +919,8 @@ const VERIFICATION_PACKAGE_FILTERS = new Set([
   "@skytwin/execution-router",
   "@skytwin/explanations",
   "@skytwin/policy-engine",
+  "@skytwin/shared-types",
+  "@skytwin/worker",
 ]);
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
@@ -3826,6 +3828,26 @@ export function validateLedgerShape(
           );
         }
       }
+    }
+    if (claim?.id === "connectors.account-free-boundary") {
+      const expectedCommands = CANONICAL_CI_EVIDENCE_CHECKS.get(claim.id).map(
+        (checkId) => {
+          const command = CANONICAL_CI_EVIDENCE_COMMANDS.get(checkId);
+          return [command.executable, ...command.args].join(" ");
+        },
+      );
+      if (
+        !sameStringSet(
+          asArray(claim.verification).map(
+            (verification) => verification?.command,
+          ),
+          expectedCommands,
+        )
+      )
+        addError(
+          errors,
+          `${prefix}.verification must exactly map the frozen account-free CI commands`,
+        );
     }
     if (claim?.state !== "proven" && !isNonEmptyString(claim?.limitation)) {
       addError(

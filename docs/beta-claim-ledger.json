@@ -1074,8 +1074,20 @@
       ],
       "verification": [
         {
-          "command": "pnpm --filter @skytwin/api test -- src/__tests__/oauth-google-disabled.test.ts src/__tests__/oauth-microsoft.test.ts src/__tests__/credentials-routes.test.ts src/__tests__/capabilities-routes.test.ts",
-          "expected": "API account authorization, credential, and capability paths fail closed in the supported mode while exact experimental source opt-in remains available"
+          "command": "pnpm --filter @skytwin/api test -- src/__tests__/oauth-google-disabled.test.ts src/__tests__/oauth-microsoft.test.ts src/__tests__/credentials-routes.test.ts src/__tests__/capabilities-routes.test.ts src/__tests__/execution-setup.test.ts",
+          "expected": "API account authorization, credential, capability, and execution-admission paths fail closed in the supported mode while exact experimental source opt-in remains available"
+        },
+        {
+          "command": "pnpm --filter @skytwin/worker test -- src/__tests__/connector-discovery.test.ts src/__tests__/execution-account-boundary.test.ts src/__tests__/changelog-poll.test.ts src/__tests__/federation-sync.test.ts src/__tests__/briefing-generator.test.ts src/__tests__/briefing-generator-adaptive.test.ts src/__tests__/promotion-eligibility-check.test.ts",
+          "expected": "Worker credential discovery, connector construction, execution admission, changelog polling, federation, briefing, and promotion activity cannot consume retained account-backed authority while disabled"
+        },
+        {
+          "command": "pnpm --filter @skytwin/shared-types test -- src/__tests__/google-preview-boundary.test.ts",
+          "expected": "The shared provider-neutral classifier recognizes the stable Google and Microsoft integration, registry, domain, and action identifiers enforced by runtime boundaries"
+        },
+        {
+          "command": "pnpm --filter @skytwin/execution-router test -- src/__tests__/adapter-discovery.test.ts src/__tests__/execution-router.test.ts",
+          "expected": "Dynamic adapter discovery and prepare/dispatch admission reject account-backed plugins and actions before import, adapter work, or dispatch authority begins"
         },
         {
           "command": "pnpm --filter skytwin-desktop test -- src/__tests__/service-manager-env.test.ts",
@@ -1238,17 +1250,17 @@
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "032bb2b195f51edce5ec84645cb9c4ad7d8dbd006de53be19a4c48aeefb26917",
+          "sha256": "6611e1232c239dc379f14cb9b8c0d0c009e91d4c81e3f837ce89c7556d7c4386",
           "why": "Defines the frozen focused CI source and command inventories, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
           "path": "scripts/release-claims/capture-release-claim-ci-runtime.mjs",
-          "sha256": "2d2b9201583c0499512368563d0d6a3891d7eff490ab8f0351d9ab788c732701",
+          "sha256": "8dc76b388c4bdd464cd96698265801e2ee3b0d799d1fb67454756c2e8b1afd6a",
           "why": "Captures safe canonical Node and delegated pnpm CLI bundle paths and digests before dependency installation can alter the job environment"
         },
         {
           "path": "scripts/release-claims/run-release-claim-ci.mjs",
-          "sha256": "b6db208f1676405f4d0bf36b85392234935123a80639bc39965cd5250b6e1343",
+          "sha256": "60aec590d4207f008eac62c6f1a792da19ce76b1094498a5370b324728b17035",
           "why": "Runs the frozen commands without a shell, records their observed exit codes and immutable workflow identity, and checks the exact tagged source tree and captured runtimes at every command boundary"
         },
         {
@@ -1288,7 +1300,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "ab148067b74b44edf8fb27e57dc82cbbac64112db7eeb8537127b55829b1e317",
+          "sha256": "223adee937a467073707db092f11264e29ef7cb61b6bd64d2588815ac07a21cd",
           "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every release material and source report binding at publication"
         }
       ],

@@ -84,8 +84,11 @@ function fixtureRoot() {
   );
   write(root, ".gitignore", "/release-claims-ci/\n");
   write(root, "package.json", '{"scripts":{"test":"vitest run"}}\n');
+  write(root, "tracked-link-target.txt", "tracked symlink target\n");
+  symlinkSync("tracked-link-target.txt", join(root, "tracked-link.txt"));
   const workspaceDirectories = new Map([
     ["@skytwin/api", "apps/api"],
+    ["@skytwin/worker", "apps/worker"],
     ["skytwin-desktop", "apps/desktop"],
   ]);
   for (const command of CANONICAL_CI_EVIDENCE_COMMANDS.values()) {
@@ -170,6 +173,47 @@ describe("release claim CI result producer", () => {
       "src/__tests__/oauth-microsoft.test.ts",
       "src/__tests__/credentials-routes.test.ts",
       "src/__tests__/capabilities-routes.test.ts",
+      "src/__tests__/execution-setup.test.ts",
+    ]);
+    expect(
+      CANONICAL_CI_EVIDENCE_COMMANDS.get(
+        "connectors.account-free-worker-disabled",
+      )?.args,
+    ).toEqual([
+      "--filter",
+      "@skytwin/worker",
+      "test",
+      "--",
+      "src/__tests__/connector-discovery.test.ts",
+      "src/__tests__/execution-account-boundary.test.ts",
+      "src/__tests__/changelog-poll.test.ts",
+      "src/__tests__/federation-sync.test.ts",
+      "src/__tests__/briefing-generator.test.ts",
+      "src/__tests__/briefing-generator-adaptive.test.ts",
+      "src/__tests__/promotion-eligibility-check.test.ts",
+    ]);
+    expect(
+      CANONICAL_CI_EVIDENCE_COMMANDS.get(
+        "connectors.account-free-shared-classifier",
+      )?.args,
+    ).toEqual([
+      "--filter",
+      "@skytwin/shared-types",
+      "test",
+      "--",
+      "src/__tests__/google-preview-boundary.test.ts",
+    ]);
+    expect(
+      CANONICAL_CI_EVIDENCE_COMMANDS.get(
+        "connectors.account-free-router-disabled",
+      )?.args,
+    ).toEqual([
+      "--filter",
+      "@skytwin/execution-router",
+      "test",
+      "--",
+      "src/__tests__/adapter-discovery.test.ts",
+      "src/__tests__/execution-router.test.ts",
     ]);
     expect(
       CANONICAL_CI_EVIDENCE_COMMANDS.get(
@@ -284,7 +328,7 @@ describe("release claim CI result producer", () => {
     await expect(
       runReleaseClaimCi({ root, env: runtimeEnv, execute }),
     ).rejects.toThrow();
-  });
+  }, 15_000);
 
   it("refuses a result when a source changes while checks are running", async () => {
     const root = fixtureRoot();
@@ -309,6 +353,105 @@ describe("release claim CI result producer", () => {
       "release claim source tree changed while checks were running",
     );
     expect(existsSync(join(root, RELEASE_CLAIM_CI_RESULT_PATH))).toBe(false);
+  });
+
+  it.each(["skip-worktree", "assume-unchanged"])(
+    "rejects a modified tracked source hidden by %s index state",
+    async (flag) => {
+      const root = fixtureRoot();
+      const runtimeEnv = releaseEnv(root);
+      const path = RELEASE_CLAIM_CI_CONSTANTS_PATH;
+      git(root, ["update-index", `--${flag}`, path]);
+      writeFileSync(join(root, path), "export const hidden = true;\n");
+      expect(git(root, ["status", "--porcelain=v1"])).toBe("");
+
+      const execute = vi.fn(async () => ({ exitCode: 0, error: null }));
+      await expect(
+        runReleaseClaimCi({ root, env: runtimeEnv, execute }),
+      ).rejects.toThrow("skip-worktree or assume-unchanged");
+      expect(execute).not.toHaveBeenCalled();
+      expect(existsSync(join(root, RELEASE_CLAIM_CI_RESULT_PATH))).toBe(false);
+    },
+  );
+
+  it("rejects an index staged from bytes that differ from the triggering tree", async () => {
+    const root = fixtureRoot();
+    const runtimeEnv = releaseEnv(root);
+    writeFileSync(
+      join(root, RELEASE_CLAIM_CI_CONSTANTS_PATH),
+      "export const staged = true;\n",
+    );
+    git(root, ["add", RELEASE_CLAIM_CI_CONSTANTS_PATH]);
+
+    const execute = vi.fn(async () => ({ exitCode: 0, error: null }));
+    await expect(
+      runReleaseClaimCi({ root, env: runtimeEnv, execute }),
+    ).rejects.toThrow("index differs from the triggering commit");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("does not let repository config hide untracked source or launch an fsmonitor hook", async () => {
+    const root = fixtureRoot();
+    const runtimeEnv = releaseEnv(root);
+    const marker = join(root, ".git", "fsmonitor-ran");
+    const hook = join(root, ".git", "malicious-fsmonitor");
+    writeFileSync(hook, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\n`);
+    chmodSync(hook, 0o755);
+    const excludes = join(root, ".git", "attacker-excludes");
+    writeFileSync(excludes, "attacker.mjs\n");
+    git(root, ["config", "core.fsmonitor", hook]);
+    git(root, ["config", "core.excludesFile", excludes]);
+    writeFileSync(join(root, "attacker.mjs"), "throw new Error('hidden');\n");
+
+    const execute = vi.fn(async () => ({ exitCode: 0, error: null }));
+    await expect(
+      runReleaseClaimCi({ root, env: runtimeEnv, execute }),
+    ).rejects.toThrow("source tree changed while checks were running");
+    expect(existsSync(marker)).toBe(false);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects a hard-linked tracked source even when its bytes match HEAD", async () => {
+    const root = fixtureRoot();
+    const runtimeEnv = releaseEnv(root);
+    const outside = mkdtempSync(join(tmpdir(), "skytwin-release-ci-link-"));
+    roots.push(outside);
+    linkSync(
+      join(root, RELEASE_CLAIM_CI_HARNESS_PATH),
+      join(outside, "linked-harness.mjs"),
+    );
+
+    const execute = vi.fn(async () => ({ exitCode: 0, error: null }));
+    await expect(
+      runReleaseClaimCi({ root, env: runtimeEnv, execute }),
+    ).rejects.toThrow("single-link regular file");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tracked executable-mode change even when bytes match HEAD", async () => {
+    const root = fixtureRoot();
+    const runtimeEnv = releaseEnv(root);
+    chmodSync(join(root, RELEASE_CLAIM_CI_CONSTANTS_PATH), 0o755);
+
+    const execute = vi.fn(async () => ({ exitCode: 0, error: null }));
+    await expect(
+      runReleaseClaimCi({ root, env: runtimeEnv, execute }),
+    ).rejects.toThrow("source tree changed while checks were running");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("rejects replacing a tracked symlink with identical regular-file bytes", async () => {
+    const root = fixtureRoot();
+    const runtimeEnv = releaseEnv(root);
+    const trackedLink = join(root, "tracked-link.txt");
+    rmSync(trackedLink);
+    writeFileSync(trackedLink, "tracked-link-target.txt");
+
+    const execute = vi.fn(async () => ({ exitCode: 0, error: null }));
+    await expect(
+      runReleaseClaimCi({ root, env: runtimeEnv, execute }),
+    ).rejects.toThrow("is not a single-link symbolic link");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it.each(["delete", "rename"])(
@@ -396,6 +539,25 @@ describe("release claim CI result producer", () => {
       }),
     ).rejects.toThrow("pnpm entry runtime identity changed after capture");
     expect(existsSync(join(root, RELEASE_CLAIM_CI_RESULT_PATH))).toBe(false);
+  });
+
+  it("rejects a hard-linked captured runtime before executing a command", async () => {
+    const root = fixtureRoot();
+    const runtimeEnv = releaseEnv(root);
+    const outside = mkdtempSync(
+      join(tmpdir(), "skytwin-release-runtime-link-"),
+    );
+    roots.push(outside);
+    linkSync(
+      runtimeEnv.SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH,
+      join(outside, "linked-pnpm.cjs"),
+    );
+
+    const execute = vi.fn(async () => ({ exitCode: 0, error: null }));
+    await expect(
+      runReleaseClaimCi({ root, env: runtimeEnv, execute }),
+    ).rejects.toThrow("pnpm entry runtime identity changed after capture");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("rejects a runtime mutation before a later command can restore it", async () => {
@@ -498,6 +660,7 @@ describe("release claim CI result producer", () => {
         "outside remains unchanged\n",
       );
     },
+    15_000,
   );
 
   it("uses spawn with an explicit no-shell execution boundary", () => {

@@ -27,8 +27,8 @@ function canonicalRegularFile(path, name, { executable = false } = {}) {
   if (!/^[A-Za-z0-9_./+-]+$/u.test(canonical))
     throw new Error(`${name} must resolve to a safe absolute path`);
   const stat = lstatSync(canonical);
-  if (!stat.isFile() || stat.isSymbolicLink())
-    throw new Error(`${name} must resolve to a regular file`);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1)
+    throw new Error(`${name} must resolve to a single-link regular file`);
   if (executable) accessSync(canonical, fsConstants.X_OK);
   return canonical;
 }
