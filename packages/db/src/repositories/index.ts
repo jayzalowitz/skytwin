@@ -60,9 +60,16 @@ export type {
 export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
 export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';
-export { workerDeadLetterRepository } from './worker-dead-letter-repository.js';
+export {
+  workerDeadLetterRepository,
+  WORKER_DEAD_LETTER_JOB_CODES,
+  WORKER_DEAD_LETTER_ERROR_CODES,
+  isWorkerDeadLetterJobCode,
+} from './worker-dead-letter-repository.js';
 export type {
   WorkerDeadLetterRow,
+  WorkerDeadLetterJobCode,
+  WorkerDeadLetterErrorCode,
   WorkerDeadLetterStatus,
   RecordDeadLetterInput,
 } from './worker-dead-letter-repository.js';

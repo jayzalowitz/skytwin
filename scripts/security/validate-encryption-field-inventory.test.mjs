@@ -648,36 +648,30 @@ test("worker generation authority remains installation-scoped and one-way", () =
   );
 });
 
-test("global dead-letter context cannot be retained as readable metadata", () => {
+test("global dead-letter codes and correlation remain content-free metadata", () => {
   const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
-  moveFieldToClassification(
-    inventory,
-    "worker_dead_letter",
-    "context",
-    "locally_exposed_metadata",
+  const entry = inventory.tables.find(
+    (candidate) => candidate.table === "worker_dead_letter",
   );
+  entry.groups.find((group) =>
+    group.columns.includes("error_code"),
+  ).classification = "deferred_source";
 
   assert.ok(
     validateInventory(inventory, extractSchemaColumns()).includes(
-      "worker_dead_letter.context: critical invariant requires forbidden_global_source",
+      "worker_dead_letter.error_code: critical invariant requires locally_exposed_metadata",
     ),
   );
 });
 
-test("global dead-letter error messages cannot be retained as readable metadata", () => {
+test("global dead-letter source-bearing columns are absent from the live schema", () => {
   const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
-  moveFieldToClassification(
-    inventory,
-    "worker_dead_letter",
-    "error_message",
-    "locally_exposed_metadata",
-  );
-
-  assert.ok(
-    validateInventory(inventory, extractSchemaColumns()).includes(
-      "worker_dead_letter.error_message: critical invariant requires forbidden_global_source",
-    ),
-  );
+  const columns = extractSchemaColumns().get("worker_dead_letter");
+  assert.ok(columns);
+  assert.equal(columns.includes("error_message"), false);
+  assert.equal(columns.includes("context"), false);
+  assert.equal(columns.includes("job_name"), false);
+  assert.deepEqual(validateInventory(inventory, extractSchemaColumns()), []);
 });
 
 test("operational metadata resolutions cannot silently disappear", () => {

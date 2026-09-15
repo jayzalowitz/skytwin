@@ -52,6 +52,14 @@ All notable changes to SkyTwin will be documented in this file.
   path. This correction supersedes current-looking bundled-client and
   five-minute-setup entries below without rewriting their historical record.
 
+- **Worker dead letters are content-free.** The global queue now stores only
+  constrained job/error codes, bounded attempts, lifecycle state, and opaque
+  UUIDs; migration 081 logically erases legacy diagnostic strings and JSON by
+  dropping their columns. CockroachDB reclaims the old physical versions under
+  its configured GC lifecycle, while existing backups retain their normal
+  lifecycle. The reviewed encryption inventory now covers all 998 columns in
+  the 104-table schema without advancing any encryption claim.
+
 - **Assistant turns now carry durable, user-scoped retry identity.**
   `POST /api/assistant/messages` requires a client-generated UUID `requestId`.
   New user and assistant rows are unique per owner, request identity, and role;

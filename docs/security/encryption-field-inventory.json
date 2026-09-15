@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "080-assistant-message-idempotency.sql",
+  "asOfMigration": "081-worker-dead-letter-content-free.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -4128,28 +4128,21 @@
           "classification": "locally_exposed_metadata",
           "columns": [
             "attempts",
+            "correlation_id",
             "dead_lettered_at",
+            "error_code",
             "id",
-            "job_name",
+            "job_code",
             "resolved_at",
             "status"
           ],
-          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "currentProtection": "Content-free global metadata only: database constraints and repository validation limit job/error values to reviewed codes, correlation identifiers are opaque UUIDs, and source-bearing diagnostic columns no longer exist.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
           "migrationStage": "disclosed-local-metadata",
           "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
-        },
-        {
-          "classification": "forbidden_global_source",
-          "columns": ["context", "error_message"],
-          "currentProtection": "Plaintext in CockroachDB today.",
-          "targetProtection": "Forbidden in the global DLQ target. Replace with stable error codes and opaque references; move required user payload to a separately user-owned encrypted record.",
-          "migrationStage": "ownership-gate-before-slice-1",
-          "rationale": "Current plaintext can contain user-derived source, but a global record has no safe per-user key or deletion scope.",
-          "searchableDerivatives": []
         }
       ],
-      "ownershipNotes": "Decision: global DLQ is content-free. Existing source-bearing rows must be redacted/deleted or moved to a new user-owned keyed record before enforcement."
+      "ownershipNotes": "Implemented by migration 081: legacy diagnostic values are replaced with bounded redaction codes while lifecycle metadata is retained, and source-bearing columns are dropped. No user payload is persisted in this global table."
     },
     {
       "table": "worker_generation_authority",

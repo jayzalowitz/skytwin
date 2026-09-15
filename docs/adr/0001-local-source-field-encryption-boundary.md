@@ -26,6 +26,7 @@ provide a general at-rest source-field guarantee:
 | [migration 066](../../packages/db/src/migrations/066-encrypt-high-value-tables.sql)     | Ciphertext siblings exist for selected preference, profile, and `brain_pages` fields. Plaintext siblings remain.                                                                                                                                                          |
 | [migration 073](../../packages/db/src/migrations/073-source-key-registry.sql)           | The recovery-wrapper registry and content-free device-wrapper deletion intent exist. They establish custody metadata only; migration 073 itself activates no source-field encryption.                                                                                     |
 | [migrations 074–079](../../packages/db/src/migrations/074-inference-receipts.sql)         | The user-child receipt tables store signed structured records and atomic completion authority with no dedicated prompt/response fields. A successfully finalized decision-event attempt creates its receipt batch with either configured or ephemeral recorder identity before approval or external execution. An existing decision without completion fails closed on retry; safe availability recovery still needs a durable provisional trace journal or atomic-restart design. Other application clients and product bundle export remain uncovered. Free-form strings cannot be proven free of source content or secrets, so the JSON is treated as potentially source-bearing. It is locally readable and not application-level encrypted. |
+| [migration 081](../../packages/db/src/migrations/081-worker-dead-letter-content-free.sql) | The system-global worker dead-letter queue retains only constrained job/error codes, bounded attempts, lifecycle timestamps/status, and opaque UUID identifiers. Existing diagnostic strings and JSON are removed from the live schema by dropping the source-capable columns; CockroachDB reclaims dropped physical data asynchronously under its configured GC policy, and prior backups retain their normal lifecycle. This closes that ownership prerequisite but does not activate source-field encryption elsewhere. |
 | [`DbTokenStore`](../../packages/connectors/src/oauth/db-token-store.ts)                 | Without a vault, API callbacks write plaintext. With the matching initialized vault unlocked, callbacks write ciphertext and null plaintext; an initialized locked vault refuses the write. Existing complete plaintext grants can migrate on authorized use. The worker's separate cache is not populated by API unlock, so it cannot use encrypted grants without future cross-process key delivery. |
 | [`TwinRepositoryAdapter`](../../packages/db/src/adapters/twin-repository-adapter.ts)    | Preference encryption is opt-in through a process-global provider. No production composition root calls it, profile fields are still plaintext, and direct backup SQL bypasses it.                                                                                        |
 | [`brain_pages` repository](../../packages/memory-gbrain-crdb-adapter/src/repository.ts) | Source text, generated tsvector, vectors, and metadata are readable from the database. The migration's ciphertext columns are not used.                                                                                                                                   |
@@ -39,11 +40,11 @@ provide a general at-rest source-field guarantee:
 The database also contains secrets and source content outside those four
 partially prepared tables: provider API keys, service credentials, MCP
 environment maps, federation private keys, decision and explanation payloads,
-assistant messages, signals, histories, both memory backends, exports, and
-dead-letter context. Execution results and spend records are included as action
+assistant messages, signals, histories, both memory backends, and exports.
+Execution results and spend records are included as action
 receipts, not treated as harmless operational data. The machine-readable
  inventory classifies all 998 columns across the 104-table live schema as of
- `080-assistant-message-idempotency.sql`; validation fails when a table or column is
+ `081-worker-dead-letter-content-free.sql`; validation fails when a table or column is
 missing or duplicated. It reconstructs the same schema-plus-sorted-SQL
 sequence used by the production
 [`001-initial` migration runner](../../packages/db/src/migrations/001-initial.ts).
@@ -249,13 +250,15 @@ random 256-bit installation root key (IRK, version N)
   Identifier-based deletion remains possible while locked. Installed service
   names, row counts, timestamps, and safety flags that remain metadata disclose
   which capabilities may be present.
-- `worker_dead_letter` remains system-global and becomes content-free before
-  slice 1. The global row may contain stable job/error codes, attempts,
-  timestamps, and opaque record IDs only. Required user payload moves to a new
-  user-owned record with `user_id`, lifecycle deletion, and a user-purpose
-  envelope; otherwise it is redacted or deleted. Encrypting a global payload
-  under an installation key is rejected because it would defeat per-user purge
-  and ownership.
+- `worker_dead_letter` remains system-global and is content-free as of migration
+  081. The global row contains constrained job/error codes, attempts,
+  timestamps, and opaque record IDs only. Legacy diagnostic content is removed
+  from the live schema; the worker does not persist a replacement payload.
+  Dropped physical data follows CockroachDB GC and backup-retention policy. Any
+  future replay design that requires user content must use a user-owned record with `user_id`,
+  lifecycle deletion, and a user-purpose envelope. Encrypting a global payload
+  under an installation key remains rejected because it would defeat per-user
+  purge and ownership.
 
 ### 3. Use a self-describing, context-bound envelope
 

@@ -38,11 +38,11 @@ const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
   "78be83cc8197f4a07fc7e1498996bf33ce56ebefa81357430a8b7443f9f2764f";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "4be48c9c97a6f08c3a2c481b439f1969047e9c049ac8edb1c456a1f22296978e";
+  "b30fe4e6283cbe4eb9d9932abc92ac135fd400ecb7efe4e665657fd04bfc90d1";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "e790f19a5ef98fc4c9ac81fb1ebe934922340a297beb510c6d4dc8b68c442426";
+  "e34b1a9fa14fda0e919a1c50dae8956bbc3fea6ef8fe91e5e85b6b9cf79aa555";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -1619,10 +1619,11 @@ export function validateInventory(inventory, schema) {
     requireField(field, "encrypted_source");
   }
   for (const field of [
-    "worker_dead_letter.context",
-    "worker_dead_letter.error_message",
+    "worker_dead_letter.correlation_id",
+    "worker_dead_letter.error_code",
+    "worker_dead_letter.job_code",
   ]) {
-    requireField(field, "forbidden_global_source");
+    requireField(field, "locally_exposed_metadata");
   }
   requireField("worker_generation_authority.secret_hash", "one_way_secret");
   requireField("brain_pages.metadata", "encrypted_source");
