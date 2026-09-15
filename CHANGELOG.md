@@ -26,6 +26,13 @@ All notable changes to SkyTwin will be documented in this file.
   ordering, package-job dependency, success-condition, or failure-tolerance
   changes cannot weaken the gate silently.
 
+- **Recovery wrappers now use the existing CockroachDB custody registry.** The
+  desktop loads that repository only through a narrow package subpath and has
+  no fallback to the legacy Electron recovery-wrapper file or plaintext when
+  the database or module is unavailable. Device wrappers remain local; API and
+  worker grants remain empty, no source repository consumes the broker, and no
+  encryption claim advances.
+
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,
   and mobile dependency graph no longer resolves the audited vulnerable
@@ -410,9 +417,9 @@ All notable changes to SkyTwin will be documented in this file.
   content-free device-wrapper deletion intent. The Electron broker implements
   versioned wrappers, purpose-separated keys, context-bound envelopes,
   capability-scoped child access, and bounded lock acknowledgement. API and
-  worker children receive empty owner grants, and production still uses a
-  temporary Electron-store adapter instead of the CockroachDB registry, so no
-  production source field is encrypted by this foundation.
+  worker children receive empty owner grants. A subsequent composition slice
+  places recovery wrappers in the CockroachDB registry without a legacy-store
+  fallback, but no production source field is encrypted by this foundation.
 
 ### Fixed (post-/review)
 

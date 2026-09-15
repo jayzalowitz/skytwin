@@ -9,6 +9,10 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
+    },
+    "./source-key-registry": {
+      "import": "./dist/source-key-registry.js",
+      "types": "./dist/source-key-registry.d.ts"
     }
   },
   "bin": {

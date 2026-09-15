@@ -27,22 +27,21 @@ import {
   setCrashReportsEnabled,
 } from './desktop-preferences.js';
 import { reportCrash } from './crash-reporter.js';
+import { DesktopKeyBroker, type DeviceWrapperStore } from './key-broker.js';
 import {
-  DesktopKeyBroker,
-  type DeviceWrapperStore,
-  PersistentWrappedKeyStore,
-  type WrappedKeyValueStore,
-  type WrappedUserKey,
-} from './key-broker.js';
+  CockroachWrappedKeyStore,
+  loadSourceKeyRegistryPort,
+} from './crdb-wrapped-key-store.js';
 import { installVaultNavigationGuards } from './vault-renderer-security.js';
 import { collectPackagedSampleRendererProof } from './release-evidence-renderer.js';
 
-// This store contains passphrase-wrapped random root keys, never passphrases or
-// plaintext root keys. Source-field migration remains disabled until the
-// broker boundary has completed its packaged verification gate.
-const wrappedKeyStore = new PersistentWrappedKeyStore(new Store<Record<string, WrappedUserKey>>({
-  name: 'skytwin-wrapped-user-keys',
-}) as unknown as WrappedKeyValueStore);
+// Recovery wrappers are held in CockroachDB through a narrow, lazily loaded
+// repository leaf. Database/load failure leaves the broker unavailable; there
+// is no fallback to the legacy Electron store or plaintext. Production owner
+// grants and source-field consumers remain disabled.
+const wrappedKeyStore = new CockroachWrappedKeyStore(
+  loadSourceKeyRegistryPort,
+);
 const electronDeviceKeyStore = new Store<Record<string, string>>({
   name: 'skytwin-device-user-keys',
 });

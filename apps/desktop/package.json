@@ -135,6 +135,7 @@
     ]
   },
   "dependencies": {
+    "@skytwin/db": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.8.9"

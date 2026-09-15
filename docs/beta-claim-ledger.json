@@ -1007,7 +1007,7 @@
         },
         {
           "path": "apps/desktop/src/main.ts",
-          "sha256": "5c232b4595e5ea5a0e23772506bf2b5264c71f72223fc1f40935e999047e90eb",
+          "sha256": "9ff5c4e81f3c07b2b9d88adccb1e472b5de99eb09f42b027379e6faa47e29384",
           "why": "Invokes renderer proof collection only for the verifier-provided evidence environment"
         },
         {
@@ -1209,7 +1209,7 @@
         },
         {
           "path": "apps/desktop/package.json",
-          "sha256": "bf9bd78192b4da6b356f5076a13c35ae20321d2798c36b9d1e62f7305adf4fe9",
+          "sha256": "940bcd0ca39d0d41f5be5abf879096de61f7ae7ddccd3d64107879ea1e6e1f8d",
           "why": "Defines the current platform build targets and publishing metadata"
         },
         {

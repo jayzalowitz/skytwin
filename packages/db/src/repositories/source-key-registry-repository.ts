@@ -120,8 +120,8 @@ function normalizeRow(raw: RawSourceKeyRegistryRow): SourceKeyRegistryRow {
   });
 }
 
-// Deliberately absent from both DB barrels. Future runtime composition must
-// wrap this sensitive leaf in a narrow, owner-bound gateway.
+// Deliberately absent from the general DB barrel. Desktop composition reaches
+// this sensitive leaf only through the narrow source-key-registry subpath.
 export const sourceKeyRegistryRepository = {
   async getCurrent(userId: string): Promise<SourceKeyRegistryRow | null> {
     validateUserId(userId);

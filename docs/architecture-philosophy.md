@@ -99,8 +99,9 @@ These are non-negotiable, deterministic, and only change via deploy:
   An initialized locked vault refuses new writes instead of downgrading them. The
   worker's separate key cache is not populated by API unlock, so encrypted grants may
   be unavailable there. Electron's broader source-key broker still gives API and
-  worker empty owner grants; its authenticated grant flow, Cockroach-backed repository,
-  and preference/profile/memory consumers are not composed.
+  worker empty owner grants. Its recovery wrappers now use the narrow CockroachDB
+  registry adapter without fallback, but authenticated grant authority and
+  preference/profile/memory consumers are not composed.
   Preferences, twin profiles and memory pages are in the same position: migration
   `066` added the columns, but `setPreferenceVaultKeyProvider()` has no production
   caller, so `resolveKey` returns plaintext mode. This is a rail we intend to hold,
