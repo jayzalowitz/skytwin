@@ -4789,7 +4789,9 @@ ${step}`,
     const runId = 101;
     const claimId = "storage.desktop-crdb";
     const releaseAssets = makeReleaseAssets(root, 303);
-    const releaseAsset = releaseAssets[0];
+    const releaseAsset = releaseAssets.find(
+      (asset) => asset.artifactName === "SkyTwin-macOS-zip",
+    );
     const subject = releaseAsset.subjects[0];
     const checkIds = CANONICAL_MACHINE_EVIDENCE_CHECKS.get(claimId);
     const producerJobId = 404;
@@ -4826,17 +4828,52 @@ ${step}`,
       runAttempt: 1,
       runAttemptStartedAt: ATTEMPT_STARTED_AT,
       platform: "macos",
+      runnerPlatform: "darwin-arm64",
       producerJobName,
       verifierPath,
       verifierCommand,
       verifierSha256,
-      releaseArtifactKind: "desktop-installer",
+      releaseArtifactKind: "desktop-archive",
       releaseArtifactId: releaseAsset.artifactId,
       releaseArtifactName: releaseAsset.artifactName,
       releaseArtifactSha256: releaseAsset.artifactSha256,
       subjectName: subject.name,
       subjectPath: subject.path,
       subjectSha256: subject.sha256,
+      executedBinary: {
+        name: "SkyTwin",
+        sizeBytes: 1_000,
+        sha256: "e".repeat(64),
+        device: 10,
+        inode: 20,
+        identityResult: "pass",
+        derivationMethod: "zip-ditto",
+        derivationPath: "SkyTwin.app/Contents/MacOS/SkyTwin",
+      },
+      databaseBinary: {
+        name: "cockroach",
+        sizeBytes: 2_000,
+        sha256: "f".repeat(64),
+        identityResult: "pass",
+        derivationPath:
+          "SkyTwin.app/Contents/Resources/cockroach/darwin-arm64/cockroach",
+      },
+      storageObservation: {
+        userDataRelativePath: "electron",
+        storeRelativePath: "electron/crdb-data",
+        sqlListener: { host: "127.0.0.1", port: 26257 },
+        httpListener: { host: "127.0.0.1", port: 26258 },
+        processOwnership: "descendant",
+        launchCount: 2,
+        markerWriteResult: "pass",
+        markerReadAfterRestartResult: "pass",
+        markerSha256: "1".repeat(64),
+        sameStoreIdentity: true,
+        storeNonEmpty: true,
+        unexpectedStoreCount: 0,
+        gracefulShutdownCount: 2,
+        listenersReleased: true,
+      },
     };
     const reportPath = `.release-evidence/reports/${claimId}.json`;
     write(root, reportPath, `${JSON.stringify(report)}\n`);
