@@ -117,6 +117,8 @@ jobs:
         run: pnpm claims:check
       - name: Test beta release-claim guard
         run: pnpm claims:test
+      - name: Test release artifact construction and verification
+        run: pnpm test:release-artifacts
       - run: pnpm build
       - run: pnpm test
 

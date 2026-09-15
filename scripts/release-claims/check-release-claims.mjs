@@ -2334,6 +2334,12 @@ export function verifyCanonicalReleasePublisher(root) {
   const ciInstallIndexes = ciSteps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.run === "pnpm install --frozen-lockfile");
+  const ciArtifactTestIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(
+      ({ step }) =>
+        step?.name === "Test release artifact construction and verification",
+    );
   const ciProducerIndexes = ciSteps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === RELEASE_CLAIM_CI_PRODUCER_STEP);
@@ -2344,6 +2350,7 @@ export function verifyCanonicalReleasePublisher(root) {
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === "Enforce beta release readiness");
   const ciProducer = ciProducerIndexes[0]?.step;
+  const ciArtifactTest = ciArtifactTestIndexes[0]?.step;
   const ciRuntimeCapture = ciRuntimeCaptureIndexes[0]?.step;
   const ciUpload = ciUploadIndexes[0]?.step;
   const ciReadiness = ciReadinessIndexes[0]?.step;
@@ -2423,12 +2430,19 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
     ciJob.defaults !== undefined ||
     ciRuntimeCaptureIndexes.length !== 1 ||
     ciInstallIndexes.length !== 1 ||
+    ciArtifactTestIndexes.length !== 1 ||
     ciProducerIndexes.length !== 1 ||
     ciUploadIndexes.length !== 1 ||
     ciReadinessIndexes.length !== 1 ||
     (ciRuntimeCaptureIndexes[0]?.index ?? -1) >=
       (ciInstallIndexes[0]?.index ?? -1) ||
     (ciInstallIndexes[0]?.index ?? -1) >= (ciProducerIndexes[0]?.index ?? -1) ||
+    (ciInstallIndexes[0]?.index ?? -1) >=
+      (ciArtifactTestIndexes[0]?.index ?? -1) ||
+    (ciArtifactTestIndexes[0]?.index ?? -1) >=
+      (ciProducerIndexes[0]?.index ?? -1) ||
+    !hasExactKeys(ciArtifactTest, ["name", "run"]) ||
+    ciArtifactTest.run !== "pnpm test:release-artifacts" ||
     (ciUploadIndexes[0]?.index ?? -1) !==
       (ciProducerIndexes[0]?.index ?? -1) + 1 ||
     (ciReadinessIndexes[0]?.index ?? -1) !==

@@ -550,6 +550,8 @@ jobs:
         shell: /bin/bash --noprofile --norc -eo pipefail {0}
         run: node scripts/release-claims/capture-release-claim-ci-runtime.mjs
       - run: pnpm install --frozen-lockfile
+      - name: Test release artifact construction and verification
+        run: pnpm test:release-artifacts
       - name: Produce release claim CI result
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 15
@@ -1886,6 +1888,22 @@ ${step}`,
       readFileSync(path, "utf8").replace(
         "      - name: Produce release claim CI result\n        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')",
         "      - name: Produce release claim CI result\n        if: always() && startsWith(github.ref, 'refs/tags/v')",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it("requires release artifact adversarial tests in the CI gate", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "      - name: Test release artifact construction and verification\n        run: pnpm test:release-artifacts\n",
+        "",
       ),
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
