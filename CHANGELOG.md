@@ -13,10 +13,14 @@ All notable changes to SkyTwin will be documented in this file.
   preparation, or a dispatch lease. Dynamic Google/Gmail/Calendar and
   Microsoft/Outlook aliases are
   filtered across credential reads, writes, sync, and UI surfaces; failed
-  dynamic credential classification also fails closed. Stale Google capability
-  rows cannot be resumed, polled for changelogs, offered as assistant installs,
-  or restore reconnect prompts. Existing stored tokens and credentials are
-  retained for a future reviewed migration. Managed account access is
+  dynamic credential classification also fails closed. Stale account-backed
+  capability rows cannot be resumed, inspected through bookmarked detail
+  routes, rendered in dependency graphs, polled for changelogs, included in
+  assistant or briefing prompts, promoted, offered as installs, transferred,
+  or used to restore reconnect prompts. Provider-native action namespaces are
+  denied before adapter planning or dispatch even when no capability-server ID
+  is supplied. Existing stored tokens and credentials are retained for a future
+  reviewed migration. Managed account access is
   deferred, and the exact experimental source flag is not a supported operator/BYO
   path. This correction supersedes current-looking bundled-client and
   five-minute-setup entries below without rewriting their historical record.

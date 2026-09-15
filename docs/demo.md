@@ -19,8 +19,9 @@ their other hand and read along.
 > a separate session-local simulation can approve, reject, correct, reset, and
 > learn from fixed fictional proposals. It cannot open settings, persist those
 > interactions, invoke providers or connectors, or run an execution adapter.
-> This isolated sample is the only supported preview path. Google connection is
-> unavailable; do not use a real Gmail or Calendar account for this demo.
+> This isolated sample is the only supported preview path. Google and Microsoft
+> account connections are unavailable; do not use a real Gmail, Calendar,
+> Outlook, or Microsoft 365 account for this demo.
 
 ---
 
@@ -35,7 +36,7 @@ You'll need:
   ```
   Then open `http://localhost:3200`.
 
-Use only fictional sample data. Real Google connection and operator/BYO
+Use only fictional sample data. Real account connections and operator/BYO
 credential setup are unsupported in the current preview.
 
 ---
@@ -60,7 +61,8 @@ start.
   the dev "Switch user" button tells three different stories. No OAuth, no
   signal-ingestion wait. This is the demo path. (The showcase data lives in
   `packages/db/src/seeds/demo-showcase.ts`; counts move as we tune it.)
-Google connection is displayed as unavailable rather than as a second path.
+Google and Microsoft account connections are displayed as unavailable rather
+than as additional paths.
 Managed Google identity/Calendar is deferred, and BYO remains unsupported until
 the OAuth and credential-custody architecture gates are complete.
 
@@ -113,7 +115,7 @@ and decision history are fictional. The packaged sample's database-backed views
 remain read-only; approve, reject, correct, reset, and learn interactions use a
 separate session-local simulation.
 
-Show the unavailable Google state. There is no connect button, credential form,
+Show the unavailable account-connection state. There is no connect button, credential form,
 authorization URL, connector wait, or provider-status promise. This absence is
 part of the release boundary, not a demo shortcut.
 
@@ -251,8 +253,8 @@ If you're capturing this for the launch video (the docs/launch-plan.md Tier
 - Open Chrome in a 1280×800 window — matches the dashboard's intended
   layout without scrollbars and is small enough that overlay text reads
   clearly when downscaled for embed.
-- Use the sample profile. Google connection is unavailable, and real-account
-  footage is not valid preview evidence.
+- Use the sample profile. Google and Microsoft account connections are
+  unavailable, and real-account footage is not valid preview evidence.
 - Set system audio to off; record with a headset mic so background noise
   doesn't leak. The brand voice carries; ambient typing doesn't.
 - Cut at five minutes. Anything you couldn't say in five was outside the
