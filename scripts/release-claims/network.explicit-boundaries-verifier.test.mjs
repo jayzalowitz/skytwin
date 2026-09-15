@@ -571,9 +571,27 @@ describe("owned process-tree socket inventory", () => {
       name: "127.0.0.1:3100",
       state: "LISTEN",
     };
-    expect(validateSocketInventory([base], owned, before, after)).toMatchObject(
-      { ownedSocketCount: 1 },
-    );
+    expect(
+      validateSocketInventory(
+        [
+          base,
+          {
+            ...base,
+            fd: "11",
+            name: "127.0.0.1:54321->127.0.0.1:3100",
+          },
+          {
+            ...base,
+            pid: 99,
+            command: "foreign",
+            name: "192.0.2.2:54321->192.0.2.3:3100",
+          },
+        ],
+        owned,
+        before,
+        after,
+      ),
+    ).toEqual({ ownedSocketCount: 2, loopbackPorts: [3100] });
     for (const mutation of [
       { name: "*:3100" },
       { name: "[::1]:3100" },

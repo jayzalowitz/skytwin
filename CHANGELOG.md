@@ -8,8 +8,9 @@ All notable changes to SkyTwin will be documented in this file.
   source.** The verifier binds the current tag-push attempt and exact release
   ZIP, self-tests a deny-by-default sandbox by requiring parent and spawned
   child loopback success plus external `EPERM`, and launches the derived app in
-  that inherited loopback-only profile with a closed environment. It repeatedly
-  inventories stable owned process-tree sockets while proving nonce-bound API,
+  that inherited loopback-only profile with a closed environment. The sandbox
+  continuously enforces the boundary; repeated stable owned process-tree socket
+  inventories corroborate it while the verifier proves nonce-bound API,
   dashboard, and one account-free sample read; wildcard, IPv6, external, UDP,
   multicast, malformed, stale, reused, or foreign managed socket evidence
   fails closed. Reports contain only bounded counts, canonical loopback ports,

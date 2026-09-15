@@ -802,9 +802,15 @@ export function parseLsofSockets(output) {
   return sockets;
 }
 
-function endpointPort(name) {
+function endpointPorts(name) {
   const matches = [...String(name).matchAll(/127\.0\.0\.1:(\d+)/gu)];
   return matches.map((match) => Number(match[1]));
+}
+
+function localEndpointPort(name) {
+  const local = String(name).split("->", 1)[0];
+  const match = local.match(/:(\d+)$/u);
+  return match ? Number(match[1]) : null;
 }
 
 export function validateSocketInventory(
@@ -817,9 +823,7 @@ export function validateSocketInventory(
   const loopbackPorts = new Set();
   for (const socket of sockets) {
     const isOwned = owned.has(socket.pid);
-    const managed = MANAGED_PORTS.some((port) =>
-      new RegExp(`(?:^|[:>])${port}(?:$|\\s|->)`, "u").test(socket.name),
-    );
+    const managed = MANAGED_PORTS.includes(localEndpointPort(socket.name));
     if (!isOwned) {
       assert(
         !managed,
@@ -848,7 +852,9 @@ export function validateSocketInventory(
       socket.protocol === "TCP",
       "owned UDP or multicast socket was observed",
     );
-    for (const port of endpointPort(socket.name)) loopbackPorts.add(port);
+    for (const port of endpointPorts(socket.name)) {
+      if (MANAGED_PORTS.includes(port)) loopbackPorts.add(port);
+    }
     ownedSocketCount += 1;
   }
   return {
