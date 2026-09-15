@@ -34,7 +34,8 @@ export const CHECK_IDS = Object.freeze([
 const WORKFLOW_PATH = ".github/workflows/build.yml";
 const MAX_API_BYTES = 16 * 1024 * 1024;
 const MAX_SUBJECT_BYTES = 8 * 1024 * 1024 * 1024;
-const MAX_TOOL_OUTPUT_BYTES = 1024 * 1024;
+const MAX_TOOL_OUTPUT_BYTES = 64 * 1024 * 1024;
+const SHA256_DIGEST = /^[0-9a-f]{64}$/u;
 const MACOS_NATIVE_TOOLS = Object.freeze({
   codesign: "/usr/bin/codesign",
   spctl: "/usr/sbin/spctl",
@@ -52,6 +53,8 @@ const WINDOWS_VERIFICATION_METHOD =
   "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate";
 const WINDOWS_TIMESTAMP_VALIDATION =
   "presence-and-fingerprint-recorded-not-independently-validated";
+const WINDOWS_NSIS_PAYLOAD = "$PLUGINSDIR/app-64.7z";
+const WINDOWS_EXECUTABLE_MEMBER = "SkyTwin.exe";
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
   `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})$`,
@@ -176,8 +179,10 @@ export function inspectStableRegularFile(
   assertNoSymlinkComponents(lexicalRoot, requested, description);
   const beforePath = lstatSync(requested, { bigint: true });
   assert(
-    beforePath.isFile() && !beforePath.isSymbolicLink(),
-    `${description} must be a direct regular non-symlink file`,
+    beforePath.isFile() &&
+      !beforePath.isSymbolicLink() &&
+      beforePath.nlink === 1n,
+    `${description} must be a direct regular non-symlink non-hard-linked file`,
   );
   assert(
     beforePath.size > 0n && beforePath.size <= BigInt(maximumBytes),
@@ -196,7 +201,9 @@ export function inspectStableRegularFile(
   try {
     const before = fstatSync(descriptor, { bigint: true });
     assert(
-      before.isFile() && sameFileIdentity(before, beforePath),
+      before.isFile() &&
+        before.nlink === 1n &&
+        sameFileIdentity(before, beforePath),
       `${description} changed before hashing`,
     );
     testHooks.afterOpen?.({ descriptor, requested });
@@ -216,7 +223,10 @@ export function inspectStableRegularFile(
     const after = fstatSync(descriptor, { bigint: true });
     const afterPath = lstatSync(requested, { bigint: true });
     assert(
-      afterPath.isFile() && !afterPath.isSymbolicLink(),
+      afterPath.isFile() &&
+        !afterPath.isSymbolicLink() &&
+        afterPath.nlink === 1n &&
+        after.nlink === 1n,
       `${description} was replaced while hashing`,
     );
     assert(
@@ -673,11 +683,11 @@ export function parseMacCodeSignature(
     /^Developer ID Application: .+ \([A-Z0-9]{10}\)$/u.test(value),
   );
   assert(
-    authorities.length >= 3 &&
-      new Set(authorities).size === authorities.length &&
+    authorities.length === 3 &&
       signerAuthorities.length === 1 &&
-      authorities.includes("Developer ID Certification Authority") &&
-      authorities.includes("Apple Root CA"),
+      authorities[0] === signerAuthorities[0] &&
+      authorities[1] === "Developer ID Certification Authority" &&
+      authorities[2] === "Apple Root CA",
     `${description} Developer ID authority chain is missing or ambiguous`,
   );
   const signer = signerAuthorities[0];
@@ -993,6 +1003,297 @@ export function verifyMacSubjects(
   return results;
 }
 
+function normalizeSevenZipMemberPath(value, description) {
+  assert(
+    typeof value === "string" && value.length > 0,
+    `${description} contains an empty member name`,
+  );
+  const normalized = value.replaceAll("\\", "/");
+  assert(
+    !normalized.startsWith("/") &&
+      !/^[a-z]:/iu.test(normalized) &&
+      !normalized.includes(":") &&
+      !normalized.startsWith("-") &&
+      !normalized.startsWith("@"),
+    `${description} contains an unsafe member name`,
+  );
+  const components = normalized.split("/");
+  assert(
+    components.every(
+      (component) =>
+        component.length > 0 &&
+        component !== "." &&
+        component !== ".." &&
+        !/[. ]$/u.test(component) &&
+        !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/iu.test(component),
+    ),
+    `${description} contains an unsafe Windows path component`,
+  );
+  return normalized;
+}
+
+export function parseSevenZipListing(output, archivePath, description) {
+  assert(
+    typeof output === "string" && output.length <= MAX_TOOL_OUTPUT_BYTES,
+    `${description} listing is missing or too large`,
+  );
+  const records = [];
+  let current = null;
+  for (const line of output.split(/\r?\n/u)) {
+    const separator = line.indexOf(" = ");
+    if (separator < 0) continue;
+    const key = line.slice(0, separator);
+    const value = line.slice(separator + 3);
+    if (key === "Path") {
+      if (current) records.push(current);
+      current = { Path: value };
+    } else if (current) {
+      assert(
+        !Object.hasOwn(current, key),
+        `${description} has duplicate ${key}`,
+      );
+      current[key] = value;
+    }
+  }
+  if (current) records.push(current);
+  if (
+    records[0] &&
+    (resolve(records[0].Path) === resolve(archivePath) ||
+      records[0].Path === basename(archivePath))
+  )
+    records.shift();
+  assert(
+    records.length > 0 && records.length <= 100_000,
+    `${description} member count is outside the release bound`,
+  );
+  let expandedBytes = 0;
+  const seen = new Set();
+  for (const record of records) {
+    const normalizedPath = normalizeSevenZipMemberPath(
+      record.Path,
+      description,
+    );
+    const folded = normalizedPath.toLowerCase();
+    assert(!seen.has(folded), `${description} has a case-colliding member`);
+    seen.add(folded);
+    assert(
+      !Object.hasOwn(record, "Symbolic Link") &&
+        !Object.hasOwn(record, "Hard Link"),
+      `${description} contains a link member`,
+    );
+    const size = Number(record.Size ?? "0");
+    assert(
+      Number.isSafeInteger(size) && size >= 0,
+      `${description} has an invalid member size`,
+    );
+    expandedBytes += size;
+    assert(
+      Number.isSafeInteger(expandedBytes) && expandedBytes <= MAX_SUBJECT_BYTES,
+      `${description} expanded size exceeds the release bound`,
+    );
+    record.normalizedPath = normalizedPath;
+  }
+  return records;
+}
+
+function assertExactExtractedFile(root, expectedPath, description) {
+  const rootStat = lstatSync(root);
+  assert(
+    rootStat.isDirectory() && !rootStat.isSymbolicLink(),
+    `${description} root must remain a direct directory`,
+  );
+  const expected = expectedPath.split("/").join(sep);
+  const files = [];
+  function walk(directory) {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const path = join(directory, entry.name);
+      const stat = lstatSync(path, { bigint: true });
+      assert(!stat.isSymbolicLink(), `${description} contains a reparse point`);
+      if (stat.isDirectory()) walk(path);
+      else {
+        assert(
+          stat.isFile() && stat.nlink === 1n,
+          `${description} contains a special file or hard link`,
+        );
+        files.push(relative(root, path));
+      }
+    }
+  }
+  walk(root);
+  assert(
+    files.length === 1 && files[0] === expected,
+    `${description} did not produce the exact requested file`,
+  );
+  return join(root, expected);
+}
+
+function executeSevenZip(execute, sevenZip, args, commandEnv, description) {
+  return checkedCommand(
+    execute,
+    sevenZip,
+    args,
+    { env: commandEnv },
+    description,
+  );
+}
+
+function deriveWindowsExecutable(
+  subjectPath,
+  extractionRoot,
+  sevenZip,
+  execute,
+  commandEnv,
+) {
+  const firstListing = parseSevenZipListing(
+    executeSevenZip(
+      execute,
+      sevenZip,
+      ["l", "-slt", "-tNSIS", subjectPath],
+      commandEnv,
+      "Windows NSIS listing",
+    ),
+    subjectPath,
+    "Windows NSIS archive",
+  );
+  assert(
+    firstListing.filter(
+      (record) => record.normalizedPath === WINDOWS_NSIS_PAYLOAD,
+    ).length === 1,
+    `Windows NSIS archive must contain exact ${WINDOWS_NSIS_PAYLOAD}`,
+  );
+  executeSevenZip(
+    execute,
+    sevenZip,
+    ["t", "-tNSIS", subjectPath],
+    commandEnv,
+    "Windows NSIS integrity test",
+  );
+  const firstRoot = join(extractionRoot, "nsis");
+  mkdirSync(firstRoot, { mode: 0o700 });
+  executeSevenZip(
+    execute,
+    sevenZip,
+    [
+      "x",
+      "-tNSIS",
+      subjectPath,
+      WINDOWS_NSIS_PAYLOAD,
+      `-o${firstRoot}`,
+      "-y",
+      "-bb0",
+      "-bd",
+    ],
+    commandEnv,
+    "Windows NSIS payload extraction",
+  );
+  const payloadPath = assertExactExtractedFile(
+    firstRoot,
+    WINDOWS_NSIS_PAYLOAD,
+    "Windows NSIS payload extraction",
+  );
+  const payloadBefore = inspectStableRegularFile(
+    firstRoot,
+    payloadPath,
+    "Windows application payload",
+    MAX_SUBJECT_BYTES,
+  );
+  const secondListing = parseSevenZipListing(
+    executeSevenZip(
+      execute,
+      sevenZip,
+      ["l", "-slt", "-t7z", payloadPath],
+      commandEnv,
+      "Windows application payload listing",
+    ),
+    payloadPath,
+    "Windows application payload",
+  );
+  assert(
+    secondListing.filter(
+      (record) => record.normalizedPath === WINDOWS_EXECUTABLE_MEMBER,
+    ).length === 1,
+    `Windows application payload must contain exact ${WINDOWS_EXECUTABLE_MEMBER}`,
+  );
+  executeSevenZip(
+    execute,
+    sevenZip,
+    ["t", "-t7z", payloadPath],
+    commandEnv,
+    "Windows application payload integrity test",
+  );
+  const executableRoot = join(extractionRoot, "application");
+  mkdirSync(executableRoot, { mode: 0o700 });
+  executeSevenZip(
+    execute,
+    sevenZip,
+    [
+      "x",
+      "-t7z",
+      payloadPath,
+      WINDOWS_EXECUTABLE_MEMBER,
+      `-o${executableRoot}`,
+      "-y",
+      "-bb0",
+      "-bd",
+    ],
+    commandEnv,
+    "Windows executable extraction",
+  );
+  const executablePath = assertExactExtractedFile(
+    executableRoot,
+    WINDOWS_EXECUTABLE_MEMBER,
+    "Windows executable extraction",
+  );
+  const executable = inspectStableRegularFile(
+    executableRoot,
+    executablePath,
+    "contained Windows executable",
+    MAX_SUBJECT_BYTES,
+  );
+  const descriptor = openSync(
+    executablePath,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+  );
+  try {
+    const dosHeader = Buffer.alloc(0x40);
+    assert(
+      readSync(descriptor, dosHeader, 0, dosHeader.length, 0) ===
+        dosHeader.length,
+      "contained Windows executable has a truncated DOS header",
+    );
+    assert(
+      dosHeader.subarray(0, 2).toString("ascii") === "MZ",
+      "contained Windows executable is not PE/MZ",
+    );
+    const peOffset = dosHeader.readUInt32LE(0x3c);
+    const peHeader = Buffer.alloc(6);
+    assert(
+      peOffset + peHeader.length <= executable.sizeBytes &&
+        readSync(descriptor, peHeader, 0, peHeader.length, peOffset) ===
+          peHeader.length &&
+        peHeader.subarray(0, 4).toString("binary") === "PE\0\0" &&
+        peHeader.readUInt16LE(4) === 0x8664,
+      "contained Windows executable is not AMD64 PE",
+    );
+  } finally {
+    closeSync(descriptor);
+  }
+  const payloadAfter = inspectStableRegularFile(
+    firstRoot,
+    payloadPath,
+    "Windows application payload",
+    MAX_SUBJECT_BYTES,
+  );
+  assert(
+    payloadBefore.sha256 === payloadAfter.sha256 &&
+      payloadBefore.sizeBytes === payloadAfter.sizeBytes &&
+      payloadBefore.device === payloadAfter.device &&
+      payloadBefore.inode === payloadAfter.inode,
+    "Windows application payload changed during extraction",
+  );
+  return { executableRoot, executable, executablePath };
+}
+
 const WINDOWS_SIGNATURE_SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 $signature = Get-AuthenticodeSignature -LiteralPath $env:SKYTWIN_SIGNATURE_SUBJECT
@@ -1003,6 +1304,7 @@ $ekuExtension = $certificate.Extensions | Where-Object { $_.Oid.Value -eq '2.5.2
 if ($null -eq $ekuExtension) { throw 'missing enhanced key usage' }
 $eku = [Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension]::new($ekuExtension, $ekuExtension.Critical)
 $ekuOids = @($eku.EnhancedKeyUsages | ForEach-Object { $_.Value })
+$version = [Diagnostics.FileVersionInfo]::GetVersionInfo($env:SKYTWIN_SIGNATURE_SUBJECT)
 [ordered]@{
   status = [string]$signature.Status
   signatureType = [string]$signature.SignatureType
@@ -1012,6 +1314,11 @@ $ekuOids = @($eku.EnhancedKeyUsages | ForEach-Object { $_.Value })
   codeSigningEku = $ekuOids -contains '1.3.6.1.5.5.7.3.3'
   timestampPresent = $null -ne $timestamp
   timestampSignerSha256 = if ($null -eq $timestamp) { '' } else { $timestamp.GetCertHashString([Security.Cryptography.HashAlgorithmName]::SHA256).ToLowerInvariant() }
+  productVersion = [string]$version.ProductVersion
+  fileVersionMajor = [int]$version.FileMajorPart
+  fileVersionMinor = [int]$version.FileMinorPart
+  fileVersionBuild = [int]$version.FileBuildPart
+  fileVersionPrivate = [int]$version.FilePrivatePart
 } | ConvertTo-Json -Compress
 `;
 
@@ -1033,6 +1340,11 @@ export function parseWindowsSignature(output, expectedSignerSha256) {
       "codeSigningEku",
       "timestampPresent",
       "timestampSignerSha256",
+      "productVersion",
+      "fileVersionMajor",
+      "fileVersionMinor",
+      "fileVersionBuild",
+      "fileVersionPrivate",
     ],
     "Windows Authenticode result",
   );
@@ -1062,13 +1374,44 @@ export function parseWindowsSignature(output, expectedSignerSha256) {
       /^[0-9a-f]{64}$/u.test(value.timestampSignerSha256),
     "Windows Authenticode signature lacks a timestamp certificate identity",
   );
+  assert(
+    typeof value.productVersion === "string" &&
+      [
+        value.fileVersionMajor,
+        value.fileVersionMinor,
+        value.fileVersionBuild,
+        value.fileVersionPrivate,
+      ].every((part) => Number.isSafeInteger(part) && part >= 0),
+    "Windows subject product version is malformed",
+  );
   return value;
+}
+
+function verifyWindowsSignature(path, powershell, commandEnv, policy, execute) {
+  const result = checkedCommand(
+    execute,
+    powershell,
+    [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+      WINDOWS_SIGNATURE_SCRIPT,
+    ],
+    {
+      env: { ...commandEnv, SKYTWIN_SIGNATURE_SUBJECT: path },
+    },
+    "Windows Authenticode verification",
+  );
+  return parseWindowsSignature(result.trim(), policy.signerSha256);
 }
 
 export function verifyWindowsSubjects(
   subjects,
   policy,
-  { execute = executeNativeCommand, env = process.env } = {},
+  { execute = executeNativeCommand, env = process.env, appVersion } = {},
 ) {
   assert(
     subjects.size === 1 && subjects.has("SkyTwin-Windows-installer"),
@@ -1086,46 +1429,153 @@ export function verifyWindowsSubjects(
       "Windows SystemRoot and WINDIR disagree",
     );
   const powershell = `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+  const sevenZip = `${systemRoot.slice(0, 2)}\\Program Files\\7-Zip\\7z.exe`;
+  assert(
+    typeof appVersion === "string" && appVersion.length > 0,
+    "Windows signing verification requires the release app version",
+  );
   const commandEnv = {
     SystemRoot: systemRoot,
     WINDIR: systemRoot,
-    SKYTWIN_SIGNATURE_SUBJECT: subject.path,
   };
-  const result = checkedCommand(
-    execute,
-    powershell,
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      WINDOWS_SIGNATURE_SCRIPT,
-    ],
-    { env: commandEnv },
-    "Windows Authenticode verification",
+  const installerBefore = inspectStableRegularFile(
+    join(subject.path, ".."),
+    subject.path,
+    "Windows installer",
+    MAX_SUBJECT_BYTES,
   );
-  const signature = parseWindowsSignature(result.trim(), policy.signerSha256);
-  return new Map([
-    [
-      "SkyTwin-Windows-installer",
-      {
-        signatureResult: "pass",
-        verificationMethod: WINDOWS_VERIFICATION_METHOD,
-        authenticodeStatus: signature.status,
-        authenticodeSignatureType: signature.signatureType,
-        signer: signature.signerSubject,
-        signerIssuer: signature.signerIssuer,
-        signerCertificateSha256: signature.signerSha256,
-        signerCertificatePinned: true,
-        codeSigningEku: signature.codeSigningEku,
-        timestampCertificatePresent: signature.timestampPresent,
-        timestampSignerCertificateSha256: signature.timestampSignerSha256,
-        timestampCertificateValidation: WINDOWS_TIMESTAMP_VALIDATION,
-      },
-    ],
-  ]);
+  const signature = verifyWindowsSignature(
+    subject.path,
+    powershell,
+    commandEnv,
+    policy,
+    execute,
+  );
+  const extractionRoot = mkdtempSync(
+    join(tmpdir(), "skytwin-signing-windows-"),
+  );
+  let primaryError;
+  try {
+    const derived = deriveWindowsExecutable(
+      subject.path,
+      extractionRoot,
+      sevenZip,
+      execute,
+      commandEnv,
+    );
+    const executableBefore = derived.executable;
+    const executableSignature = verifyWindowsSignature(
+      derived.executablePath,
+      powershell,
+      commandEnv,
+      policy,
+      execute,
+    );
+    assert(
+      executableSignature.signerSubject === signature.signerSubject &&
+        executableSignature.signerIssuer === signature.signerIssuer &&
+        executableSignature.signerSha256 === signature.signerSha256,
+      "contained Windows executable signer does not match the installer signer",
+    );
+    assert(
+      executableSignature.productVersion === appVersion,
+      "contained Windows executable ProductVersion does not match the release app version",
+    );
+    const expectedVersionParts = appVersion.split(".").map(Number);
+    assert(
+      expectedVersionParts.length === 3 &&
+        expectedVersionParts.every(Number.isSafeInteger) &&
+        executableSignature.fileVersionMajor === expectedVersionParts[0] &&
+        executableSignature.fileVersionMinor === expectedVersionParts[1] &&
+        executableSignature.fileVersionBuild === expectedVersionParts[2] &&
+        executableSignature.fileVersionPrivate === 0,
+      "contained Windows executable FileVersionInfo does not match the release app version",
+    );
+    const executableAfter = inspectStableRegularFile(
+      derived.executableRoot,
+      derived.executablePath,
+      "contained Windows executable",
+      MAX_SUBJECT_BYTES,
+    );
+    assert(
+      executableBefore.sha256 === executableAfter.sha256 &&
+        executableBefore.sizeBytes === executableAfter.sizeBytes &&
+        executableBefore.device === executableAfter.device &&
+        executableBefore.inode === executableAfter.inode,
+      "contained Windows executable changed during signature verification",
+    );
+    const installerAfter = inspectStableRegularFile(
+      join(subject.path, ".."),
+      subject.path,
+      "Windows installer",
+      MAX_SUBJECT_BYTES,
+    );
+    assert(
+      installerBefore.sha256 === installerAfter.sha256 &&
+        installerBefore.sizeBytes === installerAfter.sizeBytes &&
+        installerBefore.device === installerAfter.device &&
+        installerBefore.inode === installerAfter.inode,
+      "Windows installer changed during verification",
+    );
+    return new Map([
+      [
+        "SkyTwin-Windows-installer",
+        {
+          signatureResult: "pass",
+          verificationMethod: WINDOWS_VERIFICATION_METHOD,
+          authenticodeStatus: signature.status,
+          authenticodeSignatureType: signature.signatureType,
+          signer: signature.signerSubject,
+          signerIssuer: signature.signerIssuer,
+          signerCertificateSha256: signature.signerSha256,
+          signerCertificatePinned: true,
+          codeSigningEku: signature.codeSigningEku,
+          timestampCertificatePresent: signature.timestampPresent,
+          timestampSignerCertificateSha256: signature.timestampSignerSha256,
+          timestampCertificateValidation: WINDOWS_TIMESTAMP_VALIDATION,
+          containedExecutable: {
+            derivationMethod: "nsis-7zip",
+            derivationPath:
+              `${WINDOWS_NSIS_PAYLOAD}!/${WINDOWS_EXECUTABLE_MEMBER}`.replace(
+                "$PLUGINSDIR/",
+                "",
+              ),
+            name: basename(derived.executablePath),
+            sha256: executableBefore.sha256,
+            sizeBytes: executableBefore.sizeBytes,
+            architecture: "AMD64",
+            productVersion: executableSignature.productVersion,
+            fileVersionMajor: executableSignature.fileVersionMajor,
+            fileVersionMinor: executableSignature.fileVersionMinor,
+            fileVersionBuild: executableSignature.fileVersionBuild,
+            fileVersionPrivate: executableSignature.fileVersionPrivate,
+            signatureResult: "pass",
+            verificationMethod: WINDOWS_VERIFICATION_METHOD,
+            authenticodeStatus: executableSignature.status,
+            authenticodeSignatureType: executableSignature.signatureType,
+            signer: executableSignature.signerSubject,
+            signerIssuer: executableSignature.signerIssuer,
+            signerCertificateSha256: executableSignature.signerSha256,
+            signerCertificatePinned: true,
+            codeSigningEku: executableSignature.codeSigningEku,
+            timestampCertificatePresent: executableSignature.timestampPresent,
+            timestampSignerCertificateSha256:
+              executableSignature.timestampSignerSha256,
+            timestampCertificateValidation: WINDOWS_TIMESTAMP_VALIDATION,
+          },
+        },
+      ],
+    ]);
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      rmSync(extractionRoot, { recursive: true, force: true });
+    } catch (cleanupError) {
+      if (!primaryError) throw cleanupError;
+    }
+  }
 }
 
 export function verifyLinuxSubjects() {
@@ -1176,7 +1626,7 @@ function assertMacReportObservation(result, artifactName, appVersion) {
   );
 }
 
-function assertWindowsReportObservation(result, artifactName) {
+function assertWindowsReportObservation(result, artifactName, appVersion) {
   exactKeys(
     result,
     [
@@ -1192,6 +1642,7 @@ function assertWindowsReportObservation(result, artifactName) {
       "timestampCertificatePresent",
       "timestampSignerCertificateSha256",
       "timestampCertificateValidation",
+      "containedExecutable",
     ],
     `${artifactName} signing observation`,
   );
@@ -1210,8 +1661,67 @@ function assertWindowsReportObservation(result, artifactName) {
       result.codeSigningEku === true &&
       result.timestampCertificatePresent === true &&
       /^[0-9a-f]{64}$/u.test(result.timestampSignerCertificateSha256) &&
-      result.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION,
+      result.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION &&
+      isRecord(result.containedExecutable),
     `${artifactName} has incomplete or inconsistent Windows signing observations`,
+  );
+  exactKeys(
+    result.containedExecutable,
+    [
+      "derivationMethod",
+      "derivationPath",
+      "name",
+      "sha256",
+      "sizeBytes",
+      "architecture",
+      "productVersion",
+      "fileVersionMajor",
+      "fileVersionMinor",
+      "fileVersionBuild",
+      "fileVersionPrivate",
+      "signatureResult",
+      "verificationMethod",
+      "authenticodeStatus",
+      "authenticodeSignatureType",
+      "signer",
+      "signerIssuer",
+      "signerCertificateSha256",
+      "signerCertificatePinned",
+      "codeSigningEku",
+      "timestampCertificatePresent",
+      "timestampSignerCertificateSha256",
+      "timestampCertificateValidation",
+    ],
+    `${artifactName} contained executable observation`,
+  );
+  const executable = result.containedExecutable;
+  assert(
+    executable.derivationMethod === "nsis-7zip" &&
+      executable.derivationPath === "app-64.7z!/SkyTwin.exe" &&
+      executable.name === "SkyTwin.exe" &&
+      SHA256_DIGEST.test(executable.sha256 ?? "") &&
+      Number.isSafeInteger(executable.sizeBytes) &&
+      executable.sizeBytes > 0 &&
+      executable.architecture === "AMD64" &&
+      executable.productVersion === appVersion &&
+      executable.fileVersionMajor === Number(appVersion.split(".")[0]) &&
+      executable.fileVersionMinor === Number(appVersion.split(".")[1]) &&
+      executable.fileVersionBuild === Number(appVersion.split(".")[2]) &&
+      executable.fileVersionPrivate === 0 &&
+      executable.signatureResult === "pass" &&
+      executable.verificationMethod === WINDOWS_VERIFICATION_METHOD &&
+      executable.authenticodeStatus === "Valid" &&
+      executable.authenticodeSignatureType === "Authenticode" &&
+      executable.signer === result.signer &&
+      executable.signerIssuer === result.signerIssuer &&
+      executable.signerCertificateSha256 === result.signerCertificateSha256 &&
+      executable.signerCertificatePinned === true &&
+      executable.codeSigningEku === true &&
+      executable.timestampCertificatePresent === true &&
+      SHA256_DIGEST.test(executable.timestampSignerCertificateSha256 ?? "") &&
+      executable.timestampCertificateValidation ===
+        WINDOWS_TIMESTAMP_VALIDATION,
+    `${artifactName} has incomplete or inconsistent contained executable signing observations`,
   );
 }
 
@@ -1261,7 +1771,12 @@ export function buildReport({
       );
       if (platform === "macos")
         assertMacReportObservation(result, artifactName, identity.appVersion);
-      else assertWindowsReportObservation(result, artifactName);
+      else
+        assertWindowsReportObservation(
+          result,
+          artifactName,
+          identity.appVersion,
+        );
       return {
         artifactId: artifact.artifactId,
         artifactName,
@@ -1315,10 +1830,10 @@ export function buildReport({
     checks: [
       passingCheck(
         platform === "windows"
-          ? "Windows Get-AuthenticodeSignature reported Status=Valid for the exact installer and its signer certificate matched the operator-supplied pin"
+          ? "Windows Get-AuthenticodeSignature reported Status=Valid for the exact installer and contained AMD64 SkyTwin executable; both signer certificates matched the operator-supplied pin"
           : "Every canonical macOS package subject passed notarization validation and contained the same arm64 Developer ID signed app from the pinned team",
         platform === "windows"
-          ? `${coveredSubjects.length} exact subject byte identity from ${apiArtifacts.size} current-run ID/name/digest-bound artifact; timestamp certificate presence and SHA-256 fingerprint recorded without an independent timestamp trust assertion`
+          ? `${coveredSubjects.length} exact subject byte identity plus contained executable SHA-256 from ${apiArtifacts.size} current-run ID/name/digest-bound artifact; timestamp certificate presence and SHA-256 fingerprint recorded without an independent timestamp trust assertion`
           : `${coveredSubjects.length} exact subject byte identities from ${apiArtifacts.size} current-run ID/name/digest-bound artifacts`,
       ),
     ],
@@ -1342,20 +1857,32 @@ export function parseCanonicalArgs(argv) {
 
 function writeReport(root, relativePath, report) {
   const output = resolve(root, relativePath);
-  const reportsRoot = resolve(root, ".release-evidence", "reports");
+  const evidenceRoot = join(root, ".release-evidence");
+  const reportsRoot = join(evidenceRoot, "reports");
   assert(
     within(reportsRoot, output),
     "report output escapes reports directory",
   );
-  mkdirSync(reportsRoot, { recursive: true });
-  assertNoSymlinkComponents(root, reportsRoot, "release evidence reports");
-  const stat = lstatSync(reportsRoot);
-  assert(
-    stat.isDirectory() &&
-      !stat.isSymbolicLink() &&
-      within(root, realpathSync(reportsRoot)),
-    "release evidence reports must be a real directory inside checkout",
-  );
+  for (const [directory, description] of [
+    [evidenceRoot, "release evidence directory"],
+    [reportsRoot, "release evidence reports directory"],
+  ]) {
+    let exists = true;
+    try {
+      lstatSync(directory);
+    } catch (error) {
+      if (!isRecord(error) || error.code !== "ENOENT") throw error;
+      exists = false;
+    }
+    if (!exists) mkdirSync(directory, { mode: 0o700 });
+    const stat = lstatSync(directory);
+    assert(
+      stat.isDirectory() &&
+        !stat.isSymbolicLink() &&
+        realpathSync(directory) === directory,
+      `${description} must be a direct real directory inside checkout`,
+    );
+  }
   writeFileSync(output, `${JSON.stringify(report, null, 2)}\n`, {
     flag: "wx",
     mode: 0o600,
@@ -1411,6 +1938,7 @@ export async function runCanonicalVerifier(
         ? verifyWindowsSubjects(subjects, policy, {
             execute: executeNative,
             env,
+            appVersion: versions.appVersion,
           })
         : verifyLinuxSubjects(subjects, policy);
   const report = buildReport({

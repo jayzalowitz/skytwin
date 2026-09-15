@@ -1575,6 +1575,11 @@ function validateReleaseAssetManifest(manifest, errors) {
       subjectPaths.add(subject?.path);
       if (!SOURCE_DIGEST.test(subject?.sha256 ?? ""))
         addError(errors, `${subjectPrefix}.sha256 must be a SHA-256 digest`);
+      if (!Number.isSafeInteger(subject?.sizeBytes) || subject.sizeBytes <= 0)
+        addError(
+          errors,
+          `${subjectPrefix}.sizeBytes must be a positive integer`,
+        );
     }
   }
   for (const [name] of expected) {
@@ -4020,9 +4025,32 @@ function hasCompleteMacSigningObservation(
   expectedArtifactName,
   expectedAppVersion,
 ) {
+  const expectedKeys = [
+    "artifactId",
+    "artifactName",
+    "artifactSha256",
+    "kind",
+    "path",
+    "name",
+    "sha256",
+    "sizeBytes",
+    "platform",
+    "signatureResult",
+    "notarizationResult",
+    "verificationMethod",
+    "signer",
+    "signerTeamId",
+    "signedIdentifier",
+    "signedContentCdHash",
+    "signedBundleVersion",
+    "executableArchitecture",
+  ];
   const expectedMethod = MACOS_SIGNING_METHODS.get(expectedArtifactName);
   const teamId = subject?.signerTeamId;
   return (
+    isPlainRecord(subject) &&
+    Object.keys(subject).length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(subject, key)) &&
     subject?.artifactName === expectedArtifactName &&
     subject?.signatureResult === "pass" &&
     subject?.notarizationResult === "pass" &&
@@ -4038,8 +4066,65 @@ function hasCompleteMacSigningObservation(
   );
 }
 
-function hasCompleteWindowsSigningObservation(subject, expectedArtifactName) {
+function hasCompleteWindowsSigningObservation(
+  subject,
+  expectedArtifactName,
+  expectedAppVersion,
+) {
+  const expectedKeys = [
+    "artifactId",
+    "artifactName",
+    "artifactSha256",
+    "kind",
+    "path",
+    "name",
+    "sha256",
+    "sizeBytes",
+    "platform",
+    "signatureResult",
+    "verificationMethod",
+    "authenticodeStatus",
+    "authenticodeSignatureType",
+    "signer",
+    "signerIssuer",
+    "signerCertificateSha256",
+    "signerCertificatePinned",
+    "codeSigningEku",
+    "timestampCertificatePresent",
+    "timestampSignerCertificateSha256",
+    "timestampCertificateValidation",
+    "containedExecutable",
+  ];
+  const executableKeys = [
+    "derivationMethod",
+    "derivationPath",
+    "name",
+    "sha256",
+    "sizeBytes",
+    "architecture",
+    "productVersion",
+    "fileVersionMajor",
+    "fileVersionMinor",
+    "fileVersionBuild",
+    "fileVersionPrivate",
+    "signatureResult",
+    "verificationMethod",
+    "authenticodeStatus",
+    "authenticodeSignatureType",
+    "signer",
+    "signerIssuer",
+    "signerCertificateSha256",
+    "signerCertificatePinned",
+    "codeSigningEku",
+    "timestampCertificatePresent",
+    "timestampSignerCertificateSha256",
+    "timestampCertificateValidation",
+  ];
+  const executable = subject?.containedExecutable;
   return (
+    isPlainRecord(subject) &&
+    Object.keys(subject).length === expectedKeys.length &&
+    expectedKeys.every((key) => Object.hasOwn(subject, key)) &&
     subject?.artifactName === expectedArtifactName &&
     subject?.signatureResult === "pass" &&
     subject?.verificationMethod === WINDOWS_SIGNING_METHOD &&
@@ -4053,7 +4138,34 @@ function hasCompleteWindowsSigningObservation(subject, expectedArtifactName) {
     subject?.codeSigningEku === true &&
     subject?.timestampCertificatePresent === true &&
     SOURCE_DIGEST.test(subject?.timestampSignerCertificateSha256 ?? "") &&
-    subject?.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION
+    subject?.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION &&
+    isPlainRecord(executable) &&
+    Object.keys(executable).length === executableKeys.length &&
+    executableKeys.every((key) => Object.hasOwn(executable, key)) &&
+    executable.derivationMethod === "nsis-7zip" &&
+    executable.derivationPath === "app-64.7z!/SkyTwin.exe" &&
+    executable.name === "SkyTwin.exe" &&
+    SOURCE_DIGEST.test(executable.sha256 ?? "") &&
+    Number.isSafeInteger(executable.sizeBytes) &&
+    executable.sizeBytes > 0 &&
+    executable.architecture === "AMD64" &&
+    executable.productVersion === expectedAppVersion &&
+    executable.fileVersionMajor === Number(expectedAppVersion.split(".")[0]) &&
+    executable.fileVersionMinor === Number(expectedAppVersion.split(".")[1]) &&
+    executable.fileVersionBuild === Number(expectedAppVersion.split(".")[2]) &&
+    executable.fileVersionPrivate === 0 &&
+    executable.signatureResult === "pass" &&
+    executable.verificationMethod === WINDOWS_SIGNING_METHOD &&
+    executable.authenticodeStatus === "Valid" &&
+    executable.authenticodeSignatureType === "Authenticode" &&
+    executable.signer === subject.signer &&
+    executable.signerIssuer === subject.signerIssuer &&
+    executable.signerCertificateSha256 === subject.signerCertificateSha256 &&
+    executable.signerCertificatePinned === true &&
+    executable.codeSigningEku === true &&
+    executable.timestampCertificatePresent === true &&
+    SOURCE_DIGEST.test(executable.timestampSignerCertificateSha256 ?? "") &&
+    executable.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION
   );
 }
 
@@ -4121,7 +4233,7 @@ export function verifyMachineEvidenceApplicability(
       expectedAssets.flatMap((asset) =>
         asArray(asset.subjects).map((subject) => [
           `${subject.path}:${subject.sha256}`,
-          asset.artifactName,
+          { asset, subject },
         ]),
       ),
     );
@@ -4135,7 +4247,16 @@ export function verifyMachineEvidenceApplicability(
     );
     const observationsAreComplete = coveredSubjects.every((subject) => {
       const subjectKey = `${subject?.path}:${subject?.sha256}`;
-      const expectedArtifactName = expectedSubjectArtifacts.get(subjectKey);
+      const expected = expectedSubjectArtifacts.get(subjectKey);
+      const expectedArtifactName = expected?.asset?.artifactName;
+      const identityMatches =
+        subject?.artifactId === expected?.asset?.artifactId &&
+        subject?.artifactName === expectedArtifactName &&
+        subject?.artifactSha256 === expected?.asset?.artifactSha256 &&
+        subject?.kind === expected?.asset?.kind &&
+        subject?.name === expected?.subject?.name &&
+        subject?.sizeBytes === expected?.subject?.sizeBytes;
+      if (!identityMatches) return false;
       if (reportPlatform === "macos")
         return hasCompleteMacSigningObservation(
           subject,
@@ -4146,6 +4267,7 @@ export function verifyMachineEvidenceApplicability(
         return hasCompleteWindowsSigningObservation(
           subject,
           expectedArtifactName,
+          expectedAppVersion,
         );
       return false;
     });
@@ -5030,10 +5152,14 @@ export async function verifyPublicationEvidence(
     }
     for (const subject of asset.subjects) {
       const subjectPath = resolveContainedRegularFile(root, subject.path);
-      if (!subjectPath || sha256(readFileSync(subjectPath)) !== subject.sha256)
+      if (
+        !subjectPath ||
+        lstatSync(subjectPath).size !== subject.sizeBytes ||
+        sha256(readFileSync(subjectPath)) !== subject.sha256
+      )
         addError(
           errors,
-          `${prefix} subject is missing, unsafe, or has the wrong digest: ${subject.path}`,
+          `${prefix} subject is missing, unsafe, or has the wrong size or digest: ${subject.path}`,
         );
     }
     releaseAssetsByName.set(asset.artifactName, asset);

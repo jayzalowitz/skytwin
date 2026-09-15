@@ -122,6 +122,7 @@ function makeReleaseAssets(root, startId = 1000) {
           name,
           path,
           sha256: createHash("sha256").update(content).digest("hex"),
+          sizeBytes: Buffer.byteLength(content),
         },
       ],
     };
@@ -1655,14 +1656,32 @@ ${step}`,
   it("requires signing proof for every installer/archive subject", () => {
     const assets = [
       {
+        artifactId: 1,
         kind: "desktop-installer",
         artifactName: "SkyTwin-macOS-dmg",
-        subjects: [{ path: "a.dmg", sha256: "a".repeat(64) }],
+        artifactSha256: "1".repeat(64),
+        subjects: [
+          {
+            name: "a.dmg",
+            path: "a.dmg",
+            sha256: "a".repeat(64),
+            sizeBytes: 10,
+          },
+        ],
       },
       {
+        artifactId: 2,
         kind: "desktop-archive",
         artifactName: "SkyTwin-macOS-zip",
-        subjects: [{ path: "a.zip", sha256: "b".repeat(64) }],
+        artifactSha256: "2".repeat(64),
+        subjects: [
+          {
+            name: "a.zip",
+            path: "a.zip",
+            sha256: "b".repeat(64),
+            sizeBytes: 20,
+          },
+        ],
       },
       {
         kind: "update-manifest",
@@ -1675,9 +1694,14 @@ ${step}`,
       releaseTag: "v0.7.0-beta",
       coveredSubjects: [
         {
+          artifactId: 1,
           artifactName: "SkyTwin-macOS-dmg",
+          artifactSha256: "1".repeat(64),
+          kind: "desktop-installer",
           path: "a.dmg",
+          name: "a.dmg",
           sha256: "a".repeat(64),
+          sizeBytes: 10,
           platform: "macos-arm64",
           signatureResult: "pass",
           notarizationResult: "pass",
@@ -1695,9 +1719,14 @@ ${step}`,
       verifyMachineEvidenceApplicability("release.signing", report, assets),
     ).toHaveLength(1);
     report.coveredSubjects.push({
+      artifactId: 2,
       artifactName: "SkyTwin-macOS-zip",
+      artifactSha256: "2".repeat(64),
+      kind: "desktop-archive",
       path: "a.zip",
+      name: "a.zip",
       sha256: "b".repeat(64),
+      sizeBytes: 20,
       platform: "macos-arm64",
       signatureResult: "pass",
       notarizationResult: "pass",
@@ -1714,6 +1743,11 @@ ${step}`,
     ).toEqual([]);
 
     for (const [field, tampered] of [
+      ["artifactId", 99],
+      ["artifactSha256", "9".repeat(64)],
+      ["kind", "desktop-archive"],
+      ["name", "other.dmg"],
+      ["sizeBytes", 11],
       ["signedContentCdHash", undefined],
       ["signedBundleVersion", "0.6.99"],
       ["executableArchitecture", "x86_64"],
@@ -1728,14 +1762,28 @@ ${step}`,
         `tampered ${field}`,
       ).toHaveLength(1);
     }
+    const extraField = structuredClone(report);
+    extraField.coveredSubjects[0].unexpected = true;
+    expect(
+      verifyMachineEvidenceApplicability("release.signing", extraField, assets),
+    ).toHaveLength(1);
   });
 
   it("requires complete pinned Windows signature observations", () => {
     const assets = [
       {
+        artifactId: 1,
         kind: "desktop-installer",
         artifactName: "SkyTwin-Windows-installer",
-        subjects: [{ path: "SkyTwin.exe", sha256: "a".repeat(64) }],
+        artifactSha256: "1".repeat(64),
+        subjects: [
+          {
+            name: "SkyTwin.exe",
+            path: "SkyTwin.exe",
+            sha256: "a".repeat(64),
+            sizeBytes: 10,
+          },
+        ],
       },
     ];
     const report = {
@@ -1744,9 +1792,14 @@ ${step}`,
       releaseTag: "v0.7.0-beta",
       coveredSubjects: [
         {
+          artifactId: 1,
           artifactName: "SkyTwin-Windows-installer",
+          artifactSha256: "1".repeat(64),
+          kind: "desktop-installer",
           path: "SkyTwin.exe",
+          name: "SkyTwin.exe",
           sha256: "a".repeat(64),
+          sizeBytes: 10,
           platform: "windows-x64",
           signatureResult: "pass",
           verificationMethod:
@@ -1762,6 +1815,33 @@ ${step}`,
           timestampSignerCertificateSha256: "c".repeat(64),
           timestampCertificateValidation:
             "presence-and-fingerprint-recorded-not-independently-validated",
+          containedExecutable: {
+            derivationMethod: "nsis-7zip",
+            derivationPath: "app-64.7z!/SkyTwin.exe",
+            name: "SkyTwin.exe",
+            sha256: "d".repeat(64),
+            sizeBytes: 128,
+            architecture: "AMD64",
+            productVersion: "0.7.0",
+            fileVersionMajor: 0,
+            fileVersionMinor: 7,
+            fileVersionBuild: 0,
+            fileVersionPrivate: 0,
+            signatureResult: "pass",
+            verificationMethod:
+              "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+            authenticodeStatus: "Valid",
+            authenticodeSignatureType: "Authenticode",
+            signer: "CN=SkyTwin Publisher",
+            signerIssuer: "CN=Public Code Signing CA",
+            signerCertificateSha256: "b".repeat(64),
+            signerCertificatePinned: true,
+            codeSigningEku: true,
+            timestampCertificatePresent: true,
+            timestampSignerCertificateSha256: "c".repeat(64),
+            timestampCertificateValidation:
+              "presence-and-fingerprint-recorded-not-independently-validated",
+          },
         },
       ],
     };
@@ -1770,6 +1850,11 @@ ${step}`,
     ).toEqual([]);
 
     for (const [field, tampered] of [
+      ["artifactId", 99],
+      ["artifactSha256", "9".repeat(64)],
+      ["kind", "desktop-archive"],
+      ["name", "other.exe"],
+      ["sizeBytes", 11],
       ["codeSigningEku", undefined],
       ["signerCertificatePinned", false],
       ["signerCertificateSha256", "not-a-digest"],
@@ -1784,6 +1869,25 @@ ${step}`,
         `tampered ${field}`,
       ).toHaveLength(1);
     }
+    for (const [field, tampered] of [
+      ["sha256", "not-a-digest"],
+      ["architecture", "I386"],
+      ["productVersion", "0.6.0"],
+      ["signer", "CN=Other"],
+      ["fileVersionPrivate", 1],
+    ]) {
+      const changed = structuredClone(report);
+      changed.coveredSubjects[0].containedExecutable[field] = tampered;
+      expect(
+        verifyMachineEvidenceApplicability("release.signing", changed, assets),
+        `tampered contained executable ${field}`,
+      ).toHaveLength(1);
+    }
+    const extraField = structuredClone(report);
+    extraField.coveredSubjects[0].containedExecutable.unexpected = true;
+    expect(
+      verifyMachineEvidenceApplicability("release.signing", extraField, assets),
+    ).toHaveLength(1);
   });
 
   it("rejects signing evidence asserted by the wrong native platform", () => {

@@ -2,9 +2,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 import {
   existsSync,
+  linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -18,6 +20,7 @@ import {
   parseCanonicalArgs,
   parseMacCodeSignature,
   parseMacGatekeeper,
+  parseSevenZipListing,
   parseWindowsSignature,
   readRunIdentity,
   readTrustPolicy,
@@ -284,7 +287,70 @@ function windowsSignature(overrides = {}) {
     codeSigningEku: true,
     timestampPresent: true,
     timestampSignerSha256: timestampSha256,
+    productVersion: identity.appVersion,
+    fileVersionMajor: 0,
+    fileVersionMinor: 7,
+    fileVersionBuild: 0,
+    fileVersionPrivate: 0,
     ...overrides,
+  });
+}
+
+function windowsPe(machine = 0x8664) {
+  const bytes = Buffer.alloc(128);
+  bytes.write("MZ", 0, "ascii");
+  bytes.writeUInt32LE(0x40, 0x3c);
+  bytes.write("PE\0\0", 0x40, "binary");
+  bytes.writeUInt16LE(machine, 0x44);
+  return bytes;
+}
+
+function windowsExecutor(overrides = {}) {
+  return vi.fn((file, args, options) => {
+    if (file.endsWith("powershell.exe")) {
+      const subjectPath = options.env.SKYTWIN_SIGNATURE_SUBJECT;
+      const isInner = subjectPath.endsWith("SkyTwin.exe");
+      const signature = isInner
+        ? (overrides.innerSignature ?? windowsSignature())
+        : (overrides.outerSignature ?? windowsSignature());
+      overrides.afterSignature?.(subjectPath, { isInner });
+      return { exitCode: 0, signal: null, stdout: signature, stderr: "" };
+    }
+    if (file.endsWith("\\7-Zip\\7z.exe")) {
+      const archivePath = args.find(
+        (arg, index) =>
+          index > 0 &&
+          !arg.startsWith("-") &&
+          !arg.startsWith("$PLUGINSDIR") &&
+          arg !== "SkyTwin.exe",
+      );
+      const isNsis = args.includes("-tNSIS");
+      if (args[0] === "l") {
+        const listing = isNsis
+          ? (overrides.nsisListing ??
+            `Path = ${archivePath}\nType = Nsis\n\nPath = $PLUGINSDIR/app-64.7z\nSize = 16\n`)
+          : (overrides.payloadListing ??
+            `Path = ${archivePath}\nType = 7z\n\nPath = SkyTwin.exe\nSize = 128\n`);
+        return { exitCode: 0, signal: null, stdout: listing, stderr: "" };
+      }
+      if (args[0] === "x") {
+        const outputRoot = args.find((arg) => arg.startsWith("-o")).slice(2);
+        if (isNsis) {
+          const payload = join(outputRoot, "$PLUGINSDIR", "app-64.7z");
+          mkdirSync(join(payload, ".."), { recursive: true });
+          writeFileSync(payload, "application data");
+        } else {
+          const executable = join(outputRoot, "SkyTwin.exe");
+          if (overrides.hardLinkInner) {
+            const source = join(outputRoot, "..", "linked-SkyTwin.exe");
+            writeFileSync(source, windowsPe(overrides.machine));
+            linkSync(source, executable);
+          } else writeFileSync(executable, windowsPe(overrides.machine));
+        }
+      }
+      return { exitCode: 0, signal: null, stdout: "ok", stderr: "" };
+    }
+    throw new Error(`unexpected native tool ${file}`);
   });
 }
 
@@ -532,6 +598,23 @@ describe("release.signing canonical verifier", () => {
         "app",
       ),
     ).toThrow("ambiguous");
+    expect(() =>
+      parseMacCodeSignature(
+        macSignature().replace(
+          "Authority=Developer ID Application: SkyTwin Test (TEAM123456)\nAuthority=Developer ID Certification Authority",
+          "Authority=Developer ID Certification Authority\nAuthority=Developer ID Application: SkyTwin Test (TEAM123456)",
+        ),
+        teamId,
+        "app",
+      ),
+    ).toThrow("authority chain");
+    expect(() =>
+      parseMacCodeSignature(
+        `${macSignature()}\nAuthority=Unexpected Root`,
+        teamId,
+        "app",
+      ),
+    ).toThrow("authority chain");
     expect(() =>
       parseMacCodeSignature(
         macSignature({ signer: "Developer ID Application:" }),
@@ -852,12 +935,7 @@ describe("release.signing canonical verifier", () => {
       "windows",
       identity.appVersion,
     );
-    const execute = vi.fn(() => ({
-      exitCode: 0,
-      signal: null,
-      stdout: windowsSignature(),
-      stderr: "",
-    }));
+    const execute = windowsExecutor();
     const result = verifyWindowsSubjects(
       subjects,
       { signerSha256 },
@@ -868,6 +946,7 @@ describe("release.signing canonical verifier", () => {
           PATH: "C:\\Windows\\System32",
           DATABASE_URL: "secret",
         },
+        appVersion: identity.appVersion,
       },
     );
     expect(result.get("SkyTwin-Windows-installer")).toMatchObject({
@@ -881,6 +960,19 @@ describe("release.signing canonical verifier", () => {
       timestampSignerCertificateSha256: timestampSha256,
       timestampCertificateValidation:
         "presence-and-fingerprint-recorded-not-independently-validated",
+      containedExecutable: expect.objectContaining({
+        derivationMethod: "nsis-7zip",
+        derivationPath: "app-64.7z!/SkyTwin.exe",
+        name: "SkyTwin.exe",
+        architecture: "AMD64",
+        productVersion: identity.appVersion,
+        fileVersionMajor: 0,
+        fileVersionMinor: 7,
+        fileVersionBuild: 0,
+        fileVersionPrivate: 0,
+        signatureResult: "pass",
+        signerCertificateSha256: signerSha256,
+      }),
     });
     expect(execute).toHaveBeenCalledWith(
       "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
@@ -950,6 +1042,92 @@ describe("release.signing canonical verifier", () => {
         runtime: { platform: "win32", arch: "x64" },
       }),
     ).toThrow("incomplete or inconsistent Windows signing observations");
+  });
+
+  it("rejects unsafe Windows archive inventories and invalid contained executable identity", () => {
+    expect(() =>
+      parseSevenZipListing(
+        "Path = archive.exe\n\nPath = ../app-64.7z\nSize = 1\n",
+        "archive.exe",
+        "NSIS",
+      ),
+    ).toThrow("unsafe Windows path component");
+    expect(() =>
+      parseSevenZipListing(
+        "Path = archive.exe\n\nPath = app-64.7z\nSize = 1\nHard Link = other\n",
+        "archive.exe",
+        "NSIS",
+      ),
+    ).toThrow("link member");
+    expect(() =>
+      parseSevenZipListing(
+        "Path = archive.exe\n\nPath = SkyTwin.exe\nSize = 1\n\nPath = skytwin.EXE\nSize = 1\n",
+        "archive.exe",
+        "payload",
+      ),
+    ).toThrow("case-colliding");
+
+    const root = makeRoot();
+    populateSubjects(root, "windows");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "windows",
+      identity.appVersion,
+    );
+    const options = (execute) => ({
+      execute,
+      env: { SystemRoot: "C:\\Windows" },
+      appVersion: identity.appVersion,
+    });
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        options(
+          windowsExecutor({
+            innerSignature: windowsSignature({ signerSubject: "CN=Other" }),
+          }),
+        ),
+      ),
+    ).toThrow("does not match the installer signer");
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        options(
+          windowsExecutor({
+            innerSignature: windowsSignature({ productVersion: "0.6.0" }),
+          }),
+        ),
+      ),
+    ).toThrow("ProductVersion");
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        options(windowsExecutor({ machine: 0x014c })),
+      ),
+    ).toThrow("not AMD64 PE");
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        options(windowsExecutor({ hardLinkInner: true })),
+      ),
+    ).toThrow("hard link");
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        options(
+          windowsExecutor({
+            afterSignature: (path, { isInner }) => {
+              if (isInner) writeFileSync(path, windowsPe(0x014c));
+            },
+          }),
+        ),
+      ),
+    ).toThrow("changed during signature verification");
   });
 
   it("rejects ambiguous or non-canonical Windows native-tool roots", () => {
@@ -1040,6 +1218,7 @@ describe("release.signing canonical verifier", () => {
               name: subject.name,
               path: subject.relativePath,
               sha256: subject.sha256,
+              sizeBytes: subject.sizeBytes,
             },
           ],
         };
@@ -1201,6 +1380,55 @@ describe("release.signing canonical verifier", () => {
     expect(report.result).toBe("pass");
     expect(report.coveredSubjects).toHaveLength(2);
   });
+
+  it.each(["evidence-root", "reports"])(
+    "refuses a pre-existing %s symlink without touching its outside target",
+    async (symlinkLocation) => {
+      const root = makeRoot();
+      const outside = makeRoot();
+      prepareSource(root);
+      populateSubjects(root, "macos");
+      const evidenceRoot = join(root, ".release-evidence");
+      if (symlinkLocation === "evidence-root") {
+        symlinkSync(outside, evidenceRoot, "dir");
+      } else {
+        mkdirSync(evidenceRoot);
+        symlinkSync(outside, join(evidenceRoot, "reports"), "dir");
+      }
+
+      await expect(
+        runCanonicalVerifier(
+          [
+            "--platform",
+            "macos",
+            "--output",
+            ".release-evidence/reports/release.signing.macos.json",
+          ],
+          {
+            root,
+            runtime: { platform: "darwin", arch: "arm64" },
+            env: {
+              RUNNER_OS: "macOS",
+              RUNNER_ARCH: "ARM64",
+              GITHUB_SHA: identity.sourceCommit,
+              GITHUB_REPOSITORY: identity.repository,
+              GITHUB_REF_NAME: identity.releaseTag,
+              GITHUB_REF: identity.ref,
+              GITHUB_RUN_ID: String(identity.runId),
+              GITHUB_TOKEN: identity.token,
+              SKYTWIN_MACOS_TEAM_ID: teamId,
+            },
+            executeGit: vi.fn((args) =>
+              args[0] === "rev-parse" ? `${identity.sourceCommit}\n` : "",
+            ),
+            fetchImpl: apiFetch(platformArtifacts("macos")),
+            executeNative: macExecutor(),
+          },
+        ),
+      ).rejects.toThrow("must be a direct real directory inside checkout");
+      expect(readdirSync(outside)).toEqual([]);
+    },
+  );
 
   it("does not write evidence when a release subject changes during native verification", async () => {
     const root = makeRoot();

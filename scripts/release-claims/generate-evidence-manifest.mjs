@@ -109,12 +109,14 @@ const releaseAssets = CANONICAL_RELEASE_ASSETS.map(([artifactName, kind]) => {
           `${directory} must contain only direct regular-file release subjects`,
         );
       const path = join(directory, entry.name);
-      if (!lstatSync(path).isFile())
+      const stat = lstatSync(path);
+      if (!stat.isFile())
         throw new Error(`${path} is not a regular release subject`);
       return {
         name: entry.name,
         path,
         sha256: digestOf(path),
+        sizeBytes: stat.size,
       };
     },
   );

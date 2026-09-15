@@ -23,10 +23,11 @@
 > verifier with GitHub API discovery separated from package execution and a
 > strict allowlisted child environment. The artifact-verification lane also has
 > a tag-only material producer and independent verifier in source, but it has not
-> yet produced evidence from a tagged release run. The signing lane now has
-> macOS and Windows verifier source, but neither is workflow-wired or backed by
-> current-run evidence, and Linux signing remains deliberately blocked pending
-> package-specific trust methods. Five other verifier sources (five reports) and
+> yet produced evidence from a tagged release run. The signing lane is wired
+> into the native matrix and has macOS and Windows verifier source, but the
+> package jobs are not credentialed, protected signer pins are not configured,
+> no passing tagged-run evidence exists, and Linux signing remains deliberately
+> blocked pending package-specific trust methods. Five other verifier sources (five reports) and
 > the CI result producer are still absent. The final gate therefore fails closed
 > and the ledger remains blocked until the complete proof pipeline ships.
 
@@ -166,7 +167,10 @@ The packaged-sample verifier implements three of the twelve matrix reports; see
 implements one more, and the signing source implements macOS and Windows while
 failing closed on Linux until package-format methods and trust roots exist. Five
 verifier sources (five matrix reports), the Linux signing implementation, and
-the separate `release-claims-ci` artifact producer are absent today. Machine
+the separate `release-claims-ci` artifact producer are absent today. The
+signing matrix entries cannot pass until credentialed package jobs produce
+signed artifacts, protected operator configuration supplies the expected
+signer pins, and the tagged run records passing native evidence. Machine
 reports must come from the exact successful claim/platform job and canonical
 verifier step, carry the reviewed verifier path, command, and source digest, and
 provide structured observations; the release job independently checks those
