@@ -1007,12 +1007,12 @@
         },
         {
           "path": "apps/desktop/src/main.ts",
-          "sha256": "5c232b4595e5ea5a0e23772506bf2b5264c71f72223fc1f40935e999047e90eb",
+          "sha256": "a3dd02b543616f655b2cc1690dfc3e152c166ce1a4764c06a25fbcf636b0acc3",
           "why": "Invokes renderer proof collection only for the verifier-provided evidence environment"
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "9627a57be80913435656373a6de213655f2bb0506953e6a1001b38a250c8d765",
+          "sha256": "a99b4388cb98fc406cd03a342c92e81c764001913eaeb1790696f57d41f4d15a",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
@@ -1068,7 +1068,7 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "9627a57be80913435656373a6de213655f2bb0506953e6a1001b38a250c8d765",
+          "sha256": "a99b4388cb98fc406cd03a342c92e81c764001913eaeb1790696f57d41f4d15a",
           "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, clear filesystem plugin authority, and expose no source-key production grants"
         }
       ],
@@ -1111,7 +1111,7 @@
         },
         {
           "path": "apps/desktop/scripts/build-single-binary.sh",
-          "sha256": "df9b6d0b7a55cc2feab93c9a6513e0c09e64f86ee26430bce07dc722e8133707",
+          "sha256": "f136e49c51fbe87f52463bf3f5c60894f1e1785240513167fd0a74d01b913beb",
           "why": "Desktop bundling downloads and verifies CockroachDB, not a GGUF model"
         },
         {
@@ -1209,7 +1209,7 @@
         },
         {
           "path": "apps/desktop/package.json",
-          "sha256": "bf9bd78192b4da6b356f5076a13c35ae20321d2798c36b9d1e62f7305adf4fe9",
+          "sha256": "6cdc1273a1bd6c5871c19768addb4d56cad7ebbebdcca455add0e0170c21caee",
           "why": "Defines the current platform build targets and publishing metadata"
         },
         {
@@ -1240,7 +1240,7 @@
       "evidence": [
         {
           "path": "apps/desktop/scripts/build-single-binary.sh",
-          "sha256": "df9b6d0b7a55cc2feab93c9a6513e0c09e64f86ee26430bce07dc722e8133707",
+          "sha256": "f136e49c51fbe87f52463bf3f5c60894f1e1785240513167fd0a74d01b913beb",
           "why": "Verifies the bundled CockroachDB archive against pinned digests"
         },
         {

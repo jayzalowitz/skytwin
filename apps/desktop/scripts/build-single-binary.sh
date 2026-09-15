@@ -226,6 +226,24 @@ echo "[build-single-binary] Deploying API into embedded tree..."
 rm -rf "${EMBEDDED_DIR}/api"
 pnpm --filter @skytwin/api deploy --prod "${EMBEDDED_DIR}/api"
 
+# Electron main reuses this exact deployed DB leaf for recovery-wrapper
+# custody. Validate the deployed runtime contract before the bundle is sealed;
+# the desktop intentionally does not carry a second @skytwin/db closure.
+SOURCE_KEY_REGISTRY_MODULE="${EMBEDDED_DIR}/api/node_modules/@skytwin/db/dist/source-key-registry.js"
+if [[ ! -f "${SOURCE_KEY_REGISTRY_MODULE}" ]]; then
+  echo "ERROR: deployed source-key registry module is missing: ${SOURCE_KEY_REGISTRY_MODULE}" >&2
+  exit 1
+fi
+node --input-type=module -e '
+  const { pathToFileURL } = await import("node:url");
+  const loaded = await import(pathToFileURL(process.argv[1]).href);
+  const repository = loaded.sourceKeyRegistryRepository;
+  const methods = ["getCurrent", "createInitial", "deleteInitialIfMatch"];
+  if (!repository || methods.some((name) => typeof repository[name] !== "function")) {
+    throw new Error("deployed source-key registry contract is invalid");
+  }
+' "${SOURCE_KEY_REGISTRY_MODULE}"
+
 echo ""
 echo "[build-single-binary] Deploying worker into embedded tree..."
 rm -rf "${EMBEDDED_DIR}/worker"

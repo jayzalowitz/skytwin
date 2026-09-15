@@ -27,22 +27,27 @@ import {
   setCrashReportsEnabled,
 } from './desktop-preferences.js';
 import { reportCrash } from './crash-reporter.js';
+import { DesktopKeyBroker, type DeviceWrapperStore } from './key-broker.js';
 import {
-  DesktopKeyBroker,
-  type DeviceWrapperStore,
-  PersistentWrappedKeyStore,
-  type WrappedKeyValueStore,
-  type WrappedUserKey,
-} from './key-broker.js';
+  CockroachWrappedKeyStore,
+  loadSourceKeyRegistryPort,
+} from './crdb-wrapped-key-store.js';
 import { installVaultNavigationGuards } from './vault-renderer-security.js';
 import { collectPackagedSampleRendererProof } from './release-evidence-renderer.js';
 
-// This store contains passphrase-wrapped random root keys, never passphrases or
-// plaintext root keys. Source-field migration remains disabled until the
-// broker boundary has completed its packaged verification gate.
-const wrappedKeyStore = new PersistentWrappedKeyStore(new Store<Record<string, WrappedUserKey>>({
-  name: 'skytwin-wrapped-user-keys',
-}) as unknown as WrappedKeyValueStore);
+// Recovery wrappers are held in CockroachDB through a narrow, lazily loaded
+// repository leaf. Packaged builds reuse the DB module already present in the
+// embedded API closure instead of shipping that broad closure twice. A
+// database/load failure leaves the broker unavailable; there is no fallback to
+// the legacy Electron store or plaintext. Production owner grants and
+// source-field consumers remain disabled.
+let serviceManager: ServiceManager;
+const wrappedKeyStore: CockroachWrappedKeyStore =
+  new CockroachWrappedKeyStore(async () =>
+    loadSourceKeyRegistryPort(
+      await serviceManager.sourceKeyRegistryModuleSpecifier(),
+    ),
+  );
 const electronDeviceKeyStore = new Store<Record<string, string>>({
   name: 'skytwin-device-user-keys',
 });
@@ -52,11 +57,11 @@ const deviceKeyStore: DeviceWrapperStore = {
   delete: (key) => electronDeviceKeyStore.delete(key),
   keys: () => Object.keys(electronDeviceKeyStore.store),
 };
-const keyBroker = new DesktopKeyBroker(wrappedKeyStore, {
+const keyBroker: DesktopKeyBroker = new DesktopKeyBroker(wrappedKeyStore, {
   deviceProtection: safeStorage,
   deviceStore: deviceKeyStore,
 });
-const serviceManager = new ServiceManager(keyBroker);
+serviceManager = new ServiceManager(keyBroker);
 
 // Secure-device-backed "remember my vault passphrase" store (#401). Persists
 // safeStorage ciphertext only when a reviewed OS credential backend is active;
