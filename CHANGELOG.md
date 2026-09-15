@@ -4,6 +4,21 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **Release-facing runtime and packaging dependencies now use patched parser,
+  URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,
+  and mobile dependency graph no longer resolves the audited vulnerable
+  `fast-uri`, `ip-address`, Hono, `js-yaml`, `qs`, `tar`, Undici, or legacy
+  electron-builder peer lines. The idle miner constrains its optional Electron
+  integration to supported desktop majors, while the desktop pins the Squirrel
+  helper to the matching electron-builder release. Expo/Metro still carries
+  `image-size` advisories with no patched upstream release, and React
+  Navigation's CommonJS `query-string` line cannot consume the fixed ESM-only
+  `decode-uri-component`; both are mobile-only paths rather than dependencies
+  loaded by the desktop beta application runtime. CI now rejects every new or
+  changed production or build-tool advisory and expires those three narrowly
+  reviewed mobile exceptions on October 15, 2026; installed-graph contract tests
+  also protect the deliberate parser and glob-version boundaries.
+
 - **The supported preview is account-free sample only; connected-account access
   is fail-closed.** The packaged desktop carries no provider client authority
   and pins its managed API and worker children to disabled account mode. Google

@@ -86,6 +86,10 @@ jobs:
         continue-on-error: true
 
       - run: pnpm install --frozen-lockfile
+      - name: Test and enforce dependency advisory policy
+        run: |
+          pnpm audit:test
+          pnpm audit:check
       - name: Validate encryption field inventory
         run: pnpm check:encryption-inventory
       - name: Install CockroachDB for migration integration tests

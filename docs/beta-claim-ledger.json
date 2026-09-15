@@ -782,7 +782,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "90d854418d5218873c3dae9ad62093b6ecbc496103c8e21faf7254322bb24b65",
+          "sha256": "26291cdb555fb8b2e596cfd33bbc12331e566efd310708d5d760dbb97116c9e4",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
@@ -1174,12 +1174,12 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "35afeaafe7270a10742e0d650bca9043f0c539f690cc2b82f9250f30ae4c682b",
+          "sha256": "31bf0370fcd626cdeb9b3ae816ce95fda9fb2ce92e433d5f685b5666fecf2a96",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false; the guarded publisher now refuses their outputs without digest-bound signing evidence"
         },
         {
           "path": "apps/desktop/package.json",
-          "sha256": "2213903341f081ccdce93f1ed497cbe89579ffced6691db287e40d97c834c21e",
+          "sha256": "22d7ef2881017cfd478d20d175290d87d83574b7de811267894e47e02ebd48d5",
           "why": "Defines the current platform build targets and publishing metadata"
         }
       ],
@@ -1206,7 +1206,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "35afeaafe7270a10742e0d650bca9043f0c539f690cc2b82f9250f30ae4c682b",
+          "sha256": "31bf0370fcd626cdeb9b3ae816ce95fda9fb2ce92e433d5f685b5666fecf2a96",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
