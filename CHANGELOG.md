@@ -14,10 +14,12 @@ All notable changes to SkyTwin will be documented in this file.
   `image-size` advisories with no patched upstream release, and React
   Navigation's CommonJS `query-string` line cannot consume the fixed ESM-only
   `decode-uri-component`; both are mobile-only paths rather than dependencies
-  loaded by the desktop beta application runtime. CI now rejects every new or
-  changed production or build-tool advisory and expires those three narrowly
-  reviewed mobile exceptions on October 15, 2026; installed-graph contract tests
-  also protect the deliberate parser and glob-version boundaries.
+  loaded by the desktop beta application runtime. CI now rejects every new
+  production or build-tool advisory plus changes to a reviewed advisory's
+  identity, reachability, remediation, or risk metadata, and expires those
+  three narrowly reviewed mobile exceptions on October 15, 2026;
+  installed-graph contract tests also protect the deliberate parser and
+  glob-version boundaries.
 
 - **The supported preview is account-free sample only; connected-account access
   is fail-closed.** The packaged desktop carries no provider client authority

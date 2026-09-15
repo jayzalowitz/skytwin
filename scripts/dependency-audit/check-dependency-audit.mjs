@@ -18,6 +18,20 @@ function invariant(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function parseStrictUtcDate(value, label) {
+  invariant(
+    typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value),
+    `${label} must be YYYY-MM-DD`,
+  );
+  const timestamp = `${value}T00:00:00.000Z`;
+  const date = new Date(timestamp);
+  invariant(
+    !Number.isNaN(date.valueOf()) && date.toISOString() === timestamp,
+    `${label} must be a real calendar date`,
+  );
+  return date;
+}
+
 function parsePackageSegment(segment) {
   const delimiter = segment.lastIndexOf("@");
   invariant(
@@ -77,10 +91,7 @@ export function loadDependencyAuditPolicy(path = POLICY_PATH) {
     policy.schemaVersion === 1,
     "dependency audit policy must use schemaVersion 1",
   );
-  invariant(
-    /^\d{4}-\d{2}-\d{2}$/.test(policy.expiresOn),
-    "policy expiresOn must be YYYY-MM-DD",
-  );
+  parseStrictUtcDate(policy.expiresOn, "policy expiresOn");
   invariant(
     Array.isArray(policy.advisories),
     "policy advisories must be an array",
@@ -115,6 +126,42 @@ export function loadDependencyAuditPolicy(path = POLICY_PATH) {
     invariant(
       typeof entry.title === "string" && entry.title.length > 0,
       `${entry.ghsa} lacks title`,
+    );
+    invariant(
+      typeof entry.vulnerableVersions === "string" &&
+        entry.vulnerableVersions.length > 0,
+      `${entry.ghsa} lacks vulnerable versions`,
+    );
+    invariant(
+      typeof entry.patchedVersions === "string" &&
+        entry.patchedVersions.length > 0,
+      `${entry.ghsa} lacks patched versions`,
+    );
+    invariant(
+      typeof entry.recommendation === "string" &&
+        entry.recommendation.length > 0,
+      `${entry.ghsa} lacks recommendation`,
+    );
+    invariant(
+      entry.cvss &&
+        typeof entry.cvss === "object" &&
+        !Array.isArray(entry.cvss) &&
+        Object.keys(entry.cvss).length === 2 &&
+        Object.hasOwn(entry.cvss, "score") &&
+        Object.hasOwn(entry.cvss, "vectorString") &&
+        Number.isFinite(entry.cvss.score) &&
+        entry.cvss.score >= 0 &&
+        entry.cvss.score <= 10 &&
+        (entry.cvss.vectorString === null ||
+          (typeof entry.cvss.vectorString === "string" &&
+            entry.cvss.vectorString.length > 0)),
+      `${entry.ghsa} lacks valid CVSS metadata`,
+    );
+    invariant(
+      Array.isArray(entry.cwes) &&
+        entry.cwes.length > 0 &&
+        entry.cwes.every((cwe) => /^CWE-\d+$/.test(cwe)),
+      `${entry.ghsa} lacks valid CWE metadata`,
     );
     invariant(
       entry.advisoryUrl === `https://github.com/advisories/${entry.ghsa}`,
@@ -157,11 +204,7 @@ export function validateDependencyAuditReport({
     Object.hasOwn(AUDIT_SCOPES, scope),
     `unsupported audit scope ${scope}`,
   );
-  const expiration = new Date(`${policy.expiresOn}T00:00:00.000Z`);
-  invariant(
-    !Number.isNaN(expiration.valueOf()),
-    "policy expiration is invalid",
-  );
+  const expiration = parseStrictUtcDate(policy.expiresOn, "policy expiration");
   invariant(
     now < expiration,
     `dependency advisory policy expired on ${policy.expiresOn}`,
@@ -205,7 +248,14 @@ export function validateDependencyAuditReport({
   );
 
   for (const entry of expected) {
-    const entryExpiration = new Date(`${entry.expiresOn}T00:00:00.000Z`);
+    invariant(
+      entry.expiresOn === policy.expiresOn,
+      `${entry.ghsa} expiry must match the policy review date`,
+    );
+    const entryExpiration = parseStrictUtcDate(
+      entry.expiresOn,
+      `${entry.ghsa} expiration`,
+    );
     invariant(
       now < entryExpiration,
       `${entry.ghsa} exception expired on ${entry.expiresOn}`,
@@ -225,6 +275,35 @@ export function validateDependencyAuditReport({
     );
     invariant(advisory.title === entry.title, `${entry.ghsa} title changed`);
     invariant(advisory.url === entry.advisoryUrl, `${entry.ghsa} URL changed`);
+    invariant(
+      advisory.vulnerable_versions === entry.vulnerableVersions,
+      `${entry.ghsa} vulnerable versions changed`,
+    );
+    invariant(
+      advisory.patched_versions === entry.patchedVersions,
+      `${entry.ghsa} patched versions changed`,
+    );
+    invariant(
+      advisory.recommendation === entry.recommendation,
+      `${entry.ghsa} recommendation changed`,
+    );
+    invariant(
+      advisory.cvss &&
+        typeof advisory.cvss === "object" &&
+        !Array.isArray(advisory.cvss) &&
+        Object.keys(advisory.cvss).length === 2 &&
+        Object.hasOwn(advisory.cvss, "score") &&
+        Object.hasOwn(advisory.cvss, "vectorString") &&
+        advisory.cvss.score === entry.cvss.score &&
+        advisory.cvss.vectorString === entry.cvss.vectorString,
+      `${entry.ghsa} CVSS metadata changed`,
+    );
+    invariant(
+      Array.isArray(advisory.cwe) &&
+        advisory.cwe.length === entry.cwes.length &&
+        advisory.cwe.every((cwe, index) => cwe === entry.cwes[index]),
+      `${entry.ghsa} CWE metadata changed`,
+    );
     invariant(
       Array.isArray(advisory.cves) &&
         advisory.cves.length === 1 &&

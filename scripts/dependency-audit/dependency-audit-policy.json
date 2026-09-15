@@ -10,6 +10,14 @@
       "version": "1.2.1",
       "severity": "high",
       "title": "image-size: ICNS parser allows denial of service through an infinite loop",
+      "vulnerableVersions": "<=2.0.2",
+      "patchedVersions": "<0.0.0",
+      "recommendation": "None",
+      "cvss": {
+        "score": 7.5,
+        "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+      },
+      "cwes": ["CWE-835"],
       "advisoryUrl": "https://github.com/advisories/GHSA-w3rx-r6r6-pgpr",
       "upstreamTracking": "https://github.com/github/advisory-database/issues/9028",
       "expiresOn": "2026-10-15",
@@ -30,6 +38,14 @@
       "version": "1.2.1",
       "severity": "high",
       "title": "image-size: JXL and HEIF parsers allow denial of service through infinite loops",
+      "vulnerableVersions": "<=2.0.2",
+      "patchedVersions": "<0.0.0",
+      "recommendation": "None",
+      "cvss": {
+        "score": 7.5,
+        "vectorString": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"
+      },
+      "cwes": ["CWE-835"],
       "advisoryUrl": "https://github.com/advisories/GHSA-5p2g-fcmc-qvqq",
       "upstreamTracking": "https://github.com/github/advisory-database/issues/9028",
       "expiresOn": "2026-10-15",
@@ -50,6 +66,14 @@
       "version": "0.2.2",
       "severity": "moderate",
       "title": "decode-uri-component: Denial of service via exponential decoding of malformed percent-encoded input",
+      "vulnerableVersions": "<=0.4.2",
+      "patchedVersions": ">=0.5.0",
+      "recommendation": "Upgrade to version 0.5.0 or later",
+      "cvss": {
+        "score": 0,
+        "vectorString": null
+      },
+      "cwes": ["CWE-400", "CWE-405", "CWE-407", "CWE-1176"],
       "advisoryUrl": "https://github.com/advisories/GHSA-vcc3-ghjq-m6fr",
       "upstreamTracking": "https://github.com/SamVerschueren/decode-uri-component/security/advisories/GHSA-vcc3-ghjq-m6fr",
       "expiresOn": "2026-10-15",

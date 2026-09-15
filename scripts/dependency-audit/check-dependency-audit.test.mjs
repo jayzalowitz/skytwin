@@ -18,6 +18,11 @@ function advisoryFromPolicy(entry) {
     severity: entry.severity,
     title: entry.title,
     url: entry.advisoryUrl,
+    vulnerable_versions: entry.vulnerableVersions,
+    patched_versions: entry.patchedVersions,
+    recommendation: entry.recommendation,
+    cvss: clone(entry.cvss),
+    cwe: clone(entry.cwes),
     cves: [entry.cve],
     findings: [
       {
@@ -120,6 +125,75 @@ describe("dependency advisory policy", () => {
         }),
       ).toThrow();
     }
+  });
+
+  it("rejects changed remediation and risk metadata", () => {
+    for (const mutate of [
+      (advisory) => {
+        advisory.vulnerable_versions = "<0.0.0";
+      },
+      (advisory) => {
+        advisory.patched_versions = ">=2.0.3";
+      },
+      (advisory) => {
+        advisory.recommendation = "Upgrade to version 2.0.3 or later";
+      },
+      (advisory) => {
+        advisory.cvss.score = 9.8;
+      },
+      (advisory) => {
+        advisory.cvss.vectorString =
+          "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H";
+      },
+      (advisory) => {
+        advisory.cvss.unreviewedScore = 10;
+      },
+      (advisory) => {
+        advisory.cwe = ["CWE-400"];
+      },
+    ]) {
+      const report = reportFor("production");
+      mutate(report.advisories["1"]);
+      expect(() =>
+        validateDependencyAuditReport({
+          report,
+          scope: "production",
+          policy,
+          now: beforeExpiry,
+        }),
+      ).toThrow();
+    }
+  });
+
+  it.each(["2026-02-31", "2026-13-01", "2025-02-29", "2026-02-00"])(
+    "rejects impossible policy date %s",
+    (expiresOn) => {
+      const invalidPolicy = clone(policy);
+      invalidPolicy.expiresOn = expiresOn;
+      for (const advisory of invalidPolicy.advisories)
+        advisory.expiresOn = expiresOn;
+      expect(() =>
+        validateDependencyAuditReport({
+          report: reportFor("production"),
+          scope: "production",
+          policy: invalidPolicy,
+          now: new Date("2026-02-01T00:00:00.000Z"),
+        }),
+      ).toThrow(/real calendar date/);
+    },
+  );
+
+  it("rejects advisory expiry that drifts from the policy review date", () => {
+    const driftedPolicy = clone(policy);
+    driftedPolicy.advisories[0].expiresOn = "2026-10-14";
+    expect(() =>
+      validateDependencyAuditReport({
+        report: reportFor("production"),
+        scope: "production",
+        policy: driftedPolicy,
+        now: beforeExpiry,
+      }),
+    ).toThrow(/expiry must match/);
   });
 
   it("rejects missing, extra, and duplicate advisory identities", () => {
