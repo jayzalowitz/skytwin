@@ -113,7 +113,9 @@ export interface AccountActionBoundaryInput {
  * only an additional deny signal; known action/tool names remain independently
  * denied so a peer cannot bypass the boundary by relabeling the domain.
  */
-export function isGoogleAccountAction(input: AccountActionBoundaryInput): boolean {
+export function isAccountBackedEmailOrCalendarAction(
+  input: AccountActionBoundaryInput,
+): boolean {
   if (isGoogleAccountActionType(input.actionType)) return true;
   const domain = normalizeIntegrationToken(input.domain ?? '');
   if (domain === 'email' || domain === 'mail' || domain === 'calendar' ||

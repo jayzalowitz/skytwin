@@ -314,7 +314,7 @@ export type {
 } from './capability-acquisition.js';
 
 export {
-  isGoogleAccountAction,
+  isAccountBackedEmailOrCalendarAction,
   isGoogleAccountActionType,
   isGoogleAccountIntegration,
   isGoogleAccountRegistryIdentifier,

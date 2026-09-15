@@ -54,7 +54,7 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
-  isGoogleAccountAction,
+  isAccountBackedEmailOrCalendarAction,
   isGoogleAccountIntegration,
   normalizeAdapterOutput,
   normalizeExecutionError,
@@ -1326,7 +1326,7 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
     registry,
     executionDispatchLeaseRepository,
     (action) => config.googleConnectionMode !== 'experimental' &&
-        isGoogleAccountAction(action)
+        isAccountBackedEmailOrCalendarAction(action)
       ? {
           allowed: false,
           reason: 'Account-backed email and calendar actions are unavailable in this preview.',

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  isGoogleAccountAction,
+  isAccountBackedEmailOrCalendarAction,
   isGoogleAccountActionType,
   isGoogleAccountIntegration,
   isGoogleAccountRegistryIdentifier,
@@ -67,15 +67,15 @@ describe('Google preview boundary', () => {
     expect(isGoogleAccountRegistryIdentifier(registryId)).toBe(true);
   });
 
-  it('uses action domain and MCP tool identity as independent deny signals', () => {
-    expect(isGoogleAccountAction({ actionType: 'accept', domain: 'calendar' })).toBe(true);
-    expect(isGoogleAccountAction({ actionType: 'accept', domain: 'google:calendar' })).toBe(true);
-    expect(isGoogleAccountAction({
+  it('uses provider-agnostic account domains and MCP tool identity as deny signals', () => {
+    expect(isAccountBackedEmailOrCalendarAction({ actionType: 'accept', domain: 'calendar' })).toBe(true);
+    expect(isAccountBackedEmailOrCalendarAction({ actionType: 'accept', domain: 'google:calendar' })).toBe(true);
+    expect(isAccountBackedEmailOrCalendarAction({
       actionType: 'invoke_tool',
       domain: 'developer',
       parameters: { mcpToolName: 'read_email' },
     })).toBe(true);
-    expect(isGoogleAccountAction({ actionType: 'create_issue', domain: 'developer' })).toBe(false);
+    expect(isAccountBackedEmailOrCalendarAction({ actionType: 'create_issue', domain: 'developer' })).toBe(false);
   });
 
   it('keeps a neighboring registry entry available', () => {

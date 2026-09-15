@@ -919,7 +919,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "a71170746a91baac214c6a7fd7980e59e278bb80a8eb60c4ed6e0a670962ef15",
+          "sha256": "d8812d03e655ed1c41c004840b87747ee30261e48f99ca5c3c676f68d49b0b1e",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         }
       ],
