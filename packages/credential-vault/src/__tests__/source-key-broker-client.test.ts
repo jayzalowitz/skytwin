@@ -121,6 +121,26 @@ afterEach(() => {
 });
 
 describe('SourceKeyBrokerClient', () => {
+  it('rejects unbounded timeout and pending-request options', () => {
+    const transport = new RecordingTransport();
+    expect(
+      () =>
+        new SourceKeyBrokerClient({
+          role: 'api',
+          transport,
+          requestTimeoutMs: 60_001,
+        }),
+    ).toThrow(RangeError);
+    expect(
+      () =>
+        new SourceKeyBrokerClient({
+          role: 'api',
+          transport,
+          maxPendingRequests: 1_025,
+        }),
+    ).toThrow(RangeError);
+  });
+
   it('requires an exact capability and owner generation before sending', async () => {
     const { client, transport } = createClient();
 
@@ -334,12 +354,12 @@ describe('SourceKeyBrokerClient', () => {
       protocolVersion: SOURCE_KEY_BROKER_PROTOCOL_VERSION,
       ownerKind: 'user',
       ownerId: OWNER_A,
-      generation: 3,
+      generation: 2,
     });
     const resumed = client.encrypt(contextA, 'resumed');
     expect(requests(transport).at(-1)).toMatchObject({
       operation: 'encrypt',
-      generation: 3,
+      generation: 2,
     });
     client.handleDisconnect();
     await expect(resumed).resolves.toMatchObject({
@@ -523,5 +543,25 @@ describe('SourceKeyBrokerClient', () => {
       operation: 'state',
       error: 'vault_broker_unavailable',
     });
+  });
+
+  it('rejects a generation change that did not pass through a lock barrier', async () => {
+    const { client, transport } = createClient();
+    authorize(client);
+
+    client.handleMessage({
+      type: 'skytwin:vault:generation',
+      protocolVersion: SOURCE_KEY_BROKER_PROTOCOL_VERSION,
+      ownerKind: 'user',
+      ownerId: OWNER_A,
+      generation: 2,
+    });
+
+    await expect(client.encrypt(contextA, 'must-not-send')).resolves.toEqual({
+      success: false,
+      operation: 'encrypt',
+      error: 'vault_broker_unavailable',
+    });
+    expect(requests(transport)).toHaveLength(0);
   });
 });

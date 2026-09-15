@@ -75,7 +75,9 @@ interface PendingLock {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
+const MAX_REQUEST_TIMEOUT_MS = 60_000;
 const DEFAULT_MAX_PENDING_REQUESTS = 128;
+const MAX_PENDING_REQUESTS = 1_024;
 
 function randomRequestId(): string {
   return randomBytes(16).toString('hex');
@@ -130,17 +132,21 @@ export class SourceKeyBrokerClient {
       !Number.isSafeInteger(
         options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS,
       ) ||
-      (options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) <= 0
+      (options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) <= 0 ||
+      (options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS) >
+        MAX_REQUEST_TIMEOUT_MS
     ) {
-      throw new RangeError('requestTimeoutMs must be a positive safe integer');
+      throw new RangeError('requestTimeoutMs is outside the supported range');
     }
     if (
       !Number.isSafeInteger(
         options.maxPendingRequests ?? DEFAULT_MAX_PENDING_REQUESTS,
       ) ||
-      (options.maxPendingRequests ?? DEFAULT_MAX_PENDING_REQUESTS) <= 0
+      (options.maxPendingRequests ?? DEFAULT_MAX_PENDING_REQUESTS) <= 0 ||
+      (options.maxPendingRequests ?? DEFAULT_MAX_PENDING_REQUESTS) >
+        MAX_PENDING_REQUESTS
     ) {
-      throw new RangeError('maxPendingRequests must be a positive safe integer');
+      throw new RangeError('maxPendingRequests is outside the supported range');
     }
     this.role = options.role;
     this.transport = options.transport;
@@ -455,16 +461,20 @@ export class SourceKeyBrokerClient {
 
   private acceptGeneration(ownerId: string, generation: number): void {
     const current = this.generations.get(ownerId);
-    if (current !== undefined && generation < current) {
+    if (current !== undefined && generation !== current) {
       this.handleDisconnect();
       return;
     }
-    if (current !== undefined && generation > current) {
-      this.settleOwner(ownerId, 'vault_locked');
-    }
     this.generations.set(ownerId, generation);
     const lockedGeneration = this.lockedOwners.get(ownerId);
-    if (lockedGeneration !== undefined && generation > lockedGeneration) {
+    if (lockedGeneration !== undefined) {
+      if (
+        generation !== lockedGeneration ||
+        this.pendingLocks.has(ownerId)
+      ) {
+        this.handleDisconnect();
+        return;
+      }
       this.lockedOwners.delete(ownerId);
     }
   }

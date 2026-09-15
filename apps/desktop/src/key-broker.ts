@@ -1149,6 +1149,7 @@ export class DesktopKeyBroker {
         keyVersion,
         expiresAt: this.now() + this.ttlMs,
       });
+      this.publishGeneration(userId, generation);
       const nextTimer = setTimeout(() => {
         void this.lock(userId).catch(() => undefined);
       }, this.ttlMs);
@@ -1176,6 +1177,19 @@ export class DesktopKeyBroker {
     }
     const results = await Promise.all(waits);
     return results.every(Boolean);
+  }
+
+  private publishGeneration(userId: string, generation: number): void {
+    for (const [child, binding] of this.children) {
+      if (!binding.users.has(userId)) continue;
+      this.safeSend(child, {
+        type: 'skytwin:vault:generation',
+        protocolVersion: 1,
+        ownerKind: 'user',
+        ownerId: userId,
+        generation,
+      });
+    }
   }
 
   private async waitForChildLock(

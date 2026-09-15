@@ -585,6 +585,34 @@ describe('DesktopKeyBroker', () => {
     await Promise.all([first, second]);
   });
 
+  it('publishes the installed generation only after the child lock barrier', async () => {
+    const broker = new DesktopKeyBroker(new MemoryStore());
+    await broker.initialize(context.userId, 'correct horse battery staple');
+    const child = new FakeChild();
+    await broker.attachChild(
+      child as unknown as ChildProcess,
+      'api',
+      new Set([context.userId]),
+    );
+
+    expect(await broker.unlock(
+      context.userId,
+      'correct horse battery staple',
+    )).toEqual({ success: true, generation: 2 });
+    const lockIndex = child.sent.findIndex(
+      value => (value as { type?: string }).type === 'skytwin:vault:lock',
+    );
+    const readyIndex = child.sent.findLastIndex(
+      value => (value as { type?: string }).type === 'skytwin:vault:generation',
+    );
+    expect(lockIndex).toBeGreaterThan(0);
+    expect(readyIndex).toBeGreaterThan(lockIndex);
+    expect(child.sent[readyIndex]).toMatchObject({
+      ownerId: context.userId,
+      generation: 2,
+    });
+  });
+
   it('refuses to create a device wrapper while a lock is draining child work', async () => {
     const store = new PausableGetStore(), devices = new DeviceStore();
     const broker = new DesktopKeyBroker(store, { deviceProtection, deviceStore: devices, platform: 'darwin' });
