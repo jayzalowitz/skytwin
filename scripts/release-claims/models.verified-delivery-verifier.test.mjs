@@ -152,6 +152,12 @@ function attemptProvenance(overrides = {}) {
     producerJobName: "Desktop — Linux (AppImage + deb + rpm)",
     producerJobRunAttempt: 2,
     producerJobConclusion: "success",
+    runAttemptStartedAt: "2026-09-15T01:02:00Z",
+    runAttemptStartedTimestamp: Date.parse("2026-09-15T01:02:00Z"),
+    producerJobStartedAt: "2026-09-15T01:02:01Z",
+    producerJobCompletedAt: "2026-09-15T01:02:07Z",
+    producerJobStartedTimestamp: Date.parse("2026-09-15T01:02:01Z"),
+    producerJobCompletedTimestamp: Date.parse("2026-09-15T01:02:07Z"),
     uploadStartedAt: "2026-09-15T01:02:03Z",
     uploadCompletedAt: "2026-09-15T01:02:05Z",
     uploadStartedTimestamp: Date.parse("2026-09-15T01:02:03Z"),
@@ -406,10 +412,24 @@ describe("canonical invocation and run identity", () => {
       head_branch: expected.releaseTag,
       event: "push",
       path: ".github/workflows/build.yml",
+      run_started_at: "2026-09-15T01:02:00Z",
     };
+    const urls = [];
     await expect(
-      resolveCurrentRun(expected, async () => jsonResponse(canonical)),
-    ).resolves.toEqual(canonical);
+      resolveCurrentRun(expected, async (url) => {
+        urls.push(url);
+        return jsonResponse(canonical);
+      }),
+    ).resolves.toMatchObject({
+      run: canonical,
+      attempt: canonical,
+      runAttemptStartedAt: "2026-09-15T01:02:00Z",
+      runAttemptStartedTimestamp: Date.parse("2026-09-15T01:02:00Z"),
+    });
+    expect(urls).toEqual([
+      "https://api.github.com/repos/owner/repo/actions/runs/123",
+      "https://api.github.com/repos/owner/repo/actions/runs/123/attempts/2",
+    ]);
     for (const mutation of [
       { run_attempt: 1 },
       { head_sha: "b".repeat(40) },
@@ -417,12 +437,13 @@ describe("canonical invocation and run identity", () => {
       { event: "workflow_dispatch" },
       { path: ".github/workflows/other.yml" },
       { repository: { full_name: "other/repo" } },
+      { run_started_at: "not-a-timestamp" },
     ]) {
       await expect(
         resolveCurrentRun(expected, async () =>
           jsonResponse({ ...canonical, ...mutation }),
         ),
-      ).rejects.toThrow(/exact canonical/);
+      ).rejects.toThrow(/exact canonical|timestamp is invalid/);
     }
   });
 });
@@ -438,6 +459,8 @@ describe("current-run release artifact identity", () => {
         name: "Desktop — Linux (AppImage + deb + rpm)",
         status: "completed",
         conclusion: "success",
+        started_at: "2026-09-15T01:02:01Z",
+        completed_at: "2026-09-15T01:02:07Z",
         steps: [
           { name: "Package Linux desktop app", conclusion: "success" },
           {
@@ -475,15 +498,43 @@ describe("current-run release artifact identity", () => {
       return jsonResponse({ total_count: jobs.length, jobs });
     };
     await expect(
-      resolveAttemptProvenance(identity(), fetchImpl),
+      resolveAttemptProvenance(
+        identity(),
+        "2026-09-15T01:02:00Z",
+        fetchImpl,
+      ),
     ).resolves.toMatchObject(attemptProvenance());
 
     const staleJobs = jobs.map((job) => ({ ...job, run_attempt: 1 }));
     await expect(
-      resolveAttemptProvenance(identity(), async () =>
-        jsonResponse({ total_count: staleJobs.length, jobs: staleJobs }),
+      resolveAttemptProvenance(
+        identity(),
+        "2026-09-15T01:02:00Z",
+        async () =>
+          jsonResponse({ total_count: staleJobs.length, jobs: staleJobs }),
       ),
     ).rejects.toThrow(/exact workflow attempt/);
+
+    const relabeledCarriedForward = jobs.map((job) =>
+      job.id === 41
+        ? {
+            ...job,
+            started_at: "2026-09-14T01:02:01Z",
+            completed_at: "2026-09-14T01:02:07Z",
+          }
+        : job,
+    );
+    await expect(
+      resolveAttemptProvenance(
+        identity(),
+        "2026-09-15T01:02:00Z",
+        async () =>
+          jsonResponse({
+            total_count: relabeledCarriedForward.length,
+            jobs: relabeledCarriedForward,
+          }),
+      ),
+    ).rejects.toThrow(/outside the current workflow attempt/);
 
     const missingExactDownload = jobs.map((job) =>
       job.id === 42
@@ -498,11 +549,14 @@ describe("current-run release artifact identity", () => {
         : job,
     );
     await expect(
-      resolveAttemptProvenance(identity(), async () =>
-        jsonResponse({
-          total_count: missingExactDownload.length,
-          jobs: missingExactDownload,
-        }),
+      resolveAttemptProvenance(
+        identity(),
+        "2026-09-15T01:02:00Z",
+        async () =>
+          jsonResponse({
+            total_count: missingExactDownload.length,
+            jobs: missingExactDownload,
+          }),
       ),
     ).rejects.toThrow(/exact-ID Linux AppImage download/);
   });
@@ -528,9 +582,43 @@ describe("current-run release artifact identity", () => {
       artifactName: "SkyTwin-Linux-AppImage",
       artifactSha256: "b".repeat(64),
       artifactCreatedAt: "2026-09-15T01:02:04Z",
-      attemptBindingResult: "workflow-output-and-upload-step-window-pass",
+      attemptBindingResult: "workflow-output-and-producer-window-pass",
       kind: "desktop-installer",
     });
+  });
+
+  it("accepts GitHub's observed one-second post-upload timestamp but rejects a post-job artifact", async () => {
+    const artifact = {
+      id: 456,
+      name: "SkyTwin-Linux-AppImage",
+      digest: `sha256:${"b".repeat(64)}`,
+      expired: false,
+      created_at: "2026-09-15T01:02:06Z",
+      workflow_run: { id: 123, head_sha: "a".repeat(40) },
+    };
+    const fetchFor = (candidate) => async (url) =>
+      url.endsWith("/actions/artifacts/456")
+        ? jsonResponse(candidate)
+        : jsonResponse({ total_count: 1, artifacts: [candidate] });
+    await expect(
+      resolveReleaseArtifact(
+        identity(),
+        attemptProvenance(),
+        fetchFor(artifact),
+      ),
+    ).resolves.toMatchObject({
+      artifactCreatedAt: "2026-09-15T01:02:06Z",
+      attemptBindingResult: "workflow-output-and-producer-window-pass",
+    });
+
+    const postJob = { ...artifact, created_at: "2026-09-15T01:02:08Z" };
+    await expect(
+      resolveReleaseArtifact(
+        identity(),
+        attemptProvenance(),
+        fetchFor(postJob),
+      ),
+    ).rejects.toThrow(/producer window/);
   });
 
   it("rejects a same-run artifact retained from a prior attempt", async () => {
@@ -906,7 +994,7 @@ describe("machine report", () => {
         artifactName: "SkyTwin-Linux-AppImage",
         artifactSha256: "b".repeat(64),
         artifactCreatedAt: "2026-09-15T01:02:04Z",
-        attemptBindingResult: "workflow-output-and-upload-step-window-pass",
+        attemptBindingResult: "workflow-output-and-producer-window-pass",
         kind: "desktop-installer",
       },
       attemptProvenance: attemptProvenance(),
@@ -929,9 +1017,12 @@ describe("machine report", () => {
       sourceCommit: "a".repeat(40),
       runId: 123,
       runAttempt: 2,
+      runAttemptStartedAt: "2026-09-15T01:02:00Z",
       releaseArtifactCreatedAt: "2026-09-15T01:02:04Z",
       desktopProducerJobId: 41,
       desktopProducerJobRunAttempt: 2,
+      desktopProducerJobStartedAt: "2026-09-15T01:02:01Z",
+      desktopProducerJobCompletedAt: "2026-09-15T01:02:07Z",
       verifierJobId: 42,
       verifierJobRunAttempt: 2,
       releaseArtifactDownloadPath:

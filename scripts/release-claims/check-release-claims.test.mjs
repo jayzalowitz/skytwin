@@ -2717,6 +2717,7 @@ ${step}`,
       releaseTag: "v0.7.0-beta",
       runId: 123,
       runAttempt: 2,
+      runAttemptStartedAt: "2026-09-15T01:02:00Z",
       repository: "owner/repository",
       ref: "refs/tags/v0.7.0-beta",
       releaseArtifactKind: "desktop-installer",
@@ -2725,7 +2726,7 @@ ${step}`,
       releaseArtifactSha256: "a".repeat(64),
       releaseArtifactCreatedAt: "2026-09-15T01:02:04Z",
       releaseArtifactAttemptBindingResult:
-        "workflow-output-and-upload-step-window-pass",
+        "workflow-output-and-producer-window-pass",
       releaseArtifactDownloadPath:
         ".release-evidence/model-delivery-subject/SkyTwin-0.7.0.AppImage",
       releaseArtifactDownloadStepName:
@@ -2742,6 +2743,8 @@ ${step}`,
       desktopProducerJobName: "Desktop — Linux (AppImage + deb + rpm)",
       desktopProducerJobRunAttempt: 2,
       desktopProducerJobConclusion: "success",
+      desktopProducerJobStartedAt: "2026-09-15T01:02:01Z",
+      desktopProducerJobCompletedAt: "2026-09-15T01:02:07Z",
       desktopUploadStartedAt: "2026-09-15T01:02:03Z",
       desktopUploadCompletedAt: "2026-09-15T01:02:05Z",
       verifierJobId: 42,
@@ -2850,6 +2853,18 @@ ${step}`,
       ),
     ).toEqual([]);
 
+    const observedGithubLag = {
+      ...report,
+      releaseArtifactCreatedAt: "2026-09-15T01:02:06Z",
+    };
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        observedGithubLag,
+        [],
+      ),
+    ).toEqual([]);
+
     for (const field of Object.keys(report.modelArtifacts[0])) {
       const changed = structuredClone(report);
       changed.modelArtifacts[0][field] =
@@ -2885,6 +2900,23 @@ ${step}`,
       { ...report, desktopProducerJobRunAttempt: 1 },
       { ...report, verifierJobRunAttempt: 1 },
       { ...report, releaseArtifactCreatedAt: "2026-09-14T01:02:04Z" },
+      { ...report, runAttemptStartedAt: "2026-09-15T01:02:02Z" },
+      {
+        ...report,
+        desktopProducerJobStartedAt: "2026-09-15T01:01:59Z",
+      },
+      {
+        ...report,
+        desktopUploadStartedAt: "2026-09-15T01:01:59Z",
+      },
+      {
+        ...report,
+        releaseArtifactCreatedAt: "2026-09-15T01:02:08Z",
+      },
+      {
+        ...report,
+        desktopUploadCompletedAt: "2026-09-15T01:02:08Z",
+      },
     ])
       expect(
         verifyMachineEvidenceApplicability(

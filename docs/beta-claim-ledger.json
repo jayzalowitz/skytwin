@@ -1081,7 +1081,7 @@
       "scope": "Every model recommended to a beta user, including source, digest, bytes, license, compatibility, interruption recovery, disk checks, and deletion/replacement.",
       "owner": "desktop-inference",
       "state": "limited",
-      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. A fail-closed Linux verifier now observes immutable upstream metadata and LICENSE bytes and binds an exact-ID private AppImage download to exact-attempt job and upload evidence, but tagged clean-machine delivery and final artifact evidence are still absent.",
+      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. A fail-closed Linux verifier now observes immutable upstream metadata and LICENSE bytes and binds an exact-ID private AppImage download to the exact attempt start and producer/upload timeline, but tagged clean-machine delivery and final artifact evidence are still absent.",
       "evidence": [
         {
           "path": "packages/embedded-llm/src/model-registry.ts",
@@ -1095,8 +1095,8 @@
         },
         {
           "path": "scripts/release-claims/verifiers/models.verified-delivery.mjs",
-          "sha256": "2989e7d9017a7a85f8d871322747eb27d1400efa71270d17948a1a1159f6a304",
-          "why": "The tagged Linux verifier binds the canonical model inventory to observed immutable metadata and LICENSE bytes, an exact-ID private AppImage download, exact-attempt provenance, stable delivered bytes, and deletion proof"
+          "sha256": "a768ea3d3c09e62310c5cb573015dd134178434125c49722b2bdf7999d169a22",
+          "why": "The tagged Linux verifier binds the canonical model inventory to observed immutable metadata and LICENSE bytes, an exact-ID private AppImage download, exact-attempt start and producer/upload timestamps, stable delivered bytes, and deletion proof"
         }
       ],
       "verification": [

@@ -381,7 +381,30 @@ export async function resolveCurrentRun(
       run.path === WORKFLOW_PATH,
     "current workflow run is not the exact canonical tag-push attempt",
   );
-  return run;
+  const attempt = await githubJson(
+    identity,
+    `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}`,
+    fetchImpl,
+  );
+  assert(
+    attempt.id === identity.runId &&
+      attempt.run_attempt === identity.runAttempt &&
+      attempt.repository?.full_name === identity.repository &&
+      attempt.head_sha === identity.sourceCommit &&
+      attempt.head_branch === identity.releaseTag &&
+      attempt.event === "push" &&
+      attempt.path === WORKFLOW_PATH,
+    "current workflow attempt is not the exact canonical tag-push attempt",
+  );
+  return {
+    run,
+    attempt,
+    runAttemptStartedAt: attempt.run_started_at,
+    runAttemptStartedTimestamp: parseTimestamp(
+      attempt.run_started_at,
+      "current workflow attempt start",
+    ),
+  };
 }
 
 function parseTimestamp(value, description) {
@@ -417,8 +440,13 @@ function exactSuccessfulStep(job, name, description) {
 
 export async function resolveAttemptProvenance(
   identity,
+  runAttemptStartedAt,
   fetchImpl = globalThis.fetch,
 ) {
+  const runAttemptStartedTimestamp = parseTimestamp(
+    runAttemptStartedAt,
+    "current workflow attempt start",
+  );
   const page = await githubJson(
     identity,
     `/actions/runs/${identity.runId}/attempts/${identity.runAttempt}/jobs?per_page=100&page=1`,
@@ -447,6 +475,14 @@ export async function resolveAttemptProvenance(
       producer.conclusion === "success",
     "Linux AppImage producer is not successful in the exact workflow attempt",
   );
+  const producerJobStartedAt = parseTimestamp(
+    producer.started_at,
+    "Linux AppImage producer start",
+  );
+  const producerJobCompletedAt = parseTimestamp(
+    producer.completed_at,
+    "Linux AppImage producer completion",
+  );
   exactSuccessfulStep(
     producer,
     RELEASE_ARTIFACT_PACKAGE_STEP,
@@ -466,8 +502,11 @@ export async function resolveAttemptProvenance(
     "Linux AppImage upload completion",
   );
   assert(
-    uploadStartedAt <= uploadCompletedAt,
-    "Linux AppImage upload timestamps are inverted",
+    runAttemptStartedTimestamp <= producerJobStartedAt &&
+      producerJobStartedAt <= uploadStartedAt &&
+      uploadStartedAt <= uploadCompletedAt &&
+      uploadCompletedAt <= producerJobCompletedAt,
+    "Linux AppImage producer and upload timestamps are outside the current workflow attempt",
   );
 
   const verifierName = machineProducerJobName(CLAIM_ID, "linux");
@@ -503,6 +542,12 @@ export async function resolveAttemptProvenance(
     producerJobName: producer.name,
     producerJobRunAttempt: producer.run_attempt,
     producerJobConclusion: producer.conclusion,
+    runAttemptStartedAt,
+    runAttemptStartedTimestamp,
+    producerJobStartedAt: producer.started_at,
+    producerJobCompletedAt: producer.completed_at,
+    producerJobStartedTimestamp: producerJobStartedAt,
+    producerJobCompletedTimestamp: producerJobCompletedAt,
     uploadStartedAt: uploadStep.started_at,
     uploadCompletedAt: uploadStep.completed_at,
     uploadStartedTimestamp: uploadStartedAt,
@@ -579,15 +624,16 @@ export async function resolveReleaseArtifact(
   );
   assert(
     artifactCreatedTimestamp >= attemptProvenance.uploadStartedTimestamp &&
-      artifactCreatedTimestamp <= attemptProvenance.uploadCompletedTimestamp,
-    "Linux AppImage artifact was not created by the exact-attempt upload step",
+      artifactCreatedTimestamp <=
+        attemptProvenance.producerJobCompletedTimestamp,
+    "Linux AppImage artifact was not created inside the exact-attempt producer window",
   );
   return {
     artifactId: artifact.id,
     artifactName: RELEASE_ARTIFACT_NAME,
     artifactSha256: digest,
     artifactCreatedAt: artifact.created_at,
-    attemptBindingResult: "workflow-output-and-upload-step-window-pass",
+    attemptBindingResult: "workflow-output-and-producer-window-pass",
     kind: RELEASE_ARTIFACT_KIND,
   };
 }
@@ -1457,6 +1503,7 @@ export function buildReport({
     releaseTag: identity.releaseTag,
     runId: identity.runId,
     runAttempt: identity.runAttempt,
+    runAttemptStartedAt: attemptProvenance.runAttemptStartedAt,
     repository: identity.repository,
     ref: identity.ref,
     releaseArtifactKind: artifact.kind,
@@ -1479,6 +1526,8 @@ export function buildReport({
     desktopProducerJobName: attemptProvenance.producerJobName,
     desktopProducerJobRunAttempt: attemptProvenance.producerJobRunAttempt,
     desktopProducerJobConclusion: attemptProvenance.producerJobConclusion,
+    desktopProducerJobStartedAt: attemptProvenance.producerJobStartedAt,
+    desktopProducerJobCompletedAt: attemptProvenance.producerJobCompletedAt,
     desktopUploadStartedAt: attemptProvenance.uploadStartedAt,
     desktopUploadCompletedAt: attemptProvenance.uploadCompletedAt,
     verifierJobId: attemptProvenance.verifierJobId,
@@ -1577,8 +1626,12 @@ export async function main({
   const args = parseCanonicalArgs(argv);
   const identity = readRunIdentity(env);
   assertSourceCheckout(root, identity);
-  await resolveCurrentRun(identity, fetchImpl);
-  const attemptProvenance = await resolveAttemptProvenance(identity, fetchImpl);
+  const currentRun = await resolveCurrentRun(identity, fetchImpl);
+  const attemptProvenance = await resolveAttemptProvenance(
+    identity,
+    currentRun.runAttemptStartedAt,
+    fetchImpl,
+  );
   const artifact = await resolveReleaseArtifact(
     identity,
     attemptProvenance,

@@ -33,9 +33,9 @@
 > bytes, delivery, stable file identity, and deletion. It also binds the
 > AppImage artifact to the exact workflow attempt through the upload action's
 > ID/digest outputs, an exact-ID download into a private lane directory, and the
-> exact-attempt producer/upload-step time window, but it likewise has no tagged
-> release evidence. The other five machine reports (including Linux signing)
-> and the CI result producer are still absent.
+> exact-attempt start and producer/upload timeline, but
+> it likewise has no tagged release evidence. The other five machine reports
+> (including Linux signing) and the CI result producer are still absent.
 > The final gate therefore fails closed and the ledger remains blocked until the
 > complete proof pipeline ships.
 
@@ -60,12 +60,17 @@ artifact kind, subject filename, and subject SHA-256. Reports use schema version
 successful claim/platform job and reviewed verifier path/command/source digest,
 and contain the exact uniquely named passing checks with structured assertion,
 measurement, and exit-code observations. For model delivery, the report also
-records the exact workflow attempt, successful AppImage producer job and upload
-step, active verifier job, and artifact creation time. GitHub's artifact API
-exposes the run but not the producing job or attempt; the upload action's
-current-attempt output ID/digest plus creation inside that exact attempt's
-upload-step time window are therefore all required, and prior-attempt evidence
-is rejected. The license check reads the immutable Hugging Face metadata
+records the exact workflow-attempt start, successful AppImage producer job
+start/completion, upload step start/completion, active verifier job, and
+artifact creation time. GitHub's artifact API exposes the run but not the
+producing job or attempt; the upload action's current-attempt output ID/digest
+plus the ordered attempt-start → producer-start → upload-start → artifact-created
+→ producer-completed timeline are therefore all required, with upload completion
+also bounded by producer completion. Artifact creation may appear one second
+after upload-step completion because GitHub exposes whole-second timestamps; it
+must never fall after producer completion. This rejects both prior-attempt
+artifacts and carried-forward jobs that GitHub relabels with the current attempt.
+The license check reads the immutable Hugging Face metadata
 endpoint, validates repository/revision, card license and exact LFS sibling,
 then hashes the revision-pinned LICENSE bytes into the report. A later
 aggregation step uploads those reports as the separate `release-evidence`

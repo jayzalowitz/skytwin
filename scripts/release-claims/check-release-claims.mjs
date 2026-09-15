@@ -216,6 +216,7 @@ const MODEL_DELIVERY_REPORT_FIELDS = Object.freeze([
   "releaseTag",
   "runId",
   "runAttempt",
+  "runAttemptStartedAt",
   "repository",
   "ref",
   "releaseArtifactKind",
@@ -236,6 +237,8 @@ const MODEL_DELIVERY_REPORT_FIELDS = Object.freeze([
   "desktopProducerJobName",
   "desktopProducerJobRunAttempt",
   "desktopProducerJobConclusion",
+  "desktopProducerJobStartedAt",
+  "desktopProducerJobCompletedAt",
   "desktopUploadStartedAt",
   "desktopUploadCompletedAt",
   "verifierJobId",
@@ -4985,27 +4988,49 @@ export function verifyMachineEvidenceApplicability(
     const modelArtifacts = asArray(report?.modelArtifacts);
     const model = modelArtifacts[0];
     const expectedFields = Object.keys(CANONICAL_MODEL_DELIVERY_ARTIFACT);
-    const artifactCreated = Date.parse(report?.releaseArtifactCreatedAt ?? "");
-    const uploadStarted = Date.parse(report?.desktopUploadStartedAt ?? "");
-    const uploadCompleted = Date.parse(report?.desktopUploadCompletedAt ?? "");
+    const attemptStarted = canonicalGithubTimestampMs(
+      report?.runAttemptStartedAt,
+    );
+    const producerStarted = canonicalGithubTimestampMs(
+      report?.desktopProducerJobStartedAt,
+    );
+    const producerCompleted = canonicalGithubTimestampMs(
+      report?.desktopProducerJobCompletedAt,
+    );
+    const artifactCreated = canonicalGithubTimestampMs(
+      report?.releaseArtifactCreatedAt,
+    );
+    const uploadStarted = canonicalGithubTimestampMs(
+      report?.desktopUploadStartedAt,
+    );
+    const uploadCompleted = canonicalGithubTimestampMs(
+      report?.desktopUploadCompletedAt,
+    );
     if (
       !isPlainRecord(report) ||
       !sameStringSet(Object.keys(report), MODEL_DELIVERY_REPORT_FIELDS) ||
       !Number.isSafeInteger(report.runAttempt) ||
       report.runAttempt <= 0 ||
       report.releaseArtifactAttemptBindingResult !==
-        "workflow-output-and-upload-step-window-pass" ||
+        "workflow-output-and-producer-window-pass" ||
       report.releaseArtifactDownloadPath !==
         `${MODEL_DELIVERY_SUBJECT_DIRECTORY}/${report.subjectName}` ||
       report.releaseArtifactDownloadStepName !== MODEL_DELIVERY_DOWNLOAD_STEP ||
       report.releaseArtifactDownloadStepConclusion !== "success" ||
       report.releaseArtifactDownloadBindingResult !==
         "exact-artifact-id-action-download-pass" ||
-      !Number.isSafeInteger(artifactCreated) ||
-      !Number.isSafeInteger(uploadStarted) ||
-      !Number.isSafeInteger(uploadCompleted) ||
-      artifactCreated < uploadStarted ||
-      artifactCreated > uploadCompleted ||
+      attemptStarted === null ||
+      producerStarted === null ||
+      producerCompleted === null ||
+      artifactCreated === null ||
+      uploadStarted === null ||
+      uploadCompleted === null ||
+      attemptStarted > producerStarted ||
+      producerStarted > uploadStarted ||
+      uploadStarted > artifactCreated ||
+      artifactCreated > producerCompleted ||
+      uploadStarted > uploadCompleted ||
+      uploadCompleted > producerCompleted ||
       !Number.isSafeInteger(report.desktopProducerJobId) ||
       report.desktopProducerJobId <= 0 ||
       report.desktopProducerJobName !==
@@ -6490,6 +6515,7 @@ export async function verifyPublicationEvidence(
       continue;
     }
     let modelDesktopProducerJob = null;
+    let modelRunAttempt = null;
     if (claimId === "models.verified-delivery") {
       if (
         !Number.isSafeInteger(report.desktopProducerJobId) ||
@@ -6514,6 +6540,30 @@ export async function verifyPublicationEvidence(
             addError(
               errors,
               `${prefix} desktop producer job API response was not valid JSON`,
+            );
+          }
+        }
+      }
+      if (!Number.isSafeInteger(report.runAttempt) || report.runAttempt <= 0) {
+        addError(
+          errors,
+          `${prefix} report does not identify the exact workflow attempt`,
+        );
+      } else {
+        const attemptResponse = await fetchChecked(
+          fetchImpl,
+          `${apiRoot}/runs/${runId}/attempts/${report.runAttempt}`,
+          { headers },
+          `${prefix} workflow attempt`,
+          errors,
+        );
+        if (attemptResponse) {
+          try {
+            modelRunAttempt = await attemptResponse.json();
+          } catch {
+            addError(
+              errors,
+              `${prefix} workflow attempt API response was not valid JSON`,
             );
           }
         }
@@ -6589,10 +6639,33 @@ export async function verifyPublicationEvidence(
       const packageStep = asArray(modelDesktopProducerJob?.steps).filter(
         (step) => step?.name === "Package Linux desktop app",
       );
-      const artifactCreated = Date.parse(releaseArtifact.created_at ?? "");
-      const uploadStarted = Date.parse(uploadStep[0]?.started_at ?? "");
-      const uploadCompleted = Date.parse(uploadStep[0]?.completed_at ?? "");
+      const attemptStarted = canonicalGithubTimestampMs(
+        modelRunAttempt?.run_started_at,
+      );
+      const producerStarted = canonicalGithubTimestampMs(
+        modelDesktopProducerJob?.started_at,
+      );
+      const producerCompleted = canonicalGithubTimestampMs(
+        modelDesktopProducerJob?.completed_at,
+      );
+      const artifactCreated = canonicalGithubTimestampMs(
+        releaseArtifact.created_at,
+      );
+      const uploadStarted = canonicalGithubTimestampMs(
+        uploadStep[0]?.started_at,
+      );
+      const uploadCompleted = canonicalGithubTimestampMs(
+        uploadStep[0]?.completed_at,
+      );
       if (
+        modelRunAttempt?.id !== runId ||
+        modelRunAttempt?.run_attempt !== currentRun.run_attempt ||
+        modelRunAttempt?.repository?.full_name !== repository ||
+        modelRunAttempt?.head_sha !== releaseCommit ||
+        modelRunAttempt?.head_branch !== tag ||
+        modelRunAttempt?.event !== "push" ||
+        modelRunAttempt?.path !== RELEASE_EVIDENCE_WORKFLOW_PATH ||
+        modelRunAttempt?.run_started_at !== report.runAttemptStartedAt ||
         modelDesktopProducerJob?.id !== report.desktopProducerJobId ||
         exactDownloadStep.length !== 1 ||
         exactDownloadStep[0]?.conclusion !== "success" ||
@@ -6607,6 +6680,10 @@ export async function verifyPublicationEvidence(
         modelDesktopProducerJob?.head_sha !== releaseCommit ||
         modelDesktopProducerJob?.status !== "completed" ||
         modelDesktopProducerJob?.conclusion !== "success" ||
+        modelDesktopProducerJob?.started_at !==
+          report.desktopProducerJobStartedAt ||
+        modelDesktopProducerJob?.completed_at !==
+          report.desktopProducerJobCompletedAt ||
         packageStep.length !== 1 ||
         packageStep[0]?.conclusion !== "success" ||
         uploadStep.length !== 1 ||
@@ -6616,15 +6693,22 @@ export async function verifyPublicationEvidence(
         releaseArtifact.created_at !== report.releaseArtifactCreatedAt ||
         uploadStep[0]?.started_at !== report.desktopUploadStartedAt ||
         uploadStep[0]?.completed_at !== report.desktopUploadCompletedAt ||
-        !Number.isSafeInteger(artifactCreated) ||
-        !Number.isSafeInteger(uploadStarted) ||
-        !Number.isSafeInteger(uploadCompleted) ||
-        artifactCreated < uploadStarted ||
-        artifactCreated > uploadCompleted
+        attemptStarted === null ||
+        producerStarted === null ||
+        producerCompleted === null ||
+        artifactCreated === null ||
+        uploadStarted === null ||
+        uploadCompleted === null ||
+        attemptStarted > producerStarted ||
+        producerStarted > uploadStarted ||
+        uploadStarted > artifactCreated ||
+        artifactCreated > producerCompleted ||
+        uploadStarted > uploadCompleted ||
+        uploadCompleted > producerCompleted
       )
         addError(
           errors,
-          `${prefix} AppImage artifact is not bound to its exact-attempt successful producer and upload window`,
+          `${prefix} AppImage artifact is not bound to its exact-attempt successful producer and producer/upload timeline`,
         );
     }
     for (const applicabilityError of verifyMachineEvidenceApplicability(

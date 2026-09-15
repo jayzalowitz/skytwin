@@ -27,9 +27,15 @@ All notable changes to SkyTwin will be documented in this file.
   license, revision-pinned LICENSE bytes, filename, byte count, SHA-256 digest,
   and allowlisted delivery host; re-hashes a private stable file and proves its
   deletion. The exact-attempt job inventory, upload action artifact ID/digest
-  outputs, exact-ID download into a private lane directory, and upload-step time
-  window bind the report to the actual AppImage producer and active verifier
-  attempt. GitHub's artifact API does not expose a
+  outputs and exact-ID download into a private lane directory bind the report
+  to the actual AppImage producer and active verifier attempt. Post-review
+  hardening also binds the exact attempt start plus producer-job and upload-step
+  timestamps. It requires attempt start → producer start → upload start →
+  artifact creation → producer completion, while separately requiring upload
+  completion before producer completion. This accepts GitHub's observed
+  whole-second timestamp lag after upload completion but rejects post-job
+  artifacts and carried-forward jobs relabeled as the current attempt. GitHub's
+  artifact API does not expose a
   producer job or attempt directly, so the verifier and final consumer retain
   and enforce all three available bindings rather than inferring an attempt from
   run ID alone. The final consumer independently requires that exact inventory
