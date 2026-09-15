@@ -11,7 +11,11 @@ interface Fixture {
   constructionMarker: string;
 }
 
-function writePlugin(name: string, skills: string[]): Fixture {
+function writePlugin(
+  name: string,
+  skills: string[],
+  authModel: 'oauth' | 'api_key' | 'none' = 'oauth',
+): Fixture {
   const root = mkdtempSync(join(tmpdir(), 'skytwin-adapter-discovery-'));
   const pluginDir = join(root, 'plugin');
   const importMarker = join(root, 'imported');
@@ -23,7 +27,7 @@ function writePlugin(name: string, skills: string[]): Fixture {
     entryPoint: 'index.mjs',
     trustProfile: {
       reversibilityGuarantee: 'none',
-      authModel: 'oauth',
+      authModel,
       auditTrail: true,
       riskModifier: 2,
     },
@@ -47,10 +51,11 @@ function writePlugin(name: string, skills: string[]): Fixture {
 
 describe('adapter discovery account boundary', () => {
   it.each([
-    ['gmail-mcp', ['create_issue']],
-    ['neutral-plugin', ['outlook.messages.list']],
-  ])('filters account-backed manifest %s before module evaluation', async (name, skills) => {
-    const fixture = writePlugin(name, skills);
+    ['gmail-mcp', ['create_issue'], 'none'],
+    ['neutral-plugin', ['outlook.messages.list'], 'none'],
+    ['outlook-plugin', ['sync_crm'], 'oauth'],
+  ] as const)('filters unavailable manifest %s before module evaluation', async (name, skills, authModel) => {
+    const fixture = writePlugin(name, [...skills], authModel);
     const registry = new AdapterRegistry();
     const register = vi.spyOn(registry, 'register');
     try {

@@ -86,13 +86,17 @@ export async function discoverAdapters(
       }
 
       // A manifest is the last inert boundary before importing peer code.
-      // Reject stable account-provider names and skills here so disabled mode
-      // never evaluates the module, invokes its factory, or registers it.
-      if (options.allowAccountBackedIntegrations === false &&
-          isAccountBackedIntegration({
-            adapter: manifest.name,
-            skills: manifest.skills,
-          })) {
+      // Reject OAuth authority plus stable account-provider names and skills
+      // here so disabled mode never evaluates the module, invokes its factory,
+      // or registers it. OAuth is fail-closed because an arbitrary plugin name
+      // is not a trustworthy declaration of which account it will access.
+      if (options.allowAccountBackedIntegrations === false && (
+        manifest.trustProfile.authModel === 'oauth' ||
+        isAccountBackedIntegration({
+          adapter: manifest.name,
+          skills: manifest.skills,
+        })
+      )) {
         console.info(`[adapter-discovery] Skipping unavailable account integration "${manifest.name}"`);
         continue;
       }
