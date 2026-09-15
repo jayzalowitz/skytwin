@@ -2427,10 +2427,14 @@ fi
 /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
 exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" SKYTWIN_RELEASE_CI_NODE_PATH="$SKYTWIN_RELEASE_CI_NODE_PATH" SKYTWIN_RELEASE_CI_NODE_SHA256="$SKYTWIN_RELEASE_CI_NODE_SHA256" SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" ${RELEASE_CLAIM_CI_HARNESS_PATH} --output ${RELEASE_CLAIM_CI_RESULT_PATH}
 `;
-  const ciSafetyRun = `pnpm --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
-node scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
-node scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
-node scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
+  const ciSafetyRun = `SKYTWIN_RELEASE_CI_NODE_BIN="\${SKYTWIN_RELEASE_CI_NODE_PATH%/*}"
+/usr/bin/test "$SKYTWIN_RELEASE_CI_NODE_BIN/node" -ef "$SKYTWIN_RELEASE_CI_NODE_PATH"
+/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
+/usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
 `;
   const ciUploadPaths = `release-claims-ci/result.json
 release-claims-ci/adversarial-evidence.json
@@ -2493,8 +2497,21 @@ release-claims-ci/release-safety-evidence.json
       (ciProducerIndexes[0]?.index ?? -1) ||
     (ciSafetyIndexes[0]?.index ?? -1) !==
       (ciProducerIndexes[0]?.index ?? -1) - 1 ||
-    !hasExactKeys(ciSafety, ["name", "if", "run"]) ||
+    !hasExactKeys(ciSafety, [
+      "name",
+      "if",
+      "timeout-minutes",
+      "env",
+      "shell",
+      "run",
+    ]) ||
     ciSafety.if !== ciTagCondition ||
+    ciSafety["timeout-minutes"] !== 15 ||
+    !hasExactKeys(ciSafety.env, Object.keys(ciProducerRuntimeEnv)) ||
+    Object.entries(ciProducerRuntimeEnv).some(
+      ([name, value]) => ciSafety.env[name] !== value,
+    ) ||
+    ciSafety.shell !== ciShell ||
     ciSafety.run !== ciSafetyRun ||
     !hasExactKeys(ciArtifactTest, ["name", "env", "shell", "run"]) ||
     !hasExactKeys(ciArtifactTest.env, Object.keys(ciArtifactTestEnv)) ||

@@ -420,6 +420,10 @@ product source, and every mapped assertion source. It also records separate
 entry-path, safety, explanation, scenario, file, failure, and limitation
 counts. `verify-release-safety-evidence.mjs` independently fixes the schema and
 input set and recomputes those identities and counts before upload.
+The workflow revalidates the captured Node and pnpm digests, invokes only those
+absolute paths from a closed environment under a no-profile shell, and bounds
+the step to 15 minutes. Each mapped Vitest process additionally has a
+60-second timeout with a hard kill and bounded output buffer.
 
 This is intentionally a limited report. The current denominator is the ten
 entry paths declared by the v1 catalog, not an assertion that all effect paths

@@ -1264,6 +1264,16 @@
           "path": "scripts/release-evidence/verify-release-safety-evidence.mjs",
           "sha256": "28de9f407a3bdc6e13f426b99414c78ef89274b16b68ef3cbbe158d708f88a8a",
           "why": "Independently fixes and recomputes the report schema, tag context, source identities, denominator, hashes, coverage counts, and disclosed gaps"
+        },
+        {
+          "path": "packages/evals/src/adversarial-test-executor.ts",
+          "sha256": "8d6b86f2a492c08be7798730899c0dfbb7ab53d4364cc3eb229b1a17d36496f0",
+          "why": "Runs each exact mapped assertion with a closed child environment, captured-Node PATH, bounded output, and a 60-second hard-kill timeout"
+        },
+        {
+          "path": "packages/evals/src/__tests__/adversarial-test-executor.test.ts",
+          "sha256": "0d48f0aece0c415623dc9f2533fc495d96be7950a1dba155bfdb46c320399ec7",
+          "why": "Locks the mapped subprocess environment and timeout contract and proves timeout fails closed"
         }
       ],
       "verification": [
@@ -1288,7 +1298,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "4ea96479c2f80d800ce9a2ba9f21ecc53bfb3de3657827ce9d18dd0c28a004f2",
+          "sha256": "51ed2a1ddf3dd8cb20b2b540a27b0c0af5797223b1488106c0eb8ea0cb7f2010",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
@@ -1329,7 +1339,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "4ea96479c2f80d800ce9a2ba9f21ecc53bfb3de3657827ce9d18dd0c28a004f2",
+          "sha256": "51ed2a1ddf3dd8cb20b2b540a27b0c0af5797223b1488106c0eb8ea0cb7f2010",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
@@ -1399,7 +1409,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "80319f3f809cc74c13664f961c8a76334a2d30e4a73b0074002201792b8728b3",
+          "sha256": "6880867006b2c48518d1e7c4b346fef74f94cc9d03e0d0ebdc50c5a6079e5935",
           "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, structured desktop-storage, network-boundary, and on-device inference observations at publication"
         }
       ],

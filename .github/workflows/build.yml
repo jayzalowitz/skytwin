@@ -138,11 +138,30 @@ jobs:
 
       - name: Produce and verify release safety evidence
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        timeout-minutes: 15
+        env:
+          BASH_ENV: ''
+          COREPACK_HOME: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          PNPM_HOME: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: ${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: ${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-path }}
+          SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256: ${{ steps.capture-release-claim-runtime.outputs.pnpm-entry-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
         run: |
-          pnpm --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
-          node scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
-          node scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
-          node scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
+          SKYTWIN_RELEASE_CI_NODE_BIN="${SKYTWIN_RELEASE_CI_NODE_PATH%/*}"
+          /usr/bin/test "$SKYTWIN_RELEASE_CI_NODE_BIN/node" -ef "$SKYTWIN_RELEASE_CI_NODE_PATH"
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
+          /usr/bin/env -i PATH="$SKYTWIN_RELEASE_CI_NODE_BIN:/usr/bin:/bin" CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" "$SKYTWIN_RELEASE_CI_NODE_PATH" scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
 
       - name: Produce release claim CI result
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')

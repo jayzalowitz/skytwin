@@ -77,6 +77,10 @@ could outlive those assertions. The final checker hashes and validates the
 downloaded file as well as its GitHub artifact metadata.
 
 The safety sidecar is produced and independently verified before upload, but
+its producer first revalidates the captured Node and pnpm entry points and runs
+them in a closed environment under a no-profile shell. The step has a
+15-minute ceiling and every mapped test subprocess has a 60-second hard-kill
+timeout. Despite those producer controls,
 the final publication consumer does not yet bind that sidecar to the downloaded
 artifact ID and digest. Until that consumer exists and an immutable tag run
 passes it, treat the sidecar as source/producer evidence only: its current

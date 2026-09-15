@@ -13,6 +13,9 @@ All notable changes to SkyTwin will be documented in this file.
   the sidecar joins the tag-only `release-claims-ci` artifact. Current source
   evidence reports 10/10 inventoried paths with passing safety scenarios but
   only 3/10 explanation-persistence boundaries, leaving seven disclosed gaps.
+  The tag step revalidates and invokes the captured Node and pnpm entry points
+  through a closed environment and no-profile shell, has a fixed 15-minute
+  ceiling, and gives each mapped test process a 60-second hard-kill timeout.
   The final publication consumer does not yet re-verify this sidecar against
   the immutable GitHub artifact identity, no tagged report exists, and
   `safety.explanation-coverage` and release readiness therefore remain blocked.
