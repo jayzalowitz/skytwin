@@ -30,8 +30,14 @@ SELECT 1 / 0 AS migration_082_index_shape_assertion
             ON index_class.oid = catalog_index.indexrelid
           JOIN pg_catalog.pg_class AS table_class
             ON table_class.oid = catalog_index.indrelid
+          JOIN pg_catalog.pg_namespace AS table_namespace
+            ON table_namespace.oid = table_class.relnamespace
+          JOIN pg_catalog.pg_namespace AS index_namespace
+            ON index_namespace.oid = index_class.relnamespace
          WHERE index_class.relname = 'sessions_token_hash_unique_idx'
            AND table_class.relname = 'sessions'
+           AND table_namespace.nspname = current_schema()
+           AND index_namespace.oid = table_namespace.oid
            AND catalog_index.indpred IS NULL
       )
  );

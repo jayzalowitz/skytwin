@@ -51,4 +51,22 @@ describe.runIf(cockroachAvailable)('session token authority migration on Cockroa
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/division by zero/i);
   }, 30_000);
+
+  it('does not let a global decoy index certify a partial authority index in the current schema', () => {
+    const result = run(`${schema}
+      CREATE UNIQUE INDEX sessions_token_hash_unique_idx ON sessions (token_hash) WHERE revoked = false;
+      CREATE SCHEMA decoy;
+      CREATE TABLE decoy.sessions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        token_hash STRING NOT NULL,
+        revoked BOOLEAN NOT NULL DEFAULT false
+      );
+      CREATE UNIQUE INDEX sessions_token_hash_unique_idx ON decoy.sessions (token_hash);
+      ${migration}
+      INSERT INTO sessions (token_hash, revoked)
+        VALUES ('must-remain-unique', false), ('must-remain-unique', true);
+    `);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/division by zero/i);
+  }, 30_000);
 });
