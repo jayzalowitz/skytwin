@@ -10,14 +10,18 @@ CREATE TABLE IF NOT EXISTS execution_dispatch_ambiguities (
   dispatch_lease_id UUID PRIMARY KEY,
   decision_id UUID NOT NULL,
   explanation_id UUID NOT NULL,
-  phase STRING NOT NULL CHECK (phase IN (
-    'adapter_execute', 'adapter_stream', 'lease_expiry', 'lease_recovery'
-  )),
-  reason_code STRING NOT NULL CHECK (reason_code IN (
-    'adapter_result_unbound', 'adapter_exception',
-    'stream_protocol_invalid', 'stream_incomplete', 'stream_exception',
-    'lease_expired', 'legacy_ambiguous'
-  )),
+  phase STRING NOT NULL,
+  reason_code STRING NOT NULL,
+  CONSTRAINT execution_dispatch_ambiguity_observation_pair_check CHECK (
+    (phase = 'adapter_execute' AND reason_code IN (
+      'adapter_result_unbound', 'adapter_exception'
+    )) OR
+    (phase = 'adapter_stream' AND reason_code IN (
+      'stream_protocol_invalid', 'stream_incomplete', 'stream_exception'
+    )) OR
+    (phase = 'lease_expiry' AND reason_code IN ('lease_expired')) OR
+    (phase = 'lease_recovery' AND reason_code IN ('legacy_ambiguous'))
+  ),
   observation JSONB NOT NULL,
   evidence_schema_version INT NOT NULL DEFAULT 1 CHECK (evidence_schema_version = 1),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
