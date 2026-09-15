@@ -155,13 +155,26 @@ function getCapabilityUserId(req: Request): string | undefined {
 async function getOwnedCapabilityServer(
   id: string,
   userId: string,
-): Promise<{ status: 200; server: McpServerRow } | { status: 403 | 404; error: string }> {
+): Promise<
+  | { status: 200; server: McpServerRow }
+  | { status: 403 | 404 | 503; error: string }
+> {
   const server = await mcpServerRepository.getById(id);
   if (!server || server.status === 'uninstalled') {
     return { status: 404, error: 'Capability server not found' };
   }
   if (server.user_id !== userId) {
     return { status: 403, error: 'Forbidden: you do not own this capability server' };
+  }
+  if (await isAccountFreePreviewServerBlocked(
+    loadConfig().googleConnectionMode,
+    server,
+    (serverId) => mcpServerRepository.listSkillNamesForServer(serverId),
+  )) {
+    return {
+      status: 503,
+      error: 'This capability is unavailable while account connections are disabled.',
+    };
   }
   return { status: 200, server };
 }
@@ -325,16 +338,6 @@ function isBlockedGoogleRegistryEntry(entry: {
   return isGoogleCapabilityBlocked(loadConfig().googleConnectionMode, {
     registryId: entry.id,
     oauthProvider: entry.oauthProvider,
-  });
-}
-
-function isBlockedGoogleServer(
-  server: Pick<McpServerRow, 'registry_id' | 'oauth_provider'>,
-  googleConnectionMode = loadConfig().googleConnectionMode,
-): boolean {
-  return isGoogleCapabilityBlocked(googleConnectionMode, {
-    registryId: server.registry_id,
-    oauthProvider: server.oauth_provider,
   });
 }
 
@@ -1388,12 +1391,22 @@ export function createCapabilitiesRouter(): Router {
       try {
         const installedServers = await mcpServerRepository.listForUser(userId);
         const googleConnectionMode = loadConfig().googleConnectionMode;
+        const eligibleServers = installedServers.filter((server) =>
+          server.status === 'active' ||
+          server.status === 'installed' ||
+          server.status === 'authorized');
+        const allowedServers = await Promise.all(eligibleServers.map(async (server) => ({
+          server,
+          blocked: await isAccountFreePreviewServerBlocked(
+            googleConnectionMode,
+            server,
+            (serverId) => mcpServerRepository.listSkillNamesForServer(serverId),
+          ),
+        })));
         const installedIds = new Set(
-          installedServers
-            .filter((s) =>
-              (s.status === 'active' || s.status === 'installed' || s.status === 'authorized') &&
-              !isBlockedGoogleServer(s, googleConnectionMode))
-            .map((s) => s.id),
+          allowedServers
+            .filter(({ blocked }) => !blocked)
+            .map(({ server }) => server.id),
         );
 
         // Pull skills from mcp_server_skills for installed servers
@@ -2177,13 +2190,9 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const server = await mcpServerRepository.getById(id);
-      if (!server) {
-        res.status(404).json({ error: 'Capability server not found' });
-        return;
-      }
-      if (server.user_id !== userId) {
-        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
+      const owned = await getOwnedCapabilityServer(id, userId);
+      if (owned.status !== 200) {
+        res.status(owned.status).json({ error: owned.error });
         return;
       }
 

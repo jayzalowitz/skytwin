@@ -21,6 +21,7 @@ const {
 } = vi.hoisted(() => ({
   mockMcpServerRepo: {
     getById: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
     listForUser: vi.fn(),
     listActive: vi.fn(),
     markDormant: vi.fn(),
@@ -171,6 +172,7 @@ let app: Express;
 beforeEach(() => {
   vi.clearAllMocks();
   mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+  mockMcpServerRepo.listSkillNamesForServer.mockResolvedValue([]);
   mockQuery.mockResolvedValue({ rows: [] });
   app = buildApp();
 });
@@ -190,7 +192,13 @@ describe('GET /api/capabilities/:id/changelog', () => {
   };
 
   it('returns changelog when owned by user', async () => {
-    mockMcpServerRepo.getById.mockResolvedValue({ id: SERVER_ID, user_id: USER_ID, status: 'active' });
+    mockMcpServerRepo.getById.mockResolvedValue({
+      id: SERVER_ID,
+      user_id: USER_ID,
+      status: 'active',
+      registry_id: 'gmail-mcp',
+      oauth_provider: 'google',
+    });
     mockChangelogRepo.getForServer.mockResolvedValue(changelogRow);
 
     const { status, body } = await httpRequest(
@@ -200,6 +208,30 @@ describe('GET /api/capabilities/:id/changelog', () => {
 
     expect(status).toBe(200);
     expect((body as { changelog: { current_version: string } }).changelog.current_version).toBe('1.4.0');
+    expect(mockMcpServerRepo.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it('hides a retained account-backed changelog while account connections are disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepo.getById.mockResolvedValue({
+      id: SERVER_ID,
+      user_id: USER_ID,
+      status: 'active',
+      registry_id: 'custom-calendar',
+      oauth_provider: 'microsoft',
+    });
+
+    const { status, body } = await httpRequest(
+      app, 'GET',
+      `/api/capabilities/${SERVER_ID}/changelog?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(503);
+    expect(body).toEqual({
+      error: 'This capability is unavailable while account connections are disabled.',
+    });
+    expect(mockChangelogRepo.getForServer).not.toHaveBeenCalled();
+    expect(mockMcpServerRepo.listSkillNamesForServer).not.toHaveBeenCalled();
   });
 
   it('returns 404 when no changelog has been fetched', async () => {

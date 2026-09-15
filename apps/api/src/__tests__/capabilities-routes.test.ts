@@ -292,14 +292,82 @@ describe('Capabilities API routes', () => {
       expect(srv.trust_tier).toBeDefined();
     });
 
-    it('does not expose a capability owned by another user', async () => {
+    it('preserves ownership denial before account availability checks', async () => {
       const OTHER_USER = 'cccccccc-dddd-eeee-ffff-000000000099';
-      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: OTHER_USER }));
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
+        user_id: OTHER_USER,
+        registry_id: 'gmail-mcp',
+      }));
 
       const app = buildApp(USER_ID);
       const res = await request(app, 'GET', `/api/capabilities/${SERVER_ID}`);
 
       expect(res.status).toBe(403);
+      expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['detail', `/api/capabilities/${SERVER_ID}`, { registry_id: 'gmail-mcp' }],
+      ['skills', `/api/capabilities/${SERVER_ID}/skills`, { oauth_provider: 'microsoft' }],
+      ['policy', `/api/capabilities/${SERVER_ID}/policy`, { registry_id: 'outlook-mcp' }],
+    ])('hides retained account-backed metadata from the %s route while disabled', async (_name, path, overrides) => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer(overrides));
+
+      const res = await request(buildApp(USER_ID), 'GET', path);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({
+        error: 'This capability is unavailable while account connections are disabled.',
+      });
+      expect(JSON.stringify(res.body).toLowerCase()).not.toMatch(/google|microsoft/);
+      expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+    });
+
+    it('hides a custom server when any cached skill is account-backed', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
+        registry_id: 'custom-productivity-tools',
+      }));
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([
+        'read_file',
+        'sendEmail',
+      ]);
+
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/${SERVER_ID}`);
+
+      expect(res.status).toBe(503);
+      expect(mockMcpServerRepository.listSkillNamesForServer).toHaveBeenCalledWith(SERVER_ID);
+    });
+
+    it.each(['empty', 'error'])('fails closed when a custom server inventory is %s', async (inventoryState) => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
+        registry_id: 'custom-productivity-tools',
+      }));
+      if (inventoryState === 'error') {
+        mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(new Error('inventory unavailable'));
+      } else {
+        mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
+      }
+
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/${SERVER_ID}/policy`);
+
+      expect(res.status).toBe(503);
+      expect(res.body).toEqual({
+        error: 'This capability is unavailable while account connections are disabled.',
+      });
+    });
+
+    it('preserves account-backed detail access in exact experimental mode', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ registry_id: 'gmail-mcp' }));
+
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/${SERVER_ID}`);
+
+      expect(res.status).toBe(200);
+      expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
     });
 
     it('returns cached skills for the capability detail page', async () => {
@@ -1450,13 +1518,13 @@ describe('Capabilities API routes', () => {
         display_name: 'GitHub',
       });
       mockMcpServerRepository.listForUser.mockResolvedValue([googleServer, githubServer]);
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['create_issue']);
       mockQuery.mockResolvedValue({
         rows: [
           { server_id: googleServer.id, skill_name: 'list_events', server_display_name: 'Calendar alias' },
           { server_id: githubServer.id, skill_name: 'create_issue', server_display_name: 'GitHub' },
-          { server_id: githubServer.id, skill_name: 'sendEmail', server_display_name: 'GitHub' },
         ],
-        rowCount: 3,
+        rowCount: 2,
       });
 
       const res = await request(
@@ -1478,6 +1546,82 @@ describe('Capabilities API routes', () => {
         from: `server:${githubServer.id}`,
         to: 'skill:create_issue',
       }]);
+    });
+
+    it('excludes an entire custom server when its cached inventory mixes account-backed and local skills', async () => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const mixedServer = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000032',
+        registry_id: 'custom-productivity-tools',
+        display_name: 'Productivity tools',
+      });
+      const localServer = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000033',
+        registry_id: '@modelcontextprotocol/server-filesystem',
+        display_name: 'Filesystem',
+      });
+      mockMcpServerRepository.listForUser.mockResolvedValue([mixedServer, localServer]);
+      mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
+        serverId === mixedServer.id ? ['read_file', 'sendEmail'] : ['read_file']);
+      mockQuery.mockResolvedValue({
+        rows: [
+          { server_id: mixedServer.id, skill_name: 'read_file', server_display_name: 'Productivity tools' },
+          { server_id: mixedServer.id, skill_name: 'sendEmail', server_display_name: 'Productivity tools' },
+          { server_id: localServer.id, skill_name: 'read_file', server_display_name: 'Filesystem' },
+        ],
+        rowCount: 3,
+      });
+
+      const res = await request(
+        buildApp(USER_ID),
+        'GET',
+        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      const serialized = JSON.stringify(res.body);
+      expect(serialized).not.toContain(mixedServer.id);
+      expect(serialized).not.toContain('Productivity tools');
+      expect(serialized).toContain(localServer.id);
+    });
+
+    it.each(['empty', 'error'])('excludes a custom server whose cached inventory is %s', async (inventoryState) => {
+      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+      const uncertainServer = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000034',
+        registry_id: 'custom-uncertain-tools',
+        display_name: 'Uncertain tools',
+      });
+      const localServer = makeMcpServer({
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000035',
+        registry_id: '@modelcontextprotocol/server-filesystem',
+        display_name: 'Filesystem',
+      });
+      mockMcpServerRepository.listForUser.mockResolvedValue([uncertainServer, localServer]);
+      mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) => {
+        if (serverId === localServer.id) return ['read_file'];
+        if (inventoryState === 'error') throw new Error('inventory unavailable');
+        return [];
+      });
+      mockQuery.mockResolvedValue({
+        rows: [
+          { server_id: uncertainServer.id, skill_name: 'read_file', server_display_name: 'Uncertain tools' },
+          { server_id: localServer.id, skill_name: 'read_file', server_display_name: 'Filesystem' },
+        ],
+        rowCount: 2,
+      });
+
+      const res = await request(
+        buildApp(USER_ID),
+        'GET',
+        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
+      );
+
+      expect(res.status).toBe(200);
+      const serialized = JSON.stringify(res.body);
+      expect(serialized).not.toContain(uncertainServer.id);
+      expect(serialized).not.toContain('Uncertain tools');
+      expect(serialized).toContain(localServer.id);
     });
 
     it('keeps the disabled empty-state graph account-free', async () => {
