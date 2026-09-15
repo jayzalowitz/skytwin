@@ -774,7 +774,8 @@ if archive_bytes <= 0:
     raise SystemExit("packaged API archive is empty")
 
 seen = set()
-seen_casefold = set()
+seen_casefold = {}
+member_kinds = {}
 member_count = 0
 regular_count = 0
 directory_count = 0
@@ -803,22 +804,27 @@ with tarfile.open(archive_path, mode="r:gz", errorlevel=2) as archive:
         if folded in seen_casefold:
             raise SystemExit("packaged API archive contains a case-colliding member")
         seen.add(name)
-        seen_casefold.add(folded)
+        seen_casefold[folded] = name
         if member.isdir():
             if member.size != 0:
                 raise SystemExit("packaged API directory has a non-zero size")
             directory_count += 1
+            kind = "directory"
         elif member.isfile() and member.sparse is None:
+            if raw_name.endswith("/"):
+                raise SystemExit("packaged API regular file has a directory path")
             if member.size < 0 or member.size > max_file_bytes:
                 raise SystemExit("packaged API file exceeds release bound")
             expanded_bytes += member.size
             if expanded_bytes > max_expanded_bytes:
                 raise SystemExit("packaged API expanded bytes exceed release bound")
             regular_count += 1
+            kind = "regular"
             if name == expected_probe:
                 probe_seen = True
         else:
             raise SystemExit("packaged API archive contains a link or special member")
+        member_kinds[name] = kind
 
 if member_count == 0 or regular_count == 0:
     raise SystemExit("packaged API archive is empty")
@@ -826,6 +832,22 @@ if not probe_seen:
     raise SystemExit("packaged API archive omits the inference probe")
 if roots_seen != expected_roots:
     raise SystemExit("packaged API archive does not contain the exact application roots")
+if any(member_kinds.get(root) != "directory" for root in expected_roots):
+    raise SystemExit("packaged API application roots must be directories")
+casefolded_paths = {}
+for name in member_kinds:
+    parts = name.split("/")
+    for length in range(1, len(parts) + 1):
+        path = "/".join(parts[:length])
+        folded_path = unicodedata.normalize("NFC", path).casefold()
+        recorded_path = casefolded_paths.get(folded_path)
+        if recorded_path is not None and recorded_path != path:
+            raise SystemExit("packaged API archive contains a casefolded ancestor conflict")
+        casefolded_paths[folded_path] = path
+    for length in range(1, len(parts)):
+        ancestor = "/".join(parts[:length])
+        if member_kinds.get(ancestor) == "regular":
+            raise SystemExit("packaged API regular file has descendants")
 if expanded_bytes > archive_bytes * max_ratio:
     raise SystemExit("packaged API compression ratio exceeds release bound")
 print(json.dumps({"memberCount": member_count, "regularFileCount": regular_count, "directoryCount": directory_count, "expandedBytes": expanded_bytes, "rootCount": len(roots_seen)}, separators=(",", ":")))

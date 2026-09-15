@@ -398,6 +398,57 @@ describe("packaged probe and archive boundaries", () => {
     expect(readdirSync(target)).toEqual([]);
   });
 
+  it.each([
+    [
+      "regular ancestor followed by its child",
+      [
+        ...validPackagedMembers(),
+        { name: "web/regular-parent", data: "parent" },
+        { name: "web/regular-parent/child.js", data: "child" },
+      ],
+    ],
+    [
+      "child followed by its regular ancestor",
+      [
+        ...validPackagedMembers(),
+        { name: "web/late-parent/child.js", data: "child" },
+        { name: "web/late-parent", data: "parent" },
+      ],
+    ],
+    [
+      "regular application root with descendants",
+      validPackagedMembers().map((member) =>
+        member.name === "api"
+          ? { name: "api", data: "not a directory" }
+          : member,
+      ),
+    ],
+    [
+      "casefolded implicit parent conflict",
+      [
+        ...validPackagedMembers(),
+        { name: "web/Parent/one.js", data: "one" },
+        { name: "web/parent/two.js", data: "two" },
+      ],
+    ],
+    [
+      "regular file with a directory trailing slash",
+      [
+        ...validPackagedMembers(),
+        { name: "web/not-a-directory/", data: "file" },
+      ],
+    ],
+  ])("rejects a topology-confused %s before extraction", (_description, members) => {
+    const root = makeRoot();
+    const archive = join(root, "apps.tar.gz");
+    const target = join(root, "extracted");
+    mkdirSync(target);
+    writeTarGz(archive, members);
+
+    expect(() => extractPackagedApiArchive(archive, target)).toThrow();
+    expect(readdirSync(target)).toEqual([]);
+  });
+
   it("rejects an in-root symlink substituted at the canonical probe path", () => {
     const root = makeRoot();
     const probe = join(root, "api/dist/bin/verify-on-device-inference.js");
