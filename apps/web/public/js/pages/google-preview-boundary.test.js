@@ -51,6 +51,8 @@ describe('Google preview UI boundary', () => {
     expect(isGoogleAccountIntegration({ key: 'custom:calendar', skills: ['calendar.create'] })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:calendar', skills: ['respondToEvent'] })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:calendar', skills: ['schedule_focus_block'] })).toBe(true);
+    expect(isGoogleAccountIntegration({ key: 'custom:reader', skills: ['readGmail'] })).toBe(true);
+    expect(isGoogleAccountIntegration({ key: 'custom:calendar', skills: ['getGoogleCalendarEvents'] })).toBe(true);
     expect(isGoogleAccountIntegration({ adapter: 'gmail-mcp', integration: 'custom' })).toBe(true);
     expect(isGoogleAccountIntegration({ adapter: 'custom', integration: 'google-calendar-mcp' })).toBe(true);
     expect(isGoogleAccountIntegration({ key: 'custom:notes', skills: ['create_note'] })).toBe(false);

@@ -50,6 +50,7 @@ describe('Google preview boundary', () => {
     'calendar_update', 'rsvp_yes', 'get_calendar_events', 'email.search',
     'gmail.batch_modify', 'messages.trash', 'events.insert', 'sendEmail',
     'readEmail', 'respondToEvent', 'deleteEmails', 'schedule_focus_block',
+    'readGmail', 'sendGoogleMail', 'getGoogleCalendarEvents',
   ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);

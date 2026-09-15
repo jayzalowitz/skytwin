@@ -34,10 +34,10 @@ function isGoogleAccountActionType(value) {
     .toLowerCase()
     .replace(/[.\-:/\s]+/g, '_');
   if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
-  if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|message|messages)$/.test(normalized)) return true;
-  if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) return true;
-  if (/^(?:read|get|search|list)_(?:calendar_)?(?:event|events|invite|invites|meeting|meetings)$/.test(normalized)) return true;
-  if (/^(?:email|emails|mail|message|messages)_(?:read|search|list|archive|label|send|reply|draft|delete|trash|forward|snooze|unsubscribe|move|modify)$/.test(normalized)) return true;
+  if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|gmail|google_email|google_mail|message|messages)$/.test(normalized)) return true;
+  if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:(?:google_)?calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) return true;
+  if (/^(?:read|get|search|list)_(?:(?:google_)?calendar_)?(?:event|events|invite|invites|meeting|meetings)$/.test(normalized)) return true;
+  if (/^(?:email|emails|mail|gmail|google_email|google_mail|message|messages)_(?:read|search|list|archive|label|send|reply|draft|delete|trash|forward|snooze|unsubscribe|move|modify)$/.test(normalized)) return true;
   if (/^(?:event|events|invite|invites|meeting|meetings)_(?:read|get|search|list|insert|create|update|patch|delete|remove|move|cancel|respond)$/.test(normalized)) return true;
   return /^(?:rsvp|calendar|email|mail|gmail|gcal|google_calendar|google_mail)_/.test(normalized);
 }
