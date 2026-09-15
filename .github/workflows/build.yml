@@ -117,6 +117,22 @@ jobs:
         run: pnpm claims:check
       - name: Test beta release-claim guard
         run: pnpm claims:test
+      - name: Test release artifact construction and verification
+        env:
+          BASH_ENV: ''
+          ENV: ''
+          LD_LIBRARY_PATH: ''
+          LD_PRELOAD: ''
+          NODE_PATH: ''
+          NODE_OPTIONS: ''
+          SKYTWIN_RELEASE_CI_NODE_PATH: ${{ steps.capture-release-claim-runtime.outputs.node-path }}
+          SKYTWIN_RELEASE_CI_NODE_SHA256: ${{ steps.capture-release-claim-runtime.outputs.node-sha256 }}
+        shell: /bin/bash --noprofile --norc -eo pipefail {0}
+        run: |
+          /usr/bin/printf '%s  %s\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
+          /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
       - run: pnpm build
       - run: pnpm test
 

@@ -285,7 +285,7 @@ describe("attestation bundle materializer", () => {
         bundle: linked.bundle,
         output: linked.verificationDirectory,
       }),
-    ).toThrow("not a regular file");
+    ).toThrow("contains a symbolic-link component");
   });
 
   it("refuses any pre-existing target without replacing it", () => {

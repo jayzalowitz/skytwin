@@ -14,6 +14,18 @@ All notable changes to SkyTwin will be documented in this file.
   no repository consumes the clients and no source field or public encryption
   claim changes in this slice.
 
+- **Release artifact adversarial tests are now a mandatory packaging gate.**
+  The canonical build workflow runs the stable-file, checksum, SBOM,
+  attestation-materialization, and tamper-rejection suite before any platform
+  package job can start. The symlink-bundle regression now asserts the exact
+  earlier fail-closed rejection emitted by the shared stable-file reader, and
+  the gate invokes the three reviewed test files directly through the
+  hash-verified captured Node runtime in a clean environment. The
+  release-workflow checker requires each test file to exist, and each file runs
+  separately with empty suites treated as failures. Command, environment,
+  ordering, package-job dependency, success-condition, or failure-tolerance
+  changes cannot weaken the gate silently.
+
 - **Release-facing runtime and packaging dependencies now use patched parser,
   URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,
   and mobile dependency graph no longer resolves the audited vulnerable

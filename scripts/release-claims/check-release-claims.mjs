@@ -570,6 +570,18 @@ const SPDX_23_RELATIONSHIP_TYPES = new Set([
   "VARIANT_OF",
 ]);
 const RELEASE_EVIDENCE_WORKFLOW_PATH = ".github/workflows/build.yml";
+const RELEASE_ARTIFACT_TEST_PATHS = Object.freeze([
+  "scripts/release-artifacts/file-integrity.test.mjs",
+  "scripts/release-artifacts/generate-release-manifest.test.mjs",
+  "scripts/release-artifacts/materialize-attestation-bundles.test.mjs",
+]);
+const CANONICAL_PACKAGE_GATES = Object.freeze([
+  { jobName: "desktop-mac", changeOutput: "desktop" },
+  { jobName: "desktop-windows", changeOutput: "desktop" },
+  { jobName: "desktop-linux", changeOutput: "desktop" },
+  { jobName: "mobile-android", changeOutput: "mobile" },
+  { jobName: "mobile-ios", changeOutput: "mobile" },
+]);
 const CI_EVIDENCE_JOB_NAME = "release-claim-ci";
 const CI_EVIDENCE_ARTIFACT_NAME = "release-claims-ci";
 const MACHINE_EVIDENCE_ARTIFACT_NAME = "release-evidence";
@@ -2334,6 +2346,12 @@ export function verifyCanonicalReleasePublisher(root) {
   const ciInstallIndexes = ciSteps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.run === "pnpm install --frozen-lockfile");
+  const ciArtifactTestIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(
+      ({ step }) =>
+        step?.name === "Test release artifact construction and verification",
+    );
   const ciProducerIndexes = ciSteps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === RELEASE_CLAIM_CI_PRODUCER_STEP);
@@ -2344,6 +2362,7 @@ export function verifyCanonicalReleasePublisher(root) {
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === "Enforce beta release readiness");
   const ciProducer = ciProducerIndexes[0]?.step;
+  const ciArtifactTest = ciArtifactTestIndexes[0]?.step;
   const ciRuntimeCapture = ciRuntimeCaptureIndexes[0]?.step;
   const ciUpload = ciUploadIndexes[0]?.step;
   const ciReadiness = ciReadinessIndexes[0]?.step;
@@ -2378,6 +2397,21 @@ fi
     NODE_PATH: "",
     NODE_OPTIONS: "",
   };
+  const ciArtifactTestEnv = {
+    BASH_ENV: "",
+    ENV: "",
+    LD_LIBRARY_PATH: "",
+    LD_PRELOAD: "",
+    NODE_PATH: "",
+    NODE_OPTIONS: "",
+    SKYTWIN_RELEASE_CI_NODE_PATH: runtimeOutput("node-path"),
+    SKYTWIN_RELEASE_CI_NODE_SHA256: runtimeOutput("node-sha256"),
+  };
+  const ciArtifactTestRun = `/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
+/usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
+/usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
+/usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
+`;
   const ciProducerRun = `/usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_NODE_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" | /usr/bin/sha256sum --check --strict -
 /usr/bin/printf '%s  %s\\n' "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" | /usr/bin/sha256sum --check --strict -
 exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC GITHUB_REPOSITORY="$GITHUB_REPOSITORY" GITHUB_SHA="$GITHUB_SHA" GITHUB_REF="$GITHUB_REF" GITHUB_EVENT_NAME="$GITHUB_EVENT_NAME" GITHUB_RUN_ID="$GITHUB_RUN_ID" GITHUB_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" SKYTWIN_RELEASE_CI_NODE_PATH="$SKYTWIN_RELEASE_CI_NODE_PATH" SKYTWIN_RELEASE_CI_NODE_SHA256="$SKYTWIN_RELEASE_CI_NODE_SHA256" SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH" SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256="$SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256" "$SKYTWIN_RELEASE_CI_NODE_PATH" ${RELEASE_CLAIM_CI_HARNESS_PATH} --output ${RELEASE_CLAIM_CI_RESULT_PATH}
@@ -2421,14 +2455,30 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
     ciJob.env !== undefined ||
     ciJob.container !== undefined ||
     ciJob.defaults !== undefined ||
+    ciJob["continue-on-error"] !== undefined ||
     ciRuntimeCaptureIndexes.length !== 1 ||
     ciInstallIndexes.length !== 1 ||
+    ciArtifactTestIndexes.length !== 1 ||
     ciProducerIndexes.length !== 1 ||
     ciUploadIndexes.length !== 1 ||
     ciReadinessIndexes.length !== 1 ||
     (ciRuntimeCaptureIndexes[0]?.index ?? -1) >=
       (ciInstallIndexes[0]?.index ?? -1) ||
     (ciInstallIndexes[0]?.index ?? -1) >= (ciProducerIndexes[0]?.index ?? -1) ||
+    (ciInstallIndexes[0]?.index ?? -1) >=
+      (ciArtifactTestIndexes[0]?.index ?? -1) ||
+    (ciArtifactTestIndexes[0]?.index ?? -1) >=
+      (ciProducerIndexes[0]?.index ?? -1) ||
+    !hasExactKeys(ciArtifactTest, ["name", "env", "shell", "run"]) ||
+    !hasExactKeys(ciArtifactTest.env, Object.keys(ciArtifactTestEnv)) ||
+    Object.entries(ciArtifactTestEnv).some(
+      ([name, value]) => ciArtifactTest.env[name] !== value,
+    ) ||
+    ciArtifactTest.shell !== ciShell ||
+    ciArtifactTest.run !== ciArtifactTestRun ||
+    RELEASE_ARTIFACT_TEST_PATHS.some(
+      (path) => !resolveContainedRegularFile(root, path),
+    ) ||
     (ciUploadIndexes[0]?.index ?? -1) !==
       (ciProducerIndexes[0]?.index ?? -1) + 1 ||
     (ciReadinessIndexes[0]?.index ?? -1) !==
@@ -2485,6 +2535,19 @@ exec /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C
       errors,
       "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
     );
+  for (const { jobName, changeOutput } of CANONICAL_PACKAGE_GATES) {
+    const job = canonicalWorkflow.jobs?.[jobName];
+    if (
+      !isRecord(job) ||
+      JSON.stringify(job.needs) !== JSON.stringify(["test", "changes"]) ||
+      job.if !==
+        `github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`
+    )
+      addError(
+        errors,
+        `${jobName} must require the successful release-artifact test gate and exact path-change condition`,
+      );
+  }
   const machineProducerJob =
     canonicalWorkflow.jobs?.["release-machine-evidence"];
   const desktopLinuxJob = canonicalWorkflow.jobs?.["desktop-linux"];
