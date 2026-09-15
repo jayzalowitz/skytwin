@@ -133,6 +133,12 @@ Welcome-screen CTA is now a real `btn-outline btn-lg` card with an "or" divider 
 
 Approve, reject, correct, reset, and learn interactions now run through a separate loopback-only simulation with a closed command catalog. The simulation evaluates the real policy and explanation logic, but keeps bounded state in memory and cannot call connectors, providers, credentials, execution adapters, or database mutation paths. Browser authority is tab-scoped in `sessionStorage`; real sign-in wins, exit/renewal races are generation-fenced, and the service worker applies the API's case-insensitive route semantics before bypassing all `/api/v1/demo` traffic. Requests to normal product routes also bypass offline persistence when they carry the sample bearer credential or EventSource query token. The worker reapplies current policy before sending any stored write, deleting entries that are no longer eligible. Source of truth: `apps/api/src/services/sample-simulation.ts`, `apps/web/public/js/sample-session.js`, `apps/web/public/js/pwa/sw-policy.js`, and `apps/web/public/sw.js`.
 
+The release-safety producer now inventories and reruns the v1 catalog's ten
+declared runtime entry paths on a tag, but its bounded report currently finds
+only three explanation-persistence boundaries and has no final immutable
+artifact consumer. This reduces ambiguity around the release-evals blocker; it
+does not close it or change the blocked launch decision.
+
 Still open under [#630](https://github.com/jayzalowitz/skytwin/issues/630): fresh packaged-artifact verification and final presentation polish. The in-dashboard tour banner is functional but generic ("Click around freely, then start your own when you're ready"), and there is no "first 30 seconds" pointer steering users to the most interesting proposal. The exit flow is intentionally single-click because the state is fictional and disposable.
 
 ---

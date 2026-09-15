@@ -4,6 +4,19 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Changed
 
+- **Tag pushes now produce a bounded release-safety sidecar without advancing
+  the safety claim.** A canonical inventory binds the ten runtime entry paths
+  already declared by the v1 adversarial catalog to their product sources and
+  exact regression assertions. The deterministic report records the release
+  commit and tree, input/source/test hashes, and explicit coverage, failure,
+  and limitation counts; an independent verifier recomputes those facts before
+  the sidecar joins the tag-only `release-claims-ci` artifact. Current source
+  evidence reports 10/10 inventoried paths with passing safety scenarios but
+  only 3/10 explanation-persistence boundaries, leaving seven disclosed gaps.
+  The final publication consumer does not yet re-verify this sidecar against
+  the immutable GitHub artifact identity, no tagged report exists, and
+  `safety.explanation-coverage` and release readiness therefore remain blocked.
+
 - **Packaged default network behavior now has a fail-closed macOS verifier in
   source.** The verifier binds the current tag-push attempt and exact release
   ZIP, self-tests a deny-by-default sandbox by requiring parent and spawned

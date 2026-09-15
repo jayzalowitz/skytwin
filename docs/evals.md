@@ -410,6 +410,28 @@ path between verification and the artifact uploader opening it. This
 verify-to-upload race remains an explicit development-evidence limitation;
 copying the same bytes to another mutable temporary path would not close it.
 
+### Tag-only release-safety sidecar
+
+The tag workflow reruns the exact adversarial catalog and then builds
+`release-claims-ci/release-safety-evidence.json` from the canonical inventory
+in `scripts/release-evidence/release-safety-entry-paths.json`. The report binds
+the tag commit and tree, catalog/report/inventory digests, every declared
+product source, and every mapped assertion source. It also records separate
+entry-path, safety, explanation, scenario, file, failure, and limitation
+counts. `verify-release-safety-evidence.mjs` independently fixes the schema and
+input set and recomputes those identities and counts before upload.
+
+This is intentionally a limited report. The current denominator is the ten
+entry paths declared by the v1 catalog, not an assertion that all effect paths
+have been discovered. All ten currently have a passing cataloged safety
+scenario, while only three declare an integrity-bound regression that reaches
+an explanation persistence boundary. Seven explanation gaps remain explicit.
+The tests use declared mocks and do not provide network or clock containment;
+the sidecar has not been produced by an immutable tag run; and the final
+publication consumer does not yet re-verify it against GitHub's immutable
+artifact identity. It cannot make the explanation claim proven or the release
+ready.
+
 In code, use the `EvalRunner` class directly:
 
 ```typescript

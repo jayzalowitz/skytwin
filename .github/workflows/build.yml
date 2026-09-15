@@ -136,6 +136,14 @@ jobs:
       - run: pnpm build
       - run: pnpm test
 
+      - name: Produce and verify release safety evidence
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          pnpm --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
+          node scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
+          node scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
+          node scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
+
       - name: Produce release claim CI result
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 15
@@ -163,7 +171,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-claims-ci
-          path: release-claims-ci/result.json
+          path: |
+            release-claims-ci/result.json
+            release-claims-ci/adversarial-evidence.json
+            release-claims-ci/adversarial-evidence.json.sha256
+            release-claims-ci/release-safety-evidence.json
           if-no-files-found: error
           compression-level: 0
 

@@ -38,6 +38,7 @@ import {
   RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH,
   RELEASE_CLAIM_CI_SOURCE_PATHS,
   RELEASE_CLAIM_CI_UPLOAD_STEP,
+  RELEASE_SAFETY_EVIDENCE_STEP,
   machineProducerJobName,
   machineVerifierCommand,
   machineVerifierPath,
@@ -527,6 +528,9 @@ function writeValidFixture(
     "scripts/release-artifacts/generate-release-manifest.test.mjs",
     "scripts/release-artifacts/materialize-attestation-bundles.test.mjs",
     "scripts/release-claims/verifiers/release.artifact-verification.mjs",
+    ...RELEASE_CLAIM_CI_SOURCE_PATHS.filter(
+      (sourcePath) => sourcePath !== RELEASE_CLAIM_CI_LEDGER_PATH,
+    ),
   ])
     write(root, path, FIXTURE_RELEASE_SOURCE);
   const workflow = `env:
@@ -569,6 +573,13 @@ jobs:
           /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/file-integrity.test.mjs
           /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/generate-release-manifest.test.mjs
           /usr/bin/env -i PATH=/usr/bin:/bin CI=true NO_COLOR=1 LANG=C.UTF-8 LC_ALL=C.UTF-8 TZ=UTC "$SKYTWIN_RELEASE_CI_NODE_PATH" node_modules/vitest/vitest.mjs run --passWithNoTests=false scripts/release-artifacts/materialize-attestation-bundles.test.mjs
+      - name: Produce and verify release safety evidence
+        if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: |
+          pnpm --filter @skytwin/evals eval:adversarial --output release-claims-ci/adversarial-evidence.json
+          node scripts/release-evidence/verify-adversarial-evidence.mjs release-claims-ci/adversarial-evidence.json --fixture packages/evals/fixtures/v1/adversarial-scenarios.json --expected-commit "$GITHUB_SHA" --require-clean
+          node scripts/release-evidence/generate-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --output release-claims-ci/release-safety-evidence.json
+          node scripts/release-evidence/verify-release-safety-evidence.mjs --adversarial release-claims-ci/adversarial-evidence.json --report release-claims-ci/release-safety-evidence.json
       - name: Produce release claim CI result
         if: always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
         timeout-minutes: 15
@@ -595,7 +606,11 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-claims-ci
-          path: release-claims-ci/result.json
+          path: |
+            release-claims-ci/result.json
+            release-claims-ci/adversarial-evidence.json
+            release-claims-ci/adversarial-evidence.json.sha256
+            release-claims-ci/release-safety-evidence.json
           if-no-files-found: error
           compression-level: 0
       - name: Enforce beta release readiness
@@ -5550,6 +5565,8 @@ ${step}`,
     write(root, RELEASE_CLAIM_CI_CONSTANTS_PATH, "fixture constants\n");
     write(root, RELEASE_CLAIM_CI_RUNTIME_CAPTURE_PATH, "fixture capture\n");
     write(root, RELEASE_CLAIM_CI_HARNESS_PATH, "fixture harness\n");
+    for (const path of RELEASE_CLAIM_CI_SOURCE_PATHS.slice(4))
+      write(root, path, "fixture safety source\n");
     const ciResult = `${JSON.stringify({
       schemaVersion: 1,
       generatedBy: "release-claim-ci-harness",
@@ -5697,6 +5714,10 @@ ${step}`,
           head_sha: jobHeadSha,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${jobRunId}`,
           steps: [
+            {
+              name: RELEASE_SAFETY_EVIDENCE_STEP,
+              conclusion: "success",
+            },
             ...Array.from({ length: producerStepCount }, () => ({
               name: RELEASE_CLAIM_CI_PRODUCER_STEP,
               conclusion: producerStepConclusion,
@@ -5843,24 +5864,35 @@ ${step}`,
     const blockedJob = {
       conclusion: "failure",
       steps: [
+        { name: RELEASE_SAFETY_EVIDENCE_STEP, conclusion: "success" },
         { name: RELEASE_CLAIM_CI_PRODUCER_STEP, conclusion: "success" },
         { name: RELEASE_CLAIM_CI_UPLOAD_STEP, conclusion: "success" },
         { name: RELEASE_CLAIM_CI_READINESS_STEP, conclusion: "failure" },
       ],
     };
     expect(canonicalReleaseClaimCiJobSteps(blockedJob).producerStep).toEqual(
+      blockedJob.steps[1],
+    );
+    expect(canonicalReleaseClaimCiJobSteps(blockedJob).safetyStep).toEqual(
       blockedJob.steps[0],
     );
     const passingJob = structuredClone(blockedJob);
     passingJob.conclusion = "success";
-    passingJob.steps[2].conclusion = "success";
+    passingJob.steps[3].conclusion = "success";
     expect(() => canonicalReleaseClaimCiJobSteps(passingJob)).not.toThrow();
 
     for (const conclusion of ["failure", "skipped"]) {
       const job = structuredClone(blockedJob);
-      job.steps[0].conclusion = conclusion;
+      job.steps[1].conclusion = conclusion;
       expect(() => canonicalReleaseClaimCiJobSteps(job)).toThrow(
         "Produce release claim CI result must occur exactly once and succeed",
+      );
+    }
+    for (const conclusion of ["failure", "skipped"]) {
+      const job = structuredClone(blockedJob);
+      job.steps[0].conclusion = conclusion;
+      expect(() => canonicalReleaseClaimCiJobSteps(job)).toThrow(
+        "Produce and verify release safety evidence must occur exactly once and succeed",
       );
     }
     for (const producerCount of [0, 2]) {
@@ -5879,7 +5911,7 @@ ${step}`,
       );
     }
     const wrongFailure = structuredClone(blockedJob);
-    wrongFailure.steps[2].conclusion = "success";
+    wrongFailure.steps[3].conclusion = "success";
     expect(() => canonicalReleaseClaimCiJobSteps(wrongFailure)).toThrow(
       "failure is admissible only when the canonical readiness step also failed",
     );

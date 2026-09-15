@@ -1238,7 +1238,7 @@
       "scope": "All release-supported API, worker, routine, connector, and adapter outcomes, including failures, blocks, and no-action decisions.",
       "owner": "explanations",
       "state": "limited",
-      "limitation": "Explanation types and generators exist, but a release-SHA-bound entry-path inventory and completeness evaluation have not yet proven universal coverage.",
+      "limitation": "The release-SHA-bound inventory currently covers the ten entry paths declared by the v1 adversarial catalog and reports passing safety scenarios for all ten, but only three have an integrity-bound regression that reaches an explanation persistence boundary. Seven explanation gaps, catalog completeness beyond the declared denominator, network/clock containment, final immutable-artifact consumption, and a tagged run remain open.",
       "evidence": [
         {
           "path": "packages/explanations/src/index.ts",
@@ -1249,12 +1249,31 @@
           "path": "packages/shared-types/src/explanation.ts",
           "sha256": "8a0bc0d37e5e68f89309ff357e1e6d4f56b4db81442d23f879ec77f545804de4",
           "why": "Typed ExplanationRecord contract"
+        },
+        {
+          "path": "scripts/release-evidence/release-safety-entry-paths.json",
+          "sha256": "9a79a7ab9d6a44f4a471a8d41e435d72cfcbadddfe9fdc4d7b17c41cf0b2706e",
+          "why": "Defines the explicit ten-entry release-supported denominator, mapped safety and explanation assertions, and unresolved limitations"
+        },
+        {
+          "path": "scripts/release-evidence/generate-release-safety-evidence.mjs",
+          "sha256": "dd61b9943198c9d2f8a10901c6b841f5926b64c53a692fca444e5f79a521d0ac",
+          "why": "Generates the tag-context report with exact commit, tree, input, product-source, assertion-source, coverage, failure, and limitation bindings"
+        },
+        {
+          "path": "scripts/release-evidence/verify-release-safety-evidence.mjs",
+          "sha256": "bd614c278cee0b16ca59e546e392156835dccdb322420e574ae57ea56a30609b",
+          "why": "Independently fixes and recomputes the report schema, tag context, source identities, denominator, hashes, coverage counts, and disclosed gaps"
         }
       ],
       "verification": [
         {
           "command": "pnpm --filter @skytwin/explanations test",
           "expected": "Explanation generation tests pass; universal release coverage remains open"
+        },
+        {
+          "command": "pnpm exec vitest run scripts/release-evidence/release-safety-evidence.test.mjs",
+          "expected": "The bounded report and independent verifier pass substitution, false-completion, source-change, limitation-deletion, and tag-context adversarial tests"
         }
       ]
     },
@@ -1269,7 +1288,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "f5d2877d18767c41b1b9de3fccb63a8ff1bb35f48329506190b9ebe35aee4132",
+          "sha256": "4ea96479c2f80d800ce9a2ba9f21ecc53bfb3de3657827ce9d18dd0c28a004f2",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
@@ -1310,12 +1329,12 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "f5d2877d18767c41b1b9de3fccb63a8ff1bb35f48329506190b9ebe35aee4132",
+          "sha256": "4ea96479c2f80d800ce9a2ba9f21ecc53bfb3de3657827ce9d18dd0c28a004f2",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "7534b60b1cefe7e170de74d6aa3e5913da38edf11a25678a1a77d21fbf665457",
+          "sha256": "03917494efe12a955e654a3e16575c03a5e3bc822cb2ffd828b6ed71da782631",
           "why": "Defines the frozen focused CI source and command inventories, bounded observed-result contract, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
@@ -1327,6 +1346,21 @@
           "path": "scripts/release-claims/run-release-claim-ci.mjs",
           "sha256": "21d71b087c66b71acba6f45bc9e019faa20681de2a2e1f67c6a39a37b0795a3f",
           "why": "Runs the frozen commands without a shell, records bounded observed exit evidence and immutable workflow identity, and checks the exact tagged source tree and captured runtimes at every command boundary"
+        },
+        {
+          "path": "scripts/release-evidence/release-safety-entry-paths.json",
+          "sha256": "9a79a7ab9d6a44f4a471a8d41e435d72cfcbadddfe9fdc4d7b17c41cf0b2706e",
+          "why": "Defines the exact bounded entry-path denominator and the safety and explanation assertion mapping included in the tag-only CI artifact"
+        },
+        {
+          "path": "scripts/release-evidence/generate-release-safety-evidence.mjs",
+          "sha256": "dd61b9943198c9d2f8a10901c6b841f5926b64c53a692fca444e5f79a521d0ac",
+          "why": "Produces the release-SHA-bound safety sidecar with exact source, test, input, count, failure, and limitation identities"
+        },
+        {
+          "path": "scripts/release-evidence/verify-release-safety-evidence.mjs",
+          "sha256": "bd614c278cee0b16ca59e546e392156835dccdb322420e574ae57ea56a30609b",
+          "why": "Independently recomputes the safety sidecar's fixed schema, tag context, tree, hashes, denominator, counts, and conservative status before upload"
         },
         {
           "path": "scripts/release-claims/generate-evidence-manifest.mjs",
@@ -1365,7 +1399,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "28053fd5b9d565526ce6d780ed346643622a1d123f1a7d365a36917a89cf45e8",
+          "sha256": "80319f3f809cc74c13664f961c8a76334a2d30e4a73b0074002201792b8728b3",
           "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, and re-verifies every bounded release material, source report binding, structured desktop-storage, network-boundary, and on-device inference observations at publication"
         }
       ],
