@@ -139,7 +139,7 @@ function assertJobRunIdentity(job, description) {
     job.run_attempt !== runAttempt ||
     job.run_url !==
       `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
-    (job.head_sha !== undefined && job.head_sha !== releaseCommit) ||
+    job.head_sha !== releaseCommit ||
     githubTimestamp(job.started_at, `${description} start time`) <
       attemptStartedMs
   )

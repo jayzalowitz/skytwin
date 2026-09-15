@@ -2037,7 +2037,7 @@ ${step}`,
           timestampSignerCertificateSha256: "c".repeat(64),
           timestampCertificateValidation:
             "presence-and-fingerprint-recorded-not-independently-validated",
-          productVersion: "0.7.0",
+          productVersion: "0.7.0.0",
           fileVersionMajor: 0,
           fileVersionMinor: 7,
           fileVersionBuild: 0,
@@ -2049,7 +2049,7 @@ ${step}`,
             sha256: "d".repeat(64),
             sizeBytes: 128,
             architecture: "AMD64",
-            productVersion: "0.7.0",
+            productVersion: "0.7.0.0",
             fileVersionMajor: 0,
             fileVersionMinor: 7,
             fileVersionBuild: 0,
@@ -4021,7 +4021,7 @@ ${step}`,
           sizeBytes: subject.sizeBytes,
           platform: "windows-x64",
           ...signature,
-          productVersion: "0.7.0",
+          productVersion: "0.7.0.0",
           fileVersionMajor: 0,
           fileVersionMinor: 7,
           fileVersionBuild: 0,
@@ -4033,7 +4033,7 @@ ${step}`,
             sha256: "e".repeat(64),
             sizeBytes: 128,
             architecture: "AMD64",
-            productVersion: "0.7.0",
+            productVersion: "0.7.0.0",
             fileVersionMajor: 0,
             fileVersionMinor: 7,
             fileVersionBuild: 0,
@@ -4464,12 +4464,14 @@ ${step}`,
       evidence: [evidence],
     };
     let jobRunId = runId;
+    let jobHeadSha = commit;
+    let jobsTotalCount = 1;
     const fetchImpl = async (url) => {
       const text = String(url);
       let body;
       if (text.includes("/attempts/1/jobs")) {
         body = {
-          total_count: 1,
+          total_count: jobsTotalCount,
           jobs: [
             {
               id: 902,
@@ -4480,7 +4482,7 @@ ${step}`,
               run_attempt: 1,
               started_at: "2026-09-15T01:01:00Z",
               completed_at: "2026-09-15T01:10:00Z",
-              head_sha: commit,
+              head_sha: jobHeadSha,
               run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
             },
           ],
@@ -4515,7 +4517,7 @@ ${step}`,
           run_attempt: 1,
           started_at: "2026-09-15T01:01:00Z",
           completed_at: "2026-09-15T01:10:00Z",
-          head_sha: commit,
+          head_sha: jobHeadSha,
           run_url: `https://api.github.com/repos/owner/repository/actions/runs/${jobRunId}`,
         };
       } else if (text.endsWith("/903")) {
@@ -4549,6 +4551,26 @@ ${step}`,
     expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
       [],
     );
+    jobHeadSha = undefined;
+    expect(
+      await verifyPublicationEvidence(ledger, manifest, options),
+    ).toContain(
+      "current workflow attempt job inventory has an invalid, wrong-run, or duplicate job identity",
+    );
+    jobHeadSha = commit;
+    jobsTotalCount = 101;
+    expect(
+      await verifyPublicationEvidence(ledger, manifest, options),
+    ).toContain(
+      "current workflow attempt job inventory is malformed, ambiguous, or paginated",
+    );
+    jobsTotalCount = 2;
+    expect(
+      await verifyPublicationEvidence(ledger, manifest, options),
+    ).toContain(
+      "current workflow attempt job inventory is malformed, ambiguous, or paginated",
+    );
+    jobsTotalCount = 1;
     jobRunId = 1;
     expect(
       (await verifyPublicationEvidence(ledger, manifest, options)).some(

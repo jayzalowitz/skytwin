@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import {
   chmodSync,
   existsSync,
@@ -16,6 +17,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  appendWorkflowOutput,
   buildReport,
   inspectPlatformSubjects,
   inspectStableRegularFile,
@@ -31,11 +33,13 @@ import {
   resolveUploadedReportBindings,
   resolveCurrentRunArtifacts,
   runCanonicalVerifier,
+  uniqueMetadata,
   verifyLinuxSubjects,
   verifyMacSubjects,
   verifyAggregatedUploadedReports,
   verifyUploadedReport,
   verifyWindowsSubjects,
+  windowsProductVersion,
 } from "./verifiers/release.signing.mjs";
 import { inspectCanonicalSubjects as inspectArtifactVerificationSubjects } from "./verifiers/release.artifact-verification.mjs";
 import { verifyMachineEvidenceApplicability } from "./check-release-claims.mjs";
@@ -60,9 +64,11 @@ const identity = {
   repositoryVersion: "0.7.0.0",
   appVersion: "0.7.0",
 };
+const expectedWindowsProductVersion = "0.7.0.0";
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const path of temporary.splice(0))
     rmSync(path, { recursive: true, force: true });
 });
@@ -476,7 +482,7 @@ function windowsSignature(overrides = {}) {
     codeSigningEku: true,
     timestampPresent: true,
     timestampSignerSha256: timestampSha256,
-    productVersion: identity.appVersion,
+    productVersion: expectedWindowsProductVersion,
     fileVersionMajor: 0,
     fileVersionMinor: 7,
     fileVersionBuild: 0,
@@ -616,6 +622,49 @@ function windowsOptions(execute, overrides = {}) {
 }
 
 describe("release.signing canonical verifier", () => {
+  it("locks the Windows ProductVersion expectation to pinned electron-builder behavior", () => {
+    for (const name of [
+      "BUILD_NUMBER",
+      "TRAVIS_BUILD_NUMBER",
+      "APPVEYOR_BUILD_NUMBER",
+      "CIRCLE_BUILD_NUM",
+      "BUILD_BUILDNUMBER",
+      "CI_PIPELINE_IID",
+    ])
+      vi.stubEnv(name, "");
+    const desktopPackage = JSON.parse(
+      readFileSync("apps/desktop/package.json", "utf8"),
+    );
+    const desktopRequire = createRequire(
+      new URL("../../apps/desktop/package.json", import.meta.url),
+    );
+    const builderRequire = createRequire(
+      desktopRequire.resolve("electron-builder"),
+    );
+    const { AppInfo } = builderRequire("app-builder-lib/out/appInfo.js");
+    const appInfo = new AppInfo(
+      {
+        metadata: {
+          ...desktopPackage,
+          version: identity.appVersion,
+        },
+        config: desktopPackage.build,
+      },
+      null,
+    );
+    expect(desktopPackage.devDependencies["electron-builder"]).toBe("^26.15.3");
+    expect(desktopRequire("electron-builder/package.json").version).toBe(
+      "26.15.3",
+    );
+    expect(appInfo.shortVersionWindows).toBeUndefined();
+    expect(appInfo.getVersionInWeirdWindowsForm()).toBe(
+      expectedWindowsProductVersion,
+    );
+    expect(windowsProductVersion(identity.appVersion)).toBe(
+      appInfo.getVersionInWeirdWindowsForm(),
+    );
+  });
+
   it("is a self-contained hosted verifier with only reviewed built-in dependencies", () => {
     const source = readFileSync(
       "scripts/release-claims/verifiers/release.signing.mjs",
@@ -766,12 +815,20 @@ describe("release.signing canonical verifier", () => {
   it("binds platform artifact IDs, archive digests, run, repository, commit, and tag ref", async () => {
     const artifacts = platformArtifacts("macos");
     const fetchImpl = apiFetch(artifacts);
+    const immutableIdentity = Object.freeze({
+      ...platformIdentity("macos"),
+      runAttemptStartedAt: undefined,
+    });
     const resolved = await resolveCurrentRunArtifacts(
-      platformIdentity("macos"),
+      immutableIdentity,
       "macos",
       fetchImpl,
     );
-    expect(resolved).toEqual(apiArtifactMap("macos"));
+    expect(resolved).toEqual({
+      artifacts: apiArtifactMap("macos"),
+      runAttemptStartedAt,
+    });
+    expect(immutableIdentity.runAttemptStartedAt).toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(6);
 
     const secondGranularityArtifacts = artifacts.map((artifact) => ({
@@ -779,16 +836,19 @@ describe("release.signing canonical verifier", () => {
       created_at: "2026-09-15T01:06:01Z",
       updated_at: "2026-09-15T01:06:01Z",
     }));
-    const secondGranularityExpected = new Map(
-      [...apiArtifactMap("macos")].map(([name, artifact]) => [
-        name,
-        {
-          ...artifact,
-          artifactCreatedAt: "2026-09-15T01:06:01Z",
-          artifactUpdatedAt: "2026-09-15T01:06:01Z",
-        },
-      ]),
-    );
+    const secondGranularityExpected = {
+      artifacts: new Map(
+        [...apiArtifactMap("macos")].map(([name, artifact]) => [
+          name,
+          {
+            ...artifact,
+            artifactCreatedAt: "2026-09-15T01:06:01Z",
+            artifactUpdatedAt: "2026-09-15T01:06:01Z",
+          },
+        ]),
+      ),
+      runAttemptStartedAt,
+    };
     await expect(
       resolveCurrentRunArtifacts(
         platformIdentity("macos"),
@@ -870,6 +930,32 @@ describe("release.signing canonical verifier", () => {
         apiFetch(artifacts, {}, { jobs: [missingAttempt] }),
       ),
     ).rejects.toThrow("wrong-run job");
+
+    const missingHeadSha = desktopJobFor(artifacts);
+    delete missingHeadSha.head_sha;
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(artifacts, {}, { jobs: [missingHeadSha] }),
+      ),
+    ).rejects.toThrow("wrong-run job");
+
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(artifacts, {}, { run_id: identity.runId + 1 }),
+      ),
+    ).rejects.toThrow("wrong-run job");
+
+    await expect(
+      resolveCurrentRunArtifacts(
+        platformIdentity("macos"),
+        "macos",
+        apiFetch(artifacts, { run_started_at: "September 15, 2026" }),
+      ),
+    ).rejects.toThrow("canonical GitHub timestamp");
 
     const currentJob = desktopJobFor(artifacts);
     await expect(
@@ -1022,6 +1108,15 @@ describe("release.signing canonical verifier", () => {
         "app",
       ),
     ).toThrow("not accepted as a notarized");
+  });
+
+  it("escapes metadata keys before constructing exact-line regular expressions", () => {
+    expect(uniqueMetadata("Identifier.*=literal", "Identifier.*", "test")).toBe(
+      "literal",
+    );
+    expect(() =>
+      uniqueMetadata("IdentifierXYZ=forged", "Identifier.*", "test"),
+    ).toThrow("missing or ambiguous");
   });
 
   it("opens the exact DMG and ZIP apps and requires signatures, Gatekeeper trust, and stapled notarization", () => {
@@ -1342,6 +1437,19 @@ describe("release.signing canonical verifier", () => {
         "macOS ZIP",
       ),
     ).toThrow("unsafe path component");
+    expect(() =>
+      parseMacZipListing(
+        macZipListing([
+          { permissions: "drwxr-xr-x", sizeBytes: 0, path: "SkyTwin.app/" },
+          {
+            permissions: "-rw-r--r--",
+            sizeBytes: 1,
+            path: "__MACOSX/._SkyTwin.app",
+          },
+        ]),
+        "macOS ZIP",
+      ),
+    ).toThrow("outside SkyTwin.app");
     expect(() =>
       parseMacZipListing(
         macZipListing([
@@ -1755,7 +1863,7 @@ describe("release.signing canonical verifier", () => {
       timestampSignerCertificateSha256: timestampSha256,
       timestampCertificateValidation:
         "presence-and-fingerprint-recorded-not-independently-validated",
-      productVersion: identity.appVersion,
+      productVersion: expectedWindowsProductVersion,
       fileVersionMajor: 0,
       fileVersionMinor: 7,
       fileVersionBuild: 0,
@@ -1765,7 +1873,7 @@ describe("release.signing canonical verifier", () => {
         derivationPath: "app-64.7z!/SkyTwin.exe",
         name: "SkyTwin.exe",
         architecture: "AMD64",
-        productVersion: identity.appVersion,
+        productVersion: expectedWindowsProductVersion,
         fileVersionMajor: 0,
         fileVersionMinor: 7,
         fileVersionBuild: 0,
@@ -2063,6 +2171,28 @@ describe("release.signing canonical verifier", () => {
       ),
     ).toThrow("not a distinct capacity-enforced filesystem");
     expect(execute.diskpartScripts.at(-1)).toContain("detach vdisk");
+  });
+
+  it("refuses Windows extraction before allocation when the host reserve is unavailable", () => {
+    const root = makeRoot();
+    populateSubjects(root, "windows");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "windows",
+      identity.appVersion,
+    );
+    const execute = windowsExecutor();
+    execute.inspectFilesystem = () => ({ bavail: 1n, bsize: 4096n });
+    expect(() =>
+      verifyWindowsSubjects(
+        subjects,
+        { signerSha256 },
+        windowsOptions(execute),
+      ),
+    ).toThrow("insufficient reserved free space");
+    expect(execute.diskpartScripts).toHaveLength(1);
+    expect(execute.diskpartScripts[0]).toContain("detach vdisk");
+    expect(execute.diskpartScripts[0]).not.toContain("create vdisk");
   });
 
   it("rejects nested Windows listings whose combined content exceeds 4 GiB", () => {
@@ -2593,6 +2723,24 @@ describe("release.signing canonical verifier", () => {
         { root, env },
       ),
     ).toHaveLength(3);
+    const macBindingPath = join(
+      bindingsDirectory,
+      "release.signing.macos.json.binding.json",
+    );
+    const canonicalMacBinding = readFileSync(macBindingPath, "utf8");
+    const nonCanonicalMacBinding = JSON.parse(canonicalMacBinding);
+    nonCanonicalMacBinding.runAttemptStartedAt = "September 15, 2026 01:00 UTC";
+    writeFileSync(
+      macBindingPath,
+      `${JSON.stringify(nonCanonicalMacBinding, null, 2)}\n`,
+    );
+    expect(() =>
+      resolveUploadedReportBindings(
+        ["--bindings", ".release-evidence/upload-bindings"],
+        { root, env },
+      ),
+    ).toThrow("canonical GitHub timestamp");
+    writeFileSync(macBindingPath, canonicalMacBinding);
     writeFileSync(
       join(reportsDirectory, "release.signing.windows.json"),
       "wrong attempt bytes",
@@ -2608,6 +2756,19 @@ describe("release.signing canonical verifier", () => {
         { root, env },
       ),
     ).toThrow("does not match its source report digest");
+  });
+
+  it("rejects line breaks in GitHub workflow output values", () => {
+    const root = makeRoot();
+    const outputPath = join(root, "github-output.txt");
+    writeFileSync(outputPath, "");
+    expect(() =>
+      appendWorkflowOutput(outputPath, "artifact_ids", "700\nforged=value"),
+    ).toThrow("workflow output target is invalid");
+    expect(() =>
+      appendWorkflowOutput(outputPath, "artifact_ids", "700\rforged=value"),
+    ).toThrow("workflow output target is invalid");
+    expect(readFileSync(outputPath, "utf8")).toBe("");
   });
 
   it("does not write evidence when a release subject changes during native verification", async () => {

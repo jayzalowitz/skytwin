@@ -666,6 +666,16 @@ function githubTimestamp(value, description) {
   return Date.parse(value);
 }
 
+export function windowsProductVersion(appVersion) {
+  assert(
+    typeof appVersion === "string" &&
+      /^\d+\.\d+\.\d+$/u.test(appVersion) &&
+      appVersion.split(".").every((part) => Number.isSafeInteger(Number(part))),
+    "release app version cannot be represented as a Windows product version",
+  );
+  return `${appVersion}.0`;
+}
+
 function assertArtifactProducerBindings(
   producers,
   platform,
@@ -780,7 +790,7 @@ async function resolveDesktopProducerJobs(
         job.run_attempt === identity.runAttempt &&
         job.run_url ===
           `https://api.github.com/repos/${identity.repository}/actions/runs/${identity.runId}` &&
-        (job.head_sha === undefined || job.head_sha === identity.sourceCommit),
+        job.head_sha === identity.sourceCommit,
       `GitHub job inventory for attempt ${identity.runAttempt} contains a wrong-run job`,
     );
     return job;
@@ -803,7 +813,10 @@ function bindArtifactProducer(
     artifact.created_at,
     `${artifact.name} artifact creation time`,
   );
-  githubTimestamp(artifact.updated_at, `${artifact.name} artifact update time`);
+  const artifactUpdatedMs = githubTimestamp(
+    artifact.updated_at,
+    `${artifact.name} artifact update time`,
+  );
   const candidates = jobs.filter((job) => {
     if (
       job.name !== producerName ||
@@ -856,7 +869,7 @@ function bindArtifactProducer(
     ({ name }) => name === desktopArtifactUploadStepName(artifact.name),
   );
   assert(
-    artifactCreatedMs <= Date.parse(artifact.updated_at),
+    artifactCreatedMs <= artifactUpdatedMs,
     `${artifact.name} artifact update time precedes its creation time`,
   );
   return {
@@ -958,7 +971,6 @@ export async function resolveCurrentRunArtifacts(
     "current workflow attempt is not the canonical tag-push build for this repository and commit",
   );
   githubTimestamp(attempt.run_started_at, "workflow attempt start time");
-  identity.runAttemptStartedAt = attempt.run_started_at;
   const expectedArtifactIds = parseExpectedArtifactValues(
     identity.expectedArtifactIds,
     platform,
@@ -1044,7 +1056,10 @@ export async function resolveCurrentRunArtifacts(
       ),
     });
   }
-  return resolved;
+  return {
+    artifacts: resolved,
+    runAttemptStartedAt: attempt.run_started_at,
+  };
 }
 
 export function inspectPlatformSubjects(rootPath, platform, appVersion) {
@@ -1169,10 +1184,11 @@ function checkedCommand(execute, file, args, options, description) {
   return `${result.stdout}\n${result.stderr}`;
 }
 
-function uniqueMetadata(output, key, description) {
-  const values = [...output.matchAll(new RegExp(`^${key}=(.+)$`, "gmu"))].map(
-    (match) => match[1].trim(),
-  );
+export function uniqueMetadata(output, key, description) {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const values = [
+    ...output.matchAll(new RegExp(`^${escapedKey}=(.+)$`, "gmu")),
+  ].map((match) => match[1].trim());
   assert(
     values.length === 1 && values[0].length > 0,
     `${description} has missing or ambiguous ${key}`,
@@ -1272,7 +1288,7 @@ function normalizeMacZipMemberPath(value, description) {
     `${description} contains an unsafe path component`,
   );
   assert(
-    components[0] === "SkyTwin.app" || components[0] === "__MACOSX",
+    components[0] === "SkyTwin.app",
     `${description} contains a member outside SkyTwin.app`,
   );
   return normalized;
@@ -2447,8 +2463,9 @@ export function verifyWindowsSubjects(
       execute,
     );
     const expectedVersionParts = appVersion.split(".").map(Number);
+    const expectedProductVersion = windowsProductVersion(appVersion);
     assert(
-      signature.productVersion === appVersion,
+      signature.productVersion === expectedProductVersion,
       "Windows installer ProductVersion does not match the release app version",
     );
     assert(
@@ -2492,7 +2509,7 @@ export function verifyWindowsSubjects(
       "contained Windows executable signer does not match the installer signer",
     );
     assert(
-      executableSignature.productVersion === appVersion,
+      executableSignature.productVersion === expectedProductVersion,
       "contained Windows executable ProductVersion does not match the release app version",
     );
     assert(
@@ -2716,6 +2733,7 @@ function assertWindowsReportObservation(result, artifactName, appVersion) {
     ],
     `${artifactName} signing observation`,
   );
+  const expectedProductVersion = windowsProductVersion(appVersion);
   assert(
     result.signatureResult === "pass" &&
       result.verificationMethod === WINDOWS_VERIFICATION_METHOD &&
@@ -2732,7 +2750,7 @@ function assertWindowsReportObservation(result, artifactName, appVersion) {
       result.timestampCertificatePresent === true &&
       /^[0-9a-f]{64}$/u.test(result.timestampSignerCertificateSha256) &&
       result.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION &&
-      result.productVersion === appVersion &&
+      result.productVersion === expectedProductVersion &&
       result.fileVersionMajor === Number(appVersion.split(".")[0]) &&
       result.fileVersionMinor === Number(appVersion.split(".")[1]) &&
       result.fileVersionBuild === Number(appVersion.split(".")[2]) &&
@@ -2778,7 +2796,7 @@ function assertWindowsReportObservation(result, artifactName, appVersion) {
       Number.isSafeInteger(executable.sizeBytes) &&
       executable.sizeBytes > 0 &&
       executable.architecture === "AMD64" &&
-      executable.productVersion === appVersion &&
+      executable.productVersion === expectedProductVersion &&
       executable.fileVersionMajor === Number(appVersion.split(".")[0]) &&
       executable.fileVersionMinor === Number(appVersion.split(".")[1]) &&
       executable.fileVersionBuild === Number(appVersion.split(".")[2]) &&
@@ -2919,8 +2937,14 @@ export function buildReport({
   assert(
     artifactProducers.every(
       ({ artifactProducerJobStartedAt, artifactUploadStepStartedAt }) =>
-        Date.parse(artifactProducerJobStartedAt) >= attemptStartedMs &&
-        Date.parse(artifactUploadStepStartedAt) >= attemptStartedMs,
+        githubTimestamp(
+          artifactProducerJobStartedAt,
+          "release signing producer start time",
+        ) >= attemptStartedMs &&
+        githubTimestamp(
+          artifactUploadStepStartedAt,
+          "release signing upload step start time",
+        ) >= attemptStartedMs,
     ),
     "release signing artifact producer was carried forward from an earlier attempt",
   );
@@ -3026,9 +3050,12 @@ function writeReport(root, relativePath, report) {
   return observed;
 }
 
-function appendWorkflowOutput(outputPath, name, value) {
+export function appendWorkflowOutput(outputPath, name, value) {
   assert(
-    isAbsolute(outputPath) && /^[a-z_][a-z0-9_]*$/u.test(name),
+    isAbsolute(outputPath) &&
+      /^[a-z_][a-z0-9_]*$/u.test(name) &&
+      typeof value === "string" &&
+      !/[\r\n]/u.test(value),
     "GitHub workflow output target is invalid",
   );
   const beforePath = lstatSync(outputPath, { bigint: true });
@@ -3160,8 +3187,14 @@ export function verifyUploadedReport(
   assert(
     reportDocument.artifactProducers.every(
       ({ artifactProducerJobStartedAt, artifactUploadStepStartedAt }) =>
-        Date.parse(artifactProducerJobStartedAt) >= reportAttemptStartedMs &&
-        Date.parse(artifactUploadStepStartedAt) >= reportAttemptStartedMs,
+        githubTimestamp(
+          artifactProducerJobStartedAt,
+          "uploaded release signing producer start time",
+        ) >= reportAttemptStartedMs &&
+        githubTimestamp(
+          artifactUploadStepStartedAt,
+          "uploaded release signing upload step start time",
+        ) >= reportAttemptStartedMs,
     ),
     "uploaded release signing report carries an earlier-attempt artifact producer",
   );
@@ -3320,6 +3353,10 @@ function readUploadBindings(root, bindingsDirectory, env) {
       "release signing upload binding",
     );
     const platform = reportName.split(".").at(-2);
+    const bindingAttemptStartedMs = githubTimestamp(
+      binding.runAttemptStartedAt,
+      "release signing upload binding attempt start time",
+    );
     assert(
       binding.schemaVersion === 1 &&
         binding.generatedBy === "release-signing-upload-verifier" &&
@@ -3331,7 +3368,6 @@ function readUploadBindings(root, bindingsDirectory, env) {
         binding.ref === identity.ref &&
         binding.runId === identity.runId &&
         binding.runAttempt === identity.runAttempt &&
-        Number.isFinite(Date.parse(binding.runAttemptStartedAt)) &&
         binding.reportName === reportName &&
         SHA256_DIGEST.test(binding.reportSha256 ?? "") &&
         Number.isSafeInteger(binding.sourceArtifactId) &&
@@ -3347,15 +3383,17 @@ function readUploadBindings(root, bindingsDirectory, env) {
       identity.runAttempt,
       "release signing upload binding artifact producers",
     );
-    const bindingAttemptStartedMs = githubTimestamp(
-      binding.runAttemptStartedAt,
-      "release signing upload binding attempt start time",
-    );
     assert(
       binding.artifactProducers.every(
         ({ artifactProducerJobStartedAt, artifactUploadStepStartedAt }) =>
-          Date.parse(artifactProducerJobStartedAt) >= bindingAttemptStartedMs &&
-          Date.parse(artifactUploadStepStartedAt) >= bindingAttemptStartedMs,
+          githubTimestamp(
+            artifactProducerJobStartedAt,
+            "release signing upload binding producer start time",
+          ) >= bindingAttemptStartedMs &&
+          githubTimestamp(
+            artifactUploadStepStartedAt,
+            "release signing upload binding step start time",
+          ) >= bindingAttemptStartedMs,
       ),
       "release signing upload binding carries an earlier-attempt artifact producer",
     );
@@ -3440,11 +3478,9 @@ export async function runCanonicalVerifier(
     executeGit,
   });
   const identity = { ...runIdentity, ...versions };
-  const apiArtifacts = await resolveCurrentRunArtifacts(
-    identity,
-    args.platform,
-    fetchImpl,
-  );
+  const { artifacts: apiArtifacts, runAttemptStartedAt } =
+    await resolveCurrentRunArtifacts(identity, args.platform, fetchImpl);
+  const reportIdentity = { ...identity, runAttemptStartedAt };
   const subjects = inspectPlatformSubjects(
     canonicalRoot,
     args.platform,
@@ -3468,7 +3504,7 @@ export async function runCanonicalVerifier(
   const report = buildReport({
     root: canonicalRoot,
     platform: args.platform,
-    identity,
+    identity: reportIdentity,
     apiArtifacts,
     subjects,
     verification,

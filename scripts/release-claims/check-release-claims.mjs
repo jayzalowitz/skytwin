@@ -4548,6 +4548,7 @@ function hasCompleteWindowsSigningObservation(
     "timestampCertificateValidation",
   ];
   const executable = subject?.containedExecutable;
+  const expectedProductVersion = `${expectedAppVersion}.0`;
   return (
     isPlainRecord(subject) &&
     Object.keys(subject).length === expectedKeys.length &&
@@ -4566,7 +4567,7 @@ function hasCompleteWindowsSigningObservation(
     subject?.timestampCertificatePresent === true &&
     SOURCE_DIGEST.test(subject?.timestampSignerCertificateSha256 ?? "") &&
     subject?.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION &&
-    subject?.productVersion === expectedAppVersion &&
+    subject?.productVersion === expectedProductVersion &&
     subject?.fileVersionMajor === Number(expectedAppVersion.split(".")[0]) &&
     subject?.fileVersionMinor === Number(expectedAppVersion.split(".")[1]) &&
     subject?.fileVersionBuild === Number(expectedAppVersion.split(".")[2]) &&
@@ -4581,7 +4582,7 @@ function hasCompleteWindowsSigningObservation(
     Number.isSafeInteger(executable.sizeBytes) &&
     executable.sizeBytes > 0 &&
     executable.architecture === "AMD64" &&
-    executable.productVersion === expectedAppVersion &&
+    executable.productVersion === expectedProductVersion &&
     executable.fileVersionMajor === Number(expectedAppVersion.split(".")[0]) &&
     executable.fileVersionMinor === Number(expectedAppVersion.split(".")[1]) &&
     executable.fileVersionBuild === Number(expectedAppVersion.split(".")[2]) &&
@@ -5715,7 +5716,7 @@ export async function verifyPublicationEvidence(
       job.run_id !== runId ||
       job.run_attempt !== manifest.runAttempt ||
       job.run_url !== `${apiRoot}/runs/${runId}` ||
-      (job.head_sha !== undefined && job.head_sha !== releaseCommit) ||
+      job.head_sha !== releaseCommit ||
       exactAttemptJobsById.has(job.id)
     ) {
       addError(
@@ -5840,7 +5841,7 @@ export async function verifyPublicationEvidence(
       job.conclusion !== "success" ||
       job.run_url !==
         `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
-      (job.head_sha !== undefined && job.head_sha !== releaseCommit)
+      job.head_sha !== releaseCommit
     ) {
       addError(
         errors,
@@ -6044,8 +6045,7 @@ export async function verifyPublicationEvidence(
       evidence.producerJobRunAttempt !== manifest.runAttempt ||
       producerJob.run_url !==
         `https://api.github.com/repos/${repository}/actions/runs/${runId}` ||
-      (producerJob.head_sha !== undefined &&
-        producerJob.head_sha !== releaseCommit) ||
+      producerJob.head_sha !== releaseCommit ||
       producerStartedMs === null ||
       producerStartedMs < attemptStartedMs ||
       exactAttemptProducerJob?.id !== producerJob.id ||
@@ -6177,8 +6177,7 @@ export async function verifyPublicationEvidence(
           producerJobForAttempt?.run_attempt !== manifest.runAttempt ||
           producerJobForAttempt?.run_id !== runId ||
           producerJobForAttempt?.run_url !== `${apiRoot}/runs/${runId}` ||
-          (producerJobForAttempt?.head_sha !== undefined &&
-            producerJobForAttempt.head_sha !== releaseCommit) ||
+          producerJobForAttempt?.head_sha !== releaseCommit ||
           producerJobForAttempt?.status !== "completed" ||
           producerJobForAttempt?.conclusion !== "success" ||
           producerJobForAttempt?.started_at !==

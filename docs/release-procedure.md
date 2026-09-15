@@ -166,15 +166,21 @@ team to match its contained app, binds both signed bundle version keys, and
 checks the ZIP member inventory and declared expanded-size ceiling, extracts on
 a fully allocated fixed-capacity HFS+ image with allocation and
 filesystem-metadata headroom, requires a separate host free-space reserve both
-before and after allocating that image, and checks extracted link containment
-before trusting the contained app. For Windows, extraction runs on an attached
+before and after allocating that image, rejects AppleDouble `__MACOSX`
+resource-fork entries rather than admitting files outside the canonical app
+root, and checks extracted link containment before trusting the contained app.
+For Windows, extraction runs on an attached
 5,511 MiB fixed-capacity VHDX rather than the runner filesystem. The verifier
 formats NTFS with 4 KiB clusters and confirms that allocation unit before use;
 the capacity covers the enforced 4 GiB nested-content ceiling, worst-case
 100,000-member allocation slack, and filesystem headroom while retaining a
-separate 2 GiB host reserve. The report binds the
-Authenticode and version metadata of both the NSIS installer and its exact contained
-`SkyTwin.exe`; a correctly signed but stale wrapper is not acceptable.
+separate 2 GiB host reserve. The report binds the Authenticode and version
+metadata of both the NSIS installer and its exact contained `SkyTwin.exe`; a
+correctly signed but stale wrapper is not acceptable. Because the pinned
+electron-builder 26.15.3 converts the three-field application version to
+Windows' four-field ProductVersion, a `0.7.0` application must report
+ProductVersion `0.7.0.0`; FileVersion is checked independently as four numeric
+fields.
 Both platforms verify native tools only against a private digest-bound staged
 copy. The producer then downloads the uploaded report by its exact artifact ID
 and checks the downloaded report bytes against the verifier-emitted SHA-256;
@@ -198,10 +204,13 @@ binding combines the upload action's exact ID/digest outputs, attempt-specific
 report names, exact-attempt job and step identity, and an artifact creation time
 no earlier than the successful upload step start and no later than its producer
 job completion.
-GitHub's whole-second API timestamps can report artifact creation one second
-after the upload step's completion, so that completion timestamp is not used as
-the upper bound. This is an explicit hosted API limitation, not proof of a
-stronger native relation. These controls fail closed
+Every persisted Actions timestamp is required to use GitHub's canonical
+whole-second UTC form (`YYYY-MM-DDTHH:MM:SSZ`). The service's second-level
+quantization can report artifact creation in the second after the upload
+step's completion, so upload completion is not used as the upper bound. The
+accepted creation interval is inclusive from upload-step start through producer
+job completion; that whole-second tolerance is an explicit hosted API
+limitation, not proof of a stronger native relation. These controls fail closed
 against stale-attempt reuse and mutations within the workflow's processes and
 handoff windows; arbitrary same-user control of the hosted runner itself
 remains outside the evidence threat boundary.

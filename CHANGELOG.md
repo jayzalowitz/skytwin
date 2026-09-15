@@ -97,6 +97,18 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **Release signing evidence matches the actual native package metadata and
+  fails closed on incomplete provenance.** Windows ProductVersion checks now
+  require electron-builder's four-field value for both the installer and its
+  contained executable, while FileVersion remains independently numeric. The
+  verifier, manifest generator, and publication checker require exact job
+  commit identity; persisted Actions timestamps use canonical GitHub syntax;
+  workflow outputs reject line breaks; and macOS ZIPs reject noncanonical
+  AppleDouble resource-fork entries. Attempt timing is returned explicitly
+  rather than being written into caller-owned identity state. Release remains
+  blocked pending the documented signing, notarization, Linux trust-policy,
+  and tagged native-evidence gates.
+
 - **DXT export history avoids redundant sequential classification.** Repeated
   exports from the same capability reuse one owner/inventory classification
   per request, and distinct classifications run in bounded batches while

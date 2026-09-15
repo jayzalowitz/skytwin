@@ -1170,7 +1170,7 @@
       "scope": "Every artifact named in the beta platform support matrix, built from the release tag.",
       "owner": "release-engineering",
       "state": "deferred",
-      "limitation": "CI explicitly disables automatic signing, final-DMG notarization is not wired, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations, bind them to exact current-attempt desktop upload jobs and artifact ID/digest outputs, and reject carried-forward partial-rerun evidence, but intentionally refuses Linux until package-format methods and pinned trust roots exist. GitHub's artifact API remains run-wide and exposes no native artifact-to-job or artifact-to-attempt relation; the gated tag workflow therefore refuses draft creation.",
+      "limitation": "CI explicitly disables automatic signing, final-DMG notarization is not wired, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations, bind them to exact current-attempt desktop upload jobs and artifact ID/digest outputs, and reject carried-forward partial-rerun evidence, but intentionally refuses Linux until package-format methods and pinned trust roots exist. GitHub's artifact API remains run-wide and exposes no native artifact-to-job or artifact-to-attempt relation; its timestamps are quantized to whole seconds, so the accepted artifact-creation interval is inclusively bounded by upload-step start and producer-job completion rather than upload-step completion. The gated tag workflow therefore refuses draft creation.",
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
@@ -1184,8 +1184,8 @@
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "311925acbf4a5e47bc99296742694271f43373005040eacec570abc7c910e07f",
-          "why": "Defines contained report writes and upload bindings, exact-attempt desktop producer and artifact creation-window checks, fail-closed native macOS observations, and capacity-bounded Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
+          "sha256": "f149bb08d448a0a33cb9b0ee5dc45cdd289ab342ad12d24c9c150cce9ef2ef15",
+          "why": "Defines contained report writes and upload bindings, exact-attempt desktop producer and canonical artifact creation-window checks, fail-closed native macOS observations, and capacity-bounded Windows outer-and-contained signature and four-field version observations while refusing Linux until its package trust policy exists"
         }
       ],
       "verification": [
@@ -1255,7 +1255,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "9361c16f26bf8f52b64c0550b9af66603450580c5aade5f52c3e94a09c38c3f2",
+          "sha256": "46b8630d2c7be634961e6fb27e5e81857559c5a6a715024990eeaafc3ba14290",
           "why": "Structurally locks the sole materials producer and exact-ID signing report aggregator and re-verifies every release material and source report binding at publication"
         }
       ],
