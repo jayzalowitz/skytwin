@@ -8,18 +8,26 @@ import {
   readFileSync,
   realpathSync,
 } from "node:fs";
-import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  delimiter,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+} from "node:path";
 import { constants as fsConstants } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const SAFE_ABSOLUTE_PATH = /^[A-Za-z0-9_./+@-]+$/u;
 const PNPM_PACKAGE_LAUNCHER =
   /^\.\.\/\.pnpm\/pnpm@[A-Za-z0-9._+-]+\/node_modules\/pnpm\/bin\/pnpm\.cjs$/u;
+const PNPM_SHIM_PACKAGE_LAUNCHER = "../pnpm/bin/pnpm.cjs";
 const PNPM_CLI_REQUIRE = /require\((['"])\.\.\/dist\/pnpm\.cjs\1\)/u;
 const PNPM_SHIM_BUNDLED_NODE =
-  /^\s*exec "\$basedir\/node"\s+"\$basedir\/(\.\.\/\.pnpm\/[^"\s]+\/node_modules\/pnpm\/bin\/pnpm\.cjs)"\s+"\$@"\s*$/gmu;
+  /^\s*exec "\$basedir\/node"\s+"\$basedir\/(\.\.\/pnpm\/bin\/pnpm\.cjs)"\s+"\$@"\s*$/gmu;
 const PNPM_SHIM_PATH_NODE =
-  /^\s*exec node\s+"\$basedir\/(\.\.\/\.pnpm\/[^"\s]+\/node_modules\/pnpm\/bin\/pnpm\.cjs)"\s+"\$@"\s*$/gmu;
+  /^\s*exec node\s+"\$basedir\/(\.\.\/pnpm\/bin\/pnpm\.cjs)"\s+"\$@"\s*$/gmu;
 
 function sha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -78,17 +86,26 @@ function resolvePnpmPackageLauncher(launcherPath) {
     !launcher.startsWith("#!/bin/sh\n") ||
     bundledNodeMatches.length !== 1 ||
     pathNodeMatches.length !== 1 ||
-    !relativePackageLauncher ||
+    relativePackageLauncher !== PNPM_SHIM_PACKAGE_LAUNCHER ||
     pathNodeMatches[0]?.[1] !== relativePackageLauncher ||
-    !PNPM_PACKAGE_LAUNCHER.test(relativePackageLauncher)
+    !relativePackageLauncher
   )
     throw new Error(
       "pnpm PATH shim does not identify one canonical package launcher",
     );
-  return canonicalExecutable(
+  const packageLauncherPath = canonicalExecutable(
     resolve(dirname(launcherPath), relativePackageLauncher),
     "pnpm package launcher",
   );
+  if (
+    !PNPM_PACKAGE_LAUNCHER.test(
+      relative(dirname(launcherPath), packageLauncherPath),
+    )
+  )
+    throw new Error(
+      "pnpm package launcher resolves outside the canonical package layout",
+    );
+  return packageLauncherPath;
 }
 
 function resolvePnpmEntry(launcherPath) {

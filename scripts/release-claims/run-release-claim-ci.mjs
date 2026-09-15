@@ -117,7 +117,7 @@ function canonicalRuntimeFile(path, expectedSha256, name, { executable } = {}) {
   if (
     typeof path !== "string" ||
     !isAbsolute(path) ||
-    !/^[A-Za-z0-9_./+-]+$/u.test(path) ||
+    !/^[A-Za-z0-9_./+@-]+$/u.test(path) ||
     !SHA256_PATTERN.test(expectedSha256 ?? "")
   )
     throw new Error(`${name} runtime identity is invalid`);

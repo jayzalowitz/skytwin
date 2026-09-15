@@ -8,6 +8,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -38,8 +39,7 @@ function pnpmRuntime(root, content = "// pnpm CLI bundle\n") {
 }
 
 function pnpmActionSetupRuntime(root, { alternatePathNodeTarget } = {}) {
-  const relativePackageLauncher =
-    "../.pnpm/pnpm@9.1.0/node_modules/pnpm/bin/pnpm.cjs";
+  const relativePackageLauncher = "../pnpm/bin/pnpm.cjs";
   const packageRoot = join(
     root,
     "node_modules/.pnpm/pnpm@9.1.0/node_modules/pnpm",
@@ -52,6 +52,8 @@ function pnpmActionSetupRuntime(root, { alternatePathNodeTarget } = {}) {
   const entryPath = join(packageRoot, "dist/pnpm.cjs");
   mkdirSync(dirname(entryPath), { recursive: true });
   writeFileSync(entryPath, "// action-setup pnpm CLI bundle\n");
+  const packageLinkPath = join(root, "node_modules/pnpm");
+  symlinkSync(".pnpm/pnpm@9.1.0/node_modules/pnpm", packageLinkPath);
   const launcherPath = executable(
     root,
     "node_modules/.bin/pnpm",
@@ -64,7 +66,12 @@ else
 fi
 `,
   );
-  return { launcherPath, packageLauncherPath, entryPath };
+  return {
+    launcherPath,
+    packageLauncherPath,
+    packageLinkPath,
+    entryPath,
+  };
 }
 
 afterEach(() => {
@@ -153,8 +160,7 @@ describe("release claim CI runtime capture", () => {
     roots.push(root);
     const nodePath = executable(root, "node", "node runtime\n");
     const { launcherPath } = pnpmActionSetupRuntime(root, {
-      alternatePathNodeTarget:
-        "../.pnpm/pnpm@9.1.1/node_modules/pnpm/bin/pnpm.cjs",
+      alternatePathNodeTarget: "../attacker/bin/pnpm.cjs",
     });
 
     expect(() =>
@@ -175,7 +181,7 @@ describe("release claim CI runtime capture", () => {
     const { launcherPath } = pnpmActionSetupRuntime(root);
     appendFileSync(
       launcherPath,
-      'exec node "$basedir/../.pnpm/pnpm@9.1.0/node_modules/pnpm/bin/pnpm.cjs" "$@"\n',
+      'exec node "$basedir/../pnpm/bin/pnpm.cjs" "$@"\n',
     );
 
     expect(() =>
@@ -233,6 +239,33 @@ exec node "$basedir/../../attacker/pnpm.cjs" "$@"
         },
       }),
     ).toThrow("one canonical package launcher");
+  });
+
+  it("rejects a package alias that resolves outside the pnpm store layout", () => {
+    const root = mkdtempSync(join(tmpdir(), "skytwin-runtime-capture-"));
+    roots.push(root);
+    const nodePath = executable(root, "node", "node runtime\n");
+    const { launcherPath, packageLinkPath } = pnpmActionSetupRuntime(root);
+    rmSync(packageLinkPath);
+    const attackerRoot = join(root, "attacker");
+    executable(
+      attackerRoot,
+      "bin/pnpm.cjs",
+      "#!/usr/bin/env node\nrequire('../dist/pnpm.cjs')\n",
+    );
+    mkdirSync(join(attackerRoot, "dist"), { recursive: true });
+    writeFileSync(join(attackerRoot, "dist/pnpm.cjs"), "attacker bundle\n");
+    symlinkSync("../attacker", packageLinkPath);
+
+    expect(() =>
+      captureReleaseClaimCiRuntime({
+        execPath: nodePath,
+        env: {
+          PATH: dirname(launcherPath),
+          GITHUB_OUTPUT: join(root, "github-output"),
+        },
+      }),
+    ).toThrow("outside the canonical package layout");
   });
 
   it("rejects a hard-linked package launcher behind a valid PATH shim", () => {

@@ -125,11 +125,11 @@ function releaseEnv(root, overrides = {}) {
   roots.push(runtimeRoot);
   const unresolvedPnpmEntryPath = join(
     runtimeRoot,
-    "runtime/lib/node_modules/pnpm/dist/pnpm.cjs",
+    "runtime/lib/node_modules/.pnpm/pnpm@9.1.0/node_modules/pnpm/dist/pnpm.cjs",
   );
   write(
     runtimeRoot,
-    "runtime/lib/node_modules/pnpm/dist/pnpm.cjs",
+    "runtime/lib/node_modules/.pnpm/pnpm@9.1.0/node_modules/pnpm/dist/pnpm.cjs",
     "// delegated pnpm CLI bundle\n",
   );
   const pnpmEntryPath = realpathSync(unresolvedPnpmEntryPath);
