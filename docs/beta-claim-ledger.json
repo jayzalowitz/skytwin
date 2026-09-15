@@ -1081,7 +1081,7 @@
       "scope": "Every model recommended to a beta user, including source, digest, bytes, license, compatibility, interruption recovery, disk checks, and deletion/replacement.",
       "owner": "desktop-inference",
       "state": "limited",
-      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. Tagged clean-machine delivery and final artifact evidence are still absent.",
+      "limitation": "The maintained registry now pins a source, real digest, license, size, compatibility constraints, resilient download, and deletion controls. A fail-closed Linux verifier now observes immutable upstream metadata and LICENSE bytes and binds an exact-ID private AppImage download to the exact attempt start and producer/upload timeline, but tagged clean-machine delivery and final artifact evidence are still absent.",
       "evidence": [
         {
           "path": "packages/embedded-llm/src/model-registry.ts",
@@ -1092,6 +1092,11 @@
           "path": "apps/desktop/scripts/build-single-binary.sh",
           "sha256": "df9b6d0b7a55cc2feab93c9a6513e0c09e64f86ee26430bce07dc722e8133707",
           "why": "Desktop bundling downloads and verifies CockroachDB, not a GGUF model"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/models.verified-delivery.mjs",
+          "sha256": "a768ea3d3c09e62310c5cb573015dd134178434125c49722b2bdf7999d169a22",
+          "why": "The tagged Linux verifier binds the canonical model inventory to observed immutable metadata and LICENSE bytes, an exact-ID private AppImage download, exact-attempt start and producer/upload timestamps, stable delivered bytes, and deletion proof"
         }
       ],
       "verification": [
@@ -1102,6 +1107,10 @@
         {
           "command": "pnpm --filter @skytwin/embedded-llm test -- src/__tests__/managed-model-store.test.ts src/__tests__/runtime-compatibility.test.ts",
           "expected": "Managed download, deletion, and runtime compatibility controls pass"
+        },
+        {
+          "command": "pnpm claims:test",
+          "expected": "The verifier's source, delivery, stable-file, deletion, and report-consumer contracts pass within the adversarial release-claims suite"
         }
       ]
     },
@@ -1174,7 +1183,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "e24e17a2e4ebea50112a3494f89b44f91e8a45cb22071d438c418afbd9a5f25b",
+          "sha256": "99eaef16312c607d34a97133b826388ed23cff14fb5192d928d5f11ccd38032e",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
@@ -1215,7 +1224,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "e24e17a2e4ebea50112a3494f89b44f91e8a45cb22071d438c418afbd9a5f25b",
+          "sha256": "99eaef16312c607d34a97133b826388ed23cff14fb5192d928d5f11ccd38032e",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
@@ -1255,7 +1264,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "46b8630d2c7be634961e6fb27e5e81857559c5a6a715024990eeaafc3ba14290",
+          "sha256": "ab148067b74b44edf8fb27e57dc82cbbac64112db7eeb8537127b55829b1e317",
           "why": "Structurally locks the sole materials producer and exact-ID signing report aggregator and re-verifies every release material and source report binding at publication"
         }
       ],

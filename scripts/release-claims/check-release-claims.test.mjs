@@ -542,6 +542,7 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: SkyTwin-Linux-AppImage
+          path: apps/desktop/dist-electron/*.AppImage
       - name: Upload Linux deb
         id: upload-linux-deb
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -612,9 +613,23 @@ ${machineMatrix}
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+      - name: Download release artifacts for non-model verifiers
+        if: matrix.claimId != 'models.verified-delivery'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
+      - name: Prepare private model delivery subject directory
+        if: matrix.claimId == 'models.verified-delivery'
+        shell: bash
+        run: install -d -m 0700 -- .release-evidence/model-delivery-subject
+      - name: Download exact Linux AppImage for model delivery
+        id: download-model-appimage
+        if: matrix.claimId == 'models.verified-delivery'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          artifact-ids: \${{ needs.desktop-linux.outputs.appimage-artifact-id }}
+          path: .release-evidence/model-delivery-subject
+          digest-mismatch: error
       - name: Download release artifact verification materials
         if: matrix.claimId == 'release.artifact-verification'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
@@ -639,6 +654,9 @@ ${machineMatrix}
           GITHUB_TOKEN: \${{ github.token }}
           SKYTWIN_RELEASE_ARTIFACT_IDS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}
           SKYTWIN_RELEASE_ARTIFACT_DIGESTS: \${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}
+          SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID: \${{ needs.desktop-linux.outputs.appimage-artifact-id }}
+          SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST: \${{ needs.desktop-linux.outputs.appimage-artifact-digest }}
+          SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH: \${{ steps.download-model-appimage.outputs.download-path }}
         run: node scripts/release-claims/verifiers/\${{ matrix.claimId }}.mjs --platform \${{ matrix.platform }} --output .release-evidence/reports/\${{ matrix.reportName }}
       - name: Upload machine evidence report
         id: upload-machine-evidence
@@ -842,6 +860,58 @@ describe("release claim ledger validation", () => {
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
     );
+  });
+
+  it("requires the model lane to download only the exact AppImage artifact ID", () => {
+    for (const [expected, replacement] of [
+      [
+        "          artifact-ids: ${{ needs.desktop-linux.outputs.appimage-artifact-id }}",
+        "          name: SkyTwin-Linux-AppImage",
+      ],
+      [
+        "        if: matrix.claimId != 'models.verified-delivery'\n        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c\n        with:\n          path: artifacts",
+        "        if: always()\n        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c\n        with:\n          path: artifacts",
+      ],
+    ]) {
+      const root = makeRoot();
+      writeValidFixture(root);
+      const path = join(root, ".github/workflows/build.yml");
+      const workflow = readFileSync(path, "utf8");
+      expect(workflow).toContain(expected);
+      writeFileSync(path, workflow.replace(expected, replacement));
+      expect(verifyCanonicalReleasePublisher(root)).toContain(
+        "machine evidence producers must use the exact native matrix, reviewed verifier command, and immutable per-report upload graph",
+      );
+    }
+  });
+
+  it("requires the combined model and signing graph to retain every Linux artifact output", () => {
+    for (const [needle, replacement] of [
+      [
+        "      deb-artifact-id: ${{ steps.upload-linux-deb.outputs.artifact-id }}",
+        "      deb-artifact-id: forged",
+      ],
+      [
+        "      rpm-artifact-digest: ${{ steps.upload-linux-rpm.outputs.artifact-digest }}",
+        "      rpm-artifact-digest: forged",
+      ],
+    ]) {
+      const root = makeRoot();
+      writeValidFixture(root);
+      const path = join(root, ".github/workflows/build.yml");
+      const workflow = readFileSync(path, "utf8");
+      expect(workflow).toContain(needle);
+      expect(workflow).toContain(
+        "          SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH: ${{ steps.download-model-appimage.outputs.download-path }}",
+      );
+      expect(workflow).toContain(
+        "          SKYTWIN_RELEASE_ARTIFACT_IDS: ${{ matrix.platform == 'macos'",
+      );
+      writeFileSync(path, workflow.replace(needle, replacement));
+      expect(verifyCanonicalReleasePublisher(root)).toContain(
+        "Linux release uploads must expose their exact immutable current-attempt artifact IDs and digests",
+      );
+    }
   });
 
   it("requires every release-risk category and exact evidence command", () => {
@@ -2673,14 +2743,134 @@ ${step}`,
       verifyMachineEvidenceApplicability("models.verified-delivery", {}, []),
     ).toHaveLength(1);
     const report = {
+      releaseTag: "v0.7.0-beta",
+      runId: 123,
+      runAttempt: 2,
+      runAttemptStartedAt: "2026-09-15T01:02:00Z",
+      repository: "owner/repository",
+      ref: "refs/tags/v0.7.0-beta",
+      releaseArtifactKind: "desktop-installer",
+      releaseArtifactId: 456,
+      releaseArtifactName: "SkyTwin-Linux-AppImage",
+      releaseArtifactSha256: "a".repeat(64),
+      releaseArtifactCreatedAt: "2026-09-15T01:02:04Z",
+      releaseArtifactAttemptBindingResult:
+        "workflow-output-and-producer-window-pass",
+      releaseArtifactDownloadPath:
+        ".release-evidence/model-delivery-subject/SkyTwin-0.7.0.AppImage",
+      releaseArtifactDownloadStepName:
+        "Download exact Linux AppImage for model delivery",
+      releaseArtifactDownloadStepConclusion: "success",
+      releaseArtifactDownloadBindingResult:
+        "exact-artifact-id-action-download-pass",
+      subjectName: "SkyTwin-0.7.0.AppImage",
+      subjectPath: "artifacts/SkyTwin-Linux-AppImage/SkyTwin-0.7.0.AppImage",
+      subjectSha256: "b".repeat(64),
+      producerJobName:
+        "release-machine-evidence / models.verified-delivery / linux",
+      desktopProducerJobId: 41,
+      desktopProducerJobName: "Desktop — Linux (AppImage + deb + rpm)",
+      desktopProducerJobRunAttempt: 2,
+      desktopProducerJobConclusion: "success",
+      desktopProducerJobStartedAt: "2026-09-15T01:02:01Z",
+      desktopProducerJobCompletedAt: "2026-09-15T01:02:07Z",
+      desktopUploadStartedAt: "2026-09-15T01:02:03Z",
+      desktopUploadCompletedAt: "2026-09-15T01:02:05Z",
+      verifierJobId: 42,
+      verifierJobName:
+        "release-machine-evidence / models.verified-delivery / linux",
+      verifierJobRunAttempt: 2,
+      verifierJobStatus: "in_progress",
+      verifierPath:
+        "scripts/release-claims/verifiers/models.verified-delivery.mjs",
+      verifierCommand:
+        "node scripts/release-claims/verifiers/models.verified-delivery.mjs --platform linux --output .release-evidence/reports/models.verified-delivery.json",
+      verifierSha256: "c".repeat(64),
+      schemaVersion: 1,
+      generatedBy: "release-machine-verifier",
+      claimId: "models.verified-delivery",
+      result: "pass",
+      sourceCommit: "d".repeat(40),
+      platform: "linux",
+      runnerPlatform: "linux-x64",
       modelArtifacts: [
         {
-          name: "model.gguf",
-          source: "https://models.example/model.gguf",
+          id: "qwen2.5-1.5b-instruct-q4-k-m",
+          name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          source:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          deliveryHost: "us.aws.cdn.hf.co",
+          sourceRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          sourceRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadata:
+            "https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/revision/91cad51170dc346986eccefdc2dd33a9da36ead9?blobs=true",
+          metadataRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          metadataRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadataCardLicense: "apache-2.0",
+          metadataSiblingName: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          metadataSiblingExactBytes: 1_117_320_736,
+          metadataSiblingSha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+          metadataLicenseSiblingName: "LICENSE",
+          metadataLicenseSiblingExactBytes: 11_343,
+          metadataLicenseSiblingBlobId:
+            "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          metadataVerificationResult: "pass",
           license: "Apache-2.0",
-          sha256: "d".repeat(64),
+          licenseName: "Apache License 2.0",
+          licenseUrl:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseSource:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseExactBytes: 11_343,
+          licenseSha256:
+            "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+          licenseBlobId: "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          licenseVerificationResult: "pass",
+          exactBytes: 1_117_320_736,
+          sha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
           digestVerificationResult: "pass",
+          stableFileIdentityResult: "pass",
           deletionResult: "pass",
+        },
+      ],
+      checks: [
+        {
+          id: "models.delivery-digest",
+          testId: "models.delivery-digest",
+          result: "pass",
+          observed: {
+            assertion:
+              "The delivered model bytes match the reviewed immutable source pin",
+            measurement:
+              "qwen2.5-1.5b-instruct-q4_k_m.gguf 1117320736 bytes sha256:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-license",
+          testId: "models.delivery-license",
+          result: "pass",
+          observed: {
+            assertion:
+              "The model metadata and license bytes are observed at the same immutable source revision",
+            measurement:
+              "Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 card=apache-2.0; LICENSE 11343 bytes sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-delete",
+          testId: "models.delivery-delete",
+          result: "pass",
+          observed: {
+            assertion:
+              "The verified candidate was removed from the isolated verifier workspace",
+            measurement:
+              "stable inode quarantined and deleted after verification",
+            exitCode: 0,
+          },
         },
       ],
     };
@@ -2691,6 +2881,502 @@ ${step}`,
         [],
       ),
     ).toEqual([]);
+
+    const observedGithubLag = {
+      ...report,
+      releaseArtifactCreatedAt: "2026-09-15T01:02:06Z",
+    };
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        observedGithubLag,
+        [],
+      ),
+    ).toEqual([]);
+
+    for (const field of Object.keys(report.modelArtifacts[0])) {
+      const changed = structuredClone(report);
+      changed.modelArtifacts[0][field] =
+        `${String(changed.modelArtifacts[0][field])}-changed`;
+      expect(
+        verifyMachineEvidenceApplicability(
+          "models.verified-delivery",
+          changed,
+          [],
+        ),
+      ).toHaveLength(1);
+    }
+    const unexpectedModelField = structuredClone(report);
+    unexpectedModelField.modelArtifacts[0].redirectUrl =
+      "https://unreviewed.example/model.gguf";
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        unexpectedModelField,
+        [],
+      ),
+    ).toHaveLength(1);
+    const unexpectedReportField = { ...report, unboundOutput: "secret" };
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        unexpectedReportField,
+        [],
+      ),
+    ).toHaveLength(1);
+    for (const changed of [
+      { ...report, runAttempt: 1 },
+      { ...report, desktopProducerJobRunAttempt: 1 },
+      { ...report, verifierJobRunAttempt: 1 },
+      { ...report, releaseArtifactCreatedAt: "2026-09-14T01:02:04Z" },
+      { ...report, runAttemptStartedAt: "2026-09-15T01:02:02Z" },
+      {
+        ...report,
+        desktopProducerJobStartedAt: "2026-09-15T01:01:59Z",
+      },
+      {
+        ...report,
+        desktopUploadStartedAt: "2026-09-15T01:01:59Z",
+      },
+      {
+        ...report,
+        releaseArtifactCreatedAt: "2026-09-15T01:02:08Z",
+      },
+      {
+        ...report,
+        desktopUploadCompletedAt: "2026-09-15T01:02:08Z",
+      },
+    ])
+      expect(
+        verifyMachineEvidenceApplicability(
+          "models.verified-delivery",
+          changed,
+          [],
+        ),
+      ).toHaveLength(1);
+    const changedCheck = structuredClone(report);
+    changedCheck.checks[0].observed.measurement = "unbound measurement";
+    expect(
+      verifyMachineEvidenceApplicability(
+        "models.verified-delivery",
+        changedCheck,
+        [],
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("cross-binds model delivery publication to live attempt and AppImage producer evidence", async () => {
+    const root = makeRoot();
+    const commit = "0123456789abcdef0123456789abcdef01234567";
+    const tag = "v0.7.0-beta";
+    const ref = `refs/tags/${tag}`;
+    const runId = 601;
+    const runAttempt = 2;
+    const machineJobId = 602;
+    const desktopJobId = 603;
+    const evidenceArtifactId = 604;
+    const releaseAssets = makeReleaseAssets(root, 700);
+    const releaseAsset = releaseAssets.find(
+      ({ artifactName }) => artifactName === "SkyTwin-Linux-AppImage",
+    );
+    const subject = releaseAsset.subjects[0];
+    const claimId = "models.verified-delivery";
+    const producerJobName = machineProducerJobName(claimId, "linux");
+    const verifierPath = machineVerifierPath(claimId);
+    const verifierCommand = machineVerifierCommand(claimId, "linux");
+    const verifierSource = "// model delivery verifier fixture\n";
+    const verifierSha256 = createHash("sha256")
+      .update(verifierSource)
+      .digest("hex");
+    write(root, verifierPath, verifierSource);
+    const report = {
+      releaseTag: tag,
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      repository: "owner/repository",
+      ref,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      releaseArtifactCreatedAt: "2026-09-15T01:04:00Z",
+      releaseArtifactAttemptBindingResult:
+        "workflow-output-and-producer-window-pass",
+      releaseArtifactDownloadPath: `.release-evidence/model-delivery-subject/${subject.name}`,
+      releaseArtifactDownloadStepName:
+        "Download exact Linux AppImage for model delivery",
+      releaseArtifactDownloadStepConclusion: "success",
+      releaseArtifactDownloadBindingResult:
+        "exact-artifact-id-action-download-pass",
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      producerJobName,
+      desktopProducerJobId: desktopJobId,
+      desktopProducerJobName: "Desktop — Linux (AppImage + deb + rpm)",
+      desktopProducerJobRunAttempt: runAttempt,
+      desktopProducerJobConclusion: "success",
+      desktopProducerJobStartedAt: "2026-09-15T01:01:00Z",
+      desktopProducerJobCompletedAt: "2026-09-15T01:06:00Z",
+      desktopUploadStartedAt: "2026-09-15T01:03:00Z",
+      desktopUploadCompletedAt: "2026-09-15T01:05:00Z",
+      verifierJobId: machineJobId,
+      verifierJobName: producerJobName,
+      verifierJobRunAttempt: runAttempt,
+      verifierJobStatus: "in_progress",
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      schemaVersion: 1,
+      generatedBy: "release-machine-verifier",
+      claimId,
+      result: "pass",
+      sourceCommit: commit,
+      platform: "linux",
+      runnerPlatform: "linux-x64",
+      modelArtifacts: [
+        {
+          id: "qwen2.5-1.5b-instruct-q4-k-m",
+          name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          source:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          deliveryHost: "us.aws.cdn.hf.co",
+          sourceRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          sourceRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadata:
+            "https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/revision/91cad51170dc346986eccefdc2dd33a9da36ead9?blobs=true",
+          metadataRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+          metadataRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+          metadataCardLicense: "apache-2.0",
+          metadataSiblingName: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+          metadataSiblingExactBytes: 1_117_320_736,
+          metadataSiblingSha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+          metadataLicenseSiblingName: "LICENSE",
+          metadataLicenseSiblingExactBytes: 11_343,
+          metadataLicenseSiblingBlobId:
+            "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          metadataVerificationResult: "pass",
+          license: "Apache-2.0",
+          licenseName: "Apache License 2.0",
+          licenseUrl:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseSource:
+            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+          licenseExactBytes: 11_343,
+          licenseSha256:
+            "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+          licenseBlobId: "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+          licenseVerificationResult: "pass",
+          exactBytes: 1_117_320_736,
+          sha256:
+            "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+          digestVerificationResult: "pass",
+          stableFileIdentityResult: "pass",
+          deletionResult: "pass",
+        },
+      ],
+      checks: [
+        {
+          id: "models.delivery-digest",
+          testId: "models.delivery-digest",
+          result: "pass",
+          observed: {
+            assertion:
+              "The delivered model bytes match the reviewed immutable source pin",
+            measurement:
+              "qwen2.5-1.5b-instruct-q4_k_m.gguf 1117320736 bytes sha256:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-license",
+          testId: "models.delivery-license",
+          result: "pass",
+          observed: {
+            assertion:
+              "The model metadata and license bytes are observed at the same immutable source revision",
+            measurement:
+              "Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 card=apache-2.0; LICENSE 11343 bytes sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+            exitCode: 0,
+          },
+        },
+        {
+          id: "models.delivery-delete",
+          testId: "models.delivery-delete",
+          result: "pass",
+          observed: {
+            assertion:
+              "The verified candidate was removed from the isolated verifier workspace",
+            measurement:
+              "stable inode quarantined and deleted after verification",
+            exitCode: 0,
+          },
+        },
+      ],
+    };
+    const reportPath =
+      ".release-evidence/reports/models.verified-delivery.json";
+    const reportBytes = `${JSON.stringify(report)}\n`;
+    write(root, reportPath, reportBytes);
+    const evidence = {
+      claimId,
+      kind: "machine",
+      checkIds: CANONICAL_MACHINE_EVIDENCE_CHECKS.get(claimId),
+      repository: "owner/repository",
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      ref,
+      evidenceArtifactId,
+      evidenceArtifactName: "release-evidence",
+      evidenceArtifactSha256: "c".repeat(64),
+      reportPath,
+      reportSha256: createHash("sha256").update(reportBytes).digest("hex"),
+      sourceCommit: commit,
+      releaseTag: tag,
+      platform: "linux",
+      producerJobId: machineJobId,
+      producerJobName,
+      producerJobRunAttempt: runAttempt,
+      producerJobConclusion: "success",
+      verifierPath,
+      verifierCommand,
+      verifierSha256,
+      releaseArtifactKind: releaseAsset.kind,
+      releaseArtifactId: releaseAsset.artifactId,
+      releaseArtifactName: releaseAsset.artifactName,
+      releaseArtifactSha256: releaseAsset.artifactSha256,
+      subjectName: subject.name,
+      subjectPath: subject.path,
+      subjectSha256: subject.sha256,
+      why: "fixture",
+    };
+    const manifest = {
+      schemaVersion: 1,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      ref,
+      runId,
+      runAttempt,
+      runAttemptStartedAt: ATTEMPT_STARTED_AT,
+      releaseAssets,
+      verificationAssets: makeVerificationAssets(root, releaseAssets),
+      evidence: [evidence],
+    };
+    const machineJob = {
+      id: machineJobId,
+      run_id: runId,
+      name: producerJobName,
+      status: "completed",
+      conclusion: "success",
+      run_attempt: runAttempt,
+      started_at: "2026-09-15T01:07:00Z",
+      completed_at: "2026-09-15T01:09:00Z",
+      head_sha: commit,
+      run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+      steps: [
+        {
+          name: "Download exact Linux AppImage for model delivery",
+          conclusion: "success",
+        },
+        { name: CANONICAL_MACHINE_VERIFIER_STEP, conclusion: "success" },
+      ],
+    };
+    let liveDesktopRunAttempt = runAttempt;
+    let liveUploadStartedAt = report.desktopUploadStartedAt;
+    let liveAppImageName = releaseAsset.artifactName;
+    const desktopJob = ({ live = false } = {}) => ({
+      id: desktopJobId,
+      run_id: runId,
+      name: report.desktopProducerJobName,
+      status: "completed",
+      conclusion: "success",
+      run_attempt: live ? liveDesktopRunAttempt : runAttempt,
+      started_at: report.desktopProducerJobStartedAt,
+      completed_at: report.desktopProducerJobCompletedAt,
+      head_sha: commit,
+      run_url: `https://api.github.com/repos/owner/repository/actions/runs/${runId}`,
+      steps: [
+        { name: "Package Linux desktop app", conclusion: "success" },
+        {
+          name: "Upload Linux AppImage",
+          conclusion: "success",
+          started_at: live
+            ? liveUploadStartedAt
+            : report.desktopUploadStartedAt,
+          completed_at: report.desktopUploadCompletedAt,
+        },
+      ],
+    });
+    const apiRoot = "https://api.github.com/repos/owner/repository/actions";
+    const runUrl = `${apiRoot}/runs/${runId}`;
+    const attemptUrl = `${runUrl}/attempts/${runAttempt}`;
+    const attemptJobsUrl = `${attemptUrl}/jobs?per_page=100&page=1`;
+    const machineJobUrl = `${apiRoot}/jobs/${machineJobId}`;
+    const desktopJobUrl = `${apiRoot}/jobs/${desktopJobId}`;
+    const evidenceArtifactUrl = `${apiRoot}/artifacts/${evidenceArtifactId}`;
+    const releaseArtifactUrls = new Map(
+      releaseAssets.map((asset) => [
+        `${apiRoot}/artifacts/${asset.artifactId}`,
+        asset,
+      ]),
+    );
+    const requestedUrls = [];
+    const fetchImpl = async (url) => {
+      const text = String(url);
+      requestedUrls.push(text);
+      let body;
+      if (text === attemptJobsUrl)
+        body = { total_count: 2, jobs: [machineJob, desktopJob()] };
+      else if (text === attemptUrl)
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          run_started_at: ATTEMPT_STARTED_AT,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text === runUrl)
+        body = {
+          id: runId,
+          run_attempt: runAttempt,
+          event: "push",
+          head_branch: tag,
+          head_sha: commit,
+          path: ".github/workflows/build.yml",
+          repository: { full_name: "owner/repository" },
+        };
+      else if (text === machineJobUrl) body = machineJob;
+      else if (text === desktopJobUrl) body = desktopJob({ live: true });
+      else if (text === evidenceArtifactUrl)
+        body = {
+          id: evidenceArtifactId,
+          name: "release-evidence",
+          expired: false,
+          digest: `sha256:${"c".repeat(64)}`,
+          workflow_run: { id: runId, head_sha: commit },
+        };
+      else if (releaseArtifactUrls.has(text)) {
+        const asset = releaseArtifactUrls.get(text);
+        body = releaseAssetApiBody(asset, runId, commit);
+        if (asset.artifactId === releaseAsset.artifactId)
+          Object.assign(body, {
+            name: liveAppImageName,
+            created_at: report.releaseArtifactCreatedAt,
+            updated_at: report.releaseArtifactCreatedAt,
+          });
+      } else throw new Error(`unexpected GitHub API URL: ${text}`);
+      return { ok: true, json: async () => body };
+    };
+    const ledger = {
+      release: {
+        readinessClaims: [
+          { claimId, requiredEvidenceKinds: ["source", "machine"] },
+        ],
+      },
+    };
+    const options = {
+      root,
+      repository: "owner/repository",
+      releaseCommit: commit,
+      tag,
+      runId,
+      triggerRef: ref,
+      githubToken: "token",
+      fetchImpl,
+    };
+    expect(Date.parse(report.desktopProducerJobCompletedAt)).toBeLessThan(
+      Date.parse(machineJob.started_at),
+    );
+    expect(await verifyPublicationEvidence(ledger, manifest, options)).toEqual(
+      [],
+    );
+    const requestCount = (url) =>
+      requestedUrls.filter((requested) => requested === url).length;
+    expect(requestCount(runUrl)).toBe(1);
+    expect(requestCount(attemptUrl)).toBe(2);
+    expect(requestCount(attemptJobsUrl)).toBe(1);
+    expect(requestCount(machineJobUrl)).toBe(1);
+    expect(requestCount(desktopJobUrl)).toBe(1);
+    expect(requestCount(evidenceArtifactUrl)).toBe(1);
+    for (const [url, asset] of releaseArtifactUrls)
+      expect(requestCount(url)).toBe(
+        asset.artifactId === releaseAsset.artifactId ? 2 : 1,
+      );
+    expect(new Set(requestedUrls)).toEqual(
+      new Set([
+        runUrl,
+        attemptUrl,
+        attemptJobsUrl,
+        machineJobUrl,
+        desktopJobUrl,
+        evidenceArtifactUrl,
+        ...releaseArtifactUrls.keys(),
+      ]),
+    );
+
+    liveUploadStartedAt = "2026-09-15T01:02:00Z";
+    const exactTimestampErrors = await verifyPublicationEvidence(
+      ledger,
+      manifest,
+      options,
+    );
+    expect(
+      isArtifactCreationWithinProducerWindow(
+        report.releaseArtifactCreatedAt,
+        liveUploadStartedAt,
+        report.desktopProducerJobCompletedAt,
+      ),
+    ).toBe(true);
+    expect(exactTimestampErrors).toEqual([
+      "models.verified-delivery machine evidence AppImage artifact is not bound to its exact-attempt successful producer and producer/upload timeline",
+    ]);
+    liveUploadStartedAt = report.desktopUploadStartedAt;
+
+    liveDesktopRunAttempt = runAttempt - 1;
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("AppImage artifact is not bound"),
+      ),
+    ).toBe(true);
+    liveDesktopRunAttempt = runAttempt;
+
+    liveAppImageName = "SkyTwin-Linux-AppImage-unexpected";
+    expect(
+      (await verifyPublicationEvidence(ledger, manifest, options)).some(
+        (error) => error.includes("release artifact is not the unexpired"),
+      ),
+    ).toBe(true);
+    liveAppImageName = releaseAsset.artifactName;
+
+    liveUploadStartedAt = "2026-09-15T00:59:59Z";
+    report.desktopUploadStartedAt = liveUploadStartedAt;
+    const invalidChronologyReportBytes = `${JSON.stringify(report)}\n`;
+    write(root, reportPath, invalidChronologyReportBytes);
+    evidence.reportSha256 = createHash("sha256")
+      .update(invalidChronologyReportBytes)
+      .digest("hex");
+    const chronologyErrors = await verifyPublicationEvidence(
+      ledger,
+      manifest,
+      options,
+    );
+    expect(
+      chronologyErrors.some((error) =>
+        error.includes("AppImage artifact is not bound"),
+      ),
+    ).toBe(true);
+    expect(
+      chronologyErrors.some((error) =>
+        error.includes("complete verifier report contract"),
+      ),
+    ).toBe(true);
   });
 
   it("requires stable unpacked executable identity for packaged sample evidence", () => {

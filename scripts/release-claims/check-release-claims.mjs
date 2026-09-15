@@ -133,6 +133,132 @@ export const CANONICAL_CLAIM_CATEGORIES = new Map([
   ["release.artifact-verification", "artifact-verification"],
 ]);
 
+const CANONICAL_MODEL_DELIVERY_ARTIFACT = Object.freeze({
+  id: "qwen2.5-1.5b-instruct-q4-k-m",
+  name: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  source:
+    "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  deliveryHost: "us.aws.cdn.hf.co",
+  sourceRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+  sourceRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+  metadata:
+    "https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF/revision/91cad51170dc346986eccefdc2dd33a9da36ead9?blobs=true",
+  metadataRepository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
+  metadataRevision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
+  metadataCardLicense: "apache-2.0",
+  metadataSiblingName: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+  metadataSiblingExactBytes: 1_117_320_736,
+  metadataSiblingSha256:
+    "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+  metadataLicenseSiblingName: "LICENSE",
+  metadataLicenseSiblingExactBytes: 11_343,
+  metadataLicenseSiblingBlobId: "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+  metadataVerificationResult: "pass",
+  license: "Apache-2.0",
+  licenseName: "Apache License 2.0",
+  licenseUrl:
+    "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+  licenseSource:
+    "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE",
+  licenseExactBytes: 11_343,
+  licenseSha256:
+    "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+  licenseBlobId: "6634c8cc3133b3848ec74b9f275acaaa1ea618ab",
+  licenseVerificationResult: "pass",
+  exactBytes: 1_117_320_736,
+  sha256: "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+  digestVerificationResult: "pass",
+  stableFileIdentityResult: "pass",
+  deletionResult: "pass",
+});
+const CANONICAL_MODEL_DELIVERY_CHECKS = Object.freeze([
+  Object.freeze({
+    id: "models.delivery-digest",
+    testId: "models.delivery-digest",
+    result: "pass",
+    observed: Object.freeze({
+      assertion:
+        "The delivered model bytes match the reviewed immutable source pin",
+      measurement:
+        "qwen2.5-1.5b-instruct-q4_k_m.gguf 1117320736 bytes sha256:6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+      exitCode: 0,
+    }),
+  }),
+  Object.freeze({
+    id: "models.delivery-license",
+    testId: "models.delivery-license",
+    result: "pass",
+    observed: Object.freeze({
+      assertion:
+        "The model metadata and license bytes are observed at the same immutable source revision",
+      measurement:
+        "Qwen/Qwen2.5-1.5B-Instruct-GGUF@91cad51170dc346986eccefdc2dd33a9da36ead9 card=apache-2.0; LICENSE 11343 bytes sha256:832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e",
+      exitCode: 0,
+    }),
+  }),
+  Object.freeze({
+    id: "models.delivery-delete",
+    testId: "models.delivery-delete",
+    result: "pass",
+    observed: Object.freeze({
+      assertion:
+        "The verified candidate was removed from the isolated verifier workspace",
+      measurement: "stable inode quarantined and deleted after verification",
+      exitCode: 0,
+    }),
+  }),
+]);
+const MODEL_DELIVERY_DOWNLOAD_STEP =
+  "Download exact Linux AppImage for model delivery";
+const MODEL_DELIVERY_SUBJECT_DIRECTORY =
+  ".release-evidence/model-delivery-subject";
+const MODEL_DELIVERY_REPORT_FIELDS = Object.freeze([
+  "releaseTag",
+  "runId",
+  "runAttempt",
+  "runAttemptStartedAt",
+  "repository",
+  "ref",
+  "releaseArtifactKind",
+  "releaseArtifactId",
+  "releaseArtifactName",
+  "releaseArtifactSha256",
+  "releaseArtifactCreatedAt",
+  "releaseArtifactAttemptBindingResult",
+  "releaseArtifactDownloadPath",
+  "releaseArtifactDownloadStepName",
+  "releaseArtifactDownloadStepConclusion",
+  "releaseArtifactDownloadBindingResult",
+  "subjectName",
+  "subjectPath",
+  "subjectSha256",
+  "producerJobName",
+  "desktopProducerJobId",
+  "desktopProducerJobName",
+  "desktopProducerJobRunAttempt",
+  "desktopProducerJobConclusion",
+  "desktopProducerJobStartedAt",
+  "desktopProducerJobCompletedAt",
+  "desktopUploadStartedAt",
+  "desktopUploadCompletedAt",
+  "verifierJobId",
+  "verifierJobName",
+  "verifierJobRunAttempt",
+  "verifierJobStatus",
+  "verifierPath",
+  "verifierCommand",
+  "verifierSha256",
+  "schemaVersion",
+  "generatedBy",
+  "claimId",
+  "result",
+  "sourceCommit",
+  "platform",
+  "runnerPlatform",
+  "modelArtifacts",
+  "checks",
+]);
+
 const CANONICAL_READINESS_CLAIM_DIGESTS = new Map([
   [
     "storage.desktop-crdb",
@@ -2174,6 +2300,7 @@ export function verifyCanonicalReleasePublisher(root) {
     expectedKeys.every((key) => Object.hasOwn(value, key));
   const machineProducerJob =
     canonicalWorkflow.jobs?.["release-machine-evidence"];
+  const desktopLinuxJob = canonicalWorkflow.jobs?.["desktop-linux"];
   const evidenceAggregatorJob =
     canonicalWorkflow.jobs?.["aggregate-release-evidence"];
   const artifactMaterialsJob =
@@ -2184,6 +2311,40 @@ export function verifyCanonicalReleasePublisher(root) {
     RELEASE_ATTESTATION_MATERIALIZER_PATH,
     "scripts/release-claims/verifiers/release.artifact-verification.mjs",
   ];
+  const desktopLinuxAppImageUpload = asArray(desktopLinuxJob?.steps).filter(
+    (step) => step?.name === "Upload Linux AppImage",
+  );
+  if (
+    !isRecord(desktopLinuxJob?.outputs) ||
+    !hasExactKeys(desktopLinuxJob.outputs, [
+      "appimage-artifact-id",
+      "appimage-artifact-digest",
+      "deb-artifact-id",
+      "deb-artifact-digest",
+      "rpm-artifact-id",
+      "rpm-artifact-digest",
+    ]) ||
+    desktopLinuxJob.outputs["appimage-artifact-id"] !==
+      "${{ steps.upload-linux-appimage.outputs.artifact-id }}" ||
+    desktopLinuxJob.outputs["appimage-artifact-digest"] !==
+      "${{ steps.upload-linux-appimage.outputs.artifact-digest }}" ||
+    desktopLinuxJob.outputs["deb-artifact-id"] !==
+      "${{ steps.upload-linux-deb.outputs.artifact-id }}" ||
+    desktopLinuxJob.outputs["deb-artifact-digest"] !==
+      "${{ steps.upload-linux-deb.outputs.artifact-digest }}" ||
+    desktopLinuxJob.outputs["rpm-artifact-id"] !==
+      "${{ steps.upload-linux-rpm.outputs.artifact-id }}" ||
+    desktopLinuxJob.outputs["rpm-artifact-digest"] !==
+      "${{ steps.upload-linux-rpm.outputs.artifact-digest }}" ||
+    desktopLinuxAppImageUpload.length !== 1 ||
+    desktopLinuxAppImageUpload[0].id !== "upload-linux-appimage" ||
+    desktopLinuxAppImageUpload[0].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.uploadArtifact
+  )
+    addError(
+      errors,
+      "Linux release uploads must expose their exact immutable current-attempt artifact IDs and digests",
+    );
   for (const sourcePath of artifactMaterialSources) {
     if (!resolveContainedRegularFile(root, sourcePath))
       addError(
@@ -2407,7 +2568,7 @@ export function verifyCanonicalReleasePublisher(root) {
     JSON.stringify(machineProducerJob.strategy.matrix.include) !==
       JSON.stringify(expectedMachineMatrix) ||
     !Array.isArray(producerSteps) ||
-    producerSteps.length !== 10 ||
+    producerSteps.length !== 12 ||
     !isRecord(producerSteps[0]) ||
     !hasExactKeys(producerSteps[0], ["uses", "with"]) ||
     producerSteps[0].uses !==
@@ -2415,134 +2576,170 @@ export function verifyCanonicalReleasePublisher(root) {
     !hasExactKeys(producerSteps[0].with, ["persist-credentials"]) ||
     producerSteps[0].with["persist-credentials"] !== false ||
     !isRecord(producerSteps[1]) ||
-    !hasExactKeys(producerSteps[1], ["uses", "with"]) ||
+    !hasExactKeys(producerSteps[1], ["name", "if", "uses", "with"]) ||
+    producerSteps[1].name !==
+      "Download release artifacts for non-model verifiers" ||
+    producerSteps[1].if !== "matrix.claimId != 'models.verified-delivery'" ||
     producerSteps[1].uses !==
       "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c" ||
     !hasExactKeys(producerSteps[1].with, ["path"]) ||
     producerSteps[1].with.path !== "artifacts" ||
     !isRecord(producerSteps[2]) ||
-    !hasExactKeys(producerSteps[2], ["name", "if", "uses", "with"]) ||
+    !hasExactKeys(producerSteps[2], ["name", "if", "shell", "run"]) ||
     producerSteps[2].name !==
-      "Download release artifact verification materials" ||
-    producerSteps[2].if !==
-      "matrix.claimId == 'release.artifact-verification'" ||
-    producerSteps[2].uses !==
-      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
-    !hasExactKeys(producerSteps[2].with, ["name", "path"]) ||
-    producerSteps[2].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
-    producerSteps[2].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
+      "Prepare private model delivery subject directory" ||
+    producerSteps[2].if !== "matrix.claimId == 'models.verified-delivery'" ||
+    producerSteps[2].shell !== "bash" ||
+    producerSteps[2].run !==
+      "install -d -m 0700 -- .release-evidence/model-delivery-subject" ||
     !isRecord(producerSteps[3]) ||
-    !hasExactKeys(producerSteps[3], ["name", "id", "if", "env", "run"]) ||
-    producerSteps[3].name !== "Resolve packaged sample provenance" ||
-    producerSteps[3].id !== "sample-provenance" ||
-    producerSteps[3].if !==
-      "matrix.claimId == 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[3].env, ["GITHUB_TOKEN"]) ||
-    producerSteps[3].env.GITHUB_TOKEN !== "${{ github.token }}" ||
-    producerSteps[3].run !==
-      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }}" ||
-    !isRecord(producerSteps[4]) ||
-    !hasExactKeys(producerSteps[4], ["name", "if", "env", "run"]) ||
-    producerSteps[4].name !==
-      "Run canonical packaged sample verifier without GitHub API token" ||
-    producerSteps[4].if !==
-      "matrix.claimId == 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[4].env, [
-      "SKYTWIN_RELEASE_PROVENANCE_SHA256",
+    !hasExactKeys(producerSteps[3], ["name", "id", "if", "uses", "with"]) ||
+    producerSteps[3].name !== MODEL_DELIVERY_DOWNLOAD_STEP ||
+    producerSteps[3].id !== "download-model-appimage" ||
+    producerSteps[3].if !== "matrix.claimId == 'models.verified-delivery'" ||
+    producerSteps[3].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(producerSteps[3].with, [
+      "artifact-ids",
+      "path",
+      "digest-mismatch",
     ]) ||
-    producerSteps[4].env.SKYTWIN_RELEASE_PROVENANCE_SHA256 !==
-      "${{ steps.sample-provenance.outputs.descriptor_sha256 }}" ||
-    producerSteps[4].run !==
-      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+    producerSteps[3].with["artifact-ids"] !==
+      "${{ needs.desktop-linux.outputs.appimage-artifact-id }}" ||
+    producerSteps[3].with.path !== MODEL_DELIVERY_SUBJECT_DIRECTORY ||
+    producerSteps[3].with["digest-mismatch"] !== "error" ||
+    !isRecord(producerSteps[4]) ||
+    !hasExactKeys(producerSteps[4], ["name", "if", "uses", "with"]) ||
+    producerSteps[4].name !==
+      "Download release artifact verification materials" ||
+    producerSteps[4].if !==
+      "matrix.claimId == 'release.artifact-verification'" ||
+    producerSteps[4].uses !==
+      PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
+    !hasExactKeys(producerSteps[4].with, ["name", "path"]) ||
+    producerSteps[4].with.name !== RELEASE_ARTIFACT_MATERIALS_ARTIFACT ||
+    producerSteps[4].with.path !== ARTIFACT_VERIFICATION_DIRECTORY ||
     !isRecord(producerSteps[5]) ||
     !hasExactKeys(producerSteps[5], ["name", "id", "if", "env", "run"]) ||
-    producerSteps[5].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
-    producerSteps[5].id !== "machine-verifier" ||
+    producerSteps[5].name !== "Resolve packaged sample provenance" ||
+    producerSteps[5].id !== "sample-provenance" ||
     producerSteps[5].if !==
+      "matrix.claimId == 'sample.packaged-account-free'" ||
+    !hasExactKeys(producerSteps[5].env, ["GITHUB_TOKEN"]) ||
+    producerSteps[5].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[5].run !==
+      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --discover --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }}" ||
+    !isRecord(producerSteps[6]) ||
+    !hasExactKeys(producerSteps[6], ["name", "if", "env", "run"]) ||
+    producerSteps[6].name !==
+      "Run canonical packaged sample verifier without GitHub API token" ||
+    producerSteps[6].if !==
+      "matrix.claimId == 'sample.packaged-account-free'" ||
+    !hasExactKeys(producerSteps[6].env, [
+      "SKYTWIN_RELEASE_PROVENANCE_SHA256",
+    ]) ||
+    producerSteps[6].env.SKYTWIN_RELEASE_PROVENANCE_SHA256 !==
+      "${{ steps.sample-provenance.outputs.descriptor_sha256 }}" ||
+    producerSteps[6].run !==
+      "node scripts/release-claims/verifiers/sample.packaged-account-free.mjs --verify --platform ${{ matrix.platform }} --descriptor .release-evidence/provenance/${{ matrix.reportName }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
+    !isRecord(producerSteps[7]) ||
+    !hasExactKeys(producerSteps[7], ["name", "id", "if", "env", "run"]) ||
+    producerSteps[7].name !== CANONICAL_MACHINE_VERIFIER_STEP ||
+    producerSteps[7].id !== "machine-verifier" ||
+    producerSteps[7].if !==
       "matrix.claimId != 'sample.packaged-account-free'" ||
-    !hasExactKeys(producerSteps[5].env, [
+    !hasExactKeys(producerSteps[7].env, [
       "GITHUB_TOKEN",
       "SKYTWIN_RELEASE_ARTIFACT_IDS",
       "SKYTWIN_RELEASE_ARTIFACT_DIGESTS",
+      "SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID",
+      "SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST",
+      "SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH",
     ]) ||
-    producerSteps[5].env.GITHUB_TOKEN !== "${{ github.token }}" ||
-    producerSteps[5].env.SKYTWIN_RELEASE_ARTIFACT_IDS !==
+    producerSteps[7].env.GITHUB_TOKEN !== "${{ github.token }}" ||
+    producerSteps[7].env.SKYTWIN_RELEASE_ARTIFACT_IDS !==
       "${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-id, needs.desktop-mac.outputs.zip-artifact-id) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-id) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-id, needs.desktop-linux.outputs.deb-artifact-id, needs.desktop-linux.outputs.rpm-artifact-id) || '' }}" ||
-    producerSteps[5].env.SKYTWIN_RELEASE_ARTIFACT_DIGESTS !==
+    producerSteps[7].env.SKYTWIN_RELEASE_ARTIFACT_DIGESTS !==
       "${{ matrix.platform == 'macos' && format('SkyTwin-macOS-dmg={0},SkyTwin-macOS-zip={1}', needs.desktop-mac.outputs.dmg-artifact-digest, needs.desktop-mac.outputs.zip-artifact-digest) || matrix.platform == 'windows' && format('SkyTwin-Windows-installer={0}', needs.desktop-windows.outputs.installer-artifact-digest) || matrix.platform == 'linux' && format('SkyTwin-Linux-AppImage={0},SkyTwin-Linux-deb={1},SkyTwin-Linux-rpm={2}', needs.desktop-linux.outputs.appimage-artifact-digest, needs.desktop-linux.outputs.deb-artifact-digest, needs.desktop-linux.outputs.rpm-artifact-digest) || '' }}" ||
-    producerSteps[5].run !==
+    producerSteps[7].env.SKYTWIN_LINUX_APPIMAGE_ARTIFACT_ID !==
+      "${{ needs.desktop-linux.outputs.appimage-artifact-id }}" ||
+    producerSteps[7].env.SKYTWIN_LINUX_APPIMAGE_ARTIFACT_DIGEST !==
+      "${{ needs.desktop-linux.outputs.appimage-artifact-digest }}" ||
+    producerSteps[7].env.SKYTWIN_MODEL_APPIMAGE_DOWNLOAD_PATH !==
+      "${{ steps.download-model-appimage.outputs.download-path }}" ||
+    producerSteps[7].run !==
       "node scripts/release-claims/verifiers/${{ matrix.claimId }}.mjs --platform ${{ matrix.platform }} --output .release-evidence/reports/${{ matrix.reportName }}" ||
-    !isRecord(producerSteps[6]) ||
-    !hasExactKeys(producerSteps[6], ["name", "id", "uses", "with"]) ||
-    producerSteps[6].name !== "Upload machine evidence report" ||
-    producerSteps[6].id !== "upload-machine-evidence" ||
-    producerSteps[6].uses !==
+    !isRecord(producerSteps[8]) ||
+    !hasExactKeys(producerSteps[8], ["name", "id", "uses", "with"]) ||
+    producerSteps[8].name !== "Upload machine evidence report" ||
+    producerSteps[8].id !== "upload-machine-evidence" ||
+    producerSteps[8].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
-    !hasExactKeys(producerSteps[6].with, [
+    !hasExactKeys(producerSteps[8].with, [
       "name",
       "path",
       "if-no-files-found",
       "compression-level",
     ]) ||
-    producerSteps[6].with.name !==
+    producerSteps[8].with.name !==
       "${{ matrix.claimId == 'release.signing' && format('release-signing-report-{0}-attempt-{1}', matrix.platform, github.run_attempt) || format('release-machine-evidence-{0}-{1}-attempt-{2}', matrix.claimId, matrix.platform, github.run_attempt) }}" ||
-    producerSteps[6].with.path !==
+    producerSteps[8].with.path !==
       ".release-evidence/reports/${{ matrix.reportName }}" ||
-    producerSteps[6].with["if-no-files-found"] !== "error" ||
-    producerSteps[6].with["compression-level"] !== 0 ||
-    !isRecord(producerSteps[7]) ||
-    !hasExactKeys(producerSteps[7], ["name", "if", "uses", "with"]) ||
-    producerSteps[7].name !== "Download exact uploaded signing report" ||
-    producerSteps[7].if !== "matrix.claimId == 'release.signing'" ||
-    producerSteps[7].uses !==
+    producerSteps[8].with["if-no-files-found"] !== "error" ||
+    producerSteps[8].with["compression-level"] !== 0 ||
+    !isRecord(producerSteps[9]) ||
+    !hasExactKeys(producerSteps[9], ["name", "if", "uses", "with"]) ||
+    producerSteps[9].name !== "Download exact uploaded signing report" ||
+    producerSteps[9].if !== "matrix.claimId == 'release.signing'" ||
+    producerSteps[9].uses !==
       PINNED_RELEASE_WORKFLOW_ACTIONS.downloadArtifact ||
-    !hasExactKeys(producerSteps[7].with, [
+    !hasExactKeys(producerSteps[9].with, [
       "artifact-ids",
       "path",
       "merge-multiple",
     ]) ||
-    producerSteps[7].with["artifact-ids"] !==
+    producerSteps[9].with["artifact-ids"] !==
       "${{ steps.upload-machine-evidence.outputs.artifact-id }}" ||
-    producerSteps[7].with.path !== ".release-evidence/upload-confirmation" ||
-    producerSteps[7].with["merge-multiple"] !== true ||
-    !isRecord(producerSteps[8]) ||
-    !hasExactKeys(producerSteps[8], ["name", "if", "env", "run"]) ||
-    producerSteps[8].name !== "Verify exact uploaded signing report binding" ||
-    producerSteps[8].if !== "matrix.claimId == 'release.signing'" ||
-    !hasExactKeys(producerSteps[8].env, [
+    producerSteps[9].with.path !== ".release-evidence/upload-confirmation" ||
+    producerSteps[9].with["merge-multiple"] !== true ||
+    !isRecord(producerSteps[10]) ||
+    !hasExactKeys(producerSteps[10], ["name", "if", "env", "run"]) ||
+    producerSteps[10].name !== "Verify exact uploaded signing report binding" ||
+    producerSteps[10].if !== "matrix.claimId == 'release.signing'" ||
+    !hasExactKeys(producerSteps[10].env, [
       "SKYTWIN_EXPECTED_REPORT_SHA256",
       "SKYTWIN_UPLOADED_ARTIFACT_ID",
       "SKYTWIN_UPLOADED_ARTIFACT_NAME",
       "SKYTWIN_UPLOADED_ARTIFACT_SHA256",
     ]) ||
-    producerSteps[8].env.SKYTWIN_EXPECTED_REPORT_SHA256 !==
+    producerSteps[10].env.SKYTWIN_EXPECTED_REPORT_SHA256 !==
       "${{ steps.machine-verifier.outputs.report_sha256 }}" ||
-    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_ID !==
+    producerSteps[10].env.SKYTWIN_UPLOADED_ARTIFACT_ID !==
       "${{ steps.upload-machine-evidence.outputs.artifact-id }}" ||
-    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_NAME !==
+    producerSteps[10].env.SKYTWIN_UPLOADED_ARTIFACT_NAME !==
       "release-signing-report-${{ matrix.platform }}-attempt-${{ github.run_attempt }}" ||
-    producerSteps[8].env.SKYTWIN_UPLOADED_ARTIFACT_SHA256 !==
+    producerSteps[10].env.SKYTWIN_UPLOADED_ARTIFACT_SHA256 !==
       "${{ steps.upload-machine-evidence.outputs.artifact-digest }}" ||
-    producerSteps[8].run !==
+    producerSteps[10].run !==
       "node scripts/release-claims/verifiers/release.signing.mjs --verify-upload --platform ${{ matrix.platform }} --report .release-evidence/upload-confirmation/${{ matrix.reportName }} --binding .release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json" ||
-    !isRecord(producerSteps[9]) ||
-    !hasExactKeys(producerSteps[9], ["name", "if", "uses", "with"]) ||
-    producerSteps[9].name !== "Upload signing report source binding" ||
-    producerSteps[9].if !== "matrix.claimId == 'release.signing'" ||
-    producerSteps[9].uses !==
+    !isRecord(producerSteps[11]) ||
+    !hasExactKeys(producerSteps[11], ["name", "if", "uses", "with"]) ||
+    producerSteps[11].name !== "Upload signing report source binding" ||
+    producerSteps[11].if !== "matrix.claimId == 'release.signing'" ||
+    producerSteps[11].uses !==
       "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" ||
-    !hasExactKeys(producerSteps[9].with, [
+    !hasExactKeys(producerSteps[11].with, [
       "name",
       "path",
       "if-no-files-found",
       "compression-level",
     ]) ||
-    producerSteps[9].with.name !==
+    producerSteps[11].with.name !==
       "release-signing-binding-${{ matrix.platform }}-attempt-${{ github.run_attempt }}" ||
-    producerSteps[9].with.path !==
+    producerSteps[11].with.path !==
       ".release-evidence/upload-bindings/${{ matrix.reportName }}.binding.json" ||
-    producerSteps[9].with["if-no-files-found"] !== "error" ||
-    producerSteps[9].with["compression-level"] !== 0
+    producerSteps[11].with["if-no-files-found"] !== "error" ||
+    producerSteps[11].with["compression-level"] !== 0
   )
     addError(
       errors,
@@ -4801,20 +4998,74 @@ export function verifyMachineEvidenceApplicability(
   }
   if (claimId === "models.verified-delivery") {
     const modelArtifacts = asArray(report?.modelArtifacts);
+    const model = modelArtifacts[0];
+    const expectedFields = Object.keys(CANONICAL_MODEL_DELIVERY_ARTIFACT);
+    const attemptStarted = canonicalGithubTimestampMs(
+      report?.runAttemptStartedAt,
+    );
+    const producerStarted = canonicalGithubTimestampMs(
+      report?.desktopProducerJobStartedAt,
+    );
+    const producerCompleted = canonicalGithubTimestampMs(
+      report?.desktopProducerJobCompletedAt,
+    );
+    const artifactCreated = canonicalGithubTimestampMs(
+      report?.releaseArtifactCreatedAt,
+    );
+    const uploadStarted = canonicalGithubTimestampMs(
+      report?.desktopUploadStartedAt,
+    );
+    const uploadCompleted = canonicalGithubTimestampMs(
+      report?.desktopUploadCompletedAt,
+    );
     if (
-      modelArtifacts.length === 0 ||
-      modelArtifacts.some(
-        (model) =>
-          !isNonEmptyString(model?.name) ||
-          !isNonEmptyString(model?.source) ||
-          !isNonEmptyString(model?.license) ||
-          !SOURCE_DIGEST.test(model?.sha256 ?? "") ||
-          model?.digestVerificationResult !== "pass" ||
-          model?.deletionResult !== "pass",
-      )
+      !isPlainRecord(report) ||
+      !sameStringSet(Object.keys(report), MODEL_DELIVERY_REPORT_FIELDS) ||
+      !Number.isSafeInteger(report.runAttempt) ||
+      report.runAttempt <= 0 ||
+      report.releaseArtifactAttemptBindingResult !==
+        "workflow-output-and-producer-window-pass" ||
+      report.releaseArtifactDownloadPath !==
+        `${MODEL_DELIVERY_SUBJECT_DIRECTORY}/${report.subjectName}` ||
+      report.releaseArtifactDownloadStepName !== MODEL_DELIVERY_DOWNLOAD_STEP ||
+      report.releaseArtifactDownloadStepConclusion !== "success" ||
+      report.releaseArtifactDownloadBindingResult !==
+        "exact-artifact-id-action-download-pass" ||
+      attemptStarted === null ||
+      producerStarted === null ||
+      producerCompleted === null ||
+      artifactCreated === null ||
+      uploadStarted === null ||
+      uploadCompleted === null ||
+      attemptStarted > producerStarted ||
+      producerStarted > uploadStarted ||
+      uploadStarted > artifactCreated ||
+      artifactCreated > producerCompleted ||
+      uploadStarted > uploadCompleted ||
+      uploadCompleted > producerCompleted ||
+      !Number.isSafeInteger(report.desktopProducerJobId) ||
+      report.desktopProducerJobId <= 0 ||
+      report.desktopProducerJobName !==
+        "Desktop — Linux (AppImage + deb + rpm)" ||
+      report.desktopProducerJobRunAttempt !== report.runAttempt ||
+      report.desktopProducerJobConclusion !== "success" ||
+      !Number.isSafeInteger(report.verifierJobId) ||
+      report.verifierJobId <= 0 ||
+      report.verifierJobName !== report.producerJobName ||
+      report.verifierJobRunAttempt !== report.runAttempt ||
+      report.verifierJobStatus !== "in_progress" ||
+      report.runnerPlatform !== "linux-x64" ||
+      modelArtifacts.length !== 1 ||
+      !isPlainRecord(model) ||
+      !sameStringSet(Object.keys(model), expectedFields) ||
+      Object.entries(CANONICAL_MODEL_DELIVERY_ARTIFACT).some(
+        ([field, value]) => model[field] !== value,
+      ) ||
+      JSON.stringify(report.checks) !==
+        JSON.stringify(CANONICAL_MODEL_DELIVERY_CHECKS)
     )
       errors.push(
-        "models.verified-delivery machine evidence must identify every recommended model artifact with source, license, digest, verified delivery, and deletion proof",
+        "models.verified-delivery machine evidence must exactly match the canonical model inventory and complete verifier report contract",
       );
   }
   return errors;
@@ -6275,6 +6526,61 @@ export async function verifyPublicationEvidence(
       addError(errors, `${prefix} report is not valid JSON`);
       continue;
     }
+    let modelDesktopProducerJob = null;
+    let modelRunAttempt = null;
+    if (claimId === "models.verified-delivery") {
+      if (
+        !Number.isSafeInteger(report.desktopProducerJobId) ||
+        report.desktopProducerJobId <= 0
+      ) {
+        addError(
+          errors,
+          `${prefix} report does not identify the exact desktop producer job`,
+        );
+      } else {
+        const desktopProducerResponse = await fetchChecked(
+          fetchImpl,
+          `${apiRoot}/jobs/${report.desktopProducerJobId}`,
+          { headers },
+          `${prefix} desktop producer job`,
+          errors,
+        );
+        if (desktopProducerResponse) {
+          try {
+            modelDesktopProducerJob = await desktopProducerResponse.json();
+          } catch {
+            addError(
+              errors,
+              `${prefix} desktop producer job API response was not valid JSON`,
+            );
+          }
+        }
+      }
+      if (!Number.isSafeInteger(report.runAttempt) || report.runAttempt <= 0) {
+        addError(
+          errors,
+          `${prefix} report does not identify the exact workflow attempt`,
+        );
+      } else {
+        const attemptResponse = await fetchChecked(
+          fetchImpl,
+          `${apiRoot}/runs/${runId}/attempts/${report.runAttempt}`,
+          { headers },
+          `${prefix} workflow attempt`,
+          errors,
+        );
+        if (attemptResponse) {
+          try {
+            modelRunAttempt = await attemptResponse.json();
+          } catch {
+            addError(
+              errors,
+              `${prefix} workflow attempt API response was not valid JSON`,
+            );
+          }
+        }
+      }
+    }
     const expectedVerifierPath = machineVerifierPath(claimId);
     const expectedVerifierCommand = machineVerifierCommand(
       claimId,
@@ -6303,6 +6609,13 @@ export async function verifyPublicationEvidence(
       report.sourceCommit !== releaseCommit ||
       report.releaseTag !== tag ||
       report.runId !== runId ||
+      (claimId === "models.verified-delivery" &&
+        (report.runAttempt !== currentRun.run_attempt ||
+          report.verifierJobId !== evidence.producerJobId ||
+          report.verifierJobId !== producerJob.id ||
+          report.verifierJobName !== producerJob.name ||
+          report.verifierJobRunAttempt !== currentRun.run_attempt ||
+          producerJob.run_attempt !== currentRun.run_attempt)) ||
       report.repository !== repository ||
       report.ref !== triggerRef ||
       report.platform !== evidence.platform ||
@@ -6327,6 +6640,88 @@ export async function verifyPublicationEvidence(
         errors,
         `${prefix} report is not a passing result bound to the release artifact and commit`,
       );
+    }
+    if (claimId === "models.verified-delivery") {
+      const exactDownloadStep = asArray(producerJob?.steps).filter(
+        (step) => step?.name === MODEL_DELIVERY_DOWNLOAD_STEP,
+      );
+      const uploadStep = asArray(modelDesktopProducerJob?.steps).filter(
+        (step) => step?.name === "Upload Linux AppImage",
+      );
+      const packageStep = asArray(modelDesktopProducerJob?.steps).filter(
+        (step) => step?.name === "Package Linux desktop app",
+      );
+      const attemptStarted = canonicalGithubTimestampMs(
+        modelRunAttempt?.run_started_at,
+      );
+      const producerStarted = canonicalGithubTimestampMs(
+        modelDesktopProducerJob?.started_at,
+      );
+      const producerCompleted = canonicalGithubTimestampMs(
+        modelDesktopProducerJob?.completed_at,
+      );
+      const artifactCreated = canonicalGithubTimestampMs(
+        releaseArtifact.created_at,
+      );
+      const uploadStarted = canonicalGithubTimestampMs(
+        uploadStep[0]?.started_at,
+      );
+      const uploadCompleted = canonicalGithubTimestampMs(
+        uploadStep[0]?.completed_at,
+      );
+      if (
+        modelRunAttempt?.id !== runId ||
+        modelRunAttempt?.run_attempt !== currentRun.run_attempt ||
+        modelRunAttempt?.repository?.full_name !== repository ||
+        modelRunAttempt?.head_sha !== releaseCommit ||
+        modelRunAttempt?.head_branch !== tag ||
+        modelRunAttempt?.event !== "push" ||
+        modelRunAttempt?.path !== RELEASE_EVIDENCE_WORKFLOW_PATH ||
+        modelRunAttempt?.run_started_at !== report.runAttemptStartedAt ||
+        modelDesktopProducerJob?.id !== report.desktopProducerJobId ||
+        exactDownloadStep.length !== 1 ||
+        exactDownloadStep[0]?.conclusion !== "success" ||
+        report.releaseArtifactDownloadStepName !== exactDownloadStep[0]?.name ||
+        report.releaseArtifactDownloadStepConclusion !==
+          exactDownloadStep[0]?.conclusion ||
+        modelDesktopProducerJob?.name !== report.desktopProducerJobName ||
+        modelDesktopProducerJob?.name !==
+          "Desktop — Linux (AppImage + deb + rpm)" ||
+        modelDesktopProducerJob?.run_id !== runId ||
+        modelDesktopProducerJob?.run_attempt !== currentRun.run_attempt ||
+        modelDesktopProducerJob?.head_sha !== releaseCommit ||
+        modelDesktopProducerJob?.status !== "completed" ||
+        modelDesktopProducerJob?.conclusion !== "success" ||
+        modelDesktopProducerJob?.started_at !==
+          report.desktopProducerJobStartedAt ||
+        modelDesktopProducerJob?.completed_at !==
+          report.desktopProducerJobCompletedAt ||
+        packageStep.length !== 1 ||
+        packageStep[0]?.conclusion !== "success" ||
+        uploadStep.length !== 1 ||
+        uploadStep[0]?.conclusion !== "success" ||
+        releaseArtifact.id !== report.releaseArtifactId ||
+        releaseArtifact.digest !== `sha256:${report.releaseArtifactSha256}` ||
+        releaseArtifact.created_at !== report.releaseArtifactCreatedAt ||
+        uploadStep[0]?.started_at !== report.desktopUploadStartedAt ||
+        uploadStep[0]?.completed_at !== report.desktopUploadCompletedAt ||
+        attemptStarted === null ||
+        producerStarted === null ||
+        producerCompleted === null ||
+        artifactCreated === null ||
+        uploadStarted === null ||
+        uploadCompleted === null ||
+        attemptStarted > producerStarted ||
+        producerStarted > uploadStarted ||
+        uploadStarted > artifactCreated ||
+        artifactCreated > producerCompleted ||
+        uploadStarted > uploadCompleted ||
+        uploadCompleted > producerCompleted
+      )
+        addError(
+          errors,
+          `${prefix} AppImage artifact is not bound to its exact-attempt successful producer and producer/upload timeline`,
+        );
     }
     for (const applicabilityError of verifyMachineEvidenceApplicability(
       claimId,

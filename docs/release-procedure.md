@@ -27,9 +27,17 @@
 > into the native matrix and has macOS and Windows verifier source, but the
 > package jobs are not credentialed, protected signer pins are not configured,
 > no passing tagged-run evidence exists, and Linux signing remains deliberately
-> blocked pending package-specific trust methods. Five other verifier sources (five reports) and
-> the CI result producer are still absent. The final gate therefore fails closed
-> and the ledger remains blocked until the complete proof pipeline ships.
+> blocked pending package-specific trust methods. The model-delivery lane has
+> a Linux verifier in source that independently observes the immutable model
+> repository metadata, exact LFS sibling, card license, revision-pinned LICENSE
+> bytes, delivery, stable file identity, and deletion. It also binds the
+> AppImage artifact to the exact workflow attempt through the upload action's
+> ID/digest outputs, an exact-ID download into a private lane directory, and the
+> exact-attempt start and producer/upload timeline, but
+> it likewise has no tagged release evidence. The other five machine reports
+> (including Linux signing) and the CI result producer are still absent.
+> The final gate therefore fails closed and the ledger remains blocked until the
+> complete proof pipeline ships.
 
 The supported beta topology is one non-demo human owner per installation.
 Installation credentials are shared configuration, so multi-owner local installs
@@ -51,8 +59,22 @@ artifact kind, subject filename, and subject SHA-256. Reports use schema version
 1, identify `release-machine-verifier` as their generator, bind the canonical
 successful claim/platform job and reviewed verifier path/command/source digest,
 and contain the exact uniquely named passing checks with structured assertion,
-measurement, and exit-code observations. A later aggregation step
-uploads those reports as the separate `release-evidence` artifact. After
+measurement, and exit-code observations. For model delivery, the report also
+records the exact workflow-attempt start, successful AppImage producer job
+start/completion, upload step start/completion, active verifier job, and
+artifact creation time. GitHub's artifact API exposes the run but not the
+producing job or attempt; the upload action's current-attempt output ID/digest
+plus the ordered attempt-start → producer-start → upload-start → artifact-created
+→ producer-completed timeline are therefore all required, with upload completion
+also bounded by producer completion. Artifact creation may appear one second
+after upload-step completion because GitHub exposes whole-second timestamps; it
+must never fall after producer completion. This rejects both prior-attempt
+artifacts and carried-forward jobs that GitHub relabels with the current attempt.
+The license check reads the immutable Hugging Face metadata
+endpoint, validates repository/revision, card license and exact LFS sibling,
+then hashes the revision-pinned LICENSE bytes into the report. A later
+aggregation step uploads those reports as the separate `release-evidence`
+artifact. After
 downloading artifacts, the final job runs
 `scripts/release-claims/generate-evidence-manifest.mjs`, which queries the
 current run's jobs and artifacts through GitHub's API and writes
@@ -222,9 +244,10 @@ closed.
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
 The packaged-sample verifier implements three of the twelve matrix reports; see
 [`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
-implements one more, and the signing source implements macOS and Windows while
-failing closed on Linux until package-format methods and trust roots exist. Five
-verifier sources (five matrix reports), the Linux signing implementation, and
+and model-delivery lanes implement one more each, and the signing source
+implements macOS and Windows while failing closed on Linux until package-format
+methods and trust roots exist. Four verifier sources (four matrix reports), the
+Linux signing implementation, and
 the separate `release-claims-ci` artifact producer are absent today. The
 signing matrix entries cannot pass until credentialed package jobs produce
 signed artifacts, protected operator configuration supplies the expected
