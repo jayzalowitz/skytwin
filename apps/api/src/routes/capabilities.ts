@@ -747,9 +747,17 @@ export function createCapabilitiesRouter(): Router {
         return;
       }
 
-      const owned = await getOwnedCapabilityServer(id, userId);
-      if (owned.status !== 200) {
-        res.status(owned.status).json({ error: owned.error });
+      // Regret is intentionally report-only until durable replay protection
+      // exists: it never calls an adapter or changes external state. Keep this
+      // local cleanup/audit surface available for retained servers without
+      // consulting (or activating) their cached account-backed tool inventory.
+      const server = await mcpServerRepository.getById(id);
+      if (!server || server.status === 'uninstalled') {
+        res.status(404).json({ error: 'Capability server not found' });
+        return;
+      }
+      if (server.user_id !== userId) {
+        res.status(403).json({ error: 'Forbidden: you do not own this capability server' });
         return;
       }
 
