@@ -85,7 +85,7 @@ function validReport(commit) {
     determinism: { networkPolicy: 'not_enforced', randomSeed: null, clockPolicy: 'not_controlled', scenarioOrder: 'lexicographic_id' },
     structuralCoverage: {
       scenarios: { covered: results.length, total: results.length },
-      runtimeEntryPaths: { covered: 6, total: 10 },
+      runtimeEntryPaths: { covered: 10, total: 10 },
       adapters: { covered: 4, total: 4 },
       criticalShapes: { covered: 8, total: 8 },
       origins: { covered: 7, total: 7 },
@@ -692,7 +692,7 @@ test('allows an exact scenario addition relative to the trusted prior baseline',
   assert.equal(verified.scenarioCount, baseline.exactIds.length + 1);
 }));
 
-test('rejects fixture payload, immutable metadata, and inflated structural coverage', () => withRepository((context) => {
+test('rejects fixture payload, immutable metadata, and incorrect structural coverage', () => withRepository((context) => {
   const tamperedFixture = join(context.directory, 'fixture.json');
   const changed = structuredClone(fixture);
   changed.scenarios[0].failureMode = 'changed fixture payload';
@@ -711,7 +711,7 @@ test('rejects fixture payload, immutable metadata, and inflated structural cover
     /runtimeEntryPath does not match/,
   );
   const inflated = validReport(context.commit);
-  inflated.structuralCoverage.runtimeEntryPaths.covered = 9;
+  inflated.structuralCoverage.runtimeEntryPaths.covered = 11;
   assert.throws(
     () => verifyAdversarialEvidence(writeEvidence(context.directory, inflated), baselinePath, context.options),
     /fixture-derived coverage/,

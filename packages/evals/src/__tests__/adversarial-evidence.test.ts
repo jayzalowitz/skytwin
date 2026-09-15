@@ -42,25 +42,25 @@ describe('adversarial evidence catalog', () => {
     ]));
   });
 
-  it('counts exact mapped regressions as covered while keeping target gaps explicit', () => {
+  it('counts exact mapped regressions while keeping release incompleteness explicit', () => {
     const report = buildAdversarialEvidence(loaded.catalog, loaded.fixtureSha256, {
       commit: `b2db6ea${'0'.repeat(33)}`,
       ref: 'feature/adversarial-eval-evidence',
       cleanTree: true,
     }, passingTests);
     const mapped = report.results.filter(({ evidenceMode }) => evidenceMode === 'mapped_regression');
-    expect(mapped).toHaveLength(5);
+    expect(mapped).toHaveLength(9);
     expect(mapped.every(({ status, executableTestStatus }) =>
       status === 'passed' && executableTestStatus === 'passed')).toBe(true);
     expect(report.structuralCoverage).toMatchObject({
-      scenarios: { covered: 14, total: 14 },
-      runtimeEntryPaths: { covered: 6, total: 10 },
+      scenarios: { covered: 18, total: 18 },
+      runtimeEntryPaths: { covered: 10, total: 10 },
       adapters: { covered: 4, total: 4 },
       criticalShapes: { covered: 8, total: 8 },
       origins: { covered: 7, total: 7 },
     });
     expect(report.testSummary).toEqual({
-      passed: 14,
+      passed: 18,
       failed: 0,
       uncovered: 0,
     });
@@ -103,8 +103,8 @@ describe('adversarial evidence catalog', () => {
       ref: 'test',
       cleanTree: true,
     }, failing);
-    expect(report.structuralCoverage.scenarios).toEqual({ covered: 14, total: 14 });
-    expect(report.testSummary).toEqual({ passed: 13, failed: 1, uncovered: 0 });
+    expect(report.structuralCoverage.scenarios).toEqual({ covered: 18, total: 18 });
+    expect(report.testSummary).toEqual({ passed: 17, failed: 1, uncovered: 0 });
     expect(report.developmentStatus).toBe('incomplete');
   });
 

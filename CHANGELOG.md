@@ -86,14 +86,16 @@ All notable changes to SkyTwin will be documented in this file.
 - **Development evals now emit integrity-checked source evidence.** A versioned
   adversarial catalog exercises provenance escalation, pre-dispatch blocking,
   replay suppression, transport ambiguity, credential-response validation, and
-  generic rollback refusal. Nine deterministic policy cases and five exact
-  mapped regressions are cataloged across three execution adapters plus the
-  policy-only `none` category. Recognized API/worker dispatch terminal method
+  generic rollback refusal. Nine deterministic policy cases and nine exact
+  mapped regressions now cover all ten currently declared runtime entry paths,
+  including approval, assistant, routine, and memory-loop boundaries, across
+  three execution adapters plus the policy-only `none` category. Recognized API/worker dispatch terminal method
   names are source-inventoried. This landing establishes an internally
   consistent bootstrap; append-only comparison starts after both evidence
   inputs first exist in trusted `main` history. The artifact remains explicitly
-  incomplete development evidence: it has no packaged-release subject,
-  attestation, or release-readiness claim.
+  incomplete development evidence: the declared denominator is not an
+  exhaustive release inventory, and the artifact has no packaged-release
+  subject, attestation, or release-readiness claim.
   Review hardening now reads the trusted baseline and fixture directly from the
   exact prior Git commit; binds Git identity and tree reads to the intended
   worktree despite inherited overrides or replacement refs; rejects malformed
