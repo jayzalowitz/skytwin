@@ -8,7 +8,13 @@ export const CANONICAL_CI_EVIDENCE_CHECKS = new Map([
       "confidential-inference.response-signature",
     ],
   ],
-  ["connectors.account-free-boundary", ["connectors.account-free-disabled"]],
+  [
+    "connectors.account-free-boundary",
+    [
+      "connectors.account-free-api-disabled",
+      "connectors.account-free-desktop-disabled",
+    ],
+  ],
   [
     "safety.policy-and-provenance",
     ["policy.provenance-fail-safe", "router.provenance-backstop"],
@@ -87,7 +93,21 @@ export const CANONICAL_CI_EVIDENCE_COMMANDS = new Map(
       "@skytwin/shared-types",
       "src/__tests__/inference-receipt.test.ts",
     ],
-    ["connectors.account-free-disabled", null, null],
+    [
+      "connectors.account-free-api-disabled",
+      "@skytwin/api",
+      [
+        "src/__tests__/oauth-google-disabled.test.ts",
+        "src/__tests__/oauth-microsoft.test.ts",
+        "src/__tests__/credentials-routes.test.ts",
+        "src/__tests__/capabilities-routes.test.ts",
+      ],
+    ],
+    [
+      "connectors.account-free-desktop-disabled",
+      "skytwin-desktop",
+      ["src/__tests__/service-manager-env.test.ts"],
+    ],
     [
       "policy.provenance-fail-safe",
       "@skytwin/policy-engine",
@@ -108,16 +128,20 @@ export const CANONICAL_CI_EVIDENCE_COMMANDS = new Map(
       "@skytwin/explanations",
       "src/__tests__/explanation-generator.test.ts",
     ],
-  ].map(([id, workspace, testPath]) => [
+  ].map(([id, workspace, testPaths]) => [
     id,
     Object.freeze({
       executable: "pnpm",
       args: Object.freeze(
-        workspace === null
-          ? ["test"]
-          : testPath
-            ? ["--filter", workspace, "test", "--", testPath]
-            : ["--filter", workspace, "test"],
+        testPaths
+          ? [
+              "--filter",
+              workspace,
+              "test",
+              "--",
+              ...(Array.isArray(testPaths) ? testPaths : [testPaths]),
+            ]
+          : ["--filter", workspace, "test"],
       ),
     }),
   ]),

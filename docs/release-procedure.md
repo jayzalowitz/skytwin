@@ -53,9 +53,23 @@ and an `artifact-verification/` directory containing the exact `SHA256SUMS`,
 `release.spdx.json`, `VERIFY.md`, and digest-named provenance bundles.
 The CI artifact contains `result.json`, bound to the repository, source commit,
 actual ref, event, run ID and attempt, plus the ledger, harness, and
-frozen-command source digests. Its checks are frozen argv arrays executed
-without a shell and record observed exit codes. The final checker hashes and
-validates that downloaded file as well as its GitHub artifact metadata.
+frozen-command source digests. Its checks are frozen argv arrays launched
+without a shell and record observed exit codes. Before and after every command,
+the harness requires `HEAD` to equal the triggering commit, no tracked or
+non-ignored untracked changes, and unchanged captured Node and pnpm bundle
+identities. The account-free claim runs the ledger's exact focused API and
+desktop test paths, not a broad suite whose success could outlive those
+assertions. The final checker hashes and validates the downloaded file as well
+as its GitHub artifact metadata.
+
+The CI-result producer runs on a fresh GitHub-hosted runner. Its filesystem
+checks reject synchronous source, runtime, output-directory, symlink, and
+hardlink substitutions, while the final consumer independently binds the
+uploaded artifact digest and report digest. A deliberately detached process
+running as the same runner principal is outside this in-process verifier's
+containment boundary; preventing that actor is the responsibility of reviewed
+tag source, branch protection, pinned actions, and the fresh single-job runner,
+not a claim that same-user processes are sandboxed from one another.
 Each report is created only after its subject release artifact is uploaded, so
 it can record the upload action's immutable artifact ID, name, digest, platform,
 artifact kind, subject filename, and subject SHA-256. Reports use schema version

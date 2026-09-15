@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   accessSync,
   constants as fsConstants,
@@ -36,6 +36,14 @@ const RUNTIME_ENV = Object.freeze({
   nodeSha256: "SKYTWIN_RELEASE_CI_NODE_SHA256",
   pnpmEntryPath: "SKYTWIN_RELEASE_CI_PNPM_ENTRY_PATH",
   pnpmEntrySha256: "SKYTWIN_RELEASE_CI_PNPM_ENTRY_SHA256",
+});
+const GIT = "/usr/bin/git";
+const SOURCE_CHECK_ENV = Object.freeze({
+  PATH: "/usr/bin:/bin",
+  LANG: "C.UTF-8",
+  LC_ALL: "C.UTF-8",
+  TZ: "UTC",
+  GIT_CONFIG_NOSYSTEM: "1",
 });
 
 function sha256(bytes) {
@@ -111,6 +119,45 @@ function releaseRuntime(env) {
   if (realpathSync(process.execPath) !== runtime.nodePath)
     throw new Error("harness is not running under the captured node runtime");
   return runtime;
+}
+
+function gitOutput(root, args, description) {
+  const result = spawnSync(GIT, args, {
+    cwd: root,
+    env: SOURCE_CHECK_ENV,
+    shell: false,
+    encoding: "utf8",
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error || result.status !== 0)
+    throw new Error(
+      `${description} failed${result.error ? `: ${result.error.message}` : ""}`,
+    );
+  return result.stdout;
+}
+
+function assertExactTaggedSource(root, sourceCommit) {
+  const head = gitOutput(
+    root,
+    ["rev-parse", "--verify", "HEAD^{commit}"],
+    "release claim source identity check",
+  ).trim();
+  if (head !== sourceCommit)
+    throw new Error("release claim source HEAD is not the triggering commit");
+  const status = gitOutput(
+    root,
+    [
+      "status",
+      "--porcelain=v1",
+      "--untracked-files=all",
+      "--ignore-submodules=none",
+    ],
+    "release claim source cleanliness check",
+  );
+  if (status !== "")
+    throw new Error(
+      "release claim source tree changed while checks were running",
+    );
 }
 
 export function releaseClaimCommandEnvironment(runtime) {
@@ -290,6 +337,7 @@ export async function runReleaseClaimCi({
     throw new Error(`output must be ${RELEASE_CLAIM_CI_RESULT_PATH}`);
   const context = releaseContext(env);
   const runtime = releaseRuntime(env);
+  assertExactTaggedSource(root, context.sourceCommit);
   const canonicalCheckIds = [...CANONICAL_CI_EVIDENCE_CHECKS.values()].flat();
   if (
     new Set(canonicalCheckIds).size !== canonicalCheckIds.length ||
@@ -307,6 +355,8 @@ export async function runReleaseClaimCi({
   }));
   const observed = new Map();
   for (const [id, command] of CANONICAL_CI_EVIDENCE_COMMANDS) {
+    assertExactTaggedSource(root, context.sourceCommit);
+    releaseRuntime(env);
     let result;
     try {
       result = await execute({
@@ -322,6 +372,8 @@ export async function runReleaseClaimCi({
         error: error instanceof Error ? error.message : String(error),
       };
     }
+    releaseRuntime(env);
+    assertExactTaggedSource(root, context.sourceCommit);
     const exitCode = Number.isInteger(result?.exitCode)
       ? result.exitCode
       : null;
@@ -357,6 +409,7 @@ export async function runReleaseClaimCi({
       "release claim CI sources changed while checks were running",
     );
   releaseRuntime(env);
+  assertExactTaggedSource(root, context.sourceCommit);
   const report = {
     schemaVersion: 1,
     generatedBy: "release-claim-ci-harness",
@@ -394,6 +447,11 @@ export async function runReleaseClaimCi({
     )
       throw new Error("release claim CI output directory is unsafe");
   }
+  // The runner and every canonical child share one OS principal. Exclusive
+  // creation and component checks close all synchronous in-process path/link
+  // mutations; branch protection and the isolated hosted runner are the trust
+  // boundary for a deliberately detached same-principal process. The release
+  // consumer independently binds the uploaded artifact and report digests.
   writeFileSync(absoluteOutput, `${JSON.stringify(report, null, 2)}\n`, {
     encoding: "utf8",
     flag: "wx",

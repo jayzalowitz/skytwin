@@ -106,10 +106,11 @@ jobs:
         run: pnpm check:encryption-inventory
       - name: Install CockroachDB for migration integration tests
         run: |
-          curl --fail --location --retry 3 --output cockroach.tgz https://binaries.cockroachdb.com/cockroach-v26.1.0.linux-amd64.tgz
-          echo "096e2d40a2b30ce296c13652b839e04612003aef2820cfc5b8d712d06c9d0d86  cockroach.tgz" | sha256sum --check
-          tar --extract --gzip --file cockroach.tgz
-          sudo install --mode 0755 cockroach-v26.1.0.linux-amd64/cockroach /usr/local/bin/cockroach
+          mkdir -p "${RUNNER_TEMP}/skytwin-cockroach"
+          curl --fail --location --retry 3 --output "${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" https://binaries.cockroachdb.com/cockroach-v26.1.0.linux-amd64.tgz
+          echo "096e2d40a2b30ce296c13652b839e04612003aef2820cfc5b8d712d06c9d0d86  ${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" | sha256sum --check
+          tar --extract --gzip --file "${RUNNER_TEMP}/skytwin-cockroach/cockroach.tgz" --directory "${RUNNER_TEMP}/skytwin-cockroach"
+          sudo install --mode 0755 "${RUNNER_TEMP}/skytwin-cockroach/cockroach-v26.1.0.linux-amd64/cockroach" /usr/local/bin/cockroach
       - name: Validate beta release claims
         env:
           GITHUB_TOKEN: ${{ github.token }}

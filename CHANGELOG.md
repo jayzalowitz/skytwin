@@ -46,9 +46,13 @@ All notable changes to SkyTwin will be documented in this file.
 - **Release-claim CI results now come from observed frozen commands.** The
   no-shell tag-push harness records canonical check exit codes and binds its
   schema-v1 artifact to the repository, commit, ref, event, run attempt,
-  ledger, harness, and command-source digests. Manual tag-context runs cannot
-  enter the publisher, and release readiness remains blocked on the outstanding
-  machine evidence and external release controls.
+  ledger, harness, and command-source digests. It runs the account-free proof as
+  the ledger's exact focused API and desktop tests, requires the tracked checkout
+  to remain identical to the triggering commit at every command boundary, and
+  revalidates the captured Node and pnpm bundle before and after every command.
+  Manual tag-context runs cannot enter the publisher, and release readiness
+  remains blocked on the outstanding machine evidence and external release
+  controls.
 
 - **The supported preview is account-free sample only; connected-account access
   is fail-closed.** The packaged desktop carries no provider client authority

@@ -1192,7 +1192,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "99eaef16312c607d34a97133b826388ed23cff14fb5192d928d5f11ccd38032e",
+          "sha256": "7390a220476084fe34a6442b18f7796e4fcfb5e0acc21f7d6f619f8963fb3a48",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
         },
         {
@@ -1233,13 +1233,13 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "99eaef16312c607d34a97133b826388ed23cff14fb5192d928d5f11ccd38032e",
+          "sha256": "7390a220476084fe34a6442b18f7796e4fcfb5e0acc21f7d6f619f8963fb3a48",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "eab5126fe51f19e82931719ae8aa06485ff31749da22c1c4e4655d160f93f80a",
-          "why": "Defines the frozen CI source and command inventories, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
+          "sha256": "032bb2b195f51edce5ec84645cb9c4ad7d8dbd006de53be19a4c48aeefb26917",
+          "why": "Defines the frozen focused CI source and command inventories, exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
           "path": "scripts/release-claims/capture-release-claim-ci-runtime.mjs",
@@ -1248,8 +1248,8 @@
         },
         {
           "path": "scripts/release-claims/run-release-claim-ci.mjs",
-          "sha256": "0753d902b75d13f0e5c17d625239a8eb4c1c36cd3a192d70c7c04807e83fedcf",
-          "why": "Runs the frozen commands without a shell, records their observed exit codes and immutable workflow identity, and refuses a report if its reviewed inputs change during execution"
+          "sha256": "b6db208f1676405f4d0bf36b85392234935123a80639bc39965cd5250b6e1343",
+          "why": "Runs the frozen commands without a shell, records their observed exit codes and immutable workflow identity, and checks the exact tagged source tree and captured runtimes at every command boundary"
         },
         {
           "path": "scripts/release-claims/generate-evidence-manifest.mjs",
