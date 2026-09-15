@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -158,6 +160,7 @@ describe("internal source candidate packager", () => {
       "does not mean whole-application offline or no-network",
     );
     expect(notes).toContain("Verified-private inference is unavailable");
+    expect(notes).toContain("SKYTWIN_SOURCE_ARCHIVE=true ./install.sh");
     expect(notes).toContain(
       "beta claim ledger remains authoritative and blocked",
     );
@@ -271,5 +274,57 @@ describe("internal source candidate packager", () => {
     expect(installer).not.toContain("Set up Google access");
     expect(installer).not.toContain("Continue with Google");
     expect(installer).not.toContain("Google OAuth Client ID");
+  });
+
+  it("installs the extracted archive in place without reaching Git or moving main", () => {
+    const holder = mkdtempSync(join(tmpdir(), "skytwin-archive-install-"));
+    cleanup.push(holder);
+    const staging = join(holder, "staging");
+    const extracted = join(holder, "extracted");
+    const fakePath = join(holder, "fake-path");
+    const decoyInstall = join(holder, "must-not-be-used");
+    const marker = join(holder, "archive-source-used");
+    const gitLog = join(holder, "git-was-called");
+    const archive = join(holder, "candidate.tar.gz");
+    mkdirSync(join(staging, "bin"), { recursive: true });
+    mkdirSync(extracted);
+    mkdirSync(fakePath);
+    copyFileSync(join(sourceRoot, "install.sh"), join(staging, "install.sh"));
+    chmodSync(join(staging, "install.sh"), 0o755);
+    writeFileSync(
+      join(staging, "bin", "skytwin-install"),
+      '#!/bin/sh\nprintf "%s\\n" archive > "$ARCHIVE_TEST_MARKER"\nexit 23\n',
+      "utf8",
+    );
+    chmodSync(join(staging, "bin", "skytwin-install"), 0o755);
+    writeFileSync(
+      join(fakePath, "git"),
+      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$GIT_TEST_LOG"\nexit 97\n',
+      "utf8",
+    );
+    chmodSync(join(fakePath, "git"), 0o755);
+    execFileSync("tar", ["-czf", archive, "-C", staging, "."]);
+    execFileSync("tar", ["-xzf", archive, "-C", extracted]);
+
+    const result = spawnSync("/bin/bash", ["./install.sh"], {
+      cwd: extracted,
+      encoding: "utf8",
+      env: {
+        PATH: `${fakePath}:/usr/bin:/bin`,
+        HOME: join(holder, "home"),
+        SKYTWIN_INSTALL_DIR: decoyInstall,
+        SKYTWIN_SOURCE_ARCHIVE: "true",
+        ARCHIVE_TEST_MARKER: marker,
+        GIT_TEST_LOG: gitLog,
+      },
+    });
+
+    expect(result.status).toBe(23);
+    expect(readFileSync(marker, "utf8")).toBe("archive\n");
+    expect(existsSync(gitLog)).toBe(false);
+    expect(existsSync(decoyInstall)).toBe(false);
+    expect(result.stdout).toContain("Using immutable source archive in place");
+    expect(result.stdout).not.toContain("pulling latest");
+    expect(result.stdout).not.toContain("Cloned");
   });
 });

@@ -22,10 +22,14 @@
 #   6. Starts CockroachDB, the API, the dashboard, and the worker.
 #   7. Opens http://localhost:3200 in your browser.
 #
-# Re-running this script is safe — it pulls latest, restarts services, and
-# opens the dashboard.
+# Re-running the normal branch install is safe — it pulls latest, restarts
+# services, and opens the dashboard. Source-archive mode always stays on the
+# extracted source instead.
 #
 # Opt-in env vars (advanced):
+#   SKYTWIN_SOURCE_ARCHIVE=true
+#                               Install this extracted, non-Git source tree in
+#                               place without cloning, fetching, or merging.
 #   SKYTWIN_USE_DOCKER=true     Use Docker for CRDB instead of the native
 #                               binary (CI / legacy workflows).
 #   SKYTWIN_WITH_OLLAMA=true    Also install Ollama + pull the gemma4
@@ -34,8 +38,17 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+SOURCE_ARCHIVE_MODE="${SKYTWIN_SOURCE_ARCHIVE:-false}"
 REPO_URL="${SKYTWIN_REPO_URL:-https://github.com/jayzalowitz/skytwin.git}"
-INSTALL_DIR="${SKYTWIN_INSTALL_DIR:-$HOME/skytwin}"
+if [ "$SOURCE_ARCHIVE_MODE" = "true" ]; then
+  # An extracted source candidate must be installed in place. Do not let a
+  # default or inherited install directory redirect this invocation to a clone
+  # of moving main.
+  INSTALL_DIR="$SCRIPT_DIR"
+else
+  INSTALL_DIR="${SKYTWIN_INSTALL_DIR:-$HOME/skytwin}"
+fi
 BRANCH="${SKYTWIN_BRANCH:-main}"
 
 RED='\033[0;31m'
@@ -82,8 +95,10 @@ fi
 
 # ── Step 1: clone or update the repo ───────────────────────────────────
 
-step "Fetching the SkyTwin repo into $INSTALL_DIR"
-# Three states to handle:
+step "Selecting SkyTwin source at $INSTALL_DIR"
+# Modes and source states to handle:
+#   - explicit source-archive mode → use the script's extracted directory and
+#     refuse Git metadata, without clone/fetch/merge.
 #   - $INSTALL_DIR doesn't exist → clone from $REPO_URL.
 #   - $INSTALL_DIR has a real .git directory → fetch + ff-only merge.
 #   - $INSTALL_DIR has source but no .git directory (Conductor worktree
@@ -92,7 +107,17 @@ step "Fetching the SkyTwin repo into $INSTALL_DIR"
 # a shared object store, so `[ -d $INSTALL_DIR/.git ]` returns false even
 # though the repo is fully present. The `-e` check + `ls -A` fallback
 # covers that and also handles a hand-extracted source tree.
-if [ -e "$INSTALL_DIR/.git" ]; then
+if [ "$SOURCE_ARCHIVE_MODE" != "true" ] && [ "$SOURCE_ARCHIVE_MODE" != "false" ]; then
+  fail "SKYTWIN_SOURCE_ARCHIVE must be exactly 'true' or 'false'."
+elif [ "$SOURCE_ARCHIVE_MODE" = "true" ]; then
+  if [ -e "$INSTALL_DIR/.git" ]; then
+    fail "Source-archive mode refuses a Git checkout. Extract the verified candidate archive first."
+  fi
+  if [ ! -d "$INSTALL_DIR" ] || [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+    fail "Source-archive mode requires the extracted candidate directory."
+  fi
+  ok "Using immutable source archive in place (no clone, fetch, or merge)"
+elif [ -e "$INSTALL_DIR/.git" ]; then
   # `-e` (not `-d`) so Conductor worktrees and any other gitlink-based
   # setup match here. In a worktree, `.git` is a 75-byte file pointing
   # at the shared object store, not a directory; `git -C` follows the

@@ -48,13 +48,14 @@ the extracted directory has no Git metadata.
 shasum -a 256 -c SHA256SUMS
 tar -xzf skytwin-source-candidate-<short-sha>.tar.gz
 cd skytwin-source-candidate-<short-sha>
-./install.sh
+SKYTWIN_SOURCE_ARCHIVE=true ./install.sh
 ```
 
-The installer uses source already present in a non-empty directory without
-fetching a repository update. It can still download missing public
-prerequisites such as Node.js or CockroachDB, so this is not an offline or
-no-network installation claim.
+The explicit archive mode resolves the install directory from the extracted
+`install.sh` itself, ignores any inherited `SKYTWIN_INSTALL_DIR`, refuses Git
+metadata, and never enters the clone/fetch/merge path. It can still download
+missing public prerequisites such as Node.js or CockroachDB, so this is not an
+offline or no-network installation claim.
 
 For source inspection without packaging, pin and verify a detached checkout:
 

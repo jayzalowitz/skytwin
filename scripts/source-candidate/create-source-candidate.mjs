@@ -258,7 +258,7 @@ so \`./install.sh\` uses these exact source bytes instead of following moving
 shasum -a 256 -c SHA256SUMS
 tar -xzf ${archiveName}
 cd ${prefixFromArchiveName(archiveName)}
-./install.sh
+SKYTWIN_SOURCE_ARCHIVE=true ./install.sh
 \`\`\`
 
 The installer needs network access for any missing public prerequisites. Use

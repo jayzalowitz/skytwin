@@ -2,6 +2,16 @@ All notable changes to SkyTwin will be documented in this file.
 
 ## [Unreleased] — Fail-closed action entry paths
 
+### Fixed (post-review)
+
+- **Immutable source-candidate installation now stays inside the extracted
+  archive.** The documented command opts into a fail-closed archive mode that
+  derives its install directory from `install.sh`, ignores inherited install
+  destinations, refuses Git metadata, and cannot enter clone, fetch, or merge
+  handling. An executable regression runs the documented path with a decoy
+  home/install directory and a fail-on-use Git shim, proving the extracted
+  source reaches dependency setup without consulting moving `main`.
+
 ### Changed
 
 - **Internal source evaluation now has an immutable, non-public preparation
