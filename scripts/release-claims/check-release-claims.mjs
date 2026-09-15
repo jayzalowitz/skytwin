@@ -298,7 +298,7 @@ const CANONICAL_READINESS_CLAIM_DIGESTS = new Map([
   ],
   [
     "inference.on-device-availability",
-    "aa50cfc127466c896417a4d1e47e1807a78e236d93ff52016e4324dbb6e2e3c5",
+    "93023e8b12fd1025601d6afa89d386fdef9eff459a70e481270a1109a9f7c06a",
   ],
   [
     "inference.confidential-verification",
@@ -1272,6 +1272,7 @@ export function isAllowlistedVerificationCommand(command) {
     [
       "scripts/release-claims/release.artifact-verification.test.mjs",
       "scripts/release-claims/storage.desktop-crdb-verifier.test.mjs",
+      "scripts/release-claims/inference.on-device-availability-verifier.test.mjs",
     ].includes(tokens[4])
   )
     return true;
@@ -5225,6 +5226,161 @@ export function verifyMachineEvidenceApplicability(
     errors.push(
       "storage.desktop-crdb machine evidence must identify stable packaged app and database binaries and prove a contained user-data store, exact loopback listeners, owned process ancestry, restart persistence, and graceful listener release",
     );
+  }
+  if (claimId === "inference.on-device-availability") {
+    const application = report?.packagedApplication;
+    const probe = report?.packagedProbe;
+    const runtime = report?.runtime;
+    const model = report?.model;
+    const confinement = report?.confinement;
+    const inference = report?.inference;
+    const hardware = report?.hardwareObservation;
+    const exactKeys = (value, keys) =>
+      isPlainRecord(value) && sameStringSet(Object.keys(value), keys);
+    const valid =
+      report?.platform === "macos" &&
+      report?.runnerPlatform === "darwin-arm64" &&
+      exactKeys(application, [
+        "name",
+        "sizeBytes",
+        "sha256",
+        "device",
+        "inode",
+        "identityResult",
+        "derivationMethod",
+        "derivationPath",
+      ]) &&
+      isNonEmptyString(application.name) &&
+      Number.isSafeInteger(application.sizeBytes) &&
+      application.sizeBytes > 0 &&
+      SOURCE_DIGEST.test(application.sha256 ?? "") &&
+      Number.isSafeInteger(application.device) &&
+      Number.isSafeInteger(application.inode) &&
+      application.identityResult === "pass" &&
+      application.derivationMethod === "zip-ditto" &&
+      application.derivationPath === "SkyTwin.app/Contents/MacOS/SkyTwin" &&
+      exactKeys(probe, ["path", "sizeBytes", "sha256", "identityResult"]) &&
+      probe.path === "api/dist/bin/verify-on-device-inference.js" &&
+      Number.isSafeInteger(probe.sizeBytes) &&
+      probe.sizeBytes > 0 &&
+      SOURCE_DIGEST.test(probe.sha256 ?? "") &&
+      probe.identityResult === "pass" &&
+      exactKeys(runtime, [
+        "repository",
+        "tag",
+        "commit",
+        "releaseId",
+        "assetId",
+        "archiveName",
+        "source",
+        "archiveExactBytes",
+        "archiveSha256",
+        "binaryName",
+        "binaryExactBytes",
+        "binarySha256",
+        "build",
+        "versionCommit",
+        "versionResult",
+        "identityResult",
+        "releaseMetadataResult",
+        "tagCommitResult",
+      ]) &&
+      runtime.repository === "ggml-org/llama.cpp" &&
+      runtime.tag === "b10985" &&
+      runtime.commit === "7609846557c50f9d984719a9e1e8c5f3d02f807b" &&
+      runtime.releaseId === 389_209_275 &&
+      runtime.assetId === 565_855_246 &&
+      runtime.archiveName === "llama-b10985-bin-macos-arm64.tar.gz" &&
+      runtime.source ===
+        "https://github.com/ggml-org/llama.cpp/releases/download/b10985/llama-b10985-bin-macos-arm64.tar.gz" &&
+      runtime.archiveExactBytes === 11_150_340 &&
+      runtime.archiveSha256 ===
+        "af0c49bbc35add2cdfcdfd9b6fd1fa6d30a9087d4950561fbd6ebda37bd4fe2d" &&
+      runtime.binaryName === "llama-completion" &&
+      runtime.binaryExactBytes === 33_472 &&
+      runtime.binarySha256 ===
+        "3d3d8fd9265fe429b44b49244deb70d6712c93e31d9085b0cb660428fa4f07ab" &&
+      runtime.build === 10_985 &&
+      runtime.versionCommit === "760984655" &&
+      runtime.versionResult === "pass" &&
+      runtime.identityResult === "pass" &&
+      runtime.releaseMetadataResult === "pass" &&
+      runtime.tagCommitResult === "pass" &&
+      exactKeys(model, [
+        "id",
+        "name",
+        "repository",
+        "revision",
+        "exactBytes",
+        "sha256",
+        "digestResult",
+        "identityResult",
+      ]) &&
+      model.id === CANONICAL_MODEL_DELIVERY_ARTIFACT.id &&
+      model.name === CANONICAL_MODEL_DELIVERY_ARTIFACT.name &&
+      model.repository === CANONICAL_MODEL_DELIVERY_ARTIFACT.sourceRepository &&
+      model.revision === CANONICAL_MODEL_DELIVERY_ARTIFACT.sourceRevision &&
+      model.exactBytes === CANONICAL_MODEL_DELIVERY_ARTIFACT.exactBytes &&
+      model.sha256 === CANONICAL_MODEL_DELIVERY_ARTIFACT.sha256 &&
+      model.digestResult === "pass" &&
+      model.identityResult === "pass" &&
+      exactKeys(confinement, [
+        "method",
+        "profile",
+        "selfTestResult",
+        "externalNetworkDenied",
+        "loopbackNetworkDenied",
+        "childEnvironment",
+      ]) &&
+      confinement.method === "macos-sandbox-exec-deny-network" &&
+      confinement.profile === "deny network*" &&
+      confinement.selfTestResult === "pass" &&
+      confinement.externalNetworkDenied === true &&
+      confinement.loopbackNetworkDenied === true &&
+      confinement.childEnvironment === "closed-allowlist" &&
+      exactKeys(inference, [
+        "schemaVersion",
+        "generatedBy",
+        "result",
+        "provider",
+        "modelName",
+        "reasoningMode",
+        "executionLocation",
+        "networkScope",
+        "confidentiality",
+        "pricingKind",
+        "responseBytes",
+        "responseSha256",
+        "nonceSha256",
+        "latencyMs",
+      ]) &&
+      inference.schemaVersion === 1 &&
+      inference.generatedBy === "packaged-on-device-inference-probe" &&
+      inference.result === "pass" &&
+      inference.provider === "embedded" &&
+      inference.modelName === model.name &&
+      inference.reasoningMode === "on_device" &&
+      inference.executionLocation === "on_device" &&
+      inference.networkScope === "none" &&
+      inference.confidentiality === "device_local" &&
+      inference.pricingKind === "zero" &&
+      Number.isSafeInteger(inference.responseBytes) &&
+      inference.responseBytes > 0 &&
+      inference.responseBytes <= 64 * 1024 &&
+      SOURCE_DIGEST.test(inference.responseSha256 ?? "") &&
+      SOURCE_DIGEST.test(inference.nonceSha256 ?? "") &&
+      Number.isSafeInteger(inference.latencyMs) &&
+      inference.latencyMs > 0 &&
+      inference.latencyMs <= 180_000 &&
+      exactKeys(hardware, ["osRelease", "architecture", "totalMemoryBytes"]) &&
+      isNonEmptyString(hardware.osRelease) &&
+      hardware.architecture === "arm64" &&
+      Number.isSafeInteger(hardware.totalMemoryBytes) &&
+      hardware.totalMemoryBytes >= 4 * 1024 ** 3;
+    if (!valid)
+      errors.push(
+        "inference.on-device-availability machine evidence must bind the packaged API probe, immutable llama.cpp runtime and model bytes, closed network sandbox, embedded execution facts, non-empty response, and observed macOS arm64 hardware",
+      );
   }
   if (claimId === "sample.packaged-account-free") {
     const binary = report?.executedBinary;

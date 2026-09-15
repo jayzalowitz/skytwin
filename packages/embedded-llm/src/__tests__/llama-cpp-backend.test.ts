@@ -87,7 +87,8 @@ describe('LlamaCppTextBackend', () => {
     expect(args).toContain('--temp');
     expect(args).toContain('0.2');
     expect(args).toContain('--no-display-prompt');
-    expect(args).toContain('-no-cnv');
+    expect(args).toContain('--single-turn');
+    expect(args).not.toContain('-no-cnv');
   });
 
   it('strips llama.cpp end-of-text markers from output', async () => {

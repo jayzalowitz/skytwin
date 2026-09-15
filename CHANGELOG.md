@@ -42,6 +42,29 @@ All notable changes to SkyTwin will be documented in this file.
   Database-only owner cascades and `revokeAllForUser` still lack a linearizable
   broker-wide revocation barrier; that must be closed before a source consumer
   is activated.
+- **The macOS arm64 on-device inference evidence lane now has a fail-closed
+  verifier in source.** It derives the application from the exact release ZIP,
+  loads the probe from the artifact-contained API bundle, observes an immutable
+  upstream llama.cpp release/tag, downloads exact digest-pinned runtime and
+  GGUF bytes, selects its completion binary, and performs real embedded
+  inference inside a macOS sandbox that denies external and loopback networking.
+  The artifact-controlled application bundle is now preflighted before
+  extraction for bounded member and expanded sizes, compression ratio, safe
+  collision-free paths, and regular-file/directory-only member types. Canonical
+  probe and runtime paths are inspected lexically before canonicalization, and
+  the sandbox self-test requires a spawned child to be denied both a
+  verifier-owned loopback listener and an external address, matching the
+  inheritance boundary used for the production Node-to-llama.cpp launch.
+  The production backend now uses the runtime's bounded `--single-turn` mode;
+  this replaces a legacy argument rejected by current llama.cpp. The probe
+  receives a closed environment without provider credentials and records
+  execution facts plus response size and hashes, never prompt or response
+  content. Adversarial tests cover argument, artifact-binding, archive,
+  redirect, size, digest, metadata, result-schema, timeout, descendant-process,
+  and sandbox-denial mutations. No tagged report exists yet; the runtime and
+  model are not bundled, one runner does not establish a minimum hardware
+  profile or other platforms, and the limited on-device availability claim and
+  release block remain unchanged.
 
 - **Source-key IPC clients now fail closed without activating encryption.** The
   API and worker compose fixed-role clients that strictly validate the versioned

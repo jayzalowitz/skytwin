@@ -65,7 +65,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
       '--temp', String(temperature),
       '--no-display-prompt',
       '--no-warmup',
-      '-no-cnv',
+      '--single-turn',
     ];
     if (this.threads !== null) {
       args.push('-t', String(this.threads));
