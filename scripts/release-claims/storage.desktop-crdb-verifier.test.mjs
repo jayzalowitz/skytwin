@@ -17,6 +17,7 @@ import {
 import {
   assertDescendsFrom,
   inspectUserDataStore,
+  lsofReportsNoListeners,
   makeStorageLaunch,
   parseArtifactBindings,
   parseCanonicalArgs,
@@ -24,6 +25,7 @@ import {
   parseLsofListeners,
   parseMarkerQueryOutput,
   parsePsRecord,
+  runBoundedCommand,
   targetIsUnused,
   validateCockroachCommand,
   waitForReleasedPorts,
@@ -151,6 +153,74 @@ describe("storage desktop verifier inputs", () => {
 });
 
 describe("storage runtime observations", () => {
+  it("bounds native probes, kills timed-out children, and fails closed", () => {
+    let invocation;
+    const timedOut = Object.assign(new Error("probe timed out"), {
+      code: "ETIMEDOUT",
+    });
+    expect(() =>
+      runBoundedCommand("/probe", ["--check"], {
+        timeoutMs: 123,
+        runner: (command, args, options) => {
+          invocation = { command, args, options };
+          return {
+            error: timedOut,
+            signal: "SIGKILL",
+            status: null,
+            stderr: "",
+            stdout: "",
+          };
+        },
+      }),
+    ).toThrow(/ETIMEDOUT/);
+    expect(invocation).toMatchObject({
+      command: "/probe",
+      args: ["--check"],
+      options: { killSignal: "SIGKILL", timeout: 123 },
+    });
+
+    const startedAt = Date.now();
+    expect(() =>
+      runBoundedCommand(
+        process.execPath,
+        ["-e", "setInterval(() => {}, 1_000)"],
+        { timeoutMs: 50 },
+      ),
+    ).toThrow(/ETIMEDOUT/);
+    expect(Date.now() - startedAt).toBeLessThan(2_000);
+  });
+
+  it("bounds lsof inventory probes and preserves no-listener exit semantics", () => {
+    let timeout;
+    expect(
+      lsofReportsNoListeners(26257, {
+        timeoutMs: 321,
+        runner: (_command, _args, options) => {
+          timeout = options.timeout;
+          return {
+            error: undefined,
+            signal: null,
+            status: 1,
+            stderr: "",
+            stdout: "",
+          };
+        },
+      }),
+    ).toBe(true);
+    expect(timeout).toBe(321);
+    expect(() =>
+      lsofReportsNoListeners(26257, {
+        runner: () => ({
+          error: undefined,
+          signal: null,
+          status: 1,
+          stderr: "hung or failed",
+          stdout: "",
+        }),
+      }),
+    ).toThrow(/failed closed/);
+  });
+
   it("requires refused connect, exclusive bind, and an empty lsof inventory", async () => {
     const bindSucceeds = async () => true;
     const noLsofListeners = async () => true;

@@ -14,7 +14,9 @@ All notable changes to SkyTwin will be documented in this file.
   and refuses residual listeners or forced cleanup. Port preflight and shutdown
   now require a refused loopback connection, a successful exclusive bind, and
   an empty native listener inventory; shutdown requires two consecutive clean
-  samples. The publication consumer requires the complete structured
+  samples. Native listener, process, and database probes have fail-closed
+  timeouts so verifier cleanup cannot be stranded behind a hung subprocess.
+  The publication consumer requires the complete structured
   observation. No tagged run has produced this machine evidence, so the
   storage claim remains limited and the release remains blocked.
 

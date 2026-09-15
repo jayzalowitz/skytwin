@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { execFileSync, spawn, spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   closeSync,
@@ -62,6 +62,8 @@ const STORE_RELATIVE_PATH = `${USER_DATA_RELATIVE_PATH}/crdb-data`;
 const RUNTIME_RELATIVE_PATH = `${USER_DATA_RELATIVE_PATH}/crdb-runtime`;
 const MAX_FILE_BYTES = 8 * 1024 * 1024 * 1024;
 const MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024;
+const LISTENER_PROBE_TIMEOUT_MS = 5_000;
+const RUNTIME_COMMAND_TIMEOUT_MS = 15_000;
 const SHA256 = /^[0-9a-f]{64}$/u;
 const COMMIT = /^[0-9a-f]{40}$/u;
 
@@ -360,27 +362,48 @@ export function parseLsofListenerInventory(output) {
   return records;
 }
 
-function lsofReportsNoListeners(port) {
-  const result = spawnSync(
+export function runBoundedCommand(commandPath, args, options = {}) {
+  const timeoutMs = options.timeoutMs ?? RUNTIME_COMMAND_TIMEOUT_MS;
+  const acceptedStatuses = options.acceptedStatuses ?? [0];
+  const runner = options.runner ?? spawnSync;
+  assert(
+    Number.isSafeInteger(timeoutMs) && timeoutMs > 0,
+    "native command timeout is invalid",
+  );
+  const result = runner(commandPath, args, {
+    encoding: "utf8",
+    env: {
+      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
+      LANG: "C",
+      LC_ALL: "C",
+      TZ: "UTC",
+    },
+    killSignal: "SIGKILL",
+    maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: timeoutMs,
+  });
+  assert(
+    !result.error,
+    `native command failed closed (${result.error?.code ?? "unknown"})`,
+  );
+  assert(result.signal === null, "native command was signalled");
+  assert(
+    acceptedStatuses.includes(result.status),
+    `native command exited ${result.status ?? "without status"}`,
+  );
+  return result;
+}
+
+export function lsofReportsNoListeners(port, options = {}) {
+  const result = runBoundedCommand(
     "/usr/sbin/lsof",
     ["-nP", "-a", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fpcn"],
     {
-      encoding: "utf8",
-      env: {
-        PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-        LANG: "C",
-        LC_ALL: "C",
-        TZ: "UTC",
-      },
-      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
-      stdio: ["ignore", "pipe", "pipe"],
+      acceptedStatuses: [0, 1],
+      runner: options.runner,
+      timeoutMs: options.timeoutMs ?? LISTENER_PROBE_TIMEOUT_MS,
     },
-  );
-  assert(!result.error, `lsof listener probe failed on port ${port}`);
-  assert(result.signal === null, `lsof listener probe was signalled on port ${port}`);
-  assert(
-    result.status === 0 || result.status === 1,
-    `lsof listener probe exited ${result.status ?? "without status"} on port ${port}`,
   );
   const output = result.stdout ?? "";
   if (result.status === 1) {
@@ -523,17 +546,7 @@ export function parseLsofListeners(output, expectedPort) {
 }
 
 function command(commandPath, args) {
-  return execFileSync(commandPath, args, {
-    encoding: "utf8",
-    env: {
-      PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-      LANG: "C",
-      LC_ALL: "C",
-      TZ: "UTC",
-    },
-    maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  return runBoundedCommand(commandPath, args).stdout ?? "";
 }
 
 function listenersFor(port) {
