@@ -601,9 +601,7 @@ describe('GET /api/capabilities/audit', () => {
     mockMcpServerRepository.getById.mockResolvedValue(
       makeServer({ id: BLOCKED_SERVER_ID, oauth_provider: 'google' }),
     );
-    mockQuery
-      .mockResolvedValueOnce({ rows: [{ count: '3' }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [serverNode, unboundNode, safeNode], rowCount: 3 });
+    mockQuery.mockResolvedValueOnce({ rows: [serverNode, unboundNode, safeNode], rowCount: 3 });
 
     const { status, body } = await req(
       buildApp(),
@@ -662,9 +660,7 @@ describe('GET /api/capabilities/audit', () => {
     ];
     let dataReads = 0;
     mockQuery.mockImplementation(async (sql: string, params: unknown[]) => {
-      if (sql.includes('COUNT(*)')) {
-        return { rows: [{ count: String(orderedRows.length) }], rowCount: 1 };
-      }
+      expect(sql).not.toContain('COUNT(*)');
 
       dataReads += 1;
       if (dataReads === 1) {
@@ -703,7 +699,52 @@ describe('GET /api/capabilities/audit', () => {
     expect(typedBody.nodes.map((node) => node.id))
       .toEqual([safeNodes[1]?.id, safeNodes[2]?.id]);
     expect(typedBody.total).toBe(3);
-    expect(mockQuery.mock.calls[1]?.[1]).toEqual([USER_ID, 200]);
+    expect(mockQuery.mock.calls[0]?.[1]).toEqual([USER_ID, 200]);
+  });
+
+  it('deduplicates server visibility across pages and bounds classification fanout', async () => {
+    const serverIds = Array.from({ length: 10 }, (_, index) => `audit-server-${index}`);
+    const nodes = Array.from({ length: 205 }, (_, index) => makeNode({
+      id: `audit-node-${String(index).padStart(3, '0')}`,
+      server_id: serverIds[index % serverIds.length],
+      occurred_at: new Date(Date.UTC(2026, 0, 31, 0, 0, 205 - index)),
+      payload: { actionType: 'read_file' },
+    }));
+    let dataRead = 0;
+    mockQuery.mockImplementation(async (sql: string) => {
+      expect(sql).not.toContain('COUNT(*)');
+      const rows = dataRead === 0 ? nodes.slice(0, 200) : nodes.slice(200);
+      dataRead += 1;
+      return { rows, rowCount: rows.length };
+    });
+
+    let inFlight = 0;
+    let maxInFlight = 0;
+    mockMcpServerRepository.getById.mockImplementation(async (serverId: string) => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      return makeServer({ id: serverId, registry_id: `safe-${serverId}` });
+    });
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      inFlight -= 1;
+      return ['read_file'];
+    });
+
+    const { status, body } = await req(
+      buildApp(),
+      'GET',
+      `/api/capabilities/audit?userId=${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
+    const typedBody = body as { nodes: Array<{ id: string }>; total: number; limit: number };
+    expect(typedBody.total).toBe(nodes.length);
+    expect(typedBody.nodes.map((node) => node.id)).toEqual(nodes.slice(0, typedBody.limit).map((node) => node.id));
+    expect(maxInFlight).toBeGreaterThan(1);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+    expect(mockMcpServerRepository.getById).toHaveBeenCalledTimes(serverIds.length);
+    expect(mockMcpServerRepository.listSkillNamesForServer).toHaveBeenCalledTimes(serverIds.length);
   });
 
   it('applies free-text matching after redaction when computing the visible total', async () => {
@@ -715,9 +756,7 @@ describe('GET /api/capabilities/audit', () => {
       id: 'dddddddd-0000-0000-0000-000000000031',
       payload: { displayName: 'Needle tool', actionType: 'read_file' },
     });
-    mockQuery
-      .mockResolvedValueOnce({ rows: [{ count: '2' }], rowCount: 1 })
-      .mockResolvedValueOnce({ rows: [secretOnlyMatch, publicMatch], rowCount: 2 });
+    mockQuery.mockResolvedValueOnce({ rows: [secretOnlyMatch, publicMatch], rowCount: 2 });
 
     const { status, body } = await req(
       buildApp(),

@@ -228,10 +228,10 @@ async function filterCapabilityHistoryNodes<T extends CapabilityHistoryNode>(
   nodes: readonly T[],
   userId: string,
   googleConnectionMode: string | undefined,
+  serverVisibility = new Map<string, Promise<boolean>>(),
 ): Promise<T[]> {
   if (googleConnectionMode === 'experimental') return [...nodes];
 
-  const serverVisibility = new Map<string, Promise<boolean>>();
   const isServerVisible = (serverId: string): Promise<boolean> => {
     const cached = serverVisibility.get(serverId);
     if (cached) return cached;
@@ -252,10 +252,15 @@ async function filterCapabilityHistoryNodes<T extends CapabilityHistoryNode>(
     return resolved;
   };
 
-  const visible = await Promise.all(nodes.map(async (node) => {
-    if (node.server_id) return isServerVisible(node.server_id);
-    return !historyPayloadHasAccountIdentifier(node.payload);
-  }));
+  const visible: boolean[] = [];
+  const classificationBatchSize = 8;
+  for (let start = 0; start < nodes.length; start += classificationBatchSize) {
+    const batch = nodes.slice(start, start + classificationBatchSize);
+    visible.push(...await Promise.all(batch.map(async (node) => {
+      if (node.server_id) return isServerVisible(node.server_id);
+      return !historyPayloadHasAccountIdentifier(node.payload);
+    })));
+  }
   return nodes.filter((_node, index) => visible[index]);
 }
 
@@ -1993,12 +1998,6 @@ export function createCapabilitiesRouter(): Router {
 
       const where = conditions.join(' AND ');
 
-      const countResult = await query<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM capability_provenance_nodes WHERE ${where}`,
-        params,
-      );
-      const total = parseInt(countResult.rows[0]?.count ?? '0', 10);
-
       const googleConnectionMode = loadConfig().googleConnectionMode;
       // Account-free filtering and free-text matching happen in application
       // code. Scan fixed-size raw batches for those modes so both the reported
@@ -2008,11 +2007,21 @@ export function createCapabilitiesRouter(): Router {
       // skipping an entry. Exact totals require visiting every matching row,
       // but response memory and each database read remain bounded.
       const requiresFullVisibilityScan = googleConnectionMode !== 'experimental' || q.length > 0;
+      let total = 0;
+      if (!requiresFullVisibilityScan) {
+        const countResult = await query<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM capability_provenance_nodes WHERE ${where}`,
+          params,
+        );
+        total = parseInt(countResult.rows[0]?.count ?? '0', 10);
+      }
+      const serverVisibility = new Map<string, Promise<boolean>>();
       const visibleNodesFor = async (rows: readonly CapabilityAuditRow[]) => {
         const visibleRows = await filterCapabilityHistoryNodes(
           rows,
           userId,
           googleConnectionMode,
+          serverVisibility,
         );
         let visibleNodes = visibleRows.map((row) => ({
           ...row,

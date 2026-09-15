@@ -77,6 +77,11 @@ All notable changes to SkyTwin will be documented in this file.
   per request, and distinct classifications run in bounded batches while
   preserving the repository's response order and fail-closed behavior.
 
+- **Capability-audit visibility scans bound database fan-out.** Exact visible
+  totals still use stable keyset pagination, but server classifications are
+  now memoized across the whole request and scheduled eight at a time; the
+  full-scan path no longer performs a raw count it immediately replaces.
+
 - **Ambiguous assistant failures retain their request identity.** Generic
   server/transport failures and approval-response reconciliation failures no
   longer mint a fresh logical turn on retry. The API does not report a
