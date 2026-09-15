@@ -75,6 +75,60 @@ export interface DeltaPayload {
   }>;
 }
 
+interface FederationProvenanceEdgeRow {
+  from_node_id: string;
+  to_node_id: string;
+  edge_type: string;
+  occurred_at: Date;
+  from_server_id: string | null;
+  to_server_id: string | null;
+  from_payload: unknown;
+  to_payload: unknown;
+}
+
+const PROVENANCE_REGISTRY_KEYS = ['registryId', 'registry_id'] as const;
+const PROVENANCE_PROVIDER_KEYS = [
+  'oauthProvider', 'oauth_provider', 'integration', 'service', 'provider',
+] as const;
+const PROVENANCE_SKILL_KEYS = [
+  'toolName', 'tool_name', 'mcpToolName', 'mcp_tool_name', 'actionType', 'action_type',
+] as const;
+
+function provenancePayloadIsAffirmativelyAccountFree(payload: unknown): boolean {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false;
+  const record = payload as Record<string, unknown>;
+  const values = (keys: readonly string[]): string[] => keys
+    .map((key) => record[key])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  const adapter = record['adapter'];
+  const registryIds = values(PROVENANCE_REGISTRY_KEYS);
+  const integrations = values(PROVENANCE_PROVIDER_KEYS);
+  const skills = values(PROVENANCE_SKILL_KEYS);
+  const adapters = typeof adapter === 'string' && adapter.trim().length > 0 ? [adapter] : [];
+  const hasStableIdentifier = registryIds.length > 0 || integrations.length > 0 ||
+    skills.length > 0 || adapters.length > 0;
+
+  if (!hasStableIdentifier) return false;
+  return !registryIds.some((key) => isAccountBackedIntegration({ key })) &&
+    !adapters.some((value) => isAccountBackedIntegration({ adapter: value })) &&
+    !integrations.some((integration) => isAccountBackedIntegration({ integration })) &&
+    !skills.some((skill) => isAccountBackedIntegration({ skills: [skill] }));
+}
+
+function filterAccountFreeEdges(
+  edges: readonly FederationProvenanceEdgeRow[],
+  exportableServerIds: ReadonlySet<string>,
+): FederationProvenanceEdgeRow[] {
+  const endpointIsExportable = (serverId: string | null, payload: unknown): boolean =>
+    serverId !== null
+      ? exportableServerIds.has(serverId)
+      : provenancePayloadIsAffirmativelyAccountFree(payload);
+
+  return edges.filter((edge) =>
+    endpointIsExportable(edge.from_server_id, edge.from_payload) &&
+    endpointIsExportable(edge.to_server_id, edge.to_payload));
+}
+
 /**
  * Build the per-user delta payload that gets sealed-and-shipped to each
  * outbound peer. Pure read — no side effects on the local DB.
@@ -85,16 +139,18 @@ export async function buildDeltaPayload(
 ): Promise<DeltaPayload> {
   const [servers, edgesResult] = await Promise.all([
     mcpServerRepository.listForUser(userId),
-    query<{
-      from_node_id: string;
-      to_node_id: string;
-      edge_type: string;
-      occurred_at: Date;
-    }>(
-      `SELECT from_node_id, to_node_id, edge_type, occurred_at
-       FROM capability_provenance_edges
-       WHERE user_id = $1
-       ORDER BY occurred_at DESC
+    query<FederationProvenanceEdgeRow>(
+      `SELECT e.from_node_id, e.to_node_id, e.edge_type,
+              GREATEST(from_node.occurred_at, to_node.occurred_at) AS occurred_at,
+              from_node.server_id AS from_server_id,
+              to_node.server_id AS to_server_id,
+              from_node.payload AS from_payload,
+              to_node.payload AS to_payload
+       FROM capability_provenance_edges e
+       JOIN capability_provenance_nodes from_node ON from_node.id = e.from_node_id
+       JOIN capability_provenance_nodes to_node ON to_node.id = e.to_node_id
+       WHERE from_node.user_id = $1 AND to_node.user_id = $1
+       ORDER BY GREATEST(from_node.occurred_at, to_node.occurred_at) DESC
        LIMIT 100`,
       [userId],
     ),
@@ -106,6 +162,12 @@ export async function buildDeltaPayload(
   const exportableServers = googleConnectionMode === 'experimental'
     ? eligibleServers
     : await filterAccountFreeServers(eligibleServers);
+  const exportableEdges = googleConnectionMode === 'experimental'
+    ? edgesResult.rows
+    : filterAccountFreeEdges(
+        edgesResult.rows,
+        new Set(exportableServers.map((server) => server.id)),
+      );
 
   return {
     syncedAt: new Date().toISOString(),
@@ -116,7 +178,7 @@ export async function buildDeltaPayload(
         trustTier: String(s.trust_tier),
         status: String(s.status),
       })),
-    recentProvenanceEdges: edgesResult.rows.map((r) => ({
+    recentProvenanceEdges: exportableEdges.map((r) => ({
       fromNodeId: r.from_node_id,
       toNodeId: r.to_node_id,
       edgeType: r.edge_type,

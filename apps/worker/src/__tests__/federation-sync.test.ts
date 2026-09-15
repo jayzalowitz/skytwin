@@ -75,12 +75,80 @@ describe('buildDeltaPayload', () => {
   it('includes recent provenance edges in the payload', async () => {
     mockQuery.mockResolvedValue({
       rows: [
-        { from_node_id: 'n1', to_node_id: 'n2', edge_type: 'installed', occurred_at: new Date() },
+        {
+          from_node_id: 'n1',
+          to_node_id: 'n2',
+          edge_type: 'installed',
+          occurred_at: new Date(),
+          from_server_id: null,
+          to_server_id: null,
+          from_payload: { action_type: 'create_task' },
+          to_payload: { action_type: 'create_task' },
+        },
       ],
     });
     const payload = await buildDeltaPayload('user-1', 'experimental');
     expect(payload.recentProvenanceEdges).toHaveLength(1);
     expect(payload.recentProvenanceEdges[0]?.edgeType).toBe('installed');
+  });
+
+  it('omits disabled provenance edges associated with retained account capabilities', async () => {
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'gmail', registry_id: 'gmail-mcp', oauth_provider: 'google',
+        display_name: 'Account capability', trust_tier: 'observer', status: 'active',
+      },
+      {
+        id: 'notion', registry_id: '@notionhq/notion-mcp-server', oauth_provider: 'notion',
+        display_name: 'Notion', trust_tier: 'observer', status: 'active',
+      },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
+      serverId === 'notion' ? ['notion.search'] : ['read_email']);
+    const occurredAt = new Date('2026-09-14T12:00:00.000Z');
+    const edge = (
+      fromNodeId: string,
+      toNodeId: string,
+      fromServerId: string | null,
+      toServerId: string | null,
+      fromPayload: unknown = {},
+      toPayload: unknown = {},
+    ) => ({
+      from_node_id: fromNodeId,
+      to_node_id: toNodeId,
+      edge_type: 'contributed_to',
+      occurred_at: occurredAt,
+      from_server_id: fromServerId,
+      to_server_id: toServerId,
+      from_payload: fromPayload,
+      to_payload: toPayload,
+    });
+    mockQuery.mockResolvedValue({
+      rows: [
+        edge('safe-from', 'safe-to', 'notion', 'notion'),
+        edge('account-from', 'safe-to', 'gmail', 'notion'),
+        edge('missing-from', 'safe-to', 'missing-server', 'notion'),
+        edge('unbound-account', 'safe-unbound', null, null, { oauth_provider: 'microsoft' }),
+        edge(
+          'neutral-from',
+          'neutral-to',
+          null,
+          null,
+          { action_type: 'create_task' },
+          { registry_id: '@modelcontextprotocol/server-filesystem' },
+        ),
+        edge('unknown-from', 'neutral-to', null, null, {}, { action_type: 'create_task' }),
+      ],
+    });
+
+    const payload = await buildDeltaPayload('user-1', 'disabled');
+
+    expect(payload.recentProvenanceEdges.map((item) => item.fromNodeId))
+      .toEqual(['safe-from', 'neutral-from']);
+    const edgeQuery = String(mockQuery.mock.calls[0]?.[0]);
+    expect(edgeQuery).toContain('JOIN capability_provenance_nodes');
+    expect(edgeQuery).toContain('from_node.user_id = $1 AND to_node.user_id = $1');
+    expect(mockQuery.mock.calls[0]?.[1]).toEqual(['user-1']);
   });
 
   it('skips servers with null registry_id', async () => {

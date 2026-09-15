@@ -54,7 +54,6 @@ import {
   classifyActionSeverity,
   ConfidenceLevel,
   isPassiveAwarenessShape,
-  isAccountBackedEmailOrCalendarAction,
   isAccountBackedIntegration,
   normalizeAdapterOutput,
   normalizeExecutionError,
@@ -80,6 +79,7 @@ import {
   type DailyMemorySuggestionBundle,
 } from './memory-suggestions.js';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
+import { createWorkerExecutionAdmissionGuard } from '../execution-account-boundary.js';
 
 const log = createLogger('worker:memory-action-loop');
 
@@ -1325,13 +1325,7 @@ async function createWorkerExecutionRouter(): Promise<ExecutionRouter> {
   return new ExecutionRouter(
     registry,
     executionDispatchLeaseRepository,
-    (action) => config.googleConnectionMode !== 'experimental' &&
-        isAccountBackedEmailOrCalendarAction(action)
-      ? {
-          allowed: false,
-          reason: 'Account-backed email and calendar actions are unavailable in this preview.',
-        }
-      : { allowed: true },
+    createWorkerExecutionAdmissionGuard(config.googleConnectionMode),
   );
 }
 
