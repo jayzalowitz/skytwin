@@ -165,8 +165,9 @@ For macOS, the signing report requires the DMG's own Developer ID signer and
 team to match its contained app, binds both signed bundle version keys, and
 checks the ZIP member inventory and declared expanded-size ceiling, extracts on
 a fixed-capacity sparse volume with allocation and filesystem-metadata
-headroom, and checks extracted link containment before trusting the contained
-app. For Windows, it binds the
+headroom, requires a separate host free-space reserve beyond that volume's
+maximum growth, and checks extracted link containment before trusting the
+contained app. For Windows, it binds the
 Authenticode and version metadata of both the NSIS installer and its exact contained
 `SkyTwin.exe`; a correctly signed but stale wrapper is not acceptable.
 

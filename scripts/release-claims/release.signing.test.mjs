@@ -1108,6 +1108,34 @@ describe("release.signing canonical verifier", () => {
     ).toBe(true);
   });
 
+  it("refuses ZIP extraction unless the host can retain a safety reserve beyond the volume cap", () => {
+    const root = makeRoot();
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+    const execute = macExecutor();
+
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute,
+          appVersion: identity.appVersion,
+          inspectFilesystem: () => ({ bavail: 1n, bsize: 4096n }),
+        },
+      ),
+    ).toThrow("insufficient reserved free space");
+    expect(
+      execute.mock.calls.some(
+        ([file, args]) => file === "/usr/bin/hdiutil" && args[0] === "create",
+      ),
+    ).toBe(false);
+  });
+
   it("rejects a packaged macOS executable changed during native verification", () => {
     const root = makeRoot();
     populateSubjects(root, "macos");

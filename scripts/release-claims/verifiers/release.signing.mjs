@@ -15,6 +15,7 @@ import {
   readSync,
   realpathSync,
   rmSync,
+  statfsSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -72,6 +73,7 @@ const MAX_MAC_ZIP_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;
 const MAC_ZIP_HFS_ALLOCATION_BLOCK_BYTES = 4096;
 const MAC_ZIP_FILESYSTEM_HEADROOM_BYTES = 1024 * 1024 * 1024;
 const MAC_ZIP_IMAGE_KIB_BYTES = 1024;
+const MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES = 2 * 1024 * 1024 * 1024;
 const MAX_MAC_ZIP_SYMLINK_BYTES = 4096;
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
@@ -142,7 +144,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
-export function macZipExtractionVolumeSize(
+function macZipExtractionVolumeBytes(
   expandedBytes = MAX_MAC_ZIP_EXPANDED_BYTES,
   memberCount = MAX_MAC_ZIP_MEMBERS,
 ) {
@@ -169,10 +171,31 @@ export function macZipExtractionVolumeSize(
     Number.isSafeInteger(requiredBytes),
     "macOS ZIP extraction volume size is unsafe",
   );
-  return `${Math.ceil(requiredBytes / MAC_ZIP_IMAGE_KIB_BYTES)}k`;
+  return requiredBytes;
+}
+
+export function macZipExtractionVolumeSize(
+  expandedBytes = MAX_MAC_ZIP_EXPANDED_BYTES,
+  memberCount = MAX_MAC_ZIP_MEMBERS,
+) {
+  return `${Math.ceil(
+    macZipExtractionVolumeBytes(expandedBytes, memberCount) /
+      MAC_ZIP_IMAGE_KIB_BYTES,
+  )}k`;
 }
 
 const MAC_ZIP_EXTRACTION_VOLUME_SIZE = macZipExtractionVolumeSize();
+const MAC_ZIP_MINIMUM_HOST_FREE_BYTES =
+  macZipExtractionVolumeBytes() + MAC_ZIP_HOST_FREE_SPACE_RESERVE_BYTES;
+
+function assertMacZipHostCapacity(extractionRoot, inspectFilesystem) {
+  const filesystem = inspectFilesystem(extractionRoot, { bigint: true });
+  const availableBytes = BigInt(filesystem.bavail) * BigInt(filesystem.bsize);
+  assert(
+    availableBytes >= BigInt(MAC_ZIP_MINIMUM_HOST_FREE_BYTES),
+    "macOS ZIP verification host has insufficient reserved free space",
+  );
+}
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -1059,7 +1082,11 @@ function verifyMacDmg(dmgPath, expectedTeamId, execute, env) {
 export function verifyMacSubjects(
   subjects,
   policy,
-  { execute = executeNativeCommand, appVersion } = {},
+  {
+    execute = executeNativeCommand,
+    appVersion,
+    inspectFilesystem = statfsSync,
+  } = {},
 ) {
   assert(
     subjects.size === 2 &&
@@ -1151,6 +1178,7 @@ export function verifyMacSubjects(
           ),
           "macOS ZIP",
         );
+        assertMacZipHostCapacity(extractionRoot, inspectFilesystem);
         const extractionImage = join(extractionRoot, "zip-quota.sparseimage");
         checkedCommand(
           execute,
