@@ -81,7 +81,29 @@ const VERSION_HISTORY = [
   '0.6.101.0',
 ];
 
-let derivedVersionHistory: string[];
+interface HistoricalDerivationSuccess {
+  version: string;
+  success: true;
+  value: string;
+}
+
+interface HistoricalDerivationFailure {
+  version: string;
+  success: false;
+  error: string;
+}
+
+type HistoricalDerivation = HistoricalDerivationSuccess | HistoricalDerivationFailure;
+
+function historicalValues(results: HistoricalDerivation[]): string[] {
+  return results.map((result) => {
+    expect(
+      result.success,
+      `${result.version}: historical derivation failed${result.success ? '' : `: ${result.error}`}`,
+    ).toBe(true);
+    return result.success ? result.value : '';
+  });
+}
 
 /** Compare two three-segment versions numerically. */
 function compareSemver(a: string, b: string): number {
@@ -94,10 +116,6 @@ function compareSemver(a: string, b: string): number {
 }
 
 describe('derive-app-version.sh', () => {
-  beforeAll(() => {
-    derivedVersionHistory = VERSION_HISTORY.map((version) => derive(version));
-  }, HISTORY_SETUP_TIMEOUT_MS);
-
   it('exists and is executable from the repo root', () => {
     expect(existsSync(SCRIPT), `expected the script at ${SCRIPT}`).toBe(true);
   });
@@ -111,23 +129,44 @@ describe('derive-app-version.sh', () => {
     expect(derive('1.0.0.0')).toBe('1.0.0');
   });
 
-  it('emits a three-segment semver for every VERSION in this repo history', () => {
-    for (const [index, version] of VERSION_HISTORY.entries()) {
-      expect(derivedVersionHistory[index], version).toMatch(/^\d+\.\d+\.\d+$/);
-    }
-  });
+  describe('historical VERSION properties', () => {
+    let historicalDerivations: HistoricalDerivation[] = [];
 
-  it('is injective across this repo VERSION history (no two collide)', () => {
-    expect(new Set(derivedVersionHistory).size).toBe(VERSION_HISTORY.length);
-  });
+    beforeAll(() => {
+      historicalDerivations = VERSION_HISTORY.map((version) => {
+        try {
+          return { version, success: true, value: derive(version) };
+        } catch (error) {
+          return {
+            version,
+            success: false,
+            error: error instanceof Error ? error.message : String(error),
+          };
+        }
+      });
+    }, HISTORY_SETUP_TIMEOUT_MS);
 
-  it('is strictly increasing across this repo VERSION history', () => {
-    for (let i = 1; i < derivedVersionHistory.length; i++) {
-      expect(
-        compareSemver(derivedVersionHistory[i], derivedVersionHistory[i - 1]),
-        `${VERSION_HISTORY[i - 1]} (${derivedVersionHistory[i - 1]}) -> ${VERSION_HISTORY[i]} (${derivedVersionHistory[i]}) must increase`,
-      ).toBeGreaterThan(0);
-    }
+    it('emits a three-segment semver for every VERSION in this repo history', () => {
+      const derivedVersionHistory = historicalValues(historicalDerivations);
+      for (const [index, version] of VERSION_HISTORY.entries()) {
+        expect(derivedVersionHistory[index], version).toMatch(/^\d+\.\d+\.\d+$/);
+      }
+    });
+
+    it('is injective across this repo VERSION history (no two collide)', () => {
+      const derivedVersionHistory = historicalValues(historicalDerivations);
+      expect(new Set(derivedVersionHistory).size).toBe(VERSION_HISTORY.length);
+    });
+
+    it('is strictly increasing across this repo VERSION history', () => {
+      const derivedVersionHistory = historicalValues(historicalDerivations);
+      for (let i = 1; i < derivedVersionHistory.length; i++) {
+        expect(
+          compareSemver(derivedVersionHistory[i], derivedVersionHistory[i - 1]),
+          `${VERSION_HISTORY[i - 1]} (${derivedVersionHistory[i - 1]}) -> ${VERSION_HISTORY[i]} (${derivedVersionHistory[i]}) must increase`,
+        ).toBeGreaterThan(0);
+      }
+    });
   });
 
   it('keeps a build bump below the next patch bump (encoding stays ordered)', () => {
