@@ -32,7 +32,7 @@ These capabilities are present on `main`. Release support remains governed by th
 - **Electron desktop bundles CockroachDB + API + worker + web** — `pnpm deploy` produces self-contained app bundles; CockroachManager spawns the right per-platform binary from `<resourcesPath>/cockroach/<platform>/cockroach`. In-process migrations run via `apps/desktop/src/service-manager.ts`'s native ESM dynamic import (no child-process spawn, no asar visibility hairball).
 - **DATABASE_URL parsing fix** — every previous migration was silently landing on the wrong CRDB; `packages/db/src/connection.ts` now parses `DATABASE_URL` first.
 - **Migration cascade fixes** — 023 split into 023 (column add) + 057 (FK-chain dedupe + unique index); 046 stops using `crdb_internal.force_error()` which the bundled CRDB v23.2 blocks.
-- **Account-provider implementation inventory, currently disabled** — Google and Microsoft OAuth, connector, and action components remain available for architecture work, but the supported preview offers no account connection control and admits no old token or credential as authority. Disabled-mode filtering also covers retained briefing and live-digest history, capability audit and graph views, background token/changelog work, and filesystem execution plugins before import or dispatch.
+- **Account-provider implementation inventory, currently disabled** — Google and Microsoft OAuth, connector, and action components remain available for architecture work, but the supported preview offers no account connection control and admits no old token or credential as authority. Disabled-mode filtering also covers retained briefing and live-digest history, capability audit and graph views, background token/changelog work, and filesystem execution plugins before import or dispatch. The proactive briefing route returns an empty briefing for every non-sample user before reading retained rows; the reserved fictional sample remains available, and only the exact unsupported source-development `experimental` opt-in restores the earlier account-backed behavior.
 - **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail,demo,deck}.html` now describes the sample-only boundary. Public pages are not evidence of Google verification.
 - **Tracking issue [#351](https://github.com/jayzalowitz/skytwin/issues/351)** for the eventual Gmail restricted-scope CASA assessment.
 
@@ -177,7 +177,7 @@ Recurring annual:
 
 One-time:
 - Logo design: $0 (use existing dashboard glyph) to ~$500 (commissioned)
-- Demo video editing: $0 (raw screen capture is fine for Google review) to ~$500 (professional cut for the homepage)
+- Account-free launch demo editing: $0 (raw screen capture is sufficient) to ~$500 (professional cut for the homepage)
 
 Deferred until §3.1 trigger:
 - CASA assessment: **current authorized-lab quote required; annual revalidation applies**

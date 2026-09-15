@@ -8,7 +8,16 @@ This report is the output of a full launch-readiness pass: every open GitHub iss
 
 Current source adds a guarded account-free packaged demo: a short-lived credential bound to one reserved fictional identity and an explicit read allowlist. Its database-backed product surface is deliberately read-only. Approve, reject, correct, reset, and learn interactions run only in a separate loopback-only simulation with bounded in-memory state. The simulation uses the real policy and explanation logic but cannot open settings, mutate the database, invoke connectors or providers, access credentials, or reach execution adapters. Browser authority is scoped to one tab. The service worker applies case-insensitive API route semantics, bypasses all `/api/v1/demo` traffic, and also bypasses normal product routes carrying the sample bearer credential or EventSource query token. It discards stored writes that fail the current replay policy. Source of truth: `apps/api/src/services/sample-simulation.ts`, `apps/web/public/js/sample-session.js`, `apps/web/public/js/pwa/sw-policy.js`, and `apps/web/public/sw.js`.
 
-The currently published installers predate this packaged sample path. A public launch still requires building and verifying fresh artifacts in addition to clearing the signing, OAuth review, mobile/store, and encryption/key-management blockers retained below.
+The currently published installers predate this packaged sample path. The
+account-free desktop launch still requires fresh verified artifacts, signing,
+production key management, packaged sample/model evidence, release evals, and
+the invited-tester bake recorded in the claim ledger. Google OAuth review and
+mobile/store distribution are deferred post-launch; they do not block this
+account-free candidate.
+
+The older Gmail-connect criteria, OAuth blocker classification, and submission
+advice retained in the dated audit below are superseded by this boundary. They
+remain visible only as history and must not be used as current launch actions.
 
 ---
 
@@ -48,10 +57,12 @@ passed its recorded engineering checks, but that result does not establish that
 published installers contain later source work or that a fresh release artifact
 has passed validation.
 
-Recorded launch blockers include:
+The dated audit recorded the blockers below. For the current account-free
+desktop launch, the claim ledger is authoritative; Google OAuth and mobile/store
+items in this historical inventory are explicitly non-blocking and deferred.
 
 1. **Procurement** — Apple Developer ($99/yr) + Windows EV code-signing certs (#368/#359). Until these land, the `.dmg`/`.exe` trip Gatekeeper/SmartScreen. This is the single biggest non-engineering blocker.
-2. **External review** — Google OAuth restricted-scope / brand verification (#351, multi-week CASA review) and mobile app-store review (#369/#360, needs Apple/Play accounts).
+2. **External review (superseded for this launch)** — Google OAuth restricted-scope / brand verification (#351) and mobile app-store review (#369/#360) remain future account/mobile work, not account-free desktop launch gates.
 3. **Design assets** — real multi-resolution mobile icons/splash to replace the 1×1 placeholders (#409/#369).
 
 4. **Code and architecture** — the #401 key-management decision is now captured
@@ -83,8 +94,8 @@ Recorded launch blockers include:
 | 1 | Download a signed `.dmg`/`.exe`/store build | ⛔ external — certs (#368/#359), store accounts (#369) |
 | 2 | Install without Gatekeeper/SmartScreen warnings | ⛔ external — certs |
 | 3 | Reach a meaningful state ≤60s | 🟡 development tour verified; current source adds an interactive packaged sample, but published installers predate it and a fresh artifact still needs validation |
-| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | 🟡 development seed and the isolated packaged simulation both reach populated decisions; the packaged path is not present in published installers |
-| 5 | A real decision in the queue ≤5 min of connecting Gmail | ✅ connected-account development pipeline verified; the fictional sample queue is not evidence for this criterion |
+| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | Superseded for the account-free launch. The isolated packaged sample is the only supported preview path; fresh artifact evidence remains required. |
+| 5 | A real decision in the queue ≤5 min of connecting Gmail | Superseded for the account-free launch. Connected-account development results are not launch evidence. |
 | 6 | Understand *why* each decision was made | ✅ development/connected flow verified; current packaged-sample source can inspect allowlisted decision and explanation views |
 | 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; current source adds isolated packaged approve/reject/correct interactions, but a fresh artifact still needs validation |
 | 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |
@@ -193,14 +204,16 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#487](https://github.com/jayzalowitz/skytwin/issues/487) | ✅ closed | done | yes | Coverage model (`source-coverage.ts`) shipped + exposed in the digest payload; closed. |
 | [#489](https://github.com/jayzalowitz/skytwin/issues/489) | ✅ shipped | — | yes | Closed |
 
-## Recommended next actions (ordered)
+## Current recommended next actions (account-free desktop launch)
 
-1. **Procurement (start now — long lead time):** enroll Apple Developer + buy Windows EV cert (#368/#359). The certs alone aren't enough — `build.yml` currently skips signing (`CSC_IDENTITY_AUTO_DISCOVERY: 'false'`), so someone must also wire the cert secrets into its `package:*` steps (see launch-plan §1.3). Submit Google OAuth verification (#351) — multi-week.
-2. **Finish #374 without widening its claims:** compose authenticated broker
+1. **Signing procurement and wiring:** enroll Apple Developer + buy the Windows signing cert (#368/#359), wire the secrets into the package jobs, and produce the required platform evidence. Google OAuth submission is not part of this launch.
+2. **Finish the release-evidence train:** implement the missing CI and machine evidence producers, then validate the guarded sample, model delivery, signing, checksums, SBOM, provenance, and exact artifact set on the release SHA.
+3. **Finish #374 without widening its claims:** compose authenticated broker
    grants and clients against Cockroach custody, migrate only the reviewed source
    fields, prove recovery/backup/delete/rotation in packaged builds, resolve the
    searchable-memory boundary, and complete the bake gate. ADR 0001 has already
    resolved the #401 custody decision.
-3. **Mobile cut-or-commit (#360):** decide whether mobile ships at launch. If yes: commission icon/splash assets (#409), land the EAS config + CI (#369/#404), then the native inline notification actions (#387's remaining half). If no: descope to a fast-follow.
+
+Google account review (#351) and mobile store work (#360) are post-launch tracks.
 
 **Done since the 2026-06-14 audit (2026-06-16 update):** auto-update code half + user-facing banner/menu (#370, #523 — closed); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.

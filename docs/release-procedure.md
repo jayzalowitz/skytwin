@@ -105,8 +105,10 @@ git push origin "$RELEASE_TAG"
 That's the mechanical flow. Read the rest before the **first** public release.
 Every open stop-ship condition in the claim ledger must be closed with its
 required evidence; none may be accepted as an informal exception. Signing and
-clean-artifact verification remain release gates, while OAuth verification is
-a separate onboarding constraint.
+clean-artifact verification remain release gates. Google and Microsoft account
+connections are outside this account-free release; provider review and any
+operator/BYO account work are deferred post-launch concerns, not onboarding
+constraints for this candidate.
 
 ---
 
@@ -189,16 +191,20 @@ Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the REA
 
 The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. The manifests shipping early is harmless — verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
 
-### 3. Google OAuth verification (#351)
+### 3. Account connections are deferred from this release
 
-Independent of the build, two review tracks affect onboarding. The bundled
-identity-and-Calendar client still needs brand and sensitive-scope verification;
-until those clear, its consent screen can show an unverified-app warning. Gmail
-scopes are dropped from that bundled flow today. Launch Gmail access instead uses
-a personal BYO client, which shows its own unverified warning and requires an
-In-production publishing status to avoid seven-day Testing authorization expiry.
-Neither track blocks cutting a build, but both affect the connection experience.
-Bundled Gmail restricted-scope verification is tracked separately in #351.
+The supported `v0.7.0-beta` candidate is an account-free sample. It ships no
+supported Google or Microsoft connection path, and neither Google verification
+nor an operator/BYO OAuth client is part of its launch procedure. The exact
+`SKYTWIN_GOOGLE_CONNECTION_MODE=experimental` source-development opt-in can
+exercise retained provider implementations, but that unsupported path is not
+release evidence and must not be enabled in packaged artifacts.
+
+Future managed Google work, including applicable brand, sensitive-scope, Gmail,
+and security-assessment requirements, remains tracked separately in #351 and the
+post-launch account architecture plan. Microsoft and any operator/BYO flow must
+clear the same reviewed authorization, callback, ownership, capability, and
+secret-custody boundaries before a later release can support them.
 
 ---
 

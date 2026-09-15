@@ -18,7 +18,11 @@ All notable changes to SkyTwin will be documented in this file.
   routes, rendered in dependency graphs or audit history, polled for
   changelogs, included in assistant, current-briefing, retained-briefing, or
   live-digest prompts, promoted, offered as installs, transferred, or used to
-  restore reconnect prompts. The worker skips provider-token enumeration while
+  restore reconnect prompts. While disabled, the proactive briefing endpoint
+  returns an empty briefing for every non-sample user before reading retained
+  rows; the reserved fictional sample remains available, and only the exact
+  unsupported source-development `experimental` opt-in restores the prior
+  account-backed behavior. The worker skips provider-token enumeration while
   the boundary is disabled and treats an empty cached capability inventory as
   insufficient authority for changelog contact. Provider-native action
   namespaces are denied before adapter planning or dispatch even when no
