@@ -61,7 +61,10 @@ import {
 import { forwardSignalToApi as forwardSignalUnderAdmission } from './signal-forwarder.js';
 import { createWorkerLifecycle } from './worker-lifecycle.js';
 import { installGenerationFetch } from './generation-fetch.js';
-import { buildUserOAuthConnectors } from './connector-discovery.js';
+import {
+  buildUserOAuthConnectors,
+  loadUserOAuthConnections,
+} from './connector-discovery.js';
 
 const config = loadConfig();
 const log = createLogger('worker');
@@ -539,7 +542,10 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
  */
 async function discoverUsers(): Promise<UserConnectors[]> {
   try {
-    const tokens = await oauthRepository.getUsersWithActiveTokens();
+    const tokens = await loadUserOAuthConnections(
+      config.googleConnectionMode,
+      () => oauthRepository.getUsersWithActiveTokens(),
+    );
     if (tokens.length === 0) {
       return [];
     }

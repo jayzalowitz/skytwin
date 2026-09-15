@@ -18,6 +18,20 @@ export interface UserOAuthConnectorDiscovery<TTokenStore, TConnector> {
 }
 
 /**
+ * Keep retained credential rows outside the disabled worker process entirely.
+ * The loader is intentionally admitted before it is invoked so the poll loop
+ * cannot materialize secret-bearing rows merely to learn that no provider is
+ * enabled.
+ */
+export async function loadUserOAuthConnections<T>(
+  googleConnectionMode: GoogleConnectionMode,
+  loadConnections: () => Promise<T[]>,
+): Promise<T[]> {
+  if (googleConnectionMode !== 'experimental') return [];
+  return loadConnections();
+}
+
+/**
  * Resolve provider admission before constructing anything that can read or
  * refresh a credential. Account-backed providers require the explicit
  * experimental mode; old token rows alone never activate a resolver, token

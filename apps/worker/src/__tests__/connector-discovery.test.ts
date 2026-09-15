@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connectors';
-import { buildUserOAuthConnectors } from '../connector-discovery.js';
+import {
+  buildUserOAuthConnectors,
+  loadUserOAuthConnections,
+} from '../connector-discovery.js';
 
 const googleConfig: GoogleOAuthConfig = {
   clientId: 'google-client',
@@ -118,5 +121,24 @@ describe('buildUserOAuthConnectors', () => {
     expect(deps.createTokenStore).not.toHaveBeenCalled();
     expect(deps.createGmailConnector).not.toHaveBeenCalled();
     expect(deps.createGoogleCalendarConnector).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadUserOAuthConnections', () => {
+  it('does not read retained credential rows while account connections are disabled', async () => {
+    const loadConnections = vi.fn(async () => [{ provider: 'google' }]);
+
+    await expect(loadUserOAuthConnections('disabled', loadConnections)).resolves.toEqual([]);
+
+    expect(loadConnections).not.toHaveBeenCalled();
+  });
+
+  it('preserves credential-row discovery for the exact experimental mode', async () => {
+    const rows = [{ provider: 'google' }, { provider: 'microsoft' }];
+    const loadConnections = vi.fn(async () => rows);
+
+    await expect(loadUserOAuthConnections('experimental', loadConnections)).resolves.toBe(rows);
+
+    expect(loadConnections).toHaveBeenCalledOnce();
   });
 });

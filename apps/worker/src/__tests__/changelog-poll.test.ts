@@ -195,6 +195,28 @@ describe('runChangelogPollJob', () => {
     expect(mockChangelogRepo.getForServer).not.toHaveBeenCalled();
   });
 
+  it('does not contact a bundled registry neighbor with an empty cached-skill inventory', async () => {
+    mockServerRepo.listActive.mockResolvedValue([
+      makeServer({
+        id: 'known-server',
+        registry_id: '@modelcontextprotocol/server-github',
+        command: 'retained-command',
+      }),
+    ]);
+    mockServerRepo.listSkillNamesForServer.mockResolvedValue([]);
+    const factory = vi.fn();
+
+    await runChangelogPollJob({
+      changelogRepo: mockChangelogRepo,
+      serverRepo: mockServerRepo as unknown as typeof import('@skytwin/db').mcpServerRepository,
+      mcpHostFactory: factory,
+      googleConnectionMode: 'disabled',
+    });
+
+    expect(factory).not.toHaveBeenCalled();
+    expect(mockChangelogRepo.getForServer).not.toHaveBeenCalled();
+  });
+
   it('keeps the explicitly experimental server polling path available', async () => {
     const server = makeServer({ registry_id: 'gmail-mcp', oauth_provider: 'google' });
     mockServerRepo.listActive.mockResolvedValue([server]);
