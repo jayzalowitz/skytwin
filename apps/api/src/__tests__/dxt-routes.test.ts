@@ -49,6 +49,7 @@ vi.mock('@skytwin/db', () => ({
 }));
 
 import { createDxtRouter, type DxtRouterDeps } from '../routes/dxt.js';
+import { serialize } from '@skytwin/dxt';
 
 const USER_ID = 'ffffffff-eeee-dddd-cccc-111111111111';
 const SERVER_ID = 'aaaaaaaa-bbbb-cccc-dddd-222222222222';
@@ -335,20 +336,26 @@ describe('GET /api/dxt/exports/:id/blob', () => {
 
   it('refuses a stale account-backed artifact before emitting blob bytes', async () => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-    const artifact = Buffer.from('must-not-leave');
+    const artifact = await serialize({
+      sourceInstanceId: SERVER_ID,
+      registryId: 'gmail-mcp',
+      transport: 'stdio',
+      command: 'npx',
+      skills: ['sendEmail'],
+    });
     mockDxtExportRepo.findById.mockResolvedValueOnce({
       id: EXPORT_ID,
       user_id: USER_ID,
       server_id: SERVER_ID,
       exported_at: new Date(),
-      artifact_blob: artifact,
-      artifact_sha256: Buffer.alloc(32),
+      artifact_blob: artifact.blob,
+      artifact_sha256: artifact.sha256,
     });
     mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow({
-      registry_id: 'custom-tools',
+      registry_id: 'notion-mcp',
       oauth_provider: null,
     }));
-    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce(['gmail.messages.list']);
+    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce(['notion.search']);
     const app = buildApp();
 
     const result = await req(app, 'GET', `/api/dxt/exports/${EXPORT_ID}/blob`);
@@ -358,7 +365,33 @@ describe('GET /api/dxt/exports/:id/blob', () => {
       code: 'GOOGLE_CONNECTION_DISABLED',
       available: false,
     }));
-    expect(JSON.stringify(result.body)).not.toContain(artifact.toString('utf8'));
+    expect(JSON.stringify(result.body)).not.toContain(artifact.blob.toString('base64'));
+    expect(mockMcpServerRepo.getById).not.toHaveBeenCalled();
+    expect(mockMcpServerRepo.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a stored export digest mismatch', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const artifact = await serialize({
+      sourceInstanceId: SERVER_ID,
+      registryId: 'notion-mcp',
+      transport: 'stdio',
+      command: 'npx',
+      skills: ['notion.search'],
+    });
+    mockDxtExportRepo.findById.mockResolvedValueOnce({
+      id: EXPORT_ID,
+      user_id: USER_ID,
+      server_id: SERVER_ID,
+      exported_at: new Date(),
+      artifact_blob: artifact.blob,
+      artifact_sha256: Buffer.alloc(32, 0xff),
+    });
+
+    const result = await req(buildApp(), 'GET', `/api/dxt/exports/${EXPORT_ID}/blob`);
+
+    expect(result.status).toBe(410);
+    expect(mockMcpServerRepo.getById).not.toHaveBeenCalled();
   });
 });
 

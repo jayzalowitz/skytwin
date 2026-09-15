@@ -261,6 +261,24 @@ export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
         return;
       }
 
+      // Classify the immutable artifact, not only its mutable source row. A
+      // server can be renamed or have its cached skills replaced after an
+      // export was created; that must not make a previously blocked artifact
+      // downloadable. Deserialization verifies the artifact's internal hash.
+      const artifact = deserialize(row.artifact_blob);
+      if (!artifact.success || !row.artifact_sha256.equals(artifact.data.computedSha256)) {
+        res.status(410).json({ error: 'Export artifact failed its integrity check' });
+        return;
+      }
+      const artifactCapability = artifact.data.payload.capability;
+      if (await isBlockedGoogleDxtCapability(
+        artifactCapability.registryId,
+        artifactCapability.skills,
+      )) {
+        sendGoogleCapabilityUnavailable(res);
+        return;
+      }
+
       const server = await mcpServerRepository.getById(row.server_id);
       if (!server || server.user_id !== userId || !server.registry_id) {
         res.status(410).json({ error: 'Export source capability is no longer available' });
