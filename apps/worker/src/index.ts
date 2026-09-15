@@ -1,3 +1,4 @@
+import './source-key-broker.js';
 import { loadConfig } from '@skytwin/config';
 import { RealIronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { SignalConnector, RawSignal } from '@skytwin/connectors';

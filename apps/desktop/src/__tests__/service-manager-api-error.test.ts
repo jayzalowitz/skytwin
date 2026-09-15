@@ -170,6 +170,7 @@ interface ManagerInternals {
     dataDir: string;
     generation: number;
   }): Promise<ApiGenerationForTest | null>;
+  detectExternalApi(): Promise<boolean>;
 }
 
 function stubbornChild(): ChildProcess {
@@ -271,6 +272,31 @@ describe("ServiceManager API error lifecycle", () => {
     expect(manager.api.process).toBe(processState.child);
     expect(manager.api.status).toBe("error");
     expect(processState.fork).toHaveBeenCalledOnce();
+  });
+
+  it("contains the API when source-key broker attachment fails", async () => {
+    const broker = { attachChild: vi.fn().mockResolvedValue(false) };
+    const manager = new ServiceManager(
+      broker as unknown as ConstructorParameters<typeof ServiceManager>[0],
+    ) as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const api = generationWorker();
+    processState.child = api;
+    processState.fork.mockReturnValue(api);
+    manager.getResourcePath = vi.fn().mockReturnValue("/tmp/embedded");
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+    manager.detectExternalApi = vi.fn().mockResolvedValue(false);
+    const startup = {
+      ownership: "managed-child" as const,
+      dataDir: "/tmp/skytwin-api-error-test/crdb-data",
+      generation: 1,
+    };
+    manager.activeDatabaseStartup = startup;
+
+    expect(await manager.startApi(startup)).toBeNull();
+    expect(broker.attachChild).toHaveBeenCalledWith(api, "api", new Set());
+    expect(api.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(manager.api.process).toBeNull();
+    expect(manager.apiGeneration).toBeNull();
   });
 
   it("contains sibling services and durable worker authority when the API restart budget is exhausted", async () => {

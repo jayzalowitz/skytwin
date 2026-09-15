@@ -7,6 +7,19 @@ import {
   timingSafeEqual,
 } from 'crypto';
 import type { ChildProcess } from 'child_process';
+import { pathToFileURL } from 'node:url';
+import { join } from 'node:path';
+import type {
+  SourceKeyBrokerContext,
+  SourceKeyBrokerControlMessage,
+  SourceKeyBrokerFailureCode,
+  SourceKeyBrokerRequest,
+  SourceKeyBrokerResponse,
+  SourceKeyBrokerRole,
+  SourceKeyEnvelopeV2,
+  SourceKeyPurpose,
+  SourceKeyVaultState,
+} from '@skytwin/shared-types';
 import {
   resolveSecureStorageBackend,
   type SecureStorageBackendPort,
@@ -29,21 +42,10 @@ const KDF = {
   maxmem: 128 * 1024 * 1024,
 };
 
-export type BrokerRole = 'api' | 'worker';
-export type BrokerPurpose =
-  | 'oauth'
-  | 'provider_credentials'
-  | 'mcp_config'
-  | 'federation'
-  | 'connector_cursor'
-  | 'dxt_database';
-export type VaultFailureCode =
-  | 'vault_uninitialized'
-  | 'vault_locked'
-  | 'vault_broker_unavailable'
-  | 'key_version_unavailable'
-  | 'ciphertext_invalid';
-export type VaultState = 'locked' | 'unlocked' | 'uninitialized';
+export type BrokerRole = SourceKeyBrokerRole;
+export type BrokerPurpose = SourceKeyPurpose;
+export type VaultFailureCode = SourceKeyBrokerFailureCode;
+export type VaultState = SourceKeyVaultState;
 export type VaultStateResult =
   | { success: true; state: VaultState }
   | { success: false; error: 'vault_broker_unavailable' | 'ciphertext_invalid' };
@@ -59,17 +61,7 @@ export interface BrokerContext {
   rowId: string;
 }
 
-export interface BrokerEnvelope {
-  magic: 'skytwin-envelope';
-  version: 2;
-  algorithm: 'aes-256-gcm';
-  ownerKind: 'user';
-  purpose: BrokerPurpose;
-  keyVersion: number;
-  iv: string;
-  tag: string;
-  ciphertext: string;
-}
+export type BrokerEnvelope = SourceKeyEnvelopeV2;
 
 export interface WrappedUserKey {
   magic: 'skytwin-user-key';
@@ -109,47 +101,33 @@ export interface DeviceProtectionPort extends SecureStorageBackendPort {
   decryptString(value: Buffer): string;
 }
 
-export interface BrokerRequest {
-  type: 'skytwin:vault:request';
-  requestId: string;
-  capability: string;
-  generation: number;
-  operation: 'encrypt' | 'decrypt' | 'state';
-  context: BrokerContext;
-  plaintext?: string;
-  envelope?: BrokerEnvelope;
+export interface SourceKeyProtocolValidators {
+  readonly snapshotSourceKeyBrokerControlMessage: (
+    value: unknown,
+  ) => SourceKeyBrokerControlMessage | null;
+  readonly snapshotSourceKeyBrokerRequest: (
+    value: unknown,
+  ) => SourceKeyBrokerRequest | null;
 }
 
-export interface BrokerLockAck {
-  type: 'skytwin:vault:lock-ack';
-  lockId: string;
-  capability: string;
-  userId: string;
-  generation: number;
-}
+let protocolValidatorsPromise: Promise<SourceKeyProtocolValidators> | null = null;
 
-interface BrokerLockRequest {
-  type: 'skytwin:vault:lock';
-  lockId: string;
-  userId: string;
-  generation: number;
-}
-
-interface BrokerCapabilityMessage {
-  type: 'skytwin:vault:capability';
-  capability: string;
-  role: BrokerRole;
-}
-
-export interface BrokerResponse {
-  type: 'skytwin:vault:response';
-  requestId: string;
-  generation: number;
-  result:
-    | { success: true; state: VaultState }
-    | { success: true; envelope: BrokerEnvelope }
-    | { success: true; plaintext: string }
-    | { success: false; error: VaultFailureCode };
+function loadSourceKeyProtocolValidators(): Promise<SourceKeyProtocolValidators> {
+  const protocolEntry = join(
+    __dirname,
+    '..',
+    'node_modules',
+    '@skytwin',
+    'shared-types',
+    'dist',
+    'index.js',
+  );
+  protocolValidatorsPromise ??= (
+    new Function('specifier', 'return import(specifier)') as (
+      specifier: string,
+    ) => Promise<SourceKeyProtocolValidators>
+  )(pathToFileURL(protocolEntry).href);
+  return protocolValidatorsPromise;
 }
 
 export interface BrokerField {
@@ -165,21 +143,21 @@ const brokerField = (
 ): BrokerField => Object.freeze({ purpose, table, column });
 
 const USER_FIELDS: readonly BrokerField[] = Object.freeze([
-  brokerField('oauth', 'oauth_tokens', 'access_token'),
-  brokerField('oauth', 'oauth_tokens', 'refresh_token'),
-  brokerField('provider_credentials', 'ai_provider_settings', 'api_key'),
-  brokerField('mcp_config', 'mcp_servers', 'args'),
-  brokerField('mcp_config', 'mcp_servers', 'command'),
-  brokerField('mcp_config', 'mcp_servers', 'display_name'),
-  brokerField('mcp_config', 'mcp_servers', 'env'),
-  brokerField('mcp_config', 'mcp_servers', 'url'),
-  brokerField('federation', 'federation_peers', 'endpoint_url'),
-  brokerField('federation', 'federation_peers', 'label'),
-  brokerField('federation', 'federation_peers', 'last_sync_error'),
-  brokerField('federation', 'federation_peers', 'local_secret_key'),
-  brokerField('connector_cursor', 'connector_cursors', 'cursor_value'),
-  brokerField('dxt_database', 'dxt_imports', 'artifact_blob'),
-  brokerField('dxt_database', 'dxt_imports', 'error_message'),
+  brokerField('credentials', 'oauth_tokens', 'access_token'),
+  brokerField('credentials', 'oauth_tokens', 'refresh_token'),
+  brokerField('credentials', 'ai_provider_settings', 'api_key'),
+  brokerField('portable_config', 'mcp_servers', 'args'),
+  brokerField('portable_config', 'mcp_servers', 'command'),
+  brokerField('portable_config', 'mcp_servers', 'display_name'),
+  brokerField('portable_config', 'mcp_servers', 'env'),
+  brokerField('portable_config', 'mcp_servers', 'url'),
+  brokerField('portable_config', 'federation_peers', 'endpoint_url'),
+  brokerField('portable_config', 'federation_peers', 'label'),
+  brokerField('portable_config', 'federation_peers', 'last_sync_error'),
+  brokerField('portable_config', 'federation_peers', 'local_secret_key'),
+  brokerField('portable_config', 'connector_cursors', 'cursor_value'),
+  brokerField('portable_config', 'dxt_imports', 'artifact_blob'),
+  brokerField('portable_config', 'dxt_imports', 'error_message'),
 ]);
 export const ROLE_FIELDS: Readonly<Record<BrokerRole, readonly BrokerField[]>> = Object.freeze({
   api: USER_FIELDS,
@@ -220,9 +198,7 @@ const validId = (value: unknown, max = 512): value is string =>
 
 export const isValidVaultUserId = (value: unknown): value is string =>
   typeof value === 'string'
-  && value.length >= 8
-  && value.length <= 128
-  && /^[A-Za-z0-9_-]+$/.test(value);
+  && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(value);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -460,6 +436,7 @@ export class DesktopKeyBroker {
   private readonly platform: NodeJS.Platform;
   private readonly deviceProtection?: DeviceProtectionPort;
   private readonly deviceStore?: DeviceWrapperStore;
+  private readonly protocolValidators?: SourceKeyProtocolValidators;
 
   constructor(
     private readonly store: WrappedKeyStore,
@@ -471,6 +448,7 @@ export class DesktopKeyBroker {
       platform?: NodeJS.Platform;
       deviceProtection?: DeviceProtectionPort;
       deviceStore?: DeviceWrapperStore;
+      protocolValidators?: SourceKeyProtocolValidators;
     } = {},
   ) {
     this.now = options.now ?? Date.now;
@@ -480,6 +458,7 @@ export class DesktopKeyBroker {
     this.platform = options.platform ?? process.platform;
     this.deviceProtection = options.deviceProtection;
     this.deviceStore = options.deviceStore;
+    this.protocolValidators = options.protocolValidators;
   }
 
   async initialize(
@@ -512,7 +491,7 @@ export class DesktopKeyBroker {
       const ciphertext = Buffer.concat([cipher.update(root), cipher.final()]);
       const canaryContext: BrokerContext = {
         userId,
-        purpose: 'oauth',
+        purpose: 'credentials',
         table: 'oauth_tokens',
         column: 'access_token',
         rowId: 'vault-canary',
@@ -596,7 +575,7 @@ export class DesktopKeyBroker {
     try {
       const canaryContext: BrokerContext = {
         userId,
-        purpose: 'oauth',
+        purpose: 'credentials',
         table: 'oauth_tokens',
         column: 'access_token',
         rowId: 'vault-canary',
@@ -743,7 +722,7 @@ export class DesktopKeyBroker {
       if (!root) throw new Error('invalid root');
       const canaryContext: BrokerContext = {
         userId,
-        purpose: 'oauth',
+        purpose: 'credentials',
         table: 'oauth_tokens',
         column: 'access_token',
         rowId: 'vault-canary',
@@ -866,11 +845,18 @@ export class DesktopKeyBroker {
       : { success: false, error: 'vault_locked' };
   }
 
-  attachChild(
+  async attachChild(
     child: ChildProcess,
     role: BrokerRole,
     authorizedUsers: ReadonlySet<string>,
-  ): boolean {
+  ): Promise<boolean> {
+    if (this.children.has(child)) return false;
+    let protocol: SourceKeyProtocolValidators;
+    try {
+      protocol = this.protocolValidators ?? await loadSourceKeyProtocolValidators();
+    } catch {
+      return false;
+    }
     if (this.children.has(child)) return false;
     const capability = randomBytes(KEY_BYTES);
     const users = new Set([...authorizedUsers].filter(isValidVaultUserId));
@@ -882,8 +868,9 @@ export class DesktopKeyBroker {
       lockAcks: new Map(),
     };
     this.children.set(child, binding);
-    if (!this.safeSend(child, {
+    if (!await this.sendForAttachment(child, {
       type: 'skytwin:vault:capability',
+      protocolVersion: 1,
       capability: capability.toString('base64'),
       role,
     })) {
@@ -891,49 +878,80 @@ export class DesktopKeyBroker {
       this.children.delete(child);
       return false;
     }
+    for (const userId of users) {
+      if (!await this.sendForAttachment(child, {
+        type: 'skytwin:vault:generation',
+        protocolVersion: 1,
+        ownerKind: 'user',
+        ownerId: userId,
+        generation: this.generation(userId),
+      })) {
+        capability.fill(0);
+        this.children.delete(child);
+        return false;
+      }
+    }
     child.on('message', message => {
-      void this.handle(child, message).catch(() => {
-        this.safeSend(child, {
-          type: 'skytwin:vault:response',
-          requestId: 'invalid-request',
-          generation: -1,
-          result: { success: false, error: 'vault_broker_unavailable' },
-        });
-      });
+      void this.handle(child, message, protocol).catch(() => undefined);
     });
     child.once('exit', () => this.releaseChild(child, binding));
     return true;
   }
 
-  private async handle(child: ChildProcess, raw: unknown): Promise<void> {
-    if (!isRecord(raw)) return;
+  private async handle(
+    child: ChildProcess,
+    raw: unknown,
+    protocol: SourceKeyProtocolValidators,
+  ): Promise<void> {
     const binding = this.children.get(child);
-    const capability = b64(raw['capability'], KEY_BYTES, KEY_BYTES);
-    try {
-      if (!binding || !capability || !timingSafeEqual(capability, binding.capability)) return;
-      if (raw['type'] === 'skytwin:vault:lock-ack') {
-        const lockId = raw['lockId'];
-        const pending = typeof lockId === 'string' ? binding.lockAcks.get(lockId) : undefined;
+    if (!binding) return;
+    const control = protocol.snapshotSourceKeyBrokerControlMessage(raw);
+    if (control?.type === 'skytwin:vault:lock-ack') {
+      const capability = b64(control.capability, KEY_BYTES, KEY_BYTES);
+      try {
+        if (
+          !capability
+          || !timingSafeEqual(capability, binding.capability)
+          || control.role !== binding.role
+        ) return;
+        const pending = binding.lockAcks.get(control.lockId);
         if (
           pending
-          && raw['userId'] === pending.userId
-          && raw['generation'] === pending.generation
+          && control.ownerId === pending.userId
+          && control.generation === pending.generation
         ) pending.finish();
-        return;
+      } finally {
+        capability?.fill(0);
       }
-      if (raw['type'] !== 'skytwin:vault:request' || !validId(raw['requestId'], 128)) return;
-      const requestId = raw['requestId'];
-      const context = raw['context'];
-      const requestGeneration = raw['generation'];
+      return;
+    }
+
+    const request = protocol.snapshotSourceKeyBrokerRequest(raw);
+    if (!request) return;
+    const capability = b64(request.capability, KEY_BYTES, KEY_BYTES);
+    try {
+      if (
+        !capability
+        || !timingSafeEqual(capability, binding.capability)
+        || request.role !== binding.role
+      ) return;
+      const context: BrokerContext = {
+        userId: request.context.ownerId,
+        purpose: request.context.purpose,
+        table: request.context.table,
+        column: request.context.column,
+        rowId: request.context.rowId,
+      };
       const deny = (error: VaultFailureCode) => this.safeSend(child, {
         type: 'skytwin:vault:response',
-        requestId,
-        generation: typeof requestGeneration === 'number' ? requestGeneration : -1,
-        result: { success: false, error },
+        protocolVersion: 1,
+        requestId: request.requestId,
+        generation: request.generation,
+        context: request.context,
+        result: { success: false, operation: request.operation, error },
       });
       if (
-        !validContext(context)
-        || !binding.users.has(context.userId)
+        !binding.users.has(context.userId)
         || (this.lockDepth.get(context.userId) ?? 0) > 0
       ) {
         deny('vault_broker_unavailable');
@@ -942,35 +960,54 @@ export class DesktopKeyBroker {
       const userId = context.userId;
       binding.inFlight.set(userId, (binding.inFlight.get(userId) ?? 0) + 1);
       try {
-        if (raw['operation'] === 'state') {
-          const result = await this.state(userId);
-          this.safeSend(child, {
-            type: 'skytwin:vault:response',
-            requestId,
-            generation: this.generation(userId),
-            result,
-          });
-          return;
-        }
-        if (
-          requestGeneration !== this.generation(userId)
-          || !ROLE_FIELDS[binding.role].some(field =>
-            field.purpose === context.purpose
-            && field.table === context.table
-            && field.column === context.column)
-        ) {
+        if (request.generation !== this.generation(userId)) {
           deny('vault_locked');
           return;
         }
-        const result = raw['operation'] === 'encrypt' && typeof raw['plaintext'] === 'string'
-          ? this.encrypt(context, raw['plaintext'])
-          : raw['operation'] === 'decrypt'
-            ? this.decrypt(context, raw['envelope'])
-            : { success: false as const, error: 'ciphertext_invalid' as const };
+        if (!ROLE_FIELDS[binding.role].some(field =>
+          field.purpose === context.purpose
+          && field.table === context.table
+          && field.column === context.column)) {
+          deny('vault_broker_unavailable');
+          return;
+        }
+        if (request.operation === 'state') {
+          const result = await this.state(userId);
+          this.safeSend(child, {
+            type: 'skytwin:vault:response',
+            protocolVersion: 1,
+            requestId: request.requestId,
+            generation: request.generation,
+            context: request.context,
+            result: result.success
+              ? { success: true, operation: 'state', state: result.state }
+              : { success: false, operation: 'state', error: result.error },
+          });
+          return;
+        }
+        if (request.operation === 'rewrap') {
+          deny('rotation_in_progress');
+          return;
+        }
+        const result = request.operation === 'encrypt'
+          ? (() => {
+              const encrypted = this.encrypt(context, request.plaintext);
+              return encrypted.success
+                ? { success: true as const, operation: 'encrypt' as const, envelope: encrypted.envelope }
+                : { success: false as const, operation: 'encrypt' as const, error: encrypted.error };
+            })()
+          : (() => {
+              const decrypted = this.decrypt(context, request.envelope);
+              return decrypted.success
+                ? { success: true as const, operation: 'decrypt' as const, plaintext: decrypted.plaintext }
+                : { success: false as const, operation: 'decrypt' as const, error: decrypted.error };
+            })();
         this.safeSend(child, {
           type: 'skytwin:vault:response',
-          requestId,
-          generation: this.generation(userId),
+          protocolVersion: 1,
+          requestId: request.requestId,
+          generation: request.generation,
+          context: request.context,
           result,
         });
       } finally {
@@ -1166,8 +1203,10 @@ export class DesktopKeyBroker {
     });
     const sent = this.safeSend(child, {
       type: 'skytwin:vault:lock',
+      protocolVersion: 1,
       lockId,
-      userId,
+      ownerKind: 'user',
+      ownerId: userId,
       generation,
     });
     if (!sent) failAcknowledgement();
@@ -1230,17 +1269,43 @@ export class DesktopKeyBroker {
 
   private safeSend(
     child: ChildProcess,
-    message: BrokerResponse | BrokerLockRequest | BrokerCapabilityMessage,
+    message: SourceKeyBrokerResponse | SourceKeyBrokerControlMessage,
   ): boolean {
     try {
       if (child.connected === false || !child.send) return false;
-      return child.send(message, () => {
+      child.send(message, () => {
         // Delivery errors are contained by the callback. They never prove a
         // lock acknowledgement or release the child from the barrier.
-      }) !== false;
+      });
+      // Node's boolean return is a backpressure signal, not delivery status.
+      return true;
     } catch {
       return false;
     }
+  }
+
+  private async sendForAttachment(
+    child: ChildProcess,
+    message: SourceKeyBrokerControlMessage,
+  ): Promise<boolean> {
+    if (child.connected === false || !child.send) return false;
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (sent: boolean): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(sent);
+      };
+      const timer = setTimeout(() => finish(false), this.lockAckTimeoutMs);
+      try {
+        // Node's callback is the delivery authority. A false return only
+        // signals backpressure and must not reject a successfully queued IPC.
+        child.send(message, (error) => finish(error === null));
+      } catch {
+        finish(false);
+      }
+    });
   }
 
   private tryDeleteDevice(userId: string): boolean {

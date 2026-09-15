@@ -1,3 +1,4 @@
+import './source-key-broker.js';
 import express, { type Application } from 'express';
 import { loadConfig, validate } from '@skytwin/config';
 import { createLogger } from '@skytwin/core';

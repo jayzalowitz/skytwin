@@ -1511,7 +1511,10 @@ export class ServiceManager {
       this.apiGeneration = generation;
       // User grants are populated by the authenticated broker client in the
       // source-migration slice. An empty set is deliberately fail closed.
-      this.keyBroker?.attachChild(apiProcess, 'api', new Set());
+      if (this.keyBroker && !await this.keyBroker.attachChild(apiProcess, 'api', new Set())) {
+        await this.stopProcess(this.api, 'api');
+        throw new Error('API source-key broker attachment failed');
+      }
 
       apiProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[api] ${data.toString().trim()}`);
@@ -1914,7 +1917,10 @@ export class ServiceManager {
       });
       this.worker.process = workerProcess;
       this.workerApiGeneration = apiGeneration;
-      this.keyBroker?.attachChild(workerProcess, 'worker', new Set());
+      if (this.keyBroker && !await this.keyBroker.attachChild(workerProcess, 'worker', new Set())) {
+        await this.stopProcess(this.worker, 'worker');
+        throw new Error('Worker source-key broker attachment failed');
+      }
 
       workerProcess.stdout?.on('data', (data: Buffer) => {
         console.log(`[worker] ${data.toString().trim()}`);

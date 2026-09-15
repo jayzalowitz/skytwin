@@ -209,6 +209,30 @@ describe("ServiceManager worker start serialization", () => {
     expect(manager.worker.status).toBe("running");
   });
 
+  it("contains the worker when source-key broker attachment fails", async () => {
+    const broker = {
+      attachChild: vi.fn().mockResolvedValue(false),
+    };
+    const manager = new ServiceManager(
+      broker as unknown as ConstructorParameters<typeof ServiceManager>[0],
+    ) as InstanceType<typeof ServiceManager> & ManagerInternals;
+    const { startup, generation } = authorize(manager);
+    const worker = child(8209);
+    worker.kill = vi.fn(() => {
+      worker.exitCode = 0;
+      queueMicrotask(() => worker.emit("exit", 0));
+      return true;
+    });
+    processState.fork.mockReturnValue(worker);
+    manager.ensureEmbeddedRoot = vi.fn().mockResolvedValue("/tmp/embedded");
+
+    await manager.startWorker(startup, generation);
+    expect(broker.attachChild).toHaveBeenCalledWith(worker, "worker", new Set());
+    expect(worker.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(manager.worker.process).toBeNull();
+    expect(manager.worker.status).toBe("error");
+  });
+
   it("publishes the start latch before a synchronous status listener reenters", async () => {
     const manager = new ServiceManager() as InstanceType<
       typeof ServiceManager
