@@ -69,6 +69,7 @@ function makeServer(overrides: Record<string, unknown> = {}) {
     user_id: USER_ID,
     registry_id: 'linear-mcp',
     oauth_provider: null,
+    status: 'active',
     ...overrides,
   };
 }
@@ -143,6 +144,21 @@ describe('GET /promotion-offers/:userId', () => {
 
     const { body } = await request(makeApp(), 'GET', `/promotion-offers/${USER_ID}`);
 
+    expect(body['offers']).toEqual([]);
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
+  it('hides an offer bound to an uninstalled server in experimental mode', async () => {
+    mockPromotionOffersRepository.listPendingWithServerName.mockResolvedValue([makeOffer()]);
+    mockMcpServerRepository.getById.mockResolvedValue(makeServer({ status: 'uninstalled' }));
+
+    const { status, body } = await request(
+      makeApp(),
+      'GET',
+      `/promotion-offers/${USER_ID}`,
+    );
+
+    expect(status).toBe(200);
     expect(body['offers']).toEqual([]);
     expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
   });
@@ -337,6 +353,23 @@ describe('POST /promotion-offers/:offerId/respond', () => {
     expect(mockSseEmit).not.toHaveBeenCalled();
   });
 
+  it('denies an uninstalled server offer before atomic acceptance in experimental mode', async () => {
+    mockPromotionOffersRepository.findById.mockResolvedValue(makeOffer());
+    mockMcpServerRepository.getById.mockResolvedValue(makeServer({ status: 'uninstalled' }));
+
+    const { status, body } = await request(makeApp(), 'POST', '/promotion-offers/o-1/respond', {
+      userId: USER_ID,
+      response: 'accepted',
+    });
+
+    expect(status).toBe(503);
+    expect(body['code']).toBe('ACCOUNT_CONNECTION_DISABLED');
+    expect(mockPromotionOffersRepository.acceptAtomic).not.toHaveBeenCalled();
+    expect(mockPromotionOffersRepository.markResponded).not.toHaveBeenCalled();
+    expect(mockSseEmit).not.toHaveBeenCalled();
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
+  });
+
   it('on accept with stale snapshot: acceptAtomic returns staleSnapshot → 409 (cleanup happens inside acceptAtomic)', async () => {
     mockPromotionOffersRepository.findById.mockResolvedValue({
       id: 'o-1',
@@ -487,6 +520,17 @@ describe('sweepPromotionOffersOnce', () => {
     expect(count).toBe(1);
     expect(mockSseEmit).toHaveBeenCalledTimes(1);
     expect((mockSseEmit.mock.calls[0]![2] as Record<string, unknown>)['offerId']).toBe('safe');
+  });
+
+  it('does not emit an uninstalled server offer in experimental mode', async () => {
+    mockPromotionOffersRepository.listOfferedSince.mockResolvedValue([makeOffer()]);
+    mockMcpServerRepository.getById.mockResolvedValue(makeServer({ status: 'uninstalled' }));
+
+    const count = await sweepPromotionOffersOnce();
+
+    expect(count).toBe(0);
+    expect(mockSseEmit).not.toHaveBeenCalled();
+    expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
   });
 
   it('returns 0 and swallows errors when the repo fails', async () => {

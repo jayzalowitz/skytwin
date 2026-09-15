@@ -82,7 +82,7 @@ async function isPromotionOfferUnavailable(
   const connectionMode = loadConfig().googleConnectionMode;
   try {
     const server = await mcpServerRepository.getById(offer.server_id);
-    if (!server || server.user_id !== offer.user_id) return true;
+    if (!server || server.user_id !== offer.user_id || server.status === 'uninstalled') return true;
     return await isAccountFreePreviewServerBlocked(
       connectionMode,
       server,
