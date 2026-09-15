@@ -189,6 +189,16 @@ describe('ServiceManager.getEnv()', () => {
     expect(env['MICROSOFT_TENANT']).toBe('operator-tenant');
   });
 
+  it('leaves optional Microsoft inputs absent in source development when unset', () => {
+    const env = envOf(new ServiceManager());
+
+    expect(env['MICROSOFT_CLIENT_ID']).toBeUndefined();
+    expect(env['MICROSOFT_CLIENT_SECRET']).toBeUndefined();
+    expect(env['MICROSOFT_REDIRECT_URI']).toBeUndefined();
+    expect(env['MICROSOFT_TENANT']).toBeUndefined();
+    expect(env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID']).toBeUndefined();
+  });
+
   it('keeps renderer-proof authority out of every service child environment', () => {
     process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'] = 'api-attribution';
     process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'] = 'renderer-authority';

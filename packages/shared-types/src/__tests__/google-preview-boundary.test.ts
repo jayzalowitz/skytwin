@@ -38,7 +38,8 @@ describe('Google preview boundary', () => {
 
   it.each([
     'microsoft', 'openclaw:outlook', 'openclaw:outlook_calendar',
-    'openclaw:microsoft-graph', 'office365', 'azure', 'entra',
+    'openclaw:microsoft-graph', 'm365', 'ms365', 'office365', 'o365',
+    'outlook365', 'azure', 'azuread', 'azure-ad', 'entra', 'entraid', 'entra-id',
   ])('recognizes the Microsoft account integration alias %s', (identifier) => {
     expect(isMicrosoftIntegrationIdentifier(identifier)).toBe(true);
     expect(isAccountBackedIntegrationIdentifier(identifier)).toBe(true);
@@ -90,7 +91,11 @@ describe('Google preview boundary', () => {
       expect(isGoogleAccountActionType(actionType)).toBe(false);
     });
 
-  it.each(['outlook.send_mail', 'read_outlook_mail', 'microsoft_graph.list_events', 'azure.list_storage'])
+  it.each([
+    'outlook.send_mail', 'read_outlook_mail', 'microsoft_graph.list_events',
+    'm365.list_messages', 'o365.get_events', 'azure.list_storage',
+    'azure-ad.list_users', 'entra-id.get_user',
+  ])
     ('recognizes the provider-qualified account-backed action %s', (actionType) => {
       expect(isAccountBackedActionType(actionType)).toBe(true);
     });
@@ -105,7 +110,12 @@ describe('Google preview boundary', () => {
     expect(isGoogleAccountRegistryIdentifier(registryId)).toBe(true);
   });
 
-  it.each(['azure-mcp', 'microsoft-365-mcp', 'microsoft-graph-mcp', 'office365-mcp', 'outlook-mcp'])
+  it.each([
+    'azure-mcp', 'microsoft-365-mcp', 'm365-mcp', 'ms365-mcp',
+    'microsoft-graph-mcp', 'office365-mcp', 'o365-mcp', 'outlook-mcp',
+    'outlook365-mcp', 'azure-ad-mcp', 'azuread-mcp', 'entra-id-mcp',
+    'entraid-mcp',
+  ])
     ('recognizes the Microsoft account registry entry %s', (registryId) => {
       expect(isMicrosoftAccountRegistryIdentifier(registryId)).toBe(true);
       expect(isAccountBackedRegistryIdentifier(registryId)).toBe(true);

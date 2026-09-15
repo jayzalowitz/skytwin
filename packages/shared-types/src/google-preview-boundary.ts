@@ -28,22 +28,36 @@ const GOOGLE_ACCOUNT_REGISTRY_IDS = new Set([
 const MICROSOFT_INTEGRATION_TOKENS = new Set([
   'microsoft',
   'microsoft365',
+  'm365',
+  'ms365',
   'microsoftgraph',
   'msgraph',
   'office365',
+  'o365',
   'outlook',
+  'outlook365',
   'outlookcalendar',
   'outlookmail',
   'azure',
+  'azuread',
   'entra',
+  'entraid',
 ]);
 
 const MICROSOFT_ACCOUNT_REGISTRY_IDS = new Set([
   'azure-mcp',
   'microsoft-365-mcp',
+  'm365-mcp',
+  'ms365-mcp',
   'microsoft-graph-mcp',
   'office365-mcp',
+  'o365-mcp',
   'outlook-mcp',
+  'outlook365-mcp',
+  'azure-ad-mcp',
+  'azuread-mcp',
+  'entra-id-mcp',
+  'entraid-mcp',
 ]);
 
 const GOOGLE_ACCOUNT_ACTION_TYPES = new Set([
@@ -148,7 +162,7 @@ export function isGoogleAccountActionType(actionType: string): boolean {
 export function isAccountBackedActionType(actionType: string): boolean {
   if (isGoogleAccountActionType(actionType)) return true;
   const normalized = normalizeActionType(actionType);
-  return /(?:^|_)(?:microsoft|microsoft_graph|ms_graph|office_?365|outlook|azure|entra)(?:_|$)/
+  return /(?:^|_)(?:microsoft|microsoft_graph|ms_graph|m365|ms365|office_?365|o365|outlook|outlook365|azure|azure_?ad|entra|entra_?id)(?:_|$)/
     .test(normalized);
 }
 

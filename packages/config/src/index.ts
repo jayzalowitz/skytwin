@@ -72,7 +72,7 @@ export interface SkyTwinConfig {
   /** Google OAuth redirect URI */
   googleRedirectUri: string;
 
-  /** Google account connection availability; experimental requires an exact opt-in */
+  /** Google/Microsoft account connection availability; experimental requires an exact source opt-in */
   googleConnectionMode: GoogleConnectionMode;
 
   /** Directory to scan for adapter plugins (empty = no discovery) */

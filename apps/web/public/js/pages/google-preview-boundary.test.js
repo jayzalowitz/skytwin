@@ -66,7 +66,9 @@ describe('Google preview UI boundary', () => {
     expect(isGoogleAccountIntegration({ key: 'custom:notes', skills: ['create_note'] })).toBe(false);
     for (const key of [
       'microsoft', 'openclaw:outlook', 'openclaw:outlook_calendar',
-      'openclaw:microsoft-graph', 'office365', 'azure-mcp',
+      'openclaw:microsoft-graph', 'office365', 'm365', 'o365', 'outlook365',
+      'azure-ad', 'entra-id', 'azure-mcp', 'm365-mcp', 'o365-mcp',
+      'azure-ad-mcp', 'entra-id-mcp',
     ]) {
       expect(isAccountBackedIntegrationIdentifier(key) ||
         isAccountBackedIntegration({ key })).toBe(true);
