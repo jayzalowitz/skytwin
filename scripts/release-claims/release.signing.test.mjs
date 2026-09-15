@@ -17,6 +17,7 @@ import {
   buildReport,
   inspectPlatformSubjects,
   inspectStableRegularFile,
+  macZipExtractionVolumeSize,
   parseCanonicalArgs,
   parseMacCodeSignature,
   parseMacGatekeeper,
@@ -767,7 +768,7 @@ describe("release.signing canonical verifier", () => {
         ([file, args]) =>
           file === "/usr/bin/hdiutil" &&
           args[0] === "create" &&
-          args.includes("4608m") &&
+          args.includes("5642880k") &&
           args.includes("HFS+") &&
           args.includes("SPARSE") &&
           args.at(-1).endsWith("zip-quota.sparseimage"),
@@ -1040,6 +1041,23 @@ describe("release.signing canonical verifier", () => {
     expect(() => parseMacZipListing(zipBomb, "macOS ZIP")).toThrow(
       "expanded size is outside",
     );
+  });
+
+  it("sizes the ZIP extraction volume for content, allocation slack, and filesystem metadata", () => {
+    const expandedBytes = 4 * 1024 * 1024 * 1024;
+    const memberCount = 100_000;
+    const size = macZipExtractionVolumeSize(expandedBytes, memberCount);
+    const imageBytes = Number(size.slice(0, -1)) * 1024;
+    expect(size).toBe("5642880k");
+    expect(imageBytes).toBe(
+      expandedBytes + memberCount * 4096 + 1024 * 1024 * 1024,
+    );
+    expect(() =>
+      macZipExtractionVolumeSize(expandedBytes + 1, memberCount),
+    ).toThrow("bytes are outside");
+    expect(() =>
+      macZipExtractionVolumeSize(expandedBytes, memberCount + 1),
+    ).toThrow("member count is outside");
   });
 
   it("fails closed when actual ZIP expansion exhausts the bounded volume", () => {

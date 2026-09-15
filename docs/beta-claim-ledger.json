@@ -1184,7 +1184,7 @@
         },
         {
           "path": "scripts/release-claims/verifiers/release.signing.mjs",
-          "sha256": "c4b0dee8c7f07e7e9362961547991ef49c82a5a874572e219321673c2d332722",
+          "sha256": "10cdc8323094ec8a28a50cf3e2d1811c23b89768bf92c56b5deeb62a8a78fe09",
           "why": "Defines contained report writes, fail-closed native macOS DMG and contained-app signature observations, and Windows outer-and-contained signature observations while refusing Linux until its package trust policy exists"
         }
       ],

@@ -207,7 +207,9 @@ All notable changes to SkyTwin will be documented in this file.
   Gatekeeper, and notarization observations for both DMG and ZIP. ZIP members,
   declared expanded size, and extracted link containment are checked before the
   signed app is trusted; ZIP extraction also runs on a fixed-capacity sparse
-  volume so dishonest archive size metadata cannot exhaust the runner disk.
+  volume sized for the content ceiling, worst-case allocation-block slack, and
+  filesystem metadata so dishonest archive size metadata cannot exhaust the
+  runner disk without rejecting an otherwise admissible member set.
   Windows reports bind both installer and contained executable
   version metadata alongside the exact Authenticode method, pinned signer
   fingerprint, code-signing EKU, and timestamp-certificate observation. Report

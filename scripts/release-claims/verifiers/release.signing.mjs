@@ -69,10 +69,9 @@ const WINDOWS_NSIS_PAYLOAD = "$PLUGINSDIR/app-64.7z";
 const WINDOWS_EXECUTABLE_MEMBER = "SkyTwin.exe";
 const MAX_MAC_ZIP_MEMBERS = 100_000;
 const MAX_MAC_ZIP_EXPANDED_BYTES = 4 * 1024 * 1024 * 1024;
-// HFS+ partition metadata consumes part of the image. This leaves the full
-// 4 GiB declared-content ceiling available while still enforcing a hard,
-// host-independent upper bound on bytes ditto can materialize.
-const MAC_ZIP_EXTRACTION_VOLUME_SIZE = "4608m";
+const MAC_ZIP_HFS_ALLOCATION_BLOCK_BYTES = 4096;
+const MAC_ZIP_FILESYSTEM_HEADROOM_BYTES = 1024 * 1024 * 1024;
+const MAC_ZIP_IMAGE_KIB_BYTES = 1024;
 const MAX_MAC_ZIP_SYMLINK_BYTES = 4096;
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
@@ -142,6 +141,38 @@ const PLATFORM_CONFIG = Object.freeze({
 function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
+
+export function macZipExtractionVolumeSize(
+  expandedBytes = MAX_MAC_ZIP_EXPANDED_BYTES,
+  memberCount = MAX_MAC_ZIP_MEMBERS,
+) {
+  assert(
+    Number.isSafeInteger(expandedBytes) &&
+      expandedBytes > 0 &&
+      expandedBytes <= MAX_MAC_ZIP_EXPANDED_BYTES,
+    "macOS ZIP extraction volume bytes are outside the release bound",
+  );
+  assert(
+    Number.isSafeInteger(memberCount) &&
+      memberCount > 0 &&
+      memberCount <= MAX_MAC_ZIP_MEMBERS,
+    "macOS ZIP extraction volume member count is outside the release bound",
+  );
+  // Every non-empty member can consume a complete HFS+ allocation block even
+  // when its declared size is one byte. The additional 1 GiB is reserved for
+  // the partition map, catalog growth, directories, and extended attributes.
+  const requiredBytes =
+    expandedBytes +
+    memberCount * MAC_ZIP_HFS_ALLOCATION_BLOCK_BYTES +
+    MAC_ZIP_FILESYSTEM_HEADROOM_BYTES;
+  assert(
+    Number.isSafeInteger(requiredBytes),
+    "macOS ZIP extraction volume size is unsafe",
+  );
+  return `${Math.ceil(requiredBytes / MAC_ZIP_IMAGE_KIB_BYTES)}k`;
+}
+
+const MAC_ZIP_EXTRACTION_VOLUME_SIZE = macZipExtractionVolumeSize();
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
