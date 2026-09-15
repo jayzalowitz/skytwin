@@ -165,7 +165,7 @@ export function isGoogleAccountActionType(actionType: string): boolean {
   // than SkyTwin's verb-first action vocabulary. Deny the stable Gmail /
   // Microsoft Graph mailbox roots and explicit Google Drive namespace before
   // an adapter can treat them as generic remote actions.
-  if (/^(?:users?|me)_(?:messages?|threads?|drafts?|labels?|history|settings|profile|watch|stop)(?:_|$)/.test(normalized)) {
+  if (/^(?:users?|me)(?:_|$)/.test(normalized)) {
     return true;
   }
   if (actionContainsIntegrationToken(normalized, GOOGLE_INTEGRATION_TOKENS)) {
@@ -230,12 +230,14 @@ function isGoogleAccountRegistryIdentifierOnly(registryId: string): boolean {
 }
 
 export function isMicrosoftAccountRegistryIdentifier(registryId: string): boolean {
-  return MICROSOFT_ACCOUNT_REGISTRY_IDS.has(registryId.trim().toLowerCase());
+  return MICROSOFT_ACCOUNT_REGISTRY_IDS.has(registryId.trim().toLowerCase()) ||
+    isMicrosoftIntegrationIdentifier(registryId);
 }
 
 export function isAccountBackedRegistryIdentifier(registryId: string): boolean {
   return isGoogleAccountRegistryIdentifierOnly(registryId) ||
-    isMicrosoftAccountRegistryIdentifier(registryId);
+    isMicrosoftAccountRegistryIdentifier(registryId) ||
+    isAccountBackedIntegrationIdentifier(registryId);
 }
 
 /** @deprecated Use the provider-neutral account-backed classifier. */

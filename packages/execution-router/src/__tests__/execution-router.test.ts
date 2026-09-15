@@ -268,6 +268,9 @@ describe('ExecutionRouter', () => {
     'youtube.videos.upload',
     'gcp.compute.instances.list',
     'google.youtube.videos.list',
+    'me.events.list',
+    'me.drive.root.children',
+    'users.list',
   ])
     ('denies disabled account action %s before any adapter or dispatch call', async (actionType) => {
       const authority = createDispatchAuthority();

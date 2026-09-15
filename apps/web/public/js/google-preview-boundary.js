@@ -62,7 +62,7 @@ function isGoogleAccountActionType(value) {
     .toLowerCase()
     .replace(/[.\-:/\s]+/g, '_');
   if (GOOGLE_ACCOUNT_ACTION_TYPES.has(normalized)) return true;
-  if (/^(?:users?|me)_(?:messages?|threads?|drafts?|labels?|history|settings|profile|watch|stop)(?:_|$)/.test(normalized)) return true;
+  if (/^(?:users?|me)(?:_|$)/.test(normalized)) return true;
   if (actionContainsIntegrationToken(normalized, GOOGLE_INTEGRATION_TOKENS)) return true;
   if (/^(?:read|search|list|archive|label|send|reply|draft|delete|forward|snooze|unsubscribe|move)_(?:email|emails|mail|gmail|google_email|google_mail|message|messages)$/.test(normalized)) return true;
   if (/^(?:create|update|modify|delete|cancel|move|schedule|reschedule|respond_to)_(?:(?:google_)?calendar_)?(?:event|events|invite|meeting|meetings)$/.test(normalized)) return true;

@@ -88,6 +88,7 @@ describe('Google preview boundary', () => {
     'google.drive.files.list', 'google/drive/permissions.create',
     'gdrive.files.list', 'youtube.videos.upload', 'gcp.compute.instances.list',
     'google.youtube.videos.list',
+    'me.events.list', 'me.drive.root.children', 'users.list',
   ])
     ('recognizes the account-backed action %s', (actionType) => {
       expect(isGoogleAccountActionType(actionType)).toBe(true);
@@ -127,6 +128,7 @@ describe('Google preview boundary', () => {
     'entraid-mcp',
     'onedrive-mcp', 'sharepoint-mcp', 'exchange-mcp',
     'microsoft-teams-mcp', 'ms-teams-mcp', 'teams-mcp',
+    'openclaw:onedrive', 'openclaw:sharepoint',
   ])
     ('recognizes the Microsoft account registry entry %s', (registryId) => {
       expect(isMicrosoftAccountRegistryIdentifier(registryId)).toBe(true);

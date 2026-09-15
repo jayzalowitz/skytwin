@@ -662,6 +662,7 @@ describe('execution-setup', () => {
         'teams.messages.send',
         'gdrive.files.list', 'youtube.videos.upload', 'gcp.compute.instances.list',
         'google.youtube.videos.list',
+        'me.events.list', 'me.drive.root.children', 'users.list',
       ]) {
         await expect(guard?.({ actionType, domain: 'generic' }, 'owner-1'))
           .resolves.toMatchObject({ allowed: false });
