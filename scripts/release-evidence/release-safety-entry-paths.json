@@ -37,8 +37,11 @@
     {
       "id": "execution_router.openclaw_response",
       "sourceFiles": ["packages/execution-router/src/openclaw-adapter.ts"],
-      "safetyScenarioIds": ["adv-v1-openclaw-credential-schema"],
-      "explanationScenarioIds": []
+      "safetyScenarioIds": [
+        "adv-v1-openclaw-credential-schema",
+        "adv-v1-openclaw-terminal-explanation"
+      ],
+      "explanationScenarioIds": ["adv-v1-openclaw-terminal-explanation"]
     },
     {
       "id": "execution_router.pre_dispatch_guard",
@@ -52,8 +55,11 @@
     {
       "id": "ironclaw_adapter.execute",
       "sourceFiles": ["packages/ironclaw-adapter/src/real-adapter.ts"],
-      "safetyScenarioIds": ["adv-v1-ironclaw-transport-ambiguous"],
-      "explanationScenarioIds": []
+      "safetyScenarioIds": [
+        "adv-v1-ironclaw-terminal-explanation",
+        "adv-v1-ironclaw-transport-ambiguous"
+      ],
+      "explanationScenarioIds": ["adv-v1-ironclaw-terminal-explanation"]
     },
     {
       "id": "shared_types.injection_guard",

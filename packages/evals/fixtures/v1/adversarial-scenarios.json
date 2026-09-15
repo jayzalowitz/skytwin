@@ -265,6 +265,22 @@
       "assertionSha256": "8bb76e27a13de0e9f85200da173679093b62f16e4ba7415467ce71da8aa4f0a7"
     },
     {
+      "id": "adv-v1-ironclaw-terminal-explanation",
+      "runtimeEntryPath": "ironclaw_adapter.execute",
+      "adapter": "ironclaw",
+      "criticalShape": "send",
+      "action": { "actionType": "archive_email", "reversible": true, "parameters": {} },
+      "origin": { "kind": "user", "source": "user_request" },
+      "provenance": "user_originated",
+      "failureMode": "post-request-start IronClaw uncertainty must persist only a normalized terminal ambiguity",
+      "expectedDisposition": "dispatch_ambiguous",
+      "expectedConfirmation": "none",
+      "evidenceMode": "mapped_regression",
+      "executableTestId": "@skytwin/execution-router::src/__tests__/adversarial-ironclaw-terminal-explanation.test.ts::adv-v1-ironclaw-terminal-explanation records finite ambiguity without retry or fallback",
+      "assertionFile": "packages/execution-router/src/__tests__/adversarial-ironclaw-terminal-explanation.test.ts",
+      "assertionSha256": "40f5b04faaeab7b9553297dea82f166bcd542a7a243c9b160d5abc59c5037202"
+    },
+    {
       "id": "adv-v1-openclaw-credential-schema",
       "runtimeEntryPath": "execution_router.openclaw_response",
       "adapter": "openclaw",
@@ -279,6 +295,22 @@
       "executableTestId": "@skytwin/execution-router::src/__tests__/adversarial-openclaw-credential-schema.test.ts::adv-v1-openclaw-credential-schema rejects malicious metadata",
       "assertionFile": "packages/execution-router/src/__tests__/adversarial-openclaw-credential-schema.test.ts",
       "assertionSha256": "9ce0c4f749f571facdb2bcf4f83fe026aeecd8919c65a78107c4896dad141c34"
+    },
+    {
+      "id": "adv-v1-openclaw-terminal-explanation",
+      "runtimeEntryPath": "execution_router.openclaw_response",
+      "adapter": "openclaw",
+      "criticalShape": "send",
+      "action": { "actionType": "archive_email", "reversible": true, "parameters": {} },
+      "origin": { "kind": "user", "source": "user_request" },
+      "provenance": "user_originated",
+      "failureMode": "post-request-start OpenClaw response loss must persist only a normalized terminal ambiguity",
+      "expectedDisposition": "dispatch_ambiguous",
+      "expectedConfirmation": "none",
+      "evidenceMode": "mapped_regression",
+      "executableTestId": "@skytwin/execution-router::src/__tests__/adversarial-openclaw-terminal-explanation.test.ts::adv-v1-openclaw-terminal-explanation records finite ambiguity without retry or fallback",
+      "assertionFile": "packages/execution-router/src/__tests__/adversarial-openclaw-terminal-explanation.test.ts",
+      "assertionSha256": "a1493754477bf14ba80004ec8c98da8521909804d0a962ddce332303c128c31a"
     },
     {
       "id": "adv-v1-capability-regret-no-dispatch",

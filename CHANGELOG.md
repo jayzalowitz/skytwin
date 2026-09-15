@@ -43,6 +43,16 @@ All notable changes to SkyTwin will be documented in this file.
   while retaining the explicit unsupported source-development boundary. No
   beta claim, supported platform, or stop-ship state changes.
 
+- **OpenClaw and IronClaw terminal ambiguity now has one durable, normalized
+  explanation boundary.** The shared execution router classifies only finite
+  post-request-start outcomes; CockroachDB atomically links the resulting
+  `ExplanationRecord` to the exact dispatch lease without retaining adapter
+  errors, outputs, credentials, or capabilities. Duplicate and concurrent
+  observations are idempotent, expired or legacy ambiguous leases repair
+  through the same bounded transaction, and later reconciliation may record
+  known terminal truth without erasing the historical ambiguity. Automatic
+  replay and fallback remain disabled.
+
 - **Tag pushes now produce a bounded release-safety sidecar without advancing
   the safety claim.** A canonical inventory binds the ten runtime entry paths
   already declared by the v1 adversarial catalog to their product sources and
@@ -51,7 +61,7 @@ All notable changes to SkyTwin will be documented in this file.
   and limitation counts; an independent verifier recomputes those facts before
   the sidecar joins the tag-only `release-claims-ci` artifact. Current source
   evidence reports 10/10 inventoried paths with passing safety scenarios but
-  6/10 explanation-persistence boundaries, leaving four disclosed gaps. Three
+  8/10 explanation-persistence boundaries, leaving two disclosed gaps. Three
   append-only mapped regressions now prove existing durable behavior: replayed
   events return only their captured explanation without re-running inference,
   execution-router backstop refusals link the generated explanation into
@@ -68,7 +78,7 @@ All notable changes to SkyTwin will be documented in this file.
   exact tracked checkout. It publishes the three safety sidecars and carries
   the digest of the exact manifest bytes checked before draft creation across
   the publication gap. No tagged report exists, the bounded inventory still
-  has four explanation gaps, and `safety.explanation-coverage` and release
+  has two explanation gaps, and `safety.explanation-coverage` and release
   readiness therefore remain blocked.
 
 - **Packaged default network behavior now has a fail-closed macOS verifier in

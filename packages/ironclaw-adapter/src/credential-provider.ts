@@ -368,6 +368,10 @@ export class DbCredentialProvider implements CredentialProvider {
     grant: CredentialDispatchResult,
     state: 'completed' | 'failed' | 'ambiguous',
   ): Promise<boolean> {
+    // The shared execution router owns ambiguity classification and durable
+    // explanation persistence. This legacy credential shim may close known
+    // terminal truth, but it must not originate an adapter-owned ambiguity.
+    if (state === 'ambiguous') return false;
     return executionDispatchLeaseRepository.terminalize({
       userId: grant.userId,
       executionPlanId: grant.executionPlanId,
