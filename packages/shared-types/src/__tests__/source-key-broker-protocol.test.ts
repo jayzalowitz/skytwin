@@ -85,6 +85,62 @@ describe('source-key broker context and envelope snapshots', () => {
     }
   });
 
+  it('accepts canonical lowercase Cockroach UUID text across protocol boundaries', () => {
+    for (const compatibleOwnerId of [
+      'c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7a',
+      '00000000-0000-0000-0000-000000000001',
+    ]) {
+      const compatibleContext = { ...context, ownerId: compatibleOwnerId };
+      expect(snapshotSourceKeyBrokerContext(compatibleContext)).toEqual(
+        compatibleContext,
+      );
+      expect(
+        snapshotSourceKeyBrokerRequest({
+          ...request('state'),
+          context: compatibleContext,
+        }),
+      ).toMatchObject({ context: compatibleContext });
+
+      const expected = {
+        requestId,
+        generation: 4,
+        operation: 'state' as const,
+        context: compatibleContext,
+      };
+      expect(
+        snapshotSourceKeyBrokerResponse(
+          {
+            type: 'skytwin:vault:response',
+            protocolVersion: 1,
+            requestId,
+            generation: 4,
+            context: compatibleContext,
+            result: success('state'),
+          },
+          expected,
+        ),
+      ).toMatchObject({ context: compatibleContext });
+    }
+  });
+
+  it('rejects non-canonical and malformed Cockroach UUID text', () => {
+    const compatibleOwnerId = 'c3d4e5f6-a7b8-4c9d-0e1f-2a3b4c5d6e7a';
+    for (const malformedOwnerId of [
+      compatibleOwnerId.toUpperCase(),
+      `{${compatibleOwnerId}}`,
+      ` ${compatibleOwnerId}`,
+      compatibleOwnerId.slice(1),
+      `${compatibleOwnerId.slice(0, -1)}g`,
+    ]) {
+      expect(
+        snapshotSourceKeyBrokerContext({
+          ...context,
+          ownerId: malformedOwnerId,
+        }),
+      ).toBeNull();
+    }
+  });
+
   it('returns detached, immutable snapshots and never invokes accessors or proxies', () => {
     const mutable = { ...context };
     const snapshot = snapshotSourceKeyBrokerContext(mutable);
