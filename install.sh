@@ -279,17 +279,10 @@ echo -e "  Stop:         ${YELLOW}cd $INSTALL_DIR && ./bin/skytwin-dev --stop${N
 echo -e "  Restart:      ${YELLOW}cd $INSTALL_DIR && ./install.sh${NC}"
 echo ""
 
-# Tailor the next-step message to whether Google credentials are wired up.
-# /api/credentials/status returns { google: { configured: bool }, ... } and
-# is reachable on localhost without auth in dev mode.
-GOOGLE_STATUS="$(curl -sf "http://localhost:3100/api/credentials/status" 2>/dev/null || true)"
-if echo "$GOOGLE_STATUS" | grep -q '"configured":true'; then
-  echo "Next: open the dashboard and click 'Continue with Google' to sign in."
-  echo "Your twin will start learning from your inbox and calendar right away."
-else
-  echo "Next: open the dashboard. You'll see a 'Set up Google access' card —"
-  echo "click it for a 5-minute walkthrough that wires up your Gmail + Calendar."
-  echo ""
-  echo "Already done that elsewhere? Paste your existing Google OAuth Client ID"
-  echo "and Secret in Setup → Google account credentials and you're off."
-fi
+echo "Next: open the dashboard and choose 'Just show me around' to use the"
+echo "account-free development demo. Google and Microsoft account connections are"
+echo "not supported in this preview, and no provider credentials are needed for"
+echo "the demo."
+echo ""
+echo "The retained Google implementation is available only through the exact"
+echo "SKYTWIN_GOOGLE_CONNECTION_MODE=experimental unsupported source-development experiment."

@@ -194,6 +194,12 @@ curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh
 
 The installer detects your OS, installs anything missing (Homebrew on mac, Node 20+, pnpm), fetches the official CockroachDB single-node binary (hash-verified), clones the repo to `~/skytwin`, runs the bootstrap, starts the services, and opens the dashboard at `http://localhost:3200` once it's up. Re-running pulls latest and restarts.
 
+The command above intentionally follows the moving `main` branch. For a
+reviewable, immutable source evaluation, use the exact-commit archive workflow
+in [Internal Source Candidates](./docs/internal-source-candidates.md). Those
+archives are source-only internal materials, not public releases, and preserve
+the existing signed-artifact beta gate.
+
 **No Docker required.** Before v0.6.56 the installer pulled Docker Desktop and ran CockroachDB inside a container — by far the heaviest dependency on the list, with its own EULA and a "open it once after install" gotcha. The default path now installs the CRDB binary directly into `~/.local/share/skytwin/bin/cockroach` and spawns it as a child process. Docker remains supported via `SKYTWIN_USE_DOCKER=true` for users who already have a Docker workflow.
 
 To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
