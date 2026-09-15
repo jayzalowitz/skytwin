@@ -780,6 +780,14 @@ const BETA_TAG = new RegExp(
 const FOUR_SEGMENT_VERSION = new RegExp(
   `^${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}\\.${VERSION_SEGMENT}$`,
 );
+const MACOS_SIGNING_METHODS = new Map([
+  ["SkyTwin-macOS-dmg", "gatekeeper+stapler+dmg-contained-app-codesign"],
+  ["SkyTwin-macOS-zip", "ditto-contained-app+codesign+gatekeeper+stapler"],
+]);
+const WINDOWS_SIGNING_METHOD =
+  "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate";
+const WINDOWS_TIMESTAMP_VALIDATION =
+  "presence-and-fingerprint-recorded-not-independently-validated";
 
 function isNonEmptyString(value) {
   return typeof value === "string" && value.trim().length > 0;
@@ -1007,6 +1015,16 @@ export function normalizeReleaseTagToRepositoryVersion(tag) {
   if (!beta) return null;
   const [, major, minor, patch, build] = beta;
   return `${major}.${minor}.${patch}.${build ?? "0"}`;
+}
+
+function normalizeReleaseTagToAppVersion(tag) {
+  if (!isNonEmptyString(tag)) return null;
+  const match = FOUR_SEGMENT_TAG.exec(tag) ?? BETA_TAG.exec(tag);
+  if (!match) return null;
+  const [, major, minor, patch, rawBuild] = match;
+  const build = rawBuild ?? "0";
+  if (Number(build) >= 100 || Number(patch) > 999999) return null;
+  return `${major}.${minor}.${Number(patch) * 100 + Number(build)}`;
 }
 
 function tokenizeVerificationCommand(command) {
@@ -3997,6 +4015,48 @@ function hasExactPassingMachineChecks(checks, expectedIds) {
   );
 }
 
+function hasCompleteMacSigningObservation(
+  subject,
+  expectedArtifactName,
+  expectedAppVersion,
+) {
+  const expectedMethod = MACOS_SIGNING_METHODS.get(expectedArtifactName);
+  const teamId = subject?.signerTeamId;
+  return (
+    subject?.artifactName === expectedArtifactName &&
+    subject?.signatureResult === "pass" &&
+    subject?.notarizationResult === "pass" &&
+    subject?.verificationMethod === expectedMethod &&
+    /^[A-Z0-9]{10}$/u.test(teamId ?? "") &&
+    new RegExp(`^Developer ID Application: .+ \\(${teamId}\\)$`, "u").test(
+      subject?.signer ?? "",
+    ) &&
+    subject?.signedIdentifier === "com.skytwin.desktop" &&
+    /^[0-9a-f]{40}$/u.test(subject?.signedContentCdHash ?? "") &&
+    subject?.signedBundleVersion === expectedAppVersion &&
+    subject?.executableArchitecture === "arm64"
+  );
+}
+
+function hasCompleteWindowsSigningObservation(subject, expectedArtifactName) {
+  return (
+    subject?.artifactName === expectedArtifactName &&
+    subject?.signatureResult === "pass" &&
+    subject?.verificationMethod === WINDOWS_SIGNING_METHOD &&
+    subject?.authenticodeStatus === "Valid" &&
+    subject?.authenticodeSignatureType === "Authenticode" &&
+    isNonEmptyString(subject?.signer) &&
+    isNonEmptyString(subject?.signerIssuer) &&
+    subject.signer !== subject.signerIssuer &&
+    SOURCE_DIGEST.test(subject?.signerCertificateSha256 ?? "") &&
+    subject?.signerCertificatePinned === true &&
+    subject?.codeSigningEku === true &&
+    subject?.timestampCertificatePresent === true &&
+    SOURCE_DIGEST.test(subject?.timestampSignerCertificateSha256 ?? "") &&
+    subject?.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION
+  );
+}
+
 export function verifyMachineEvidenceApplicability(
   claimId,
   report,
@@ -4040,7 +4100,12 @@ export function verifyMachineEvidenceApplicability(
   }
   if (claimId === "release.signing") {
     const reportPlatform = machineEvidencePlatformFamily(report?.platform);
-    const expectedSubjects = asArray(releaseAssets)
+    const expectedRunnerPlatforms = new Map([
+      ["macos", "darwin-arm64"],
+      ["windows", "win32-x64"],
+      ["linux", "linux-x64"],
+    ]);
+    const expectedAssets = asArray(releaseAssets)
       .filter((asset) =>
         ["desktop-installer", "desktop-archive"].includes(asset.kind),
       )
@@ -4051,30 +4116,65 @@ export function verifyMachineEvidenceApplicability(
           (reportPlatform === "windows" && name.includes("Windows")) ||
           (reportPlatform === "linux" && name.includes("Linux"))
         );
-      })
-      .flatMap((asset) =>
-        asArray(asset.subjects).map(
-          (subject) => `${subject.path}:${subject.sha256}`,
-        ),
-      )
-      .sort();
+      });
+    const expectedSubjectArtifacts = new Map(
+      expectedAssets.flatMap((asset) =>
+        asArray(asset.subjects).map((subject) => [
+          `${subject.path}:${subject.sha256}`,
+          asset.artifactName,
+        ]),
+      ),
+    );
+    const expectedSubjects = [...expectedSubjectArtifacts.keys()].sort();
     const coveredSubjects = asArray(report?.coveredSubjects);
     const actualSubjects = coveredSubjects
       .map((subject) => `${subject?.path}:${subject?.sha256}`)
       .sort();
+    const expectedAppVersion = normalizeReleaseTagToAppVersion(
+      report?.releaseTag,
+    );
+    const observationsAreComplete = coveredSubjects.every((subject) => {
+      const subjectKey = `${subject?.path}:${subject?.sha256}`;
+      const expectedArtifactName = expectedSubjectArtifacts.get(subjectKey);
+      if (reportPlatform === "macos")
+        return hasCompleteMacSigningObservation(
+          subject,
+          expectedArtifactName,
+          expectedAppVersion,
+        );
+      if (reportPlatform === "windows")
+        return hasCompleteWindowsSigningObservation(
+          subject,
+          expectedArtifactName,
+        );
+      return false;
+    });
+    const macIdentities = new Set(
+      coveredSubjects.map((subject) =>
+        [
+          subject?.signer,
+          subject?.signerTeamId,
+          subject?.signedIdentifier,
+          subject?.signedContentCdHash,
+          subject?.signedBundleVersion,
+          subject?.executableArchitecture,
+        ].join("\u0000"),
+      ),
+    );
     if (
       !sameStringSet(actualSubjects, expectedSubjects) ||
       expectedSubjects.length === 0 ||
+      reportPlatform === "linux" ||
+      expectedRunnerPlatforms.get(reportPlatform) !== report?.runnerPlatform ||
       coveredSubjects.some(
         (subject) =>
-          machineEvidencePlatformFamily(subject?.platform) !== reportPlatform ||
-          subject?.signatureResult !== "pass" ||
-          (subject.platform.startsWith("macos") &&
-            subject.notarizationResult !== "pass"),
-      )
+          machineEvidencePlatformFamily(subject?.platform) !== reportPlatform,
+      ) ||
+      !observationsAreComplete ||
+      (reportPlatform === "macos" && macIdentities.size !== 1)
     )
       errors.push(
-        "release.signing machine evidence must prove signature trust for every published installer/archive subject and notarization for every macOS subject",
+        "release.signing machine evidence must prove the complete platform-native signature, identity, architecture, and notarization contract for every published installer/archive subject",
       );
   }
   if (claimId === "release.artifact-verification") {

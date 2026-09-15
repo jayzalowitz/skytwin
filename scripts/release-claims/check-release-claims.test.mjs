@@ -1671,13 +1671,23 @@ ${step}`,
     ];
     const report = {
       platform: "macos",
+      runnerPlatform: "darwin-arm64",
+      releaseTag: "v0.7.0-beta",
       coveredSubjects: [
         {
+          artifactName: "SkyTwin-macOS-dmg",
           path: "a.dmg",
           sha256: "a".repeat(64),
           platform: "macos-arm64",
           signatureResult: "pass",
           notarizationResult: "pass",
+          verificationMethod: "gatekeeper+stapler+dmg-contained-app-codesign",
+          signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
+          signerTeamId: "TEAM123456",
+          signedIdentifier: "com.skytwin.desktop",
+          signedContentCdHash: "d".repeat(40),
+          signedBundleVersion: "0.7.0",
+          executableArchitecture: "arm64",
         },
       ],
     };
@@ -1685,15 +1695,95 @@ ${step}`,
       verifyMachineEvidenceApplicability("release.signing", report, assets),
     ).toHaveLength(1);
     report.coveredSubjects.push({
+      artifactName: "SkyTwin-macOS-zip",
       path: "a.zip",
       sha256: "b".repeat(64),
       platform: "macos-arm64",
       signatureResult: "pass",
       notarizationResult: "pass",
+      verificationMethod: "ditto-contained-app+codesign+gatekeeper+stapler",
+      signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
+      signerTeamId: "TEAM123456",
+      signedIdentifier: "com.skytwin.desktop",
+      signedContentCdHash: "d".repeat(40),
+      signedBundleVersion: "0.7.0",
+      executableArchitecture: "arm64",
     });
     expect(
       verifyMachineEvidenceApplicability("release.signing", report, assets),
     ).toEqual([]);
+
+    for (const [field, tampered] of [
+      ["signedContentCdHash", undefined],
+      ["signedBundleVersion", "0.6.99"],
+      ["executableArchitecture", "x86_64"],
+      ["verificationMethod", "codesign-only"],
+      ["signerTeamId", "OTHER12345"],
+    ]) {
+      const changed = structuredClone(report);
+      if (tampered === undefined) delete changed.coveredSubjects[0][field];
+      else changed.coveredSubjects[0][field] = tampered;
+      expect(
+        verifyMachineEvidenceApplicability("release.signing", changed, assets),
+        `tampered ${field}`,
+      ).toHaveLength(1);
+    }
+  });
+
+  it("requires complete pinned Windows signature observations", () => {
+    const assets = [
+      {
+        kind: "desktop-installer",
+        artifactName: "SkyTwin-Windows-installer",
+        subjects: [{ path: "SkyTwin.exe", sha256: "a".repeat(64) }],
+      },
+    ];
+    const report = {
+      platform: "windows",
+      runnerPlatform: "win32-x64",
+      releaseTag: "v0.7.0-beta",
+      coveredSubjects: [
+        {
+          artifactName: "SkyTwin-Windows-installer",
+          path: "SkyTwin.exe",
+          sha256: "a".repeat(64),
+          platform: "windows-x64",
+          signatureResult: "pass",
+          verificationMethod:
+            "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+          authenticodeStatus: "Valid",
+          authenticodeSignatureType: "Authenticode",
+          signer: "CN=SkyTwin Publisher",
+          signerIssuer: "CN=Public Code Signing CA",
+          signerCertificateSha256: "b".repeat(64),
+          signerCertificatePinned: true,
+          codeSigningEku: true,
+          timestampCertificatePresent: true,
+          timestampSignerCertificateSha256: "c".repeat(64),
+          timestampCertificateValidation:
+            "presence-and-fingerprint-recorded-not-independently-validated",
+        },
+      ],
+    };
+    expect(
+      verifyMachineEvidenceApplicability("release.signing", report, assets),
+    ).toEqual([]);
+
+    for (const [field, tampered] of [
+      ["codeSigningEku", undefined],
+      ["signerCertificatePinned", false],
+      ["signerCertificateSha256", "not-a-digest"],
+      ["timestampCertificatePresent", false],
+      ["verificationMethod", "fingerprint-only"],
+    ]) {
+      const changed = structuredClone(report);
+      if (tampered === undefined) delete changed.coveredSubjects[0][field];
+      else changed.coveredSubjects[0][field] = tampered;
+      expect(
+        verifyMachineEvidenceApplicability("release.signing", changed, assets),
+        `tampered ${field}`,
+      ).toHaveLength(1);
+    }
   });
 
   it("rejects signing evidence asserted by the wrong native platform", () => {

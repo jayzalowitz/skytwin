@@ -1170,7 +1170,7 @@
       "scope": "Every artifact named in the beta platform support matrix, built from the release tag.",
       "owner": "release-engineering",
       "state": "deferred",
-      "limitation": "CI explicitly disables automatic signing and produces no notarization evidence; the gated tag workflow therefore refuses draft creation until digest-bound signing evidence proves every supported artifact.",
+      "limitation": "CI explicitly disables automatic signing, protected publisher pins are not wired, and no tagged run has produced notarization or signature evidence. The canonical verifier can evaluate macOS and Windows observations but intentionally refuses Linux until package-format methods and pinned trust roots exist; the gated tag workflow therefore refuses draft creation.",
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
@@ -1181,12 +1181,21 @@
           "path": "apps/desktop/package.json",
           "sha256": "22d7ef2881017cfd478d20d175290d87d83574b7de811267894e47e02ebd48d5",
           "why": "Defines the current platform build targets and publishing metadata"
+        },
+        {
+          "path": "scripts/release-claims/verifiers/release.signing.mjs",
+          "sha256": "82098d42c81fbd548e26f6bba09308ce36d4225d66043de3c7689b3f742c5ae4",
+          "why": "Defines fail-closed native macOS and Windows signature observations while refusing Linux until its package trust policy exists"
         }
       ],
       "verification": [
         {
           "command": "rg -n -- \"CSC_IDENTITY_AUTO_DISCOVERY: 'false'|notar\" .github/workflows/build.yml apps/desktop/scripts/sign-and-notarize.ts",
           "expected": "Release review continues to show unsigned CI artifacts until credentialed signing and notarization are wired"
+        },
+        {
+          "command": "pnpm claims:test",
+          "expected": "Release-claim tests pass, including signing-verifier regressions; no unsigned or Linux package can produce passing release evidence"
         }
       ]
     },
@@ -1246,7 +1255,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "d388baa06221a65dbf0f3a90eaa54bd185154a19455f37215ce0755f80dbf6d9",
+          "sha256": "183a9ab8fabfb0199e0ff3671a6ef2fccb473b0c0c4635878b34a6bf5798fbf1",
           "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],

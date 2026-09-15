@@ -27,6 +27,7 @@ import {
   verifyMacSubjects,
   verifyWindowsSubjects,
 } from "./verifiers/release.signing.mjs";
+import { inspectCanonicalSubjects as inspectArtifactVerificationSubjects } from "./verifiers/release.artifact-verification.mjs";
 import { verifyMachineEvidenceApplicability } from "./check-release-claims.mjs";
 
 const temporary = [];
@@ -34,6 +35,7 @@ const sourceCommit = "0123456789abcdef0123456789abcdef01234567";
 const signerSha256 = "a".repeat(64);
 const timestampSha256 = "b".repeat(64);
 const teamId = "TEAM123456";
+const cdHash = "c".repeat(40);
 const identity = {
   repository: "owner/repository",
   sourceCommit,
@@ -80,11 +82,14 @@ const subjectFixtures = Object.freeze({
   ]),
 });
 
-function populateSubjects(root, platform) {
+function populateSubjects(root, platform, filenameOverrides = {}) {
   for (const [artifactName, filename, bytes] of subjectFixtures[platform]) {
     const directory = join(root, "artifacts", artifactName);
     mkdirSync(directory, { recursive: true });
-    writeFileSync(join(directory, filename), bytes);
+    writeFileSync(
+      join(directory, filenameOverrides[artifactName] ?? filename),
+      bytes,
+    );
   }
 }
 
@@ -175,6 +180,7 @@ function macSignature({
   identifier = "com.skytwin.desktop",
   signer = "Developer ID Application: SkyTwin Test (TEAM123456)",
   actualTeamId = teamId,
+  actualCdHash = cdHash,
   runtime = true,
 } = {}) {
   return [
@@ -183,10 +189,29 @@ function macSignature({
     "Authority=Developer ID Certification Authority",
     "Authority=Apple Root CA",
     `TeamIdentifier=${actualTeamId}`,
+    `CDHash=${actualCdHash}`,
     runtime
       ? "CodeDirectory flags=0x10000(runtime)"
       : "CodeDirectory flags=0x0(none)",
   ].join("\n");
+}
+
+function macReportObservation(artifactName, overrides = {}) {
+  return {
+    signatureResult: "pass",
+    notarizationResult: "pass",
+    verificationMethod:
+      artifactName === "SkyTwin-macOS-dmg"
+        ? "gatekeeper+stapler+dmg-contained-app-codesign"
+        : "ditto-contained-app+codesign+gatekeeper+stapler",
+    signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
+    signerTeamId: teamId,
+    signedIdentifier: "com.skytwin.desktop",
+    signedContentCdHash: cdHash,
+    signedBundleVersion: identity.appVersion,
+    executableArchitecture: "arm64",
+    ...overrides,
+  };
 }
 
 function createMacApp(root) {
@@ -196,6 +221,7 @@ function createMacApp(root) {
 }
 
 function macExecutor(overrides = {}) {
+  let appIndex = 0;
   return vi.fn((file, args) => {
     if (file === "/usr/bin/hdiutil" && args[0] === "attach") {
       createMacApp(args[args.indexOf("-mountpoint") + 1]);
@@ -207,14 +233,24 @@ function macExecutor(overrides = {}) {
     }
     if (file === "/usr/bin/codesign" && args[0] === "--display") {
       const path = args.at(-1);
-      const isDmg = path.endsWith(".dmg");
-      const value =
-        overrides.signature?.(path) ??
-        macSignature({
-          identifier: isDmg ? "com.skytwin.desktop.dmg" : undefined,
-        });
+      appIndex += 1;
+      const value = overrides.signature?.(path, { appIndex }) ?? macSignature();
       overrides.afterSignature?.(path);
       return { exitCode: 0, signal: null, stdout: "", stderr: value };
+    }
+    if (file === "/usr/bin/lipo") {
+      const value =
+        typeof overrides.architecture === "function"
+          ? overrides.architecture(args.at(-1), { appIndex })
+          : (overrides.architecture ?? "arm64");
+      return { exitCode: 0, signal: null, stdout: value, stderr: "" };
+    }
+    if (file === "/usr/bin/plutil") {
+      const value =
+        typeof overrides.bundleVersion === "function"
+          ? overrides.bundleVersion(args.at(-1), { appIndex })
+          : (overrides.bundleVersion ?? identity.appVersion);
+      return { exitCode: 0, signal: null, stdout: value, stderr: "" };
     }
     if (file === "/usr/sbin/spctl") {
       return {
@@ -307,6 +343,97 @@ describe("release.signing canonical verifier", () => {
     expect(() =>
       inspectStableRegularFile(linkedRoot, join(linkedRoot, "link"), "link"),
     ).toThrow("symlink component");
+  });
+
+  it("rejects noncanonical architecture filenames at artifact selection", () => {
+    const wrongMacRoot = makeRoot();
+    populateSubjects(wrongMacRoot, "macos", {
+      "SkyTwin-macOS-dmg": "SkyTwin-0.7.0-x64.dmg",
+      "SkyTwin-macOS-zip": "SkyTwin-0.7.0-x64-mac.zip",
+    });
+    expect(() =>
+      inspectPlatformSubjects(wrongMacRoot, "macos", identity.appVersion),
+    ).toThrow("unexpected filename");
+
+    const mixedMacRoot = makeRoot();
+    populateSubjects(mixedMacRoot, "macos", {
+      "SkyTwin-macOS-zip": "SkyTwin-0.7.0-x64-mac.zip",
+    });
+    expect(() =>
+      inspectPlatformSubjects(mixedMacRoot, "macos", identity.appVersion),
+    ).toThrow("unexpected filename");
+
+    // Linux remains unconditionally blocked until package-format trust and
+    // internal architecture verification land. These cases intentionally
+    // describe only the filename-level subject selection in this car.
+    for (const [artifactName, filename] of [
+      ["SkyTwin-Linux-deb", "skytwin-desktop_0.7.0_arm64.deb"],
+      ["SkyTwin-Linux-rpm", "skytwin-desktop-0.7.0.aarch64.rpm"],
+    ]) {
+      const wrongLinuxRoot = makeRoot();
+      populateSubjects(wrongLinuxRoot, "linux", { [artifactName]: filename });
+      expect(() =>
+        inspectPlatformSubjects(wrongLinuxRoot, "linux", identity.appVersion),
+      ).toThrow("unexpected filename");
+    }
+  });
+
+  it("keeps the configured Windows producer name aligned with upload and verifier contracts", () => {
+    const desktopPackage = JSON.parse(
+      readFileSync("apps/desktop/package.json", "utf8"),
+    );
+    const artifactTemplate = desktopPackage.build?.nsis?.artifactName;
+    expect(artifactTemplate).toEqual(expect.any(String));
+    const macroValues = new Map([
+      ["productName", desktopPackage.build.productName],
+      ["version", identity.appVersion],
+      ["ext", "exe"],
+    ]);
+    const producedName = artifactTemplate.replace(
+      /\$\{([^}]+)\}/gu,
+      (_match, macro) => {
+        const value = macroValues.get(macro);
+        expect(value, `unsupported artifactName macro ${macro}`).toEqual(
+          expect.any(String),
+        );
+        return value;
+      },
+    );
+    expect(producedName).not.toContain("${");
+
+    const root = makeRoot();
+    for (const [artifactName, filename] of [
+      ["SkyTwin-macOS-dmg", "SkyTwin-0.7.0-arm64.dmg"],
+      ["SkyTwin-macOS-zip", "SkyTwin-0.7.0-arm64-mac.zip"],
+      ["SkyTwin-macOS-update-manifest", "latest-mac.yml"],
+      ["SkyTwin-Windows-installer", producedName],
+      ["SkyTwin-Windows-update-manifest", "latest.yml"],
+      ["SkyTwin-Linux-AppImage", "SkyTwin-0.7.0.AppImage"],
+      ["SkyTwin-Linux-deb", "skytwin-desktop_0.7.0_amd64.deb"],
+      ["SkyTwin-Linux-rpm", "skytwin-desktop-0.7.0.x86_64.rpm"],
+      ["SkyTwin-Linux-update-manifest", "latest-linux.yml"],
+    ]) {
+      const directory = join(root, "artifacts", artifactName);
+      mkdirSync(directory, { recursive: true });
+      writeFileSync(join(directory, filename), `${artifactName} bytes`);
+    }
+    expect(
+      inspectPlatformSubjects(root, "windows", identity.appVersion).get(
+        "SkyTwin-Windows-installer",
+      ).name,
+    ).toBe(producedName);
+    expect(
+      inspectArtifactVerificationSubjects(root, identity.appVersion).get(
+        "SkyTwin-Windows-installer",
+      ).name,
+    ).toBe(producedName);
+
+    const workflow = readFileSync(".github/workflows/build.yml", "utf8");
+    const windowsJob = workflow.slice(
+      workflow.indexOf("\n  desktop-windows:\n"),
+      workflow.indexOf("\n  desktop-linux:\n"),
+    );
+    expect(windowsJob).toContain("path: apps/desktop/dist-electron/*.exe");
   });
 
   it("binds platform artifact IDs, archive digests, run, repository, commit, and tag ref", async () => {
@@ -406,6 +533,29 @@ describe("release.signing canonical verifier", () => {
       ),
     ).toThrow("ambiguous");
     expect(() =>
+      parseMacCodeSignature(
+        macSignature({ signer: "Developer ID Application:" }),
+        teamId,
+        "app",
+      ),
+    ).toThrow("authority chain");
+    expect(() =>
+      parseMacCodeSignature(
+        macSignature({
+          signer: "Developer ID Application: Other Publisher (OTHER12345)",
+        }),
+        teamId,
+        "app",
+      ),
+    ).toThrow("does not match its TeamIdentifier");
+    expect(() =>
+      parseMacCodeSignature(
+        macSignature({ actualCdHash: "not-a-cdhash" }),
+        teamId,
+        "app",
+      ),
+    ).toThrow("invalid CDHash");
+    expect(() =>
       parseMacGatekeeper("accepted\nsource=Developer ID", "app"),
     ).toThrow("not accepted as a notarized");
     expect(() =>
@@ -430,6 +580,7 @@ describe("release.signing canonical verifier", () => {
       { teamId },
       {
         execute,
+        appVersion: identity.appVersion,
         env: { PATH: "/usr/bin", GITHUB_TOKEN: "must-not-leak" },
       },
     );
@@ -442,11 +593,17 @@ describe("release.signing canonical verifier", () => {
         signatureResult: "pass",
         notarizationResult: "pass",
         signerTeamId: teamId,
+        signedContentCdHash: cdHash,
+        signedBundleVersion: identity.appVersion,
+        executableArchitecture: "arm64",
       }),
       expect.objectContaining({
         signatureResult: "pass",
         notarizationResult: "pass",
         signerTeamId: teamId,
+        signedContentCdHash: cdHash,
+        signedBundleVersion: identity.appVersion,
+        executableArchitecture: "arm64",
       }),
     ]);
     expect(
@@ -464,6 +621,22 @@ describe("release.signing canonical verifier", () => {
         ([file, args]) => file === "/usr/bin/ditto" && args.includes("-k"),
       ),
     ).toBe(true);
+    const dmgPath = subjects.get("SkyTwin-macOS-dmg").path;
+    expect(
+      execute.mock.calls.some(
+        ([file, args]) =>
+          file === "/usr/bin/codesign" && args.at(-1) === dmgPath,
+      ),
+    ).toBe(false);
+    expect(
+      execute.mock.calls.filter(([file]) => file === "/usr/bin/lipo"),
+    ).toHaveLength(2);
+    expect(
+      execute.mock.calls.filter(([file]) => file === "/usr/bin/plutil"),
+    ).toHaveLength(2);
+    expect(result.get("SkyTwin-macOS-dmg").verificationMethod).toBe(
+      "gatekeeper+stapler+dmg-contained-app-codesign",
+    );
     expect(
       execute.mock.calls.every(([file]) =>
         [
@@ -472,6 +645,8 @@ describe("release.signing canonical verifier", () => {
           "/usr/bin/xcrun",
           "/usr/bin/hdiutil",
           "/usr/bin/ditto",
+          "/usr/bin/lipo",
+          "/usr/bin/plutil",
         ].includes(file),
       ),
     ).toBe(true);
@@ -493,6 +668,7 @@ describe("release.signing canonical verifier", () => {
         { teamId },
         {
           execute: macExecutor({ stapler: "ticket absent" }),
+          appVersion: identity.appVersion,
           env: {},
         },
       ),
@@ -503,10 +679,103 @@ describe("release.signing canonical verifier", () => {
         { teamId },
         {
           execute: macExecutor({ gatekeeperExitCode: 3 }),
+          appVersion: identity.appVersion,
           env: {},
         },
       ),
     ).toThrow("Gatekeeper assessment failed");
+  });
+
+  it("pins each contained app signer and requires the same signed app in DMG and ZIP", () => {
+    const root = makeRoot();
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute: macExecutor({
+            signature: (_path, { appIndex }) =>
+              appIndex === 1
+                ? macSignature({ actualTeamId: "OTHER12345" })
+                : macSignature(),
+          }),
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("SkyTwin-macOS-dmg Apple Team ID is untrusted");
+
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute: macExecutor({
+            signature: (_path, { appIndex }) =>
+              macSignature({
+                actualCdHash: appIndex === 1 ? cdHash : "d".repeat(40),
+              }),
+          }),
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("different signed application identities");
+
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute: macExecutor({
+            signature: (_path, { appIndex }) =>
+              macSignature({
+                signer:
+                  appIndex === 1
+                    ? "Developer ID Application: SkyTwin Test (TEAM123456)"
+                    : "Developer ID Application: Rotated Name (TEAM123456)",
+              }),
+          }),
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("different signed application identities");
+  });
+
+  it("requires canonical arm64 executables and the release-tag bundle version", () => {
+    const root = makeRoot();
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute: macExecutor({ architecture: "x86_64" }),
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("not the canonical arm64 architecture");
+    expect(() =>
+      verifyMacSubjects(
+        subjects,
+        { teamId },
+        {
+          execute: macExecutor({ bundleVersion: "0.6.99" }),
+          appVersion: identity.appVersion,
+        },
+      ),
+    ).toThrow("signed bundle version does not match the release tag");
   });
 
   it("rejects a packaged macOS executable changed during native verification", () => {
@@ -525,7 +794,7 @@ describe("release.signing canonical verifier", () => {
         {
           execute: macExecutor({
             afterSignature: (appPath) => {
-              if (changed) return;
+              if (changed || !appPath.endsWith(".app")) return;
               changed = true;
               writeFileSync(
                 join(appPath, "Contents", "MacOS", "SkyTwin"),
@@ -533,6 +802,7 @@ describe("release.signing canonical verifier", () => {
               );
             },
           }),
+          appVersion: identity.appVersion,
           env: {},
         },
       ),
@@ -603,8 +873,10 @@ describe("release.signing canonical verifier", () => {
     expect(result.get("SkyTwin-Windows-installer")).toMatchObject({
       signatureResult: "pass",
       authenticodeStatus: "Valid",
+      authenticodeSignatureType: "Authenticode",
       signerCertificateSha256: signerSha256,
       signerCertificatePinned: true,
+      codeSigningEku: true,
       timestampCertificatePresent: true,
       timestampSignerCertificateSha256: timestampSha256,
       timestampCertificateValidation:
@@ -645,6 +917,39 @@ describe("release.signing canonical verifier", () => {
       "recorded without an independent timestamp trust assertion",
     );
     expect(JSON.stringify(report)).not.toMatch(/trusted timestamp/iu);
+
+    const missingEku = new Map(result);
+    const incomplete = { ...missingEku.get("SkyTwin-Windows-installer") };
+    delete incomplete.codeSigningEku;
+    missingEku.set("SkyTwin-Windows-installer", incomplete);
+    expect(() =>
+      buildReport({
+        root,
+        platform: "windows",
+        identity,
+        apiArtifacts: apiArtifactMap("windows"),
+        subjects,
+        verification: missingEku,
+        runtime: { platform: "win32", arch: "x64" },
+      }),
+    ).toThrow("unexpected or missing fields");
+
+    const wrongMethod = new Map(result);
+    wrongMethod.set("SkyTwin-Windows-installer", {
+      ...wrongMethod.get("SkyTwin-Windows-installer"),
+      verificationMethod: "fingerprint-only",
+    });
+    expect(() =>
+      buildReport({
+        root,
+        platform: "windows",
+        identity,
+        apiArtifacts: apiArtifactMap("windows"),
+        subjects,
+        verification: wrongMethod,
+        runtime: { platform: "win32", arch: "x64" },
+      }),
+    ).toThrow("incomplete or inconsistent Windows signing observations");
   });
 
   it("rejects ambiguous or non-canonical Windows native-tool roots", () => {
@@ -697,14 +1002,7 @@ describe("release.signing canonical verifier", () => {
     const verification = new Map(
       [...subjects.keys()].map((artifactName) => [
         artifactName,
-        {
-          signatureResult: "pass",
-          notarizationResult: "pass",
-          verificationMethod: "native-test",
-          signer: "Developer ID Application: SkyTwin Test (TEAM123456)",
-          signerTeamId: teamId,
-          signedIdentifier: "com.skytwin.desktop",
-        },
+        macReportObservation(artifactName),
       ]),
     );
     const input = {
@@ -754,6 +1052,57 @@ describe("release.signing canonical verifier", () => {
         releaseAssets,
       ),
     ).toEqual([]);
+  });
+
+  it("refuses incomplete or inconsistent native observations while building a report", () => {
+    const root = makeRoot();
+    prepareSource(root);
+    populateSubjects(root, "macos");
+    const subjects = inspectPlatformSubjects(
+      root,
+      "macos",
+      identity.appVersion,
+    );
+    const baseVerification = new Map(
+      [...subjects.keys()].map((artifactName) => [
+        artifactName,
+        macReportObservation(artifactName),
+      ]),
+    );
+    const input = {
+      root,
+      platform: "macos",
+      identity,
+      apiArtifacts: apiArtifactMap("macos"),
+      subjects,
+      runtime: { platform: "darwin", arch: "arm64" },
+    };
+
+    const missing = new Map(baseVerification);
+    const missingDmg = { ...missing.get("SkyTwin-macOS-dmg") };
+    delete missingDmg.signedContentCdHash;
+    missing.set("SkyTwin-macOS-dmg", missingDmg);
+    expect(() => buildReport({ ...input, verification: missing })).toThrow(
+      "unexpected or missing fields",
+    );
+
+    const wrongMethod = new Map(baseVerification);
+    wrongMethod.set("SkyTwin-macOS-dmg", {
+      ...wrongMethod.get("SkyTwin-macOS-dmg"),
+      verificationMethod: "codesign-only",
+    });
+    expect(() => buildReport({ ...input, verification: wrongMethod })).toThrow(
+      "incomplete or inconsistent macOS signing observations",
+    );
+
+    const tamperedIdentity = new Map(baseVerification);
+    tamperedIdentity.set("SkyTwin-macOS-zip", {
+      ...tamperedIdentity.get("SkyTwin-macOS-zip"),
+      signedContentCdHash: "d".repeat(40),
+    });
+    expect(() =>
+      buildReport({ ...input, verification: tamperedIdentity }),
+    ).toThrow("different signed application identities");
   });
 
   it("uses exact canonical CLI paths and cannot pass the current unsigned workflow", async () => {

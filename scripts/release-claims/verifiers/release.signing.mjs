@@ -41,7 +41,17 @@ const MACOS_NATIVE_TOOLS = Object.freeze({
   xcrun: "/usr/bin/xcrun",
   hdiutil: "/usr/bin/hdiutil",
   ditto: "/usr/bin/ditto",
+  lipo: "/usr/bin/lipo",
+  plutil: "/usr/bin/plutil",
 });
+const MACOS_VERIFICATION_METHODS = Object.freeze({
+  "SkyTwin-macOS-dmg": "gatekeeper+stapler+dmg-contained-app-codesign",
+  "SkyTwin-macOS-zip": "ditto-contained-app+codesign+gatekeeper+stapler",
+});
+const WINDOWS_VERIFICATION_METHOD =
+  "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate";
+const WINDOWS_TIMESTAMP_VALIDATION =
+  "presence-and-fingerprint-recorded-not-independently-validated";
 const VERSION_SEGMENT = "(?:0|[1-9][0-9]{0,8})";
 const FOUR_SEGMENT_TAG = new RegExp(
   `^v(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})\\.(${VERSION_SEGMENT})$`,
@@ -60,12 +70,12 @@ const PLATFORM_CONFIG = Object.freeze({
       Object.freeze({
         artifactName: "SkyTwin-macOS-dmg",
         kind: "desktop-installer",
-        pattern: /^SkyTwin-APP_VERSION-(?:arm64|x64)\.dmg$/u,
+        pattern: /^SkyTwin-APP_VERSION-arm64\.dmg$/u,
       }),
       Object.freeze({
         artifactName: "SkyTwin-macOS-zip",
         kind: "desktop-archive",
-        pattern: /^SkyTwin-APP_VERSION-(?:arm64|x64)-mac\.zip$/u,
+        pattern: /^SkyTwin-APP_VERSION-arm64-mac\.zip$/u,
       }),
     ]),
   }),
@@ -96,12 +106,12 @@ const PLATFORM_CONFIG = Object.freeze({
       Object.freeze({
         artifactName: "SkyTwin-Linux-deb",
         kind: "desktop-installer",
-        pattern: /^skytwin-desktop_APP_VERSION_(?:amd64|arm64)\.deb$/u,
+        pattern: /^skytwin-desktop_APP_VERSION_amd64\.deb$/u,
       }),
       Object.freeze({
         artifactName: "SkyTwin-Linux-rpm",
         kind: "desktop-installer",
-        pattern: /^skytwin-desktop-APP_VERSION\.(?:x86_64|aarch64)\.rpm$/u,
+        pattern: /^skytwin-desktop-APP_VERSION\.x86_64\.rpm$/u,
       }),
     ]),
   }),
@@ -651,6 +661,7 @@ export function parseMacCodeSignature(
 ) {
   const identifier = uniqueMetadata(output, "Identifier", description);
   const teamId = uniqueMetadata(output, "TeamIdentifier", description);
+  const cdHash = uniqueMetadata(output, "CDHash", description);
   const authorities = [...output.matchAll(/^Authority=(.+)$/gmu)].map((match) =>
     match[1].trim(),
   );
@@ -658,15 +669,25 @@ export function parseMacCodeSignature(
     teamId === expectedTeamId,
     `${description} Apple Team ID is untrusted`,
   );
+  const signerAuthorities = authorities.filter((value) =>
+    /^Developer ID Application: .+ \([A-Z0-9]{10}\)$/u.test(value),
+  );
   assert(
     authorities.length >= 3 &&
       new Set(authorities).size === authorities.length &&
-      authorities.filter((value) =>
-        value.startsWith("Developer ID Application:"),
-      ).length === 1 &&
+      signerAuthorities.length === 1 &&
       authorities.includes("Developer ID Certification Authority") &&
       authorities.includes("Apple Root CA"),
     `${description} Developer ID authority chain is missing or ambiguous`,
+  );
+  const signer = signerAuthorities[0];
+  assert(
+    signer.endsWith(`(${teamId})`),
+    `${description} Developer ID authority does not match its TeamIdentifier`,
+  );
+  assert(
+    /^[0-9a-fA-F]{40}$/u.test(cdHash),
+    `${description} has an invalid CDHash`,
   );
   if (requireRuntime)
     assert(
@@ -676,9 +697,8 @@ export function parseMacCodeSignature(
   return {
     identifier,
     teamId,
-    signer: authorities.find((value) =>
-      value.startsWith("Developer ID Application:"),
-    ),
+    signer,
+    cdHash: cdHash.toLowerCase(),
   };
 }
 
@@ -721,7 +741,14 @@ function inspectMacApp(extractionRoot, appPath, description) {
   return { path: requested, packagedExecutable };
 }
 
-function verifyMacApp(appPath, expectedTeamId, execute, env, description) {
+function verifyMacApp(
+  appPath,
+  expectedTeamId,
+  expectedAppVersion,
+  execute,
+  env,
+  description,
+) {
   checkedCommand(
     execute,
     MACOS_NATIVE_TOOLS.codesign,
@@ -744,6 +771,37 @@ function verifyMacApp(appPath, expectedTeamId, execute, env, description) {
     signature.identifier === "com.skytwin.desktop",
     `${description} has an unexpected signed application identifier`,
   );
+  const architectures = checkedCommand(
+    execute,
+    MACOS_NATIVE_TOOLS.lipo,
+    ["-archs", join(appPath, "Contents", "MacOS", "SkyTwin")],
+    { env },
+    `${description} packaged executable architecture inspection`,
+  )
+    .trim()
+    .split(/\s+/u);
+  assert(
+    architectures.length === 1 && architectures[0] === "arm64",
+    `${description} packaged executable is not the canonical arm64 architecture`,
+  );
+  const bundleVersion = checkedCommand(
+    execute,
+    MACOS_NATIVE_TOOLS.plutil,
+    [
+      "-extract",
+      "CFBundleShortVersionString",
+      "raw",
+      "-o",
+      "-",
+      join(appPath, "Contents", "Info.plist"),
+    ],
+    { env },
+    `${description} signed bundle version inspection`,
+  ).trim();
+  assert(
+    bundleVersion === expectedAppVersion,
+    `${description} signed bundle version does not match the release tag`,
+  );
   parseMacGatekeeper(
     checkedCommand(
       execute,
@@ -765,13 +823,17 @@ function verifyMacApp(appPath, expectedTeamId, execute, env, description) {
     /The validate action worked!/u.test(stapler),
     `${description} has no valid stapled notarization ticket`,
   );
-  return signature;
+  return {
+    ...signature,
+    bundleVersion,
+    executableArchitecture: architectures[0],
+  };
 }
 
 export function verifyMacSubjects(
   subjects,
   policy,
-  { execute = executeNativeCommand } = {},
+  { execute = executeNativeCommand, appVersion } = {},
 ) {
   assert(
     subjects.size === 2 &&
@@ -784,8 +846,12 @@ export function verifyMacSubjects(
     LANG: "C",
     LC_ALL: "C",
   };
+  assert(
+    typeof appVersion === "string" && appVersion.length > 0,
+    "macOS signing verification requires the release app version",
+  );
   const results = new Map();
-  let canonicalSigner = null;
+  let canonicalAppIdentity = null;
   for (const artifactName of ["SkyTwin-macOS-dmg", "SkyTwin-macOS-zip"]) {
     const subject = subjects.get(artifactName);
     const extractionRoot = mkdtempSync(join(tmpdir(), "skytwin-signing-"));
@@ -868,6 +934,7 @@ export function verifyMacSubjects(
       const appSignature = verifyMacApp(
         appPath.path,
         policy.teamId,
+        appVersion,
         execute,
         commandEnv,
         artifactName,
@@ -886,22 +953,27 @@ export function verifyMacSubjects(
           observedExecutable.inode === appPath.packagedExecutable.inode,
         `${artifactName} packaged executable changed during native verification`,
       );
-      canonicalSigner = canonicalSigner ?? appSignature;
+      canonicalAppIdentity = canonicalAppIdentity ?? appSignature;
       assert(
-        appSignature.teamId === canonicalSigner.teamId &&
-          appSignature.signer === canonicalSigner.signer,
-        "macOS packaged subjects have different signer identities",
+        appSignature.teamId === canonicalAppIdentity.teamId &&
+          appSignature.signer === canonicalAppIdentity.signer &&
+          appSignature.identifier === canonicalAppIdentity.identifier &&
+          appSignature.cdHash === canonicalAppIdentity.cdHash &&
+          appSignature.bundleVersion === canonicalAppIdentity.bundleVersion &&
+          appSignature.executableArchitecture ===
+            canonicalAppIdentity.executableArchitecture,
+        "macOS packaged subjects have different signed application identities",
       );
       results.set(artifactName, {
         signatureResult: "pass",
         notarizationResult: "pass",
-        verificationMethod:
-          artifactName === "SkyTwin-macOS-dmg"
-            ? "gatekeeper+stapler+dmg-contained-app-codesign"
-            : "ditto-contained-app+codesign+gatekeeper+stapler",
+        verificationMethod: MACOS_VERIFICATION_METHODS[artifactName],
         signer: appSignature.signer,
         signerTeamId: appSignature.teamId,
         signedIdentifier: appSignature.identifier,
+        signedContentCdHash: appSignature.cdHash,
+        signedBundleVersion: appSignature.bundleVersion,
+        executableArchitecture: appSignature.executableArchitecture,
       });
     } finally {
       try {
@@ -1040,17 +1112,17 @@ export function verifyWindowsSubjects(
       "SkyTwin-Windows-installer",
       {
         signatureResult: "pass",
-        verificationMethod:
-          "Get-AuthenticodeSignature(Status=Valid)+pinned-signer-certificate",
+        verificationMethod: WINDOWS_VERIFICATION_METHOD,
         authenticodeStatus: signature.status,
+        authenticodeSignatureType: signature.signatureType,
         signer: signature.signerSubject,
         signerIssuer: signature.signerIssuer,
         signerCertificateSha256: signature.signerSha256,
         signerCertificatePinned: true,
+        codeSigningEku: signature.codeSigningEku,
         timestampCertificatePresent: signature.timestampPresent,
         timestampSignerCertificateSha256: signature.timestampSignerSha256,
-        timestampCertificateValidation:
-          "presence-and-fingerprint-recorded-not-independently-validated",
+        timestampCertificateValidation: WINDOWS_TIMESTAMP_VALIDATION,
       },
     ],
   ]);
@@ -1069,6 +1141,78 @@ function passingCheck(assertion, measurement) {
     result: "pass",
     observed: { assertion, measurement, exitCode: 0 },
   };
+}
+
+function assertMacReportObservation(result, artifactName, appVersion) {
+  exactKeys(
+    result,
+    [
+      "signatureResult",
+      "notarizationResult",
+      "verificationMethod",
+      "signer",
+      "signerTeamId",
+      "signedIdentifier",
+      "signedContentCdHash",
+      "signedBundleVersion",
+      "executableArchitecture",
+    ],
+    `${artifactName} signing observation`,
+  );
+  assert(
+    result.signatureResult === "pass" &&
+      result.notarizationResult === "pass" &&
+      result.verificationMethod === MACOS_VERIFICATION_METHODS[artifactName] &&
+      /^[A-Z0-9]{10}$/u.test(result.signerTeamId) &&
+      new RegExp(
+        `^Developer ID Application: .+ \\(${result.signerTeamId}\\)$`,
+        "u",
+      ).test(result.signer) &&
+      result.signedIdentifier === "com.skytwin.desktop" &&
+      /^[0-9a-f]{40}$/u.test(result.signedContentCdHash) &&
+      result.signedBundleVersion === appVersion &&
+      result.executableArchitecture === "arm64",
+    `${artifactName} has incomplete or inconsistent macOS signing observations`,
+  );
+}
+
+function assertWindowsReportObservation(result, artifactName) {
+  exactKeys(
+    result,
+    [
+      "signatureResult",
+      "verificationMethod",
+      "authenticodeStatus",
+      "authenticodeSignatureType",
+      "signer",
+      "signerIssuer",
+      "signerCertificateSha256",
+      "signerCertificatePinned",
+      "codeSigningEku",
+      "timestampCertificatePresent",
+      "timestampSignerCertificateSha256",
+      "timestampCertificateValidation",
+    ],
+    `${artifactName} signing observation`,
+  );
+  assert(
+    result.signatureResult === "pass" &&
+      result.verificationMethod === WINDOWS_VERIFICATION_METHOD &&
+      result.authenticodeStatus === "Valid" &&
+      result.authenticodeSignatureType === "Authenticode" &&
+      typeof result.signer === "string" &&
+      result.signer.length > 0 &&
+      typeof result.signerIssuer === "string" &&
+      result.signerIssuer.length > 0 &&
+      result.signer !== result.signerIssuer &&
+      /^[0-9a-f]{64}$/u.test(result.signerCertificateSha256) &&
+      result.signerCertificatePinned === true &&
+      result.codeSigningEku === true &&
+      result.timestampCertificatePresent === true &&
+      /^[0-9a-f]{64}$/u.test(result.timestampSignerCertificateSha256) &&
+      result.timestampCertificateValidation === WINDOWS_TIMESTAMP_VALIDATION,
+    `${artifactName} has incomplete or inconsistent Windows signing observations`,
+  );
 }
 
 export function buildReport({
@@ -1112,14 +1256,12 @@ export function buildReport({
       const artifact = apiArtifacts.get(artifactName);
       const result = verification.get(artifactName);
       assert(
-        subject && artifact && result?.signatureResult === "pass",
-        `${artifactName} lacks passing signature verification`,
+        subject && artifact && isRecord(result),
+        `${artifactName} lacks a complete signing observation`,
       );
       if (platform === "macos")
-        assert(
-          result.notarizationResult === "pass",
-          `${artifactName} lacks passing notarization verification`,
-        );
+        assertMacReportObservation(result, artifactName, identity.appVersion);
+      else assertWindowsReportObservation(result, artifactName);
       return {
         artifactId: artifact.artifactId,
         artifactName,
@@ -1134,6 +1276,18 @@ export function buildReport({
       };
     })
     .sort((left, right) => left.path.localeCompare(right.path));
+  if (platform === "macos") {
+    const [canonical, comparison] = coveredSubjects;
+    assert(
+      canonical.signer === comparison.signer &&
+        canonical.signerTeamId === comparison.signerTeamId &&
+        canonical.signedIdentifier === comparison.signedIdentifier &&
+        canonical.signedContentCdHash === comparison.signedContentCdHash &&
+        canonical.signedBundleVersion === comparison.signedBundleVersion &&
+        canonical.executableArchitecture === comparison.executableArchitecture,
+      "macOS signing report subjects have different signed application identities",
+    );
+  }
   return {
     releaseTag: identity.releaseTag,
     runId: identity.runId,
@@ -1162,7 +1316,7 @@ export function buildReport({
       passingCheck(
         platform === "windows"
           ? "Windows Get-AuthenticodeSignature reported Status=Valid for the exact installer and its signer certificate matched the operator-supplied pin"
-          : "Every canonical macOS package subject passed Developer ID signature trust and notarization validation",
+          : "Every canonical macOS package subject passed notarization validation and contained the same arm64 Developer ID signed app from the pinned team",
         platform === "windows"
           ? `${coveredSubjects.length} exact subject byte identity from ${apiArtifacts.size} current-run ID/name/digest-bound artifact; timestamp certificate presence and SHA-256 fingerprint recorded without an independent timestamp trust assertion`
           : `${coveredSubjects.length} exact subject byte identities from ${apiArtifacts.size} current-run ID/name/digest-bound artifacts`,
@@ -1251,6 +1405,7 @@ export async function runCanonicalVerifier(
       ? verifyMacSubjects(subjects, policy, {
           execute: executeNative,
           env,
+          appVersion: versions.appVersion,
         })
       : args.platform === "windows"
         ? verifyWindowsSubjects(subjects, policy, {

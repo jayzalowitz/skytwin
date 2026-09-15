@@ -23,10 +23,12 @@
 > verifier with GitHub API discovery separated from package execution and a
 > strict allowlisted child environment. The artifact-verification lane also has
 > a tag-only material producer and independent verifier in source, but it has not
-> yet produced evidence from a tagged release run. The other six
-> machine-verifier implementations and the CI result producer are still absent.
-> The final gate therefore fails closed and the ledger remains blocked until the
-> complete proof pipeline ships.
+> yet produced evidence from a tagged release run. The signing lane now has
+> macOS and Windows verifier source, but neither is workflow-wired or backed by
+> current-run evidence, and Linux signing remains deliberately blocked pending
+> package-specific trust methods. Five other verifier sources (five reports) and
+> the CI result producer are still absent. The final gate therefore fails closed
+> and the ledger remains blocked until the complete proof pipeline ships.
 
 The supported beta topology is one non-demo human owner per installation.
 Installation credentials are shared configuration, so multi-owner local installs
@@ -161,7 +163,9 @@ signing/notarization remains a separate stop-ship.
 The native machine-evidence matrix and exclusive aggregator are scaffolded.
 The packaged-sample verifier implements three of the twelve matrix reports; see
 [`sample-release-evidence.md`](./sample-release-evidence.md). The artifact lane
-implements one more. The other six verifier sources (eight matrix reports) and
+implements one more, and the signing source implements macOS and Windows while
+failing closed on Linux until package-format methods and trust roots exist. Five
+verifier sources (five matrix reports), the Linux signing implementation, and
 the separate `release-claims-ci` artifact producer are absent today. Machine
 reports must come from the exact successful claim/platform job and canonical
 verifier step, carry the reviewed verifier path, command, and source digest, and
