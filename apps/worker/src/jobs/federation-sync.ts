@@ -1,4 +1,5 @@
 import { createLogger } from '@skytwin/core';
+import { loadConfig, type GoogleConnectionMode } from '@skytwin/config';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
 import {
   federationPeerRepository,
@@ -6,6 +7,8 @@ import {
   query,
   type FederationPeerRow,
 } from '@skytwin/db';
+import type { McpServerRow } from '@skytwin/db';
+import { isGoogleAccountIntegration } from '@skytwin/shared-types';
 import nacl from 'tweetnacl';
 
 const log = createLogger('worker:federation-sync');
@@ -49,6 +52,8 @@ export interface FederationSyncDeps {
   fetcher?: (url: string, opts: RequestInit) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
   /** Override the peer-row updater (for tests). */
   markSyncResult?: typeof federationPeerRepository.markSyncResult;
+  /** Exact preview mode from the worker generation; inject for tests. */
+  googleConnectionMode?: GoogleConnectionMode;
   signal?: AbortSignal;
 }
 
@@ -72,7 +77,10 @@ export interface DeltaPayload {
  * Build the per-user delta payload that gets sealed-and-shipped to each
  * outbound peer. Pure read — no side effects on the local DB.
  */
-export async function buildDeltaPayload(userId: string): Promise<DeltaPayload> {
+export async function buildDeltaPayload(
+  userId: string,
+  googleConnectionMode: GoogleConnectionMode = loadConfig().googleConnectionMode,
+): Promise<DeltaPayload> {
   const [servers, edgesResult] = await Promise.all([
     mcpServerRepository.listForUser(userId),
     query<{
@@ -90,10 +98,16 @@ export async function buildDeltaPayload(userId: string): Promise<DeltaPayload> {
     ),
   ]);
 
+  const eligibleServers = servers.filter((server) =>
+    server.registry_id !== null &&
+    (server.status === 'active' || server.status === 'installed' || server.status === 'authorized'));
+  const exportableServers = googleConnectionMode === 'experimental'
+    ? eligibleServers
+    : await filterAccountFreeServers(eligibleServers);
+
   return {
     syncedAt: new Date().toISOString(),
-    installedServers: servers
-      .filter((s) => s.registry_id !== null && (s.status === 'active' || s.status === 'installed' || s.status === 'authorized'))
+    installedServers: exportableServers
       .map((s) => ({
         registryId: s.registry_id ?? '',
         displayName: s.display_name,
@@ -107,6 +121,40 @@ export async function buildDeltaPayload(userId: string): Promise<DeltaPayload> {
       occurredAt: r.occurred_at.toISOString(),
     })),
   };
+}
+
+async function filterAccountFreeServers(servers: McpServerRow[]): Promise<McpServerRow[]> {
+  const exportable: McpServerRow[] = [];
+  for (const server of servers) {
+    if (isGoogleAccountIntegration({
+      key: server.registry_id ?? undefined,
+      integration: server.oauth_provider ?? undefined,
+    })) {
+      continue;
+    }
+
+    try {
+      const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+      if (isGoogleAccountIntegration({
+        key: server.registry_id ?? undefined,
+        integration: server.oauth_provider ?? undefined,
+        skills,
+      })) {
+        continue;
+      }
+    } catch (error) {
+      // Federation is an outbound disclosure path. If local classification
+      // state cannot be read, omit the row rather than sending it unchecked.
+      log.warn('Federation sync: omitting unclassified capability', {
+        serverId: server.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
+
+    exportable.push(server);
+  }
+  return exportable;
 }
 
 /**
@@ -167,6 +215,7 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
 
   const fetcher = deps.fetcher ?? defaultFetcher;
   const markSyncResult = deps.markSyncResult ?? federationPeerRepository.markSyncResult.bind(federationPeerRepository);
+  const googleConnectionMode = deps.googleConnectionMode ?? loadConfig().googleConnectionMode;
 
   log.info('Federation sync starting', { peerCount: peers.length });
   let pushed = 0;
@@ -177,7 +226,8 @@ export async function runFederationSyncJob(deps: FederationSyncDeps = {}): Promi
     const endpoint = peer.endpoint_url;
     if (endpoint === null) continue;
     try {
-      const payload = await runAdmitted(deps.signal, () => buildDeltaPayload(peer.user_id));
+      const payload = await runAdmitted(deps.signal, () =>
+        buildDeltaPayload(peer.user_id, googleConnectionMode));
       const sealed = sealForPeer(payload, peer);
       const url = endpoint.replace(/\/$/, '') + '/api/federation/inbox';
       const res = await fetcher(url, {

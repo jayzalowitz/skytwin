@@ -2,7 +2,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import express from 'express';
 import type { Express } from 'express';
 
-const { mockMcpServerRepo, mockDxtExportRepo, mockDxtImportRepo, mockProvenanceRepo, mockQuery } = vi.hoisted(() => ({
+const {
+  mockMcpServerRepo,
+  mockDxtExportRepo,
+  mockDxtImportRepo,
+  mockProvenanceRepo,
+  mockQuery,
+  mockLoadConfig,
+} = vi.hoisted(() => ({
   mockMcpServerRepo: {
     getById: vi.fn(),
     getByUserAndRegistry: vi.fn(),
@@ -26,6 +33,11 @@ const { mockMcpServerRepo, mockDxtExportRepo, mockDxtImportRepo, mockProvenanceR
     writeNode: vi.fn(),
   },
   mockQuery: vi.fn(),
+  mockLoadConfig: vi.fn(),
+}));
+
+vi.mock('@skytwin/config', () => ({
+  loadConfig: mockLoadConfig,
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -36,14 +48,16 @@ vi.mock('@skytwin/db', () => ({
   query: mockQuery,
 }));
 
-import { createDxtRouter } from '../routes/dxt.js';
+import { createDxtRouter, type DxtRouterDeps } from '../routes/dxt.js';
 
 const USER_ID = 'ffffffff-eeee-dddd-cccc-111111111111';
 const SERVER_ID = 'aaaaaaaa-bbbb-cccc-dddd-222222222222';
 const EXPORT_ID = 'bbbbbbbb-cccc-dddd-eeee-333333333333';
 const IMPORT_ID = 'cccccccc-dddd-eeee-ffff-444444444444';
+const NEIGHBOR_SERVER_ID = 'dddddddd-eeee-ffff-aaaa-555555555555';
+const NEIGHBOR_EXPORT_ID = 'eeeeeeee-ffff-aaaa-bbbb-666666666666';
 
-function buildApp(userId = USER_ID): Express {
+function buildApp(userId = USER_ID, deps: DxtRouterDeps = {}): Express {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -51,7 +65,7 @@ function buildApp(userId = USER_ID): Express {
     req.authenticatedUserId = userId;
     next();
   });
-  app.use('/api/dxt', createDxtRouter());
+  app.use('/api/dxt', createDxtRouter(deps));
   app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     res.status(500).json({ error: err.message });
   });
@@ -127,6 +141,8 @@ function makeMcpServerRow(overrides: Record<string, unknown> = {}): Record<strin
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+  mockMcpServerRepo.listSkillNamesForServer.mockResolvedValue([]);
 });
 
 describe('POST /api/dxt/export/:serverId', () => {
@@ -191,10 +207,58 @@ describe('POST /api/dxt/export/:serverId', () => {
     const body = result.body as { error?: string };
     expect(body.error).toMatch(/registry_id/);
   });
+
+  it.each([
+    ['stable registry id', { registry_id: 'gmail-mcp', oauth_provider: null }, []],
+    ['persisted OAuth provider', { registry_id: 'custom-provider', oauth_provider: 'google' }, []],
+    ['cached account skill', { registry_id: 'custom-tools', oauth_provider: null }, ['read_email']],
+  ])('rejects a disabled %s before serialization or persistence', async (_label, overrides, skills) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow(overrides));
+    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce(skills);
+    const serializeArtifact = vi.fn();
+    const app = buildApp(USER_ID, { serializeArtifact });
+
+    const result = await req(app, 'POST', `/api/dxt/export/${SERVER_ID}`);
+
+    expect(result.status).toBe(503);
+    expect(result.body).toEqual(expect.objectContaining({
+      code: 'GOOGLE_CONNECTION_DISABLED',
+      available: false,
+    }));
+    expect(serializeArtifact).not.toHaveBeenCalled();
+    expect(mockDxtExportRepo.create).not.toHaveBeenCalled();
+  });
+
+  it('preserves the exact experimental opt-in for account-backed export', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow({
+      registry_id: 'gmail-mcp',
+      oauth_provider: 'google',
+    }));
+    const artifact = { blob: Buffer.alloc(48, 0xab), sha256: Buffer.alloc(32, 0xcd) };
+    const serializeArtifact = vi.fn().mockResolvedValue(artifact);
+    mockDxtExportRepo.create.mockResolvedValueOnce({
+      id: EXPORT_ID,
+      user_id: USER_ID,
+      server_id: SERVER_ID,
+      exported_at: new Date(),
+      artifact_blob: artifact.blob,
+      artifact_sha256: artifact.sha256,
+    });
+    const app = buildApp(USER_ID, { serializeArtifact });
+
+    const result = await req(app, 'POST', `/api/dxt/export/${SERVER_ID}`);
+
+    expect(result.status).toBe(201);
+    expect(serializeArtifact).toHaveBeenCalledOnce();
+    expect(mockDxtExportRepo.create).toHaveBeenCalledOnce();
+  });
 });
 
 describe('GET /api/dxt/exports', () => {
   it('returns metadata only (no blob bytes in response) and never loads blobs from DB', async () => {
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow());
     mockDxtExportRepo.listMetadataForUser.mockResolvedValueOnce([
       {
         id: EXPORT_ID,
@@ -218,6 +282,40 @@ describe('GET /api/dxt/exports', () => {
     expect(mockDxtExportRepo.listForUser).not.toHaveBeenCalled();
     expect(mockDxtExportRepo.listMetadataForUser).toHaveBeenCalledWith(USER_ID);
   });
+
+  it('omits stale account-backed exports while preserving neighboring metadata', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockDxtExportRepo.listMetadataForUser.mockResolvedValueOnce([
+      {
+        id: EXPORT_ID,
+        user_id: USER_ID,
+        server_id: SERVER_ID,
+        exported_at: new Date(),
+        artifact_sha256: Buffer.alloc(32, 0xaa),
+        blob_bytes: 100,
+      },
+      {
+        id: NEIGHBOR_EXPORT_ID,
+        user_id: USER_ID,
+        server_id: NEIGHBOR_SERVER_ID,
+        exported_at: new Date(),
+        artifact_sha256: Buffer.alloc(32, 0xbb),
+        blob_bytes: 200,
+      },
+    ]);
+    mockMcpServerRepo.getById.mockImplementation(async (serverId: string) =>
+      serverId === SERVER_ID
+        ? makeMcpServerRow({ registry_id: 'custom-mail', oauth_provider: 'google' })
+        : makeMcpServerRow({ id: NEIGHBOR_SERVER_ID, registry_id: 'notion-mcp', oauth_provider: 'notion' }));
+    const app = buildApp();
+
+    const result = await req(app, 'GET', '/api/dxt/exports');
+
+    expect(result.status).toBe(200);
+    const body = result.body as { exports: Array<{ id: string }> };
+    expect(body.exports.map((row) => row.id)).toEqual([NEIGHBOR_EXPORT_ID]);
+    expect(mockDxtExportRepo.listForUser).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/dxt/exports/:id/blob', () => {
@@ -233,6 +331,34 @@ describe('GET /api/dxt/exports/:id/blob', () => {
     const app = buildApp();
     const result = await req(app, 'GET', `/api/dxt/exports/${EXPORT_ID}/blob`);
     expect(result.status).toBe(403);
+  });
+
+  it('refuses a stale account-backed artifact before emitting blob bytes', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    const artifact = Buffer.from('must-not-leave');
+    mockDxtExportRepo.findById.mockResolvedValueOnce({
+      id: EXPORT_ID,
+      user_id: USER_ID,
+      server_id: SERVER_ID,
+      exported_at: new Date(),
+      artifact_blob: artifact,
+      artifact_sha256: Buffer.alloc(32),
+    });
+    mockMcpServerRepo.getById.mockResolvedValueOnce(makeMcpServerRow({
+      registry_id: 'custom-tools',
+      oauth_provider: null,
+    }));
+    mockMcpServerRepo.listSkillNamesForServer.mockResolvedValueOnce(['gmail.messages.list']);
+    const app = buildApp();
+
+    const result = await req(app, 'GET', `/api/dxt/exports/${EXPORT_ID}/blob`);
+
+    expect(result.status).toBe(503);
+    expect(result.body).toEqual(expect.objectContaining({
+      code: 'GOOGLE_CONNECTION_DISABLED',
+      available: false,
+    }));
+    expect(JSON.stringify(result.body)).not.toContain(artifact.toString('utf8'));
   });
 });
 

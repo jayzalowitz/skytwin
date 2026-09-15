@@ -47,11 +47,16 @@ function getUserId(req: Request): string | undefined {
 async function isBlockedGoogleDxtCapability(
   registryId: string,
   skills: readonly string[],
+  oauthProvider?: string | null,
 ): Promise<boolean> {
   const googleConnectionMode = loadConfig().googleConnectionMode;
   if (googleConnectionMode === 'experimental') return false;
   const trustedEntry = await dxtRegistryClient.getById(registryId);
   return isGoogleCapabilityBlocked(googleConnectionMode, {
+    registryId,
+    oauthProvider,
+    skills,
+  }) || isGoogleCapabilityBlocked(googleConnectionMode, {
     registryId,
     oauthProvider: trustedEntry?.oauthProvider,
     skills,
@@ -105,8 +110,14 @@ function buildArtifactInput(server: McpServerRow, sourceInstanceId: string, skil
   return result;
 }
 
-export function createDxtRouter(): Router {
+export interface DxtRouterDeps {
+  /** Injected only to prove rejected exports never reach serialization. */
+  serializeArtifact?: typeof serialize;
+}
+
+export function createDxtRouter(deps: DxtRouterDeps = {}): Router {
   const router = Router();
+  const serializeArtifact = deps.serializeArtifact ?? serialize;
 
   // ─────────────────────────────────────────────────────────────────────────
   // POST /export/:serverId
@@ -147,8 +158,16 @@ export function createDxtRouter(): Router {
       }
 
       const skills = await mcpServerRepository.listSkillNamesForServer(serverId);
+      if (await isBlockedGoogleDxtCapability(
+        server.registry_id,
+        skills,
+        server.oauth_provider,
+      )) {
+        sendGoogleCapabilityUnavailable(res);
+        return;
+      }
       const input = buildArtifactInput(server, serverId, skills);
-      const { blob, sha256 } = await serialize(input);
+      const { blob, sha256 } = await serializeArtifact(input);
 
       const row = await dxtExportRepository.create({
         userId,
@@ -185,7 +204,22 @@ export function createDxtRouter(): Router {
 
       // Metadata-only — never load full blobs into memory just to render the list.
       const rows = await dxtExportRepository.listMetadataForUser(userId);
-      const exports = rows.map((r: DxtExportMetadataRow) => ({
+      const visibleRows: DxtExportMetadataRow[] = [];
+      for (const row of rows) {
+        const server = await mcpServerRepository.getById(row.server_id);
+        // A real export retains its source server through a foreign key. Treat
+        // missing or cross-user metadata as unverifiable and keep it out of
+        // the outbound response.
+        if (!server || server.user_id !== userId || !server.registry_id) continue;
+        const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+        if (await isBlockedGoogleDxtCapability(
+          server.registry_id,
+          skills,
+          server.oauth_provider,
+        )) continue;
+        visibleRows.push(row);
+      }
+      const exports = visibleRows.map((r: DxtExportMetadataRow) => ({
         id: r.id,
         serverId: r.server_id,
         exportedAt: r.exported_at,
@@ -224,6 +258,21 @@ export function createDxtRouter(): Router {
       }
       if (row.user_id !== userId) {
         res.status(403).json({ error: 'Forbidden: you do not own this export' });
+        return;
+      }
+
+      const server = await mcpServerRepository.getById(row.server_id);
+      if (!server || server.user_id !== userId || !server.registry_id) {
+        res.status(410).json({ error: 'Export source capability is no longer available' });
+        return;
+      }
+      const skills = await mcpServerRepository.listSkillNamesForServer(server.id);
+      if (await isBlockedGoogleDxtCapability(
+        server.registry_id,
+        skills,
+        server.oauth_provider,
+      )) {
+        sendGoogleCapabilityUnavailable(res);
         return;
       }
 
