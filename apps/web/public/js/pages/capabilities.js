@@ -692,7 +692,7 @@ async function handleSnoozeSuggestion(id, userId, days) {
 
 async function handleInstallFromSuggestion(registryId, userId) {
   if (isGoogleAccountIntegration({ key: registryId })) {
-    showToast('Google account capabilities are unavailable in this preview.', { kind: 'info' });
+    showToast('Account-backed capabilities are unavailable in this preview.', { kind: 'info' });
     return;
   }
   // Install from suggestion: placeholder — actual install wiring is via mcp-host (#176 follow-up)
@@ -714,7 +714,7 @@ async function handleInstallRecipe(slug, userId, btn) {
 
 async function handleInstallRegistryEntry(registryId, userId, btn) {
   if (isGoogleAccountIntegration({ key: registryId })) {
-    showToast('Google account capabilities are unavailable in this preview.', { kind: 'info' });
+    showToast('Account-backed capabilities are unavailable in this preview.', { kind: 'info' });
     return;
   }
   // Direct registry install: placeholder — mcp-host wiring is downstream (#176 follow-up)

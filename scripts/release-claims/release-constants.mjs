@@ -8,7 +8,7 @@ export const CANONICAL_CI_EVIDENCE_CHECKS = new Map([
       "confidential-inference.response-signature",
     ],
   ],
-  ["connectors.direct-provider-access", ["connectors.direct-egress-only"]],
+  ["connectors.account-free-boundary", ["connectors.account-free-disabled"]],
   [
     "safety.policy-and-provenance",
     ["policy.provenance-fail-safe", "router.provenance-backstop"],

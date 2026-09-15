@@ -115,7 +115,7 @@ export async function renderSetup(container, _userId) {
         <div style="margin-bottom: 1.25rem;">
           <div style="font-weight: 600; font-size: 0.9rem; margin-bottom: 0.5rem;">Live status</div>
           ${renderAdapterStatus('Sandboxed execution server (IronClaw)', ironclaw, 'Highest trust — actions are sandboxed, audited, and reversible. Auto-detects on localhost:4000.', true)}
-          ${renderAdapterStatus('Built-in handlers', direct, 'Local handlers are available where required account connections are supported. Gmail and Google Calendar actions are unavailable in this preview.')}
+          ${renderAdapterStatus('Built-in handlers', direct, 'Local handlers are available where required account connections are supported. Account-backed email and calendar actions are unavailable in this preview.')}
           ${renderAdapterStatus('Local-AI execution (OpenClaw)', openclaw, 'Community engine that uses a local LLM for broader skills. Optional.', true)}
           <div style="margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-muted);">
             Your twin automatically picks the most trusted engine that's available and falls back if one is down.

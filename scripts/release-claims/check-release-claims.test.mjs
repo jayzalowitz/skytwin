@@ -75,7 +75,7 @@ const CLAIM_CATEGORIES = new Map([
   ["inference.confidential-verification", "inference"],
   ["network.explicit-boundaries", "network-use"],
   ["sample.packaged-account-free", "sample-mode"],
-  ["connectors.direct-provider-access", "connectors"],
+  ["connectors.account-free-boundary", "connectors"],
   ["models.verified-delivery", "model-delivery"],
   ["safety.policy-and-provenance", "action-safety"],
   ["safety.explanation-coverage", "action-safety"],

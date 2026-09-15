@@ -650,7 +650,7 @@ async function checkReverseCapabilityFlow(userMessage, replyText, container) {
  */
 async function handleReverseCapabilityInstall(registryId, displayName) {
   if (isGoogleAccountIntegration({ key: registryId })) {
-    showToast('Google account capabilities are unavailable in this preview.', { kind: 'info' });
+    showToast('Account-backed capabilities are unavailable in this preview.', { kind: 'info' });
     return;
   }
   const userId = getEffectiveUserId() || _state.userId || '';

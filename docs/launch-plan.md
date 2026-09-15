@@ -32,7 +32,7 @@ These capabilities are present on `main`. Release support remains governed by th
 - **Electron desktop bundles CockroachDB + API + worker + web** — `pnpm deploy` produces self-contained app bundles; CockroachManager spawns the right per-platform binary from `<resourcesPath>/cockroach/<platform>/cockroach`. In-process migrations run via `apps/desktop/src/service-manager.ts`'s native ESM dynamic import (no child-process spawn, no asar visibility hairball).
 - **DATABASE_URL parsing fix** — every previous migration was silently landing on the wrong CRDB; `packages/db/src/connection.ts` now parses `DATABASE_URL` first.
 - **Migration cascade fixes** — 023 split into 023 (column add) + 057 (FK-chain dedupe + unique index); 046 stops using `crdb_internal.force_error()` which the bundled CRDB v23.2 blocks.
-- **Google implementation inventory, currently disabled** — OAuth, connector, and action components remain available for architecture work, but the supported preview offers no Google connection control and admits no old token or credential as authority.
+- **Account-provider implementation inventory, currently disabled** — Google and Microsoft OAuth, connector, and action components remain available for architecture work, but the supported preview offers no account connection control and admits no old token or credential as authority. Disabled-mode filtering also covers retained briefing and live-digest history, capability audit and graph views, background token/changelog work, and filesystem execution plugins before import or dispatch.
 - **Public-web documentation** — `https://jayzalowitz.github.io/skytwin/{index,privacy,terms,connect-gmail,demo,deck}.html` now describes the sample-only boundary. Public pages are not evidence of Google verification.
 - **Tracking issue [#351](https://github.com/jayzalowitz/skytwin/issues/351)** for the eventual Gmail restricted-scope CASA assessment.
 
@@ -45,13 +45,14 @@ These capabilities are present on `main`. Release support remains governed by th
 
 The release consumer must remain fail-closed while the remaining producer work lands. The native claim/platform matrix and exclusive evidence aggregator are scaffolded. The canonical packaged-sample verifier covers its three native matrix entries, and the artifact-verification lane now stages the exact nine desktop release subjects, generates checksums, a subject-complete SPDX 2.3 document, canonical verification instructions, and source-bound GitHub attestations, then independently verifies those materials before producing its machine report. The remaining scope is six verifier sources (eight matrix reports), the `release-claims-ci` artifact producer, and signing/notarization proof. Each machine report must bind the exact successful native producer job, reviewed verifier source digest and command, release artifact, tag run, and structured observations. Source availability is not artifact certification: `sample.packaged-account-free` and `release.artifact-verification` remain limited until a tagged run produces and the publisher validates their reports and material. See [`sample-release-evidence.md`](./sample-release-evidence.md). The authoritative completion state is `docs/beta-claim-ledger.json`; none of its stop-ship conditions may be waived informally.
 
-### 1.2 Keep Google outside the preview
+### 1.2 Keep account connections outside the preview
 **Dependency:** #703 architecture series before any future enablement.
 
-The release candidate must keep Google disabled and present the account-free
-sample instead. Managed identity/Calendar review is deferred. Do not submit or
-describe a Google review from this candidate: the real-account architecture,
-scope behavior, public disclosures, and exact artifact must first agree.
+The release candidate must keep Google and Microsoft account access disabled
+and present the account-free sample instead. Managed Google identity/Calendar
+review is deferred. Do not submit or describe a Google review from this
+candidate: the real-account architecture, scope behavior, public disclosures,
+and exact artifact must first agree.
 
 ### 1.3 Code signing + notarization
 **Dependency:** purchase. **Owner:** SkyTwin team. **Time:** 1 day setup, certs renew annually.
@@ -118,10 +119,11 @@ sample-only boundary supersedes that current-looking flow: onboarding now offers
 the isolated sample and an unavailable Google state. The prior implementation
 remains history, not a supported preview path.
 
-### 2.4 Typed Google unavailable state — **current preview**
-Google routes return a stable disabled result before authorization, callback
-exchange, or persistence. The UI does not turn that result into a credential
-writer or first-use bypass; it keeps the user on the account-free sample path.
+### 2.4 Typed account-connection unavailable state — **current preview**
+Google and Microsoft account routes return a stable disabled result before
+authorization, callback exchange, or persistence. The UI does not turn that
+result into a credential writer or first-use bypass; it keeps the user on the
+account-free sample path.
 
 ### 2.5 Telemetry-free crash reporting
 Automatic error reporting would expand SkyTwin's network and data-handling boundary, but **fully silent failures** are at odds with shipping a desktop app. The middle ground: an opt-in "send anonymized crash report" prompt that uploads a JSON payload with the exception, stack, and SkyTwin version (no user data) to a developer-controlled endpoint. Default off; if you opt in the prompt explains exactly what's sent.
@@ -188,4 +190,4 @@ Total recurring annual cost to start: **$500–$1000** including domain.
 
 Each Tier 1 item was selected by asking: *"If we shipped without this, what would break for the user?"* If the answer is "the .dmg won't open at all" (§1.3), "the download link doesn't exist yet" (§1.5), or "the sample can escape its isolation boundary" (§1.2), it's Tier 1. If the answer is "the experience is rougher than it could be" (§2.x), it's Tier 2. If the answer is "we'll know we needed this from telemetry once we have users" (§3.x), it's Tier 3 and shouldn't drain attention before we have those users.
 
-The most common failure mode for plans like this is letting Tier 3 items (interesting strategic things) crowd out Tier 1 items (necessary boring things). The release pipeline (the `release` job in `.github/workflows/build.yml`) doesn't count as "release pipeline shipped" until §1.5 actually fires it on a tag. OAuth and connector code existing in source does not count as supported Google access; that requires the complete #703 architecture and external requirements on the exact candidate. Build all the way to the user, then up.
+The most common failure mode for plans like this is letting Tier 3 items (interesting strategic things) crowd out Tier 1 items (necessary boring things). The release pipeline (the `release` job in `.github/workflows/build.yml`) doesn't count as "release pipeline shipped" until §1.5 actually fires it on a tag. OAuth and connector code existing in source does not count as supported account access; that requires the complete #703 architecture and applicable external requirements on the exact candidate. Build all the way to the user, then up.

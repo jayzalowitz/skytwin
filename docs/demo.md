@@ -61,8 +61,9 @@ start.
   the dev "Switch user" button tells three different stories. No OAuth, no
   signal-ingestion wait. This is the demo path. (The showcase data lives in
   `packages/db/src/seeds/demo-showcase.ts`; counts move as we tune it.)
-Google and Microsoft account connections are displayed as unavailable rather
-than as additional paths.
+Google connection is displayed as unavailable rather than as an additional
+path. Microsoft connection has no preview setup control; both providers remain
+outside the supported sample.
 Managed Google identity/Calendar is deferred, and BYO remains unsupported until
 the OAuth and credential-custody architecture gates are complete.
 

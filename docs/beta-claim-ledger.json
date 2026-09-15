@@ -65,7 +65,7 @@
         "requiredPlatforms": ["macos", "windows", "linux"]
       },
       {
-        "claimId": "connectors.direct-provider-access",
+        "claimId": "connectors.account-free-boundary",
         "critical": true,
         "acceptedStates": ["proven"],
         "requiredEvidenceKinds": ["source", "ci"]
@@ -831,7 +831,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "0fa148d6ef900485532bda3cf33f9e2b13018e118fcda69e619c84c8adf04a2e",
+          "sha256": "c49f9f6282f989a8dae5d89d7cd3b21f003851ce40cc1066bc3c3207b9d8144d",
           "why": "Documents and implements an empty worker-local key cache without cross-process handoff"
         }
       ],
@@ -941,7 +941,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "1da8f60f278248764366db69d46e51266378c05c48eb6ce6965b1b48a6a688ed",
+          "sha256": "78f5b306e271d6c6eee605ad100ff7313806ccdc5dc83617a270996b5e1383ca",
           "why": "Public disclosure names connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -1003,7 +1003,7 @@
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "6fcd5d153e0b23ba104d7373cd56e76ae8d2ed57eea001dc8bb5db08cf175ad0",
+          "sha256": "c61488f17f07caeab355af356fef169f3382264f9ed255829a9eccbd6357f668",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
@@ -1034,29 +1034,43 @@
       ]
     },
     {
-      "id": "connectors.direct-provider-access",
+      "id": "connectors.account-free-boundary",
       "category": "connectors",
-      "statement": "Google and Microsoft connectors call the providers' APIs directly from the SkyTwin runtime using scopes authorized by the user.",
-      "scope": "Implemented Gmail, Google Calendar, Outlook Mail, and Outlook Calendar connectors; data still crosses the network to the applicable provider.",
+      "statement": "The supported preview blocks Google and Microsoft account connection and connector paths while preserving an explicit source-development experimental opt-in.",
+      "scope": "OAuth authorization, callback, status, account mutation, credential mutation and synchronization, connector discovery and startup, capability admission, worker activity, and packaged desktop child configuration for Google- and Microsoft-backed integrations.",
       "owner": "connectors",
       "state": "limited",
-      "limitation": "OAuth configuration, provider availability, granted scopes, and external verification determine which connector operations work in a release artifact.",
+      "limitation": "The disabled boundary is implemented and tested in source, but exact-candidate CI evidence is not yet present. Direct provider access under the exact experimental source-development opt-in is outside required public-preview support.",
       "evidence": [
         {
-          "path": "packages/connectors/src/oauth/google-oauth.ts",
-          "sha256": "73d3b2e892538e9c3cde5d4594571579203eb7db41c3e2695ef856cdc9746aa1",
-          "why": "Google OAuth endpoints and token exchange"
+          "path": "packages/shared-types/src/google-preview-boundary.ts",
+          "sha256": "0a24967292e76abb7b782aa84ffc486d10ddba230d3f5b9c551da16ed46c408e",
+          "why": "Shared account-backed integration and action classification fails closed unless the exact experimental mode is selected"
         },
         {
-          "path": "packages/connectors/src/oauth/microsoft-oauth.ts",
-          "sha256": "bd55b712035df68e9238b34cead93d87df338a7c98327feae501453aee6cb70e",
-          "why": "Microsoft OAuth endpoints and token exchange"
+          "path": "apps/api/src/routes/oauth.ts",
+          "sha256": "ad1f56d0e5718857ee405e508dd640b8ce52b13ff4326b88c46d933288ec31f5",
+          "why": "OAuth routes reject disabled Google and Microsoft paths before configuration, token, database, or provider effects"
+        },
+        {
+          "path": "apps/worker/src/index.ts",
+          "sha256": "c49f9f6282f989a8dae5d89d7cd3b21f003851ce40cc1066bc3c3207b9d8144d",
+          "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch"
+        },
+        {
+          "path": "apps/desktop/src/service-manager.ts",
+          "sha256": "c61488f17f07caeab355af356fef169f3382264f9ed255829a9eccbd6357f668",
+          "why": "Packaged desktop children pin the disabled mode and withhold provider credentials"
         }
       ],
       "verification": [
         {
-          "command": "pnpm --filter @skytwin/connectors test",
-          "expected": "Connector OAuth, provider routing, token-store, and ingestion unit tests pass"
+          "command": "pnpm --filter @skytwin/api test -- src/__tests__/oauth-google-disabled.test.ts src/__tests__/oauth-microsoft.test.ts src/__tests__/credentials-routes.test.ts src/__tests__/capabilities-routes.test.ts",
+          "expected": "API account authorization, credential, and capability paths fail closed in the supported mode while exact experimental source opt-in remains available"
+        },
+        {
+          "command": "pnpm --filter skytwin-desktop test -- src/__tests__/service-manager-env.test.ts",
+          "expected": "Packaged child environments keep both account providers disabled and do not expose their credentials"
         }
       ]
     },
@@ -1107,7 +1121,7 @@
         },
         {
           "path": "packages/execution-router/src/execution-router.ts",
-          "sha256": "b296b254277a195d6106d740460d3201d6f28fb99c3be0840b5adf85a7226f9e",
+          "sha256": "43e885e1985a6b2d6901bbb29945f12cfa360a4eeee374ce7a0e0e096694308d",
           "why": "Independent provenance/severity backstop before adapter execution"
         }
       ],
@@ -1197,7 +1211,7 @@
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
-          "sha256": "2ea73081a3e47af9aac360a3e00e06bb3d0599c4533c672df6bdc9184ec8eb35",
+          "sha256": "7c7359874cd45a28d86a0f11871ebc880c011a13c5aaea0ba85c8900c32b1a75",
           "why": "Defines the exact nine release artifacts, five verification checks, fixed material paths, and immutable workflow action pins"
         },
         {
@@ -1232,7 +1246,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "d9e96a53c308f7ec770bfbd08e89a6a28b8137e434099846aa56f94729dc5e0a",
+          "sha256": "d388baa06221a65dbf0f3a90eaa54bd185154a19455f37215ce0755f80dbf6d9",
           "why": "Structurally locks the sole materials producer and aggregator and re-verifies every release material at the final publication boundary"
         }
       ],

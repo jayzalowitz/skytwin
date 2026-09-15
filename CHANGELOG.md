@@ -15,12 +15,18 @@ All notable changes to SkyTwin will be documented in this file.
   filtered across credential reads, writes, sync, and UI surfaces; failed
   dynamic credential classification also fails closed. Stale account-backed
   capability rows cannot be resumed, inspected through bookmarked detail
-  routes, rendered in dependency graphs, polled for changelogs, included in
-  assistant or briefing prompts, promoted, offered as installs, transferred,
-  or used to restore reconnect prompts. Provider-native action namespaces are
-  denied before adapter planning or dispatch even when no capability-server ID
-  is supplied. Existing stored tokens and credentials are retained for a future
-  reviewed migration. Managed account access is
+  routes, rendered in dependency graphs or audit history, polled for
+  changelogs, included in assistant, current-briefing, retained-briefing, or
+  live-digest prompts, promoted, offered as installs, transferred, or used to
+  restore reconnect prompts. The worker skips provider-token enumeration while
+  the boundary is disabled and treats an empty cached capability inventory as
+  insufficient authority for changelog contact. Provider-native action
+  namespaces are denied before adapter planning or dispatch even when no
+  capability-server ID is supplied. Account-backed execution plugins
+  discovered from the filesystem are rejected before import and bound to
+  admission again before routing, preparation, or prepared dispatch. Existing
+  stored tokens and credentials
+  are retained for a future reviewed migration. Managed account access is
   deferred, and the exact experimental source flag is not a supported operator/BYO
   path. This correction supersedes current-looking bundled-client and
   five-minute-setup entries below without rewriting their historical record.

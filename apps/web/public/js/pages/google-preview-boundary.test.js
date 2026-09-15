@@ -153,11 +153,22 @@ describe('Google preview UI boundary', () => {
     const source = pageSource('setup');
 
     expect(source).toContain('Google account connection and credential entry are disabled');
+    expect(source).toContain('Account-backed email and calendar actions are unavailable');
     expect(source).toContain('href="#/sample"');
     expect(source).not.toContain('id="cred-google-');
     expect(source).not.toContain('data-save-service="google"');
     expect(source).not.toContain('data-action="connect-google"');
     expect(source).not.toContain("renderIronClawSyncSummary('google'");
+  });
+
+  it('uses provider-neutral copy for blocked capability actions', () => {
+    const assistant = pageSource('assistant');
+    const capabilities = pageSource('capabilities');
+
+    expect(assistant).toContain('Account-backed capabilities are unavailable in this preview.');
+    expect(capabilities).toContain('Account-backed capabilities are unavailable in this preview.');
+    expect(assistant).not.toContain('Google account capabilities are unavailable');
+    expect(capabilities).not.toContain('Google account capabilities are unavailable');
   });
 
   it('does not expose Google account actions in settings', () => {
