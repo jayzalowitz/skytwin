@@ -82,6 +82,14 @@ interface SourceKeyBrokerRequestBase {
   readonly role: SourceKeyBrokerRole;
   readonly generation: number;
   readonly context: SourceKeyBrokerContext;
+  readonly authority?: SourceKeyBrokerSessionAuthority;
+}
+
+/** Opaque grant returned only after a real API session is revalidated. */
+export interface SourceKeyBrokerSessionAuthority {
+  readonly kind: 'api_session';
+  readonly sessionId: string;
+  readonly grantId: string;
 }
 
 export interface SourceKeyBrokerEncryptRequest extends SourceKeyBrokerRequestBase {
@@ -213,7 +221,68 @@ export type SourceKeyBrokerControlMessage =
   | SourceKeyBrokerLockAckMessage
   | SourceKeyBrokerGenerationMessage;
 
+export interface SourceKeyBrokerOwnerGrantRequest {
+  readonly type: 'skytwin:vault:owner-grant-request';
+  readonly protocolVersion: 1;
+  readonly requestId: string;
+  readonly capability: string;
+  readonly role: 'api';
+  readonly ownerKind: 'user';
+  readonly ownerId: string;
+  readonly sessionId: string;
+  readonly tokenHash: string;
+  readonly expiresAtMs: number;
+}
+
+export interface SourceKeyBrokerOwnerGrantSuccess {
+  readonly type: 'skytwin:vault:owner-grant-result';
+  readonly protocolVersion: 1;
+  readonly requestId: string;
+  readonly role: 'api';
+  readonly ownerKind: 'user';
+  readonly ownerId: string;
+  readonly sessionId: string;
+  readonly expiresAtMs: number;
+  readonly success: true;
+  readonly grantId: string;
+  readonly generation: number;
+}
+
+export interface SourceKeyBrokerOwnerGrantFailure {
+  readonly type: 'skytwin:vault:owner-grant-result';
+  readonly protocolVersion: 1;
+  readonly requestId: string;
+  readonly role: 'api';
+  readonly ownerKind: 'user';
+  readonly ownerId: string;
+  readonly sessionId: string;
+  readonly expiresAtMs: number;
+  readonly success: false;
+  readonly error: 'vault_broker_unavailable';
+}
+
+export type SourceKeyBrokerOwnerGrantResult =
+  | SourceKeyBrokerOwnerGrantSuccess
+  | SourceKeyBrokerOwnerGrantFailure;
+
+export interface SourceKeyBrokerOwnerRevokeRequest {
+  readonly type: 'skytwin:vault:owner-revoke';
+  readonly protocolVersion: 1;
+  readonly requestId: string;
+  readonly capability: string;
+  readonly role: 'api';
+  readonly ownerKind: 'user';
+  readonly ownerId: string;
+  readonly sessionId: string;
+}
+
+export type SourceKeyBrokerOwnerAuthorityMessage =
+  | SourceKeyBrokerOwnerGrantRequest
+  | SourceKeyBrokerOwnerGrantResult
+  | SourceKeyBrokerOwnerRevokeRequest;
+
 const REQUEST_ID = /^[a-f0-9]{32}$/;
+const TOKEN_HASH = /^[a-f0-9]{64}$/;
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SQL_IDENTIFIER = /^[a-z][a-z0-9_]{0,62}$/;
@@ -294,6 +363,122 @@ function isGeneration(value: unknown): value is number {
 
 function isKeyVersion(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function isFutureEpoch(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+export function snapshotSourceKeyBrokerSessionAuthority(
+  value: unknown,
+): SourceKeyBrokerSessionAuthority | null {
+  try {
+    const record = exactOwnRecord(value, ['kind', 'sessionId', 'grantId']);
+    if (
+      !record ||
+      record['kind'] !== 'api_session' ||
+      typeof record['sessionId'] !== 'string' ||
+      !UUID.test(record['sessionId']) ||
+      typeof record['grantId'] !== 'string' ||
+      !REQUEST_ID.test(record['grantId'])
+    ) return null;
+    return Object.freeze({
+      kind: 'api_session',
+      sessionId: record['sessionId'],
+      grantId: record['grantId'],
+    });
+  } catch {
+    return null;
+  }
+}
+
+export function snapshotSourceKeyBrokerOwnerAuthorityMessage(
+  value: unknown,
+): SourceKeyBrokerOwnerAuthorityMessage | null {
+  try {
+    const type = ownDataProperty(value, 'type');
+    if (type === 'skytwin:vault:owner-grant-request') {
+      const record = exactOwnRecord(value, [
+        'type', 'protocolVersion', 'requestId', 'capability', 'role',
+        'ownerKind', 'ownerId', 'sessionId', 'tokenHash', 'expiresAtMs',
+      ]);
+      if (
+        !record ||
+        record['protocolVersion'] !== SOURCE_KEY_BROKER_PROTOCOL_VERSION ||
+        typeof record['requestId'] !== 'string' || !REQUEST_ID.test(record['requestId']) ||
+        !isCanonicalBase64(record['capability'], CAPABILITY_BYTES, CAPABILITY_BYTES) ||
+        record['role'] !== 'api' || record['ownerKind'] !== 'user' ||
+        typeof record['ownerId'] !== 'string' || !UUID.test(record['ownerId']) ||
+        typeof record['sessionId'] !== 'string' || !UUID.test(record['sessionId']) ||
+        typeof record['tokenHash'] !== 'string' || !TOKEN_HASH.test(record['tokenHash']) ||
+        !isFutureEpoch(record['expiresAtMs'])
+      ) return null;
+      return Object.freeze({
+        type, protocolVersion: SOURCE_KEY_BROKER_PROTOCOL_VERSION,
+        requestId: record['requestId'], capability: record['capability'],
+        role: 'api', ownerKind: 'user', ownerId: record['ownerId'],
+        sessionId: record['sessionId'], tokenHash: record['tokenHash'],
+        expiresAtMs: record['expiresAtMs'],
+      });
+    }
+    if (type === 'skytwin:vault:owner-revoke') {
+      const record = exactOwnRecord(value, [
+        'type', 'protocolVersion', 'requestId', 'capability', 'role',
+        'ownerKind', 'ownerId', 'sessionId',
+      ]);
+      if (
+        !record ||
+        record['protocolVersion'] !== SOURCE_KEY_BROKER_PROTOCOL_VERSION ||
+        typeof record['requestId'] !== 'string' || !REQUEST_ID.test(record['requestId']) ||
+        !isCanonicalBase64(record['capability'], CAPABILITY_BYTES, CAPABILITY_BYTES) ||
+        record['role'] !== 'api' || record['ownerKind'] !== 'user' ||
+        typeof record['ownerId'] !== 'string' || !UUID.test(record['ownerId']) ||
+        typeof record['sessionId'] !== 'string' || !UUID.test(record['sessionId'])
+      ) return null;
+      return Object.freeze({
+        type, protocolVersion: SOURCE_KEY_BROKER_PROTOCOL_VERSION,
+        requestId: record['requestId'], capability: record['capability'],
+        role: 'api', ownerKind: 'user', ownerId: record['ownerId'],
+        sessionId: record['sessionId'],
+      });
+    }
+    if (type !== 'skytwin:vault:owner-grant-result') return null;
+    const success = ownDataProperty(value, 'success');
+    const record = exactOwnRecord(value, [
+      'type', 'protocolVersion', 'requestId', 'role', 'ownerKind', 'ownerId',
+      'sessionId', 'expiresAtMs', 'success',
+      ...(success === true ? ['grantId', 'generation'] : ['error']),
+    ]);
+    if (
+      !record ||
+      record['protocolVersion'] !== SOURCE_KEY_BROKER_PROTOCOL_VERSION ||
+      typeof record['requestId'] !== 'string' || !REQUEST_ID.test(record['requestId']) ||
+      record['role'] !== 'api' || record['ownerKind'] !== 'user' ||
+      typeof record['ownerId'] !== 'string' || !UUID.test(record['ownerId']) ||
+      typeof record['sessionId'] !== 'string' || !UUID.test(record['sessionId']) ||
+      !isFutureEpoch(record['expiresAtMs'])
+    ) return null;
+    const common = {
+      type: 'skytwin:vault:owner-grant-result' as const,
+      protocolVersion: SOURCE_KEY_BROKER_PROTOCOL_VERSION,
+      requestId: record['requestId'], role: 'api' as const,
+      ownerKind: 'user' as const, ownerId: record['ownerId'],
+      sessionId: record['sessionId'], expiresAtMs: record['expiresAtMs'],
+    };
+    if (success === false && record['error'] === 'vault_broker_unavailable') {
+      return Object.freeze({ ...common, success: false, error: record['error'] });
+    }
+    if (
+      success !== true || typeof record['grantId'] !== 'string' ||
+      !REQUEST_ID.test(record['grantId']) || !isGeneration(record['generation'])
+    ) return null;
+    return Object.freeze({
+      ...common, success: true, grantId: record['grantId'],
+      generation: record['generation'],
+    });
+  } catch {
+    return null;
+  }
 }
 
 function utf8LengthAtMost(value: unknown, maximum: number): value is string {
@@ -575,6 +760,11 @@ export function snapshotSourceKeyBrokerRequest(
         : operation === 'decrypt' || operation === 'rewrap'
           ? 'envelope'
           : null;
+    const authorityValue = ownDataProperty(value, 'authority');
+    const authority = authorityValue === undefined
+      ? null
+      : snapshotSourceKeyBrokerSessionAuthority(authorityValue);
+    if (authorityValue !== undefined && !authority) return null;
     const fields = [
       'type',
       'protocolVersion',
@@ -584,6 +774,7 @@ export function snapshotSourceKeyBrokerRequest(
       'generation',
       'operation',
       'context',
+      ...(authority ? ['authority'] : []),
       ...(payloadField === null ? [] : [payloadField]),
     ];
     const record = exactOwnRecord(value, fields);
@@ -614,6 +805,7 @@ export function snapshotSourceKeyBrokerRequest(
       role: record['role'],
       generation: record['generation'],
       context,
+      ...(authority ? { authority } : {}),
     };
     if (operation === 'state') return Object.freeze({ ...base, operation });
     if (operation === 'encrypt') {

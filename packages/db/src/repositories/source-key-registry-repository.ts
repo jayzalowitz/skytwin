@@ -1,4 +1,8 @@
 import { query } from '../connection.js';
+import {
+  revalidateSourceKeySessionAuthority,
+  type SourceKeySessionAuthorityInput,
+} from './session-repository.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MAX_JSON_BYTES = 64 * 1024;
@@ -123,6 +127,11 @@ function normalizeRow(raw: RawSourceKeyRegistryRow): SourceKeyRegistryRow {
 // Deliberately absent from the general DB barrel. Desktop composition reaches
 // this sensitive leaf only through the narrow source-key-registry subpath.
 export const sourceKeyRegistryRepository = {
+  async revalidateSessionAuthority(
+    input: SourceKeySessionAuthorityInput,
+  ): Promise<boolean> {
+    return await revalidateSourceKeySessionAuthority(input);
+  },
   async getCurrent(userId: string): Promise<SourceKeyRegistryRow | null> {
     validateUserId(userId);
     const result = await query<RawSourceKeyRegistryRow>(

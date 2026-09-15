@@ -11,7 +11,46 @@ export interface SessionRow {
   revoked: boolean;
 }
 
+export interface SourceKeySessionAuthorityInput {
+  readonly sessionId: string;
+  readonly ownerId: string;
+  readonly tokenHash: string;
+  readonly expiresAtMs: number;
+}
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const TOKEN_HASH = /^[a-f0-9]{64}$/;
+
+/** Exact live-session check shared by API admission and Electron revalidation. */
+export async function revalidateSourceKeySessionAuthority(
+  input: SourceKeySessionAuthorityInput,
+): Promise<boolean> {
+  if (
+    !UUID.test(input.sessionId) || !UUID.test(input.ownerId) ||
+    !TOKEN_HASH.test(input.tokenHash) ||
+    !Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= 0
+  ) return false;
+  const result = await query<{ id: string }>(
+    `SELECT id FROM sessions
+      WHERE id = $1
+        AND user_id = $2
+        AND token_hash = $3
+        AND revoked = false
+        AND expires_at = $4
+        AND expires_at > now()
+      LIMIT 2`,
+    [
+      input.sessionId,
+      input.ownerId,
+      input.tokenHash,
+      new Date(input.expiresAtMs),
+    ],
+  );
+  return result.rows.length === 1 && result.rows[0]?.id === input.sessionId;
+}
+
 export const sessionRepository = {
+  revalidateSourceKeyAuthority: revalidateSourceKeySessionAuthority,
   async create(input: {
     userId: string;
     tokenHash: string;

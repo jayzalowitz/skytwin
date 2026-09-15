@@ -73,4 +73,46 @@ describe('sourceKeyRegistryRepository', () => {
     expect(mockQuery.mock.calls[0]![0]).toContain('UPSERT INTO source_key_deletion_intents');
     expect(mockQuery.mock.calls[0]![1]).toEqual([input.user_id]);
   });
+
+  it('revalidates the exact immutable live session authority tuple', async () => {
+    const authority = {
+      sessionId: '11111111-1111-4111-8111-111111111111',
+      ownerId: '22222222-2222-4222-8222-222222222222',
+      tokenHash: 'a'.repeat(64),
+      expiresAtMs: 1_800_000_000_000,
+    };
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: authority.sessionId }], rowCount: 1,
+    });
+    await expect(
+      sourceKeyRegistryRepository.revalidateSessionAuthority(authority),
+    ).resolves.toBe(true);
+    expect(mockQuery.mock.calls[0]![0]).toContain('token_hash = $3');
+    expect(mockQuery.mock.calls[0]![0]).toContain('revoked = false');
+    expect(mockQuery.mock.calls[0]![0]).toContain('expires_at = $4');
+    expect(mockQuery.mock.calls[0]![0]).toContain('expires_at > now()');
+    expect(mockQuery.mock.calls[0]![1]).toEqual([
+      authority.sessionId,
+      authority.ownerId,
+      authority.tokenHash,
+      new Date(authority.expiresAtMs),
+    ]);
+
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: authority.sessionId }, { id: authority.sessionId }], rowCount: 2,
+    });
+    await expect(
+      sourceKeyRegistryRepository.revalidateSessionAuthority(authority),
+    ).resolves.toBe(false);
+  });
+
+  it('rejects malformed session authority without querying CockroachDB', async () => {
+    await expect(sourceKeyRegistryRepository.revalidateSessionAuthority({
+      sessionId: 'not-a-uuid',
+      ownerId: input.user_id,
+      tokenHash: 'a'.repeat(64),
+      expiresAtMs: 1_800_000_000_000,
+    })).resolves.toBe(false);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
 });

@@ -61,6 +61,7 @@ function registry(
     getCurrent: vi.fn(async () => current),
     createInitial: vi.fn(async () => true),
     deleteInitialIfMatch: vi.fn(async () => true),
+    revalidateSessionAuthority: vi.fn(async () => true),
   };
 }
 
@@ -79,6 +80,7 @@ describe("CockroachWrappedKeyStore", () => {
       getCurrent: expect.any(Function),
       createInitial: expect.any(Function),
       deleteInitialIfMatch: expect.any(Function),
+      revalidateSessionAuthority: expect.any(Function),
     });
     expect(importModule).toHaveBeenCalledWith(moduleSpecifier);
   });
@@ -95,6 +97,9 @@ describe("CockroachWrappedKeyStore", () => {
     vi.mocked(repository.deleteInitialIfMatch).mockResolvedValue(
       1 as unknown as boolean,
     );
+    vi.mocked(repository.revalidateSessionAuthority).mockResolvedValue(
+      "yes" as unknown as boolean,
+    );
     const port = await loadSourceKeyRegistryPort(
       "file:///invalid-results.js",
       async () => ({ sourceKeyRegistryRepository: repository }),
@@ -105,6 +110,12 @@ describe("CockroachWrappedKeyStore", () => {
     await expect(port.deleteInitialIfMatch(row())).rejects.toThrow(
       "source-key registry delete result is invalid",
     );
+    await expect(port.revalidateSessionAuthority({
+      sessionId: USER_ID,
+      ownerId: OTHER_USER_ID,
+      tokenHash: "a".repeat(64),
+      expiresAtMs: 1_800_000_000_000,
+    })).rejects.toThrow("source-key session authority result is invalid");
   });
 
   it("maps a matching active row and preserves an absent row", async () => {

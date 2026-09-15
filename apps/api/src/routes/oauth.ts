@@ -1408,9 +1408,9 @@ export function createOAuthRouter(): Router {
    * **Security model.** Possession of the pendingKey IS the
    * authorization. The endpoint:
    *   1. Does NOT just return the userId — that would chain with the
-   *      pre-existing `POST /api/sessions` (which accepts any userId
-   *      from a localhost caller) to make a leaked key worth a 7-day
-   *      session token. Instead, this endpoint mints the session
+   *      `POST /api/sessions` pairing flow (which requires a pre-existing
+   *      real session) to make a leaked key worth a second credential.
+   *      Instead, this endpoint mints the initial session
    *      itself, returning a fresh token. The wizard stashes the
    *      token; subsequent API calls flow through `Authorization:
    *      Bearer …` exactly like the QR-paired mobile flow.

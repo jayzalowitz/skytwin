@@ -28,7 +28,7 @@ export interface SourceKeyBrokerProcessPort {
 export interface ProcessSourceKeyBrokerClientOptions
   extends Pick<
     SourceKeyBrokerClientOptions,
-    'maxPendingRequests' | 'requestIdFactory' | 'requestTimeoutMs'
+    'maxPendingRequests' | 'requestIdFactory' | 'requestTimeoutMs' | 'sessionAuthorityProvider'
   > {}
 
 /**

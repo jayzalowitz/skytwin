@@ -108,14 +108,17 @@ items in this historical inventory are explicitly non-blocking and deferred.
 > resolves the #401 design question for the desktop boundary. Migration 073 now
 > defines the recovery-wrapper registry and deletion intent, and Electron has a
 > locked, capability-scoped source-key broker with private API/worker child IPC.
-> Production deliberately supplies empty owner grants. Recovery wrappers now use
+> Every production child binding starts with empty owner authority. Exact live
+> human API sessions can now receive session-bound authority after independent
+> API and Electron database revalidation, while worker, demo, development-bypass,
+> service, and unauthenticated paths remain unable to grant. Recovery wrappers now use
 > the narrow CockroachDB registry adapter with no Electron-store or plaintext
 > fallback, but no source repository consumes the broker, so it encrypts no
 > production source field. Separately, the API-local OAuth vault encrypts new/reconnected
 > grants when its matching generation is unlocked and can migrate complete plaintext
 > grants on authorized use; without a vault, tokens remain plaintext, and the worker
-> does not receive the API key. The authenticated owner-grant authority, source
-> repository clients and migration, clean packaged-platform
+> does not receive the API key. Source repository clients and migration, an
+> owned-service authority design, clean packaged-platform
 > verification, and bake period remain blockers. See the
 > [implementation status](./security/source-key-broker-implementation.md).
 
@@ -127,11 +130,11 @@ items in this historical inventory are explicitly non-blocking and deferred.
 - **The hard part:** `brain_pages` is the *searchable* store. RRF retrieval needs `content_tsv @@ plainto_tsquery` (full-text, server-side) and the row's `embedding` (vector — pulled out and scored with `cosineSimilarity` in application code, brute-force; not a CRDB `<=>` operator). Both are derived from plaintext content, and a `tsvector` stores the lexemes in the clear — so encrypting `content` while keeping `content_tsv` queryable leaks it anyway, while encrypting the index breaks search; the embedding likewise has to be read back out in the clear to score. So memory-at-rest encryption needs a design (scope to non-searched columns, index-time decrypt, or searchable encryption), not just an `encryptColumn` call.
 
 **Why it still is not a wiring-only fix:** the custody design is accepted, but
-activating it before authenticated owner grants, source-specific clients,
+activating it before source-specific clients,
 crash-safe plaintext migration, packaged-platform
 verification, and recovery testing would risk either exposing keys or losing
 data. The memory search conflict also still needs a deliberate boundary.
-**Recommended sequence:** compose authenticated owner grants and source clients
+**Recommended sequence:** compose source clients over the authenticated grants
 → migrate the narrow non-search fields with crash recovery → verify
 backup/delete/rotation and packaged lock behavior → resolve the readable search
 derivatives for `brain_pages` → complete the bake gate before making a claim.

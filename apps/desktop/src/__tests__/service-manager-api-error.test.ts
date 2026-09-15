@@ -293,7 +293,9 @@ describe("ServiceManager API error lifecycle", () => {
     manager.activeDatabaseStartup = startup;
 
     expect(await manager.startApi(startup)).toBeNull();
-    expect(broker.attachChild).toHaveBeenCalledWith(api, "api", new Set());
+    expect(broker.attachChild).toHaveBeenCalledWith(api, "api", new Set(), {
+      verifySession: expect.any(Function),
+    });
     expect(api.kill).toHaveBeenCalledWith("SIGTERM");
     expect(manager.api.process).toBeNull();
     expect(manager.apiGeneration).toBeNull();

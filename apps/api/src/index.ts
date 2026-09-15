@@ -357,7 +357,7 @@ app.use('/api/v1/twin', sessionAuth, requireOwnership, requestContext, createAsk
 app.use('/api/v1/briefings', sessionAuth, requireOwnership, requestContext, createBriefingsRouter());
 app.use('/api/v1/skill-gaps', sessionAuth, requireOwnership, requestContext, createSkillGapsRouter());
 app.use('/api/settings', sessionAuth, requireOwnership, requestContext, createSettingsRouter());
-app.use('/api/sessions', createSessionsRouter()); // POST pairing is public; others are protected in-router
+app.use('/api/sessions', createSessionsRouter()); // pairing consume is public; mint/list/revoke are protected in-router
 app.use('/api/audit', sessionAuth, requireOwnership, requestContext, createAuditRouter());
 app.use('/api/policies', sessionAuth, requireOwnership, requestContext, createPoliciesRouter());
 app.use('/api/mempalace', sessionAuth, requireOwnership, requestContext, createMempalaceRouter());

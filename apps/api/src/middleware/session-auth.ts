@@ -14,6 +14,8 @@ import {
   revokeDemoSessionByKey,
 } from '../auth/demo-session.js';
 import type { VerifiedDemoSession } from '../auth/demo-session.js';
+import type { SourceKeyBrokerSessionAuthority } from '@skytwin/shared-types';
+import { apiSourceKeyBrokerClient } from '../source-key-broker.js';
 
 const log = createLogger('api:auth');
 
@@ -25,6 +27,8 @@ declare global {
       authenticatedUserId?: string;
       /** The sessionId from the validated session. */
       authenticatedSessionId?: string;
+      /** Opaque Electron grant available only to this revalidated real session. */
+      sourceKeySessionAuthority?: SourceKeyBrokerSessionAuthority;
       /**
        * True when the request authenticated as the local SkyTwin service
        * (the worker or the idle-miner) via `SKYTWIN_SERVICE_TOKEN` from a
@@ -458,6 +462,9 @@ export async function sessionAuth(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
+  // Express may re-enter middleware on nested routers. Never let a stale
+  // request-scoped grant survive into demo, dev-bypass, service, or failure.
+  delete req.sourceKeySessionAuthority;
   const authHeader = req.headers['authorization'];
   const query = req.query ?? {};
   const queryToken = typeof query['token'] === 'string' ? query['token'] : undefined;
@@ -541,7 +548,7 @@ export async function sessionAuth(
   // Check the reserved sample credential path first: presenting that narrow
   // principal must never inherit the broader development bypass merely because
   // the request is loopback.
-  if (DEV_AUTH_BYPASS && isLocalhost(req)) {
+  if (DEV_AUTH_BYPASS && isLocalhost(req) && !token) {
     if (!bypassWarned) {
       log.warn(
         'Localhost auth bypass is ACTIVE. Set SKYTWIN_DEV_AUTH_BYPASS=false or NODE_ENV=production to require real auth.',
@@ -614,14 +621,39 @@ export async function sessionAuth(
   req.authenticatedSessionId = session.id;
 
   // Auto-refresh if within 1 day of expiry
-  const timeUntilExpiry = new Date(session.expires_at).getTime() - Date.now();
+  let authorityExpiresAtMs = new Date(session.expires_at).getTime();
+  const timeUntilExpiry = authorityExpiresAtMs - Date.now();
   if (timeUntilExpiry < REFRESH_WINDOW_MS) {
+    const refreshedExpiry = new Date(Date.now() + SESSION_DURATION_MS);
     await sessionRepository.refreshExpiry(
       session.id,
-      new Date(Date.now() + SESSION_DURATION_MS),
+      refreshedExpiry,
     );
+    authorityExpiresAtMs = refreshedExpiry.getTime();
   } else {
     await sessionRepository.touchLastActive(session.id);
+  }
+
+  // This is the sole production grant path. Revalidate the immutable session
+  // identity, owner, token hash, revocation state, and exact current expiry
+  // after the touch/refresh race before asking Electron for authority. Broker
+  // unavailability does not break ordinary plaintext-era routes; it merely
+  // leaves the request unable to perform source-key operations.
+  try {
+    const authorityInput = {
+      sessionId: session.id,
+      ownerId: session.user_id,
+      tokenHash,
+      expiresAtMs: authorityExpiresAtMs,
+    };
+    if (
+      await sessionRepository.revalidateSourceKeyAuthority(authorityInput)
+    ) {
+      const grant = await apiSourceKeyBrokerClient.grantSession(authorityInput);
+      if (grant.success) req.sourceKeySessionAuthority = grant.authority;
+    }
+  } catch {
+    // Fail closed for source-key authority while preserving existing routes.
   }
 
   next();

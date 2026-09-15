@@ -13,6 +13,12 @@ export interface SourceKeyRegistryPort {
   getCurrent(userId: string): Promise<SourceKeyRegistryRecord | null>;
   createInitial(input: SourceKeyRegistryRecord): Promise<boolean>;
   deleteInitialIfMatch(input: SourceKeyRegistryRecord): Promise<boolean>;
+  revalidateSessionAuthority(input: {
+    sessionId: string;
+    ownerId: string;
+    tokenHash: string;
+    expiresAtMs: number;
+  }): Promise<boolean>;
 }
 
 type DynamicImport = (specifier: string) => Promise<unknown>;
@@ -112,11 +118,13 @@ export async function loadSourceKeyRegistryPort(
   const getCurrent = ownData(repository, "getCurrent");
   const createInitial = ownData(repository, "createInitial");
   const deleteInitialIfMatch = ownData(repository, "deleteInitialIfMatch");
+  const revalidateSessionAuthority = ownData(repository, "revalidateSessionAuthority");
   if (
     repository === INVALID ||
     typeof getCurrent !== "function" ||
     typeof createInitial !== "function" ||
-    typeof deleteInitialIfMatch !== "function"
+    typeof deleteInitialIfMatch !== "function" ||
+    typeof revalidateSessionAuthority !== "function"
   ) {
     throw new Error("source-key registry module is invalid");
   }
@@ -143,6 +151,15 @@ export async function loadSourceKeyRegistryPort(
       );
       if (typeof result !== "boolean") {
         throw new Error("source-key registry delete result is invalid");
+      }
+      return result;
+    },
+    async revalidateSessionAuthority(
+      input: Parameters<SourceKeyRegistryPort["revalidateSessionAuthority"]>[0],
+    ): Promise<boolean> {
+      const result: unknown = await revalidateSessionAuthority.call(repository, input);
+      if (typeof result !== "boolean") {
+        throw new Error("source-key session authority result is invalid");
       }
       return result;
     },

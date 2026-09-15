@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 
+const mockBroker = vi.hoisted(() => ({
+  grantSession: vi.fn(),
+  revokeSession: vi.fn(),
+}));
+
 /**
  * Tests for the session-auth middleware and require-ownership middleware.
  *
@@ -15,8 +20,13 @@ vi.mock('@skytwin/db', () => ({
     findByTokenHash: vi.fn(),
     refreshExpiry: vi.fn(),
     touchLastActive: vi.fn(),
+    revalidateSourceKeyAuthority: vi.fn(),
   },
   userRepository: { findDemoById: vi.fn() },
+}));
+
+vi.mock('../source-key-broker.js', () => ({
+  apiSourceKeyBrokerClient: mockBroker,
 }));
 
 function mockReq(overrides: Partial<Request> = {}): Request {
@@ -59,6 +69,7 @@ describe('sessionAuth middleware', () => {
   };
 
   beforeEach(async () => {
+    vi.clearAllMocks();
     // Reset env for each test
     delete process.env['SKYTWIN_DEV_AUTH_BYPASS'];
     delete process.env['SKYTWIN_SERVICE_TOKEN'];
@@ -72,9 +83,17 @@ describe('sessionAuth middleware', () => {
         findByTokenHash: vi.fn(),
         refreshExpiry: vi.fn(),
         touchLastActive: vi.fn(),
+        revalidateSourceKeyAuthority: vi.fn().mockResolvedValue(false),
       },
       userRepository: { findDemoById: vi.fn() },
     }));
+    vi.doMock('../source-key-broker.js', () => ({
+      apiSourceKeyBrokerClient: mockBroker,
+    }));
+    mockBroker.grantSession.mockResolvedValue({
+      success: false,
+      error: 'vault_broker_unavailable',
+    });
   });
 
   afterEach(() => {
@@ -142,6 +161,46 @@ describe('sessionAuth middleware', () => {
     expect(req.authenticatedSessionId).toBe('session-1');
   });
 
+  it('mints request authority only after exact live-session revalidation', async () => {
+    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
+    const mod = await import('../middleware/session-auth.js');
+    sessionAuth = mod.sessionAuth;
+    const db = await import('@skytwin/db');
+    const expiresAt = new Date(Date.now() + 3 * 86_400_000);
+    const row = {
+      id: '11111111-1111-4111-8111-111111111111',
+      user_id: '22222222-2222-4222-8222-222222222222',
+      expires_at: expiresAt,
+    };
+    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(row);
+    (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(undefined);
+    (db.sessionRepository.revalidateSourceKeyAuthority as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(true);
+    const authority = {
+      kind: 'api_session' as const,
+      sessionId: row.id,
+      grantId: 'c'.repeat(32),
+    };
+    mockBroker.grantSession.mockResolvedValue({ success: true, authority });
+
+    const req = mockReq({ headers: { authorization: 'Bearer exact-token' } });
+    const next = vi.fn();
+    await sessionAuth(req, mockRes(), next);
+
+    const expected = {
+      sessionId: row.id,
+      ownerId: row.user_id,
+      tokenHash: mod.hashToken('exact-token'),
+      expiresAtMs: expiresAt.getTime(),
+    };
+    expect(db.sessionRepository.revalidateSourceKeyAuthority).toHaveBeenCalledWith(expected);
+    expect(mockBroker.grantSession).toHaveBeenCalledWith(expected);
+    expect(req.sourceKeySessionAuthority).toEqual(authority);
+    expect(next).toHaveBeenCalledOnce();
+  });
+
   it('accepts token from query string for EventSource-based clients', async () => {
     process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'false';
     const mod = await import('../middleware/session-auth.js');
@@ -190,7 +249,14 @@ describe('sessionAuth middleware', () => {
     const mod = await import('../middleware/session-auth.js');
     sessionAuth = mod.sessionAuth;
 
-    const req = mockReq({ ip: '127.0.0.1' });
+    const req = mockReq({
+      ip: '127.0.0.1',
+      sourceKeySessionAuthority: {
+        kind: 'api_session',
+        sessionId: '11111111-1111-4111-8111-111111111111',
+        grantId: 'a'.repeat(32),
+      },
+    });
     const res = mockRes();
     const next = vi.fn();
 
@@ -198,6 +264,8 @@ describe('sessionAuth middleware', () => {
 
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBeUndefined(); // no session in bypass mode
+    expect(req.sourceKeySessionAuthority).toBeUndefined();
+    expect(mockBroker.grantSession).not.toHaveBeenCalled();
   });
 
   it('requires auth for localhost when bypass is disabled', async () => {
@@ -213,6 +281,44 @@ describe('sessionAuth middleware', () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(401);
+  });
+
+  it('prefers a presented real bearer on localhost even when dev bypass is enabled', async () => {
+    process.env['SKYTWIN_DEV_AUTH_BYPASS'] = 'true';
+    const mod = await import('../middleware/session-auth.js');
+    sessionAuth = mod.sessionAuth;
+    const db = await import('@skytwin/db');
+    const expiresAt = new Date(Date.now() + 3 * 86_400_000);
+    const row = {
+      id: '11111111-1111-4111-8111-111111111111',
+      user_id: '22222222-2222-4222-8222-222222222222',
+      expires_at: expiresAt,
+    };
+    (db.sessionRepository.findByTokenHash as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(row);
+    (db.sessionRepository.touchLastActive as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(undefined);
+    (db.sessionRepository.revalidateSourceKeyAuthority as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(true);
+    mockBroker.grantSession.mockResolvedValue({
+      success: true,
+      authority: {
+        kind: 'api_session', sessionId: row.id, grantId: 'c'.repeat(32),
+      },
+    });
+    const req = mockReq({
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' } as Request['socket'],
+      headers: { authorization: 'Bearer real-local-token' },
+    });
+    const next = vi.fn();
+
+    await sessionAuth(req, mockRes(), next);
+
+    expect(req.authenticatedUserId).toBe(row.user_id);
+    expect(req.authenticatedSessionId).toBe(row.id);
+    expect(req.sourceKeySessionAuthority?.sessionId).toBe(row.id);
+    expect(next).toHaveBeenCalledOnce();
   });
 
   describe('read-only sample credential', () => {
@@ -264,6 +370,7 @@ describe('sessionAuth middleware', () => {
       expect(next).toHaveBeenCalledOnce();
       expect(req.authenticatedUserId).toBe('a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d');
       expect(req.demoAuthenticated).toBe(true);
+      expect(mockBroker.grantSession).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -976,6 +1083,7 @@ describe('sessionAuth middleware', () => {
       // No human identity is bound — the daemons act for every user.
       expect(req.authenticatedUserId).toBeUndefined();
       expect(req.authenticatedSessionId).toBeUndefined();
+      expect(mockBroker.grantSession).not.toHaveBeenCalled();
     });
 
     it('rejects a non-matching token of the same length', async () => {

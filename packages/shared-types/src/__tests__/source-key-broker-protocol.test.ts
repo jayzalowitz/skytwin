@@ -5,6 +5,7 @@ import {
   SOURCE_KEY_PURPOSES,
   snapshotSourceKeyBrokerContext,
   snapshotSourceKeyBrokerControlMessage,
+  snapshotSourceKeyBrokerOwnerAuthorityMessage,
   snapshotSourceKeyBrokerRequest,
   snapshotSourceKeyBrokerResponse,
   snapshotSourceKeyBrokerResult,
@@ -17,6 +18,8 @@ import {
 const ownerId = '01993f36-7c79-4f17-8e7f-5611f00dba21';
 const requestId = '0123456789abcdef0123456789abcdef';
 const capability = Buffer.alloc(32, 7).toString('base64');
+const sessionId = '33333333-3333-4333-8333-333333333333';
+const tokenHash = 'a'.repeat(64);
 const context: SourceKeyBrokerContext = Object.freeze({
   ownerKind: 'user',
   ownerId,
@@ -24,6 +27,93 @@ const context: SourceKeyBrokerContext = Object.freeze({
   table: 'oauth_tokens',
   column: 'access_token',
   rowId: 'row-1',
+});
+
+describe('source-key broker API-session authority snapshots', () => {
+  it('binds grants, results, revokes, and crypto requests to exact immutable fields', () => {
+    const grant = {
+      type: 'skytwin:vault:owner-grant-request',
+      protocolVersion: 1,
+      requestId,
+      capability,
+      role: 'api',
+      ownerKind: 'user',
+      ownerId,
+      sessionId,
+      tokenHash,
+      expiresAtMs: 1_800_000_000_000,
+    };
+    expect(snapshotSourceKeyBrokerOwnerAuthorityMessage(grant)).toEqual(grant);
+    expect(snapshotSourceKeyBrokerOwnerAuthorityMessage({
+      type: 'skytwin:vault:owner-grant-result',
+      protocolVersion: 1,
+      requestId,
+      role: 'api',
+      ownerKind: 'user',
+      ownerId,
+      sessionId,
+      expiresAtMs: grant.expiresAtMs,
+      success: true,
+      grantId: 'f'.repeat(32),
+      generation: 3,
+    })).not.toBeNull();
+    expect(snapshotSourceKeyBrokerOwnerAuthorityMessage({
+      type: 'skytwin:vault:owner-revoke',
+      protocolVersion: 1,
+      requestId,
+      capability,
+      role: 'api',
+      ownerKind: 'user',
+      ownerId,
+      sessionId,
+    })).not.toBeNull();
+    expect(snapshotSourceKeyBrokerRequest({
+      ...request('state'),
+      authority: { kind: 'api_session', sessionId, grantId: 'f'.repeat(32) },
+    })).toMatchObject({
+      authority: { kind: 'api_session', sessionId, grantId: 'f'.repeat(32) },
+    });
+  });
+
+  it('rejects role, owner, session, token, expiry, replay-shape, and hostile substitutions', () => {
+    const grant = {
+      type: 'skytwin:vault:owner-grant-request',
+      protocolVersion: 1,
+      requestId,
+      capability,
+      role: 'api',
+      ownerKind: 'user',
+      ownerId,
+      sessionId,
+      tokenHash,
+      expiresAtMs: 1_800_000_000_000,
+    };
+    for (const malformed of [
+      { ...grant, role: 'worker' },
+      { ...grant, ownerId: ownerId.toUpperCase() },
+      { ...grant, sessionId: 'not-a-session' },
+      { ...grant, tokenHash: tokenHash.toUpperCase() },
+      { ...grant, expiresAtMs: 0 },
+      { ...grant, grantId: 'unexpected' },
+    ]) expect(snapshotSourceKeyBrokerOwnerAuthorityMessage(malformed)).toBeNull();
+
+    let accessed = false;
+    const hostile = { ...grant } as Record<string, unknown>;
+    Object.defineProperty(hostile, 'tokenHash', {
+      enumerable: true,
+      get: () => {
+        accessed = true;
+        return tokenHash;
+      },
+    });
+    expect(snapshotSourceKeyBrokerOwnerAuthorityMessage(hostile)).toBeNull();
+    expect(accessed).toBe(false);
+    expect(snapshotSourceKeyBrokerOwnerAuthorityMessage(new Proxy(grant, {}))).toBeNull();
+    expect(snapshotSourceKeyBrokerRequest({
+      ...request('state'),
+      authority: { kind: 'api_session', sessionId: ownerId, grantId: 'short' },
+    })).toBeNull();
+  });
 });
 const envelope = Object.freeze({
   magic: 'skytwin-envelope',
