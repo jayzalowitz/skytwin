@@ -49,7 +49,10 @@ const {
   mockMcpServerRepository,
   mockAiProviderRepository,
 } = vi.hoisted(() => ({
-  mockMcpServerRepository: { listForUser: vi.fn() },
+  mockMcpServerRepository: {
+    listForUser: vi.fn(),
+    listSkillNamesForServer: vi.fn(),
+  },
   mockAiProviderRepository: {
     getEnabledForUser: vi.fn(),
     getReasoningSnapshotForUser: vi.fn(),
@@ -147,6 +150,7 @@ const USER_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 beforeEach(() => {
   vi.clearAllMocks();
   mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+  mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['list_items']);
   mockRegistryGetAll.mockResolvedValue([
     { id: 'linear-mcp', displayName: 'Linear', description: 'Manage Linear issues', oauthProvider: null },
     { id: '@modelcontextprotocol/server-github', displayName: 'GitHub', description: 'GitHub PRs and issues', oauthProvider: 'github' },
@@ -324,12 +328,14 @@ describe('POST /api/assistant/install-suggestion', () => {
     ]);
     mockMcpServerRepository.listForUser.mockResolvedValue([
       {
+        id: 'google-server',
         registry_id: 'custom-drive',
         display_name: 'Drive alias',
         oauth_provider: 'google',
         status: 'active',
       },
       {
+        id: 'slack-server',
         registry_id: '@modelcontextprotocol/server-slack',
         display_name: 'Slack',
         oauth_provider: null,
@@ -370,6 +376,84 @@ describe('POST /api/assistant/install-suggestion', () => {
     expect(promptCall.inputs.available_capabilities.map((entry) => entry.id)).toEqual(['linear-mcp']);
     expect((res.body as { suggestions: Array<{ registryId: string }> }).suggestions)
       .toEqual([expect.objectContaining({ registryId: 'linear-mcp' })]);
+  });
+
+  it('removes an installed capability identified only by its cached account skill', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'custom-mail-server',
+        registry_id: 'custom-tools',
+        display_name: 'Custom tools',
+        oauth_provider: null,
+        status: 'active',
+      },
+    ]);
+    mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['sendEmail']);
+    mockRunPrompt.mockResolvedValue({
+      output: { intent_detected: false, suggestions: [] },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'Connect a tool', assistantReply: 'I need a capability' },
+    );
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: Array<{ id: string }> };
+    };
+    expect(promptCall.inputs.installed_capabilities).toEqual([]);
+    expect(mockMcpServerRepository.listSkillNamesForServer).toHaveBeenCalledWith(
+      'custom-mail-server',
+    );
+  });
+
+  it.each([
+    ['missing', []],
+    ['unavailable', new Error('skill cache unavailable')],
+  ])('fails closed when installed capability inventory is %s', async (_case, result) => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockAiProviderRepository.getEnabledForUser.mockResolvedValue([
+      { provider: 'anthropic', api_key: 'k', model: 'claude-haiku-4-5', base_url: null },
+    ]);
+    mockMcpServerRepository.listForUser.mockResolvedValue([
+      {
+        id: 'uncertain-server',
+        registry_id: 'custom-tools',
+        display_name: 'Unclassified tools',
+        oauth_provider: null,
+        status: 'active',
+      },
+    ]);
+    if (result instanceof Error) {
+      mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(result);
+    } else {
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(result);
+    }
+    mockRunPrompt.mockResolvedValue({
+      output: { intent_detected: false, suggestions: [] },
+      fellBackToDeterministic: false,
+    });
+
+    const res = await request(
+      buildApp(),
+      'POST',
+      `/api/assistant/install-suggestion?userId=${USER_ID}`,
+      { userMessage: 'Connect a tool', assistantReply: 'I need a capability' },
+    );
+
+    expect(res.status).toBe(200);
+    const promptCall = mockRunPrompt.mock.calls[0]?.[0] as {
+      inputs: { installed_capabilities: Array<{ id: string }> };
+    };
+    expect(promptCall.inputs.installed_capabilities).toEqual([]);
   });
 
   it('preserves Google prompt candidates behind the exact experimental opt-in', async () => {

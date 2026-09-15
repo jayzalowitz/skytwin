@@ -3,10 +3,14 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // Mock only @skytwin/db's query — the decision-engine fold (buildDigest,
 // toSignalText, buildDigestItemDetail, computeCoverage) stays REAL so this
 // exercises the actual mapper glue, not a stub of it.
-const mockQuery = vi.fn();
+const { mockQuery, mockLoadConfig } = vi.hoisted(() => ({
+  mockQuery: vi.fn(),
+  mockLoadConfig: vi.fn(),
+}));
 vi.mock('@skytwin/db', () => ({
   query: (...args: unknown[]) => mockQuery(...args),
 }));
+vi.mock('@skytwin/config', () => ({ loadConfig: mockLoadConfig }));
 
 import { buildLiveDigest } from '../services/live-digest.js';
 
@@ -39,7 +43,10 @@ function decisionRow(over: Record<string, unknown> = {}) {
 }
 
 describe('buildLiveDigest', () => {
-  beforeEach(() => mockQuery.mockReset());
+  beforeEach(() => {
+    mockQuery.mockReset();
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
+  });
 
   it('returns null when the user has no decisions (cold start)', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
@@ -120,6 +127,37 @@ describe('buildLiveDigest', () => {
     const security = d!.coverage?.capabilityStatus.find((c) => c.capability === 'security');
     expect(security?.status).toBe('available'); // Outlook mail enables security, parity with Google
     expect(d!.coverage?.missing).not.toContain('gmail'); // never nudged to connect Google
+  });
+
+  it('ignores retained account tokens for coverage while account connections are disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockQuery
+      .mockResolvedValueOnce({ rows: [decisionRow()] })
+      .mockResolvedValueOnce({ rows: [] });
+
+    const d = await buildLiveDigest('u1');
+
+    expect(d!.coverage?.coldStart).toBe(true);
+    expect(d!.coverage?.connected).toEqual([]);
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('oauth_tokens'))).toBe(false);
+  });
+
+  it('does not surface a retained Microsoft token while account connections are disabled', async () => {
+    mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+    mockQuery.mockImplementation(async (sql: unknown) => {
+      const statement = String(sql);
+      if (statement.includes('FROM decisions')) return { rows: [decisionRow()] };
+      if (statement.includes('oauth_tokens')) {
+        return { rows: [{ provider: 'microsoft', scopes: [] }] };
+      }
+      return { rows: [] };
+    });
+
+    const d = await buildLiveDigest('u1');
+
+    expect(d!.coverage?.connected).not.toContain('outlook');
+    expect(d!.coverage?.connected).not.toContain('outlook_calendar');
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('oauth_tokens'))).toBe(false);
   });
 
   it('maps a security decision to a to-do with meaningful power-view detail', async () => {

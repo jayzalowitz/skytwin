@@ -16,6 +16,7 @@
  */
 
 import { query, watchRunRepository, type WatchRunRow } from '@skytwin/db';
+import { loadConfig } from '@skytwin/config';
 import {
   buildDigest,
   buildDigestItemDetail,
@@ -643,10 +644,15 @@ export async function buildLiveDigest(userId: string): Promise<LiveDigest | null
   // writer anywhere, which left the panel stuck in cold-start for EVERY user.
   // refresh_token is intentionally not filtered — it's NULL for credential-
   // vault-migrated rows (the token lives in the encrypted columns).
-  const accounts = await query<AccountRow>(
-    `SELECT provider, scopes FROM oauth_tokens WHERE user_id = $1`,
-    [userId],
-  );
+  // Retained OAuth rows are not usable connections while account-backed
+  // integrations are outside the supported preview. Avoid reading them at all
+  // so stale rows cannot make the coverage panel claim access it does not have.
+  const accounts = loadConfig().googleConnectionMode === 'experimental'
+    ? await query<AccountRow>(
+        `SELECT provider, scopes FROM oauth_tokens WHERE user_id = $1`,
+        [userId],
+      )
+    : { rows: [] as AccountRow[] };
   const coverage = computeCoverage(
     accounts.rows.map((a) => ({
       provider: a.provider,
