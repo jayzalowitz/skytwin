@@ -159,6 +159,12 @@ vi.mock('@skytwin/db', () => {
       markExecutionTerminalForDecision: vi.fn().mockResolvedValue(true),
       markNonEffectForDecision: vi.fn().mockResolvedValue(true),
     },
+    executionAdmissionRepository: {
+      recordApprovalPreflightNonAction: vi.fn().mockResolvedValue({
+        explanationId: 'preflight-explanation-1',
+        evidence: {},
+      }),
+    },
     emailLabelRepository: {
       topLabelsForSender: vi.fn().mockResolvedValue([]),
       topLabelsForListId: vi.fn().mockResolvedValue([]),
