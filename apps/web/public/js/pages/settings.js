@@ -203,7 +203,7 @@ export async function renderSettings(container, userId) {
       <div id="theme-switcher-target"></div>
     </div>
 
-    <div id="embedded-llm-card-target"></div>
+    <div id="embedded-llm-card-target" aria-live="polite" aria-atomic="true" aria-busy="true">Loading local model setup…</div>
 
     <div class="card" id="local-brain-card">
       <div class="card-header">
@@ -664,7 +664,11 @@ export async function renderSettings(container, userId) {
   // No-await — render shouldn't block the rest of the settings page.
   const embeddedTarget = document.getElementById('embedded-llm-card-target');
   if (embeddedTarget) {
-    void mountEmbeddedLlmCard(embeddedTarget, userId).catch(() => { /* best-effort */ });
+    void mountEmbeddedLlmCard(embeddedTarget, userId).catch(() => {
+      embeddedTarget.setAttribute('aria-busy', 'false');
+      embeddedTarget.textContent = 'Local model setup could not load. Reload Settings to try again.';
+      embeddedTarget.dispatchEvent(new Event('skytwin:embedded-llm-ready'));
+    });
   }
 
   // Hydrate the launch-at-login toggle from the desktop API. Skipped in
@@ -831,6 +835,36 @@ window.federationUnpair = async function(userId, peerId) {
 // one #page-content container, so any overlapping data-action names need
 // an authoritative scope, and the URL hash is it.
 let _settingsListenerWired = false;
+
+function openLocalInferenceSetup() {
+  const card = document.getElementById('ai-brain-card');
+  if (card instanceof HTMLDetailsElement) card.open = true;
+
+  const target = document.getElementById('embedded-llm-card-target');
+  target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  // The local-model card loads its registry asynchronously. Its one-shot ready
+  // event gives this action a lifecycle-bound handoff rather than a long-lived
+  // DOM observer or a timing guess.
+  const focusSetupControl = () => {
+    const picker = target?.querySelector('#embedded-model-select');
+    const resumeOrProgressControl = target?.querySelector(
+      '[data-action="embedded-resume-download"], [data-action="embedded-pause-download"], [data-action="embedded-cancel-download"]',
+    );
+    const focusTarget = picker instanceof HTMLSelectElement
+      ? picker
+      : resumeOrProgressControl instanceof HTMLElement
+        ? resumeOrProgressControl
+        : target?.querySelector('#embedded-llm-card');
+    if (!(focusTarget instanceof HTMLElement)) return false;
+    if (focusTarget === target?.querySelector('#embedded-llm-card')) focusTarget.tabIndex = -1;
+    focusTarget.focus();
+    return true;
+  };
+  if (focusSetupControl() || !target) return;
+
+  target.addEventListener('skytwin:embedded-llm-ready', focusSetupControl, { once: true });
+}
 
 function ensureSettingsListener() {
   if (_settingsListenerWired || typeof document === 'undefined') return;
@@ -1008,6 +1042,9 @@ function ensureSettingsListener() {
         return;
       case 'reload-settings':
         renderSettings(document.getElementById('page-content'), uid);
+        return;
+      case 'open-local-inference-setup':
+        openLocalInferenceSetup();
         return;
       case 'switch-to-smart':
         window.switchAIBrainMode(uid, 'smart');
@@ -1701,7 +1738,7 @@ function renderReasoningLocation(settingsAvailable = true) {
     `;
   }
   const boundaryDescription = _reasoningMode === 'on_device'
-    ? 'Prompts stay on this device. The embedded runtime is local; loopback Ollama requests are source-qualified as local so its daemon cannot relay them to a cloud model.'
+    ? 'This is the default boundary. SkyTwin admits only its embedded runtime or a source-qualified loopback Ollama model here. Managed local setup stays unavailable until its artifact and runtime pass verification; an explicitly configured local model remains local but is not represented as artifact-verified. This boundary never falls through to a remote provider.'
     : _reasoningMode === 'bring_your_own_provider'
       ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Embedded inference is ineligible in this mode; Ollama may relay through its operator, so this mode treats it as potentially remote. This mode makes no confidential-computing claim.'
       : 'This mode requires a successfully verified confidential-computing adapter for every request. No eligible adapter is available in this build.';
@@ -1714,6 +1751,9 @@ function renderReasoningLocation(settingsAvailable = true) {
   const disclosure = hasUnsavedMode
     ? `Draft only — this selection is not active until you press Save. The active boundary remains “${persistedLabel}”. If saved: ${boundaryDescription}`
     : boundaryDescription;
+  const localSetup = _reasoningMode === 'on_device' ? `
+    <button type="button" class="btn btn-primary btn-sm" style="margin-top: 0.65rem;" data-action="open-local-inference-setup">Set up local model</button>
+  ` : '';
   return `
     <div style="padding: 0.75rem; margin-bottom: 0.75rem; background: var(--bg); border: 1px solid ${_reasoningModeRequiresConfirmation || hasUnsavedMode ? 'var(--warning)' : 'var(--border)'}; border-radius: 8px;">
       <label for="ai-reasoning-mode" style="display: block; font-size: 0.75rem; color: var(--text-muted); margin-bottom: 0.35rem;">Where reasoning runs</label>
@@ -1723,8 +1763,21 @@ function renderReasoningLocation(settingsAvailable = true) {
         <option value="verified_private_cloud" ${_reasoningMode === 'verified_private_cloud' ? 'selected' : ''} disabled>Verified private cloud — unavailable</option>
       </select>
       <div id="ai-reasoning-disclosure" style="font-size: 0.75rem; line-height: 1.45; color: var(--text-muted); margin-top: 0.5rem;">${disclosure}</div>
+      ${localSetup}
       ${_reasoningModeRequiresConfirmation ? '<div style="font-size: 0.75rem; color: var(--warning); margin-top: 0.4rem;">Your earlier provider chain was ambiguous. Choose a location before testing or saving.</div>' : ''}
     </div>
+    <details style="margin: -0.25rem 0 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);">
+      <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted);">Confidential remote inference options</summary>
+      <div style="font-size: 0.75rem; line-height: 1.5; color: var(--text-muted); margin-top: 0.55rem;">
+        TrustedRouter and NEAR AI publish confidential-computing and attestation materials. SkyTwin does not enable either route merely because a key or endpoint is entered: this build has no verifier-owned remote adapter, so no prompt is sent in verified-private mode.
+        <div style="display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.45rem;">
+          <a href="https://trustedrouter.com/docs" target="_blank" rel="noopener noreferrer">TrustedRouter docs</a>
+          <a href="https://trustedrouter.com/trust" target="_blank" rel="noopener noreferrer">TrustedRouter attestation</a>
+          <a href="https://github.com/nearai/nearai-cloud-verifier" target="_blank" rel="noopener noreferrer">NEAR AI verifier</a>
+          <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md" target="_blank" rel="noopener noreferrer">SkyTwin verification guide</a>
+        </div>
+      </div>
+    </details>
   `;
 }
 

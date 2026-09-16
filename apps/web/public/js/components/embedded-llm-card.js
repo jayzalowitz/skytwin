@@ -237,6 +237,8 @@ async function renderCardInto(container, userId) {
       ${body}
     </div>
   `;
+  container.setAttribute('aria-busy', 'false');
+  container.dispatchEvent(new Event('skytwin:embedded-llm-ready'));
 
   // Manage polling: poll while we have an active download.
   if (active && ACTIVE_STATUSES.has(active.status)) {

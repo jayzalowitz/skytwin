@@ -24,6 +24,10 @@ const connectGmailSource = readFileSync(
   'utf8',
 );
 const apiSource = readFileSync(resolve(process.cwd(), 'public/js/api-client.js'), 'utf8');
+const confidentialGuide = readFileSync(
+  resolve(process.cwd(), '../../docs/confidential-inference.md'),
+  'utf8',
+);
 
 describe('reasoning-location settings boundary', () => {
   it('renders local, explicit-provider, unavailable-private, confirmation, and error states', () => {
@@ -34,6 +38,19 @@ describe('reasoning-location settings boundary', () => {
     expect(source).toContain('Your earlier provider chain was ambiguous');
     expect(source).toContain('Could not load the reasoning-location boundary');
     expect(source).toContain('Draft only — this selection is not active until you press Save');
+    expect(source).toContain('Set up local model');
+    expect(source).toContain('Confidential remote inference options');
+    expect(source).toContain('TrustedRouter docs');
+    expect(source).toContain('NEAR AI verifier');
+    expect(source).toContain('no prompt is sent in verified-private mode');
+  });
+
+  it('keeps local setup as the default action and uses a singleton delegated handler', () => {
+    expect(source).toContain('data-action="open-local-inference-setup"');
+    expect(source).toContain("case 'open-local-inference-setup'");
+    expect(source).toContain('openLocalInferenceSetup();');
+    expect(source).toContain("addEventListener('skytwin:embedded-llm-ready'");
+    expect(source).toContain('aria-live="polite"');
   });
 
   it('invalidates server-derived privacy metadata when its mode or model changes', () => {
@@ -61,6 +78,16 @@ describe('reasoning-location settings boundary', () => {
     const locationRenderer = source.slice(start, end);
     expect(locationRenderer).toContain('data-action="ai-reasoning-mode"');
     expect(locationRenderer).not.toMatch(/on(?:click|change|input|keydown)\s*=/i);
+  });
+});
+
+describe('confidential inference documentation', () => {
+  it('distinguishes local admission from remote provider evidence and rejects fallback', () => {
+    expect(confidentialGuide).toContain('SkyTwin defaults to the **On this device** reasoning boundary');
+    expect(confidentialGuide).toContain('`provider.min_privacy: "confidential"`');
+    expect(confidentialGuide).toContain('same live TLS connection');
+    expect(confidentialGuide).toContain('It must never retry through');
+    expect(confidentialGuide).toContain('NEAR AI Cloud Verifier');
   });
 });
 
