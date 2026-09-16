@@ -29,7 +29,7 @@ export const SKYTWIN_OWNED_TABLES = [
   'oauth_pending_signin', 'oauth_pkce_pending',
   'oauth_tokens', 'pending_skill_opt_ins',
   'preference_history', 'preference_proposals', 'preferences', 'proactive_scans',
-  'promotion_offers', 'recovery_codes', 'reasoning_mode_settings',
+  'promotion_offers', 'reasoning_mode_settings', 'recovery_codes',
   'rollback_admissions', 'rollback_terminal_ledger', 'service_credentials',
   'sessions', 'signals', 'skill_gap_log', 'source_key_deletion_intents', 'spend_records',
   'trust_tier_audit', 'twin_briefings',

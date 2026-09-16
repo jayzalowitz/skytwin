@@ -10,6 +10,7 @@ import {
   upOwned,
   type OwnedMigrationClient,
 } from '../migrations/001-initial.js';
+import { SKYTWIN_OWNED_TABLES } from './fixtures/skytwin-owned-tables.js';
 
 function fakeMigrationClient(): OwnedMigrationClient & {
   connect: ReturnType<typeof vi.fn>;
@@ -117,6 +118,11 @@ describe('SkyTwin-owned table manifest', () => {
     expect(manifest.current).not.toContain('capability_recipes');
     expect(manifest.all).toContain('capability_recipes');
     expect(new Set(manifest.current).size).toBe(manifest.current.length);
+  });
+
+  it('keeps the reviewed ownership oracle in exact runtime manifest order', () => {
+    expect([...SKYTWIN_OWNED_TABLES]).toEqual(getSkyTwinOwnedTableManifest().current);
+    expect([...SKYTWIN_OWNED_TABLES]).toEqual([...SKYTWIN_OWNED_TABLES].sort());
   });
 });
 
