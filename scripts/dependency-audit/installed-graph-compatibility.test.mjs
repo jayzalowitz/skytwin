@@ -98,14 +98,19 @@ describe("installed dependency graph compatibility", () => {
   });
 
   it("keeps Expo plist on its compatible xmldom 0.8 line", () => {
+    const expoCli = follow(mobileRequire, ["expo", "@expo/cli"]);
     const expoPlist = follow(mobileRequire, [
       "expo",
       "@expo/cli",
       "@expo/plist",
     ]);
     const xmldomContext = follow(expoPlist.require, ["@xmldom/xmldom"]);
-    expect(expoPlist.metadata.version).toBe("0.7.0");
-    expect(xmldomContext.metadata.version).toBe("0.8.15");
+    // Expo SDK 57's CLI declares @expo/plist ^0.8.1; keep this assertion tied
+    // to that compatibility contract rather than a single lockfile patch.
+    expect(expoCli.metadata.dependencies["@expo/plist"]).toBe("^0.8.1");
+    expect(expoPlist.metadata.version).toMatch(/^0\.8\./);
+    expect(expoPlist.metadata.dependencies["@xmldom/xmldom"]).toBe("^0.8.8");
+    expect(xmldomContext.metadata.version).toMatch(/^0\.8\./);
     const plist = unwrapDefault(expoPlist.load());
     expect(
       plist.parse(plist.build({ name: "SkyTwin", enabled: true })),
