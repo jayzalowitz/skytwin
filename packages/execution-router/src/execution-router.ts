@@ -66,6 +66,13 @@ export interface ExecutionDispatchLeaseGrant {
   expiresAt: Date;
 }
 
+export type ExecutionAmbiguityReason =
+  | { phase: 'adapter_execute'; reasonCode: 'adapter_result_unbound' | 'adapter_exception' }
+  | {
+      phase: 'adapter_stream';
+      reasonCode: 'stream_protocol_invalid' | 'stream_incomplete' | 'stream_exception';
+    };
+
 export interface ExecutionDispatchAuthorityPort {
   start(input: {
     userId: string;
@@ -96,8 +103,10 @@ export interface ExecutionDispatchAuthorityPort {
     executionPlanId: string;
     capability: string;
     leaseGeneration: string;
-    state: 'completed' | 'failed' | 'ambiguous';
-  }): Promise<boolean>;
+  } & (
+    | { state: 'completed' | 'failed'; ambiguity?: never }
+    | { state: 'ambiguous'; ambiguity: ExecutionAmbiguityReason }
+  )): Promise<boolean>;
 }
 
 export type ExecutionAdmissionDecision =
@@ -655,14 +664,20 @@ export class ExecutionRouter {
     planId: string,
     grant: ExecutionDispatchLeaseGrant,
     state: 'completed' | 'failed' | 'ambiguous',
+    ambiguity?: ExecutionAmbiguityReason,
   ): Promise<void> {
-    const persisted = await this.dispatchAuthority.terminalize({
+    if (state === 'ambiguous' && !ambiguity) {
+      throw new AmbiguousExecutionError('Ambiguous dispatch requires a trusted observation code.');
+    }
+    const identity = {
       userId,
       executionPlanId: planId,
       capability: grant.capability,
       leaseGeneration: grant.leaseGeneration,
-      state,
-    });
+    };
+    const persisted = state === 'ambiguous'
+      ? await this.dispatchAuthority.terminalize({ ...identity, state, ambiguity: ambiguity! })
+      : await this.dispatchAuthority.terminalize({ ...identity, state });
     if (!persisted) {
       throw new AmbiguousExecutionError('Dispatch terminal state could not be durably linked to its request-start capability.');
     }
@@ -1002,10 +1017,15 @@ export class ExecutionRouter {
       state.builtPlan, dispatchAction, userId, state.adapterName, grant,
       state.executionChannel,
     );
+    let ambiguity: ExecutionAmbiguityReason = {
+      phase: 'adapter_execute',
+      reasonCode: 'adapter_exception',
+    };
     try {
       const result = await state.adapter.execute(plan, state.preparation);
       if (result.planId !== plan.id ||
           (result.status !== 'completed' && result.status !== 'failed')) {
+        ambiguity = { phase: 'adapter_execute', reasonCode: 'adapter_result_unbound' };
         throw new AmbiguousExecutionError('Adapter returned unbound terminal truth.');
       }
       await this.terminalizeDispatch(userId, plan.id, grant, result.status);
@@ -1027,7 +1047,7 @@ export class ExecutionRouter {
       };
     } catch (error) {
       try {
-        await this.terminalizeDispatch(userId, plan.id, grant, 'ambiguous');
+        await this.terminalizeDispatch(userId, plan.id, grant, 'ambiguous', ambiguity);
       } catch {
         // A request-start row remains non-replayable even if terminalization fails.
       }
@@ -1062,11 +1082,20 @@ export class ExecutionRouter {
       state.builtPlan, dispatchAction, userId, state.adapterName, grant,
       state.executionChannel,
     );
+    let ambiguity: ExecutionAmbiguityReason = {
+      phase: 'adapter_stream',
+      reasonCode: 'stream_exception',
+    };
+    const rejectStream = (message: string): never => {
+      ambiguity = { phase: 'adapter_stream', reasonCode: 'stream_protocol_invalid' };
+      throw new Error(message);
+    };
     try {
       if (!hasStreamingExecution(state.adapter)) {
         const result = await state.adapter.execute(plan, state.preparation);
         if (result.planId !== plan.id ||
             (result.status !== 'completed' && result.status !== 'failed')) {
+          ambiguity = { phase: 'adapter_execute', reasonCode: 'adapter_result_unbound' };
           throw new Error('Adapter returned unbound terminal truth.');
         }
         await this.terminalizeDispatch(userId, plan.id, grant, result.status);
@@ -1097,28 +1126,31 @@ export class ExecutionRouter {
       for await (const event of state.adapter.executeStreaming(plan, state.preparation)) {
         const isTerminal = event.eventType === 'plan_completed' || event.eventType === 'plan_failed';
         if (event.planId !== plan.id || terminalEvent) {
-          throw new Error('Adapter stream emitted unbound or post-terminal evidence.');
+          rejectStream('Adapter stream emitted unbound or post-terminal evidence.');
         }
         let canonicalStepId: string | undefined;
         if (event.eventType === 'step_started' || event.eventType === 'step_completed' ||
             event.eventType === 'step_failed') {
           const expectedStep = plan.steps[nextStepIndex];
           if (!expectedStep || event.stepId !== expectedStep.id) {
-            throw new Error('Adapter stream emitted an event with an unbound step identity.');
+            rejectStream('Adapter stream emitted an event with an unbound step identity.');
           }
-          canonicalStepId = expectedStep.id;
+          const expectedStepId = expectedStep?.id;
+          const admittedStepId = expectedStepId ??
+            rejectStream('Adapter stream emitted an event without an admitted step.');
+          canonicalStepId = admittedStepId;
           if (event.eventType === 'step_started') {
-            if (activeStepId !== null) throw new Error('Adapter emitted overlapping step starts.');
-            activeStepId = expectedStep.id;
+            if (activeStepId !== null) rejectStream('Adapter emitted overlapping step starts.');
+            activeStepId = admittedStepId;
           } else {
-            if (activeStepId !== null && activeStepId !== expectedStep.id) {
-              throw new Error('Adapter emitted a result for another active step.');
+            if (activeStepId !== null && activeStepId !== admittedStepId) {
+              rejectStream('Adapter emitted a result for another active step.');
             }
             activeStepId = null;
             nextStepIndex += 1;
           }
         } else if (event.stepId !== undefined) {
-          throw new Error('Adapter stream attached a step identity to a plan event.');
+          rejectStream('Adapter stream attached a step identity to a plan event.');
         }
         const adapterPayload = { ...event.payload };
         for (const key of ADAPTER_RESERVED_OUTPUT_KEYS) delete adapterPayload[key];
@@ -1138,7 +1170,7 @@ export class ExecutionRouter {
           },
         };
         if (!isTerminal && bufferedEvents.length >= MAX_BUFFERED_STREAM_EVENTS) {
-          throw new Error('Adapter stream exceeded the buffered event limit.');
+          rejectStream('Adapter stream exceeded the buffered event limit.');
         }
         const size = {
           bytes: 0,
@@ -1146,20 +1178,23 @@ export class ExecutionRouter {
           seen: new WeakSet<object>(),
         };
         if (size.limit < 0 || !addStreamValueSize(routedEvent, size)) {
-          throw new Error('Adapter stream exceeded the buffered byte limit.');
+          rejectStream('Adapter stream exceeded the buffered byte limit.');
         }
         bufferedBytes += size.bytes;
         if (isTerminal) terminalEvent = routedEvent;
         else bufferedEvents.push(routedEvent);
       }
-      if (!terminalEvent) throw new Error('Adapter stream ended without an explicit terminal event.');
+      if (!terminalEvent) {
+        ambiguity = { phase: 'adapter_stream', reasonCode: 'stream_incomplete' };
+        throw new Error('Adapter stream ended without an explicit terminal event.');
+      }
       const terminalState = terminalEvent.eventType === 'plan_completed' ? 'completed' : 'failed';
       await this.terminalizeDispatch(userId, plan.id, grant, terminalState);
       for (const event of bufferedEvents) yield event;
       yield terminalEvent;
     } catch (error) {
       try {
-        await this.terminalizeDispatch(userId, plan.id, grant, 'ambiguous');
+        await this.terminalizeDispatch(userId, plan.id, grant, 'ambiguous', ambiguity);
       } catch {
         // The unresolved durable request-start claim remains non-replayable.
       }

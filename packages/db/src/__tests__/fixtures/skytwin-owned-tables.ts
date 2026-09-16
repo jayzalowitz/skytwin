@@ -15,7 +15,7 @@ export const SKYTWIN_OWNED_TABLES = [
   'decision_outcomes', 'decisions', 'domain_autonomy_policies', 'draft_email_calls',
   'draft_email_eval_runs', 'dxt_exports', 'dxt_imports', 'email_label_signals',
   'entity_codes', 'episodic_memories', 'escalation_triggers', 'eval_runs',
-  'execution_admission_barriers', 'execution_events', 'execution_plans',
+  'execution_admission_barriers', 'execution_dispatch_ambiguities', 'execution_events', 'execution_plans',
   'execution_policy_authority', 'execution_results', 'explanation_records',
   'external_agent_tokens',
   'federation_pairing_codes', 'federation_peers', 'feedback_events',

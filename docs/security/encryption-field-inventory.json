@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "082-session-token-hash-unique.sql",
+  "asOfMigration": "083-execution-dispatch-ambiguities.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -1693,6 +1693,37 @@
       "ownershipNotes": "Direct user ownership through user_id, with graph constraints binding the decision, action, outcome, plan, and explanation."
     },
     {
+      "table": "execution_dispatch_ambiguities",
+      "owner": "user_child",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "locally_exposed_or_excluded",
+        "auditedCallsites": [
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "decision_id",
+            "dispatch_lease_id",
+            "evidence_schema_version",
+            "explanation_id",
+            "observation",
+            "phase",
+            "reason_code"
+          ],
+          "currentProtection": "Locally readable identifiers and a finite normalized ambiguity observation. Database constraints restrict phase and reason_code to reviewed pairs, and repository construction restricts observation to schema/version, status, enum, and linkage metadata without adapter errors or output content.",
+          "targetProtection": "Remain locally readable for joins, lifecycle, audit, and no-replay recovery; preserve the finite observation schema and exclusion of adapter or provider content.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "The durable ambiguity marker must link the exact lease, decision, and explanation and retain only enough normalized terminal-state metadata to prevent unsafe replay or fallback."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through the constrained credential dispatch lease and decision/explanation graph; repository access must preserve that scope."
+    },
+    {
       "table": "execution_events",
       "owner": "user_child",
       "boundary": {
@@ -1853,6 +1884,7 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",

@@ -155,8 +155,29 @@ describe('oauthRepository (multi-account)', () => {
             vault_generation: 'vault-generation-7',
           }] });
         }
+        if (sql.includes('SELECT l.* FROM credential_dispatch_leases')) {
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
+        if (sql.includes('SELECT * FROM execution_dispatch_ambiguities')) {
+          return Promise.resolve({ rows: [], rowCount: 0 });
+        }
+        if (sql.includes('INSERT INTO explanation_records')) {
+          return Promise.resolve({ rows: [{ id: 'explanation-1' }], rowCount: 1 });
+        }
+        if (sql.includes('INSERT INTO execution_dispatch_ambiguities')) {
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        }
+        if (sql.includes('UPDATE credential_dispatch_leases')) {
+          return Promise.resolve({ rows: [{ id: 'lease-1' }], rowCount: 1 });
+        }
+        if (sql.includes('SELECT count(*) AS active_count')) {
+          return Promise.resolve({ rows: [{ active_count: '0', retry_after: null }], rowCount: 1 });
+        }
         if (sql.includes('SELECT * FROM oauth_tokens')) return Promise.resolve({ rows: [row] });
-        return Promise.resolve({ rows: [row], rowCount: 1 });
+        if (sql.includes('INSERT INTO oauth_tokens')) {
+          return Promise.resolve({ rows: [row], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 1 });
       });
 
       await oauthRepository.saveTokenForAccount({

@@ -1,7 +1,11 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { normalizeMemoryActionAdapterName } from '@skytwin/shared-types';
 import { withTransaction } from '../connection.js';
-import type { CredentialDispatchLeaseRow, OAuthTokenRow } from '../types.js';
+import type {
+  CredentialDispatchLeaseRow,
+  ExecutionDispatchAmbiguityRow,
+  OAuthTokenRow,
+} from '../types.js';
 
 const LEASE_TTL_MS = 5 * 60_000;
 const ACTIVE_STATES = "('request_started', 'ambiguous')";
@@ -90,6 +94,55 @@ export interface StartCredentialDispatchInput extends Omit<StartExecutionDispatc
 
 export type StartCredentialDispatchResult = BindCredentialDispatchResult;
 export type CredentialDispatchTerminalState = 'completed' | 'failed' | 'ambiguous';
+export type ExecutionAmbiguityPhase =
+  | 'adapter_execute'
+  | 'adapter_stream'
+  | 'lease_expiry'
+  | 'lease_recovery';
+export type ExecutionAmbiguityReasonCode =
+  | 'adapter_result_unbound'
+  | 'adapter_exception'
+  | 'stream_protocol_invalid'
+  | 'stream_incomplete'
+  | 'stream_exception'
+  | 'lease_expired'
+  | 'legacy_ambiguous';
+
+export interface ExecutionAmbiguityObservation {
+  schemaVersion: 1;
+  kind: 'execution_terminal_ambiguity';
+  status: 'ambiguous';
+  phase: ExecutionAmbiguityPhase;
+  reasonCode: ExecutionAmbiguityReasonCode;
+  decisionId: string;
+  actionId: string;
+  executionPlanId: string;
+  adapterName: string;
+  authorityKind: 'admission' | 'receipt';
+  dispatchLeaseId: string;
+}
+
+export type TerminalizeExecutionDispatchInput = {
+  userId: string;
+  executionPlanId: string;
+  capability: string;
+  leaseGeneration: string;
+  now?: Date;
+} & (
+  | { state: 'completed' | 'failed'; ambiguity?: never }
+  | {
+      state: 'ambiguous';
+      ambiguity: {
+        phase: 'adapter_execute' | 'adapter_stream';
+        reasonCode:
+          | 'adapter_result_unbound'
+          | 'adapter_exception'
+          | 'stream_protocol_invalid'
+          | 'stream_incomplete'
+          | 'stream_exception';
+      };
+    }
+);
 
 interface DispatchTokenRow extends OAuthTokenRow {
   encrypted_access_token?: Buffer | null;
@@ -119,19 +172,128 @@ function hashCapability(capability: string): string {
   return createHash('sha256').update(capability, 'utf8').digest('hex');
 }
 
+function isValidAmbiguityPair(
+  phase: ExecutionAmbiguityPhase,
+  reasonCode: ExecutionAmbiguityReasonCode,
+): boolean {
+  if (phase === 'adapter_execute') {
+    return reasonCode === 'adapter_result_unbound' || reasonCode === 'adapter_exception';
+  }
+  if (phase === 'adapter_stream') {
+    return reasonCode === 'stream_protocol_invalid' || reasonCode === 'stream_incomplete' ||
+      reasonCode === 'stream_exception';
+  }
+  if (phase === 'lease_expiry') return reasonCode === 'lease_expired';
+  return reasonCode === 'legacy_ambiguous';
+}
+
+function ambiguityObservation(
+  lease: CredentialDispatchLeaseRow,
+  phase: ExecutionAmbiguityPhase,
+  reasonCode: ExecutionAmbiguityReasonCode,
+): ExecutionAmbiguityObservation {
+  if (!isValidAmbiguityPair(phase, reasonCode)) {
+    throw new Error('Execution ambiguity phase and reason code conflict.');
+  }
+  return {
+    schemaVersion: 1,
+    kind: 'execution_terminal_ambiguity',
+    status: 'ambiguous',
+    phase,
+    reasonCode,
+    decisionId: lease.decision_id,
+    actionId: lease.action_id,
+    executionPlanId: lease.execution_plan_id,
+    adapterName: lease.adapter_name,
+    authorityKind: lease.authority_kind,
+    dispatchLeaseId: lease.id,
+  };
+}
+
+async function recordAmbiguityWithClient(
+  client: import('pg').PoolClient,
+  lease: CredentialDispatchLeaseRow,
+  phase: ExecutionAmbiguityPhase,
+  reasonCode: ExecutionAmbiguityReasonCode,
+  now: Date,
+): Promise<boolean> {
+  const observation = ambiguityObservation(lease, phase, reasonCode);
+  const existing = await client.query<ExecutionDispatchAmbiguityRow>(
+    `SELECT * FROM execution_dispatch_ambiguities
+      WHERE dispatch_lease_id = $1 FOR UPDATE`,
+    [lease.id],
+  );
+  if (existing.rows[0]) {
+    return canonicalJson(existing.rows[0].observation) === canonicalJson(observation);
+  }
+  if (lease.state !== 'request_started' && lease.state !== 'ambiguous') return false;
+
+  const explanation = await client.query<{ id: string }>(
+    `INSERT INTO explanation_records (
+       decision_id, type, what_happened, evidence_used, preferences_invoked,
+       confidence_reasoning, action_rationale, escalation_rationale,
+       correction_guidance
+     ) VALUES ($1, 'execution_terminal_ambiguity', $2, $3::JSONB,
+               ARRAY[]::STRING[], $4, $5, $6, $7)
+     RETURNING id`,
+    [lease.decision_id,
+      'SkyTwin retained this execution as ambiguous because trustworthy terminal truth was unavailable.',
+      JSON.stringify([observation]),
+      'A request-start lease exists, so the action may have reached the external system.',
+      'Automatic fallback and replay are disabled for this execution plan.',
+      'The terminal observation was incomplete or untrusted.',
+      'Reconcile the external result before creating a new decision; do not replay this plan.'],
+  );
+  const explanationId = explanation.rows[0]?.id;
+  if (!explanationId) throw new Error('Execution ambiguity explanation was not persisted.');
+
+  await client.query(
+    `INSERT INTO execution_dispatch_ambiguities (
+       dispatch_lease_id, decision_id, explanation_id, phase, reason_code,
+       observation, evidence_schema_version, created_at
+     ) VALUES ($1, $2, $3, $4, $5, $6::JSONB, 1, $7)`,
+    [lease.id, lease.decision_id, explanationId, phase, reasonCode,
+      JSON.stringify(observation), now],
+  );
+  const updated = await client.query(
+    `UPDATE credential_dispatch_leases
+        SET state = 'ambiguous', terminal_at = COALESCE(terminal_at, $2)
+      WHERE id = $1 AND state IN ('request_started', 'ambiguous')
+      RETURNING id`,
+    [lease.id, now],
+  );
+  if (!updated.rows[0]) throw new Error('Execution ambiguity lease could not be retained.');
+  return true;
+}
+
 async function markOverdueLeasesAmbiguous(
   client: import('pg').PoolClient,
   input: { userId?: string; oauthTokenId?: string },
   now: Date,
 ): Promise<void> {
-  await client.query(
-    `UPDATE credential_dispatch_leases
-       SET state = 'ambiguous'
-     WHERE state = 'request_started' AND expires_at <= $1
-       AND ($2::UUID IS NULL OR user_id = $2)
-       AND ($3::UUID IS NULL OR oauth_token_id = $3)`,
+  const overdue = await client.query<CredentialDispatchLeaseRow>(
+    `SELECT l.* FROM credential_dispatch_leases l
+      LEFT JOIN execution_dispatch_ambiguities a ON a.dispatch_lease_id = l.id
+      WHERE ((l.state = 'request_started' AND l.expires_at <= $1) OR
+             (l.state = 'ambiguous' AND a.dispatch_lease_id IS NULL))
+        AND ($2::UUID IS NULL OR l.user_id = $2)
+        AND ($3::UUID IS NULL OR l.oauth_token_id = $3)
+      ORDER BY l.expires_at ASC, l.id ASC
+      LIMIT 100
+      FOR UPDATE OF l`,
     [now, input.userId ?? null, input.oauthTokenId ?? null],
   );
+  for (const lease of overdue.rows) {
+    const recovering = lease.state === 'ambiguous';
+    const recorded = await recordAmbiguityWithClient(
+      client,
+      lease,
+      recovering ? 'lease_recovery' : 'lease_expiry',
+      recovering ? 'legacy_ambiguous' : 'lease_expired',
+      now,
+    );
+    if (!recorded) throw new Error('Expired execution ambiguity could not be persisted.');
+  }
 }
 
 /**
@@ -487,25 +649,32 @@ export const executionDispatchLeaseRepository = {
     });
   },
 
-  async terminalize(input: {
-    userId: string;
-    executionPlanId: string;
-    capability: string;
-    leaseGeneration: string;
-    state: CredentialDispatchTerminalState;
-    now?: Date;
-  }): Promise<boolean> {
+  async terminalize(input: TerminalizeExecutionDispatchInput): Promise<boolean> {
     const now = input.now ?? new Date();
     return withTransaction(async (client) => {
       const owner = await client.query('SELECT id FROM users WHERE id = $1 FOR UPDATE', [input.userId]);
       if (!owner.rows[0]) return false;
-      const result = await client.query(
-        `UPDATE credential_dispatch_leases SET state = $5, terminal_at = $6
+      const locked = await client.query<CredentialDispatchLeaseRow>(
+        `SELECT * FROM credential_dispatch_leases
           WHERE user_id = $1 AND execution_plan_id = $2
             AND capability_hash = $3 AND lease_generation = $4
-            AND state IN ('request_started', 'ambiguous') RETURNING id`,
+          FOR UPDATE`,
         [input.userId, input.executionPlanId, hashCapability(input.capability),
-          input.leaseGeneration, input.state, now],
+          input.leaseGeneration],
+      );
+      const lease = locked.rows[0];
+      if (!lease) return false;
+      if (input.state === 'ambiguous') {
+        return recordAmbiguityWithClient(
+          client, lease, input.ambiguity.phase, input.ambiguity.reasonCode, now,
+        );
+      }
+      if (lease.state === input.state) return true;
+      if (lease.state === 'completed' || lease.state === 'failed') return false;
+      const result = await client.query(
+        `UPDATE credential_dispatch_leases SET state = $2, terminal_at = $3
+          WHERE id = $1 AND state IN ('request_started', 'ambiguous') RETURNING id`,
+        [lease.id, input.state, now],
       );
       return !!result.rows[0];
     });

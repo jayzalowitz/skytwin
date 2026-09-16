@@ -43,6 +43,19 @@ All notable changes to SkyTwin will be documented in this file.
   while retaining the explicit unsupported source-development boundary. No
   beta claim, supported platform, or stop-ship state changes.
 
+- **OpenClaw and IronClaw terminal ambiguity now has one durable, normalized
+  explanation boundary.** The shared execution router classifies only finite
+  post-request-start outcomes; CockroachDB atomically links the resulting
+  `ExplanationRecord` to the exact dispatch lease without retaining adapter
+  errors, outputs, credentials, or capabilities. Duplicate and concurrent
+  observations are idempotent, expired or legacy ambiguous leases repair
+  through the same bounded transaction, and later reconciliation may record
+  known terminal truth without erasing the historical ambiguity. Automatic
+  replay and fallback remain disabled. The router regressions remain
+  standalone, non-claiming coverage: they are not appended to the frozen v1
+  catalog and do not activate either reserved v2 successor, so release
+  explanation coverage remains 6/10 with four explicit gaps.
+
 - **Tag pushes now produce a bounded release-safety sidecar without advancing
   the safety claim.** A canonical inventory binds the ten runtime entry paths
   already declared by the v1 adversarial catalog to their product sources and

@@ -1216,7 +1216,7 @@
         },
         {
           "path": "packages/execution-router/src/execution-router.ts",
-          "sha256": "43e885e1985a6b2d6901bbb29945f12cfa360a4eeee374ce7a0e0e096694308d",
+          "sha256": "0a88d084071e5192f41bc85caa4ae92b0e6e85384344f7058cba36e60f114937",
           "why": "Independent provenance/severity backstop before adapter execution"
         }
       ],
@@ -1238,7 +1238,7 @@
       "scope": "All release-supported API, worker, routine, connector, and adapter outcomes, including failures, blocks, and no-action decisions.",
       "owner": "explanations",
       "state": "limited",
-      "limitation": "The release-SHA-bound inventory currently covers the ten entry paths declared by the v1 adversarial catalog and reports passing safety scenarios for all ten, but only six have an integrity-bound regression that reaches an explanation persistence boundary. The final publication consumer now binds and independently re-verifies the exact four-member CI artifact before publishing its three safety sidecars. Four explanation gaps, catalog completeness beyond the declared denominator, network/clock containment, and a tagged run remain open; independent artifact-archive re-download is explicitly outside this bounded consumer.",
+      "limitation": "The release-SHA-bound inventory currently covers the ten entry paths declared by the v1 adversarial catalog and reports passing safety scenarios for all ten, but only six have an integrity-bound regression that reaches an explanation persistence boundary. The standalone OpenClaw and IronClaw terminal regressions prove finite router classification and no retry or fallback, but they are not appended to the frozen v1 catalog and do not activate either reserved v2 successor. The final publication consumer now binds and independently re-verifies the exact four-member CI artifact before publishing its three safety sidecars. Four explanation gaps, catalog completeness beyond the declared denominator, network/clock containment, and a tagged run remain open; independent artifact-archive re-download is explicitly outside this bounded consumer.",
       "evidence": [
         {
           "path": "packages/explanations/src/index.ts",

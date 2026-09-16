@@ -399,6 +399,24 @@ export interface CredentialDispatchLeaseRow {
   terminal_at: Date | null;
 }
 
+export interface ExecutionDispatchAmbiguityRow {
+  dispatch_lease_id: string;
+  decision_id: string;
+  explanation_id: string;
+  phase: 'adapter_execute' | 'adapter_stream' | 'lease_expiry' | 'lease_recovery';
+  reason_code:
+    | 'adapter_result_unbound'
+    | 'adapter_exception'
+    | 'stream_protocol_invalid'
+    | 'stream_incomplete'
+    | 'stream_exception'
+    | 'lease_expired'
+    | 'legacy_ambiguous';
+  observation: Record<string, unknown>;
+  evidence_schema_version: number;
+  created_at: Date;
+}
+
 // ============================================================================
 // Credential Vault Metadata
 // ============================================================================

@@ -69,6 +69,7 @@ export {
 // Row types
 export type {
   OAuthTokenRowWithEncrypted,
+  ExecutionDispatchAmbiguityRow,
   CredentialVaultMetaRow,
   UserRow,
   ConnectedAccountRow,

@@ -1211,6 +1211,39 @@ describe('ExecutionRouter', () => {
       },
     );
 
+    it('persists an unbound non-stream result with adapter-execute ambiguity on the streaming route', async () => {
+      const ambiguous = createMockAdapter('ironclaw');
+      ambiguous.execute = vi.fn(async (plan) => ({
+        planId: plan.id,
+        status: 'pending' as const,
+        startedAt: new Date(),
+      }));
+      const fallback = createMockAdapter('direct');
+      const fallbackExecute = vi.spyOn(fallback, 'execute');
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', ambiguous, IRONCLAW_TRUST_PROFILE);
+      localRegistry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
+
+      const stream = localRouter.executeWithRoutingStreaming(
+        makeAction(), makeRiskAssessment(), 'user-1',
+      );
+      await expect((async () => {
+        for await (const _event of stream) {
+          // consume
+        }
+      })()).rejects.toBeInstanceOf(AmbiguousExecutionError);
+
+      expect(ambiguous.execute).toHaveBeenCalledTimes(1);
+      expect(fallbackExecute).not.toHaveBeenCalled();
+      expect(authority.terminalize).toHaveBeenCalledTimes(1);
+      expect(authority.terminalize).toHaveBeenCalledWith(expect.objectContaining({
+        state: 'ambiguous',
+        ambiguity: { phase: 'adapter_execute', reasonCode: 'adapter_result_unbound' },
+      }));
+    });
+
     it('surfaces the first adapter error without trying the rest', async () => {
       registry.register('ironclaw', createThrowingAdapter('ironclaw'), IRONCLAW_TRUST_PROFILE);
       registry.register('direct', createThrowingAdapter('direct'), DIRECT_TRUST_PROFILE);
@@ -1231,13 +1264,20 @@ describe('ExecutionRouter', () => {
       });
       const fallback = createMockAdapter('direct');
       const fallbackExecute = vi.spyOn(fallback, 'execute');
-      registry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
-      registry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+      const authority = createDispatchAuthority();
+      const localRegistry = new AdapterRegistry();
+      localRegistry.register('ironclaw', hostile, IRONCLAW_TRUST_PROFILE);
+      localRegistry.register('direct', fallback, DIRECT_TRUST_PROFILE);
+      const localRouter = new ExecutionRouter(localRegistry, authority);
 
-      await expect(router.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
+      await expect(localRouter.executeWithRouting(makeAction(), makeRiskAssessment(), 'user-1'))
         .rejects.toThrow('Execution through adapter "ironclaw" is ambiguous.');
       expect(committed).toBe(true);
       expect(fallbackExecute).not.toHaveBeenCalled();
+      expect(authority.terminalize).toHaveBeenCalledWith(expect.objectContaining({
+        state: 'ambiguous',
+        ambiguity: { phase: 'adapter_execute', reasonCode: 'adapter_exception' },
+      }));
     });
 
     it('does not stream through a fallback after an ambiguous commit-then-throw', async () => {
@@ -1375,7 +1415,10 @@ describe('ExecutionRouter', () => {
       expect(published).toEqual([]);
       expect(authority.terminalize).toHaveBeenCalledTimes(1);
       expect(authority.terminalize).toHaveBeenCalledWith(
-        expect.objectContaining({ state: 'ambiguous' }),
+        expect.objectContaining({
+          state: 'ambiguous',
+          ambiguity: { phase: 'adapter_stream', reasonCode: 'stream_protocol_invalid' },
+        }),
       );
     });
 

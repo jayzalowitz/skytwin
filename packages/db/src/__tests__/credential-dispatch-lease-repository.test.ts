@@ -6,7 +6,7 @@ vi.mock('../connection.js', () => ({
     fn({ query: mockQuery }),
 }));
 
-const { executionDispatchLeaseRepository } = await import(
+const { executionDispatchLeaseRepository, expireCredentialDispatchLeasesWithClient } = await import(
   '../repositories/credential-dispatch-lease-repository.js'
 );
 
@@ -51,6 +51,36 @@ const TOKEN = {
   dispatch_generation: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
   dispatch_state: 'active',
 };
+const LEASE = {
+  id: '99999999-9999-4999-8999-999999999999',
+  user_id: INPUT.userId,
+  oauth_token_id: null,
+  provider: null,
+  account_email: null,
+  credential_revision: null,
+  credential_generation: null,
+  vault_generation: null,
+  adapter_name: INPUT.adapterName,
+  risk_snapshot: INPUT.expectedRiskSnapshot,
+  execution_channel: null,
+  mcp_server_id: null,
+  mcp_tool_name: null,
+  execution_authority_revision: INPUT.expectedAuthorityRevision,
+  policy_authority_revision: INPUT.expectedPolicyAuthorityRevision,
+  action_id: INPUT.actionId,
+  decision_id: INPUT.decisionId,
+  execution_plan_id: INPUT.executionPlanId,
+  authority_kind: 'admission',
+  authority_id: AUTHORITY_ID,
+  authority_updated_at: NOW,
+  capability_hash: 'persisted-hash',
+  lease_generation: 'lease-generation',
+  state: 'request_started',
+  acquired_at: NOW,
+  request_started_at: NOW,
+  expires_at: new Date('2026-09-13T10:05:00.000Z'),
+  terminal_at: null,
+} as const;
 
 describe('executionDispatchLeaseRepository', () => {
   beforeEach(() => mockQuery.mockReset());
@@ -302,7 +332,132 @@ describe('executionDispatchLeaseRepository', () => {
     })).resolves.toBe(false);
     const update = mockQuery.mock.calls[1]!;
     expect(String(update[0])).toContain('capability_hash = $3');
-    expect(String(update[0])).toContain("state IN ('request_started', 'ambiguous')");
+    expect(String(update[0])).toContain('FOR UPDATE');
     expect(JSON.stringify(update[1])).not.toContain('wrong-capability');
+  });
+
+  it('atomically persists a finite ambiguity explanation without raw adapter content', async () => {
+    const secret = 'RAW_ADAPTER_SECRET_SENTINEL';
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: INPUT.userId }] })
+      .mockResolvedValueOnce({ rows: [LEASE] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] })
+      .mockResolvedValueOnce({ rows: [{ dispatch_lease_id: LEASE.id }] })
+      .mockResolvedValueOnce({ rows: [{ id: LEASE.id }] });
+
+    await expect(executionDispatchLeaseRepository.terminalize({
+      userId: INPUT.userId,
+      executionPlanId: INPUT.executionPlanId,
+      capability: `capability-${secret}`,
+      leaseGeneration: LEASE.lease_generation,
+      state: 'ambiguous',
+      ambiguity: { phase: 'adapter_execute', reasonCode: 'adapter_exception' },
+      now: NOW,
+    })).resolves.toBe(true);
+
+    const explanationInsert = mockQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO explanation_records'))!;
+    const persistedEvidence = JSON.stringify(explanationInsert[1]);
+    expect(persistedEvidence).toContain('execution_terminal_ambiguity');
+    expect(persistedEvidence).toContain('adapter_exception');
+    expect(persistedEvidence).toContain(INPUT.adapterName);
+    expect(persistedEvidence).not.toContain(secret);
+    expect(persistedEvidence).not.toContain('capability-');
+    expect(mockQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO execution_dispatch_ambiguities'))).toBeDefined();
+  });
+
+  it('returns an exact existing ambiguity without creating another explanation', async () => {
+    const observation = {
+      schemaVersion: 1,
+      kind: 'execution_terminal_ambiguity',
+      status: 'ambiguous',
+      phase: 'adapter_execute',
+      reasonCode: 'adapter_exception',
+      decisionId: INPUT.decisionId,
+      actionId: INPUT.actionId,
+      executionPlanId: INPUT.executionPlanId,
+      adapterName: INPUT.adapterName,
+      authorityKind: 'admission',
+      dispatchLeaseId: LEASE.id,
+    };
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: INPUT.userId }] })
+      .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'ambiguous' }] })
+      .mockResolvedValueOnce({ rows: [{
+        dispatch_lease_id: LEASE.id,
+        observation,
+      }] });
+
+    await expect(executionDispatchLeaseRepository.terminalize({
+      userId: INPUT.userId,
+      executionPlanId: INPUT.executionPlanId,
+      capability: 'exact-capability',
+      leaseGeneration: LEASE.lease_generation,
+      state: 'ambiguous',
+      ambiguity: { phase: 'adapter_execute', reasonCode: 'adapter_exception' },
+    })).resolves.toBe(true);
+    expect(mockQuery.mock.calls.some(([sql]) =>
+      String(sql).includes('INSERT INTO explanation_records'))).toBe(false);
+  });
+
+  it('does not overwrite known completed truth with ambiguity', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: INPUT.userId }] })
+      .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'completed' }] })
+      .mockResolvedValueOnce({ rows: [] });
+    await expect(executionDispatchLeaseRepository.terminalize({
+      userId: INPUT.userId,
+      executionPlanId: INPUT.executionPlanId,
+      capability: 'exact-capability',
+      leaseGeneration: LEASE.lease_generation,
+      state: 'ambiguous',
+      ambiguity: { phase: 'adapter_stream', reasonCode: 'stream_incomplete' },
+    })).resolves.toBe(false);
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO'))).toBe(false);
+  });
+
+  it('accepts exact repeated known terminal truth but rejects a conflicting terminal state', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: INPUT.userId }] })
+      .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'completed' }] })
+      .mockResolvedValueOnce({ rows: [{ id: INPUT.userId }] })
+      .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'completed' }] });
+
+    const identity = {
+      userId: INPUT.userId,
+      executionPlanId: INPUT.executionPlanId,
+      capability: 'exact-capability',
+      leaseGeneration: LEASE.lease_generation,
+    };
+    await expect(executionDispatchLeaseRepository.terminalize({
+      ...identity,
+      state: 'completed',
+    })).resolves.toBe(true);
+    await expect(executionDispatchLeaseRepository.terminalize({
+      ...identity,
+      state: 'failed',
+    })).resolves.toBe(false);
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('UPDATE credential_dispatch_leases')))
+      .toBe(false);
+  });
+
+  it('repairs a legacy ambiguous lease with a finite recovery explanation', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'ambiguous' }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' }] })
+      .mockResolvedValueOnce({ rows: [{ dispatch_lease_id: LEASE.id }] })
+      .mockResolvedValueOnce({ rows: [{ id: LEASE.id }] });
+    await expireCredentialDispatchLeasesWithClient(
+      { query: mockQuery } as never,
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      NOW,
+    );
+    const explanationInsert = mockQuery.mock.calls.find(([sql]) =>
+      String(sql).includes('INSERT INTO explanation_records'))!;
+    expect(JSON.stringify(explanationInsert[1])).toContain('legacy_ambiguous');
+    expect(JSON.stringify(explanationInsert[1])).toContain('lease_recovery');
   });
 });

@@ -622,6 +622,31 @@ test("critical OAuth token classifications cannot be weakened", () => {
   );
 });
 
+test("terminal ambiguity persistence remains finite local metadata", () => {
+  const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
+  const ambiguity = inventory.tables.find(
+    (entry) => entry.table === "execution_dispatch_ambiguities",
+  );
+  assert.equal(ambiguity.owner, "user_child");
+  assert.equal(ambiguity.boundary.current, "repository_sql");
+  assert.equal(ambiguity.boundary.target, "locally_exposed_or_excluded");
+  assert.deepEqual(ambiguity.boundary.auditedCallsites, [
+    "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+  ]);
+  assert.equal(ambiguity.groups.length, 1);
+  assert.equal(ambiguity.groups[0].classification, "locally_exposed_metadata");
+  assert.deepEqual(ambiguity.groups[0].columns, [
+    "created_at",
+    "decision_id",
+    "dispatch_lease_id",
+    "evidence_schema_version",
+    "explanation_id",
+    "observation",
+    "phase",
+    "reason_code",
+  ]);
+});
+
 test("worker generation authority remains installation-scoped and one-way", () => {
   const inventory = JSON.parse(readFileSync(inventoryPath, "utf8"));
   const authority = inventory.tables.find(

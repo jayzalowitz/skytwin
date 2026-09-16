@@ -429,12 +429,15 @@ This is intentionally a limited report. The current denominator is the ten
 entry paths declared by the v1 catalog, not an assertion that all effect paths
 have been discovered. All ten currently have a passing cataloged safety
 scenario, while six declare an integrity-bound regression that reaches an
-explanation persistence boundary. Four explanation gaps remain explicit. The
+explanation persistence boundary. The
 additional regressions bind replay suppression to its captured explanation,
 the router backstop's generated explanation to receipt finalization before
 router preparation and its separate atomic preparation disposition, and a
 missing-origin send proposal to untrusted provenance plus its approval-bound
-continuation.
+continuation. The OpenClaw and IronClaw terminal regressions prove finite router
+classification and no retry or fallback as standalone, non-claiming tests.
+They are not appended to the frozen v1 catalog and do not activate either
+reserved v2 successor. Four explanation gaps therefore remain explicit.
 The tests use declared mocks and do not provide network or clock containment,
 and the sidecar has not been produced by an immutable tag run. The final
 publication consumer now binds the exact four members and their hashes to the
