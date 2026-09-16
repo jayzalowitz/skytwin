@@ -22,10 +22,6 @@ concurrency:
 
 env:
   NODE_VERSION: '20'
-  # Turbo remote cache — uses the GitHub Actions cache as the backend via
-  # dtinth/setup-github-actions-caching-for-turbo. No external account needed.
-  # All build jobs share cached package outputs, so the second job onward gets
-  # `pnpm build` as cache hits.
   TURBO_TELEMETRY_DISABLED: '1'
 
 jobs:
@@ -84,12 +80,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      # Turbo cache is opportunistic; GitHub cache API failures must not fail
-      # correctness gates after install/build/test pass.
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - name: Capture release claim CI runtime
         id: capture-release-claim-runtime
@@ -298,10 +288,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
-
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -404,11 +390,6 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      # Turbo remote cache action is skipped on Windows — dtinth/setup-...@v1
-      # writes to /tmp/turbogha.log which doesn't exist on Windows runners
-      # (ENOENT on D:\tmp\turbogha.log). Electron-builder packaging dominates
-      # wall-clock here; missing the TS-compile cache is negligible.
-
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
@@ -505,10 +486,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -701,10 +678,6 @@ jobs:
           # which is absent from current hosted-runner SDK repositories.
           packages: 'platform-tools'
 
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
-
       - run: pnpm install --frozen-lockfile
 
       - name: Install Expo CLI
@@ -754,10 +727,6 @@ jobs:
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - name: Cache CocoaPods
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
