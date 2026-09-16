@@ -60,9 +60,11 @@ async function request(
       fetch(`http://127.0.0.1:${address.port}/api/decisions/${decisionId}/receipt`, { method })
         .then(async (response) => {
           const body = await response.json().catch(() => null);
-          server.close();
-          resolve({ status: response.status, body });
-        }).catch(reject);
+          server.close((error) => {
+            if (error) reject(error);
+            else resolve({ status: response.status, body });
+          });
+        }).catch((error: unknown) => server.close(() => reject(error)));
     });
   });
 }
