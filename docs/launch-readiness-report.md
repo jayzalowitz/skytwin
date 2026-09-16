@@ -1,5 +1,12 @@
 # SkyTwin Launch-Readiness Report
 
+> **Current release status (2026-09-16): blocked.** The machine-checked
+> [`beta-claim-ledger.json`](./beta-claim-ledger.json) is authoritative for
+> the `v0.7.0-beta` claim states and stop-ship gates. This report is supporting
+> evidence and historical audit context; it does not authorize a tag, release,
+> or publication. The prohibited historical captures in `docs/screenshots/`
+> remain quarantined and must not be used as public evidence.
+
 **Date:** 2026-06-14 (updated 2026-06-23) · **Version audited:** 0.6.61.0 · **Branch:** `jayzalowitz/pre-launch-dev-audit-toolchain`
 
 This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan). Its checkmarks record the development/source revision named above; they are not certification of a later packaged artifact or the current published release.

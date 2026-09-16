@@ -52,6 +52,11 @@
 > The final gate therefore fails closed and the ledger remains blocked until the
 > complete proof pipeline ships.
 
+The historical files in `docs/screenshots/` are listed in the ledger as
+`prohibited` stale assets. Keep them for audit provenance, but do not link,
+embed, upload, or describe them as evidence for a candidate. Only a newly
+captured and re-audited replacement may enter release or launch materials.
+
 The supported beta topology is one non-demo human owner per installation.
 Installation credentials are shared configuration, so multi-owner local installs
 and hosted service deployments are outside this release procedure.
