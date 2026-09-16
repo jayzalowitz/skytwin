@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from 'vitest';
 import { TrustTier } from '@skytwin/shared-types';
 
 /**
@@ -12,16 +12,18 @@ describe('checkRateLimit', () => {
   let checkRateLimit: (userId: string, trustTier: TrustTier) => { allowed: boolean; remaining: number; resetAt: number };
   let RATE_LIMITS: Record<TrustTier, number>;
 
-  beforeEach(async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-04-01T12:00:00Z'));
-
-    // Dynamic import to get fresh module state per test via cache busting
-    // is not straightforward, so we import once and rely on unique userIds
-    // per test to avoid state collisions.
+  // Import the route once: every assertion already uses a unique user id, so
+  // repeating this large dependency-graph import in each hook adds no isolation
+  // and can starve the hook under the full monorepo test fan-out.
+  beforeAll(async () => {
     const mod = await import('../routes/ask.js');
     checkRateLimit = mod.checkRateLimit;
     RATE_LIMITS = mod.RATE_LIMITS;
+  }, 30_000);
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-01T12:00:00Z'));
   });
 
   afterEach(() => {
