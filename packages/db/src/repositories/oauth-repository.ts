@@ -1021,6 +1021,10 @@ export const oauthRepository = {
          AND ca.identity_verified = true AND t.credential_revision = $6
          AND t.dispatch_state = 'active'
          AND NOT EXISTS (
+           SELECT 1 FROM user_credential_vault_meta v
+            WHERE v.user_id = t.user_id
+         )
+         AND NOT EXISTS (
            SELECT 1 FROM credential_dispatch_leases l
             WHERE (l.oauth_token_id = t.id OR
                    (l.oauth_token_id IS NULL AND l.user_id = t.user_id

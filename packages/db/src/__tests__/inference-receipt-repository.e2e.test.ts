@@ -405,6 +405,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       userId: owner.userId,
       provider: 'google',
       accountEmail: `oauth-vault-init-${owner.userId}@example.test`,
+      accountProviderId: `oauth-vault-init-subject-${owner.userId}`,
       accessToken: 'access-before-provider-wait',
       refreshToken: 'refresh-before-provider-wait',
       expiresAt: new Date('2026-09-13T01:00:00Z'),
@@ -419,6 +420,14 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       Buffer.alloc(16, 7),
       Buffer.alloc(32, 9),
     );
+    await expect(oauthRepository.updateAccessTokenByConnectorAccount(
+      owner.userId,
+      'google',
+      original.connector_account_id!,
+      'late-account-bound-plaintext-provider-response',
+      new Date('2026-09-13T03:00:00Z'),
+      original.credential_revision,
+    )).resolves.toBeNull();
     await expect(oauthRepository.updateAccessTokenIfCurrent({
       id: original.id,
       userId: owner.userId,

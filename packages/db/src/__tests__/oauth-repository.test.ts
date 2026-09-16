@@ -576,6 +576,8 @@ describe('oauthRepository (multi-account)', () => {
     expect(sql).toContain('t.credential_revision = $6');
     expect(sql).not.toContain('t.updated_at = $6');
     expect(sql).toContain('ca.identity_verified = true');
+    expect(sql).toContain('user_credential_vault_meta');
+    expect(sql).toContain('v.user_id = t.user_id');
     expect(args[5]).toBe('11111111-1111-4111-8111-111111111111');
   });
 
