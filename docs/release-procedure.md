@@ -17,9 +17,9 @@
 > verifies that draft by its numeric release ID, exact asset names, and GitHub
 > SHA-256 digests, and publishes it immediately from the same gated job. Evidence IDs
 > are deliberately not committed to this ledger: doing so would change the SHA
-> they attest and create an impossible hash cycle. The release job now generates
-> the tag-bound release path is implemented to generate the external manifest
-> from current-run GitHub API metadata and to generate/attach updater manifests;
+> they attest and create an impossible hash cycle. The tag-bound release path is
+> implemented to generate the external manifest from current-run GitHub API
+> metadata and to generate/attach updater manifests;
 > no qualifying tagged release has independently proved or published those
 > manifests. Downstream
 > evidence-matrix jobs include the canonical three-platform packaged-sample
