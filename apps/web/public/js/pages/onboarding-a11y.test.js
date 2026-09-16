@@ -12,9 +12,13 @@ describe('onboarding accessibility contract', () => {
     expect(index).toContain('id="onboarding-content" aria-busy="false"');
     expect(index).toContain('id="onb-wizard-status" role="status" aria-live="polite"');
     expect(onboarding).toContain("renderContent(html, { busy = false, status = '' } = {})");
-    expect(onboarding).toContain("setWizardBusy(false, 'Onboarding options ready.')");
-    expect(onboarding).toContain("setWizardBusy(true, 'Scanning for project signals…')");
+    expect(onboarding).toContain("setWizardBusy(false, 'Onboarding options ready.', generation)");
+    expect(onboarding).toContain("status: 'Scanning for project signals…'");
     expect(onboarding).toContain('let _renderGeneration = 0');
+    expect(onboarding).toContain('let _wizardRunGeneration = 0');
+    expect(onboarding).toContain('if (!isCurrentWizardRun(runGeneration)) return');
+    expect(onboarding).toContain('const runGeneration = ++_wizardRunGeneration');
+    expect(onboarding).toContain('_wizardRunGeneration += 1');
     expect(onboarding).toContain('if (generation !== _renderGeneration) return');
     expect(onboarding).toContain("setWizardBusy(true, 'Loading your first question…')");
   });

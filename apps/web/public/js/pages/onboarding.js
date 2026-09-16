@@ -86,6 +86,11 @@ let _wizardListenerWired = false;
 let _onCompleteCallback = null;   // set by renderOnboarding
 let _wizardState = null;          // { screen, userId, hasLlmProvider, history, recipeSlug, recommendedRegistryIds, firstRunChoice }
 let _renderGeneration = 0;
+let _wizardRunGeneration = 0;
+
+function isCurrentWizardRun(runGeneration) {
+  return runGeneration === _wizardRunGeneration;
+}
 
 // The three real entry paths users can take from the welcome screen. We
 // stash the chosen path on _wizardState.firstRunChoice so every
@@ -687,8 +692,6 @@ function renderAboutMeConversational() {
       </button>
     </div>
   `);
-  setWizardBusy(true, 'Loading your first question…');
-
   // Kick off the first question
   setWizardBusy(true, 'Loading your first question…');
   kickConversation();
@@ -1165,6 +1168,7 @@ async function finishWizard(userId, choice, recipeSlug) {
 }
 
 function hideWizard() {
+  _wizardRunGeneration += 1;
   const overlay = document.getElementById('onboarding-overlay');
   if (overlay) overlay.style.display = 'none';
   // Sample onboarding state is tab-scoped. Only promote the real account's
@@ -1263,6 +1267,7 @@ async function transitionTo(screen) {
  * @param {Function}    onComplete - Called with (userId) when the wizard finishes
  */
 export async function renderOnboarding(container, onComplete) {
+  const runGeneration = ++_wizardRunGeneration;
   ensureWizardListener();
   _onCompleteCallback = onComplete;
 
@@ -1283,6 +1288,7 @@ export async function renderOnboarding(container, onComplete) {
   if (userId) {
     try {
       const state = await fetchOnboardingState(userId);
+      if (!isCurrentWizardRun(runGeneration)) return;
       _wizardState.hasLlmProvider = state.hasLlmProvider ?? false;
       // If they've already completed onboarding, close the wizard
       if (!state.isFirstRun) {
@@ -1291,10 +1297,13 @@ export async function renderOnboarding(container, onComplete) {
         return;
       }
     } catch {
+      if (!isCurrentWizardRun(runGeneration)) return;
       // Non-fatal — proceed with defaults (deterministic path)
       _wizardState.hasLlmProvider = false;
     }
   }
+
+  if (!isCurrentWizardRun(runGeneration)) return;
 
   // Resume path (#390). A tab-close mid-wizard leaves a
   // KEY_ONBOARDING_STATE payload behind; rather than dropping the
