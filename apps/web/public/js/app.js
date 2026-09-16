@@ -87,15 +87,49 @@ function needsOnboarding() {
  */
 function hideOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
+  if (typeof window.skyTwinCancelOnboarding === 'function') {
+    window.skyTwinCancelOnboarding();
+  }
   if (overlay) overlay.style.display = 'none';
   if (_onboardingEscHandler) {
     document.removeEventListener('keydown', _onboardingEscHandler);
     _onboardingEscHandler = null;
   }
   updateConnectionStatus();
+  if (_onboardingReturnFocus instanceof HTMLElement) {
+    _onboardingReturnFocus.focus();
+    _onboardingReturnFocus = null;
+  }
+  document.removeEventListener('keydown', handleOnboardingKeydown);
 }
 
 let _onboardingEscHandler = null;
+let _onboardingReturnFocus = null;
+
+function handleOnboardingKeydown(e) {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay || overlay.style.display === 'none' || e.key !== 'Tab') return;
+  const focusable = [...overlay.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  )].filter((el) => el instanceof HTMLElement && el.offsetParent !== null);
+  if (focusable.length === 0) {
+    e.preventDefault();
+    overlay.querySelector('.onboarding-card')?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const activeInsideDialog = document.activeElement instanceof HTMLElement
+    && overlay.contains(document.activeElement);
+  if (e.shiftKey && activeInsideDialog && (document.activeElement === first
+    || document.activeElement?.getAttribute('tabindex') === '-1')) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 
 /**
  * Dismiss the modal as "skipped" — user pressed Esc, the X button, or
@@ -122,6 +156,7 @@ window.skyTwinTeardownOnboardingEsc = () => {
     document.removeEventListener('keydown', _onboardingEscHandler);
     _onboardingEscHandler = null;
   }
+  document.removeEventListener('keydown', handleOnboardingKeydown);
 };
 
 /**
@@ -129,6 +164,9 @@ window.skyTwinTeardownOnboardingEsc = () => {
  */
 function showOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
+  _onboardingReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   overlay.style.display = 'flex';
 
   // Esc-to-dismiss. Wired once per show, torn down by hideOnboarding so
@@ -143,6 +181,7 @@ function showOnboarding() {
     };
     document.addEventListener('keydown', _onboardingEscHandler);
   }
+  document.addEventListener('keydown', handleOnboardingKeydown);
 
   renderOnboarding(
     document.getElementById('onboarding-content'),

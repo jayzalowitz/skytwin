@@ -1082,7 +1082,7 @@
         },
         {
           "path": "apps/web/public/js/pages/onboarding.js",
-          "sha256": "db866e1268f05d75619c2f2434cccc35aaddf4c4be317b777793b5a92a3b3306",
+          "sha256": "e831f1cb75fc632cf4ee0116e6869405c8a15cbd2da041079b18abbdd4e347c3",
           "why": "Provides the real first-run sample control, session issuance flow, and sample-route transition"
         },
         {
@@ -1298,7 +1298,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "9713bbd39a196aead4aaf180db39189eecf09c4ef8eaaa2052d0f939268bb13d",
+          "sha256": "4d88984f75e09521f59abd9838b82418b5fb229cf35d70adc5d700fbcf6189d2",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence, while the release-claim test checkout retains the history needed for fail-closed predecessor ancestry checks"
         },
         {
@@ -1339,7 +1339,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "9713bbd39a196aead4aaf180db39189eecf09c4ef8eaaa2052d0f939268bb13d",
+          "sha256": "4d88984f75e09521f59abd9838b82418b5fb229cf35d70adc5d700fbcf6189d2",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, guarded publisher graph, and full-history release-claim checkout required for immutable predecessor ancestry proof"
         },
         {

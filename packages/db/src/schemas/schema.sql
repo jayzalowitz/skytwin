@@ -245,6 +245,21 @@ CREATE TABLE IF NOT EXISTS execution_results (
   completed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- #695: durable rollback claims. The terminal ledger is declared below,
+-- after explanation_records exists.
+CREATE TABLE IF NOT EXISTS rollback_admissions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  candidate_action_id UUID NOT NULL REFERENCES candidate_actions(id),
+  decision_outcome_id UUID NOT NULL REFERENCES decision_outcomes(id),
+  execution_result_id UUID NOT NULL REFERENCES execution_results(id),
+  adapter_name STRING NOT NULL,
+  provider_plan_id STRING NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT rollback_admission_one_claim_per_action UNIQUE (candidate_action_id),
+  CONSTRAINT rollback_admission_owner_graph UNIQUE (id, user_id)
+);
+
 CREATE TABLE IF NOT EXISTS execution_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   plan_id UUID NOT NULL REFERENCES execution_plans(id),
@@ -297,6 +312,27 @@ CREATE TABLE IF NOT EXISTS explanation_records (
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   INDEX (decision_id)
 );
+
+-- Required before rollback_terminal_ledger's composite explanation FK.
+CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx
+  ON explanation_records (id, decision_id);
+
+CREATE TABLE IF NOT EXISTS rollback_terminal_ledger (
+  admission_id UUID PRIMARY KEY REFERENCES rollback_admissions(id),
+  user_id UUID NOT NULL,
+  decision_id UUID NOT NULL REFERENCES decisions(id),
+  status STRING NOT NULL CHECK (status IN ('rolled_back', 'failed', 'unknown')),
+  result JSONB NOT NULL DEFAULT '{}',
+  explanation_id UUID NOT NULL,
+  terminal_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT rollback_terminal_owner_fk FOREIGN KEY (admission_id, user_id)
+    REFERENCES rollback_admissions(id, user_id),
+  CONSTRAINT rollback_terminal_explanation_fk FOREIGN KEY (explanation_id, decision_id)
+    REFERENCES explanation_records(id, decision_id),
+  CONSTRAINT rollback_terminal_explanation_unique UNIQUE (explanation_id)
+);
+CREATE INDEX IF NOT EXISTS rollback_admissions_owner_idx
+  ON rollback_admissions (user_id, created_at DESC);
 
 -- ============================================================================
 -- Feedback
@@ -510,8 +546,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS decision_outcomes_id_decision_action_idx
   ON decision_outcomes (id, decision_id, selected_action_id);
 CREATE UNIQUE INDEX IF NOT EXISTS execution_plans_id_decision_action_idx
   ON execution_plans (id, decision_id, action_id);
-CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx
-  ON explanation_records (id, decision_id);
 CREATE TABLE IF NOT EXISTS execution_admission_barriers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -98,13 +98,17 @@ describe("installed dependency graph compatibility", () => {
   });
 
   it("keeps Expo plist on its compatible xmldom 0.8 line", () => {
+    const expoCli = follow(mobileRequire, ["expo", "@expo/cli"]);
     const expoPlist = follow(mobileRequire, [
       "expo",
       "@expo/cli",
       "@expo/plist",
     ]);
     const xmldomContext = follow(expoPlist.require, ["@xmldom/xmldom"]);
+    // Keep both the SDK contract and the reviewed concrete graph fail-closed.
+    expect(expoCli.metadata.dependencies["@expo/plist"]).toBe("^0.8.1");
     expect(expoPlist.metadata.version).toBe("0.8.1");
+    expect(expoPlist.metadata.dependencies["@xmldom/xmldom"]).toBe("^0.8.8");
     expect(xmldomContext.metadata.version).toBe("0.8.15");
     const plist = unwrapDefault(expoPlist.load());
     expect(
