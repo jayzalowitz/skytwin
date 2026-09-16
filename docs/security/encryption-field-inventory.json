@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "084-rollback-admission-ledger.sql",
+  "asOfMigration": "085-rollback-admission-claims.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -4156,7 +4156,8 @@
       "owner": "user_child",
       "boundary": {"current": "repository_sql", "target": "ownership_required", "auditedCallsites": ["packages/db/src/repositories/rollback-admission-repository.ts"]},
       "groups": [
-        {"classification": "locally_exposed_metadata", "columns": ["adapter_name", "candidate_action_id", "created_at", "decision_outcome_id", "execution_result_id", "id", "provider_plan_id", "user_id"], "currentProtection": "Locally readable rollback claim identity, ownership, provider routing metadata, linkage, and timestamp.", "targetProtection": "Remain locally readable for owner-bound admission, uniqueness, terminal reconciliation, and deletion; disclose inference leakage.", "migrationStage": "disclosed-local-metadata", "rationale": "Required to admit exactly one rollback claim for the owned execution graph and route reconciliation to the recorded provider plan."}
+        {"classification": "locally_exposed_metadata", "columns": ["adapter_name", "candidate_action_id", "claim_expires_at", "claimed_at", "created_at", "decision_outcome_id", "execution_result_id", "id", "lifecycle_status", "provider_plan_id", "terminalized_at", "user_id"], "currentProtection": "Locally readable rollback claim identity, ownership, lifecycle state, provider routing metadata, linkage, and timestamps.", "targetProtection": "Remain locally readable for owner-bound admission, uniqueness, claim expiry, terminal reconciliation, and deletion; disclose inference leakage.", "migrationStage": "disclosed-local-metadata", "rationale": "Required to admit exactly one rollback claim for the owned execution graph, enforce its bounded lifecycle, and route reconciliation to the recorded provider plan."},
+        {"classification": "one_way_secret", "columns": ["claim_token_hash"], "currentProtection": "One-way SHA-256 verifier of a random rollback claim token; the bearer token is not stored.", "targetProtection": "Retain the one-way verifier with comparison safety; never persist or recover the bearer token.", "migrationStage": "retain-one-way", "rationale": "Rollback claim authorization compares a process-supplied random token and never needs to recover it."}
       ],
       "ownershipNotes": "Child of a user-owned candidate action; repository admission requires an exact user, decision, action, outcome, result, adapter, and provider plan graph."
     },

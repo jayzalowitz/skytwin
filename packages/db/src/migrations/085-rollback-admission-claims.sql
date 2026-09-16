@@ -1,10 +1,14 @@
 -- #695: bounded, single-use rollback claim lifecycle.  This migration only
 -- stores admission authority; it does not enable any dispatch path.
 ALTER TABLE rollback_admissions
-  ADD COLUMN IF NOT EXISTS lifecycle_status STRING NOT NULL DEFAULT 'admitted',
-  ADD COLUMN IF NOT EXISTS claim_token_hash STRING,
-  ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ,
-  ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ,
+  ADD COLUMN IF NOT EXISTS lifecycle_status STRING NOT NULL DEFAULT 'admitted';
+ALTER TABLE rollback_admissions
+  ADD COLUMN IF NOT EXISTS claim_token_hash STRING;
+ALTER TABLE rollback_admissions
+  ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMPTZ;
+ALTER TABLE rollback_admissions
+  ADD COLUMN IF NOT EXISTS claim_expires_at TIMESTAMPTZ;
+ALTER TABLE rollback_admissions
   ADD COLUMN IF NOT EXISTS terminalized_at TIMESTAMPTZ;
 
 ALTER TABLE rollback_admissions
