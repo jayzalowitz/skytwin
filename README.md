@@ -292,8 +292,8 @@ packages/
   policy-prompts/                 Versioned LLM prompts with JSON schema validation and deterministic fallbacks
   ironclaw-adapter/               Execution adapter with HMAC auth, retries, circuit breaker
   execution-router/               Adapter selection, fallback chains, risk modifiers, plugin discovery
-  llm-client/                     Unified LLM client — local, conventional, and admitted TrustedRouter paths; NEAR staged but blocked
-  near-confidential/              Staged fail-closed NEAR verifier/transport; not runtime-admitted
+  llm-client/                     Unified LLM client — local, conventional, and admitted TrustedRouter paths; NEAR represented but blocked
+  near-confidential/              Fail-closed NEAR verification contract; no transport is runtime-admitted
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
   connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors; account providers disabled in supported preview

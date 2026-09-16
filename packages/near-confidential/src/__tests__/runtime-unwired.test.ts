@@ -34,13 +34,17 @@ function runtimeSourceFilesBelow(root: string): string[] {
 }
 
 describe("confidential runtime activation guard", () => {
-  it("keeps the fail-closed placeholder transport out of application composition", () => {
+  it("keeps the unavailable strict client out of application composition", () => {
     const runtimeFiles = ["apps", "packages"].flatMap((directory) =>
       runtimeSourceFilesBelow(join(repositoryRoot, directory)),
     );
     const activationReferences = runtimeFiles.filter((path) => {
       const source = readFileSync(path, "utf8");
-      return source.includes("UnavailableConfidentialTransport");
+      return (
+        source.includes("@skytwin/near-confidential") ||
+        source.includes("StrictConfidentialClient") ||
+        source.includes("UnavailableConfidentialTransport")
+      );
     });
 
     expect(activationReferences).toEqual([]);

@@ -78,7 +78,6 @@ function fixture(evidenceOverrides: Record<string, unknown> = {}) {
     attestation: {
       tdxQuote: new Uint8Array([1]),
       tdxVerified: true,
-      tdxStatus: "UpToDate",
       gpuEvidence: new Uint8Array([2]),
       gpuVerified: true,
       measurement: "approved-measurement",
@@ -357,20 +356,6 @@ describe("strict confidential client", () => {
       promptTransmitted: false,
     });
     expect(malformed.close).toHaveBeenCalledOnce();
-
-    const unsupportedStatus = fixture({
-      attestation: {
-        ...fixture().channel.evidence.attestation,
-        tdxStatus: "ConfigurationNeeded",
-      },
-    });
-    expect(
-      await unsupportedStatus.client.generate(new Uint8Array([1]), policy),
-    ).toMatchObject({
-      code: "attestation_invalid",
-      promptTransmitted: false,
-    });
-    expect(unsupportedStatus.close).toHaveBeenCalledOnce();
 
     const throwing = fixture();
     Object.defineProperty(throwing.channel, "evidence", {

@@ -983,24 +983,14 @@
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         },
         {
-          "path": "packages/near-confidential/src/near-transport.ts",
-          "sha256": "39eaf2fd87b8ff7d3134d3fff9a331e39a369a13ccebc205a04de6c8163fb250",
-          "why": "Implements the staged one-socket TDX/GPU/TLS and response-signature transport whose remaining dynamic-workload gap keeps NEAR runtime-blocked"
-        },
-        {
-          "path": "packages/near-confidential/src/__tests__/near-transport.test.ts",
-          "sha256": "6af72e4ffe1beecc7a62bfd71e85a82103ccffcd655d98fef57a74cec65b98ad",
-          "why": "Exercises canonical direct-endpoint catalog admission and fail-closed malformed endpoint/catalog handling"
-        },
-        {
           "path": "packages/llm-client/src/providers/nearai.ts",
-          "sha256": "01b2c9600335d05a7a912e68ba5c7c1e01eacb8b51be603094f4e3e5290f0084",
-          "why": "Stages strict NEAR output verification, while the mode-policy gate prevents this provider from entering the runtime chain"
+          "sha256": "551b547ad1625b0dd23fcd21fdbd046b1741dfc8124d46278c7ea83ace9ff928",
+          "why": "Provides a final fail-before-transport boundary in addition to the mode-policy gate that prevents NEAR from entering the runtime chain"
         },
         {
           "path": "packages/llm-client/src/__tests__/nearai-provider.test.ts",
-          "sha256": "2c71a3106d75ed79ea90e7e37b86a18bb894409b6b46f961370e63417df625c9",
-          "why": "Exercises pinned model admission, exact signed-byte trace construction, and fail-closed verifier errors"
+          "sha256": "45fa764bfd319e572ecd340f43e792e72bc7ee88094e310fad2a3cd38ea8213b",
+          "why": "Exercises the provider boundary's unconditional failure before any prompt transport"
         },
         {
           "path": "packages/shared-types/src/inference-receipt.ts",

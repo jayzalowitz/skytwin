@@ -36,7 +36,7 @@ skytwin/
     memory-hybrid/   # Composes two MemoryPort impls with routing + dual-write
     memory-mempalace/ # MemPalaceMemoryPort adapter (legacy backend, selectable)
     mempalace/       # Legacy memory system: episodic memory, knowledge graph, 4-layer retrieval
-    near-confidential/ # Staged NEAR verifier/transport; runtime admission remains blocked
+    near-confidential/ # Fail-closed NEAR verification contract; no transport admitted
 
   docs/              # Architecture and design documentation
   planning/          # Milestone and issue tracking documents

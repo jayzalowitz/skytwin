@@ -108,10 +108,11 @@ SkyTwin verifies the evidence for that exact call and fails closed otherwise.
 ### NEAR AI
 
 NEAR AI publishes model-specific direct completion endpoints and verifier
-tooling. SkyTwin contains a staged strict client and transport in
-[`packages/near-confidential`](../packages/near-confidential), including
-same-socket TLS, TDX/GPU evidence, and exact-byte signature checks. That work is
-not enough to admit the provider.
+tooling. SkyTwin retains a fail-closed verification contract in
+[`packages/near-confidential`](../packages/near-confidential), but packages no
+NEAR transport and cannot send a prompt through that provider. A future
+transport would still need same-socket TLS, TDX/GPU evidence, and exact-byte
+signature checks; those checks alone are not enough to admit the provider.
 
 The live attestation reviewed for this integration measures a base compose
 environment containing a privileged compose manager. That manager has access
@@ -127,7 +128,7 @@ Accordingly:
 - Settings shows NEAR AI as **verification pending** and does not let a user
   add it to the verified-private chain;
 - API and database compatibility gates reject new or stored NEAR AI chains;
-- the staged provider code cannot be reached through
+- the provider boundary throws before transport and cannot be admitted through
   `verified_private_cloud`; and
 - SkyTwin makes no current confidential-inference claim for NEAR AI.
 
