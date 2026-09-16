@@ -669,13 +669,16 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
         leaseGeneration: startResult.grant.leaseGeneration,
         state: 'completed',
       })).resolves.toBe(true);
+      // An exact repeat acknowledges already-durable truth. This lets a caller
+      // recover a lost COMMIT response without reclassifying completion as
+      // ambiguity or attempting the external action again.
       await expect(credentialDispatchLeaseRepository.terminalize({
         userId: fixture.graph.userId,
         executionPlanId: fixture.plan.id,
         capability: startResult.grant.capability,
         leaseGeneration: startResult.grant.leaseGeneration,
         state: 'completed',
-      })).resolves.toBe(false);
+      })).resolves.toBe(true);
       await expect(oauthRepository.beginDisconnect(
         fixture.graph.userId, 'google', fixture.accountEmail,
       )).resolves.toMatchObject({ status: 'ready' });
@@ -777,13 +780,14 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       leaseGeneration: started.grant.leaseGeneration,
       state: 'completed',
     })).resolves.toBe(true);
-    await expect(pool.query(
+    const ambiguityCount = await pool.query<{ count: string | number }>(
       `SELECT count(*)::INT AS count
          FROM execution_dispatch_ambiguities a
          JOIN credential_dispatch_leases l ON l.id = a.dispatch_lease_id
         WHERE l.execution_plan_id = $1`,
       [fixture.plan.id],
-    )).resolves.toMatchObject({ rows: [{ count: 1 }] });
+    );
+    expect(Number(ambiguityCount.rows[0]?.count)).toBe(1);
   });
 
   it('serializes concurrent ambiguity persistence and retains it after reconciliation', async () => {
@@ -816,13 +820,14 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       executionDispatchLeaseRepository.terminalize(observation),
       executionDispatchLeaseRepository.terminalize(observation),
     ])).resolves.toEqual([true, true]);
-    await expect(pool.query(
+    const concurrentAmbiguityCount = await pool.query<{ count: string | number }>(
       `SELECT count(*)::INT AS count
          FROM execution_dispatch_ambiguities a
          JOIN credential_dispatch_leases l ON l.id = a.dispatch_lease_id
         WHERE l.execution_plan_id = $1`,
       [fixture.plan.id],
-    )).resolves.toMatchObject({ rows: [{ count: 1 }] });
+    );
+    expect(Number(concurrentAmbiguityCount.rows[0]?.count)).toBe(1);
     await expect(executionDispatchLeaseRepository.terminalize({
       userId: fixture.graph.userId,
       executionPlanId: fixture.plan.id,
@@ -830,14 +835,19 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       leaseGeneration: started.grant.leaseGeneration,
       state: 'completed',
     })).resolves.toBe(true);
-    await expect(pool.query(
+    const reconciled = await pool.query<{
+      state: string;
+      ambiguity_count: string | number;
+    }>(
       `SELECT l.state, count(a.dispatch_lease_id)::INT AS ambiguity_count
          FROM credential_dispatch_leases l
          LEFT JOIN execution_dispatch_ambiguities a ON a.dispatch_lease_id = l.id
         WHERE l.execution_plan_id = $1
         GROUP BY l.state`,
       [fixture.plan.id],
-    )).resolves.toMatchObject({ rows: [{ state: 'completed', ambiguity_count: 1 }] });
+    );
+    expect(reconciled.rows[0]?.state).toBe('completed');
+    expect(Number(reconciled.rows[0]?.ambiguity_count)).toBe(1);
   });
 
   it('serializes MCP pending opt-in discovery with exact tool request-start', async () => {

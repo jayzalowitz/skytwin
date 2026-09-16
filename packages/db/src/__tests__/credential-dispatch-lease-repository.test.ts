@@ -418,6 +418,31 @@ describe('executionDispatchLeaseRepository', () => {
     expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO'))).toBe(false);
   });
 
+  it('accepts exact repeated known terminal truth but rejects a conflicting terminal state', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ id: INPUT.userId }] })
+      .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'completed' }] })
+      .mockResolvedValueOnce({ rows: [{ id: INPUT.userId }] })
+      .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'completed' }] });
+
+    const identity = {
+      userId: INPUT.userId,
+      executionPlanId: INPUT.executionPlanId,
+      capability: 'exact-capability',
+      leaseGeneration: LEASE.lease_generation,
+    };
+    await expect(executionDispatchLeaseRepository.terminalize({
+      ...identity,
+      state: 'completed',
+    })).resolves.toBe(true);
+    await expect(executionDispatchLeaseRepository.terminalize({
+      ...identity,
+      state: 'failed',
+    })).resolves.toBe(false);
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('UPDATE credential_dispatch_leases')))
+      .toBe(false);
+  });
+
   it('repairs a legacy ambiguous lease with a finite recovery explanation', async () => {
     mockQuery
       .mockResolvedValueOnce({ rows: [{ ...LEASE, state: 'ambiguous' }] })
