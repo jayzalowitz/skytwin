@@ -685,8 +685,10 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     } else {
       expect(startResult.code).toBe('authority_revoked');
       // The generic request-start fence may win before the exact credential
-      // bind loses. A concurrently observed pending response is truthful even
-      // though the compatibility caller subsequently terminalizes no-effect.
+      // bind begins. In that case request-start never crosses the durable
+      // boundary, so there is no lease to terminalize. A concurrently
+      // observed pending response remains truthful while the disconnect
+      // completes its own durable authority change.
       expect(['pending', 'ready']).toContain(disconnectResult.status);
       await expect(oauthRepository.beginDisconnect(
         fixture.graph.userId, 'google', fixture.accountEmail,
@@ -694,7 +696,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
       expect(await pool.query(
         `SELECT state FROM credential_dispatch_leases WHERE execution_plan_id = $1`,
         [fixture.plan.id],
-      )).toMatchObject({ rows: [{ state: 'failed' }] });
+      )).toMatchObject({ rows: [] });
     }
   });
 
