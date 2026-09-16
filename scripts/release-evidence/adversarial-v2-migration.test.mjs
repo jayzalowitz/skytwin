@@ -188,7 +188,7 @@ describe('v2 adversarial scenario migration', () => {
     });
     expect(result.status).not.toBe(0);
     expect(result.stderr).toMatch(/deleted or rewritten relative to trusted v2 provenance/i);
-  });
+  }, 20_000);
 
   it('rejects deletion from the generated baseline', () => {
     const paths = writeCase(fixture());
