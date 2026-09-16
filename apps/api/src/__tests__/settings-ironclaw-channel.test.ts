@@ -537,16 +537,41 @@ describe('reasoning-mode provider mutations', () => {
     expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
   });
 
-  it('does not persist verified-private-cloud mode without a verified adapter', async () => {
+  it('persists verified-private-cloud mode with the verifier-owned adapter', async () => {
     const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
       reasoningMode: 'verified_private_cloud',
-      providers: [],
+      providers: [{
+        provider: 'trustedrouter',
+        apiKey: 'secret',
+        model: 'trustedrouter/confidential',
+        priority: 0,
+        enabled: true,
+      }],
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockAiProviderRepository.replaceAllWithReasoningMode).toHaveBeenCalledWith(
+      userId,
+      'verified_private_cloud',
+      [expect.objectContaining({ provider: 'trustedrouter', baseUrl: undefined })],
+    );
+  });
+
+  it('keeps NEAR AI unavailable until its dynamic inference workload can be pinned', async () => {
+    const response = await request(app, 'PUT', `/api/settings/${userId}/ai`, {
+      reasoningMode: 'verified_private_cloud',
+      providers: [{
+        provider: 'nearai',
+        apiKey: 'secret',
+        model: 'deepseek-ai/DeepSeek-V4-Flash',
+        priority: 0,
+        enabled: true,
+      }],
     });
 
     expect(response.status).toBe(409);
-    expect(response.body).toEqual({
-      error: 'Verified private cloud requires a verifier-owned provider adapter',
-    });
+    expect((response.body as { error: string }).error)
+      .toMatch(/dynamically selected inference workload/i);
     expect(mockAiProviderRepository.replaceAllWithReasoningMode).not.toHaveBeenCalled();
   });
 

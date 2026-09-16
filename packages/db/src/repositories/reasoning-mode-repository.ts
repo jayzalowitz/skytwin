@@ -49,12 +49,11 @@ export const reasoningModeRepository = {
     const result = await query<ReasoningModeSettingsRow>(
       `INSERT INTO reasoning_mode_settings (user_id, mode, requires_confirmation)
        SELECT $1, $2, false
-       WHERE $2 <> 'verified_private_cloud'
-         AND NOT EXISTS (
+       WHERE NOT EXISTS (
            SELECT 1 FROM ai_provider_settings
            WHERE user_id = $1 AND enabled = true
              AND (
-               provider NOT IN ('anthropic', 'openai', 'google', 'ollama', 'embedded')
+               provider NOT IN ('anthropic', 'openai', 'google', 'ollama', 'embedded', 'trustedrouter', 'nearai')
                OR (
                  $2 = 'on_device'
                  AND (
@@ -69,6 +68,15 @@ export const reasoningModeRepository = {
                    )
                  )
                )
+               OR (
+                 $2 = 'verified_private_cloud'
+                 AND (
+                   provider <> 'trustedrouter'
+                   OR base_url IS NOT NULL
+                   OR model <> 'trustedrouter/confidential'
+                 )
+               )
+               OR ($2 = 'bring_your_own_provider' AND provider IN ('embedded', 'trustedrouter', 'nearai'))
              )
          )
        ON CONFLICT (user_id) DO UPDATE SET
