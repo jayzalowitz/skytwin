@@ -14,6 +14,10 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **TrustedRouter now accepts the only SDK status produced by its pinned-policy
+  verification path.** Compact receipts still require their signed attestation
+  hash and receipt-key workload binding to verify independently before output
+  is released.
 - **CockroachDB integration suites no longer compete for runner resources in
   the package-wide test job.** Unit files still run in parallel, then the four
   fresh-node integration files run serially in their own Vitest project.

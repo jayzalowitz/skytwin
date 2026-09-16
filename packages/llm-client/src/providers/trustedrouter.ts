@@ -397,7 +397,15 @@ export async function generate(
       policy,
       keyCommitmentHex,
     });
-    if (claims.upstream.tier !== 'tee-verified' || claims.attestationStatus !== 'verified') {
+    // `requireAttestation: false` deliberately limits the SDK call above to
+    // signature and exact traffic bindings; for a compact receipt its only
+    // valid status is therefore `unverified_by_this_sdk`. The attestation is
+    // still mandatory here: its signed hash was matched above and its receipt
+    // key/workload binding was independently verified against SkyTwin's pinned
+    // policy. Requiring the SDK's `verified` status in this configuration would
+    // reject every genuine compact receipt after the prompt had already left.
+    if (claims.upstream.tier !== 'tee-verified'
+        || claims.attestationStatus !== 'unverified_by_this_sdk') {
       throw new Error('TrustedRouter receipt did not prove a confidential upstream route');
     }
     if (claims.model.requested !== (model || 'trustedrouter/confidential')) {

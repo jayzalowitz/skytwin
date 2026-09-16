@@ -969,12 +969,12 @@
       "evidence": [
         {
           "path": "packages/llm-client/src/providers/trustedrouter.ts",
-          "sha256": "59dc7edb24eb510dbe78d8d5109c1a7469bfaaba5cbda89d762c777bab864b52",
+          "sha256": "b68961ed940cb1fcbe5a30913ae1ae530cce9942e5c797d265c7918afa17b910",
           "why": "Implements the pinned same-socket gateway-attestation, exact-byte request/response receipt, and confidential-upstream verification path"
         },
         {
           "path": "packages/llm-client/src/__tests__/trustedrouter-provider.test.ts",
-          "sha256": "0a0039b39bcee9a0f77cf900c30d29a4007a12cad28aadcebac90126ef0b2abe",
+          "sha256": "27ddc3b41090117b1bfc7da8b176cea107782b81645f0172dd2ed5a7cb6f3d5d",
           "why": "Exercises one-socket sequencing, exact-byte binding, and fail-closed receipt rejection"
         },
         {

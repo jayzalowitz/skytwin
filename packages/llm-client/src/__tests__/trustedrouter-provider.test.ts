@@ -120,7 +120,10 @@ describe('TrustedRouter confidential provider', () => {
     sdk.verifyReceiptKeyAttestation.mockResolvedValue(undefined);
     sdk.verifyReceipt.mockResolvedValue({
       jti: 'chatcmpl-1',
-      attestationStatus: 'verified',
+      // Compact receipts verified with `requireAttestation: false` can only
+      // report this status. The provider separately verifies the fetched
+      // receipt-key attestation against SkyTwin's pinned workload policy.
+      attestationStatus: 'unverified_by_this_sdk',
       model: {
         requested: 'trustedrouter/confidential',
         selected: 'provider/confidential-model',
@@ -194,6 +197,28 @@ describe('TrustedRouter confidential provider', () => {
 
     await expect(generate('sk-test', 'trustedrouter/confidential', 'hello'))
       .rejects.toThrow('image digest mismatch');
+    expect(socket.destroyed).toBe(true);
+  });
+
+  it('rejects an SDK attestation status that is impossible for the configured compact-receipt path', async () => {
+    sdk.verifyReceipt.mockResolvedValueOnce({
+      jti: 'chatcmpl-1',
+      attestationStatus: 'verified',
+      model: {
+        requested: 'trustedrouter/confidential',
+        selected: 'provider/confidential-model',
+      },
+      upstream: {
+        tier: 'tee-verified',
+        verifiedAt: 1_780_000_000,
+        verificationExpiresAt: 1_780_000_300,
+      },
+      attSha256: createHash('sha256').update('receipt-attestation').digest('base64url'),
+    });
+
+    await expect(generate('sk-test', 'trustedrouter/confidential', 'hello'))
+      .rejects.toThrow('did not prove a confidential upstream route');
+    expect(sdk.verifyReceiptKeyAttestation).toHaveBeenCalledOnce();
     expect(socket.destroyed).toBe(true);
   });
 
