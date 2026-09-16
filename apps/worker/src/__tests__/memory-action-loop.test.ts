@@ -14,7 +14,7 @@ function asPreparedRouter(router: {
   return {
     ...router,
     prepareExecution: vi.fn(async (...args: unknown[]) => {
-      const routing = await (router.route as (...values: unknown[]) => unknown)(...args) as Record<string, unknown>;
+      const routing = (await (router.route as (...values: unknown[]) => unknown)(...args)) as Record<string, unknown>;
       const sourceRisk = args[1] as Record<string, unknown>;
       const modified = routing['modifiedRiskAssessment'] as Record<string, unknown> | undefined;
       return {
@@ -27,7 +27,8 @@ function asPreparedRouter(router: {
       };
     }),
     executePrepared: vi.fn(async (_prepared: unknown, ...args: unknown[]) =>
-      (router.executeWithRouting as (...values: unknown[]) => unknown)(...args)),
+      (router.executeWithRouting as (...values: unknown[]) => unknown)(...args),
+    ),
   } as unknown as Pick<ExecutionRouter, 'prepareExecution' | 'executePrepared'>;
 }
 
@@ -164,11 +165,13 @@ function makeOpportunity(actionType = 'create_task'): MemoryActionOpportunitySna
 
 function mockCommon(opportunity = makeOpportunity()) {
   mockMemoryActionOpportunityRepository.upsertFromSuggestion.mockResolvedValue(opportunity);
-  mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([{
-    ...opportunity,
-    attemptCount: opportunity.attemptCount + 1,
-    lastAttemptedAt: new Date('2026-06-25T12:05:00Z'),
-  }]);
+  mockMemoryActionOpportunityRepository.claimDueForUser.mockResolvedValue([
+    {
+      ...opportunity,
+      attemptCount: opportunity.attemptCount + 1,
+      lastAttemptedAt: new Date('2026-06-25T12:05:00Z'),
+    },
+  ]);
   mockMemoryActionOpportunityRepository.markStatus.mockImplementation(async (input) => ({
     ...opportunity,
     status: input.status,
@@ -217,7 +220,9 @@ function mockCommon(opportunity = makeOpportunity()) {
   mockExecutionAdmissionRepository.observeTerminal.mockResolvedValue({});
   mockExecutionAdmissionRepository.findByScope.mockResolvedValue(null);
   mockExecutionAdmissionRepository.isDispatchable.mockResolvedValue(true);
-  mockExecutionAdmissionRepository.failBeforeDispatch.mockResolvedValue({ status: 'failed' });
+  mockExecutionAdmissionRepository.failBeforeDispatch.mockResolvedValue({
+    status: 'failed',
+  });
   mockSkillGapRepository.log.mockResolvedValue({
     id: 'skill-gap-1',
   });
@@ -238,6 +243,7 @@ describe('runMemoryActionLoopJob', () => {
         reason: 'Suggest trust tier requires approval for all actions.',
       }),
     };
+    const loadPolicies = vi.fn().mockResolvedValue([]);
 
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
@@ -245,20 +251,27 @@ describe('runMemoryActionLoopJob', () => {
       fetchBundle: async () => ({
         suggestions: [makeSuggestion('create_task')],
         pagesById: new Map([
-          ['page-1', {
-            id: 'page-1',
-            content: 'I will send the Madrid launch checklist tomorrow.',
-            source: 'signal',
-            metadata: { signalSource: 'voice', authoringTier: 'user_sent_originated' },
-            createdAt: new Date(),
-          }],
+          [
+            'page-1',
+            {
+              id: 'page-1',
+              content: 'I will send the Madrid launch checklist tomorrow.',
+              source: 'signal',
+              metadata: {
+                signalSource: 'voice',
+                authoringTier: 'user_sent_originated',
+              },
+              createdAt: new Date(),
+            },
+          ],
         ]),
       }),
       policyEvaluator,
-      loadPolicies: async () => [],
+      loadPolicies,
     });
 
     expect(summary.approvalsQueued).toBe(1);
+    expect(loadPolicies).toHaveBeenCalledWith('user-1');
     expect(mockApprovalRepository.create).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'user-1',
@@ -285,19 +298,20 @@ describe('runMemoryActionLoopJob', () => {
       execution_authority_revision: 'authority-revision-1',
     });
     const policyEvaluator = {
-      evaluate: vi.fn(async (
-        _action: unknown,
-        _policies: unknown,
-        _trust: unknown,
-        risk?: { overallTier?: string },
-      ) => risk?.overallTier === 'critical'
-        ? {
-            allowed: true,
-            requiresApproval: true,
-            reason: 'The selected adapter raises this action above moderate risk.',
-            confirmationLevel: 'single' as const,
-          }
-        : { allowed: true, requiresApproval: false, reason: 'Source risk is auto-executable.' }),
+      evaluate: vi.fn(async (_action: unknown, _policies: unknown, _trust: unknown, risk?: { overallTier?: string }) =>
+        risk?.overallTier === 'critical'
+          ? {
+              allowed: true,
+              requiresApproval: true,
+              reason: 'The selected adapter raises this action above moderate risk.',
+              confirmationLevel: 'single' as const,
+            }
+          : {
+              allowed: true,
+              requiresApproval: false,
+              reason: 'Source risk is auto-executable.',
+            },
+      ),
     };
     const router = {
       route: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
@@ -324,14 +338,19 @@ describe('runMemoryActionLoopJob', () => {
     });
 
     expect(summary.approvalsQueued).toBe(1);
-    expect(mockApprovalRepository.create).toHaveBeenCalledWith(expect.objectContaining({
-      reason: 'The selected adapter raises this action above moderate risk.',
-      confirmationLevel: 'single',
-    }));
+    expect(mockApprovalRepository.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'The selected adapter raises this action above moderate risk.',
+        confirmationLevel: 'single',
+      }),
+    );
     expect(mockExecutionAdmissionRepository.admitMemoryExecution).not.toHaveBeenCalled();
     expect(router.executeWithRouting).not.toHaveBeenCalled();
     expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ status: 'queued_approval', adapterName: 'openclaw' }),
+      expect.objectContaining({
+        status: 'queued_approval',
+        adapterName: 'openclaw',
+      }),
     );
   });
 
@@ -339,18 +358,19 @@ describe('runMemoryActionLoopJob', () => {
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     const policyEvaluator = {
-      evaluate: vi.fn(async (
-        _action: unknown,
-        _policies: unknown,
-        _trust: unknown,
-        risk?: { overallTier?: string },
-      ) => risk?.overallTier === 'critical'
-        ? {
-            allowed: false,
-            requiresApproval: false,
-            reason: 'The prepared adapter exceeds the policy ceiling.',
-          }
-        : { allowed: true, requiresApproval: false, reason: 'Source risk is allowed.' }),
+      evaluate: vi.fn(async (_action: unknown, _policies: unknown, _trust: unknown, risk?: { overallTier?: string }) =>
+        risk?.overallTier === 'critical'
+          ? {
+              allowed: false,
+              requiresApproval: false,
+              reason: 'The prepared adapter exceeds the policy ceiling.',
+            }
+          : {
+              allowed: true,
+              requiresApproval: false,
+              reason: 'Source risk is allowed.',
+            },
+      ),
     };
     const router = {
       route: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
@@ -379,7 +399,9 @@ describe('runMemoryActionLoopJob', () => {
     expect(summary.blocked).toBe(1);
     expect(summary.executionFailed).toBe(0);
     expect(mockExplanationRepository.create).toHaveBeenCalledWith(
-      expect.objectContaining({ confidenceReasoning: 'Adapter-adjusted critical risk.' }),
+      expect.objectContaining({
+        confidenceReasoning: 'Adapter-adjusted critical risk.',
+      }),
     );
     expect(mockMemoryActionOpportunityRepository.markStatus).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -455,20 +477,29 @@ describe('runMemoryActionLoopJob', () => {
         status: 'completed',
         startedAt: new Date(),
         completedAt: new Date(),
-        output: { adapter_used: 'direct', routing_decision: 'ironclaw', fallbacks_attempted: 1 },
+        output: {
+          adapter_used: 'direct',
+          routing_decision: 'ironclaw',
+          fallbacks_attempted: 1,
+        },
       }),
     };
+    const loadPolicies = vi.fn().mockResolvedValue([]);
 
     const preparedRouter = asPreparedRouter(router);
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator,
-      loadPolicies: async () => [],
+      loadPolicies,
       getExecutionRouter: async () => preparedRouter,
     });
 
     expect(summary.autoExecuted).toBe(1);
+    expect(loadPolicies).toHaveBeenCalledTimes(3);
+    expect(loadPolicies).toHaveBeenNthCalledWith(1, 'user-1');
+    expect(loadPolicies).toHaveBeenNthCalledWith(2, 'user-1');
+    expect(loadPolicies).toHaveBeenNthCalledWith(3, 'user-1');
     expect(policyEvaluator.evaluate.mock.calls[0]![0]).toEqual(
       expect.objectContaining({
         actionType: 'create_task',
@@ -476,12 +507,10 @@ describe('runMemoryActionLoopJob', () => {
       }),
     );
     expect(router.executeWithRouting).toHaveBeenCalledOnce();
-    expect(preparedRouter.prepareExecution).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.anything(),
-      'user-1',
-      { streaming: false, ironclawChannel: 'trusted-channel' },
-    );
+    expect(preparedRouter.prepareExecution).toHaveBeenCalledWith(expect.anything(), expect.anything(), 'user-1', {
+      streaming: false,
+      ironclawChannel: 'trusted-channel',
+    });
     expect(router.executeWithRouting.mock.calls[0]![0]).toMatchObject({
       parameters: { executionPlanId: '44444444-4444-4444-4444-444444444444' },
     });
@@ -511,18 +540,26 @@ describe('runMemoryActionLoopJob', () => {
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy',
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
       autonomy_settings: {
-        maxSpendPerActionCents: 0, maxDailySpendCents: 0,
-        allowedDomains: [], blockedDomains: [], requireApprovalForIrreversible: true,
+        maxSpendPerActionCents: 0,
+        maxDailySpendCents: 0,
+        allowedDomains: [],
+        blockedDomains: [],
+        requireApprovalForIrreversible: true,
       },
       ironclaw_channel: null,
     });
     mockExecutionAdmissionRepository.isDispatchable.mockResolvedValue(false);
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {},
-        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'direct',
+        selectedAdapter: 'direct',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'direct',
       }),
       executeWithRouting: vi.fn(),
     };
@@ -530,11 +567,15 @@ describe('runMemoryActionLoopJob', () => {
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
-      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'allowed',
-      }) },
+      policyEvaluator: {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'allowed',
+        }),
+      },
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).not.toHaveBeenCalled();
@@ -553,27 +594,36 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {},
-      ironclaw_channel: 'trusted-channel', execution_authority_revision: 'authority-revision-1',
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: 'trusted-channel',
+      execution_authority_revision: 'authority-revision-1',
     });
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {},
-        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'direct',
+        selectedAdapter: 'direct',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'direct',
       }),
-      executeWithRouting: vi.fn().mockRejectedValue(
-        new NoRequestExecutionError('request-start authority refused'),
-      ),
+      executeWithRouting: vi.fn().mockRejectedValue(new NoRequestExecutionError('request-start authority refused')),
     };
 
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
-      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'allowed',
-      }) },
+      policyEvaluator: {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'allowed',
+        }),
+      },
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(mockExecutionAdmissionRepository.failBeforeDispatch).toHaveBeenCalledWith({
@@ -594,41 +644,54 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {},
-      ironclaw_channel: 'old-channel', execution_authority_revision: 'old-channel-revision',
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: 'old-channel',
+      execution_authority_revision: 'old-channel-revision',
     });
     let policyReads = 0;
     let channelChanged = false;
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'ironclaw', fallbackChain: [], trustProfile: {},
-        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'ironclaw',
+        selectedAdapter: 'ironclaw',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'ironclaw',
       }),
-      executeWithRouting: vi.fn(async (
-        action: { parameters: Record<string, unknown> },
-        _risk: unknown,
-        _userId: string,
-        context: { ironclawChannel?: string },
-      ) => {
-        expect(channelChanged).toBe(true);
-        expect(action.parameters['credentialAuthorityRevision']).toBe('old-channel-revision');
-        expect(context.ironclawChannel).toBe('old-channel');
-        throw new NoRequestExecutionError('channel authority changed before request start');
-      }),
+      executeWithRouting: vi.fn(
+        async (
+          action: { parameters: Record<string, unknown> },
+          _risk: unknown,
+          _userId: string,
+          context: { ironclawChannel?: string },
+        ) => {
+          expect(channelChanged).toBe(true);
+          expect(action.parameters['credentialAuthorityRevision']).toBe('old-channel-revision');
+          expect(context.ironclawChannel).toBe('old-channel');
+          throw new NoRequestExecutionError('channel authority changed before request start');
+        },
+      ),
     };
 
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
-      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'allowed',
-      }) },
+      policyEvaluator: {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'allowed',
+        }),
+      },
       loadPolicies: async () => {
         policyReads += 1;
         if (policyReads === 2) channelChanged = true;
         return [];
       },
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).toHaveBeenCalledOnce();
@@ -642,15 +705,24 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const secret = 'opaque-memory-token';
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
     });
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
-        modifiedRiskAssessment: {}, reasoning: 'direct route',
+        selectedAdapter: 'direct',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'direct route',
       }),
       executeWithRouting: vi.fn().mockResolvedValue({
-        planId: 'adapter-plan-failed', status: 'failed', startedAt: new Date(),
+        planId: 'adapter-plan-failed',
+        status: 'failed',
+        startedAt: new Date(),
         completedAt: new Date(),
         output: {
           adapter_used: 'direct',
@@ -667,11 +739,15 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
-      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'All policies passed.',
-      }) },
+      policyEvaluator: {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'All policies passed.',
+        }),
+      },
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(summary.executionFailed).toBe(1);
@@ -692,19 +768,38 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy',
-      autonomy_settings: {}, ironclaw_channel: null,
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
     });
     const policyEvaluator = {
-      evaluate: vi.fn()
-        .mockResolvedValueOnce({ allowed: true, requiresApproval: false, reason: 'initially allowed' })
-        .mockResolvedValueOnce({ allowed: true, requiresApproval: false, reason: 'allowed at admission' })
-        .mockResolvedValueOnce({ allowed: false, requiresApproval: true, reason: 'operator paused' }),
+      evaluate: vi
+        .fn()
+        .mockResolvedValueOnce({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'initially allowed',
+        })
+        .mockResolvedValueOnce({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'allowed at admission',
+        })
+        .mockResolvedValueOnce({
+          allowed: false,
+          requiresApproval: true,
+          reason: 'operator paused',
+        }),
     };
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {},
-        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'direct',
+        selectedAdapter: 'direct',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'direct',
       }),
       executeWithRouting: vi.fn(),
     };
@@ -714,7 +809,7 @@ getExecutionRouter: async () => asPreparedRouter(router),
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator,
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(policyEvaluator.evaluate).toHaveBeenCalledTimes(3);
@@ -729,21 +824,31 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy',
-      autonomy_settings: {}, ironclaw_channel: null,
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
     });
     const policyEvaluator = {
       evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'All policies passed.',
+        allowed: true,
+        requiresApproval: false,
+        reason: 'All policies passed.',
       }),
     };
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'ironclaw', fallbackChain: [], trustProfile: {},
-        riskModifierApplied: 0, modifiedRiskAssessment: {}, reasoning: 'preferred',
+        selectedAdapter: 'ironclaw',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'preferred',
       }),
       executeWithRouting: vi.fn().mockResolvedValue({
-        planId: 'adapter-plan-unresolved', status: 'pending', startedAt: new Date(),
+        planId: 'adapter-plan-unresolved',
+        status: 'pending',
+        startedAt: new Date(),
       }),
     };
 
@@ -752,7 +857,7 @@ getExecutionRouter: async () => asPreparedRouter(router),
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
       policyEvaluator,
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(summary.executionAmbiguous).toBe(1);
@@ -767,8 +872,12 @@ getExecutionRouter: async () => asPreparedRouter(router),
     );
     expect(mockExecutionAdmissionRepository.admitMemoryExecution).toHaveBeenCalledWith(
       expect.objectContaining({
-        preEffectOutcome: expect.objectContaining({ explanation: expect.stringContaining('before adapter dispatch') }),
-        preEffectExplanation: expect.objectContaining({ whatHappened: expect.stringContaining('before adapter dispatch') }),
+        preEffectOutcome: expect.objectContaining({
+          explanation: expect.stringContaining('before adapter dispatch'),
+        }),
+        preEffectExplanation: expect.objectContaining({
+          whatHappened: expect.stringContaining('before adapter dispatch'),
+        }),
       }),
     );
   });
@@ -777,7 +886,10 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
     });
     mockExecutionAdmissionRepository.observeTerminal.mockRejectedValue(new Error('commit response lost'));
     mockExecutionRepository.finalizeAdmittedPlan.mockRejectedValue(new Error('result DB unavailable'));
@@ -785,23 +897,34 @@ getExecutionRouter: async () => asPreparedRouter(router),
     mockMemoryActionOpportunityRepository.markStatus.mockRejectedValue(new Error('opportunity DB unavailable'));
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
-        modifiedRiskAssessment: {}, reasoning: 'direct route',
+        selectedAdapter: 'direct',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'direct route',
       }),
       executeWithRouting: vi.fn().mockResolvedValue({
-        planId: 'adapter-plan-completed', status: 'completed', startedAt: new Date(),
-        completedAt: new Date(), output: { adapter_used: 'direct' },
+        planId: 'adapter-plan-completed',
+        status: 'completed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        output: { adapter_used: 'direct' },
       }),
     };
 
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
-      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'All policies passed.',
-      }) },
+      policyEvaluator: {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'All policies passed.',
+        }),
+      },
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(summary.autoExecuted).toBe(1);
@@ -817,11 +940,12 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
     });
-    mockExecutionAdmissionRepository.admitMemoryExecution.mockRejectedValue(
-      new Error('commit response lost'),
-    );
+    mockExecutionAdmissionRepository.admitMemoryExecution.mockRejectedValue(new Error('commit response lost'));
     mockExecutionAdmissionRepository.findByScope.mockResolvedValueOnce({
       created: false,
       barrier: { status: 'in_progress' },
@@ -829,8 +953,12 @@ getExecutionRouter: async () => asPreparedRouter(router),
     });
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
-        modifiedRiskAssessment: {}, reasoning: 'direct route',
+        selectedAdapter: 'direct',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'direct route',
       }),
       executeWithRouting: vi.fn(),
     };
@@ -838,11 +966,15 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
-      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'All policies passed.',
-      }) },
+      policyEvaluator: {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'All policies passed.',
+        }),
+      },
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).not.toHaveBeenCalled();
@@ -857,7 +989,10 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const opportunity = makeOpportunity('create_task');
     mockCommon(opportunity);
     mockUserRepository.findById.mockResolvedValue({
-      id: 'user-1', trust_tier: 'high_autonomy', autonomy_settings: {}, ironclaw_channel: null,
+      id: 'user-1',
+      trust_tier: 'high_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: null,
     });
     mockExecutionAdmissionRepository.admitMemoryExecution.mockResolvedValueOnce({
       created: false,
@@ -869,8 +1004,12 @@ getExecutionRouter: async () => asPreparedRouter(router),
     });
     const router = {
       route: vi.fn().mockResolvedValue({
-        selectedAdapter: 'direct', fallbackChain: [], trustProfile: {}, riskModifierApplied: 0,
-        modifiedRiskAssessment: {}, reasoning: 'direct route',
+        selectedAdapter: 'direct',
+        fallbackChain: [],
+        trustProfile: {},
+        riskModifierApplied: 0,
+        modifiedRiskAssessment: {},
+        reasoning: 'direct route',
       }),
       executeWithRouting: vi.fn(),
     };
@@ -878,11 +1017,15 @@ getExecutionRouter: async () => asPreparedRouter(router),
     const summary = await runMemoryActionLoopJob({
       userIds: ['user-1'],
       fetchBundle: async () => ({ suggestions: [], pagesById: new Map() }),
-      policyEvaluator: { evaluate: vi.fn().mockResolvedValue({
-        allowed: true, requiresApproval: false, reason: 'All policies passed.',
-      }) },
+      policyEvaluator: {
+        evaluate: vi.fn().mockResolvedValue({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'All policies passed.',
+        }),
+      },
       loadPolicies: async () => [],
-getExecutionRouter: async () => asPreparedRouter(router),
+      getExecutionRouter: async () => asPreparedRouter(router),
     });
 
     expect(router.executeWithRouting).not.toHaveBeenCalled();
@@ -923,10 +1066,9 @@ getExecutionRouter: async () => asPreparedRouter(router),
 
   it('does not begin persistence when generation revokes during bundle collection', async () => {
     const controller = new AbortController();
-    let release: ((value: {
-      suggestions: DailyMemorySuggestion[];
-      pagesById: Map<string, DailyMemorySuggestionPage>;
-    }) => void) | undefined;
+    let release:
+      | ((value: { suggestions: DailyMemorySuggestion[]; pagesById: Map<string, DailyMemorySuggestionPage> }) => void)
+      | undefined;
     const bundle = new Promise<{
       suggestions: DailyMemorySuggestion[];
       pagesById: Map<string, DailyMemorySuggestionPage>;

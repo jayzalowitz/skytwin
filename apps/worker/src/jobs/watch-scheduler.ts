@@ -1,22 +1,16 @@
 import { createLogger } from '@skytwin/core';
 import { requireJobAdmission, runAdmitted } from './job-admission.js';
-import {
-  watchRepository,
-  watchRunRepository,
-  signalRepository,
-  userRepository,
-} from '@skytwin/db';
+import { watchRunRepository, signalRepository } from '@skytwin/db';
 import type { SignalRow } from '@skytwin/db';
-import type { Watch } from '@skytwin/shared-types';
+import type { RoutineSpec } from '@skytwin/shared-types';
 import { computeNextRun, matchesFilter, type MatchableSignal } from '@skytwin/routines';
 
 const log = createLogger('worker:watch-scheduler');
 
-const HOUR_MS = 60 * 60 * 1000;
-/** Hard ceiling on a single firing's signal window (bounds per-tick work after long downtime). */
-const MAX_WINDOW_MS = 7 * 24 * HOUR_MS;
 /** Cap on the matched-signal refs stored in a run row (matchedCount keeps the true total). */
 const MAX_STORED_REFS = 200;
+const MAX_SLOTS_PER_TICK = 100;
+const ZERO_MATCH_RETENTION_DAYS = 30;
 
 /**
  * The scheduler polls this often; per-watch cadence is enforced by each watch's
@@ -43,13 +37,6 @@ export function shouldRunWatchScheduler(input: {
 }): boolean {
   if (!input.enabled) return false;
   return input.nowMs - input.lastRunAt >= (input.intervalMs ?? WATCH_SCHEDULER_INTERVAL_MS);
-}
-
-/** First-run lookback when a watch has never fired, by cadence. */
-function defaultLookbackMs(cadence: Watch['cadence']): number {
-  if (cadence === 'hourly') return HOUR_MS;
-  if (cadence === 'weekly') return 7 * 24 * HOUR_MS;
-  return 24 * HOUR_MS;
 }
 
 function str(v: unknown): string {
@@ -88,7 +75,7 @@ export interface WatchEvaluation {
  * no clock — unit-testable in isolation.
  */
 export function evaluateWatch(
-  watch: Watch,
+  watch: RoutineSpec,
   signals: SignalRow[],
   windowStart: Date,
   windowEnd: Date,
@@ -114,88 +101,90 @@ export function evaluateWatch(
   }
   // matchedCount is the true total; store a bounded slice of refs so a run row
   // can't balloon on a pathological match set.
-  return { matchedCount: n, matchedRefs: matched.slice(0, MAX_STORED_REFS).map((s) => s.id), summary };
+  return {
+    matchedCount: n,
+    matchedRefs: matched.slice(0, MAX_STORED_REFS).map((s) => s.id),
+    summary,
+  };
 }
 
 export interface WatchSchedulerDeps {
-  now?: Date;
-  watchRepo?: Pick<typeof watchRepository, 'listDue' | 'claimDue'>;
-  runRepo?: Pick<typeof watchRunRepository, 'create'>;
-  signalRepo?: Pick<typeof signalRepository, 'getRecent'>;
-  userRepo?: Pick<typeof userRepository, 'getLocale'>;
+  runRepo?: Pick<typeof watchRunRepository, 'claimNextDueSlot' | 'completeSlot' | 'failSlot' | 'pruneZeroMatchSlots'>;
+  signalRepo?: Pick<typeof signalRepository, 'listInWindow'>;
   signal?: AbortSignal;
 }
 
 /**
- * Fire every due watch: match the user's recent signals against its filter,
- * record a `watch_run` when there's something (the canonical, explanation-
- * carrying record), and schedule the next firing. Read-only — no action, no
- * policy gate. Each watch is isolated so one failure can't stall the rest.
+ * Claim durable scheduled slots, evaluate their persisted windows, and finish
+ * each slot even when no signal matched. Read-only processing is lease-retried;
+ * user-facing repositories hide zero-match slots. Each slot is isolated so one
+ * failure cannot stall the rest.
  */
 export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promise<void> {
   requireJobAdmission(deps.signal);
-  const now = deps.now ?? new Date();
-  const watchRepo = deps.watchRepo ?? watchRepository;
   const runRepo = deps.runRepo ?? watchRunRepository;
   const signalRepo = deps.signalRepo ?? signalRepository;
-  const userRepo = deps.userRepo ?? userRepository;
-
-  const due = await runAdmitted(deps.signal, () => watchRepo.listDue(now));
-  if (due.length === 0) return;
-
-  let fired = 0;
-  for (const watch of due) {
+  let completed = 0;
+  let matched = 0;
+  for (let i = 0; i < MAX_SLOTS_PER_TICK; i += 1) {
     requireJobAdmission(deps.signal);
+    const slot = await runAdmitted(deps.signal, () => runRepo.claimNextDueSlot({ calculateNextRun: computeNextRun }));
+    if (!slot) break;
     try {
-      if (!watch.nextRunAt) continue; // defensive: listDue only returns non-null
-      const tz = (await userRepo.getLocale(watch.userId)).timezone ?? 'UTC';
-
-      // Window since the last run — but never before the watch existed (a fresh
-      // watch must not digest signals from before it was created), and never
-      // wider than MAX_WINDOW_MS (bound work after long downtime).
-      const cadenceFloor = new Date(now.getTime() - defaultLookbackMs(watch.cadence));
-      const createdAt = watch.createdAt instanceof Date ? watch.createdAt : cadenceFloor;
-      const firstRunStart = new Date(Math.max(cadenceFloor.getTime(), createdAt.getTime()));
-      let windowStart = watch.lastRunAt ?? firstRunStart;
-      const hardFloor = new Date(now.getTime() - MAX_WINDOW_MS);
-      if (windowStart < hardFloor) windowStart = hardFloor;
-
-      const lookbackHours = Math.ceil((now.getTime() - windowStart.getTime()) / HOUR_MS) + 1;
-      const signals = await signalRepo.getRecent(watch.userId, undefined, lookbackHours);
-      const evalResult = evaluateWatch(watch, signals, windowStart, now);
-
-      // Claim AFTER the expensive fetch/evaluate: a crash there does NOT advance
-      // the schedule, so the window is retried next tick (no lost digest). Only
-      // the winner of the atomic claim writes the run; a loser discards its work.
-      const claimed = await watchRepo.claimDue(
-        watch.id,
-        watch.nextRunAt,
-        computeNextRun(watch, now, tz),
-        now,
+      const signals = await runAdmitted(deps.signal, () =>
+        signalRepo.listInWindow(slot.userId, slot.windowStart, slot.windowEnd),
       );
-      if (!claimed) continue;
-
-      if (evalResult.matchedCount > 0) {
-        requireJobAdmission(deps.signal);
-        await runRepo.create({
-          watchId: watch.id,
-          userId: watch.userId,
-          action: watch.action,
+      const evalResult = evaluateWatch(slot.spec, signals, slot.windowStart, slot.windowEnd);
+      const wonLease = await runAdmitted(deps.signal, () =>
+        runRepo.completeSlot({
+          id: slot.id,
+          leaseToken: slot.leaseToken,
           matchedCount: evalResult.matchedCount,
           summary: evalResult.summary,
           matchedRefs: evalResult.matchedRefs,
-        });
-        requireJobAdmission(deps.signal);
-        fired += 1;
+        }),
+      );
+      if (wonLease) {
+        completed += 1;
+        if (evalResult.matchedCount > 0) matched += 1;
       }
     } catch (err) {
+      // A revoked worker generation must not convert its abandoned lease into
+      // an ordinary retry record after shutdown or credential revocation.
       requireJobAdmission(deps.signal);
-      log.error(`Watch ${watch.id} failed to run`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        const result = await runAdmitted(deps.signal, () =>
+          runRepo.failSlot({
+            id: slot.id,
+            leaseToken: slot.leaseToken,
+            retryDelayMs: WATCH_SCHEDULER_INTERVAL_MS,
+            error: message,
+          }),
+        );
+        log.error(`Watch slot ${slot.id} failed (${result})`, {
+          error: message,
+        });
+      } catch (failError) {
+        requireJobAdmission(deps.signal);
+        log.error(`Watch slot ${slot.id} failed and could not record the failure`, {
+          error: failError instanceof Error ? failError.message : String(failError),
+          processingError: message,
+        });
+      }
     }
   }
 
   requireJobAdmission(deps.signal);
-  if (fired > 0) log.info(`Watch scheduler: ${fired} of ${due.length} due watch(es) produced a run`);
+  if (completed > 0) {
+    log.info(`Watch scheduler: completed ${completed} durable slot(s); ${matched} produced matches`);
+  }
+  try {
+    await runAdmitted(deps.signal, () => runRepo.pruneZeroMatchSlots(ZERO_MATCH_RETENTION_DAYS, 100));
+  } catch (err) {
+    requireJobAdmission(deps.signal);
+    log.error('Watch scheduler could not prune expired zero-match slots', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }

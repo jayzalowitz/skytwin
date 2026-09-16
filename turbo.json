@@ -20,7 +20,9 @@
         "BRIDGE_PORT",
         "OLLAMA_HOST",
         "OLLAMA_MODEL",
-        "AWARENESS_DISPOSITION_GATE"
+        "AWARENESS_DISPOSITION_GATE",
+        "SKYTWIN_GMAIL_ARCHIVE_ENABLED",
+        "SKYTWIN_WATCHES_ENABLED"
       ]
     },
     "test": {

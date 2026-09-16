@@ -9,8 +9,10 @@ describe('ActionHandlerRegistry', () => {
     const email = new EmailActionHandler();
     registry.register(email);
 
-    expect(registry.hasHandler('archive_email')).toBe(true);
-    expect(registry.getHandler('archive_email')).toBe(email);
+    expect(registry.hasHandler('archive_email')).toBe(false);
+    expect(registry.getHandler('archive_email')).toBeNull();
+    expect(registry.hasHandler('label_email')).toBe(true);
+    expect(registry.getHandler('label_email')).toBe(email);
   });
 
   it('returns null for unregistered action types without generic handler', () => {

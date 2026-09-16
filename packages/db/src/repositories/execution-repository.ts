@@ -91,21 +91,29 @@ export interface ExecutionPlanWithResult {
  * #324: this is the materialized output of the
  * `capability_provenance_nodes → decision_outcomes → execution_plans →
  * execution_results` join the `regret` endpoint needs. `executionPlanId` is the
- * real plan ID `IronClawAdapter.rollback(planId)` acts on (NULL when no outcome
- * links to a plan yet); `adapterUsed` is the adapter that executed the plan
- * (read from `execution_results.outputs.adapter_used`) so rollback can route
- * back to the SAME adapter that performed the action.
+ * exact completed plan ID (NULL when the validated graph is absent);
+ * `adapterUsed` identifies the adapter recorded on its successful reversible
+ * result. This is report metadata only until a durable rollback lifecycle owns
+ * any future dispatch.
  */
 export interface RollbackTarget {
   /** The provenance node's `ref_id` — the candidate action id. */
-  actionId: string;
-  /** Raw provenance payload (carries `reversible` + `irreversibleReason`). */
-  payload: Record<string, unknown> | null;
-  occurredAt: Date;
+  readonly actionId: string;
+  /**
+   * Action type read through the exact owner/decision/outcome/plan binding.
+   * NULL means that immutable graph is absent or inconsistent and therefore
+   * cannot authorize generic rollback dispatch.
+   */
+  readonly actionType: string | null;
+  /** Reversibility from the exactly bound candidate row, never provenance JSON. */
+  readonly reversible: boolean | null;
+  /** Raw provenance payload; presentation metadata only. */
+  readonly payload: Record<string, unknown> | null;
+  readonly occurredAt: Date;
   /** Real execution plan id resolved via the #324 FK, or NULL if unlinked. */
-  executionPlanId: string | null;
+  readonly executionPlanId: string | null;
   /** Adapter that executed the plan, or NULL if not recorded / no result. */
-  adapterUsed: string | null;
+  readonly adapterUsed: string | null;
 }
 
 /**
@@ -314,60 +322,90 @@ export const executionRepository = {
    *
    * Walks `capability_provenance_nodes` (the server↔action attribution) and,
    * for each `action` node, resolves the real execution plan via the #324
-   * `decision_outcomes.execution_plan_id` FK plus the adapter that executed it
-   * via `execution_results.outputs->>'adapter_used'`. The `regret` endpoint
-   * uses this to dispatch `IronClawAdapter.rollback(planId)` through the
-   * execution router, targeting the SAME adapter that ran the action.
+   * `decision_outcomes.execution_plan_id` FK plus the successful reversible
+   * result's recorded adapter. The `regret` endpoint uses this for a truthful
+   * report only; it does not authorize or dispatch a rollback.
    *
-   * SUBQUERY (not LEFT JOIN) for `execution_plan_id`: `selected_action_id`
-   * should be unique per outcome but there is no DB constraint enforcing it, so
-   * a LEFT JOIN could duplicate the provenance row. `LIMIT 1` keeps one row per
-   * provenance node regardless. The adapter lookup is similarly a scalar
-   * subquery against the latest result for the resolved plan.
+   * The outer lateral subquery independently binds candidate identity/type and
+   * reversibility through its owner-scoped decision. Its nested lateral lookup
+   * exposes plan/adapter metadata only when the current outcome plan identifies
+   * that same action and has a qualifying result. This preserves archive and
+   * reversibility classification even when plan metadata must fail closed.
    */
   async getRollbackTargetsByServer(input: {
     serverId: string;
     userId: string;
     since: Date;
-  }): Promise<RollbackTarget[]> {
+  }): Promise<readonly RollbackTarget[]> {
     const result = await query<{
       ref_id: string;
       payload: Record<string, unknown> | null;
       occurred_at: Date;
       execution_plan_id: string | null;
       adapter_used: string | null;
+      action_type: string | null;
+      reversible: boolean | null;
     }>(
       `SELECT pn.ref_id,
               pn.payload,
               pn.occurred_at,
               link.execution_plan_id,
-              (SELECT er.outputs->>'adapter_used'
-                 FROM execution_results er
-                WHERE er.plan_id = link.execution_plan_id
-                ORDER BY er.completed_at DESC
-                LIMIT 1) AS adapter_used
+              link.action_type,
+              link.reversible,
+              link.adapter_used
          FROM capability_provenance_nodes pn
          LEFT JOIN LATERAL (
-                SELECT doc.execution_plan_id
-                  FROM decision_outcomes doc
-                 WHERE doc.selected_action_id = pn.ref_id
+                SELECT candidate.action_type,
+                       candidate.reversible,
+                       qualified.execution_plan_id,
+                       qualified.adapter_used
+                  FROM candidate_actions candidate
+                  JOIN decisions decision
+                    ON decision.id = candidate.decision_id
+                   AND decision.user_id = pn.user_id
+                  JOIN decision_outcomes doc
+                    ON doc.decision_id = decision.id
+                   AND doc.selected_action_id = candidate.id
+                  LEFT JOIN LATERAL (
+                    SELECT plan.id AS execution_plan_id,
+                           latest_result.outputs->>'adapter_used' AS adapter_used
+                      FROM execution_plans plan
+                      JOIN LATERAL (
+                        SELECT result.*
+                          FROM execution_results result
+                         WHERE result.plan_id = plan.id
+                         ORDER BY result.completed_at DESC, result.id DESC
+                         LIMIT 1
+                      ) latest_result ON true
+                     WHERE plan.id = doc.execution_plan_id
+                       AND plan.decision_id = decision.id
+                       AND plan.action_id = candidate.id
+                       AND plan.status = 'completed'
+                       AND latest_result.success = true
+                       AND latest_result.rollback_available = true
+                       AND nullif(latest_result.outputs->>'adapter_used', '') IS NOT NULL
+                     LIMIT 1
+                  ) qualified ON true
+                 WHERE candidate.id = pn.ref_id
                  LIMIT 1
               ) link ON true
         WHERE pn.server_id = $1
           AND pn.node_type = 'action'
           AND pn.occurred_at >= $2
           AND pn.user_id = $3
-        ORDER BY pn.occurred_at DESC`,
+        ORDER BY pn.occurred_at DESC, pn.id DESC`,
       [input.serverId, input.since, input.userId],
     );
 
-    return result.rows.map((row) => ({
+    return Object.freeze(result.rows.map((row) => Object.freeze({
       actionId: row.ref_id,
+      actionType: row.action_type,
+      reversible: row.reversible,
       payload: row.payload,
       occurredAt: row.occurred_at,
       executionPlanId: row.execution_plan_id,
       adapterUsed: normalizeMemoryActionAdapterName(row.adapter_used),
-    }));
+    })));
   },
 
   /**

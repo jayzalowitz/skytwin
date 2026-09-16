@@ -2,6 +2,8 @@
 export type {
   RawSignal,
   SignalHandler,
+  ConnectorEvidence,
+  GmailConnectorEvidence,
 } from './connector-interface.js';
 export type { SignalConnector } from './connector-interface.js';
 
@@ -17,7 +19,7 @@ export { MockCalendarConnector } from './mock-calendar-connector.js';
 
 // Real connector implementations
 export { GmailConnector, normalizeSenderAddress, parseListId } from './gmail-connector.js';
-export type { CursorStore, LabelObserver } from './gmail-connector.js';
+export type { CursorStore, LabelObserver, GmailAccountBinding } from './gmail-connector.js';
 export {
   classifyEmailAuthoringTier,
   extractBareAddress,
@@ -40,13 +42,20 @@ export {
   revokeToken,
   OAuthRefreshError,
 } from './oauth/google-oauth.js';
-export type { GoogleOAuthConfig, PkcePair } from './oauth/google-oauth.js';
+export type {
+  GoogleOAuthConfig,
+  GoogleOAuthRefreshTransportOptions,
+  PkcePair,
+} from './oauth/google-oauth.js';
 
 // Microsoft Entra OAuth — foundation for the Outlook (Graph) connector.
 // Namespaced because its function names (generateAuthUrl, exchangeCode,
 // refreshAccessToken) intentionally mirror the Google module's.
 export * as microsoftOAuth from './oauth/microsoft-oauth.js';
-export type { MicrosoftOAuthConfig } from './oauth/microsoft-oauth.js';
+export type {
+  MicrosoftOAuthConfig,
+  MicrosoftOAuthRefreshOptions,
+} from './oauth/microsoft-oauth.js';
 export { MicrosoftOAuthRefreshError, MICROSOFT_GRAPH_SCOPES } from './oauth/microsoft-oauth.js';
 
 // Profile sync — capture per-user language + timezone from the Google identity (#486).
@@ -54,4 +63,4 @@ export { fetchGoogleProfileSync } from './google-profile-sync.js';
 export type { GoogleProfileSyncResult, FetchLike } from './google-profile-sync.js';
 export type { OAuthTokenStore } from './oauth/token-store.js';
 export { DbTokenStore } from './oauth/db-token-store.js';
-export type { AuditLogPort } from './oauth/db-token-store.js';
+export type { AuditLogPort, RevisionBoundOAuthTokenSet } from './oauth/db-token-store.js';

@@ -284,20 +284,55 @@ async function applyMigrations(
     const statements = splitSqlStatements(sql);
 
     let applied = 0;
-    for (const stmt of statements) {
-      try {
-        requireOwnedMigrationAuthority(authorize);
-        await client.query(stmt);
-        applied++;
-      } catch (error) {
-        if (isIdempotentError(error)) {
-          // Already applied on a prior run — skip
-          continue;
+    // Migration 088 must temporarily disable connector_cursors.schema_locked
+    // because CockroachDB rejects the required PK/index/FK changes otherwise.
+    // Statements are committed one at a time, so an error after the unlock
+    // would otherwise strand the table unlocked. Track the committed state and
+    // restore it on every authorized exit, including a failed statement.
+    const guardsConnectorCursorSchemaLock = file === '088-gmail-evidence-foundation.sql';
+    let connectorCursorSchemaLockOpen = false;
+    let migrationError: unknown;
+    try {
+      for (const stmt of statements) {
+        try {
+          requireOwnedMigrationAuthority(authorize);
+          await client.query(stmt);
+          applied++;
+          if (guardsConnectorCursorSchemaLock) {
+            if (/^ALTER TABLE connector_cursors SET \(schema_locked = false\)$/i.test(stmt.trim())) {
+              connectorCursorSchemaLockOpen = true;
+            } else if (/^ALTER TABLE connector_cursors SET \(schema_locked = true\)$/i.test(stmt.trim())) {
+              connectorCursorSchemaLockOpen = false;
+            }
+          }
+        } catch (error) {
+          if (isIdempotentError(error)) {
+            // Already applied on a prior run — skip
+            continue;
+          }
+          console.error(`[migration] ${file}: statement failed:\n${stmt.substring(0, 120)}`);
+          throw error;
         }
-        console.error(`[migration] ${file}: statement failed:\n${stmt.substring(0, 120)}`);
-        throw error;
+      }
+    } catch (error) {
+      migrationError = error;
+    } finally {
+      if (connectorCursorSchemaLockOpen) {
+        try {
+          // Preserve the owned-desktop authority invariant: cleanup is a write
+          // and must never be redirected after the managed child is lost.
+          requireOwnedMigrationAuthority(authorize);
+          await client.query('ALTER TABLE IF EXISTS connector_cursors SET (schema_locked = true)');
+          connectorCursorSchemaLockOpen = false;
+        } catch (cleanupError) {
+          throw new AggregateError(
+            migrationError === undefined ? [cleanupError] : [migrationError, cleanupError],
+            `${file} failed and connector_cursors could not be re-locked`,
+          );
+        }
       }
     }
+    if (migrationError !== undefined) throw migrationError;
     console.log(`[migration] ${file}: applied ${applied} statement(s).`);
   }
 }

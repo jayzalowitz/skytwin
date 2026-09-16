@@ -36,13 +36,13 @@ const EXPECTED_SOURCES = [
 const EXPECTED_MIGRATION_RUNNER = "packages/db/src/migrations/001-initial.ts";
 const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
-  "78be83cc8197f4a07fc7e1498996bf33ce56ebefa81357430a8b7443f9f2764f";
+  "ca0f74a4fda4ccca4911b71c9a67a4b9dee39e5d22970be8f1b4200e1c015076";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "80772b28c97fbfa06872f3153f50f9534e0c201ba95d9687f9a5b708a025bc5e";
+  "f03eab9098df4c1f40ef52133bc4243f41e17c5e7e2f97db9a5a056ca491a091";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "5b46aaee52889285d4e5457459640272bbe5d52f2c36f110eb9d3384dded9360";
+  "81f0d3f24373afb873918f23e280a9bc473f6b18b634c7162aa579a52dc38f50";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -252,6 +252,10 @@ function modeledNonColumnDefinition(definition) {
     new RegExp(
       `^(?:INDEX|FAMILY)(?:\\s+${name})?\\s*\\([\\s\\S]+\\)$`,
       "i",
+    ).test(definition) ||
+    new RegExp(
+      `^UNIQUE\\s+INDEX(?:\\s+${name})?\\s*\\([\\s\\S]+\\)(?:\\s+WHERE\\s+[\\s\\S]+)?$`,
+      "i",
     ).test(definition)
   ) {
     return "modeled_non_column";
@@ -337,7 +341,22 @@ export function applySchemaSql(schema, rawSql) {
     }
     const table = alter[1];
     const action = alter[2].trim();
-    if (splitTopLevel(action).length !== 1) {
+    const actionParts = splitTopLevel(action);
+    if (
+      actionParts.length > 1 &&
+      actionParts.every(
+        (part) =>
+          /^ADD\s+CONSTRAINT\s+(?:"[^"]+"|[a-zA-Z_][\w]*)\s+[\s\S]+$/i.test(
+            part.trim(),
+          ) ||
+          /^DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?(?:"[^"]+"|[a-zA-Z_][\w]*)(?:\s+(?:CASCADE|RESTRICT))?$/i.test(
+            part.trim(),
+          ),
+      )
+    ) {
+      continue;
+    }
+    if (actionParts.length !== 1) {
       throw new Error(`unsupported schema-mutating DDL: ${statement}`);
     }
 
@@ -387,7 +406,8 @@ export function applySchemaSql(schema, rawSql) {
       ) ||
       /^DROP\s+CONSTRAINT\s+(?:IF\s+EXISTS\s+)?(?:"[^"]+"|[a-zA-Z_][\w]*)(?:\s+(?:CASCADE|RESTRICT))?$/i.test(
         action,
-      )
+      ) ||
+      /^SET\s*\(\s*schema_locked\s*=\s*(?:true|false)\s*\)$/i.test(action)
     ) {
       continue;
     }
@@ -572,6 +592,7 @@ export function migrationRunnerContractErrors(source) {
   if (applyMigrations?.body && clientName) {
     let schemaQueryCalls = 0;
     let statementQueryCalls = 0;
+    let cursorRelockGuardCalls = 0;
     let hasUnexpectedQuery = false;
     let hasUnexpectedClientUse = false;
 
@@ -608,6 +629,13 @@ export function migrationRunnerContractErrors(source) {
           node.arguments[0].text === "stmt"
         ) {
           statementQueryCalls += 1;
+        } else if (
+          node.arguments.length === 1 &&
+          ts.isStringLiteral(node.arguments[0]) &&
+          node.arguments[0].text ===
+            "ALTER TABLE IF EXISTS connector_cursors SET (schema_locked = true)"
+        ) {
+          cursorRelockGuardCalls += 1;
         } else {
           hasUnexpectedQuery = true;
         }
@@ -626,11 +654,12 @@ export function migrationRunnerContractErrors(source) {
     if (
       schemaQueryCalls !== 1 ||
       statementQueryCalls !== 1 ||
+      cursorRelockGuardCalls !== 1 ||
       hasUnexpectedQuery ||
       hasUnexpectedClientUse
     ) {
       errors.push(
-        "production migration runner must not execute SQL outside the exact schema and per-statement migration queries",
+        "production migration runner must only execute the exact schema, per-statement migrations, and cursor re-lock guard",
       );
     }
   }
@@ -785,15 +814,25 @@ export function migrationRunnerContractErrors(source) {
     });
     splitsSelectedSql = splitIndex > readIndex && readIndex !== -1;
 
+    function findStatementLoop(node) {
+      if (
+        ts.isForOfStatement(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "statements" &&
+        ts.isVariableDeclarationList(node.initializer) &&
+        node.initializer.declarations.length === 1 &&
+        ts.isIdentifier(node.initializer.declarations[0].name) &&
+        node.initializer.declarations[0].name.text === "stmt"
+      ) return node;
+      if (ts.isFunctionLike(node)) return undefined;
+      let found;
+      ts.forEachChild(node, (child) => {
+        if (!found) found = findStatementLoop(child);
+      });
+      return found;
+    }
     const statementLoopIndex = statements.findIndex(
-      (statement) =>
-        ts.isForOfStatement(statement) &&
-        ts.isIdentifier(statement.expression) &&
-        statement.expression.text === "statements" &&
-        ts.isVariableDeclarationList(statement.initializer) &&
-        statement.initializer.declarations.length === 1 &&
-        ts.isIdentifier(statement.initializer.declarations[0].name) &&
-        statement.initializer.declarations[0].name.text === "stmt",
+      (statement) => findStatementLoop(statement) !== undefined,
     );
     skipsSelectedFile = statements
       .slice(
@@ -807,10 +846,13 @@ export function migrationRunnerContractErrors(source) {
           ts.isReturnStatement(statement),
       );
 
-    const statementLoop = statements[statementLoopIndex];
+    const statementLoop = statementLoopIndex === -1
+      ? undefined
+      : findStatementLoop(statements[statementLoopIndex]);
     if (
       statementLoopIndex > splitIndex &&
       splitIndex !== -1 &&
+      statementLoop &&
       ts.isForOfStatement(statementLoop)
     ) {
       function findExecution(node, conditionallySkipped = false) {
@@ -1144,14 +1186,29 @@ export function auditDynamicSqlFile(repoPath, content, schema) {
         `for\\s*\\(\\s*const\\s+${escaped}\\s+of\\s*\\[([\\s\\S]*?)\\]\\s*\\)`,
       ),
     );
-    if (!loop) {
+    if (loop) {
+      for (const match of loop[1].matchAll(/['"]([a-z_][a-z0-9_]*)['"]/g)) {
+        loopTables.add(match[1]);
+      }
+      continue;
+    }
+    const finiteConditionalAssignments = [
+      ...code.matchAll(
+        new RegExp(
+          `const\\s+${escaped}\\s*=\\s*[^;?]+\\?\\s*['"]([a-z_][a-z0-9_]*)['"]\\s*:\\s*['"]([a-z_][a-z0-9_]*)['"]\\s*;`,
+          "g",
+        ),
+      ),
+    ];
+    if (finiteConditionalAssignments.length === 0) {
       errors.push(
         `${repoPath}: dynamic SQL identifier ${identifier} needs a validator-supported finite table declaration`,
       );
       continue;
     }
-    for (const match of loop[1].matchAll(/['"]([a-z_][a-z0-9_]*)['"]/g)) {
+    for (const match of finiteConditionalAssignments) {
       loopTables.add(match[1]);
+      loopTables.add(match[2]);
     }
   }
   if (loopTables.size > 0 && !sameStringSet(annotated, loopTables)) {

@@ -77,6 +77,38 @@ describe('OutlookCalendarConnector', () => {
     await expect(new OutlookCalendarConnector('u', makeStubStore(null)).connect()).rejects.toThrow();
   });
 
+  it('loads and saves delta links through the bound connector account', async () => {
+    const get = vi.fn(async () => null);
+    const save = vi.fn(async () => undefined);
+    const getForAccount = vi.fn(async () => 'BOUND-OLD');
+    const saveForAccount = vi.fn(async () => undefined);
+    const cursor: CursorStore = { get, save, getForAccount, saveForAccount };
+    fetchMock.mockResolvedValueOnce(res(200, { value: [gevent()], '@odata.deltaLink': 'BOUND-NEW' }));
+    const accountId = '11111111-1111-4111-8111-111111111111';
+    const conn = new OutlookCalendarConnector(
+      'user-1', makeStubStore(VALID_TOKEN), cursor, accountId,
+    );
+
+    await conn.connect();
+    const [signal] = await conn.poll();
+
+    expect(getForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'outlook_calendar', 'delta_link',
+    );
+    expect(saveForAccount).not.toHaveBeenCalled();
+    await conn.commitCursor();
+    expect(saveForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'outlook_calendar', 'delta_link', 'BOUND-NEW',
+    );
+    expect(signal?.id).toContain(accountId);
+    expect(signal?.connectorEvidence).toMatchObject({
+      kind: 'account_signal', connectorAccountId: accountId,
+      provider: 'microsoft', source: 'outlook_calendar',
+    });
+    expect(get).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('bootstraps from calendarView/delta and shapes a meeting_invite signal', async () => {
     fetchMock.mockResolvedValueOnce(res(200, { value: [gevent({ id: 'e1' })], '@odata.deltaLink': 'DELTA1' }));
     const cursor = makeCursorStore();

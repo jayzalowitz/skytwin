@@ -104,7 +104,10 @@ describe('Routines API routes', () => {
       requiresApproval: false,
       reason: 'Allowed by current policy.',
     });
-    mocks.recordNonAction.mockResolvedValue({ created: true, decisionId: 'decision-1' });
+    mocks.recordNonAction.mockResolvedValue({
+      created: true,
+      decisionId: 'decision-1',
+    });
     mocks.getAdapter.mockResolvedValue(adapter);
     adapter.createRoutine.mockResolvedValue({ routineId: 'routine-1' });
     adapter.listRoutines.mockResolvedValue([
@@ -124,22 +127,26 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(503);
-      expect(response.body).toMatchObject({ code: 'routine_registration_unavailable' });
-      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
-        outcome: expect.objectContaining({
-          selectedAction: null,
-          riskAssessment: null,
-          allCandidates: [expect.any(Object)],
-          allRiskAssessments: [expect.any(Object)],
-          autoExecute: false,
-          requiresApproval: false,
-          reasoning: expect.stringContaining('runtime policy and explanation admission'),
+      expect(response.body).toMatchObject({
+        code: 'routine_registration_unavailable',
+      });
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: expect.objectContaining({
+            selectedAction: null,
+            riskAssessment: null,
+            allCandidates: [expect.any(Object)],
+            allRiskAssessments: [expect.any(Object)],
+            autoExecute: false,
+            requiresApproval: false,
+            reasoning: expect.stringContaining('runtime policy and explanation admission'),
+          }),
+          explanation: expect.objectContaining({
+            summary: 'The routine was not registered.',
+            escalationRationale: expect.stringContaining('runtime policy and explanation admission'),
+          }),
         }),
-        explanation: expect.objectContaining({
-          summary: 'The routine was not registered.',
-          escalationRationale: expect.stringContaining('runtime policy and explanation admission'),
-        }),
-      }));
+      );
       expect(mocks.getAdapter).not.toHaveBeenCalled();
       expect(adapter.createRoutine).not.toHaveBeenCalled();
     });
@@ -181,6 +188,25 @@ describe('Routines API routes', () => {
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
+    it('rejects archive_email before generic routine admission', async () => {
+      const response = await request(app, 'POST', '/api/routines', {
+        userId: USER_ID,
+        schedule: '0 9 * * *',
+        plan: { action: { actionType: 'archive_email' } },
+      });
+
+      expect(response).toEqual({
+        status: 409,
+        body: {
+          error: 'archive_email is reserved for its dedicated execution lifecycle.',
+        },
+      });
+      expect(mocks.findUser).not.toHaveBeenCalled();
+      expect(mocks.evaluatePolicy).not.toHaveBeenCalled();
+      expect(mocks.recordNonAction).not.toHaveBeenCalled();
+      expect(mocks.getAdapter).not.toHaveBeenCalled();
+    });
+
     it('fails closed with no adapter access when the atomic audit write fails', async () => {
       mocks.recordNonAction.mockRejectedValueOnce(new Error('audit transaction rolled back'));
 
@@ -210,20 +236,27 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(403);
-      expect(response.body).toMatchObject({ code: 'routine_blocked_by_policy' });
-      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
-        outcome: expect.objectContaining({
-          selectedAction: null,
-          riskAssessment: null,
-          reasoning: 'Spend limit exceeded.',
+      expect(response.body).toMatchObject({
+        code: 'routine_blocked_by_policy',
+      });
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: expect.objectContaining({
+            selectedAction: null,
+            riskAssessment: null,
+            reasoning: 'Spend limit exceeded.',
+          }),
+          explanation: expect.any(Object),
         }),
-        explanation: expect.any(Object),
-      }));
+      );
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
     it('suppresses a replay before writing child artifacts or resolving the adapter', async () => {
-      mocks.recordNonAction.mockResolvedValueOnce({ created: false, decisionId: 'existing' });
+      mocks.recordNonAction.mockResolvedValueOnce({
+        created: false,
+        decisionId: 'existing',
+      });
 
       const response = await request(app, 'POST', '/api/routines', {
         userId: USER_ID,
@@ -232,7 +265,9 @@ describe('Routines API routes', () => {
       });
 
       expect(response.status).toBe(409);
-      expect(response.body).toMatchObject({ code: 'routine_write_already_recorded' });
+      expect(response.body).toMatchObject({
+        code: 'routine_write_already_recorded',
+      });
       expect(mocks.recordNonAction).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
@@ -281,7 +316,11 @@ describe('Routines API routes', () => {
       mocks.recordNonAction
         .mockRejectedValueOnce(new Error('audit transaction rolled back'))
         .mockResolvedValueOnce({ created: true, decisionId: 'decision-1' });
-      const requestBody = { userId: USER_ID, schedule: '0 9 * * *', plan: validPlan };
+      const requestBody = {
+        userId: USER_ID,
+        schedule: '0 9 * * *',
+        plan: validPlan,
+      };
 
       const first = await request(app, 'POST', '/api/routines', requestBody);
       const retry = await request(app, 'POST', '/api/routines', requestBody);
@@ -307,13 +346,19 @@ describe('Routines API routes', () => {
       const response = await request(app, 'GET', `/api/routines/${USER_ID}`);
 
       expect(response.status).toBe(200);
-      expect(response.body).toEqual({ userId: USER_ID, routines: [], available: false });
+      expect(response.body).toEqual({
+        userId: USER_ID,
+        routines: [],
+        available: false,
+      });
     });
   });
 
   describe('DELETE /:routineId', () => {
     it('durably records a deliberate non-action with zero remote calls', async () => {
-      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', {
+        userId: USER_ID,
+      });
 
       expect(response.status).toBe(503);
       expect(response.body).toMatchObject({
@@ -321,21 +366,25 @@ describe('Routines API routes', () => {
         deleted: false,
         code: 'routine_deletion_unavailable',
       });
-      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
-        action: expect.objectContaining({
-          actionType: 'delete_routine',
-          reversible: false,
-          parameters: { userId: USER_ID, routineId: 'routine-1' },
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          action: expect.objectContaining({
+            actionType: 'delete_routine',
+            reversible: false,
+            parameters: { userId: USER_ID, routineId: 'routine-1' },
+          }),
+          outcome: expect.objectContaining({
+            selectedAction: null,
+            riskAssessment: null,
+            autoExecute: false,
+            requiresApproval: false,
+            reasoning: expect.stringContaining('durable admission and reconciliation'),
+          }),
+          explanation: expect.objectContaining({
+            summary: 'The routine was not deleted.',
+          }),
         }),
-        outcome: expect.objectContaining({
-          selectedAction: null,
-          riskAssessment: null,
-          autoExecute: false,
-          requiresApproval: false,
-          reasoning: expect.stringContaining('durable admission and reconciliation'),
-        }),
-        explanation: expect.objectContaining({ summary: 'The routine was not deleted.' }),
-      }));
+      );
       expect(mocks.getAdapter).not.toHaveBeenCalled();
       expect(adapter.listRoutines).not.toHaveBeenCalled();
       expect(adapter.deleteRoutine).not.toHaveBeenCalled();
@@ -348,21 +397,31 @@ describe('Routines API routes', () => {
         reason: 'Routine changes are disabled by policy.',
       });
 
-      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', {
+        userId: USER_ID,
+      });
 
       expect(response.status).toBe(403);
-      expect(response.body).toMatchObject({ code: 'routine_blocked_by_policy' });
-      expect(mocks.recordNonAction).toHaveBeenCalledWith(expect.objectContaining({
-        outcome: expect.objectContaining({ reasoning: 'Routine changes are disabled by policy.' }),
-        explanation: expect.any(Object),
-      }));
+      expect(response.body).toMatchObject({
+        code: 'routine_blocked_by_policy',
+      });
+      expect(mocks.recordNonAction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outcome: expect.objectContaining({
+            reasoning: 'Routine changes are disabled by policy.',
+          }),
+          explanation: expect.any(Object),
+        }),
+      );
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
 
     it('fails closed with no remote calls when the deletion audit transaction fails', async () => {
       mocks.recordNonAction.mockRejectedValueOnce(new Error('audit transaction rolled back'));
 
-      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', {
+        userId: USER_ID,
+      });
 
       expect(response.status).toBe(500);
       expect(mocks.getAdapter).not.toHaveBeenCalled();
@@ -371,12 +430,19 @@ describe('Routines API routes', () => {
     });
 
     it('suppresses deletion replay before child records or remote access', async () => {
-      mocks.recordNonAction.mockResolvedValueOnce({ created: false, decisionId: 'existing' });
+      mocks.recordNonAction.mockResolvedValueOnce({
+        created: false,
+        decisionId: 'existing',
+      });
 
-      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', {
+        userId: USER_ID,
+      });
 
       expect(response.status).toBe(409);
-      expect(response.body).toMatchObject({ code: 'routine_write_already_recorded' });
+      expect(response.body).toMatchObject({
+        code: 'routine_write_already_recorded',
+      });
       expect(mocks.recordNonAction).toHaveBeenCalledOnce();
       expect(mocks.getAdapter).not.toHaveBeenCalled();
     });
@@ -384,7 +450,9 @@ describe('Routines API routes', () => {
     it('rejects an authenticated owner mismatch before reads or writes', async () => {
       app = buildApp('bbbbbbbb-bbbb-cccc-dddd-000000000002');
 
-      const response = await request(app, 'DELETE', '/api/routines/routine-1', { userId: USER_ID });
+      const response = await request(app, 'DELETE', '/api/routines/routine-1', {
+        userId: USER_ID,
+      });
 
       expect(response.status).toBe(403);
       expect(mocks.findUser).not.toHaveBeenCalled();
@@ -394,7 +462,9 @@ describe('Routines API routes', () => {
 
     it('rejects missing ownership input and malformed routine ids', async () => {
       const missingOwner = await request(app, 'DELETE', '/api/routines/routine-1', {});
-      const malformedId = await request(app, 'DELETE', `/api/routines/${'x'.repeat(257)}`, { userId: USER_ID });
+      const malformedId = await request(app, 'DELETE', `/api/routines/${'x'.repeat(257)}`, {
+        userId: USER_ID,
+      });
 
       expect([missingOwner.status, malformedId.status]).toEqual([400, 400]);
       expect(mocks.recordNonAction).not.toHaveBeenCalled();

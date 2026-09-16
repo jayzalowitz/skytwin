@@ -745,4 +745,53 @@ describe('GmailConnector History API', () => {
     await conn.commitCursor();
     expect(cursor.snapshot['user-1:gmail:history_id']).toBe('1300');
   });
+
+  it('binds cursor, signal identity, and evidence to one stable Gmail account', async () => {
+    vi.stubGlobal('fetch', makeFetchRouter({
+      '/users/me/messages?q=': () => jsonResponse({ messages: [{ id: 'm-account' }] }),
+      '/users/me/messages/m-account': () => jsonResponse({
+        id: 'm-account',
+        threadId: 'thread-account',
+        labelIds: ['INBOX'],
+        snippet: 'preview',
+        payload: { headers: [{ name: 'From', value: 'friend@example.com' }] },
+        internalDate: '1735689600000',
+        historyId: '1400',
+      }),
+    }));
+    const getForAccount = vi.fn().mockResolvedValue(null);
+    const saveForAccount = vi.fn().mockResolvedValue(undefined);
+    const cursor: CursorStore = {
+      get: vi.fn().mockRejectedValue(new Error('legacy cursor must not be used')),
+      save: vi.fn().mockRejectedValue(new Error('legacy cursor must not be used')),
+      getForAccount,
+      saveForAccount,
+    };
+    const accountId = '22222222-2222-4222-8222-222222222222';
+    const conn = new GmailConnector(
+      'user-1', makeFreshTokenStore(), cursor, null, { connectorAccountId: accountId },
+    );
+
+    await conn.connect();
+    const [signal] = await conn.poll();
+    await conn.commitCursor();
+
+    expect(getForAccount).toHaveBeenCalledWith('user-1', accountId, 'gmail', 'history_id');
+    expect(saveForAccount).toHaveBeenCalledWith('user-1', accountId, 'gmail', 'history_id', '1400');
+    expect(signal?.id).toMatch(/^sig_gmail_[0-9a-f]{64}$/);
+    expect(signal?.id).not.toContain('m-account');
+    expect(signal?.data).not.toHaveProperty('messageId');
+    expect(signal?.data).not.toHaveProperty('threadId');
+    expect(signal?.connectorEvidence).toEqual({
+      kind: 'gmail_message',
+      connectorAccountId: accountId,
+      provider: 'google',
+      providerMessageId: 'm-account',
+      providerThreadId: 'thread-account',
+      authoringTier: 'inbox_personal',
+      observedInInbox: true,
+      observedAt: expect.any(String),
+      messageTimestamp: '2025-01-01T00:00:00.000Z',
+    });
+  });
 });

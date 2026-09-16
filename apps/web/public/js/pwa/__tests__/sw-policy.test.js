@@ -4,6 +4,7 @@ import {
   isPrecached,
   isQueuedWriteEligible,
   isReplayable,
+  shouldReplayQueuedWrite,
   serializeWrite,
   decideReplayOutcome,
   CACHE_VERSION,
@@ -15,18 +16,18 @@ const ORIGIN = 'https://localhost:3200';
 
 describe('classifyRequest', () => {
   it('treats navigate-mode requests as navigation (network-first shell)', () => {
-    expect(
-      classifyRequest({ method: 'GET', url: `${ORIGIN}/`, mode: 'navigate' }, ORIGIN),
-    ).toBe('navigation');
-    expect(
-      classifyRequest({ method: 'GET', url: `${ORIGIN}/decisions`, mode: 'navigate' }, ORIGIN),
-    ).toBe('navigation');
+    expect(classifyRequest({ method: 'GET', url: `${ORIGIN}/`, mode: 'navigate' }, ORIGIN)).toBe('navigation');
+    expect(classifyRequest({ method: 'GET', url: `${ORIGIN}/decisions`, mode: 'navigate' }, ORIGIN)).toBe('navigation');
   });
 
   it('treats Accept: text/html GETs as navigation even without mode', () => {
     expect(
       classifyRequest(
-        { method: 'GET', url: `${ORIGIN}/`, headers: { accept: 'text/html,*/*' } },
+        {
+          method: 'GET',
+          url: `${ORIGIN}/`,
+          headers: { accept: 'text/html,*/*' },
+        },
         ORIGIN,
       ),
     ).toBe('navigation');
@@ -38,24 +39,20 @@ describe('classifyRequest', () => {
   });
 
   it('routes other same-origin GETs to runtime (network-first)', () => {
-    expect(
-      classifyRequest({ method: 'GET', url: `${ORIGIN}/api/decisions/u1` }, ORIGIN),
-    ).toBe('runtime');
+    expect(classifyRequest({ method: 'GET', url: `${ORIGIN}/api/decisions/u1` }, ORIGIN)).toBe('runtime');
   });
 
   it('never caches credential-scoped sample reads', () => {
-    expect(
-      classifyRequest({ method: 'GET', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN),
-    ).toBe('passthrough');
-    expect(
-      classifyRequest({ method: 'GET', url: `${ORIGIN}/API/V1/DEMO/SIMULATION` }, ORIGIN),
-    ).toBe('passthrough');
+    expect(classifyRequest({ method: 'GET', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN)).toBe('passthrough');
+    expect(classifyRequest({ method: 'GET', url: `${ORIGIN}/API/V1/DEMO/SIMULATION` }, ORIGIN)).toBe('passthrough');
     expect(
       classifyRequest(
         {
           method: 'GET',
           url: `${ORIGIN}/api/approvals/sample/pending`,
-          headers: { Authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+          headers: {
+            Authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature',
+          },
         },
         ORIGIN,
       ),
@@ -73,56 +70,54 @@ describe('classifyRequest', () => {
 
   it('queues same-origin mutating API writes', () => {
     for (const m of ['POST', 'PUT', 'PATCH', 'DELETE']) {
-      expect(
-        classifyRequest({ method: m, url: `${ORIGIN}/api/feedback` }, ORIGIN),
-      ).toBe('queueable-write');
+      expect(classifyRequest({ method: m, url: `${ORIGIN}/api/feedback` }, ORIGIN)).toBe('queueable-write');
     }
   });
 
-  it('does NOT queue OAuth / pairing / stream writes (non-replayable)', () => {
-    expect(
-      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/sessions/pair/consume` }, ORIGIN),
-    ).toBe('passthrough');
-    expect(
-      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/oauth/google/authorize` }, ORIGIN),
-    ).toBe('passthrough');
-    expect(
-      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/assistant/messages` }, ORIGIN),
-    ).toBe('passthrough');
-    expect(
-      classifyRequest({ method: 'DELETE', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN),
-    ).toBe('passthrough');
-    expect(
-      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/v1/demo/session` }, ORIGIN),
-    ).toBe('passthrough');
-    expect(
-      classifyRequest({ method: 'POST', url: `${ORIGIN}/api/V1/Demo/simulation/commands` }, ORIGIN),
-    ).toBe('passthrough');
+  it('does NOT queue OAuth / pairing / stream / approval writes (non-replayable)', () => {
+    expect(classifyRequest({ method: 'POST', url: `${ORIGIN}/api/sessions/pair/consume` }, ORIGIN)).toBe('passthrough');
+    expect(classifyRequest({ method: 'POST', url: `${ORIGIN}/api/oauth/google/authorize` }, ORIGIN)).toBe(
+      'passthrough',
+    );
+    expect(classifyRequest({ method: 'POST', url: `${ORIGIN}/api/assistant/messages` }, ORIGIN)).toBe('passthrough');
+    expect(classifyRequest({ method: 'DELETE', url: `${ORIGIN}/api/v1/demo/simulation` }, ORIGIN)).toBe('passthrough');
+    expect(classifyRequest({ method: 'POST', url: `${ORIGIN}/api/v1/demo/session` }, ORIGIN)).toBe('passthrough');
+    expect(classifyRequest({ method: 'POST', url: `${ORIGIN}/api/V1/Demo/simulation/commands` }, ORIGIN)).toBe(
+      'passthrough',
+    );
     expect(
       classifyRequest(
         {
           method: 'POST',
           url: `${ORIGIN}/api/feedback`,
-          headers: { authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+          headers: {
+            authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature',
+          },
         },
         ORIGIN,
       ),
     ).toBe('passthrough');
+    expect(classifyRequest({ method: 'POST', url: `${ORIGIN}/api/approvals/req-1/respond` }, ORIGIN)).toBe(
+      'passthrough',
+    );
+    expect(
+      classifyRequest(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/approvals/u1/cleanup-escalations`,
+        },
+        ORIGIN,
+      ),
+    ).toBe('queueable-write');
   });
 
   it('never intercepts cross-origin requests', () => {
-    expect(
-      classifyRequest({ method: 'GET', url: 'https://fonts.googleapis.com/css2' }, ORIGIN),
-    ).toBe('passthrough');
-    expect(
-      classifyRequest({ method: 'POST', url: 'https://evil.example/api/feedback' }, ORIGIN),
-    ).toBe('passthrough');
+    expect(classifyRequest({ method: 'GET', url: 'https://fonts.googleapis.com/css2' }, ORIGIN)).toBe('passthrough');
+    expect(classifyRequest({ method: 'POST', url: 'https://evil.example/api/feedback' }, ORIGIN)).toBe('passthrough');
   });
 
   it('does not queue non-API writes (e.g. a POST to a non-/api path)', () => {
-    expect(
-      classifyRequest({ method: 'POST', url: `${ORIGIN}/upload` }, ORIGIN),
-    ).toBe('passthrough');
+    expect(classifyRequest({ method: 'POST', url: `${ORIGIN}/upload` }, ORIGIN)).toBe('passthrough');
   });
 
   it('falls back to passthrough on an unparseable URL', () => {
@@ -150,7 +145,6 @@ describe('precache list', () => {
 describe('isReplayable', () => {
   it('allows ordinary mutating endpoints', () => {
     expect(isReplayable('/api/feedback')).toBe(true);
-    expect(isReplayable('/api/approvals/req-1/respond')).toBe(true);
     expect(isReplayable('/api/twin/u1/preferences')).toBe(true);
   });
   it('blocks single-use / streamed / time-sensitive endpoints', () => {
@@ -164,24 +158,18 @@ describe('isReplayable', () => {
 
 describe('isQueuedWriteEligible', () => {
   it('revalidates persisted writes under the current case-insensitive policy', () => {
-    expect(
-      isQueuedWriteEligible(
-        { method: 'POST', url: `${ORIGIN}/api/feedback` },
-        ORIGIN,
-      ),
-    ).toBe(true);
-    expect(
-      isQueuedWriteEligible(
-        { method: 'POST', url: `${ORIGIN}/API/V1/DEMO/SIMULATION/COMMANDS` },
-        ORIGIN,
-      ),
-    ).toBe(false);
+    expect(isQueuedWriteEligible({ method: 'POST', url: `${ORIGIN}/api/feedback` }, ORIGIN)).toBe(true);
+    expect(isQueuedWriteEligible({ method: 'POST', url: `${ORIGIN}/API/V1/DEMO/SIMULATION/COMMANDS` }, ORIGIN)).toBe(
+      false,
+    );
     expect(
       isQueuedWriteEligible(
         {
           method: 'POST',
           url: `${ORIGIN}/api/feedback`,
-          headers: { authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature' },
+          headers: {
+            authorization: 'Bearer skytwin-demo-v1.expiry.nonce.signature',
+          },
         },
         ORIGIN,
       ),
@@ -192,6 +180,57 @@ describe('isQueuedWriteEligible', () => {
           method: 'POST',
           url: `${ORIGIN}/api/feedback?token=skytwin-demo-v1.expiry.nonce.signature`,
           headers: {},
+        },
+        ORIGIN,
+      ),
+    ).toBe(false);
+    expect(isReplayable('/api/approvals/req-1/respond')).toBe(false);
+    expect(isReplayable('/api/approvals/req-1/respond/')).toBe(false);
+    expect(isReplayable('/api/Approvals/req-1/Respond')).toBe(false);
+    expect(isReplayable('/api/approvals/u1/cleanup-escalations')).toBe(true);
+    expect(isReplayable('/api/approvals/expire-sweep')).toBe(true);
+    expect(isReplayable('/api/approvals/req-1/respond/extra')).toBe(true);
+  });
+});
+
+describe('shouldReplayQueuedWrite', () => {
+  it('drops approval responses persisted by an older worker before network replay', () => {
+    expect(
+      shouldReplayQueuedWrite(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/approvals/req-1/respond`,
+        },
+        ORIGIN,
+      ),
+    ).toBe(false);
+    expect(
+      shouldReplayQueuedWrite(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/Approvals/req-1/Respond`,
+        },
+        ORIGIN,
+      ),
+    ).toBe(false);
+  });
+
+  it('retains ordinary queued writes and rejects malformed or cross-origin records', () => {
+    expect(
+      shouldReplayQueuedWrite(
+        {
+          method: 'POST',
+          url: `${ORIGIN}/api/feedback`,
+        },
+        ORIGIN,
+      ),
+    ).toBe(true);
+    expect(shouldReplayQueuedWrite({ method: 'POST', url: 'http://[' }, ORIGIN)).toBe(false);
+    expect(
+      shouldReplayQueuedWrite(
+        {
+          method: 'POST',
+          url: 'https://example.test/api/feedback',
         },
         ORIGIN,
       ),
@@ -237,7 +276,15 @@ describe('serializeWrite', () => {
 });
 
 describe('decideReplayOutcome', () => {
-  const base = { id: 'a', url: 'u', method: 'POST', headers: {}, body: null, queuedAt: 0, attempts: 0 };
+  const base = {
+    id: 'a',
+    url: 'u',
+    method: 'POST',
+    headers: {},
+    body: null,
+    queuedAt: 0,
+    attempts: 0,
+  };
 
   it('removes on a successful replay', () => {
     expect(decideReplayOutcome(base, { ok: true, status: 200 })).toBe('remove');
@@ -257,14 +304,12 @@ describe('decideReplayOutcome', () => {
 
   it('retries on a network error until the attempt cap, then drops', () => {
     expect(decideReplayOutcome({ ...base, attempts: 0 }, { networkError: true })).toBe('retry');
-    expect(
-      decideReplayOutcome({ ...base, attempts: MAX_REPLAY_ATTEMPTS - 1 }, { networkError: true }),
-    ).toBe('drop');
+    expect(decideReplayOutcome({ ...base, attempts: MAX_REPLAY_ATTEMPTS - 1 }, { networkError: true })).toBe('drop');
   });
 
   it('drops a transient failure once the attempt cap is reached', () => {
-    expect(
-      decideReplayOutcome({ ...base, attempts: MAX_REPLAY_ATTEMPTS - 1 }, { ok: false, status: 503 }),
-    ).toBe('drop');
+    expect(decideReplayOutcome({ ...base, attempts: MAX_REPLAY_ATTEMPTS - 1 }, { ok: false, status: 503 })).toBe(
+      'drop',
+    );
   });
 });

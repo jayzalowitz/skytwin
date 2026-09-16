@@ -63,14 +63,20 @@ const SAMPLE_TOKEN_PREFIX = 'skytwin-demo-v1';
  *     replaying it produces a confusing "already used" error.
  *   - disposable sample lifecycle — queueing would persist tab-scoped sample
  *     authority and could report disposal before the server confirmed it.
+ *   - approval responses — consent is time-bound and contextual; an offline
+ *     click must never be queued and delivered after that context expires.
  * Matched as path prefixes (after the leading /api).
  */
 const NON_REPLAYABLE_PREFIXES = Object.freeze([
   '/api/assistant/messages', // streamed; replay would duplicate a turn
-  '/api/sessions/pair',      // single-use pairing tokens
-  '/api/oauth',              // OAuth handshakes are time-sensitive
-  '/api/v1/demo',            // disposable sample state must never be replayed
+  '/api/sessions/pair', // single-use pairing tokens
+  '/api/oauth', // OAuth handshakes are time-sensitive
+  '/api/v1/demo', // disposable sample state must never be replayed
 ]);
+
+// Express routes are case-insensitive unless the application opts in to
+// case-sensitive routing, so the offline policy must match the same surface.
+const APPROVAL_RESPONSE_PATH = /^\/api\/approvals\/[^/]+\/respond\/?$/i;
 
 /**
  * Decide how the worker should handle a request.
@@ -149,10 +155,7 @@ function readHeader(headers, name) {
 }
 
 function isSampleTokenCandidate(token) {
-  return (
-    typeof token === 'string' &&
-    (token === SAMPLE_TOKEN_PREFIX || token.startsWith(`${SAMPLE_TOKEN_PREFIX}.`))
-  );
+  return typeof token === 'string' && (token === SAMPLE_TOKEN_PREFIX || token.startsWith(`${SAMPLE_TOKEN_PREFIX}.`));
 }
 
 function hasSampleCredential(req, parsed) {
@@ -170,16 +173,21 @@ export function isPrecached(pathname) {
 /** True when a mutating API path is safe to queue + replay later. */
 export function isReplayable(pathname) {
   const normalizedPathname = String(pathname).toLowerCase();
-  return !NON_REPLAYABLE_PREFIXES.some((p) => normalizedPathname.startsWith(p));
+  return (
+    !APPROVAL_RESPONSE_PATH.test(normalizedPathname) &&
+    !NON_REPLAYABLE_PREFIXES.some((p) => normalizedPathname.startsWith(p))
+  );
 }
 
 /** Revalidate a persisted write under the current routing policy before send. */
 export function isQueuedWriteEligible(write, origin) {
-  return classifyRequest(
-    { method: write?.method, url: write?.url, headers: write?.headers },
-    origin,
-  ) === 'queueable-write';
+  return (
+    classifyRequest({ method: write?.method, url: write?.url, headers: write?.headers }, origin) === 'queueable-write'
+  );
 }
+
+/** Compatibility name for callers introduced with approval-response fencing. */
+export const shouldReplayQueuedWrite = isQueuedWriteEligible;
 
 /**
  * Serialize a fetch Request-like object into a plain, structured-clone-
@@ -227,7 +235,9 @@ function defaultId() {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
       return crypto.randomUUID();
     }
-  } catch { /* fall through */ }
+  } catch {
+    /* fall through */
+  }
   return `w_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 

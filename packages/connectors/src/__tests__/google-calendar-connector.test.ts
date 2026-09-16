@@ -234,6 +234,43 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     vi.unstubAllGlobals();
   });
 
+  it('loads and saves sync tokens through the bound connector account', async () => {
+    vi.stubGlobal('fetch', (async () => jsonResponse({ items: [makeEvent()], nextSyncToken: 'next-bound' })) as typeof fetch);
+    const get = vi.fn(async () => null);
+    const save = vi.fn(async () => undefined);
+    const getForAccount = vi.fn(async () => 'prior-bound');
+    const saveForAccount = vi.fn(async () => undefined);
+    const cursor: CursorStore = { get, save, getForAccount, saveForAccount };
+    const tokenStore = makeStubStore({
+      accessToken: 'a', refreshToken: 'r', expiresAt: new Date(Date.now() + 60_000),
+    });
+    const accountId = '11111111-1111-4111-8111-111111111111';
+    const conn = new GoogleCalendarConnector(
+      'user-1', tokenStore, cursor, 'primary', accountId,
+    );
+
+    await conn.connect();
+    const [signal] = await conn.poll();
+
+    expect(getForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'google_calendar', 'sync_token',
+    );
+    // Poll only stages the cursor. The worker commits after every returned
+    // signal has been accepted, preserving at-least-once delivery.
+    expect(saveForAccount).not.toHaveBeenCalled();
+    await conn.commitCursor();
+    expect(saveForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'google_calendar', 'sync_token', 'next-bound',
+    );
+    expect(signal?.id).toContain(accountId);
+    expect(signal?.connectorEvidence).toMatchObject({
+      kind: 'account_signal', connectorAccountId: accountId,
+      provider: 'google', source: 'google_calendar',
+    });
+    expect(get).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('on first poll uses timeMin/timeMax (no syncToken) and persists nextSyncToken', async () => {
     vi.stubGlobal('fetch', (async (input: string | URL | { url: string }): Promise<Response> => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;

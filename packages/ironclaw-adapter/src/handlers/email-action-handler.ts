@@ -24,7 +24,8 @@ function throwIfProviderOutcomeIsAmbiguous(service: string, status: number): voi
 
 /**
  * Handler for email actions via the Gmail API.
- * Handles archive, label, send_reply, draft_email, send_email, and delete operations.
+ * Handles label, send_reply, draft_email, send_email, and delete operations.
+ * Archive is reserved for the dedicated Gmail archive lifecycle.
  */
 export class EmailActionHandler implements ActionHandler {
   readonly actionType = 'email';
@@ -36,7 +37,6 @@ export class EmailActionHandler implements ActionHandler {
 
   canHandle(actionType: string): boolean {
     return [
-      'archive_email',
       'label_email',
       'send_reply',
       'reply_email',
@@ -75,6 +75,9 @@ export class EmailActionHandler implements ActionHandler {
     _preparation?: ExecutionRequestPreparation,
   ): Promise<StepResult> {
     const actionType = (step.parameters['actionType'] as string) ?? step.type;
+    if (step.type === 'archive_email' || actionType === 'archive_email') {
+      return { success: false, error: 'archive_email is reserved for its dedicated lifecycle' };
+    }
     const messageId = step.parameters['emailId'] as string | undefined;
 
     if (['archive_email', 'label_email', 'send_reply', 'reply_email', 'draft_email', 'delete_email']
@@ -94,7 +97,7 @@ export class EmailActionHandler implements ActionHandler {
       }
     }
     const supported = new Set([
-      'archive_email', 'label_email', 'send_reply', 'reply_email',
+      'label_email', 'send_reply', 'reply_email',
       'draft_email', 'send_email', 'delete_email',
     ]);
     if (!supported.has(actionType)) {
@@ -122,9 +125,6 @@ export class EmailActionHandler implements ActionHandler {
     // No await occurs between the credential bind returned above and this
     // call. The router owns the encompassing request-start lease.
     switch (actionType) {
-        case 'archive_email':
-          result = await this.archiveEmail(credential.accessToken, messageId!);
-          break;
         case 'label_email':
           result = await this.labelEmail(
             credential.accessToken, messageId!, step.parameters['labels'] as string[] ?? [],
@@ -150,13 +150,17 @@ export class EmailActionHandler implements ActionHandler {
   }
 
   async rollback(step: ExecutionStep): Promise<StepResult> {
+    const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
+    if (step.type === 'archive_email' || step.type === 'rollback_archive_email' ||
+        originalAction === 'archive_email') {
+      return { success: false, error: 'archive_email rollback requires its dedicated lifecycle' };
+    }
     if (this.credentialProvider) {
       return {
         success: false,
         error: 'Credential-backed rollback requires a separately admitted dispatch authority.',
       };
     }
-    const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
     const { accessToken } = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;
 
@@ -165,9 +169,6 @@ export class EmailActionHandler implements ActionHandler {
     }
 
     switch (originalAction) {
-      case 'archive_email':
-        // Un-archive: add INBOX label back
-        return this.modifyLabels(accessToken, messageId, ['INBOX'], []);
       case 'label_email':
         // Remove added labels
         return this.modifyLabels(
@@ -230,10 +231,6 @@ export class EmailActionHandler implements ActionHandler {
       throw new PreRequestExecutionError('Missing accessToken — no OAuth token available for Gmail.');
     }
     return { accessToken };
-  }
-
-  private async archiveEmail(accessToken: string, messageId: string): Promise<StepResult> {
-    return this.modifyLabels(accessToken, messageId, [], ['INBOX']);
   }
 
   private async labelEmail(accessToken: string, messageId: string, labels: string[]): Promise<StepResult> {

@@ -159,6 +159,12 @@ vi.mock('@skytwin/db', () => {
       markExecutionTerminalForDecision: vi.fn().mockResolvedValue(true),
       markNonEffectForDecision: vi.fn().mockResolvedValue(true),
     },
+    executionAdmissionRepository: {
+      recordApprovalPreflightNonAction: vi.fn().mockResolvedValue({
+        explanationId: 'preflight-explanation-1',
+        evidence: {},
+      }),
+    },
     emailLabelRepository: {
       topLabelsForSender: vi.fn().mockResolvedValue([]),
       topLabelsForListId: vi.fn().mockResolvedValue([]),
@@ -281,6 +287,7 @@ function buildApp(): Express {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as unknown as { user: { id: string } }).user = { id: USER_ID };
+    req.authenticatedUserId = USER_ID;
     next();
   });
   app.use('/api/events', createEventsRouter());

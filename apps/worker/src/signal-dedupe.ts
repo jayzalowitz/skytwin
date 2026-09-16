@@ -133,7 +133,10 @@ export class SignalDeduper {
    * starting at "1") do not collide.
    */
   private key(signal: RawSignal): string {
-    return `${signal.source}:${signal.id}`;
+    const accountId = signal.connectorEvidence?.connectorAccountId;
+    return accountId
+      ? `${signal.source}:${accountId}:${signal.id}`
+      : `${signal.source}:${signal.id}`;
   }
 
   private getOrCreate(userId: string): Map<string, number> {

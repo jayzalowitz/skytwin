@@ -31,6 +31,11 @@ export interface ConnectedAccountRow {
   scopes: string[];
   is_active: boolean;
   connected_at: Date;
+  provider_subject_digest: string | null;
+  account_display: string | null;
+  identity_verified: boolean;
+  disconnected_at: Date | null;
+  updated_at: Date;
 }
 
 // ============================================================================
@@ -70,6 +75,19 @@ export interface TwinProfileVersionRow {
   changed_fields: string[];
   reason: string | null;
   created_at: Date;
+}
+
+export interface TwinFeedbackApplicationRow {
+  id: string;
+  feedback_event_id: string;
+  user_id: string;
+  decision_id: string;
+  profile_id: string;
+  input_profile_version: number;
+  output_profile_version: number;
+  changed: boolean;
+  output_digest: string;
+  applied_at: Date;
 }
 
 // ============================================================================
@@ -309,6 +327,37 @@ export interface InferenceReceiptRow {
   created_at: Date;
 }
 
+export interface DecisionReceiptRow {
+  id: string;
+  user_id: string;
+  decision_id: string;
+  created_at: Date;
+}
+
+export interface DecisionReceiptRevisionRow {
+  id: string;
+  receipt_id: string;
+  /** Repository APIs normalize Cockroach INT8 strings to a safe integer. */
+  sequence: number;
+  event_key: import('@skytwin/shared-types').DecisionReceiptEventKey;
+  previous_digest: string | null;
+  content_digest: string;
+  revision_digest: string;
+  stage: import('@skytwin/shared-types').DecisionReceiptStage;
+  disposition: import('@skytwin/shared-types').DecisionReceiptDisposition;
+  content: import('@skytwin/shared-types').JoinedDecisionReceiptContent;
+  trusted: boolean;
+  candidate_action_id: string | null;
+  barrier_id: string | null;
+  explanation_id: string | null;
+  approval_request_id: string | null;
+  execution_plan_id: string | null;
+  execution_result_id: string | null;
+  execution_disposition: 'succeeded' | 'failed' | 'unknown' | null;
+  correction_of_revision_id: string | null;
+  created_at: Date;
+}
+
 // ============================================================================
 // Feedback
 // ============================================================================
@@ -317,6 +366,8 @@ export interface FeedbackEventRow {
   id: string;
   user_id: string;
   decision_id: string;
+  /** Dedicated approval source; null for historical and generic feedback. */
+  approval_request_id: string | null;
   type: string;
   data: Record<string, unknown>;
   created_at: Date;
@@ -334,6 +385,8 @@ export interface OAuthTokenRow {
   account_email: string;
   /** Provider's stable account id (Google `sub`); null for legacy rows. */
   account_provider_id: string | null;
+  /** Stable, non-secret connector identity that owns this credential row. */
+  connector_account_id: string;
   /**
    * Plaintext access token. Null after credential-vault lazy migration
    * (migration 032) — encrypted_access_token holds the value.
@@ -446,6 +499,28 @@ export interface SignalRow {
   timestamp: Date;
   retention_until: Date;
   created_at: Date;
+  /** Connector-native idempotency key, scoped by source and account. */
+  source_signal_id: string | null;
+  /** Stable connector account that observed the signal. */
+  connector_account_id: string | null;
+  /** Durable resource reference; Gmail signals point to gmail_message_refs. */
+  resource_ref_id: string | null;
+}
+
+export interface GmailMessageRefRow {
+  id: string;
+  user_id: string;
+  connector_account_id: string;
+  provider: 'google';
+  provider_message_id: string;
+  provider_thread_id: string | null;
+  source_signal_id: string;
+  authoring_tier: string;
+  last_observed_inbox: boolean;
+  first_observed_at: Date;
+  last_observed_at: Date;
+  created_at: Date;
+  updated_at: Date;
 }
 
 // ============================================================================

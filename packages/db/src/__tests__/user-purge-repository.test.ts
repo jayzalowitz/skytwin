@@ -79,6 +79,7 @@ describe('userPurgeRepository.purgeUser', () => {
       twin_profile_versions: 1,
       entity_codes: 2,
       knowledge_triples: 0,
+      preference_history: 2,
       users: 1,
     });
 
@@ -89,7 +90,8 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(result.counts['candidate_actions']).toBe(11);
     expect(result.counts['users']).toBe(1);
     // Total sums every table's count (including the user row itself).
-    expect(result.total).toBe(1 + 3 + 5 + 2 + 7 + 4 + 11 + 1 + 2 + 0 + 1);
+    expect(result.counts['preference_history']).toBe(2);
+    expect(result.total).toBe(1 + 3 + 5 + 2 + 7 + 4 + 11 + 1 + 2 + 0 + 2 + 1);
   });
 
   it('returns userExisted=false when the final DELETE FROM users hit zero rows', async () => {
@@ -139,6 +141,9 @@ describe('userPurgeRepository.purgeUser', () => {
       indexOf('DELETE FROM execution_plans'),
     );
     expect(indexOf('DELETE FROM twin_profile_versions')).toBeLessThan(
+      indexOf('DELETE FROM users'),
+    );
+    expect(indexOf('DELETE FROM preference_history')).toBeLessThan(
       indexOf('DELETE FROM users'),
     );
   });
@@ -220,6 +225,19 @@ describe('userPurgeRepository.purgeUser', () => {
       expect.anything(),
     );
     expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
+  });
+
+  it('fences the dedicated Gmail lifecycle and its in-progress execution plan', async () => {
+    setupDeleteCounts({ users: 1 });
+
+    await userPurgeRepository.purgeUser(USER_ID);
+
+    const activeFenceSql = mockClient.query.mock.calls
+      .map((call) => typeof call[0] === 'string' ? call[0] : '')
+      .find((sql) => sql.includes('AS active_count'));
+    expect(activeFenceSql).toContain('FROM pre_effect_barriers');
+    expect(activeFenceSql).toContain("status IN ('in_progress', 'unknown')");
+    expect(activeFenceSql).toContain("ep.status IN ('running', 'in_progress')");
   });
 
   it('advances only the deleted owner account tombstones before removing the user', async () => {

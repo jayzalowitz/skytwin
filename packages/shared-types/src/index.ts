@@ -108,12 +108,18 @@ export {
   buildExecutableActionPlan,
   IRONCLAW_CORE_ACTION_TYPES,
   OPENCLAW_ACTION_TYPES,
+  ReservedActionCapabilityError,
 } from './action-capabilities.js';
 export type {
   ActionPlanReadiness,
   ExecutableActionPlan,
   ExecutionAdapterName,
 } from './action-capabilities.js';
+
+export { classifyGmailArchiveGenericAction } from './gmail-archive-quarantine.js';
+export type {
+  GmailArchiveGenericActionClassification,
+} from './gmail-archive-quarantine.js';
 
 export {
   EXECUTION_RUNTIME_VERSION_CHECKED_AT,
@@ -154,6 +160,52 @@ export type {
   ProviderVerificationStatus,
   ReasoningMode,
 } from './reasoning-mode.js';
+
+export {
+  canonicalJoinedDecisionReceiptContent,
+  buildDecisionReceiptEventKey,
+  isDecisionReceiptEventKey,
+  isJoinedDecisionReceiptTransition,
+  preservesJoinedDecisionReceiptLinks,
+  joinedDecisionReceiptArtifactDigest,
+  joinedDecisionReceiptContentDigest,
+  joinedDecisionReceiptRevisionDigest,
+  normalizeDecisionReceiptSequence,
+  verifyJoinedDecisionReceiptChain,
+  validateJoinedDecisionReceiptContent,
+} from './joined-decision-receipt.js';
+export type {
+  DecisionReceiptArtifactRef,
+  DecisionReceiptArtifactKind,
+  DecisionReceiptApprovalRef,
+  DecisionReceiptApprovalSnapshotV1,
+  DecisionReceiptBarrierRef,
+  DecisionReceiptBarrierSnapshotV1,
+  DecisionReceiptDigest,
+  DecisionReceiptEventKey,
+  DecisionReceiptDisposition,
+  DecisionReceiptEvidenceRef,
+  DecisionReceiptExecutionPlanRef,
+  DecisionReceiptExecutionPlanSnapshotV1,
+  DecisionReceiptExecutionResultRef,
+  DecisionReceiptExecutionResultSnapshotV1,
+  DecisionReceiptFeedbackApplicationRef,
+  DecisionReceiptFeedbackApplicationSnapshotV1,
+  DecisionReceiptInferenceSet,
+  DecisionReceiptPolicyRef,
+  DecisionReceiptPolicyEvaluationV1,
+  DecisionReceiptPreferenceHistoryRef,
+  DecisionReceiptPreferenceHistorySnapshotV1,
+  DecisionReceiptCorrectionV1,
+  DecisionReceiptRiskRef,
+  DecisionReceiptStage,
+  JoinedDecisionReceiptContent,
+  JoinedDecisionReceiptContentV1,
+  JoinedDecisionReceiptContentV2,
+  JoinedDecisionReceiptContentV3,
+  DecisionReceiptRevisionDigestInput,
+  DecisionReceiptChainRevisionV1,
+} from './joined-decision-receipt.js';
 
 export type {
   ActionPolicy,
@@ -220,6 +272,64 @@ export type {
   OAuthTokenSet,
   ConnectorConfig,
 } from './oauth.js';
+
+export {
+  GMAIL_ARCHIVE_ATTEMPT_SCHEMA,
+  GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
+} from './gmail-inbox-mutation.js';
+export type {
+  GmailArchiveAttemptPhase,
+  GmailArchiveAttemptStateV1,
+  GmailInboxMutationBinding,
+  GmailInboxMutationCommand,
+  GmailInboxMutationDispatchGate,
+  GmailInboxMutationDispatchGateResult,
+  GmailInboxMutationPort,
+  GmailInboxMutationResult,
+  GmailInboxMutationTarget,
+} from './gmail-inbox-mutation.js';
+
+export type {
+  GmailInboxObservationBinding,
+  GmailInboxObservationCommand,
+  GmailInboxObservationPort,
+  GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
+} from './gmail-inbox-observation.js';
+
+export type {
+  AbandonedGmailArchiveRecovery,
+  AbandonedGmailArchiveRecoveryQuery,
+  QueryAbandonedGmailArchiveInput,
+  QueryAbandonedGmailArchiveResult,
+} from './gmail-archive-recovery.js';
+
+export type {
+  AcquireGmailArchiveRecoveryLeaseInput,
+  AcquireGmailArchiveRecoveryLeaseResult,
+  BeginGmailArchiveRecoveryObservationResult,
+  GmailArchiveRecoveryLease,
+  GmailArchiveRecoveryLeaseFence,
+  GmailArchiveRecoveryLeaseRepository,
+  GmailArchiveRecoveryMailboxObservedEvidence,
+  GmailArchiveRecoveryObservationEvidence,
+  GmailArchiveRecoveryObservationPermit,
+  GmailArchiveRecoveryObservationState,
+  GmailArchiveRecoveryObservationUnavailableEvidence,
+  GmailArchiveRecoveryWorkKind,
+  RecordGmailArchiveRecoveryObservationInput,
+  RecordGmailArchiveRecoveryObservationResult,
+} from './gmail-archive-recovery-lease.js';
+
+export type {
+  GmailArchiveInterruptedBeforeDispatchEvidence,
+  GmailArchiveMailboxObservationUnavailableEvidence,
+  GmailArchiveMailboxObservedEvidence,
+  GmailArchiveReconciliationCommand,
+  GmailArchiveReconciliationEvidence,
+  GmailArchiveReconciliationRecoveryProof,
+  ReconcileAbandonedGmailArchiveInput,
+} from './gmail-archive-reconciliation.js';
 
 export type {
   BehavioralPattern,

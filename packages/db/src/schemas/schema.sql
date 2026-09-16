@@ -97,7 +97,8 @@ CREATE TABLE IF NOT EXISTS twin_profiles (
   -- the cost / opt-in gates.
   drafts_eval_passed_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT twin_profiles_id_user_id_idx UNIQUE (id, user_id)
 );
 
 CREATE TABLE IF NOT EXISTS twin_profile_versions (
@@ -108,7 +109,7 @@ CREATE TABLE IF NOT EXISTS twin_profile_versions (
   changed_fields STRING[] NOT NULL DEFAULT '{}',
   reason STRING,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  INDEX (profile_id, version DESC)
+  CONSTRAINT twin_profile_versions_profile_version_idx UNIQUE (profile_id, version)
 );
 
 -- ============================================================================
@@ -144,6 +145,7 @@ CREATE TABLE IF NOT EXISTS decisions (
   urgency STRING NOT NULL DEFAULT 'normal',
   metadata JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT decisions_id_user_id_idx UNIQUE (id, user_id),
   INDEX (user_id, created_at DESC),
   INDEX (user_id, domain, created_at DESC)
 );
@@ -215,6 +217,9 @@ CREATE TABLE IF NOT EXISTS approval_requests (
   response JSONB,
   execution_denied_at TIMESTAMPTZ,
   execution_denial_explanation_id UUID,
+  CONSTRAINT approval_requests_decision_owner_fk
+    FOREIGN KEY (decision_id, user_id) REFERENCES decisions (id, user_id),
+  CONSTRAINT approval_requests_id_owner_decision_idx UNIQUE (id, user_id, decision_id),
   INDEX (user_id, status)
 );
 
@@ -344,6 +349,133 @@ CREATE UNIQUE INDEX IF NOT EXISTS rollback_admissions_claim_token_idx
 CREATE INDEX IF NOT EXISTS rollback_admissions_claim_expiry_idx
   ON rollback_admissions (claim_expires_at) WHERE lifecycle_status = 'claimed';
 
+-- Durable admission record for externally visible effects (#653). An
+-- in-progress row is never automatically replayed because generic adapters do
+-- not accept provider idempotency keys.
+CREATE TABLE IF NOT EXISTS pre_effect_barriers (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  effect_type STRING NOT NULL CHECK (effect_type IN (
+    'assistant_approval', 'event_execution', 'memory_execution', 'routine_registration'
+  )),
+  idempotency_key STRING NOT NULL,
+  status STRING NOT NULL DEFAULT 'reserved' CHECK (status IN (
+    'reserved', 'prepared', 'in_progress', 'succeeded', 'blocked', 'failed', 'unknown'
+  )),
+  decision_id UUID REFERENCES decisions(id) ON DELETE SET NULL,
+  action_id UUID REFERENCES candidate_actions(id) ON DELETE SET NULL,
+  explanation_id UUID REFERENCES explanation_records(id) ON DELETE SET NULL,
+  policy_snapshot JSONB NOT NULL DEFAULT '{}',
+  effect_result JSONB NOT NULL DEFAULT '{}',
+  failure_reason STRING,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT pre_effect_barrier_explanation_required
+    CHECK (status = 'reserved' OR explanation_id IS NOT NULL),
+  UNIQUE (user_id, effect_type, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS pre_effect_barriers_decision_idx
+  ON pre_effect_barriers (decision_id) WHERE decision_id IS NOT NULL;
+
+-- Repository-enforced, user-purgeable hash-linked decision receipts (#657).
+-- The root is uniquely owned through its decision.
+CREATE UNIQUE INDEX IF NOT EXISTS decisions_id_user_id_idx
+  ON decisions (id, user_id);
+CREATE TABLE IF NOT EXISTS decision_receipts (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  decision_id UUID NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT decision_receipts_owned_decision_unique UNIQUE (decision_id),
+  CONSTRAINT decision_receipts_owned_decision_fk
+    FOREIGN KEY (decision_id, user_id) REFERENCES decisions (id, user_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS decision_receipts_user_created_idx
+  ON decision_receipts (user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS decision_receipt_revisions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  receipt_id UUID NOT NULL REFERENCES decision_receipts(id) ON DELETE CASCADE,
+  sequence INT NOT NULL CHECK (sequence > 0),
+  event_key STRING NOT NULL CHECK (
+    event_key ~ '^[a-z][a-z0-9_]{0,47}:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+  ),
+  previous_digest STRING,
+  content_digest STRING NOT NULL,
+  revision_digest STRING NOT NULL,
+  stage STRING NOT NULL CHECK (stage IN (
+    'decision_recorded', 'policy_evaluated', 'approval_recorded',
+    'execution_admitted', 'execution_recorded', 'feedback_recorded', 'corrected'
+  )),
+  disposition STRING NOT NULL CHECK (disposition IN (
+    'pending', 'allowed', 'deliberate_non_action', 'requires_approval', 'approved',
+    'rejected', 'expired', 'blocked', 'succeeded', 'failed', 'unknown', 'corrected'
+  )),
+  content JSONB NOT NULL,
+  trusted BOOL NOT NULL DEFAULT false,
+  -- Historical pointers are owner-derived and verified by the repository at
+  -- append time, but intentionally are not FKs: deleting a source artifact
+  -- must not mutate or strand the retained hash-linked receipt history.
+  candidate_action_id UUID,
+  barrier_id UUID,
+  explanation_id UUID,
+  approval_request_id UUID,
+  execution_plan_id UUID,
+  execution_result_id UUID,
+  execution_disposition STRING CHECK (execution_disposition IN ('succeeded', 'failed', 'unknown')),
+  correction_of_revision_id UUID,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT decision_receipt_revision_sequence_unique UNIQUE (receipt_id, sequence),
+  CONSTRAINT decision_receipt_revision_event_unique UNIQUE (receipt_id, event_key),
+  CONSTRAINT decision_receipt_previous_digest_shape CHECK (
+    previous_digest IS NULL OR previous_digest ~ '^[0-9a-f]{64}$'
+  ),
+  CONSTRAINT decision_receipt_content_digest_shape CHECK (
+    content_digest ~ '^[0-9a-f]{64}$'
+  ),
+  CONSTRAINT decision_receipt_revision_digest_shape CHECK (
+    revision_digest ~ '^[0-9a-f]{64}$'
+  ),
+  CONSTRAINT decision_receipt_execution_result_plan CHECK (
+    execution_result_id IS NULL OR execution_plan_id IS NOT NULL
+  ),
+  CONSTRAINT decision_receipt_execution_disposition_shape CHECK (
+    (stage = 'execution_recorded' AND execution_disposition = disposition) OR
+    (stage IN ('feedback_recorded', 'corrected') AND
+      ((execution_plan_id IS NULL AND execution_disposition IS NULL) OR
+       (execution_plan_id IS NOT NULL AND execution_disposition IS NOT NULL))) OR
+    (stage NOT IN ('execution_recorded', 'feedback_recorded', 'corrected') AND
+      execution_disposition IS NULL)
+  ),
+  CONSTRAINT decision_receipt_correction_shape CHECK (
+    (stage = 'corrected' AND disposition = 'corrected' AND correction_of_revision_id IS NOT NULL)
+    OR (stage != 'corrected' AND disposition != 'corrected' AND correction_of_revision_id IS NULL)
+  ),
+  CONSTRAINT decision_receipt_approval_shape CHECK (
+    stage != 'approval_recorded' OR approval_request_id IS NOT NULL
+  ),
+  CONSTRAINT decision_receipt_execution_shape CHECK (
+    stage != 'execution_recorded' OR (
+      barrier_id IS NOT NULL AND disposition IN ('succeeded', 'failed', 'unknown')
+      AND ((disposition IN ('succeeded', 'failed') AND execution_result_id IS NOT NULL)
+        OR disposition = 'unknown')
+    )
+  ),
+  CONSTRAINT decision_receipt_stage_disposition_matrix CHECK (
+    (stage = 'decision_recorded' AND disposition = 'pending') OR
+    (stage = 'policy_evaluated' AND disposition IN ('allowed', 'deliberate_non_action', 'requires_approval', 'blocked')) OR
+    (stage = 'approval_recorded' AND disposition IN ('requires_approval', 'approved', 'rejected', 'expired')) OR
+    (stage = 'execution_admitted' AND disposition = 'pending') OR
+    (stage = 'execution_recorded' AND disposition IN ('succeeded', 'failed', 'unknown')) OR
+    (stage = 'feedback_recorded' AND disposition IN (
+      'deliberate_non_action', 'approved', 'rejected', 'expired', 'blocked', 'succeeded', 'failed', 'unknown'
+    )) OR
+    (stage = 'corrected' AND disposition = 'corrected')
+  )
+);
+CREATE INDEX IF NOT EXISTS decision_receipt_revisions_receipt_created_idx
+  ON decision_receipt_revisions (receipt_id, sequence DESC);
+
 -- ============================================================================
 -- Feedback
 -- ============================================================================
@@ -352,11 +484,45 @@ CREATE TABLE IF NOT EXISTS feedback_events (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id),
   decision_id UUID NOT NULL REFERENCES decisions(id),
+  approval_request_id UUID,
   type STRING NOT NULL,
   data JSONB NOT NULL DEFAULT '{}',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT feedback_events_approval_owner_decision_fk
+    FOREIGN KEY (approval_request_id, user_id, decision_id)
+    REFERENCES approval_requests (id, user_id, decision_id) ON DELETE CASCADE,
   INDEX (user_id, created_at DESC),
-  INDEX (decision_id)
+  INDEX (decision_id),
+  CONSTRAINT feedback_events_id_owner_decision_idx UNIQUE (id, user_id, decision_id),
+  UNIQUE INDEX feedback_events_approval_request_unique_idx (approval_request_id)
+    WHERE approval_request_id IS NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS twin_feedback_applications (
+  id UUID PRIMARY KEY,
+  feedback_event_id UUID NOT NULL,
+  user_id UUID NOT NULL,
+  decision_id UUID NOT NULL,
+  profile_id UUID NOT NULL,
+  input_profile_version INT NOT NULL,
+  output_profile_version INT NOT NULL,
+  changed BOOL NOT NULL,
+  output_digest STRING NOT NULL,
+  applied_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT twin_feedback_applications_feedback_unique UNIQUE (feedback_event_id),
+  CONSTRAINT twin_feedback_applications_feedback_owner_decision_fk
+    FOREIGN KEY (feedback_event_id, user_id, decision_id)
+    REFERENCES feedback_events (id, user_id, decision_id) ON DELETE CASCADE,
+  CONSTRAINT twin_feedback_applications_profile_owner_fk
+    FOREIGN KEY (profile_id, user_id) REFERENCES twin_profiles (id, user_id),
+  CONSTRAINT twin_feedback_applications_versions_chk CHECK (
+    input_profile_version > 0 AND
+    ((changed = true AND output_profile_version = input_profile_version + 1) OR
+     (changed = false AND output_profile_version = input_profile_version))
+  ),
+  CONSTRAINT twin_feedback_applications_digest_chk CHECK (
+    output_digest ~ '^[0-9a-f]{64}$'
+  )
 );
 
 -- ============================================================================

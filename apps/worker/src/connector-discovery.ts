@@ -31,6 +31,35 @@ export async function loadUserOAuthConnections<T>(
   return loadConnections();
 }
 
+export interface AccountConnectorTopology<TGoogle, TMicrosoft, TConnector> {
+  googleAccounts: readonly TGoogle[];
+  microsoftAccounts: readonly TMicrosoft[];
+  createGmail(account: TGoogle): TConnector;
+  createGoogleCalendar(account: TGoogle): TConnector;
+  createOutlookMail(account: TMicrosoft): TConnector;
+  createOutlookCalendar(account: TMicrosoft): TConnector;
+}
+
+/**
+ * Expand every admitted credential account into its complete connector pair.
+ * Keeping this pure makes it impossible for refresh-order changes to silently
+ * select a different `tokens[0]` account.
+ */
+export function buildAccountConnectorTopology<TGoogle, TMicrosoft, TConnector>(
+  input: AccountConnectorTopology<TGoogle, TMicrosoft, TConnector>,
+): TConnector[] {
+  const connectors: TConnector[] = [];
+  for (const account of input.googleAccounts) {
+    connectors.push(input.createGmail(account));
+    connectors.push(input.createGoogleCalendar(account));
+  }
+  for (const account of input.microsoftAccounts) {
+    connectors.push(input.createOutlookMail(account));
+    connectors.push(input.createOutlookCalendar(account));
+  }
+  return connectors;
+}
+
 /**
  * Resolve provider admission before constructing anything that can read or
  * refresh a credential. Account-backed providers require the explicit

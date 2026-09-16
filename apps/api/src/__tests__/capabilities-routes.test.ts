@@ -69,9 +69,8 @@ vi.mock('@skytwin/db', () => ({
   query: mockQuery,
 }));
 
-// #324: the regret endpoint resolves the execution router to dispatch
-// IronClawAdapter.rollback(planId). Mock it so tests assert the wiring without
-// constructing real adapters.
+// Sentinel mocks prove the report-only regret endpoint does not construct an
+// execution router or dispatch rollback work.
 vi.mock('../execution-setup.js', () => ({
   getExecutionRouter: mockGetExecutionRouter,
 }));
@@ -79,7 +78,9 @@ vi.mock('../execution-setup.js', () => ({
 vi.mock('../lib/user-llm-client.js', () => ({
   buildUserLlmClient: vi.fn().mockResolvedValue(null),
   resolveUserLlmClient: vi.fn().mockResolvedValue({
-    state: 'no_provider', client: null, reason: 'No enabled provider is configured',
+    state: 'no_provider',
+    client: null,
+    reason: 'No enabled provider is configured',
   }),
 }));
 
@@ -140,7 +141,9 @@ async function request(
         return;
       }
       const url = `http://127.0.0.1:${addr.port}${path}`;
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+      };
       const options: RequestInit = { method, headers };
       if (body !== undefined) {
         options.body = JSON.stringify(body);
@@ -163,19 +166,21 @@ async function request(
 // Fixtures
 // ---------------------------------------------------------------------------
 
-function makeMcpServer(overrides: Partial<{
-  id: string;
-  user_id: string;
-  registry_id: string | null;
-  display_name: string;
-  status: string;
-  oauth_token_id: string | null;
-  oauth_provider: string | null;
-  trust_tier: string;
-  last_active_at: Date | null;
-  created_at: Date;
-  updated_at: Date;
-}> = {}) {
+function makeMcpServer(
+  overrides: Partial<{
+    id: string;
+    user_id: string;
+    registry_id: string | null;
+    display_name: string;
+    status: string;
+    oauth_token_id: string | null;
+    oauth_provider: string | null;
+    trust_tier: string;
+    last_active_at: Date | null;
+    created_at: Date;
+    updated_at: Date;
+  }> = {},
+) {
   return {
     id: overrides.id ?? SERVER_ID,
     user_id: overrides.user_id ?? USER_ID,
@@ -239,14 +244,9 @@ describe('Capabilities API routes', () => {
     // Default: listForUser returns empty array
     mockMcpServerRepository.listForUser.mockResolvedValue([]);
     mockMcpServerRepository.markAllResumedForUser.mockResolvedValue([]);
-    // #324: default router resolves with a rollback() that succeeds.
-    mockRouterRollback.mockResolvedValue({
-      result: { success: true, message: 'Rolled back by ironclaw' },
-      adapterUsed: 'ironclaw',
-      noAdapter: false,
-    });
-    mockGetExecutionRouter.mockResolvedValue({ rollback: mockRouterRollback });
-    // #324: default rollback targets are empty unless a test sets them.
+    mockRouterRollback.mockRejectedValue(new Error('rollback dispatch must remain disabled'));
+    mockGetExecutionRouter.mockRejectedValue(new Error('router construction must remain disabled'));
+    // Report targets are empty unless a test sets them.
     mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([]);
   });
 
@@ -296,10 +296,12 @@ describe('Capabilities API routes', () => {
     it('preserves ownership denial before account availability checks', async () => {
       const OTHER_USER = 'cccccccc-dddd-eeee-ffff-000000000099';
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
-        user_id: OTHER_USER,
-        registry_id: 'gmail-mcp',
-      }));
+      mockMcpServerRepository.getById.mockResolvedValue(
+        makeMcpServer({
+          user_id: OTHER_USER,
+          registry_id: 'gmail-mcp',
+        }),
+      );
 
       const app = buildApp(USER_ID);
       const res = await request(app, 'GET', `/api/capabilities/${SERVER_ID}`);
@@ -328,13 +330,12 @@ describe('Capabilities API routes', () => {
 
     it('hides a custom server when any cached skill is account-backed', async () => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
-        registry_id: 'custom-productivity-tools',
-      }));
-      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([
-        'read_file',
-        'sendEmail',
-      ]);
+      mockMcpServerRepository.getById.mockResolvedValue(
+        makeMcpServer({
+          registry_id: 'custom-productivity-tools',
+        }),
+      );
+      mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['read_file', 'sendEmail']);
 
       const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/${SERVER_ID}`);
 
@@ -344,9 +345,11 @@ describe('Capabilities API routes', () => {
 
     it.each(['empty', 'error'])('fails closed when a custom server inventory is %s', async (inventoryState) => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
-        registry_id: 'custom-productivity-tools',
-      }));
+      mockMcpServerRepository.getById.mockResolvedValue(
+        makeMcpServer({
+          registry_id: 'custom-productivity-tools',
+        }),
+      );
       if (inventoryState === 'error') {
         mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(new Error('inventory unavailable'));
       } else {
@@ -406,7 +409,12 @@ describe('Capabilities API routes', () => {
       const res = await request(app, 'GET', `/api/capabilities/${SERVER_ID}/policy`);
 
       expect(res.status).toBe(200);
-      const body = res.body as { policy: { perAppSpendPerActionCents: number; perAppDailySpendCents: number } };
+      const body = res.body as {
+        policy: {
+          perAppSpendPerActionCents: number;
+          perAppDailySpendCents: number;
+        };
+      };
       expect(body.policy.perAppSpendPerActionCents).toBe(500);
       expect(body.policy.perAppDailySpendCents).toBe(2500);
     });
@@ -425,19 +433,26 @@ describe('Capabilities API routes', () => {
       });
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'PUT',
-        `/api/capabilities/${SERVER_ID}/policy`,
-        { perAppSpendPerActionCents: 1200, perAppDailySpendCents: null },
-      );
+      const res = await request(app, 'PUT', `/api/capabilities/${SERVER_ID}/policy`, {
+        perAppSpendPerActionCents: 1200,
+        perAppDailySpendCents: null,
+      });
 
       expect(res.status).toBe(200);
-      expect(mockQuery).toHaveBeenCalledWith(
-        expect.stringContaining('UPDATE mcp_servers'),
-        [SERVER_ID, true, 1200, true, null, USER_ID],
-      );
-      const body = res.body as { policy: { perAppSpendPerActionCents: number; perAppDailySpendCents: null } };
+      expect(mockQuery).toHaveBeenCalledWith(expect.stringContaining('UPDATE mcp_servers'), [
+        SERVER_ID,
+        true,
+        1200,
+        true,
+        null,
+        USER_ID,
+      ]);
+      const body = res.body as {
+        policy: {
+          perAppSpendPerActionCents: number;
+          perAppDailySpendCents: null;
+        };
+      };
       expect(body.policy.perAppSpendPerActionCents).toBe(1200);
       expect(body.policy.perAppDailySpendCents).toBeNull();
     });
@@ -451,7 +466,10 @@ describe('Capabilities API routes', () => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
       const server = makeMcpServer({ registry_id: 'gmail-mcp' });
       mockMcpServerRepository.getById.mockResolvedValue(server);
-      mockMcpServerRepository.softDelete.mockResolvedValue({ ...server, status: 'uninstalled' });
+      mockMcpServerRepository.softDelete.mockResolvedValue({
+        ...server,
+        status: 'uninstalled',
+      });
 
       const app = buildApp(USER_ID);
       const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/uninstall`, {});
@@ -473,12 +491,7 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ status: 'uninstalled' }));
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/uninstall`,
-        {},
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/uninstall`, {});
 
       expect(res.status).toBe(404);
       expect(mockMcpServerRepository.softDelete).not.toHaveBeenCalled();
@@ -489,12 +502,7 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: OTHER_USER }));
 
       const app = buildApp(USER_ID); // different user
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/uninstall`,
-        {},
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/uninstall`, {});
 
       expect(res.status).toBe(403);
       expect(mockMcpServerRepository.softDelete).not.toHaveBeenCalled();
@@ -504,15 +512,15 @@ describe('Capabilities API routes', () => {
       const tokenId = 'token-uuid-1111-1111-1111-111111111111';
       const server = makeMcpServer({ oauth_token_id: tokenId });
       mockMcpServerRepository.getById.mockResolvedValue(server);
-      mockMcpServerRepository.softDelete.mockResolvedValue({ ...server, status: 'uninstalled' });
+      mockMcpServerRepository.softDelete.mockResolvedValue({
+        ...server,
+        status: 'uninstalled',
+      });
 
       const app = buildApp(USER_ID);
-      await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/uninstall`,
-        { revokeOauth: true },
-      );
+      await request(app, 'POST', `/api/capabilities/${SERVER_ID}/uninstall`, {
+        revokeOauth: true,
+      });
 
       expect(mockOauthRepository.deleteById).toHaveBeenCalledWith(USER_ID, tokenId);
     });
@@ -520,21 +528,17 @@ describe('Capabilities API routes', () => {
     it('writes a capability_provenance_nodes row on successful uninstall', async () => {
       const server = makeMcpServer();
       mockMcpServerRepository.getById.mockResolvedValue(server);
-      mockMcpServerRepository.softDelete.mockResolvedValue({ ...server, status: 'uninstalled' });
+      mockMcpServerRepository.softDelete.mockResolvedValue({
+        ...server,
+        status: 'uninstalled',
+      });
 
       const app = buildApp(USER_ID);
-      await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/uninstall`,
-        {},
-      );
+      await request(app, 'POST', `/api/capabilities/${SERVER_ID}/uninstall`, {});
 
       const callArgs = mockQuery.mock.calls;
       const provenanceInsert = callArgs.find(
-        (args: unknown[]) =>
-          typeof args[0] === 'string' &&
-          (args[0] as string).includes('capability_provenance_nodes'),
+        (args: unknown[]) => typeof args[0] === 'string' && (args[0] as string).includes('capability_provenance_nodes'),
       );
       expect(provenanceInsert).toBeDefined();
     });
@@ -548,13 +552,16 @@ describe('Capabilities API routes', () => {
       const server = makeMcpServer();
       mockMcpServerRepository.getById.mockResolvedValue(server);
 
-      // Two rollback targets — one reversible (no plan linkage), one not.
+      // Two rollback targets — one reversible whose result did not qualify a
+      // plan report (for example rollback_available=false), one not reversible.
       // #324: the route resolves targets via the join repo method now. A
       // reversible action with NULL executionPlanId remains visible in the
       // report, but cannot be dispatched without a durable rollback lifecycle.
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-aaa',
+          actionType: 'label_email',
+          reversible: true,
           payload: { reversible: true },
           occurredAt: new Date(),
           executionPlanId: null,
@@ -562,6 +569,8 @@ describe('Capabilities API routes', () => {
         },
         {
           actionId: 'action-bbb',
+          actionType: 'send_email',
+          reversible: false,
           payload: { reversible: false, irreversibleReason: 'Sent email' },
           occurredAt: new Date(),
           executionPlanId: null,
@@ -570,19 +579,20 @@ describe('Capabilities API routes', () => {
       ]);
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/regret`,
-        { withinHours: 48 },
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/regret`, {
+        withinHours: 48,
+      });
 
       expect(res.status).toBe(200);
       const body = res.body as {
         status: string;
         code: string;
         undone: unknown[];
-        unavailable: Array<{ actionId: string; planId: string | null; result: string }>;
+        unavailable: Array<{
+          actionId: string;
+          planId: string | null;
+          result: string;
+        }>;
         irreversible: Array<{ actionId: string; reason: string }>;
       };
       expect(body.status).toBe('report_only');
@@ -607,6 +617,17 @@ describe('Capabilities API routes', () => {
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-ccc',
+          actionType: 'label_email',
+          reversible: true,
+          payload: { reversible: true },
+          occurredAt: new Date(),
+          executionPlanId: 'plan-xyz',
+          adapterUsed: 'ironclaw',
+        },
+        {
+          actionId: 'action-ccc',
+          actionType: 'label_email',
+          reversible: true,
           payload: { reversible: true },
           occurredAt: new Date(),
           executionPlanId: 'plan-xyz',
@@ -615,18 +636,20 @@ describe('Capabilities API routes', () => {
       ]);
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/regret`,
-        { withinHours: 48 },
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/regret`, {
+        withinHours: 48,
+      });
 
       expect(res.status).toBe(200);
       const body = res.body as {
         status: string;
         undone: unknown[];
-        unavailable: Array<{ actionId: string; planId: string | null; adapterUsed: string | null; result: string }>;
+        unavailable: Array<{
+          actionId: string;
+          planId: string | null;
+          adapterUsed: string | null;
+          result: string;
+        }>;
       };
       expect(body.status).toBe('report_only');
       expect(body.undone).toEqual([]);
@@ -637,8 +660,11 @@ describe('Capabilities API routes', () => {
       expect(mockGetExecutionRouter).not.toHaveBeenCalled();
       expect(mockRouterRollback).not.toHaveBeenCalled();
       const rollbackAuditCall = mockQuery.mock.calls.find(
-        (c) => typeof c[0] === 'string' && c[0].includes('capability_provenance_nodes')
-          && Array.isArray(c[1]) && JSON.stringify(c[1]).includes('rollback'),
+        (c) =>
+          typeof c[0] === 'string' &&
+          c[0].includes('capability_provenance_nodes') &&
+          Array.isArray(c[1]) &&
+          JSON.stringify(c[1]).includes('rollback'),
       );
       expect(rollbackAuditCall).toBeUndefined();
     });
@@ -648,6 +674,8 @@ describe('Capabilities API routes', () => {
       mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
         {
           actionId: 'action-ddd',
+          actionType: 'label_email',
+          reversible: true,
           payload: { reversible: true },
           occurredAt: new Date(),
           executionPlanId: 'plan-fail',
@@ -662,17 +690,18 @@ describe('Capabilities API routes', () => {
       });
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/regret`,
-        { withinHours: 48 },
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/regret`, {
+        withinHours: 48,
+      });
 
       expect(res.status).toBe(200);
       const body = res.body as {
         undone: unknown[];
-        unavailable: Array<{ planId: string | null; result: string; message?: string }>;
+        unavailable: Array<{
+          planId: string | null;
+          result: string;
+          message?: string;
+        }>;
       };
       expect(body.undone).toEqual([]);
       expect(body.unavailable).toHaveLength(1);
@@ -681,42 +710,44 @@ describe('Capabilities API routes', () => {
       expect(body.unavailable[0]!.message).toContain('durable replay protection');
       expect(mockGetExecutionRouter).not.toHaveBeenCalled();
       expect(mockRouterRollback).not.toHaveBeenCalled();
-      expect(JSON.stringify({ response: res.body, writes: mockQuery.mock.calls }))
-        .not.toContain('ya29.adapter-secret');
+      expect(JSON.stringify({ response: res.body, writes: mockQuery.mock.calls })).not.toContain('ya29.adapter-secret');
     });
 
     it('keeps an owned retained account capability report-only without external mutation', async () => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
-        user_id: USER_ID,
-        oauth_provider: 'microsoft',
-      }));
-      mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([{
-        actionId: 'action-retained',
-        payload: { reversible: true },
-        occurredAt: new Date(),
-        executionPlanId: 'plan-retained',
-        adapterUsed: 'ironclaw',
-      }]);
-
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/${SERVER_ID}/regret`,
-        { withinHours: 24 },
+      mockMcpServerRepository.getById.mockResolvedValue(
+        makeMcpServer({
+          user_id: USER_ID,
+          oauth_provider: 'microsoft',
+        }),
       );
+      mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
+        {
+          actionId: 'action-retained',
+          payload: { reversible: true },
+          occurredAt: new Date(),
+          executionPlanId: 'plan-retained',
+          adapterUsed: 'ironclaw',
+        },
+      ]);
+
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/${SERVER_ID}/regret`, {
+        withinHours: 24,
+      });
 
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
         status: 'report_only',
         code: 'generic_rollback_report_only',
         undone: [],
-        unavailable: [{
-          actionId: 'action-retained',
-          planId: 'plan-retained',
-          adapterUsed: 'ironclaw',
-          result: 'rollback_unavailable',
-        }],
+        unavailable: [
+          {
+            actionId: 'action-retained',
+            planId: 'plan-retained',
+            adapterUsed: 'ironclaw',
+            result: 'rollback_unavailable',
+          },
+        ],
       });
       expect(mockExecutionRepository.getRollbackTargetsByServer).toHaveBeenCalledWith({
         serverId: SERVER_ID,
@@ -732,17 +763,54 @@ describe('Capabilities API routes', () => {
       expect(mockQuery).not.toHaveBeenCalled();
     });
 
+    it('quarantines legacy archive rollback before reversibility classification', async () => {
+      mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: USER_ID }));
+      mockExecutionRepository.getRollbackTargetsByServer.mockResolvedValue([
+        {
+          actionId: 'legacy-archive-action',
+          actionType: 'archive_email',
+          reversible: false,
+          payload: {
+            reversible: true,
+            irreversibleReason: 'untrusted display value',
+          },
+          occurredAt: new Date(),
+          executionPlanId: null,
+          adapterUsed: null,
+        },
+      ]);
+
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/${SERVER_ID}/regret`, {
+        withinHours: 48,
+      });
+
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({
+        status: 'report_only',
+        undone: [],
+        unavailable: [
+          {
+            actionId: 'legacy-archive-action',
+            planId: null,
+            adapterUsed: null,
+            result: 'rollback_unavailable',
+            message: expect.stringContaining('dedicated execution lifecycle'),
+          },
+        ],
+        irreversible: [],
+      });
+      expect(mockGetExecutionRouter).not.toHaveBeenCalled();
+      expect(mockRouterRollback).not.toHaveBeenCalled();
+    });
+
     it('returns 403 when requester is not the owner', async () => {
       const OTHER_USER = 'cccccccc-dddd-eeee-ffff-000000000099';
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({ user_id: OTHER_USER }));
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/regret`,
-        { withinHours: 24 },
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/regret`, {
+        withinHours: 24,
+      });
 
       expect(res.status).toBe(403);
     });
@@ -763,12 +831,10 @@ describe('Capabilities API routes', () => {
       mockQuery.mockResolvedValueOnce({ rows: [fakeDecision], rowCount: 1 });
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/time-machine`,
-        { decisionId, withoutCapability: true },
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/time-machine`, {
+        decisionId,
+        withoutCapability: true,
+      });
 
       expect(res.status).toBe(200);
       const body = res.body as {
@@ -786,12 +852,7 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer());
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/time-machine`,
-        {},
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/time-machine`, {});
 
       expect(res.status).toBe(400);
     });
@@ -807,19 +868,24 @@ describe('Capabilities API routes', () => {
 
       mockQuery.mockResolvedValueOnce({
         rows: [
-          { id: 'dec-1', situation_type: 'email_received', created_at: new Date('2026-04-15') },
-          { id: 'dec-2', situation_type: 'calendar_event', created_at: new Date('2026-04-20') },
+          {
+            id: 'dec-1',
+            situation_type: 'email_received',
+            created_at: new Date('2026-04-15'),
+          },
+          {
+            id: 'dec-2',
+            situation_type: 'calendar_event',
+            created_at: new Date('2026-04-20'),
+          },
         ],
         rowCount: 2,
       });
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/${SERVER_ID}/rehearse`,
-        { daysBack: 30 },
-      );
+      const res = await request(app, 'POST', `/api/capabilities/${SERVER_ID}/rehearse`, {
+        daysBack: 30,
+      });
 
       expect(res.status).toBe(200);
       const body = res.body as {
@@ -842,7 +908,10 @@ describe('Capabilities API routes', () => {
   describe('GET /', () => {
     it('returns installed, suggestions, and dormant slices', async () => {
       const activeServer = makeMcpServer({ status: 'active' });
-      const dormantServer = makeMcpServer({ id: 'bbbbbbbb-bbbb-cccc-dddd-000000000002', status: 'dormant' });
+      const dormantServer = makeMcpServer({
+        id: 'bbbbbbbb-bbbb-cccc-dddd-000000000002',
+        status: 'dormant',
+      });
       const suggestion = {
         id: 'cccccccc-dddd-eeee-ffff-000000000001',
         user_id: USER_ID,
@@ -912,24 +981,16 @@ describe('Capabilities API routes', () => {
         registry_id: 'custom-productivity',
         display_name: 'Custom productivity',
       });
-      mockMcpServerRepository.listForUser.mockResolvedValue([
-        gmail,
-        googleOauthAlias,
-        customMail,
-        github,
-      ]);
+      mockMcpServerRepository.listForUser.mockResolvedValue([gmail, googleOauthAlias, customMail, github]);
       mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
-        serverId === customMail.id ? ['sendEmail'] : ['create_issue']);
+        serverId === customMail.id ? ['sendEmail'] : ['create_issue'],
+      );
       mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
         { registry_id: 'google-calendar-mcp' },
         { registry_id: 'linear-mcp' },
       ]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       const body = res.body as {
@@ -937,8 +998,7 @@ describe('Capabilities API routes', () => {
         dormant: Array<{ registry_id: string }>;
         suggestions: Array<{ registry_id: string }>;
       };
-      expect(body.installed.map((server) => server.registry_id))
-        .toEqual(['@modelcontextprotocol/server-github']);
+      expect(body.installed.map((server) => server.registry_id)).toEqual(['@modelcontextprotocol/server-github']);
       expect(body.dormant).toEqual([]);
       expect(body.suggestions.map((suggestion) => suggestion.registry_id)).toEqual(['linear-mcp']);
     });
@@ -948,16 +1008,10 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.listForUser.mockResolvedValue([
         makeMcpServer({ registry_id: '@modelcontextprotocol/server-github' }),
       ]);
-      mockMcpServerRepository.listSkillNamesForServer.mockRejectedValueOnce(
-        new Error('classification unavailable'),
-      );
+      mockMcpServerRepository.listSkillNamesForServer.mockRejectedValueOnce(new Error('classification unavailable'));
       mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({ installed: [], dormant: [] });
@@ -968,15 +1022,9 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.listForUser.mockResolvedValue([
         makeMcpServer({ registry_id: 'gmail-mcp', display_name: 'Gmail' }),
       ]);
-      mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([
-        { registry_id: 'google-calendar-mcp' },
-      ]);
+      mockAppSuggestionRepository.getPendingForUser.mockResolvedValue([{ registry_id: 'google-calendar-mcp' }]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       const body = res.body as { installed: unknown[]; suggestions: unknown[] };
@@ -1006,21 +1054,14 @@ describe('Capabilities API routes', () => {
       });
       mockMcpServerRepository.listForUser.mockResolvedValue([gmail, googleOauthAlias, github]);
       mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['create_issue']);
-      mockMcpServerRepository.markResumedForUserByIds.mockResolvedValueOnce([
-        { ...github, status: 'active' },
-      ]);
+      mockMcpServerRepository.markResumedForUserByIds.mockResolvedValueOnce([{ ...github, status: 'active' }]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/resume-all?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/resume-all?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ resumedCount: 1 });
       expect(mockMcpServerRepository.markAllResumedForUser).not.toHaveBeenCalled();
-      expect(mockMcpServerRepository.markResumedForUserByIds)
-        .toHaveBeenCalledWith(USER_ID, [github.id]);
+      expect(mockMcpServerRepository.markResumedForUserByIds).toHaveBeenCalledWith(USER_ID, [github.id]);
     });
 
     it('does not issue an update when only Google servers are paused', async () => {
@@ -1029,11 +1070,7 @@ describe('Capabilities API routes', () => {
         makeMcpServer({ registry_id: 'gmail-mcp', status: 'paused' }),
       ]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/resume-all?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/resume-all?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ resumedCount: 0 });
@@ -1056,21 +1093,15 @@ describe('Capabilities API routes', () => {
       });
       mockMcpServerRepository.listForUser.mockResolvedValue([custom, github]);
       mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
-        serverId === custom.id ? ['sendEmail'] : ['create_issue']);
-      mockMcpServerRepository.markResumedForUserByIds.mockResolvedValueOnce([
-        { ...github, status: 'active' },
-      ]);
-
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/resume-all?userId=${USER_ID}`,
+        serverId === custom.id ? ['sendEmail'] : ['create_issue'],
       );
+      mockMcpServerRepository.markResumedForUserByIds.mockResolvedValueOnce([{ ...github, status: 'active' }]);
+
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/resume-all?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ resumedCount: 1 });
-      expect(mockMcpServerRepository.markResumedForUserByIds)
-        .toHaveBeenCalledWith(USER_ID, [github.id]);
+      expect(mockMcpServerRepository.markResumedForUserByIds).toHaveBeenCalledWith(USER_ID, [github.id]);
     });
 
     it('fails closed when paused-server skill classification cannot be read', async () => {
@@ -1081,15 +1112,9 @@ describe('Capabilities API routes', () => {
         status: 'paused',
       });
       mockMcpServerRepository.listForUser.mockResolvedValue([custom]);
-      mockMcpServerRepository.listSkillNamesForServer.mockRejectedValueOnce(
-        new Error('classification unavailable'),
-      );
+      mockMcpServerRepository.listSkillNamesForServer.mockRejectedValueOnce(new Error('classification unavailable'));
 
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/resume-all?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/resume-all?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ resumedCount: 0 });
@@ -1106,11 +1131,7 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.listForUser.mockResolvedValue([custom]);
       mockMcpServerRepository.listSkillNamesForServer.mockResolvedValueOnce([]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/resume-all?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/resume-all?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ resumedCount: 0 });
@@ -1119,14 +1140,13 @@ describe('Capabilities API routes', () => {
 
     it('preserves bulk resume behind the exact experimental opt-in', async () => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
-      const gmail = makeMcpServer({ registry_id: 'gmail-mcp', status: 'active' });
+      const gmail = makeMcpServer({
+        registry_id: 'gmail-mcp',
+        status: 'active',
+      });
       mockMcpServerRepository.markAllResumedForUser.mockResolvedValue([gmail]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/resume-all?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/resume-all?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ resumedCount: 1 });
@@ -1163,15 +1183,12 @@ describe('Capabilities API routes', () => {
         suggestion('linear-mcp', 'suggestion-linear'),
       ]);
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities/suggestions?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/suggestions?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
-      expect((res.body as { suggestions: Array<{ registry_id: string }> }).suggestions
-        .map((entry) => entry.registry_id)).toEqual(['linear-mcp']);
+      expect(
+        (res.body as { suggestions: Array<{ registry_id: string }> }).suggestions.map((entry) => entry.registry_id),
+      ).toEqual(['linear-mcp']);
     });
   });
 
@@ -1191,13 +1208,12 @@ describe('Capabilities API routes', () => {
 
     it('filters by category when provided', async () => {
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'GET',
-        `/api/capabilities/registry?userId=${USER_ID}&category=developer`,
-      );
+      const res = await request(app, 'GET', `/api/capabilities/registry?userId=${USER_ID}&category=developer`);
       expect(res.status).toBe(200);
-      const body = res.body as { entries: Array<{ category: string }>; nextCursor: null };
+      const body = res.body as {
+        entries: Array<{ category: string }>;
+        nextCursor: null;
+      };
       // All returned entries should have category=developer (or the filtered mock returns all)
       for (const entry of body.entries) {
         expect(entry.category).toBe('developer');
@@ -1232,9 +1248,7 @@ describe('Capabilities API routes', () => {
 
       expect(res.status).toBe(200);
       const body = res.body as { entries: Array<{ id: string }> };
-      expect(body.entries.map((entry) => entry.id)).toEqual([
-        '@modelcontextprotocol/server-github',
-      ]);
+      expect(body.entries.map((entry) => entry.id)).toEqual(['@modelcontextprotocol/server-github']);
       expect(mockRegistrySearch).toHaveBeenCalledWith('');
     });
   });
@@ -1265,7 +1279,10 @@ describe('Capabilities API routes', () => {
         updated_at: new Date(),
       };
       mockAppSuggestionRepository.getActiveForUser.mockResolvedValue([suggestion]);
-      mockAppSuggestionRepository.markDismissed.mockResolvedValue({ ...suggestion, status: 'dismissed' as const });
+      mockAppSuggestionRepository.markDismissed.mockResolvedValue({
+        ...suggestion,
+        status: 'dismissed' as const,
+      });
 
       const app = buildApp(USER_ID);
       const res = await request(
@@ -1381,7 +1398,13 @@ describe('Capabilities API routes', () => {
       const res = await request(app, 'GET', `/api/capabilities/recipes?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
-      const body = res.body as { recipes: Array<{ slug: string; displayName: string; registryIds: string[] }> };
+      const body = res.body as {
+        recipes: Array<{
+          slug: string;
+          displayName: string;
+          registryIds: string[];
+        }>;
+      };
       expect(body.recipes).toHaveLength(6);
       const slugs = body.recipes.map((r) => r.slug);
       expect(slugs).toContain('developer-pack');
@@ -1394,31 +1417,34 @@ describe('Capabilities API routes', () => {
       const res = await request(app, 'GET', `/api/capabilities/recipes?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
-      const body = res.body as { recipes: Array<{ slug: string; description: string; registryIds: string[] }> };
+      const body = res.body as {
+        recipes: Array<{
+          slug: string;
+          description: string;
+          registryIds: string[];
+        }>;
+      };
       const allIds = body.recipes.flatMap((recipe) => recipe.registryIds);
       expect(allIds).not.toContain('gmail-mcp');
       expect(allIds).not.toContain('google-calendar-mcp');
       expect(allIds).not.toContain('@modelcontextprotocol/server-google-drive');
       expect(allIds).toContain('@modelcontextprotocol/server-github');
-      expect(body.recipes.find((recipe) => recipe.slug === 'productivity-pack'))
-        .toMatchObject({
-          description: 'Productivity pack capabilities available in this preview.',
-          registryIds: ['@notionhq/notion-mcp-server', '@modelcontextprotocol/server-slack'],
-        });
+      expect(body.recipes.find((recipe) => recipe.slug === 'productivity-pack')).toMatchObject({
+        description: 'Productivity pack capabilities available in this preview.',
+        registryIds: ['@notionhq/notion-mcp-server', '@modelcontextprotocol/server-slack'],
+      });
     });
   });
 
   describe('POST /recipes/:slug/install', () => {
     it('returns job descriptors for a valid recipe slug', async () => {
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/recipes/developer-pack/install?userId=${USER_ID}`,
-      );
+      const res = await request(app, 'POST', `/api/capabilities/recipes/developer-pack/install?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
-      const body = res.body as { jobs: Array<{ registryId: string; status: string }> };
+      const body = res.body as {
+        jobs: Array<{ registryId: string; status: string }>;
+      };
       expect(Array.isArray(body.jobs)).toBe(true);
       expect(body.jobs.length).toBeGreaterThan(0);
       for (const job of body.jobs) {
@@ -1429,51 +1455,51 @@ describe('Capabilities API routes', () => {
 
     it('returns 404 for an unknown recipe slug', async () => {
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/recipes/nonexistent-pack/install?userId=${USER_ID}`,
-      );
+      const res = await request(app, 'POST', `/api/capabilities/recipes/nonexistent-pack/install?userId=${USER_ID}`);
       expect(res.status).toBe(404);
     });
 
     it('returns only non-Google jobs from a mixed recipe while disabled', async () => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'POST',
-        `/api/capabilities/recipes/productivity-pack/install?userId=${USER_ID}`,
-      );
+      const res = await request(app, 'POST', `/api/capabilities/recipes/productivity-pack/install?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       expect(res.body).toEqual({
         jobs: [
-          { registryId: '@notionhq/notion-mcp-server', status: 'pending_user_oauth' },
-          { registryId: '@modelcontextprotocol/server-slack', status: 'pending_user_oauth' },
+          {
+            registryId: '@notionhq/notion-mcp-server',
+            status: 'pending_user_oauth',
+          },
+          {
+            registryId: '@modelcontextprotocol/server-slack',
+            status: 'pending_user_oauth',
+          },
         ],
       });
     });
   });
 
   describe('POST /install', () => {
-    it.each(['gmail-mcp', 'outlook-mcp', 'openclaw:onedrive'])
-    ('rejects the known account capability %s before registry lookup or provenance writes', async (registryId) => {
-      mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-      const app = buildApp(USER_ID);
-      const res = await request(app, 'POST', `/api/capabilities/install?userId=${USER_ID}`, {
-        registryId,
-      });
+    it.each(['gmail-mcp', 'outlook-mcp', 'openclaw:onedrive'])(
+      'rejects the known account capability %s before registry lookup or provenance writes',
+      async (registryId) => {
+        mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
+        const app = buildApp(USER_ID);
+        const res = await request(app, 'POST', `/api/capabilities/install?userId=${USER_ID}`, {
+          registryId,
+        });
 
-      expect(res.status).toBe(503);
-      expect(res.body).toMatchObject({
-        code: 'ACCOUNT_CONNECTION_DISABLED',
-        available: false,
-        mode: 'disabled',
-      });
-      expect(mockRegistrySearch).not.toHaveBeenCalled();
-      expect(mockProvenanceRepository.writeNode).not.toHaveBeenCalled();
-    });
+        expect(res.status).toBe(503);
+        expect(res.body).toMatchObject({
+          code: 'ACCOUNT_CONNECTION_DISABLED',
+          available: false,
+          mode: 'disabled',
+        });
+        expect(mockRegistrySearch).not.toHaveBeenCalled();
+        expect(mockProvenanceRepository.writeNode).not.toHaveBeenCalled();
+      },
+    );
 
     it('rejects a registry entry declaring Google OAuth before provenance writes', async () => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
@@ -1538,21 +1564,16 @@ describe('Capabilities API routes', () => {
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
       mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer(overrides));
       if (inventory === 'error') {
-        mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(
-          new Error('inventory unavailable'),
-        );
+        mockMcpServerRepository.listSkillNamesForServer.mockRejectedValue(new Error('inventory unavailable'));
       } else if (inventory === 'empty') {
         mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([]);
       } else if (inventory !== 'unused') {
         mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue([inventory]);
       }
 
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/${SERVER_ID}/promote-tier`,
-        { toTier: 'suggest' },
-      );
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/${SERVER_ID}/promote-tier`, {
+        toTier: 'suggest',
+      });
 
       expect(res.status).toBe(503);
       expect(res.body).toEqual({
@@ -1565,13 +1586,22 @@ describe('Capabilities API routes', () => {
     });
 
     it('preserves account-backed promotion in exact experimental mode', async () => {
-      const server = makeMcpServer({ registry_id: 'gmail-mcp', trust_tier: 'observer' });
-      const promoted = makeMcpServer({ registry_id: 'gmail-mcp', trust_tier: 'suggest' });
+      const server = makeMcpServer({
+        registry_id: 'gmail-mcp',
+        trust_tier: 'observer',
+      });
+      const promoted = makeMcpServer({
+        registry_id: 'gmail-mcp',
+        trust_tier: 'suggest',
+      });
       mockLoadConfig.mockReturnValue({ googleConnectionMode: 'experimental' });
       mockMcpServerRepository.getById.mockResolvedValue(server);
       mockMcpServerRepository.updateTrustTier.mockResolvedValue(promoted);
       mockQuery
-        .mockResolvedValueOnce({ rows: [{ total: '10', approved: '10' }], rowCount: 1 })
+        .mockResolvedValueOnce({
+          rows: [{ total: '10', approved: '10' }],
+          rowCount: 1,
+        })
         .mockResolvedValueOnce({
           rows: Array.from({ length: 10 }, () => ({
             node_type: 'action',
@@ -1580,29 +1610,35 @@ describe('Capabilities API routes', () => {
           rowCount: 10,
         });
 
-      const res = await request(
-        buildApp(USER_ID),
-        'POST',
-        `/api/capabilities/${SERVER_ID}/promote-tier`,
-        { toTier: 'suggest' },
-      );
+      const res = await request(buildApp(USER_ID), 'POST', `/api/capabilities/${SERVER_ID}/promote-tier`, {
+        toTier: 'suggest',
+      });
 
       expect(res.status).toBe(200);
-      expect(res.body).toEqual({ server: expect.objectContaining({ trust_tier: 'suggest' }) });
+      expect(res.body).toEqual({
+        server: expect.objectContaining({ trust_tier: 'suggest' }),
+      });
       expect(mockMcpServerRepository.listSkillNamesForServer).not.toHaveBeenCalled();
       expect(mockMcpServerRepository.updateTrustTier).toHaveBeenCalledWith(SERVER_ID, 'suggest');
-      expect(mockProvenanceRepository.writeNode).toHaveBeenCalledWith(expect.objectContaining({
-        userId: USER_ID,
-        nodeType: 'tier_promotion',
-        serverId: SERVER_ID,
-      }));
+      expect(mockProvenanceRepository.writeNode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: USER_ID,
+          nodeType: 'tier_promotion',
+          serverId: SERVER_ID,
+        }),
+      );
     });
   });
 
   it.each([
-    ['time-machine report', 'POST', `/api/capabilities/${SERVER_ID}/time-machine`, {
-      decisionId: 'dddddddd-0000-0000-0000-000000000001',
-    }],
+    [
+      'time-machine report',
+      'POST',
+      `/api/capabilities/${SERVER_ID}/time-machine`,
+      {
+        decisionId: 'dddddddd-0000-0000-0000-000000000001',
+      },
+    ],
     ['rehearsal', 'POST', `/api/capabilities/${SERVER_ID}/rehearse`, { daysBack: 30 }],
     ['promotion decline', 'POST', `/api/capabilities/${SERVER_ID}/decline-promotion`, {}],
     ['provenance detail', 'GET', `/api/capabilities/${SERVER_ID}/provenance`, undefined],
@@ -1611,9 +1647,11 @@ describe('Capabilities API routes', () => {
     ['zero-trust disable', 'POST', `/api/capabilities/${SERVER_ID}/zero-trust/disable`, {}],
   ])('hides the retained account capability from the %s route', async (_name, method, path, body) => {
     mockLoadConfig.mockReturnValue({ googleConnectionMode: 'disabled' });
-    mockMcpServerRepository.getById.mockResolvedValue(makeMcpServer({
-      oauth_provider: 'microsoft',
-    }));
+    mockMcpServerRepository.getById.mockResolvedValue(
+      makeMcpServer({
+        oauth_provider: 'microsoft',
+      }),
+    );
 
     const res = await request(buildApp(USER_ID), method, path, body);
 
@@ -1639,11 +1677,7 @@ describe('Capabilities API routes', () => {
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
       const app = buildApp(USER_ID);
-      const res = await request(
-        app,
-        'GET',
-        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
-      );
+      const res = await request(app, 'GET', `/api/capabilities/dependency-graph?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       const body = res.body as {
@@ -1674,31 +1708,34 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.listSkillNamesForServer.mockResolvedValue(['create_issue']);
       mockQuery.mockResolvedValue({
         rows: [
-          { server_id: googleServer.id, skill_name: 'list_events', server_display_name: 'Calendar alias' },
-          { server_id: githubServer.id, skill_name: 'create_issue', server_display_name: 'GitHub' },
+          {
+            server_id: googleServer.id,
+            skill_name: 'list_events',
+            server_display_name: 'Calendar alias',
+          },
+          {
+            server_id: githubServer.id,
+            skill_name: 'create_issue',
+            server_display_name: 'GitHub',
+          },
         ],
         rowCount: 2,
       });
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/dependency-graph?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       const body = res.body as {
         nodes: Array<{ id: string; label: string }>;
         edges: Array<{ from: string; to: string }>;
       };
-      expect(body.nodes.map((node) => node.id)).toEqual([
-        `server:${githubServer.id}`,
-        'skill:create_issue',
+      expect(body.nodes.map((node) => node.id)).toEqual([`server:${githubServer.id}`, 'skill:create_issue']);
+      expect(body.edges).toEqual([
+        {
+          from: `server:${githubServer.id}`,
+          to: 'skill:create_issue',
+        },
       ]);
-      expect(body.edges).toEqual([{
-        from: `server:${githubServer.id}`,
-        to: 'skill:create_issue',
-      }]);
     });
 
     it('excludes an entire custom server when its cached inventory mixes account-backed and local skills', async () => {
@@ -1715,21 +1752,30 @@ describe('Capabilities API routes', () => {
       });
       mockMcpServerRepository.listForUser.mockResolvedValue([mixedServer, localServer]);
       mockMcpServerRepository.listSkillNamesForServer.mockImplementation(async (serverId: string) =>
-        serverId === mixedServer.id ? ['read_file', 'sendEmail'] : ['read_file']);
+        serverId === mixedServer.id ? ['read_file', 'sendEmail'] : ['read_file'],
+      );
       mockQuery.mockResolvedValue({
         rows: [
-          { server_id: mixedServer.id, skill_name: 'read_file', server_display_name: 'Productivity tools' },
-          { server_id: mixedServer.id, skill_name: 'sendEmail', server_display_name: 'Productivity tools' },
-          { server_id: localServer.id, skill_name: 'read_file', server_display_name: 'Filesystem' },
+          {
+            server_id: mixedServer.id,
+            skill_name: 'read_file',
+            server_display_name: 'Productivity tools',
+          },
+          {
+            server_id: mixedServer.id,
+            skill_name: 'sendEmail',
+            server_display_name: 'Productivity tools',
+          },
+          {
+            server_id: localServer.id,
+            skill_name: 'read_file',
+            server_display_name: 'Filesystem',
+          },
         ],
         rowCount: 3,
       });
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/dependency-graph?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       const serialized = JSON.stringify(res.body);
@@ -1758,17 +1804,21 @@ describe('Capabilities API routes', () => {
       });
       mockQuery.mockResolvedValue({
         rows: [
-          { server_id: uncertainServer.id, skill_name: 'read_file', server_display_name: 'Uncertain tools' },
-          { server_id: localServer.id, skill_name: 'read_file', server_display_name: 'Filesystem' },
+          {
+            server_id: uncertainServer.id,
+            skill_name: 'read_file',
+            server_display_name: 'Uncertain tools',
+          },
+          {
+            server_id: localServer.id,
+            skill_name: 'read_file',
+            server_display_name: 'Filesystem',
+          },
         ],
         rowCount: 2,
       });
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/dependency-graph?userId=${USER_ID}`);
 
       expect(res.status).toBe(200);
       const serialized = JSON.stringify(res.body);
@@ -1782,11 +1832,7 @@ describe('Capabilities API routes', () => {
       mockMcpServerRepository.listForUser.mockResolvedValue([]);
       mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
 
-      const res = await request(
-        buildApp(USER_ID),
-        'GET',
-        `/api/capabilities/dependency-graph?userId=${USER_ID}`,
-      );
+      const res = await request(buildApp(USER_ID), 'GET', `/api/capabilities/dependency-graph?userId=${USER_ID}`);
 
       const serialized = JSON.stringify(res.body);
       expect(res.status).toBe(200);

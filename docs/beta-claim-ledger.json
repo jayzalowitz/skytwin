@@ -849,12 +849,12 @@
       "evidence": [
         {
           "path": "packages/db/src/repositories/oauth-repository.ts",
-          "sha256": "30c1c829cc81be9865a9c15998c9b6f4d86637258be6b5fb1cd10ef951b42658",
+          "sha256": "3644b9ba624393f52b83d0ffdf928a34b611795b50e07780857d1adf06ffc4ca",
           "why": "The production repository supports ciphertext plus legacy plaintext columns, with encryption selected by the API vault state"
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "af390c5150938a46c27bc1ff54f0352c032c4b091d28720a6fe3dbfa61110c1f",
+          "sha256": "7d2cee87b9fdfb76253a8dd8c6c53f9d896a804cbb93341f6b249ffd9b5ba26e",
           "why": "Attaches strict cross-process broker lifecycle plumbing while immutable empty production grants prevent worker key delivery or cryptographic source-field use"
         }
       ],
@@ -965,7 +965,7 @@
       "scope": "Remote inference requests, endpoint/model identity, attestation freshness, request/response binding, persisted receipts, and fail-closed fallback behavior.",
       "owner": "inference-security",
       "state": "deferred",
-      "limitation": "Typed signed receipts, persistence, integrity verification, and atomic decision-event capture exist. Verified-private mode remains unavailable because no production attestation-backed provider adapter, pinned provider and recorder trust roots, provider-specific verification policy, or product receipt export path is wired.",
+      "limitation": "Typed signed receipts, persistence, integrity verification, atomic decision-event capture, and a fail-closed NEAR client contract exist. Verified-private mode remains unavailable because no packaged verifier-owned transport, production-pinned trust roots and provider policy, runtime composition, or product receipt export path is wired.",
       "evidence": [
         {
           "path": "packages/llm-client/src/index.ts",
@@ -974,8 +974,18 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "389b22f9e10469163ba781173192e48f2acfb2a52c644061e55ca53507221187",
+          "sha256": "6be9224be229c088133204103fee8e00958f7df52bd84ec040aa4e83a1936ab7",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
+        },
+        {
+          "path": "packages/near-confidential/src/unavailable-transport.ts",
+          "sha256": "c960aee43f073ec2eeb152db869a31bc9a9173efe9eb55806754bda72f17b9a9",
+          "why": "Keeps the strict confidential client fail closed until a packaged verifier-owned transport exists"
+        },
+        {
+          "path": "packages/near-confidential/src/__tests__/runtime-unwired.test.ts",
+          "sha256": "ae784a4220e9db54b64bead819c8ed3fd514bb2f4351ece00b5c2b2fbe973206",
+          "why": "Proves application composition does not activate the unavailable confidential client"
         }
       ],
       "verification": [
@@ -996,7 +1006,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "f741f7b79d2f0e66e3120fc760ac666130f7b33ba6856ae8563487457d0b5976",
+          "sha256": "1626ea00181c86059481269cb8c14da44e77f47380b3ccb8a4f4d1f83751f6f9",
           "why": "Public disclosure names local-model, connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -1123,12 +1133,12 @@
         },
         {
           "path": "apps/api/src/routes/oauth.ts",
-          "sha256": "d1e89675fdbb62af1e087c3708f2c50345dae94660445a181687f38e81068d13",
+          "sha256": "59bf0d6999022f89a27c27447d5e8c4fe73a9ec602988fd123fb3234abf9705c",
           "why": "OAuth routes reject disabled Google and Microsoft paths before configuration, token, database, or provider effects"
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "af390c5150938a46c27bc1ff54f0352c032c4b091d28720a6fe3dbfa61110c1f",
+          "sha256": "7d2cee87b9fdfb76253a8dd8c6c53f9d896a804cbb93341f6b249ffd9b5ba26e",
           "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch, while worker source-key broker grants remain empty"
         },
         {
@@ -1211,12 +1221,12 @@
       "evidence": [
         {
           "path": "packages/policy-engine/src/policy-evaluator.ts",
-          "sha256": "e18f9efb0a20bdc40a1d43344d76e4ea4cc94bdf8a08bf789e9a6243b3621dbb",
+          "sha256": "395ae5ff68a43d709538f40fc3851b916eb864ae8ed73afb5b8f87b446b5202f",
           "why": "Primary policy, trust, spend, pause, and injection-guard evaluation"
         },
         {
           "path": "packages/execution-router/src/execution-router.ts",
-          "sha256": "0a88d084071e5192f41bc85caa4ae92b0e6e85384344f7058cba36e60f114937",
+          "sha256": "15e7b468b5cc7dee95f3fdf2011dc5dc772eb6884633c32a1611b9104203ad4c",
           "why": "Independent provenance/severity backstop before adapter execution"
         }
       ],

@@ -222,15 +222,15 @@ Measures whether the system is actually working. Supports scenario simulation, r
 **Twin consultation:** The twin knows this user archives all newsletters without reading, replies to their manager within 2 hours, and ignores transactional receipts from known vendors.
 
 **Candidate actions:**
-- Archive without notification (newsletter from subscribed source)
+- Propose archiving for explicit confirmation (newsletter from subscribed source)
 - Surface with summary (work email from known colleague)
 - Draft reply using communication style preferences (routine request from manager)
 - Send pre-approved routine reply (meeting confirmation)
 - Escalate with context (unknown sender, ambiguous content)
 
-**Policy check:** Sending any email reply requires at least `LOW_AUTONOMY` trust tier. Drafting is allowed at `SUGGEST`. Archiving newsletters is allowed at `LOW_AUTONOMY` if the user has archived from this sender before.
+**Policy check:** Sending any email reply requires at least `LOW_AUTONOMY` trust tier. Drafting is allowed at `SUGGEST`. An archive preference may raise proposal confidence, but [`archive_email`](../packages/shared-types/src/action-safety.ts) always requires explicit confirmation before the Inbox changes.
 
-**Outcome:** For a known newsletter, auto-archive and log explanation. For a routine manager request, draft a reply and surface it for approval. For an unknown sender, escalate with a one-line summary.
+**Outcome:** For a known newsletter, propose archiving and log the explanation. In current source, the dedicated approval response records consent but does not mutate Gmail; caller, recovery, and feedback-projection composition remain future work. For a routine manager request, draft a reply and surface it for approval. For an unknown sender, escalate with a one-line summary.
 
 ### Calendar Conflict
 

@@ -109,14 +109,14 @@ curl -s http://localhost:4199/execute -H 'Content-Type: application/json' -d '{
   "planId": "test_plan_safe_001",
   "decisionId": "test_decision_safe_001",
   "action": {
-    "type": "archive_email",
-    "description": "Archive a newsletter from test@example.invalid",
-    "parameters": { "messageId": "FAKE-MSG-DOES-NOT-EXIST", "userId": "test-user-no-tokens" },
-    "domain": "email"
+    "type": "create_note",
+    "description": "Create a fake local test note",
+    "parameters": { "title": "OpenClaw bridge test", "body": "No external side effect" },
+    "domain": "productivity"
   },
   "steps": [
-    { "id": "step_1", "type": "archive_email", "description": "Archive the message",
-      "parameters": { "messageId": "FAKE-MSG-DOES-NOT-EXIST" } }
+    { "id": "step_1", "type": "create_note", "description": "Create the fake note",
+      "parameters": { "title": "OpenClaw bridge test" } }
   ]
 }'
 # -> {"status":"completed","adapter":"openclaw-bridge","model":"gemma4:latest",...,"latencyMs":~19000}
@@ -129,6 +129,10 @@ curl -s http://localhost:4199/rollback -H 'Content-Type: application/json' \
 # 4. Clean up
 kill %1   # or kill the bridge PID
 ```
+
+Do not substitute `archive_email` in this generic adapter example. Gmail
+archive proposals are quarantined to their dedicated consent path and are not
+valid OpenClaw bridge execution probes.
 
 ### Optional: full router path against the bridge, via the API
 

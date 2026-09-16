@@ -1,4 +1,11 @@
 import type { CircuitBreaker } from '@skytwin/core';
+import { MicrosoftOAuthRefreshError, OAuthRefreshError } from '@skytwin/connectors';
+
+export function isPermanentOAuthRefreshError(
+  error: unknown,
+): error is OAuthRefreshError | MicrosoftOAuthRefreshError {
+  return (error instanceof OAuthRefreshError || error instanceof MicrosoftOAuthRefreshError) && error.permanent;
+}
 
 /**
  * Permanent OAuth failures are not transient outages. Force the circuit open in

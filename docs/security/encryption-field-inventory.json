@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "085-rollback-admission-claims.sql",
+  "asOfMigration": "094-account-signal-persistence.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -82,6 +82,9 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/adapters/policy-repository-adapter.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
           "packages/db/src/repositories/policy-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
@@ -205,7 +208,13 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/repositories/approval-repository.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-feedback-application-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminal-status-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
@@ -699,10 +708,18 @@
           "apps/api/src/services/live-digest.ts",
           "packages/db/src/adapters/decision-repository-adapter.ts",
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
-          "packages/db/src/repositories/rollback-admission-repository.ts",
+          "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts",
+          "packages/db/src/repositories/gmail-message-ref-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/pre-effect-barrier-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
@@ -822,14 +839,31 @@
       "table": "connected_accounts",
       "owner": "user",
       "boundary": {
-        "current": "repository_sql",
+        "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
-        "auditedCallsites": ["packages/db/src/repositories/user-repository.ts"]
+        "auditedCallsites": [
+          "packages/db/src/repositories/connected-account-repository.ts",
+          "packages/db/src/repositories/connector-cursor-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts",
+          "packages/db/src/repositories/gmail-message-ref-repository.ts",
+          "packages/db/src/repositories/oauth-repository.ts",
+          "packages/db/src/repositories/signal-repository.ts",
+        "packages/db/src/repositories/user-purge-repository.ts",
+        "packages/db/src/repositories/user-repository.ts",
+        "packages/db/src/seeds/demo-showcase.ts",
+        "packages/db/src/seeds/seed.ts"
+        ]
       },
       "groups": [
         {
           "classification": "deferred_source",
-          "columns": ["account_id"],
+          "columns": [
+            "account_display",
+            "account_id"
+          ],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-5-remaining-user-content",
@@ -840,16 +874,29 @@
           "classification": "locally_exposed_metadata",
           "columns": [
             "connected_at",
+            "disconnected_at",
             "id",
+            "identity_verified",
             "is_active",
             "provider",
             "scopes",
+            "updated_at",
             "user_id"
           ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
           "migrationStage": "disclosed-local-metadata",
           "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": [
+            "provider_subject_digest"
+          ],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "The stable provider-subject digest supports conflict-safe identity binding but discloses equality within its domain."
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."
@@ -899,13 +946,22 @@
         "current": "repository_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "packages/db/src/repositories/connector-cursor-repository.ts"
+          "packages/db/src/repositories/connector-cursor-repository.ts",
+          "packages/db/src/repositories/oauth-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
         ]
       },
       "groups": [
         {
           "classification": "locally_exposed_metadata",
-          "columns": ["cursor_kind", "provider", "updated_at", "user_id"],
+          "columns": [
+            "connector_account_id",
+            "cursor_kind",
+            "id",
+            "provider",
+            "updated_at",
+            "user_id"
+          ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
           "migrationStage": "disclosed-local-metadata",
@@ -913,7 +969,9 @@
         },
         {
           "classification": "encrypted_source",
-          "columns": ["cursor_value"],
+          "columns": [
+            "cursor_value"
+          ],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-1-secrets-and-portable-config",
@@ -930,7 +988,9 @@
         "current": "repository_sql",
         "target": "locally_exposed_or_excluded",
         "auditedCallsites": [
-          "packages/db/src/repositories/connector-health-repository.ts"
+          "packages/db/src/repositories/connected-account-repository.ts",
+          "packages/db/src/repositories/connector-health-repository.ts",
+          "packages/db/src/repositories/oauth-repository.ts"
         ]
       },
       "groups": [
@@ -1179,9 +1239,14 @@
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
-          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
@@ -1231,11 +1296,18 @@
           "apps/api/src/services/live-digest.ts",
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts",
+          "packages/db/src/repositories/gmail-message-ref-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/pre-effect-barrier-repository.ts",
           "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
@@ -1734,6 +1806,11 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-dispatch-gate-repository.ts",
+          "packages/db/src/repositories/gmail-archive-reconciliation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-recovery-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/legacy-decision-cleanup.ts"
@@ -1774,11 +1851,21 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
-          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-dispatch-gate-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-reconciliation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-recovery-lease-repository.ts",
+          "packages/db/src/repositories/gmail-archive-recovery-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminal-status-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/legacy-decision-cleanup.ts"
@@ -1843,8 +1930,15 @@
         "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-dispatch-gate-repository.ts",
+          "packages/db/src/repositories/gmail-archive-reconciliation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-recovery-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminal-status-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
@@ -1890,10 +1984,20 @@
         "auditedCallsites": [
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-dispatch-gate-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-reconciliation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminal-status-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/pre-effect-barrier-repository.ts",
           "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
@@ -2075,8 +2179,11 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/adapters/twin-repository-adapter.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/feedback-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-feedback-application-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
           "packages/db/src/seeds/legacy-decision-cleanup.ts",
@@ -2087,6 +2194,7 @@
         {
           "classification": "locally_exposed_metadata",
           "columns": [
+            "approval_request_id",
             "created_at",
             "decision_id",
             "id",
@@ -2101,7 +2209,10 @@
         },
         {
           "classification": "deferred_source",
-          "columns": ["data", "undo_reasoning"],
+          "columns": [
+            "data",
+            "undo_reasoning"
+          ],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-3-activity-and-conversation",
@@ -2220,6 +2331,7 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts"
         ]
       },
@@ -2243,6 +2355,7 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts"
         ]
       },
@@ -3080,8 +3193,14 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "apps/api/src/services/live-digest.ts",
+          "packages/db/src/repositories/connected-account-repository.ts",
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts",
+          "packages/db/src/repositories/gmail-message-ref-repository.ts",
           "packages/db/src/repositories/oauth-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/seeds/demo-showcase.ts",
           "packages/db/src/seeds/seed.ts"
         ]
@@ -3103,7 +3222,10 @@
         },
         {
           "classification": "encrypted_source",
-          "columns": ["account_email", "account_provider_id"],
+          "columns": [
+            "account_email",
+            "account_provider_id"
+          ],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-1-secrets-and-portable-config",
@@ -3113,6 +3235,7 @@
         {
           "classification": "locally_exposed_metadata",
           "columns": [
+            "connector_account_id",
             "created_at",
             "credential_revision",
             "dispatch_generation",
@@ -3180,7 +3303,9 @@
         "current": "repository_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "packages/db/src/repositories/preference-history-repository.ts"
+          "packages/db/src/repositories/decision-receipt-repository.ts",
+          "packages/db/src/repositories/preference-history-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
         ]
       },
       "groups": [
@@ -3262,6 +3387,7 @@
         "auditedCallsites": [
           "packages/db/src/adapters/twin-repository-adapter.ts",
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/seed.ts"
         ]
@@ -3534,16 +3660,26 @@
         "current": "repository_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
-          "packages/db/src/repositories/signal-repository.ts"
+          "packages/db/src/repositories/decision-receipt-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts",
+          "packages/db/src/repositories/gmail-message-ref-repository.ts",
+          "packages/db/src/repositories/signal-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
         ]
       },
       "groups": [
         {
           "classification": "locally_exposed_metadata",
           "columns": [
+            "connector_account_id",
             "created_at",
             "domain",
             "id",
+            "resource_ref_id",
             "retention_until",
             "source",
             "timestamp",
@@ -3557,7 +3693,10 @@
         },
         {
           "classification": "deferred_source",
-          "columns": ["data"],
+          "columns": [
+            "data",
+            "source_signal_id"
+          ],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-3-activity-and-conversation",
@@ -3770,6 +3909,7 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/gmail-archive-feedback-application-repository.ts",
           "packages/db/src/repositories/twin-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts"
@@ -3804,7 +3944,9 @@
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
           "packages/db/src/repositories/draft-email-eval-runs-repository.ts",
+          "packages/db/src/repositories/gmail-archive-feedback-application-repository.ts",
           "packages/db/src/repositories/twin-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
@@ -4027,6 +4169,8 @@
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/mcp-server-changelog-repository.ts",
           "packages/db/src/repositories/oauth-repository.ts",
@@ -4036,6 +4180,7 @@
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/repositories/vacation-mode-repository.ts",
+          "packages/db/src/repositories/watch-run-repository.ts",
           "packages/db/src/seeds/demo-fixture.ts",
           "packages/db/src/seeds/demo-showcase.ts",
           "packages/db/src/seeds/packaged-sample.ts",
@@ -4093,7 +4238,13 @@
       "groups": [
         {
           "classification": "deferred_source",
-          "columns": ["action", "matched_refs", "summary"],
+          "columns": [
+            "action",
+            "last_error",
+            "matched_refs",
+            "summary",
+            "watch_spec"
+          ],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-3-activity-and-conversation",
@@ -4102,11 +4253,37 @@
         },
         {
           "classification": "locally_exposed_metadata",
-          "columns": ["id", "matched_count", "ran_at", "user_id", "watch_id"],
+          "columns": [
+            "attempt_count",
+            "completed_at",
+            "failed_at",
+            "id",
+            "lease_expires_at",
+            "matched_count",
+            "ran_at",
+            "schedule_revision",
+            "scheduled_for",
+            "slot_status",
+            "user_id",
+            "watch_id",
+            "window_end",
+            "window_start"
+          ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
           "migrationStage": "disclosed-local-metadata",
           "rationale": "Required to route, schedule, migrate, verify, delete, or audit records without decrypting source content."
+        },
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "lease_token"
+          ],
+          "currentProtection": "A recoverable random lease bearer is stored in plaintext in CockroachDB today.",
+          "targetProtection": "Replace the persisted bearer with a domain-separated one-way verifier; never persist a recoverable lease token.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "The lease bearer authorizes a state transition and must not be treated as harmless scheduling metadata.",
+          "searchableDerivatives": []
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."
@@ -4117,12 +4294,20 @@
       "boundary": {
         "current": "repository_sql",
         "target": "user_broker_gateway",
-        "auditedCallsites": ["packages/db/src/repositories/watch-repository.ts"]
+        "auditedCallsites": [
+          "packages/db/src/repositories/watch-repository.ts",
+          "packages/db/src/repositories/watch-run-repository.ts"
+        ]
       },
       "groups": [
         {
           "classification": "deferred_source",
-          "columns": ["action", "filter", "name", "source_text"],
+          "columns": [
+            "action",
+            "filter",
+            "name",
+            "source_text"
+          ],
           "currentProtection": "Plaintext in CockroachDB today.",
           "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
           "migrationStage": "slice-3-activity-and-conversation",
@@ -4139,6 +4324,7 @@
             "id",
             "last_run_at",
             "next_run_at",
+            "schedule_revision",
             "status",
             "updated_at",
             "user_id"
@@ -4232,6 +4418,327 @@
         }
       ],
       "ownershipNotes": "Installation-scoped, ephemeral authority for the packaged worker generation. It is excluded from portable backup and a restored or restarted installation registers fresh authority."
+    },
+    {
+      "table": "decision_receipt_revisions",
+      "owner": "user_child",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminal-status-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "content"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "A joined receipt revision can retain private action, policy, explanation, execution, or feedback evidence.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": [
+            "content_digest",
+            "previous_digest",
+            "revision_digest"
+          ],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "Digest-chain fields authenticate receipt content and ordering but disclose equality and linkage."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "approval_request_id",
+            "barrier_id",
+            "candidate_action_id",
+            "correction_of_revision_id",
+            "created_at",
+            "disposition",
+            "event_key",
+            "execution_disposition",
+            "execution_plan_id",
+            "execution_result_id",
+            "explanation_id",
+            "id",
+            "receipt_id",
+            "sequence",
+            "stage",
+            "trusted"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to link and order the immutable receipt evidence chain, enforce stage transitions, and expose trust/disposition state."
+        }
+      ],
+      "ownershipNotes": "User ownership resolves through receipt_id to decision_receipts; graph links are constrained to the same owner-bound decision."
+    },
+    {
+      "table": "decision_receipts",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/decision-receipt-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "created_at",
+            "decision_id",
+            "id",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to anchor one owner-bound, append-only receipt chain to a decision and support backup and deletion."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id, constrained to the referenced decision."
+    },
+    {
+      "table": "gmail_archive_recovery_leases",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/gmail-archive-recovery-lease-consumer.ts",
+          "packages/db/src/repositories/gmail-archive-recovery-lease-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "encrypted_source",
+          "columns": [
+            "lease_token"
+          ],
+          "currentProtection": "A recoverable random recovery lease bearer is stored in plaintext in CockroachDB today.",
+          "targetProtection": "Replace the persisted bearer with a domain-separated one-way verifier; never persist a recoverable recovery token.",
+          "migrationStage": "slice-1-secrets-and-portable-config",
+          "rationale": "The bearer authorizes renewal and completion of owner-bound recovery work and must not be treated as harmless metadata.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "observation_evidence"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "Recorded provider observation evidence may contain private mailbox state and provider-originated content.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "acquired_at",
+            "admission_id",
+            "approval_id",
+            "attempt_phase",
+            "barrier_status",
+            "expires_at",
+            "generation",
+            "message_ref_id",
+            "observation_attempt_id",
+            "observation_authorized_at",
+            "observation_deadline_at",
+            "observation_state",
+            "phase_changed_at",
+            "renewed_at",
+            "user_id",
+            "work_kind"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to fence recovery workers, select finite recovery phases, enforce observation authorization, and retain owner-bound lifecycle state."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id; admission, approval, and message-reference joins must resolve to the same owner."
+    },
+    {
+      "table": "gmail_message_refs",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts",
+          "packages/db/src/repositories/gmail-message-ref-repository.ts",
+          "packages/db/src/repositories/signal-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "provider_message_id",
+            "provider_thread_id"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "Opaque provider identifiers are private mailbox source data; exact-match recovery creates a disclosed future lookup-design requirement.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "authoring_tier",
+            "connector_account_id",
+            "created_at",
+            "first_observed_at",
+            "id",
+            "last_observed_at",
+            "last_observed_inbox",
+            "provider",
+            "source_signal_id",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to bind a provider message to an owner, verified connector account, durable signal, authoring tier, and observation lifecycle."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id, with owner-bound connector-account and source-signal constraints."
+    },
+    {
+      "table": "pre_effect_barriers",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/decision-receipt-repository.ts",
+          "packages/db/src/repositories/gmail-archive-approval-response-repository.ts",
+          "packages/db/src/repositories/gmail-archive-claim-repository.ts",
+          "packages/db/src/repositories/gmail-archive-dispatch-gate-repository.ts",
+          "packages/db/src/repositories/gmail-archive-feedback-receipt-repository.ts",
+          "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-proposal-repository.ts",
+          "packages/db/src/repositories/gmail-archive-reconciliation-repository.ts",
+          "packages/db/src/repositories/gmail-archive-recovery-lease-repository.ts",
+          "packages/db/src/repositories/gmail-archive-recovery-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminal-status-repository.ts",
+          "packages/db/src/repositories/gmail-archive-terminalization-repository.ts",
+          "packages/db/src/repositories/gmail-inbox-observation-target-repository.ts",
+          "packages/db/src/repositories/gmail-message-ref-repository.ts",
+          "packages/db/src/repositories/pre-effect-barrier-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "effect_result",
+            "failure_reason",
+            "policy_snapshot"
+          ],
+          "currentProtection": "Plaintext in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.",
+          "migrationStage": "slice-3-activity-and-conversation",
+          "rationale": "Policy and effect evidence can retain private action context, provider results, and diagnostic content.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "action_id",
+            "created_at",
+            "decision_id",
+            "effect_type",
+            "explanation_id",
+            "id",
+            "idempotency_key",
+            "status",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to reserve, fence, and audit one owner-bound effect before any external mutation."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id, constrained to the exact decision, candidate action, and explanation graph."
+    },
+    {
+      "table": "twin_feedback_applications",
+      "owner": "user",
+      "boundary": {
+        "current": "repository_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/repositories/decision-receipt-repository.ts",
+          "packages/db/src/repositories/gmail-archive-feedback-application-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_derivative",
+          "columns": [
+            "output_digest"
+          ],
+          "currentProtection": "Locally readable derived value or index.",
+          "targetProtection": "Remain locally readable for retrieval; rebuildable from encrypted source and disclosed as leakage.",
+          "migrationStage": "disclosed-local-derivative",
+          "rationale": "The output digest proves the applied profile projection while disclosing equality."
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "applied_at",
+            "changed",
+            "decision_id",
+            "feedback_event_id",
+            "id",
+            "input_profile_version",
+            "output_profile_version",
+            "profile_id",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
+          "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Required to make one feedback projection idempotent and bind its input and output profile versions to the owner."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id, with constrained feedback, decision, profile, and profile-version links."
     }
   ]
 }

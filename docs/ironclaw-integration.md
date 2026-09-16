@@ -117,10 +117,10 @@ SkyTwin sends a structured message to IronClaw's webhook:
     decision_id: "<decisionId>",
     idempotency_key: "<planId>",
     action: {
-      type: "archive_email",
-      domain: "email",
-      description: "Archive the newsletter email",
-      parameters: { emailId: "msg_123" },
+      type: "create_note",
+      domain: "productivity",
+      description: "Create a local follow-up note",
+      parameters: { title: "Follow up", body: "Review the decision later" },
       reversible: true,
       estimated_cost_cents: 0,
     },
@@ -128,6 +128,10 @@ SkyTwin sends a structured message to IronClaw's webhook:
   }
 }
 ```
+
+`archive_email` is intentionally absent from this generic request example.
+The Gmail archive experiment uses an owner-bound proposal/consent path and
+cannot fall through to IronClaw, OpenClaw, or Direct execution.
 
 **Security note:** Sensitive parameters (OAuth tokens, API keys) are sanitized before being included in the message body. Token references (`accessToken_ref: "[managed-by-ironclaw]"`) are sent instead. IronClaw manages credentials through its own credential injection system.
 
@@ -137,12 +141,12 @@ IronClaw returns:
 
 ```typescript
 {
-  content: "Successfully archived email msg_123",
+  content: "Created local note note_123",
   thread_id: "thread_abc",
   attachments: [],
   metadata: {
     status: "completed",  // or "failed", "pending", "running"
-    outputs: { messageId: "msg_123", action: "archived" },
+    outputs: { noteId: "note_123", action: "created" },
     error: null,          // populated on failure
   }
 }

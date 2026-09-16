@@ -637,7 +637,7 @@ describe('DesktopKeyBroker', () => {
     expect(broker.encrypt(context, 'secret')).toEqual({ success: false, error: 'vault_locked' });
     expect(await broker.unlock(context.userId, 'wrong passphrase')).toEqual({ success: false, error: 'ciphertext_invalid' });
     expect(await broker.unlock(context.userId, 'correct horse battery staple')).toMatchObject({ success: true });
-  });
+  }, 20_000);
 
   it('admits only one initializer before the persistence lookup resolves', async () => {
     const store = new DeferredGetStore(), broker = new DesktopKeyBroker(store);

@@ -4,6 +4,34 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **CockroachDB account-binding migrations now fail closed on drift and
+  interruption.** Migrations 088 and 094 verify the exact catalog shape of
+  every security-critical identity, owner, cursor, and Gmail evidence
+  constraint after creation. The migration runner restores
+  `connector_cursors.schema_locked` if an authorized run fails inside the
+  narrow schema-change window, and migration 088 removes CockroachDB's
+  preserved legacy global cursor key so separate Gmail accounts can each own
+  a `history_id` cursor.
+
+- **Clean installs seed only account-bound synthetic OAuth grants.** Both demo
+  seed paths now create an explicit unverified synthetic connected account and
+  bind the token row through `connector_account_id`; clean install and rerun
+  seeding no longer violate the migration 088 non-null ownership boundary.
+
+- **An in-flight connector refresh can no longer reintroduce plaintext after
+  vault initialization.** Account-qualified token refresh now repeats the
+  vault-existence fence inside its compare-and-swap update, matching the
+  single-account path and preventing a late refresh write across the vault
+  activation boundary.
+
+- **Generic approval preflight exits now persist an explanation before they
+  return.** Current-policy denial, a current pause, and a newly required dual
+  confirmation are recorded atomically against the still-pending,
+  owner-scoped approval and exact stored/current action, risk, policy, and
+  adapter snapshots. Approval state remains unconsumed and no adapter request
+  may start; the reserved v2 successor stays non-claiming until its separate
+  append-only activation review.
+
 - **Release materials now state the blocked beta status at their public entry
   points.** README, the launch-readiness report, the demo walkthrough, and the
   GitHub Pages index link the machine-checked claim ledger instead of implying
@@ -27,6 +55,34 @@ All notable changes to SkyTwin will be documented in this file.
   without consulting moving `main`.
 
 ### Changed
+
+- **Gmail archive now has a dedicated, owner-bound proposal and consent
+  boundary without claiming mailbox execution.** The default-off source
+  experiment persists an opaque account/message reference, canonical
+  `MODERATE`-risk proposal, explanation, approval response, joined receipt,
+  and one-shot pre-effect reservation. The response is truthful
+  (`execution: null`) and cannot enter generic IronClaw, OpenClaw, Direct, or
+  PWA offline-replay paths. Mutation caller composition, recovery-worker
+  scheduling, and twin-feedback projection remain intentionally unwired.
+
+- **Connected-account and Watch evidence is now durable and owner-bound in
+  CockroachDB.** Verified provider identities anchor credentials, cursors, and
+  signals; Gmail signals expose only opaque application references outside the
+  repository boundary. Every verified Google account expands to Gmail and
+  Calendar, every verified Microsoft account expands to Outlook mail and
+  Calendar, and account identity participates in deduplication. The Watch
+  scheduler reserves an immutable exact-window slot before reading signals,
+  uses database-clock leases and fencing for retry safety, projects only
+  positive completed runs, and prunes internal zero-match audit slots after 30
+  days.
+
+- **The encryption-boundary inventory now covers migrations 086–094 and their
+  complete SQL callsite surface.** New receipt, pre-effect, Gmail evidence,
+  recovery, and feedback-projection tables are classified conservatively;
+  provider identifiers, diagnostic/provider evidence, and recoverable lease
+  bearers are not mislabeled as harmless metadata. The validator now models
+  the reviewed CockroachDB DDL forms used by those migrations while retaining
+  fail-closed corpus and semantic hashes.
 
 - **Adversarial route harnesses now have an append-only v2 migration path.**
   The immutable v1 assertion bytes remain intact. A separate reserved v2

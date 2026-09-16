@@ -95,12 +95,16 @@ async function request(
           res.headers.forEach((v, k) => {
             respHeaders[k] = v;
           });
-          server.close();
-          resolve({ status: res.status, body: json, headers: respHeaders });
+          server.close((closeError) => {
+            if (closeError) {
+              reject(closeError);
+              return;
+            }
+            resolve({ status: res.status, body: json, headers: respHeaders });
+          });
         })
         .catch((err) => {
-          server.close();
-          reject(err);
+          server.close(() => reject(err));
         });
     });
   });

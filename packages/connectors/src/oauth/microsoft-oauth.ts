@@ -36,6 +36,16 @@ export interface MicrosoftOAuthConfig {
   tenant?: string;
 }
 
+export interface MicrosoftOAuthRefreshOptions {
+  signal?: AbortSignal;
+  /**
+   * Exact scopes on the persisted grant. Microsoft may omit `scope` (and
+   * historically returns an empty value in some compatible responses) when
+   * refresh leaves the grant unchanged.
+   */
+  persistedScopes?: readonly string[];
+}
+
 export type { PkcePair };
 export { generatePkcePair };
 
@@ -65,6 +75,31 @@ function authBase(tenant: string): string {
 
 function withOfflineAccess(scopes: string[]): string[] {
   return scopes.includes(OFFLINE_ACCESS_SCOPE) ? scopes : [...scopes, OFFLINE_ACCESS_SCOPE];
+}
+
+function snapshotScopes(value: unknown): string[] | null {
+  try {
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0 ||
+        value.length < 1 || value.length > 128) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    if (Object.getOwnPropertyNames(descriptors).length !== value.length + 1) return null;
+    const scopes: string[] = [];
+    const seen = new Set<string>();
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
+          descriptor.enumerable !== true) return null;
+      const scope = descriptor.value as unknown;
+      if (typeof scope !== 'string' || scope.length === 0 || scope.length > 512 ||
+          seen.has(scope)) return null;
+      seen.add(scope);
+      scopes.push(scope);
+    }
+    return scopes;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -200,8 +235,14 @@ export class MicrosoftOAuthRefreshError extends Error {
 export async function refreshAccessToken(
   config: MicrosoftOAuthConfig,
   refreshToken: string,
-  signal?: AbortSignal,
+  options: MicrosoftOAuthRefreshOptions = {},
 ): Promise<OAuthTokenSet> {
+  // Snapshot the authority fallback before network I/O so caller mutation
+  // cannot alter which persisted grant an omitted provider scope inherits.
+  const persistedScopesInput = options.persistedScopes;
+  const persistedScopes = persistedScopesInput === undefined
+    ? undefined
+    : snapshotScopes(persistedScopesInput);
   const body = new URLSearchParams({
     refresh_token: refreshToken,
     client_id: config.clientId,
@@ -215,7 +256,7 @@ export async function refreshAccessToken(
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
-    signal,
+    signal: options.signal,
   });
 
   if (!response.ok) {
@@ -230,12 +271,29 @@ export async function refreshAccessToken(
     scope?: string;
   };
 
+  let scopes: string[] | null;
+  if (data.scope === undefined || data.scope === '') {
+    // Microsoft responses in the field use both omission and an empty value
+    // to mean the grant is unchanged. Neither form invents authority: only an
+    // exact validated snapshot supplied by the credential owner is accepted.
+    scopes = persistedScopes === null || persistedScopes === undefined
+      ? null
+      : [...persistedScopes];
+  } else if (typeof data.scope === 'string') {
+    scopes = snapshotScopes(data.scope.split(' '));
+  } else {
+    scopes = null;
+  }
+  if (!scopes) {
+    throw new Error('Microsoft OAuth token refresh returned an invalid scope grant.');
+  }
+
   return {
     accessToken: data.access_token,
     // Non-rotating by default — fall back to the token we already hold.
     refreshToken: data.refresh_token ?? refreshToken,
     expiresAt: expiresAtFrom(data.expires_in),
-    scopes: (data.scope ?? '').split(' ').filter(Boolean),
+    scopes,
     provider: 'microsoft',
   };
 }

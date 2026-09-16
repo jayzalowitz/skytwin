@@ -224,7 +224,12 @@ export const decisionRepositoryAdapter: DecisionRepositoryPort = {
         decisionId: candidate.decisionId,
         actionType: candidate.actionType,
         description: candidate.description,
-        parameters: { ...candidate.parameters, domain: candidate.domain },
+        parameters: {
+          ...candidate.parameters,
+          domain: candidate.domain,
+          costZeroIntent: candidate.costZeroIntent,
+          provenance: candidate.provenance,
+        },
         predictedUserPreference: candidate.confidence,
         riskAssessment: { reasoning: candidate.reasoning },
         reversible: candidate.reversible,

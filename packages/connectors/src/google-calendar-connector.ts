@@ -32,6 +32,7 @@ interface CalendarEvent {
  */
 export class GoogleCalendarConnector implements SignalConnector {
   readonly name = 'google-calendar';
+  readonly connectorAccountId?: string;
 
   private handlers: SignalHandler[] = [];
   private connected = false;
@@ -47,6 +48,7 @@ export class GoogleCalendarConnector implements SignalConnector {
     tokenStore: OAuthTokenStore,
     cursorStoreOrCalendarId: CursorStore | string | null = null,
     calendarId = 'primary',
+    connectorAccountId?: string,
   ) {
     this.userId = userId;
     this.tokenStore = tokenStore;
@@ -60,6 +62,7 @@ export class GoogleCalendarConnector implements SignalConnector {
       this.cursorStore = cursorStoreOrCalendarId;
       this.calendarId = calendarId;
     }
+    this.connectorAccountId = connectorAccountId;
   }
 
   async connect(signal?: AbortSignal): Promise<void> {
@@ -70,7 +73,19 @@ export class GoogleCalendarConnector implements SignalConnector {
       throw new Error('No Google OAuth token available. User must authorize first.');
     }
     if (this.cursorStore) {
-      this.syncToken = await this.cursorStore.get(this.userId, 'google_calendar', SYNC_TOKEN_KIND);
+      if (this.connectorAccountId) {
+        if (!this.cursorStore.getForAccount || !this.cursorStore.saveForAccount) {
+          throw new Error('Account-bound Google Calendar requires an account-bound cursor store.');
+        }
+        this.syncToken = await this.cursorStore.getForAccount(
+          this.userId,
+          this.connectorAccountId,
+          'google_calendar',
+          SYNC_TOKEN_KIND,
+        );
+      } else {
+        this.syncToken = await this.cursorStore.get(this.userId, 'google_calendar', SYNC_TOKEN_KIND);
+      }
       signal?.throwIfAborted();
     }
     this.connected = true;
@@ -87,7 +102,20 @@ export class GoogleCalendarConnector implements SignalConnector {
     const token = this.pendingSyncToken;
     if (token === null) return;
     if (this.cursorStore) {
-      await this.cursorStore.save(this.userId, 'google_calendar', SYNC_TOKEN_KIND, token);
+      if (this.connectorAccountId) {
+        if (!this.cursorStore.saveForAccount) {
+          throw new Error('Account-bound Google Calendar requires an account-bound cursor store.');
+        }
+        await this.cursorStore.saveForAccount(
+          this.userId,
+          this.connectorAccountId,
+          'google_calendar',
+          SYNC_TOKEN_KIND,
+          token,
+        );
+      } else {
+        await this.cursorStore.save(this.userId, 'google_calendar', SYNC_TOKEN_KIND, token);
+      }
     }
     this.syncToken = token;
     this.pendingSyncToken = null;
@@ -227,8 +255,10 @@ export class GoogleCalendarConnector implements SignalConnector {
       attendeeCount: event.attendees?.length ?? 0,
     });
 
+    const timestamp = new Date(event.updated ?? event.created);
+    const baseId = `sig_cal_${event.id}_${version || 'unknown'}`;
     return {
-      id: `sig_cal_${event.id}_${version || 'unknown'}`,
+      id: this.connectorAccountId ? `${baseId}_${this.connectorAccountId}` : baseId,
       source: 'google_calendar',
       type: needsResponse ? 'meeting_invite' : 'calendar_event',
       data: {
@@ -254,7 +284,19 @@ export class GoogleCalendarConnector implements SignalConnector {
         htmlLink: event.htmlLink,
         authoringTier,
       },
-      timestamp: new Date(event.updated ?? event.created),
+      timestamp,
+      ...(this.connectorAccountId
+        ? {
+            connectorEvidence: {
+              kind: 'account_signal' as const,
+              connectorAccountId: this.connectorAccountId,
+              provider: 'google' as const,
+              source: 'google_calendar' as const,
+              authoringTier,
+              observedAt: timestamp.toISOString(),
+            },
+          }
+        : {}),
     };
   }
 

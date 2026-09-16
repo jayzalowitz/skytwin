@@ -123,6 +123,10 @@ describe('DbTokenStore — lazy vault migration', () => {
       iv: Buffer;
       tag: Buffer;
       keyVersion: number;
+      userId: string;
+      provider: string;
+      expectedCredentialRevision: string;
+      expectedVaultGeneration: string;
     }];
     expect(call[0].id).toBe('row-id-001');
     expect(call[0]).toMatchObject({
@@ -334,12 +338,20 @@ describe('DbTokenStore — lazy vault migration', () => {
     repo.getVaultAuthorityState.mockResolvedValue({
       state: 'unlocked', generation: 'vault-generation-1', keyVersion: 2,
     });
+    const migratedAccess = packEncrypted(encrypt('expired-access', key));
+    const migratedRefresh = packEncrypted(encrypt('refresh-secret', key));
     repo.getToken.mockResolvedValueOnce({
       id: 'row-expired-plaintext', credential_revision: 'revision-before-refresh',
       access_token: 'expired-access', refresh_token: 'refresh-secret',
       expires_at: new Date(Date.now() - 1_000), scopes: ['email'],
       encrypted_access_token: null, encrypted_refresh_token: null,
       encryption_iv: null, encryption_tag: null, encryption_key_version: 1,
+    }).mockResolvedValueOnce({
+      id: 'row-expired-plaintext', credential_revision: 'revision-after-migration',
+      access_token: null, refresh_token: null,
+      expires_at: new Date(Date.now() - 1_000), scopes: ['email'],
+      encrypted_access_token: migratedAccess, encrypted_refresh_token: migratedRefresh,
+      encryption_iv: null, encryption_tag: null, encryption_key_version: 2,
     });
     vi.mocked(refreshAccessToken).mockResolvedValueOnce({
       accessToken: 'refreshed-access', refreshToken: 'refresh-secret',
@@ -356,6 +368,12 @@ describe('DbTokenStore — lazy vault migration', () => {
       expectedCredentialRevision: 'revision-before-refresh',
       expectedVaultGeneration: 'vault-generation-1',
       keyVersion: 2,
+    }));
+    expect(repo.updateEncryptedAccessTokenIfCurrent).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'row-expired-plaintext',
+      expectedCredentialRevision: 'revision-after-migration',
+      expectedVaultGeneration: 'vault-generation-1',
+      expiresAt: expect.any(Date),
     }));
     expect(repo.updateAccessTokenIfCurrent).not.toHaveBeenCalled();
   });

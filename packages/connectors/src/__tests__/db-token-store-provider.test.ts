@@ -60,6 +60,51 @@ describe('DbTokenStore provider-aware refresh', () => {
     expect(mockMicrosoftRefresh).toHaveBeenCalledTimes(1);
     expect(mockGoogleRefresh).not.toHaveBeenCalled();
     expect(out.accessToken).toBe('new-ms-at');
+    expect(mockMicrosoftRefresh).toHaveBeenCalledWith(microsoftConfig, 'rt', {
+      persistedScopes: ['s'],
+    });
+  });
+
+  it('preserves persisted Microsoft scopes when the refresh response omits or empties scope', async () => {
+    repo.getToken.mockResolvedValue(expiredRow());
+    mockMicrosoftRefresh.mockImplementation(async (_config, refreshToken, options) => ({
+      accessToken: 'new-ms-at',
+      refreshToken,
+      expiresAt: new Date(Date.now() + 3_600_000),
+      scopes: [...(options?.persistedScopes ?? [])],
+      provider: 'microsoft',
+    }));
+    const store = new DbTokenStore(repo, googleConfig, microsoftConfig);
+
+    const out = await store.refreshIfExpired('u1', 'microsoft');
+
+    expect(out.scopes).toEqual(['s']);
+    expect(repo.updateAccessTokenIfCurrent).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'token-row',
+      userId: 'u1',
+      provider: 'microsoft',
+      expectedCredentialRevision: 'revision-1',
+      accessToken: 'new-ms-at',
+    }));
+    expect(repo.updateAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('rejects changed Microsoft scopes before writing the refreshed bearer', async () => {
+    repo.getToken.mockResolvedValue(expiredRow());
+    mockMicrosoftRefresh.mockResolvedValue({
+      accessToken: 'narrow-ms-at',
+      refreshToken: 'rt',
+      expiresAt: new Date(Date.now() + 3_600_000),
+      scopes: ['different'],
+      provider: 'microsoft',
+    });
+    const store = new DbTokenStore(repo, googleConfig, microsoftConfig);
+
+    await expect(store.refreshIfExpired('u1', 'microsoft')).rejects.toThrow(
+      /changed or invalid scope grant/,
+    );
+    expect(repo.updateAccessToken).not.toHaveBeenCalled();
+    expect(repo.updateAccessTokenIfCurrent).not.toHaveBeenCalled();
   });
 
   it('REFUSES to refresh a microsoft token when no microsoftConfig is wired (never leaks to Google)', async () => {

@@ -78,6 +78,38 @@ describe('OutlookMailConnector', () => {
     await expect(conn.connect()).rejects.toThrow();
   });
 
+  it('loads and saves delta links through the bound connector account', async () => {
+    const get = vi.fn(async () => null);
+    const save = vi.fn(async () => undefined);
+    const getForAccount = vi.fn(async () => 'BOUND-OLD');
+    const saveForAccount = vi.fn(async () => undefined);
+    const cursor: CursorStore = { get, save, getForAccount, saveForAccount };
+    fetchMock.mockResolvedValueOnce(res(200, { value: [gmsg()], '@odata.deltaLink': 'BOUND-NEW' }));
+    const accountId = '11111111-1111-4111-8111-111111111111';
+    const conn = new OutlookMailConnector(
+      'user-1', makeStubStore(VALID_TOKEN), cursor, accountId,
+    );
+
+    await conn.connect();
+    const [signal] = await conn.poll();
+
+    expect(getForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'outlook', 'delta_link',
+    );
+    expect(saveForAccount).not.toHaveBeenCalled();
+    await conn.commitCursor();
+    expect(saveForAccount).toHaveBeenCalledWith(
+      'user-1', accountId, 'outlook', 'delta_link', 'BOUND-NEW',
+    );
+    expect(signal?.id).toContain(accountId);
+    expect(signal?.connectorEvidence).toMatchObject({
+      kind: 'account_signal', connectorAccountId: accountId,
+      provider: 'microsoft', source: 'outlook',
+    });
+    expect(get).not.toHaveBeenCalled();
+    expect(save).not.toHaveBeenCalled();
+  });
+
   it('bootstraps from a fresh inbox delta and emits one signal per message', async () => {
     fetchMock.mockResolvedValueOnce(
       res(200, { value: [gmsg({ id: 'a' }), gmsg({ id: 'b' })], '@odata.deltaLink': 'DELTA1' }),

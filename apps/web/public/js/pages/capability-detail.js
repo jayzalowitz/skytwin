@@ -74,7 +74,9 @@ function handleCapabilityDetailAction(e) {
     }
     case 'capability-export-dxt':
       // Placeholder — Export DXT wiring is downstream (#180)
-      showToast('Export DXT is not yet wired — coming in #180.', { kind: 'info' });
+      showToast('Export DXT is not yet wired — coming in #180.', {
+        kind: 'info',
+      });
       break;
     case 'capability-save-spend-cap': {
       const perActionInput = document.getElementById('cap-per-action');
@@ -108,19 +110,17 @@ async function handleZeroTrustToggle(serverId, userId, enable, btn) {
       `${API}/capabilities/${encodeURIComponent(serverId)}/zero-trust/${path}?userId=${encodeURIComponent(userId)}`,
       { method: 'POST' },
     );
-    showToast(
-      `Zero-trust ${enable ? 'enabled' : 'disabled'}.`,
-      { kind: 'success' },
-    );
+    showToast(`Zero-trust ${enable ? 'enabled' : 'disabled'}.`, {
+      kind: 'success',
+    });
     void res;
     // Re-render to reflect new state
     const container = document.getElementById('page-content');
     if (container) await renderCapabilityDetail(container, userId, serverId);
   } catch (err) {
-    showToast(
-      err instanceof Error ? err.message : 'Failed to toggle zero-trust',
-      { kind: 'error' },
-    );
+    showToast(err instanceof Error ? err.message : 'Failed to toggle zero-trust', {
+      kind: 'error',
+    });
   } finally {
     if (btn) btn.removeAttribute('disabled');
   }
@@ -189,10 +189,14 @@ export async function renderCapabilityDetail(container, userId, serverId) {
   );
   const skillsPromise = fetchJSON(
     `${API}/capabilities/${encodeURIComponent(serverId)}/skills?userId=${encodeURIComponent(userId)}`,
-  ).then((r) => r.skills ?? []).catch(() => []);
+  )
+    .then((r) => r.skills ?? [])
+    .catch(() => []);
   const policyPromise = fetchJSON(
     `${API}/capabilities/${encodeURIComponent(serverId)}/policy?userId=${encodeURIComponent(userId)}`,
-  ).then((r) => (r?.policy ?? r ?? null)).catch(() => null);
+  )
+    .then((r) => r?.policy ?? r ?? null)
+    .catch(() => null);
 
   let serverPayload;
   try {
@@ -209,17 +213,19 @@ export async function renderCapabilityDetail(container, userId, serverId) {
   const server = serverPayload.server ?? serverPayload;
   const [skills, policies] = await Promise.all([skillsPromise, policyPromise]);
 
-  const statusBadgeClass = server.status === 'active' ? 'badge-success'
-    : server.status === 'dormant' || server.status === 'paused' ? 'badge-warning'
-    : server.status === 'uninstalled' ? 'badge-danger'
-    : 'badge-muted';
+  const statusBadgeClass =
+    server.status === 'active'
+      ? 'badge-success'
+      : server.status === 'dormant' || server.status === 'paused'
+        ? 'badge-warning'
+        : server.status === 'uninstalled'
+          ? 'badge-danger'
+          : 'badge-muted';
 
-  const perActionDollars = server.per_app_spend_per_action_cents != null
-    ? (server.per_app_spend_per_action_cents / 100).toFixed(2)
-    : '';
-  const perDayDollars = server.per_app_daily_spend_cents != null
-    ? (server.per_app_daily_spend_cents / 100).toFixed(2)
-    : '';
+  const perActionDollars =
+    server.per_app_spend_per_action_cents != null ? (server.per_app_spend_per_action_cents / 100).toFixed(2) : '';
+  const perDayDollars =
+    server.per_app_daily_spend_cents != null ? (server.per_app_daily_spend_cents / 100).toFixed(2) : '';
 
   container.innerHTML = `
     <div style="display: flex; flex-direction: column; gap: 1.25rem;">
@@ -244,10 +250,11 @@ export async function renderCapabilityDetail(container, userId, serverId) {
           <span class="card-title">Skills</span>
           <span class="badge badge-info">${skills.length}</span>
         </div>
-        ${skills.length === 0
-          ? '<div class="card-subtitle">No skill records yet — skills populate once the server runs.</div>'
-          : `<div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem;">
-               ${skills.map(sk => `<span class="badge badge-muted" style="font-size: 0.78rem;">${escapeHtml(sk.skill_name ?? sk)}</span>`).join('')}
+        ${
+          skills.length === 0
+            ? '<div class="card-subtitle">No skill records yet — skills populate once the server runs.</div>'
+            : `<div style="display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem;">
+               ${skills.map((sk) => `<span class="badge badge-muted" style="font-size: 0.78rem;">${escapeHtml(sk.skill_name ?? sk)}</span>`).join('')}
              </div>`
         }
       </div>
@@ -259,9 +266,11 @@ export async function renderCapabilityDetail(container, userId, serverId) {
         </div>
         <div class="card-subtitle" style="margin-bottom: 0.75rem;">
           Last 24 hours — latency and success rate.
-          ${server.last_active_at
-            ? `Last used ${escapeHtml(formatRelative(server.last_active_at))}.`
-            : 'No usage recorded yet.'}
+          ${
+            server.last_active_at
+              ? `Last used ${escapeHtml(formatRelative(server.last_active_at))}.`
+              : 'No usage recorded yet.'
+          }
         </div>
         <div id="sparkline-container">
           <div style="color: var(--text-muted); font-size: 0.85rem;">Loading metrics…</div>
@@ -336,9 +345,11 @@ export async function renderCapabilityDetail(container, userId, serverId) {
           pipeline; that wiring is tracked as a #222 follow-up. Container-level
           network isolation lives in the desktop app (#180).
         </div>
-        ${server.zero_trust_mode
-          ? `<button class="btn btn-outline btn-sm" data-action="capability-zero-trust-disable">Disable zero-trust</button>`
-          : `<button class="btn btn-warning btn-sm" data-action="capability-zero-trust-enable">Enable zero-trust</button>`}
+        ${
+          server.zero_trust_mode
+            ? `<button class="btn btn-outline btn-sm" data-action="capability-zero-trust-disable">Disable zero-trust</button>`
+            : `<button class="btn btn-warning btn-sm" data-action="capability-zero-trust-enable">Enable zero-trust</button>`
+        }
       </div>
 
       <!-- Actions -->
@@ -394,7 +405,8 @@ async function loadSparklines(serverId, userId) {
     );
     const points = data.sparkline || [];
     if (points.length === 0) {
-      el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No metrics collected yet — tool call data populates once the server is used.</div>';
+      el.innerHTML =
+        '<div style="color: var(--text-muted); font-size: 0.85rem;">No metrics collected yet — tool call data populates once the server is used.</div>';
       return;
     }
     el.innerHTML = renderSparklineSvgs(points);
@@ -404,9 +416,9 @@ async function loadSparklines(serverId, userId) {
 }
 
 function renderSparklineSvgs(points) {
-  const latencies50 = points.map(p => p.latencyP50Ms ?? 0);
-  const latencies95 = points.map(p => p.latencyP95Ms ?? 0);
-  const successRates = points.map(p => p.successRate ?? 1);
+  const latencies50 = points.map((p) => p.latencyP50Ms ?? 0);
+  const latencies95 = points.map((p) => p.latencyP95Ms ?? 0);
+  const successRates = points.map((p) => p.successRate ?? 1);
 
   const p50Last = latencies50.at(-1) ?? 0;
   const p95Last = latencies95.at(-1) ?? 0;
@@ -430,7 +442,10 @@ function renderSparklineSvgs(points) {
       <div>
         <div style="font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.25rem;">Success rate</div>
         <div style="font-size: 1.1rem; font-weight: 600; color: ${escapeHtml(srColor)};">${Math.round(srLast * 100)}%</div>
-        ${renderSvgSparkline(successRates.map(r => r * 100), srColor)}
+        ${renderSvgSparkline(
+          successRates.map((r) => r * 100),
+          srColor,
+        )}
       </div>
     </div>
     <div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.5rem;">${points.length} minute-buckets in the last 24h</div>
@@ -443,14 +458,18 @@ function renderSparklineSvgs(points) {
  */
 function renderSvgSparkline(values, color) {
   if (!values.length) return '';
-  const W = 120, H = 32, PAD = 2;
+  const W = 120,
+    H = 32,
+    PAD = 2;
   const max = Math.max(...values, 1);
   const step = (W - PAD * 2) / Math.max(values.length - 1, 1);
-  const points = values.map((v, i) => {
-    const x = PAD + i * step;
-    const y = H - PAD - ((v / max) * (H - PAD * 2));
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
+  const points = values
+    .map((v, i) => {
+      const x = PAD + i * step;
+      const y = H - PAD - (v / max) * (H - PAD * 2);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
   return `<svg width="${W}" height="${H}" style="display:block;" aria-hidden="true">
     <polyline points="${escapeHtml(points)}" fill="none" stroke="${escapeHtml(color)}" stroke-width="1.5" stroke-linejoin="round"/>
   </svg>`;
@@ -483,7 +502,7 @@ async function loadMonthlyCostMeter(serverId, userId, server) {
     const now = new Date();
     const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const spentCents = recent
-      .filter(b => new Date(b.bucket_started_at) >= monthStart)
+      .filter((b) => new Date(b.bucket_started_at) >= monthStart)
       .reduce((sum, b) => sum + (Number(b.spend_cents) || 0), 0);
 
     const pct = perMonthCap > 0 ? Math.min(100, Math.round((spentCents / perMonthCap) * 100)) : 0;
@@ -497,9 +516,11 @@ async function loadMonthlyCostMeter(serverId, userId, server) {
       <div style="background: var(--border); border-radius: 9999px; height: 8px; overflow: hidden;">
         <div style="width: ${pct}%; background: ${escapeHtml(barColor)}; height: 100%; border-radius: 9999px; transition: width 0.3s;"></div>
       </div>
-      ${server.per_app_monthly_rollover
-        ? '<div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.35rem;">Unspent budget rolls over monthly.</div>'
-        : ''}
+      ${
+        server.per_app_monthly_rollover
+          ? '<div style="font-size: 0.75rem; color: var(--text-dim); margin-top: 0.35rem;">Unspent budget rolls over monthly.</div>'
+          : ''
+      }
     `;
   } catch {
     el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.82rem;">Spend data unavailable.</div>';
@@ -517,7 +538,8 @@ async function loadChangelog(serverId, userId) {
     const data = await fetchCapabilityChangelog(serverId, userId);
     const changelog = data.changelog;
     if (!changelog) {
-      el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No changelog published by this server.</div>';
+      el.innerHTML =
+        '<div style="color: var(--text-muted); font-size: 0.85rem;">No changelog published by this server.</div>';
       return;
     }
 
@@ -544,7 +566,8 @@ async function loadChangelog(serverId, userId) {
   } catch (err) {
     // 404 means no changelog fetched yet — show a gentle nudge
     if (err && err.kind === 'not-found') {
-      el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.85rem;">No changelog fetched yet. The weekly sweep will check again soon.</div>';
+      el.innerHTML =
+        '<div style="color: var(--text-muted); font-size: 0.85rem;">No changelog fetched yet. The weekly sweep will check again soon.</div>';
     } else {
       el.innerHTML = '<div style="color: var(--text-muted); font-size: 0.82rem;">Changelog unavailable.</div>';
     }
@@ -562,12 +585,17 @@ async function handleDetailUninstall(serverId, userId) {
     showToast('Capability uninstalled.', { kind: 'success' });
     window.location.hash = '#/capabilities';
   } catch (err) {
-    showToast(err.friendlyMessage || err.message || 'Could not uninstall.', { kind: 'error' });
+    showToast(err.friendlyMessage || err.message || 'Could not uninstall.', {
+      kind: 'error',
+    });
   }
 }
 
 async function handleDetailRehearse(serverId, userId, daysBack, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = 'Rehearsing…'; }
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Rehearsing…';
+  }
   const resultEl = document.getElementById('capability-action-result');
   try {
     const { wouldHaveActions } = await rehearseCapability(serverId, userId, daysBack);
@@ -579,21 +607,49 @@ async function handleDetailRehearse(serverId, userId, daysBack, btn) {
       </div>`;
     }
   } catch (err) {
-    if (resultEl) resultEl.innerHTML = `<div class="error-banner">${escapeHtml(err.friendlyMessage || err.message)}</div>`;
+    if (resultEl)
+      resultEl.innerHTML = `<div class="error-banner">${escapeHtml(err.friendlyMessage || err.message)}</div>`;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = `Rehearse (${daysBack}d)`; }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = `Rehearse (${daysBack}d)`;
+    }
   }
+}
+
+export function summarizeRegretResults(undone, irreversible) {
+  const summary = {
+    reportedRolledBack: 0,
+    unavailable: 0,
+    noPlanLinkage: 0,
+    irreversible: Array.isArray(irreversible) ? irreversible.length : 0,
+    messages: [],
+  };
+  if (!Array.isArray(undone)) return summary;
+  for (const entry of undone) {
+    if (!entry || typeof entry !== 'object') {
+      summary.unavailable += 1;
+      continue;
+    }
+    if (entry.result === 'rolled_back') summary.reportedRolledBack += 1;
+    else if (entry.result === 'no_plan_linkage') summary.noPlanLinkage += 1;
+    else summary.unavailable += 1;
+    if (typeof entry.message === 'string' && entry.message) summary.messages.push(entry.message);
+  }
+  return summary;
+}
+
+export function renderRegretMessageList(messages) {
+  return Array.isArray(messages) && messages.length > 0
+    ? `<ul>${messages.map((message) => `<li>${escapeHtml(message)}</li>`).join('')}</ul>`
+    : '';
 }
 
 async function handleDetailRegret(serverId, userId, withinHours) {
   if (!confirm(`Review reversible actions from the last ${withinHours}h? No changes will be made.`)) return;
   const resultEl = document.getElementById('capability-action-result');
   try {
-    const { undone, unavailable, irreversible, status } = await regretCapability(
-      serverId,
-      userId,
-      withinHours,
-    );
+    const { undone, unavailable, irreversible, status } = await regretCapability(serverId, userId, withinHours);
     if (resultEl) {
       resultEl.innerHTML = `<div class="card" style="border-left: 3px solid var(--warning);">
         <div class="card-header"><span class="card-title">Rollback report</span></div>
@@ -607,27 +663,35 @@ async function handleDetailRegret(serverId, userId, withinHours) {
       { kind: status === 'report_only' ? 'warning' : 'success' },
     );
   } catch (err) {
-    if (resultEl) resultEl.innerHTML = `<div class="error-banner">${escapeHtml(err.friendlyMessage || err.message)}</div>`;
+    if (resultEl)
+      resultEl.innerHTML = `<div class="error-banner">${escapeHtml(err.friendlyMessage || err.message)}</div>`;
   }
 }
 
 async function handleSaveSpendCap(serverId, userId, perActionCents, perDayCents, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+  }
   const statusEl = document.getElementById('cap-policy-status');
   try {
-    await fetchJSON(
-      `${API}/capabilities/${encodeURIComponent(serverId)}/policy?userId=${encodeURIComponent(userId)}`,
-      {
-        method: 'PUT',
-        body: JSON.stringify({ perAppSpendPerActionCents: perActionCents, perAppDailySpendCents: perDayCents }),
-      },
-    );
+    await fetchJSON(`${API}/capabilities/${encodeURIComponent(serverId)}/policy?userId=${encodeURIComponent(userId)}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        perAppSpendPerActionCents: perActionCents,
+        perAppDailySpendCents: perDayCents,
+      }),
+    });
     if (statusEl) statusEl.innerHTML = '<span style="color: var(--success);">Saved</span>';
     showToast('Spend caps saved.', { kind: 'success' });
   } catch (err) {
-    if (statusEl) statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.friendlyMessage || err.message)}</span>`;
+    if (statusEl)
+      statusEl.innerHTML = `<span style="color: var(--danger);">${escapeHtml(err.friendlyMessage || err.message)}</span>`;
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = 'Save'; }
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Save';
+    }
   }
 }
 
@@ -646,34 +710,37 @@ function closeProvenanceFlyout() {
 }
 
 const NODE_TYPE_LABELS = {
-  signal:         { icon: '📡', label: 'Signal detected' },
-  entity:         { icon: '🔍', label: 'Entity extracted' },
-  suggestion:     { icon: '💡', label: 'Install suggested' },
-  install:        { icon: '✅', label: 'Installed' },
+  signal: { icon: '📡', label: 'Signal detected' },
+  entity: { icon: '🔍', label: 'Entity extracted' },
+  suggestion: { icon: '💡', label: 'Install suggested' },
+  install: { icon: '✅', label: 'Installed' },
   tier_promotion: { icon: '⬆️', label: 'Tier promoted' },
-  action:         { icon: '⚡', label: 'Action executed' },
-  feedback:       { icon: '💬', label: 'Feedback recorded' },
-  uninstall:      { icon: '🗑️', label: 'Uninstalled' },
+  action: { icon: '⚡', label: 'Action executed' },
+  feedback: { icon: '💬', label: 'Feedback recorded' },
+  uninstall: { icon: '🗑️', label: 'Uninstalled' },
   external_agent: { icon: '🤖', label: 'External agent' },
 };
 
 function renderProvenanceNode(node) {
-  const meta = NODE_TYPE_LABELS[node.node_type] || { icon: '•', label: node.node_type };
+  const meta = NODE_TYPE_LABELS[node.node_type] || {
+    icon: '•',
+    label: node.node_type,
+  };
   const when = node.occurred_at ? formatRelative(node.occurred_at) : '';
   const payload = node.payload ? JSON.stringify(node.payload) : null;
   // Truncate payload for display
-  const payloadPreview = payload && payload.length > 120
-    ? payload.slice(0, 117) + '…'
-    : payload;
+  const payloadPreview = payload && payload.length > 120 ? payload.slice(0, 117) + '…' : payload;
 
   return `
     <div class="provenance-node" style="display: flex; gap: 0.75rem; align-items: flex-start; padding: 0.6rem 0; border-bottom: 1px solid var(--border);">
       <span style="font-size: 1.1rem; flex-shrink: 0; margin-top: 0.1rem;">${meta.icon}</span>
       <div style="flex: 1; min-width: 0;">
         <div style="font-weight: 500; font-size: 0.85rem;">${escapeHtml(meta.label)}</div>
-        ${payloadPreview
-          ? `<div style="font-size: 0.78rem; color: var(--text-dim); word-break: break-all; margin-top: 0.1rem;">${escapeHtml(payloadPreview)}</div>`
-          : ''}
+        ${
+          payloadPreview
+            ? `<div style="font-size: 0.78rem; color: var(--text-dim); word-break: break-all; margin-top: 0.1rem;">${escapeHtml(payloadPreview)}</div>`
+            : ''
+        }
       </div>
       <span style="font-size: 0.75rem; color: var(--text-dim); flex-shrink: 0; white-space: nowrap;">${escapeHtml(when)}</span>
     </div>
@@ -739,7 +806,9 @@ async function handleProvenanceFlyout(serverId, userId) {
       `;
     }
   } catch (err) {
-    bodyEl.innerHTML = renderApiError(err, { context: "Couldn't load provenance chain." });
+    bodyEl.innerHTML = renderApiError(err, {
+      context: "Couldn't load provenance chain.",
+    });
   }
 }
 

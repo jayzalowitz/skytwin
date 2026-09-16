@@ -21,6 +21,42 @@ export {
 
 // Direct execution adapter: local handler dispatch (fallback when IronClaw is unavailable)
 export { DirectExecutionAdapter } from './direct-execution-adapter.js';
+// The Gmail mutation implementation remains internal until the reviewed
+// coordinator is activated. Export only its inert limits and port types.
+export { gmailInboxMutationLimits } from './gmail-inbox-mutation-port.js';
+export {
+  DbGmailInboxObservationCredentials,
+  GmailInboxObservationService,
+  gmailInboxObservationLimits,
+} from './gmail-inbox-observation-port.js';
+export {
+  GMAIL_ARCHIVE_ATTEMPT_SCHEMA,
+  GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
+} from '@skytwin/shared-types';
+export type {
+  GmailArchiveAttemptPhase,
+  GmailArchiveAttemptStateV1,
+  GmailInboxMutationBinding,
+  GmailInboxMutationCommand,
+  GmailInboxMutationDispatchGate,
+  GmailInboxMutationDispatchGateResult,
+  GmailInboxMutationPort,
+  GmailInboxMutationResult,
+  GmailInboxMutationTarget,
+  GmailInboxObservationBinding,
+  GmailInboxObservationCommand,
+  GmailInboxObservationPort,
+  GmailInboxObservationResult,
+  GmailInboxObservationUnavailableCode,
+} from '@skytwin/shared-types';
+export type {
+  DbGmailInboxObservationCredentialsOptions,
+  GmailInboxObservationCredential,
+  GmailInboxObservationCredentialRequest,
+  GmailInboxObservationCredentialsPort,
+  GmailInboxObservationServiceOptions,
+  GmailInboxObservationTargetResolver,
+} from './gmail-inbox-observation-port.js';
 export { ActionHandlerRegistry } from './handler-registry.js';
 export { DbCredentialProvider, NoopCredentialProvider } from './credential-provider.js';
 export type {

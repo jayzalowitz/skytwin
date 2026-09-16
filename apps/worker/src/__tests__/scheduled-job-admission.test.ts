@@ -32,8 +32,8 @@ describe("worker scheduled-job generation admission inventory", () => {
     expect(workerSource).toContain(
       "if (generationAdmission.isActive() && pollCount % 10 === 0)",
     );
-    expect(workerSource).toContain(
-      "generationAdmission.isActive() &&\n      (userConnectors.length === 0 || pollCount % 10 === 0)",
+    expect(workerSource).toMatch(
+      /generationAdmission\.isActive\(\)\s*&&\s*\(userConnectors\.length === 0 \|\| pollCount % 10 === 0\)/,
     );
   });
 });

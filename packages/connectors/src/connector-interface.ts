@@ -1,3 +1,5 @@
+import type { AuthoringTier } from './authoring-tier.js';
+
 /**
  * A raw signal from a connected data source. Signals are the primary
  * input to SkyTwin's decision pipeline.
@@ -8,7 +10,41 @@ export interface RawSignal {
   type: string;
   data: Record<string, unknown>;
   timestamp: Date;
+  /**
+   * Trusted connector observation metadata. Only the loopback service ingest
+   * path may consume this envelope; human/API callers cannot establish its
+   * ownership boundary by supplying the same JSON shape.
+   */
+  connectorEvidence?: ConnectorEvidence;
 }
+
+export interface GmailConnectorEvidence {
+  kind: 'gmail_message';
+  connectorAccountId: string;
+  provider: 'google';
+  providerMessageId: string;
+  providerThreadId: string | null;
+  authoringTier: AuthoringTier;
+  observedInInbox: boolean;
+  observedAt: string;
+  messageTimestamp: string;
+}
+
+/**
+ * Ownership evidence for account-bound connectors that do not need a
+ * provider-resource reference. The API resolves this account id against its
+ * own active, identity-verified account row before accepting the signal.
+ */
+export interface AccountConnectorEvidence {
+  kind: 'account_signal';
+  connectorAccountId: string;
+  provider: 'google' | 'microsoft';
+  source: 'google_calendar' | 'outlook' | 'outlook_calendar';
+  authoringTier: AuthoringTier;
+  observedAt: string;
+}
+
+export type ConnectorEvidence = GmailConnectorEvidence | AccountConnectorEvidence;
 
 /**
  * A handler function that processes incoming signals.
@@ -25,6 +61,8 @@ export type SignalHandler = (signal: RawSignal) => void;
 export interface SignalConnector {
   /** Human-readable name for this connector. */
   readonly name: string;
+  /** Stable non-secret identity used to isolate runtime state per account. */
+  readonly connectorAccountId?: string;
 
   /**
    * Connect to the data source. This may involve authentication,

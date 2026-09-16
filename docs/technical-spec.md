@@ -2,7 +2,7 @@
 
 ## Architecture Overview
 
-SkyTwin is a TypeScript monorepo managed by pnpm workspaces and built with Turborepo. The system follows a pipeline architecture: events flow in, get interpreted, pass through decision and policy engines, and either auto-execute via IronClaw or escalate to the user.
+SkyTwin is a TypeScript monorepo managed by pnpm workspaces and built with Turborepo. The system follows a pipeline architecture: events flow in, get interpreted, pass through decision and policy engines, and either enter an explicitly admitted adapter path or escalate to the user.
 
 ### Repository Structure
 
@@ -24,7 +24,7 @@ skytwin/
     twin-model/      # Twin profile management and preference learning
     decision-engine/ # Event interpretation and action selection
     policy-engine/   # Safety constraints, trust tiers, spend limits
-    ironclaw-adapter/# IronClaw HTTP adapter (HMAC-SHA256 auth, retries, circuit breaker)
+    ironclaw-adapter/# IronClaw adapter plus quarantined Gmail mutation/observation primitives
     execution-router/# Adapter selection, fallback chains, risk modifiers, skill gap detection, plugin discovery
     llm-client/      # Unified LLM client — provider chain, circuit breakers, SSRF-safe URL validation
     explanations/    # Human-readable explanation generation
@@ -36,6 +36,7 @@ skytwin/
     memory-hybrid/   # Composes two MemoryPort impls with routing + dual-write
     memory-mempalace/ # MemPalaceMemoryPort adapter (legacy backend, selectable)
     mempalace/       # Legacy memory system: episodic memory, knowledge graph, 4-layer retrieval
+    near-confidential/ # Strict confidential-inference contract (provider remains disabled)
 
   docs/              # Architecture and design documentation
   planning/          # Milestone and issue tracking documents
@@ -45,8 +46,8 @@ skytwin/
 
 | Component | Technology | Rationale |
 |-----------|-----------|-----------|
-| Language | TypeScript 5.4+, strict mode | Type safety across the entire pipeline |
-| Runtime | Node.js >= 20 | LTS, native ESM, good async performance |
+| Language | TypeScript 6.0+, strict mode | Type safety across the entire pipeline |
+| Runtime | Node.js >= 20.19.4 | LTS, native ESM, good async performance |
 | Package manager | pnpm 9 | Fast, disk-efficient, excellent workspace support |
 | Monorepo tooling | Turborepo 2 | Dependency-aware build orchestration, caching |
 | Database | CockroachDB 23.2 | Distributed SQL, serializable transactions, resilient |
@@ -94,7 +95,7 @@ PASS              FAIL/REQUIRES_APPROVAL
   |-- convert to     |-- persist to CockroachDB
   |   ExecutionPlan   |-- notify user via preferred channel
   |-- execute         |-- await response
-  |-- receive result  |-- on approval: re-enter pipeline at IronClaw
+  |-- receive result  |-- on approval: enter the action-specific continuation
   |                   |-- on rejection: record feedback
   v                   v
 [Explanation Layer]   [Explanation Layer]
@@ -109,6 +110,13 @@ PASS              FAIL/REQUIRES_APPROVAL
   |-- record FeedbackEvent
 ```
 
+This is the generic supported-action flow, not permission to route every action
+through an interchangeable adapter. In particular, the default-off Gmail
+archive experiment records owner-bound consent and returns `execution: null`.
+Its caller kernel, recovery worker, and feedback projection are not composed
+into runtime, and it cannot fall through to IronClaw, OpenClaw, or Direct
+execution.
+
 ### Event Lifecycle
 
 1. **Ingestion:** Raw event arrives, gets normalized into internal format with standard metadata (timestamp, source, domain, raw payload).
@@ -117,7 +125,7 @@ PASS              FAIL/REQUIRES_APPROVAL
 4. **Candidacy:** Engine generates `CandidateAction[]`, each with parameters, risk assessment, reversibility flag, cost estimate, and predicted user preference.
 5. **Selection:** Engine selects the best candidate and determines whether auto-execution is allowed (producing a `DecisionOutcome`).
 6. **Policy gate:** Policy engine evaluates the selected action. Pass, deny, or require approval.
-7. **Execution or escalation:** Either hand off to IronClaw or create an approval request.
+7. **Execution or escalation:** Either enter the action's admitted adapter path or create an approval request. Approval is consent, not universal dispatch authority; quarantined actions such as Gmail archive stop at their dedicated non-executing response boundary in current source.
 8. **Explanation:** Generate and persist an explanation record regardless of outcome.
 9. **Feedback:** When the user responds (approval, rejection, edit, undo), update the twin model and record the feedback event.
 

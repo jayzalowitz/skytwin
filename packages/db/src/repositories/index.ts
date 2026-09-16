@@ -28,12 +28,104 @@ export type {
 } from './routine-non-action-repository.js';
 export { inferenceReceiptRepository } from './inference-receipt-repository.js';
 export type { CreateInferenceReceiptInput } from './inference-receipt-repository.js';
+export { decisionReceiptRepository } from './decision-receipt-repository.js';
+export type {
+  AppendDecisionReceiptFailureCode,
+  AppendDecisionReceiptInput,
+  AppendDecisionReceiptResult,
+  FindDecisionReceiptResult,
+} from './decision-receipt-repository.js';
+export {
+  buildDecisionRecordedReceiptContentV1,
+  decisionReceiptLifecycleRepository,
+} from './decision-receipt-lifecycle.js';
+export type { AppendDecisionReceiptLifecycleInput } from './decision-receipt-lifecycle.js';
+export {
+  decisionReceiptRowArtifactRefV1,
+  decisionReceiptRowEvidenceRefV1,
+} from './decision-receipt-artifacts.js';
+export {
+  buildGmailArchiveProposalCandidate,
+  gmailArchiveProposalRepository,
+  GmailArchiveProposalReceiptError,
+} from './gmail-archive-proposal-repository.js';
+export type {
+  GmailArchiveProposalBundle,
+  GmailArchiveProposal,
+  PersistGmailArchiveProposalInput,
+  PersistGmailArchiveProposalResult,
+} from './gmail-archive-proposal-repository.js';
+export type {
+  GmailArchiveApprovalResponseBundle,
+  RespondGmailArchiveApprovalInput,
+  RespondGmailArchiveApprovalResult,
+} from './gmail-archive-approval-response-repository.js';
+export type {
+  GmailArchivePreparationBundle,
+  PrepareGmailArchiveInput,
+  PrepareGmailArchiveResult,
+} from './gmail-archive-preparation-repository.js';
+export type {
+  ClaimPreparedGmailArchiveInput,
+  ClaimPreparedGmailArchiveResult,
+} from './gmail-archive-claim-repository.js';
+export { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-repository.js';
+export { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-lease-repository.js';
+export type { GmailInboxObservationTarget } from './gmail-inbox-observation-target-repository.js';
+export {
+  buildGmailArchiveReconciliationTerminalEnvelope,
+  gmailArchiveReconciliationEvidenceAllowedForPhase,
+  gmailArchiveReconciliationExplanationSemantics,
+  parseGmailArchiveReconciliationExplanationEvidence,
+  parseGmailArchiveReconciliationTerminalEnvelope,
+  validateStoredGmailArchiveReconciliationTerminal,
+  validateStoredGmailArchiveTerminalGraph,
+} from './gmail-archive-reconciliation-repository.js';
+export type {
+  GmailArchiveReconciliationBundle,
+  GmailArchiveReconciliationExplanationSemantics,
+  GmailArchiveReconciliationStableValues,
+  GmailArchiveReconciliationTerminalEnvelope,
+  ReconcileAbandonedGmailArchiveResult,
+} from './gmail-archive-reconciliation-repository.js';
+export {
+  buildGmailArchiveTerminalContent,
+  buildGmailArchiveTerminalResultEnvelope,
+  gmailArchiveResultAllowedForAttemptPhase,
+  parseGmailArchiveTerminalEvidence,
+  parseGmailArchiveTerminalExplanationBinding,
+  parseGmailArchiveTerminalExplanationEvidence,
+  parseGmailArchiveTerminalResultEnvelope,
+} from './gmail-archive-terminalization-repository.js';
+export type {
+  QueryAbandonedGmailArchiveInput,
+  QueryAbandonedGmailArchiveResult,
+  AcquireGmailArchiveRecoveryLeaseInput,
+  AcquireGmailArchiveRecoveryLeaseResult,
+  BeginGmailArchiveRecoveryObservationResult,
+  GmailArchiveRecoveryLease,
+  GmailArchiveRecoveryLeaseFence,
+  GmailArchiveRecoveryObservationPermit,
+  RecordGmailArchiveRecoveryObservationInput,
+  RecordGmailArchiveRecoveryObservationResult,
+} from '@skytwin/shared-types';
+export type {
+  GmailArchiveTerminalEvidence,
+  LegacyGmailArchiveTerminalResultPayload,
+  StoredGmailArchiveMutationResult,
+  GmailArchiveTerminalResultEnvelope,
+  GmailArchiveTerminalizationBundle,
+  TerminalizeGmailArchiveInput,
+  TerminalizeGmailArchiveResult,
+} from './gmail-archive-terminalization-repository.js';
+export { gmailArchiveRuntimeRepositories } from './gmail-archive-runtime-repositories.js';
 
 export { feedbackRepository } from './feedback-repository.js';
 export type { CreateFeedbackInput } from './feedback-repository.js';
 
 export {
   oauthRepository,
+  OAuthAccountBindingConflictError,
   CredentialDispatchConflictError,
   CredentialDisconnectInProgressError,
   CredentialVaultLockedError,
@@ -57,6 +149,15 @@ export type {
   StartCredentialDispatchInput,
   StartCredentialDispatchResult,
 } from './credential-dispatch-lease-repository.js';
+export {
+  connectedAccountRepository,
+  digestProviderSubject,
+  canonicalizeScopes,
+} from './connected-account-repository.js';
+export type {
+  VerifiedConnectedAccountInput,
+  UnverifiedConnectedAccountInput,
+} from './connected-account-repository.js';
 export { oauthPkcePendingRepository } from './oauth-pkce-pending-repository.js';
 export { connectorHealthRepository } from './connector-health-repository.js';
 export type { ConnectorHealthRow } from './connector-health-repository.js';
@@ -108,7 +209,16 @@ export type {
 } from './execution-repository.js';
 
 export { signalRepository } from './signal-repository.js';
-export type { CreateSignalInput } from './signal-repository.js';
+export type {
+  CreateSignalInput,
+  PersistAccountConnectorSignalInput,
+  PersistConnectorSignalInput,
+} from './signal-repository.js';
+export { gmailMessageRefRepository } from './gmail-message-ref-repository.js';
+export type {
+  PersistGmailEvidenceInput,
+  PersistGmailEvidenceResult,
+} from './gmail-message-ref-repository.js';
 
 export { proposalRepository } from './proposal-repository.js';
 export type { CreateProposalInput } from './proposal-repository.js';
@@ -328,4 +438,22 @@ export { watchRepository } from './watch-repository.js';
 export type { WatchRow, CreateWatchInput } from './watch-repository.js';
 
 export { watchRunRepository } from './watch-run-repository.js';
-export type { WatchRunRow, CreateWatchRunInput } from './watch-run-repository.js';
+export type {
+  WatchRunRow,
+  WatchSlotStatus,
+  ClaimedWatchSlot,
+  ClaimNextWatchSlotInput,
+  CompleteWatchSlotInput,
+  FailWatchSlotInput,
+  FailWatchSlotResult,
+} from './watch-run-repository.js';
+
+export { preEffectBarrierRepository } from './pre-effect-barrier-repository.js';
+export type {
+  PreEffectType,
+  PreEffectBarrierStatus,
+  PreEffectBarrierRow,
+  ReservePreEffectInput,
+  PreparePreEffectInput,
+  TerminalPreEffectWithExplanationInput,
+} from './pre-effect-barrier-repository.js';
