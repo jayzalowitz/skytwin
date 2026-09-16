@@ -84,22 +84,7 @@ export const rollbackAdmissionRepository = {
     return withTransaction(async (client) => {
       const existing = await client.query<TerminalDbRow>('SELECT * FROM rollback_terminal_ledger WHERE admission_id = $1 AND user_id = $2 AND decision_id = $3', [input.admissionId, input.userId, input.decisionId]);
       if (existing.rows[0]) return toTerminal(existing.rows[0]);
-      const owned = await client.query('SELECT d.id FROM rollback_admissions ra JOIN decision_outcomes o ON o.id = ra.decision_outcome_id JOIN decisions d ON d.id = o.decision_id WHERE ra.id = $1 AND ra.user_id = $2 AND d.id = $3', [input.admissionId, input.userId, input.decisionId]);
-      if (!owned.rows[0]) throw new Error('Rollback admission is not owned by the user.');
-      await client.query('SAVEPOINT rollback_terminal_insert');
-      const explanation = await client.query<{ id: string }>(`INSERT INTO explanation_records (decision_id, what_happened, evidence_used, preferences_invoked, confidence_reasoning, action_rationale, escalation_rationale, correction_guidance) VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`, [input.decisionId, input.explanation.whatHappened, JSON.stringify(input.explanation.evidenceUsed ?? []), input.explanation.preferencesInvoked ?? [], input.explanation.confidenceReasoning, input.explanation.actionRationale, input.explanation.escalationRationale ?? null, input.explanation.correctionGuidance]);
-      try {
-        const inserted = await client.query<TerminalDbRow>(`INSERT INTO rollback_terminal_ledger (admission_id, user_id, decision_id, status, result, explanation_id) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`, [input.admissionId, input.userId, input.decisionId, input.status, JSON.stringify(input.result ?? {}), explanation.rows[0]!.id]);
-        return toTerminal(inserted.rows[0]!);
-      } catch (error) {
-        if ((error as { code?: string }).code !== '23505') throw error;
-        await client.query('ROLLBACK TO SAVEPOINT rollback_terminal_insert');
-        const replay = await client.query<TerminalDbRow>('SELECT * FROM rollback_terminal_ledger WHERE admission_id = $1', [input.admissionId]);
-        if (!replay.rows[0]) throw error;
-        return toTerminal(replay.rows[0]);
-      } finally {
-        await client.query('RELEASE SAVEPOINT rollback_terminal_insert').catch(() => undefined);
-      }
+      throw new Error('Legacy rollback terminalization is disabled; claimRollback must be used.');
     });
   },
   async getTerminal(admissionId: string, userId: string): Promise<RollbackTerminalRow | null> {
