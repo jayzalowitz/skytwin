@@ -53,4 +53,17 @@ describe('rollbackAdmissionRepository', () => {
     await rollbackAdmissionRepository.recordTerminal({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'unknown', explanation: { whatHappened: 'ignored', confidenceReasoning: 'ignored', actionRationale: 'ignored', correctionGuidance: 'ignored' } });
     expect(clientQuery).toHaveBeenCalledTimes(1);
   });
+
+  it('rolls back the losing explanation before replaying a concurrent terminal', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'd' }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ id: 'loser-explanation' }] })
+      .mockRejectedValueOnce(Object.assign(new Error('duplicate terminal'), { code: '23505' }))
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({ rows: [{ admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'rolled_back', result: {}, explanation_id: 'winner-explanation', terminal_at: new Date() }] });
+    const row = await rollbackAdmissionRepository.recordTerminal({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'failed', explanation: { whatHappened: 'loser', confidenceReasoning: 'loser', actionRationale: 'loser', correctionGuidance: 'loser' } });
+    expect(row.explanationId).toBe('winner-explanation');
+    expect(clientQuery.mock.calls.map((call) => call[0])).toContain('ROLLBACK TO SAVEPOINT rollback_terminal_insert');
+  });
 });
