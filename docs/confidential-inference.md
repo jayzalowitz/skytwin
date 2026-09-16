@@ -11,13 +11,15 @@ path as artifact-verified. Neither path falls back to a remote provider.
 
 ## Remote attested inference
 
-`verified_private_cloud` is intentionally unavailable in this build. Entering
-an API key, selecting HTTPS, or trusting a provider name does **not** enable it
-and does not send a prompt. SkyTwin will expose a remote route as verified only
-after its own adapter verifies the provider's evidence for the exact prompt
-connection and exact response.
+`verified_private_cloud` is available through the isolated TrustedRouter
+adapter. NEAR AI is represented in Settings as **verification pending**, but it
+is not admitted by this build. Providers are configured per user in
+**Settings → AI brain**, and the first-run screen links directly to that setup.
+Entering an API key, selecting HTTPS, or trusting a provider name still does
+**not** establish confidentiality. A route is admitted only when its dedicated
+SkyTwin adapter verifies evidence for the exact prompt connection and response.
 
-The planned adapter contract is deliberately stronger than a conventional
+The adapter contract is deliberately stronger than a conventional
 OpenAI-compatible endpoint:
 
 - construct and retain the exact request bytes;
@@ -32,37 +34,72 @@ OpenAI-compatible endpoint:
 
 ### TrustedRouter
 
-TrustedRouter documents a confidential routing floor via
-`provider.min_privacy: "confidential"`, signed inference receipts, and a
-TLS-bound gateway-attestation procedure. A future SkyTwin adapter must require
-that routing floor, verify the live attestation and policy, and then verify the
-receipt's nonce, exact request/response hashes, selected route, attestation
-chain, and freshness. A signed receipt alone is not a confidentiality proof;
-TrustedRouter explicitly separates receipt integrity/origin from session
-privacy. Use the provider materials to evaluate the route, not as a SkyTwin
-availability claim:
+SkyTwin pins the reviewed TrustedRouter JavaScript verifier source at commit
+`2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb`; the dependency has no native
+runtime component. For every call, the adapter:
+
+1. constructs policy from the workload image digest and image reference pinned
+   in this SkyTwin build, then opens a TLS 1.3 session;
+2. verifies issuer, audience, accepted workload image, certificate, fresh
+   nonce, and TLS exporter binding before prompt transmission;
+3. captures another verified attestation over that same live socket, then sends
+   the exact buffered request body on the socket with
+   `provider.min_privacy: "confidential"`, `data_collection: "deny"`, and a
+   fresh receipt nonce;
+4. buffers the full response without exposing tokens downstream;
+5. fetches the issuing instance's receipt-key attestation on the same socket
+   and verifies the Ed25519 receipt, freshness, nonce, requested and selected
+   model, exact request/response hashes, attestation chain, and
+   `upstream.tier: "tee-verified"`; and
+6. emits a verified inference trace containing the exact body bytes and an
+   evidence bundle. Only then is response text returned.
+
+The production endpoint is fixed in code; user-supplied TrustedRouter base URLs
+are rejected. The provider is rejected in `on_device` and
+`bring_your_own_provider`, while every other provider is rejected in
+`verified_private_cloud`. Verification failure, authentication failure, model
+removal, receipt mismatch, timeout, or socket closure therefore ends the path
+without a conventional-provider retry. The live trust record is review input,
+not a trust root that can widen an already-built SkyTwin binary.
+
+A signed receipt alone is not a confidentiality proof; TrustedRouter explicitly
+separates receipt integrity/origin from session privacy. SkyTwin requires both
+the live TLS-bound gateway verification and the receipt's confidential upstream
+tier. The upstream tier is an authenticated TrustedRouter claim; SkyTwin does
+not independently re-attest a third-party model host outside the evidence
+carried by that receipt.
+
+Operational limits remain explicit:
+
+- a user must supply a valid TrustedRouter key with available credits;
+- dynamic route pricing is not yet persisted as an expiring exact price, so the
+  existing hard-spend gate blocks this provider for unattended calls; it is
+  available for explicit interactive calls and connection tests;
+- no response is streamed before final verification; and
+- remote verification does not move policy, credentials, durable twin state,
+  action authorization, or execution authority out of SkyTwin.
+
+Provider materials used by the adapter and its review:
 
 - [TrustedRouter API and confidential-routing documentation](https://trustedrouter.com/docs)
 - [TrustedRouter live trust record: attestation, accepted measurements, and signed release provenance](https://trust.trustedrouter.com/)
 - [TrustedRouter signed-receipt format and limitations](https://trustedrouter.com/docs/receipts)
 
-The trust portal is especially relevant to a future adapter: it publishes the
-accepted measurements and describes checking a fresh attestation's issuer,
-audience, image digest, and TLS-certificate binding. Its scope is the hosted
-gateway workload; it does not turn every downstream model route into an
-attested model-provider claim. In particular, the portal describes
-user-provided-model routes as leaving that gateway boundary. SkyTwin must keep
-those distinctions in its route policy rather than inferring them from a model
-name. The portal also distinguishes a measured image from mutable launch-time
-configuration; a future adapter must pin the full policy it relies on.
+The trust portal publishes measurements and describes checking a fresh
+attestation's issuer, audience, image digest, and TLS-certificate binding. Its
+scope is the hosted gateway workload; it does not independently attest every
+downstream model host. SkyTwin therefore also requires the signed receipt's
+`tee-verified` upstream tier and hard confidential routing policy. That tier is
+an authenticated TrustedRouter claim, not a second SkyTwin-run hardware
+verifier for the selected model host.
 
 ## Boundary comparison
 
-| Route | What SkyTwin can establish today | What a future remote adapter must establish | Availability in this build |
+| Route | What SkyTwin can establish today | Per-call admission requirement | Availability in this build |
 | --- | --- | --- | --- |
 | **On this device** | A managed artifact can be digest-checked; an explicit local model is local-only but not artifact-verified. | Compatible runtime admission; no remote fallback. | Available when the selected local runtime/model can run. |
-| **TrustedRouter remote route** | The provider publishes a trust portal, a confidential-routing floor, attestation material, and receipts. | A fresh TLS-bound gateway attestation against an accepted measurement, the required route policy, and a nonce-bound exact-byte receipt. | Unavailable — SkyTwin has not yet wired a verifier-owned transport. |
-| **NEAR AI remote route** | A fail-closed client contract exists, and the provider publishes verifier tooling and direct-endpoint attestation material. | A packaged pinned verifier, fresh endpoint policy, TLS/TEE evidence, stable completion-to-signature routing, and response-signature checks. | Unavailable — SkyTwin has not yet wired a production verifier-owned transport. |
+| **TrustedRouter remote route** | A fresh same-session gateway attestation, pinned workload policy, hard confidential routing floor, and nonce-bound exact-byte receipt with a TEE-verified upstream tier. | Valid credentials/credits and successful per-call verification. Dynamic price persistence is still required before unattended use. | Available for explicit interactive calls; fails closed. |
+| **NEAR AI remote route** | The public evidence can authenticate a base CVM, TDX/GPU state, TLS binding, and response signature, but does not pin the model/proxy workload dynamically selected by the privileged compose manager. | A future policy must verify the compose-manager evidence and event log against a pinned inference workload state. | Unavailable; settings explain the missing proof and runtime admission fails closed. |
 
 This is a comparison of evidence boundaries, not a statement that remote and
 local execution are interchangeable. A remote route remains unavailable until
@@ -70,51 +107,34 @@ SkyTwin verifies the evidence for that exact call and fails closed otherwise.
 
 ### NEAR AI
 
-NEAR AI publishes verifier tooling for direct confidential endpoints. SkyTwin's
-`@skytwin/near-confidential` package implements the fail-closed client contract,
-but it is not an available inference provider. The contract requires all of the
-following before prompt bytes may be sent:
+NEAR AI publishes model-specific direct completion endpoints and verifier
+tooling. SkyTwin contains a staged strict client and transport in
+[`packages/near-confidential`](../packages/near-confidential), including
+same-socket TLS, TDX/GPU evidence, and exact-byte signature checks. That work is
+not enough to admit the provider.
 
-- the model remains present in a live catalog and is marked verifiable,
-  attestation-supported, and compatible with the serving protocol;
-- the selected URL is that model's HTTPS direct endpoint under
-  `completions.near.ai`, rather than the shared gateway;
-- a client-generated 32-byte nonce is bound into verified TDX and GPU evidence;
-- verified `report_data` binds the attested signing identity and live TLS SPKI
-  fingerprint to that nonce, alongside the approved deployment measurement;
-- TLS attestation is checked on the same live connection that will carry the
-  prompt.
+The live attestation reviewed for this integration measures a base compose
+environment containing a privileged compose manager. That manager has access
+to the Docker socket, host PID namespace, `SYS_ADMIN`, and `SYS_PTRACE`, and its
+event log shows model and proxy services being selected and replaced after the
+measured base environment starts. Pinning the base compose hash therefore does
+not pin the code that receives a prompt. The reviewed upstream verifier checks
+the quote and bindings, but does not enforce a SkyTwin-owned policy over the
+compose-manager attestation, action history, model image, and proxy image.
 
-The client snapshots transport and channel method capabilities before any later
-asynchronous boundary. Every catalog, channel-open, send, signature,
-verification, and close stage has a bounded deadline and receives an abort
-signal. Fixed catalog, string, request, response, signature, and attestation
-proof limits are passed to the transport and independently enforced at the
-client boundary. A production transport must apply those limits while reading
-from the network, before allocating an unbounded response body.
+Accordingly:
 
-After inference, the same channel retrieves `GET /v1/signature/{chat_id}`. The
-verifier must normalize the response by binding model/chat identity, signature
-scheme, signed-text format, and provenance to authenticated channel and route
-facts. It must authenticate provenance (`provider_tee`, not `gateway`) before
-the prompt is sent and must never infer it from caller input or stamp a trusted
-default. The normalized record must match the attested channel. The verifier
-receives immutable snapshots of the exact request and response bytes and checks
-the current proxy's domain-separated
-`model:SHA256(request):SHA256(response)` signed text using EIP-191 or Ed25519
-without parsing and reserializing JSON. Failed verification returns no response
-content and never falls back to a conventional cloud provider.
+- Settings shows NEAR AI as **verification pending** and does not let a user
+  add it to the verified-private chain;
+- API and database compatibility gates reject new or stored NEAR AI chains;
+- the staged provider code cannot be reached through
+  `verified_private_cloud`; and
+- SkyTwin makes no current confidential-inference claim for NEAR AI.
 
-The ordinary OpenAI-compatible adapter uses platform `fetch`, which cannot
-expose the live peer certificate or prove that preflight attestation and the
-inference POST share one connection. Enabling NEAR therefore requires a
-packaged, independently reviewed transport backed by a pinned verifier.
-Upstream verifier issue
-[#33](https://github.com/nearai/nearai-cloud-verifier/issues/33) also tracks
-cases where direct signature lookup can reach a route without the completion's
-cached record, so the production adapter must demonstrate stable
-completion-to-signature routing. Until those prerequisites exist,
-`UnavailableConfidentialTransport` fails before transmitting prompts.
+Admission requires a reviewed, stable policy that binds the live
+compose-manager evidence and event log to exact approved model/proxy images and
+rejects later mutations. Until then, trusting provider documentation or a valid
+base-CVM quote is not a substitute for verifying the inference workload.
 
 Provider materials:
 
@@ -130,7 +150,9 @@ Provider materials:
 | --- | --- |
 | **On this device — managed artifact verified** | A digest-verified managed artifact and compatible runtime were admitted for a local-only call. |
 | **On this device — user-managed model** | A configured local model was admitted only to the local boundary; SkyTwin does not claim artifact verification for it. |
-| **Unavailable — no prompt sent** | A requested local or confidential boundary could not be verified. No remote fallback is attempted. |
+| **Verified private cloud — TrustedRouter** | The exact call passed same-session gateway attestation and exact-byte confidential-route receipt verification before content was released. |
+| **Verified private cloud — NEAR AI** | Not emitted in this build. NEAR AI remains unavailable until SkyTwin can pin and verify the dynamically selected inference workload. |
+| **Unavailable — no prompt sent** | A requested local or confidential boundary could not be admitted before transmission. No remote fallback is attempted. A post-transmission receipt failure also returns no content. |
 | **My configured provider** | A separately selected conventional provider may receive prompts under its own terms. This is not confidential inference. |
 
 This document describes runtime admission boundaries. It does not change the

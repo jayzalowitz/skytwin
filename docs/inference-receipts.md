@@ -2,8 +2,9 @@
 
 SkyTwin's version-1 inference receipt is a signed, structured record linked to
 one decision and its `ExplanationRecord`. It identifies the reasoning path,
-provider, model, endpoint, hashes of the canonical logical request and
-provider-neutral response bytes,
+provider, model, endpoint, and hashes. Local and conventional receipts hash a
+canonical logical request plus provider-neutral response bytes; verified
+confidential receipts hash the exact provider HTTP request and response bodies,
 cost basis, and verification or fallback outcome. It has no dedicated fields
 for prompts, responses, credentials, chain-of-thought, or complete attestation
 documents. Several identifier and reason fields are free-form strings, however,
@@ -28,10 +29,14 @@ must never be inferred as a privacy outcome.
 
 On-device and conventional calls are classified from their configured runtime
 mode. Hosted costs remain `unknown` until provider usage or billing identifiers
-are available; local runtime cost is exactly zero. The decision-event path does
-not configure a confidential verifier, so it cannot emit or display a trusted
-`verified_confidential` result. That result requires caller-pinned recorder and
-provider roots plus a provider-specific attestation verifier.
+are available; local runtime cost is exactly zero. A user-configured
+TrustedRouter call can produce `verified_confidential` only after the pinned
+adapter verifies its same-session gateway attestation and exact-byte receipt.
+NEAR AI cannot produce that status in this build: its base-CVM evidence does
+not pin the dynamically selected model/proxy workload, so provider admission
+fails closed. Because TrustedRouter's dynamic route pricing is not yet
+persisted with freshness metadata, the hard-spend gate excludes it from
+unattended calls.
 
 For a stable recorder identity, configure `SKYTWIN_RECEIPT_KEY_ID`,
 `SKYTWIN_RECEIPT_PRIVATE_KEY_BASE64`, and
@@ -42,10 +47,18 @@ stable across restarts and must not be presented as release-pinned.
 
 ## Independent verification
 
-An export bundle contains the canonical signed receipt plus the canonical
-logical request, response, and (for confidential verification) minimum evidence
-bytes. These are provider-neutral application-boundary values, not HTTP
-payloads, headers, raw response bodies, or transport transcripts. The product
+An export bundle contains the canonical signed receipt plus its captured
+request, response, and (for confidential verification) minimum evidence bytes.
+Verified-confidential bundles contain exact HTTP body bytes; other modes contain
+provider-neutral application-boundary values. Headers and full transport
+transcripts are not included. When the provider signs a JWS rather than the raw
+response body, the receipt records the verified JWS signing input; the generic
+verifier parses its signed claims and requires them to bind the exported
+request hash, response hash, and selected model before evaluating
+caller-supplied provider and attestation trust roots. For the staged NEAR AI
+format, the receipt records the verified
+`model:request_sha256:response_sha256` payload and the generic verifier checks
+that tuple against the exported bytes before evaluating trust roots. The product
 does not export this bundle in this slice: the receipt GET route cannot be used
 as verifier input. Integrators and developers can construct a bundle against
 the versioned library contract and run the verifier from a built source checkout
@@ -117,10 +130,11 @@ ordinal remain accepted and derive it from array order; duplicate receipt IDs
 are rejected before database writes. Because an embedded key is not an identity
 trust root, restored rows are marked `imported_unverified`. This slice has no
 trust-aware promotion workflow, so they remain untrusted after restore.
-Canonical logical input/output and verification-evidence bytes live in
-transient request memory while an uninterrupted route validates and inserts
-receipt metadata, and may remain until JavaScript references are released and
-garbage collection runs. They are never written to the receipt or ingest-guard
+Canonical logical input/output bytes for local and conventional calls, exact
+provider HTTP body bytes plus verification evidence for verified-confidential
+calls, live in transient request memory while an uninterrupted route validates
+and inserts receipt metadata, and may remain until JavaScript references are
+released and garbage collection runs. They are never written to the receipt or ingest-guard
 tables, which is why an interrupted pre-finalization attempt cannot be safely
 completed by retry today.
 Standalone verification bundles are more sensitive because they contain the
