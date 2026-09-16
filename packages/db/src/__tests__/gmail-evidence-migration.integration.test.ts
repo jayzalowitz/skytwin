@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 const cockroachAvailable = spawnSync('cockroach', ['version'], { encoding: 'utf8' }).status === 0;
 
-describe.runIf(cockroachAvailable)('082 Gmail evidence upgrade on CockroachDB', () => {
+describe.runIf(cockroachAvailable)('088 Gmail evidence upgrade on CockroachDB', () => {
   it('upgrades the pre-082 shape, preserves selected cursors, and installs exact revisions', () => {
     const migration = readFileSync(
       new URL('../migrations/088-gmail-evidence-foundation.sql', import.meta.url),
@@ -67,6 +67,12 @@ describe.runIf(cockroachAvailable)('082 Gmail evidence upgrade on CockroachDB', 
         ('00000000-0000-4000-8000-000000000003', 'outlook_calendar', 'delta_link', 'outlook-calendar-cursor', now());
     `;
     const verify = `
+      INSERT INTO connector_cursors (
+        user_id, provider, cursor_kind, cursor_value, connector_account_id
+      ) VALUES (
+        '00000000-0000-4000-8000-000000000001', 'gmail', 'history_id',
+        'second-account-cursor', '10000000-0000-4000-8000-000000000001'
+      );
       SELECT
         (SELECT connector_account_id FROM connector_cursors WHERE cursor_value = 'multi-cursor')
           = '10000000-0000-4000-8000-000000000002'::UUID AS multi_cursor_preserved,
@@ -93,7 +99,15 @@ describe.runIf(cockroachAvailable)('082 Gmail evidence upgrade on CockroachDB', 
         EXISTS (
           SELECT 1 FROM [SHOW COLUMNS FROM gmail_message_refs]
           WHERE column_name = 'last_observed_inbox' AND is_nullable = false
-        ) AS inbox_not_null;
+        ) AS inbox_not_null,
+        (SELECT count(*) FROM connector_cursors
+          WHERE user_id = '00000000-0000-4000-8000-000000000001'
+            AND provider = 'gmail' AND cursor_kind = 'history_id') = 2
+          AS multi_account_cursors,
+        NOT EXISTS (
+          SELECT 1 FROM [SHOW CONSTRAINTS FROM connector_cursors]
+          WHERE constraint_name = 'connector_cursors_user_id_provider_cursor_kind_key'
+        ) AS legacy_global_key_removed;
     `;
     const result = spawnSync(
       'cockroach',
@@ -114,6 +128,6 @@ describe.runIf(cockroachAvailable)('082 Gmail evidence upgrade on CockroachDB', 
     );
 
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('t,t,t,t,t,t,t,t,t,t');
+    expect(result.stdout).toContain('t,t,t,t,t,t,t,t,t,t,t,t');
   }, 30_000);
 });

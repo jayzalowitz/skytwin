@@ -4,6 +4,26 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **CockroachDB account-binding migrations now fail closed on drift and
+  interruption.** Migrations 088 and 094 verify the exact catalog shape of
+  every security-critical identity, owner, cursor, and Gmail evidence
+  constraint after creation. The migration runner restores
+  `connector_cursors.schema_locked` if an authorized run fails inside the
+  narrow schema-change window, and migration 088 removes CockroachDB's
+  preserved legacy global cursor key so separate Gmail accounts can each own
+  a `history_id` cursor.
+
+- **Clean installs seed only account-bound synthetic OAuth grants.** Both demo
+  seed paths now create an explicit unverified synthetic connected account and
+  bind the token row through `connector_account_id`; clean install and rerun
+  seeding no longer violate the migration 088 non-null ownership boundary.
+
+- **An in-flight connector refresh can no longer reintroduce plaintext after
+  vault initialization.** Account-qualified token refresh now repeats the
+  vault-existence fence inside its compare-and-swap update, matching the
+  single-account path and preventing a late refresh write across the vault
+  activation boundary.
+
 - **Generic approval preflight exits now persist an explanation before they
   return.** Current-policy denial, a current pause, and a newly required dual
   confirmation are recorded atomically against the still-pending,

@@ -41,6 +41,15 @@ describe('Gmail evidence schema', () => {
     expect(migration).toContain('last_observed_inbox BOOL NOT NULL');
     expect(migration).toContain('gmail_message_refs_thread_id_chk');
     expect(migration).toContain('signals_source_signal_id_chk');
+    for (const exactShapeCheck of [
+      'migration_088_connected_account_identity_preflight',
+      'migration_088_oauth_account_binding_preflight',
+      'migration_088_cursor_account_binding_preflight',
+      'migration_088_gmail_resource_binding_preflight',
+      'migration_088_signal_resource_binding_preflight',
+    ]) {
+      expect(migration).toContain(exactShapeCheck);
+    }
   });
 
   it('makes the deliberate legacy reconnect pause observable', () => {

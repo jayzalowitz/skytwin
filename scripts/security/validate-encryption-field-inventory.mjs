@@ -36,13 +36,13 @@ const EXPECTED_SOURCES = [
 const EXPECTED_MIGRATION_RUNNER = "packages/db/src/migrations/001-initial.ts";
 const MIGRATION_RUNNER_PATH = join(REPO_ROOT, EXPECTED_MIGRATION_RUNNER);
 const EXPECTED_MIGRATION_RUNNER_SHA256 =
-  "78be83cc8197f4a07fc7e1498996bf33ce56ebefa81357430a8b7443f9f2764f";
+  "ca0f74a4fda4ccca4911b71c9a67a4b9dee39e5d22970be8f1b4200e1c015076";
 const EXPECTED_SCHEMA_CORPUS_SHA256 =
-  "94d5ba285c13f4e13399dd67cf9471d4ddf5a703a7c06fb88f9820a6283e109f";
+  "f03eab9098df4c1f40ef52133bc4243f41e17c5e7e2f97db9a5a056ca491a091";
 const EXPECTED_WARNING =
   "This inventory records current exposure and the proposed target boundary. It is not evidence that target encryption is implemented or accepted.";
 const EXPECTED_SEMANTIC_BASELINE_SHA256 =
-  "c25cc349495eef7d2d4e1509fb8e590b1ee0873ac7c7c0a1236d14af5dc96dea";
+  "81f0d3f24373afb873918f23e280a9bc473f6b18b634c7162aa579a52dc38f50";
 
 const OWNER_KINDS = new Set([
   "user",
@@ -592,6 +592,7 @@ export function migrationRunnerContractErrors(source) {
   if (applyMigrations?.body && clientName) {
     let schemaQueryCalls = 0;
     let statementQueryCalls = 0;
+    let cursorRelockGuardCalls = 0;
     let hasUnexpectedQuery = false;
     let hasUnexpectedClientUse = false;
 
@@ -628,6 +629,13 @@ export function migrationRunnerContractErrors(source) {
           node.arguments[0].text === "stmt"
         ) {
           statementQueryCalls += 1;
+        } else if (
+          node.arguments.length === 1 &&
+          ts.isStringLiteral(node.arguments[0]) &&
+          node.arguments[0].text ===
+            "ALTER TABLE IF EXISTS connector_cursors SET (schema_locked = true)"
+        ) {
+          cursorRelockGuardCalls += 1;
         } else {
           hasUnexpectedQuery = true;
         }
@@ -646,11 +654,12 @@ export function migrationRunnerContractErrors(source) {
     if (
       schemaQueryCalls !== 1 ||
       statementQueryCalls !== 1 ||
+      cursorRelockGuardCalls !== 1 ||
       hasUnexpectedQuery ||
       hasUnexpectedClientUse
     ) {
       errors.push(
-        "production migration runner must not execute SQL outside the exact schema and per-statement migration queries",
+        "production migration runner must only execute the exact schema, per-statement migrations, and cursor re-lock guard",
       );
     }
   }
@@ -805,15 +814,25 @@ export function migrationRunnerContractErrors(source) {
     });
     splitsSelectedSql = splitIndex > readIndex && readIndex !== -1;
 
+    function findStatementLoop(node) {
+      if (
+        ts.isForOfStatement(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === "statements" &&
+        ts.isVariableDeclarationList(node.initializer) &&
+        node.initializer.declarations.length === 1 &&
+        ts.isIdentifier(node.initializer.declarations[0].name) &&
+        node.initializer.declarations[0].name.text === "stmt"
+      ) return node;
+      if (ts.isFunctionLike(node)) return undefined;
+      let found;
+      ts.forEachChild(node, (child) => {
+        if (!found) found = findStatementLoop(child);
+      });
+      return found;
+    }
     const statementLoopIndex = statements.findIndex(
-      (statement) =>
-        ts.isForOfStatement(statement) &&
-        ts.isIdentifier(statement.expression) &&
-        statement.expression.text === "statements" &&
-        ts.isVariableDeclarationList(statement.initializer) &&
-        statement.initializer.declarations.length === 1 &&
-        ts.isIdentifier(statement.initializer.declarations[0].name) &&
-        statement.initializer.declarations[0].name.text === "stmt",
+      (statement) => findStatementLoop(statement) !== undefined,
     );
     skipsSelectedFile = statements
       .slice(
@@ -827,10 +846,13 @@ export function migrationRunnerContractErrors(source) {
           ts.isReturnStatement(statement),
       );
 
-    const statementLoop = statements[statementLoopIndex];
+    const statementLoop = statementLoopIndex === -1
+      ? undefined
+      : findStatementLoop(statements[statementLoopIndex]);
     if (
       statementLoopIndex > splitIndex &&
       splitIndex !== -1 &&
+      statementLoop &&
       ts.isForOfStatement(statementLoop)
     ) {
       function findExecution(node, conditionallySkipped = false) {

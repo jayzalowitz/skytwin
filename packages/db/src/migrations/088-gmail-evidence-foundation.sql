@@ -156,6 +156,11 @@ ALTER TABLE connector_cursors ALTER COLUMN id SET NOT NULL;
 ALTER TABLE connector_cursors
   DROP CONSTRAINT IF EXISTS connector_cursors_pkey,
   ADD CONSTRAINT connector_cursors_pkey PRIMARY KEY (id);
+-- CockroachDB preserves the dropped natural primary key as a UNIQUE
+-- constraint. It must be removed explicitly: leaving it in place would still
+-- allow only one (user, provider, kind) cursor and silently defeat the new
+-- per-account Gmail topology.
+DROP INDEX IF EXISTS connector_cursors@connector_cursors_user_id_provider_cursor_kind_key;
 
 CREATE UNIQUE INDEX IF NOT EXISTS connector_cursors_legacy_key
   ON connector_cursors (user_id, provider, cursor_kind)
@@ -223,3 +228,183 @@ ALTER TABLE signals
   ADD CONSTRAINT signals_gmail_resource_owner_fk
   FOREIGN KEY (resource_ref_id, user_id, connector_account_id)
   REFERENCES gmail_message_refs (id, user_id, connector_account_id) ON DELETE CASCADE;
+
+-- The migration runner deliberately absorbs duplicate-object/name errors so
+-- old migrations remain restart-safe. That must not let a malformed namesake
+-- satisfy an identity or ownership boundary. Verify every security-critical
+-- object by its canonical CockroachDB shape after creation/backfill.
+SELECT 1 / 0 AS migration_088_connected_account_identity_preflight
+WHERE NOT (
+  EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connected_accounts]
+     WHERE constraint_name = 'connected_accounts_verified_subject_chk'
+       AND constraint_type = 'CHECK'
+       AND details =
+         'CHECK (((identity_verified = false) OR ((provider_subject_digest IS NOT NULL) AND (provider_subject_digest ~ ''^[0-9a-f]{64}$''::STRING))))'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connected_accounts]
+     WHERE constraint_name = 'connected_accounts_subject_key'
+       AND constraint_type = 'UNIQUE'
+       AND details =
+         'UNIQUE (user_id ASC, provider ASC, provider_subject_digest ASC) WHERE (provider_subject_digest IS NOT NULL)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connected_accounts]
+     WHERE constraint_name = 'connected_accounts_id_user_provider_key'
+       AND constraint_type = 'UNIQUE'
+       AND details = 'UNIQUE (id ASC, user_id ASC, provider ASC)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connected_accounts]
+     WHERE constraint_name = 'connected_accounts_id_user_key'
+       AND constraint_type = 'UNIQUE'
+       AND details = 'UNIQUE (id ASC, user_id ASC)'
+       AND validated = true
+  )
+);
+
+SELECT 1 / 0 AS migration_088_oauth_account_binding_preflight
+WHERE NOT (
+  EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM oauth_tokens]
+     WHERE constraint_name = 'oauth_tokens_connector_account_key'
+       AND constraint_type = 'UNIQUE'
+       AND details =
+         'UNIQUE (connector_account_id ASC) WHERE (connector_account_id IS NOT NULL)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM oauth_tokens]
+     WHERE constraint_name = 'oauth_tokens_connector_account_fk'
+       AND constraint_type = 'FOREIGN KEY'
+       AND details =
+         'FOREIGN KEY (connector_account_id, user_id, provider) REFERENCES connected_accounts(id, user_id, provider) ON DELETE CASCADE'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW COLUMNS FROM oauth_tokens]
+     WHERE column_name = 'connector_account_id' AND is_nullable = false
+  )
+);
+
+SELECT 1 / 0 AS migration_088_cursor_account_binding_preflight
+WHERE NOT (
+  EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connector_cursors]
+     WHERE constraint_name = 'connector_cursors_pkey'
+       AND constraint_type = 'PRIMARY KEY'
+       AND details = 'PRIMARY KEY (id ASC)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connector_cursors]
+     WHERE constraint_name = 'connector_cursors_legacy_key'
+       AND constraint_type = 'UNIQUE'
+       AND details =
+         'UNIQUE (user_id ASC, provider ASC, cursor_kind ASC) WHERE (connector_account_id IS NULL)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connector_cursors]
+     WHERE constraint_name = 'connector_cursors_account_kind_key'
+       AND constraint_type = 'UNIQUE'
+       AND details =
+         'UNIQUE (connector_account_id ASC, provider ASC, cursor_kind ASC) WHERE (connector_account_id IS NOT NULL)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connector_cursors]
+     WHERE constraint_name = 'connector_cursors_id_user_provider_key'
+       AND constraint_type = 'UNIQUE'
+       AND details = 'UNIQUE (id ASC, user_id ASC, provider ASC)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connector_cursors]
+     WHERE constraint_name = 'connector_cursors_account_fk'
+       AND constraint_type = 'FOREIGN KEY'
+       AND details =
+         'FOREIGN KEY (connector_account_id, user_id) REFERENCES connected_accounts(id, user_id) ON DELETE CASCADE'
+       AND validated = true
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM connector_cursors]
+     WHERE constraint_name = 'connector_cursors_user_id_provider_cursor_kind_key'
+  )
+);
+
+SELECT 1 / 0 AS migration_088_gmail_resource_binding_preflight
+WHERE NOT (
+  EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM gmail_message_refs]
+     WHERE constraint_name = 'gmail_message_refs_account_fk'
+       AND constraint_type = 'FOREIGN KEY'
+       AND details =
+         'FOREIGN KEY (connector_account_id, user_id, provider) REFERENCES connected_accounts(id, user_id, provider) ON DELETE CASCADE'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM gmail_message_refs]
+     WHERE constraint_name = 'gmail_message_refs_provider_chk'
+       AND constraint_type = 'CHECK'
+       AND details = 'CHECK ((provider = ''google''::STRING))'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM gmail_message_refs]
+     WHERE constraint_name = 'gmail_message_refs_connector_account_id_provider_message_id_key'
+       AND constraint_type = 'UNIQUE'
+       AND details = 'UNIQUE (connector_account_id ASC, provider_message_id ASC)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM gmail_message_refs]
+     WHERE constraint_name = 'gmail_message_refs_connector_account_id_source_signal_id_key'
+       AND constraint_type = 'UNIQUE'
+       AND details = 'UNIQUE (connector_account_id ASC, source_signal_id ASC)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM gmail_message_refs]
+     WHERE constraint_name = 'gmail_message_refs_id_user_id_connector_account_id_key'
+       AND constraint_type = 'UNIQUE'
+       AND details = 'UNIQUE (id ASC, user_id ASC, connector_account_id ASC)'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW COLUMNS FROM gmail_message_refs]
+     WHERE column_name = 'last_observed_inbox' AND is_nullable = false
+  )
+);
+
+SELECT 1 / 0 AS migration_088_signal_resource_binding_preflight
+WHERE NOT (
+  EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM signals]
+     WHERE constraint_name = 'signals_source_signal_id_chk'
+       AND constraint_type = 'CHECK'
+       AND details =
+         'CHECK (((source_signal_id IS NULL) OR (length(source_signal_id) BETWEEN 1 AND 2048)))'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM signals]
+     WHERE constraint_name = 'signals_owned_source_key'
+       AND constraint_type = 'UNIQUE'
+       AND details =
+         'UNIQUE (user_id ASC, source ASC, connector_account_id ASC, source_signal_id ASC) WHERE ((source_signal_id IS NOT NULL) AND (connector_account_id IS NOT NULL))'
+       AND validated = true
+  )
+  AND EXISTS (
+    SELECT 1 FROM [SHOW CONSTRAINTS FROM signals]
+     WHERE constraint_name = 'signals_gmail_resource_owner_fk'
+       AND constraint_type = 'FOREIGN KEY'
+       AND details =
+         'FOREIGN KEY (resource_ref_id, user_id, connector_account_id) REFERENCES gmail_message_refs(id, user_id, connector_account_id) ON DELETE CASCADE'
+       AND validated = true
+  )
+);

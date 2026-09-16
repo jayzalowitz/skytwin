@@ -387,7 +387,7 @@ test("schema reconstruction is bound to the production migration runner order", 
   );
 
   const unexpectedQueryError =
-    "production migration runner must not execute SQL outside the exact schema and per-statement migration queries";
+    "production migration runner must only execute the exact schema, per-statement migrations, and cursor re-lock guard";
   for (const mutatedRunner of [
     runner.replace(
       "const schema = readFileSync(SCHEMA_PATH, 'utf-8');",

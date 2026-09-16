@@ -818,18 +818,43 @@ async function seed(): Promise<void> {
     // NULL — nothing here can actually call Google (db-token-store returns "no
     // usable token" for a NULL row), it only represents the connection so the
     // digest, coverage panel, and "connected" chrome reflect a real user.
+    const sampleGoogleAccount = await client.query<{ id: string }>(
+      `INSERT INTO connected_accounts
+         (id, user_id, provider, account_id, scopes, is_active, connected_at,
+          account_display, identity_verified, updated_at)
+       VALUES
+         ('ac000001-0000-4000-8000-000000000002', $1, 'google',
+          'sample:google:alex',
+          ARRAY['https://www.googleapis.com/auth/gmail.modify','https://www.googleapis.com/auth/calendar'],
+          true, now(), 'alex@example.com', false, now())
+       ON CONFLICT (user_id, provider, account_id) DO UPDATE SET
+         scopes = EXCLUDED.scopes,
+         is_active = true,
+         disconnected_at = NULL,
+         account_display = EXCLUDED.account_display,
+         updated_at = now()
+       RETURNING id`,
+      [userId],
+    );
+    const sampleGoogleAccountId = sampleGoogleAccount.rows[0]?.id;
+    if (!sampleGoogleAccountId) {
+      throw new Error('Sample Google connector account could not be created.');
+    }
+
     await client.query(
       `INSERT INTO oauth_tokens
-         (id, user_id, provider, account_email, scopes, expires_at, encryption_key_version, created_at, updated_at)
+         (id, user_id, provider, account_email, scopes, expires_at,
+          encryption_key_version, connector_account_id, created_at, updated_at)
        VALUES
          ('ac000001-0000-4000-8000-000000000001', $1, 'google', 'alex@example.com',
           ARRAY['https://www.googleapis.com/auth/gmail.modify','https://www.googleapis.com/auth/calendar'],
-          now() + INTERVAL '30 days', 1, now(), now())
+          now() + INTERVAL '30 days', 1, $2, now(), now())
        ON CONFLICT (user_id, provider, account_email) DO UPDATE SET
          scopes = EXCLUDED.scopes,
          expires_at = EXCLUDED.expires_at,
+         connector_account_id = EXCLUDED.connector_account_id,
          updated_at = now()`,
-      [userId],
+      [userId, sampleGoogleAccountId],
     );
     console.log('[seed] Marked the sample profile as Gmail + Calendar connected (synthetic, NULL tokens).');
 

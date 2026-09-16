@@ -91,6 +91,42 @@ describe('owned desktop migration connection', () => {
     expect(String(target.query.mock.calls[0]?.[0])).toContain('CREATE TABLE IF NOT EXISTS users');
     expect(target.end).toHaveBeenCalledOnce();
   });
+
+  it('re-locks connector_cursors when migration 088 fails inside an unlock window', async () => {
+    const admin = fakeMigrationClient();
+    const target = fakeMigrationClient();
+    const failure = Object.assign(new Error('injected cursor DDL failure'), { code: 'XX000' });
+    target.query.mockImplementation(async (sql: string) => {
+      if (sql.includes('ALTER TABLE connector_cursors ALTER COLUMN id SET NOT NULL')) {
+        throw failure;
+      }
+      return { rows: [], rowCount: 0 };
+    });
+    const createClient = vi.fn()
+      .mockReturnValueOnce(admin)
+      .mockReturnValueOnce(target);
+
+    await expect(upOwned({
+      connectionString: 'postgresql://root@127.0.0.1:26257/skytwin?sslmode=disable',
+      authorize: () => true,
+      createClient,
+    })).rejects.toBe(failure);
+
+    const writes = target.query.mock.calls.map(([sql]) => String(sql));
+    const unlock = writes.lastIndexOf(
+      'ALTER TABLE connector_cursors SET (schema_locked = false)',
+    );
+    const failed = writes.findIndex((sql) =>
+      sql.includes('ALTER TABLE connector_cursors ALTER COLUMN id SET NOT NULL'));
+    const cleanup = writes.lastIndexOf(
+      'ALTER TABLE IF EXISTS connector_cursors SET (schema_locked = true)',
+    );
+    expect(unlock).toBeGreaterThan(-1);
+    expect(failed).toBeGreaterThan(unlock);
+    expect(cleanup).toBeGreaterThan(failed);
+    expect(target.end).toHaveBeenCalledOnce();
+  });
+
 });
 
 describe('SkyTwin-owned table manifest', () => {

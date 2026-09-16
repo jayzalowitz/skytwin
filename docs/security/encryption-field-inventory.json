@@ -839,7 +839,7 @@
       "table": "connected_accounts",
       "owner": "user",
       "boundary": {
-        "current": "repository_sql",
+        "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
           "packages/db/src/repositories/connected-account-repository.ts",
@@ -851,8 +851,10 @@
           "packages/db/src/repositories/gmail-message-ref-repository.ts",
           "packages/db/src/repositories/oauth-repository.ts",
           "packages/db/src/repositories/signal-repository.ts",
-          "packages/db/src/repositories/user-purge-repository.ts",
-          "packages/db/src/repositories/user-repository.ts"
+        "packages/db/src/repositories/user-purge-repository.ts",
+        "packages/db/src/repositories/user-repository.ts",
+        "packages/db/src/seeds/demo-showcase.ts",
+        "packages/db/src/seeds/seed.ts"
         ]
       },
       "groups": [
