@@ -124,6 +124,29 @@ describe('GbrainMemoryPort', () => {
       });
     });
 
+    it('drops malformed optional metadata from current gbrain output', async () => {
+      mockIsInstalled.mockReturnValue(true);
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify([
+          {
+            slug: 'projects/skytwin',
+            score: 0.95,
+            chunk_text: 'result text',
+            source_id: 'main',
+            metadata: 'not-an-object',
+            page_id: Number.POSITIVE_INFINITY,
+            chunk_id: 'wrong-type',
+            stale: 'false',
+          },
+        ]),
+      );
+
+      const port = new GbrainMemoryPort();
+      const result = await port.searchSemantic('query', 10);
+
+      expect(result[0]?.metadata).toEqual({ source_id: 'main' });
+    });
+
     it('retains compatibility with the legacy gbrain hit shape', async () => {
       mockIsInstalled.mockReturnValue(true);
       const hits: SemanticHit[] = [

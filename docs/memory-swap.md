@@ -246,7 +246,9 @@ The script (`packages/memory-gbrain-crdb-adapter/scripts/run-crdb-integration.sh
    for this explicitly insecure, disposable test node and runs the image's own
    SQL client, so no host `psql` installation is required.
 2. Creates a `skytwin_test` database + a minimal `users` table for the FK.
-3. Applies the current brain schema chain (`040`, `043`, `044`, and `052`).
+3. Applies the brain-specific migration chain that can run in isolation (`040`,
+   `043`, `044`, and `052`). The repository's full migration/rollback CI lane
+   separately exercises the complete application schema.
 4. Seeds one test user.
 5. Runs the integration suite with `RUN_DB_TESTS=1` and the right `DATABASE_*`
    env vars.
@@ -280,10 +282,12 @@ Issue #197 originally targeted the upstream `gbrain` CLI. SkyTwin's default
 `EmbeddedGbrainMemoryPort` is a CRDB-native, gbrain-compatible implementation,
 not a vendored copy of the upstream runtime. We keep that boundary because:
 
-1. **No second Postgres.** Upstream gbrain defaults to PGLite or Supabase.
-   Running PGLite alongside CRDB means two databases per install — a
-   nontrivial operational burden. The CRDB adapter (in this repo) lets
-   gbrain run against the database SkyTwin already has.
+1. **No second Postgres.** Upstream gbrain defaults to PGLite and supports
+   Postgres + pgvector for shared deployments. Its Postgres schema depends on
+   extensions and behavior CRDB does not provide, including pgvector/HNSW,
+   PL/pgSQL triggers, and Postgres RLS. Running either engine alongside CRDB
+   means two databases per install — a nontrivial operational burden. The CRDB
+   adapter (in this repo) keeps memory in the database SkyTwin already has.
 2. **No second runtime or install step.** Upstream gbrain v0.50.5.0 requires
    Bun and is installed from GitHub; its maintainers explicitly warn that the
    npm package named `gbrain` is unrelated. SkyTwin's default remains Node-only.

@@ -234,6 +234,10 @@ interface CurrentGbrainHit {
   metadata?: Record<string, unknown>;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
 function normalizeGbrainHit(value: unknown): SemanticHit | null {
   if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
@@ -263,19 +267,18 @@ function normalizeGbrainHit(value: unknown): SemanticHit | null {
   }
 
   const hit = v as unknown as CurrentGbrainHit;
-  const metadata: Record<string, unknown> = { ...(hit.metadata ?? {}) };
-  for (const key of [
-    'source_id',
-    'title',
-    'type',
-    'page_id',
-    'chunk_id',
-    'chunk_index',
-    'stale',
-  ] as const) {
-    const item = hit[key];
-    if (item !== undefined) metadata[key] = item;
+  const metadata: Record<string, unknown> = isRecord(v['metadata'])
+    ? { ...v['metadata'] }
+    : {};
+  for (const key of ['source_id', 'title', 'type'] as const) {
+    const item = v[key];
+    if (typeof item === 'string') metadata[key] = item;
   }
+  for (const key of ['page_id', 'chunk_id', 'chunk_index'] as const) {
+    const item = v[key];
+    if (typeof item === 'number' && Number.isFinite(item)) metadata[key] = item;
+  }
+  if (typeof v['stale'] === 'boolean') metadata['stale'] = v['stale'];
   return {
     id: hit.slug,
     score: hit.score,
