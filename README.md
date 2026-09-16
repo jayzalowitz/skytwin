@@ -77,58 +77,6 @@ Microsoft account connections are unavailable.
 
 Supported decision paths can persist explanation and feedback records. Release-wide coverage is still being audited before the public beta.
 
-## Screenshots
-
-The historical captures under `docs/screenshots/` are retained for audit
-provenance only. They are prohibited release assets and are intentionally not
-linked or embedded here; do not use them in launch, release, or marketing
-materials. A replacement capture must be freshly recorded and re-audited
-before it can be published. See the [`beta-claim-ledger.json`](./docs/beta-claim-ledger.json)
-asset dispositions.
-
-<table>
-<tr>
-<td width="50%">
-<p align="center"><strong>Onboarding</strong></p>
-<p>Historical capture withheld pending replacement after the public-copy audit.</p>
-</td>
-<td width="50%">
-<p align="center"><strong>Dashboard</strong></p>
-<p>Historical capture withheld pending replacement after the public-copy audit.</p>
-</td>
-</tr>
-<tr>
-<td width="50%">
-<p align="center"><strong>Approvals</strong></p>
-<p>Historical capture withheld pending replacement after the public-copy audit.</p>
-</td>
-<td width="50%">
-<p align="center"><strong>Decision History</strong></p>
-<p>Historical capture withheld pending replacement after the public-copy audit.</p>
-</td>
-</tr>
-<tr>
-<td width="50%">
-<p align="center"><strong>Setup &amp; Credentials</strong></p>
-<p>Historical capture withheld pending replacement after the public-copy audit.</p>
-</td>
-<td width="50%">
-<p align="center"><strong>Settings — fresh capture pending</strong></p>
-<p>The current source adds an explicit saved reasoning-location boundary and accurate local-storage and remote-processing disclosures. The older full-page image was removed because it predates those controls.</p>
-</td>
-</tr>
-<tr>
-<td width="50%">
-<p align="center"><strong>My Learnings</strong></p>
-<p>Historical capture withheld pending replacement after the public-copy audit.</p>
-</td>
-<td width="50%">
-<p align="center"><strong>Daily Briefing</strong></p>
-<p>Historical capture withheld pending replacement after the public-copy audit.</p>
-</td>
-</tr>
-</table>
-
 ## Illustrative Decision Scenarios
 
 These examples explain the intended judgment model; they are not a list of
