@@ -714,12 +714,10 @@ jobs:
       - name: Prebuild Android project
         run: npx expo prebuild --platform android --no-install
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Install native dependencies
         run: pnpm install --frozen-lockfile
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Build Android APK
         run: |
@@ -727,7 +725,6 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Upload Android APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -735,7 +732,7 @@ jobs:
         with:
           name: SkyTwin-Android-apk
           path: apps/mobile/android/app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
 
   # ──────────────────────────────────────────────
   # Mobile — iOS (unsigned .app for simulator / TestFlight prep)
@@ -778,19 +775,16 @@ jobs:
       - name: Prebuild iOS project
         run: npx expo prebuild --platform ios --no-install
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Install native dependencies
         run: pnpm install --frozen-lockfile
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Install CocoaPods
         run: |
           cd ios
           pod install
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Build iOS simulator app
         run: |
@@ -803,14 +797,12 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             | xcpretty
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Package iOS simulator build
         run: |
           cd build/Build/Products/Release-iphonesimulator
           zip -r ../../../../SkyTwin-iOS-simulator.zip SkyTwin.app
         working-directory: apps/mobile
-        continue-on-error: true
 
       - name: Upload iOS simulator build
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -818,7 +810,7 @@ jobs:
         with:
           name: SkyTwin-iOS-simulator
           path: apps/mobile/SkyTwin-iOS-simulator.zip
-          if-no-files-found: warn
+          if-no-files-found: error
 
   # Missing machine-verifier implementations fail closed here instead of
   # allowing a hand-authored passing report into the release artifact graph.
