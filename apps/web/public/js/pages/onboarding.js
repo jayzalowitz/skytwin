@@ -92,6 +92,10 @@ function isCurrentWizardRun(runGeneration) {
   return runGeneration === _wizardRunGeneration;
 }
 
+export function invalidateOnboardingRun() {
+  _wizardRunGeneration += 1;
+}
+
 // The three real entry paths users can take from the welcome screen. We
 // stash the chosen path on _wizardState.firstRunChoice so every
 // finishWizard/postOnboardingComplete site below can record the correct
@@ -372,6 +376,7 @@ function hideWizardError() {
 // ── Welcome ──────────────────────────────────────────────────────────────────
 
 function renderWelcome() {
+  const runGeneration = _wizardRunGeneration;
   const generation = renderContent(`
     <button class="onb-close-x" data-action="onb-dismiss-modal" type="button"
             aria-label="Dismiss onboarding">×</button>
@@ -447,6 +452,7 @@ function renderWelcome() {
   // ready. Best-effort: if the probe fails, keep the generic checking line.
   const modelCheck = fetchLocalModelRecommendation()
     .then((rec) => {
+      if (!isCurrentWizardRun(runGeneration)) return;
       const el = document.getElementById('onb-ai-text');
       if (!el) return;
       if (rec?.model) {
@@ -470,6 +476,7 @@ function renderWelcome() {
   // helpful "not loaded" message so the user knows the button exists
   // and what to do about it (#363 Fix 1).
   const updateTourButton = (available) => {
+    if (!isCurrentWizardRun(runGeneration)) return;
     const btn = document.getElementById('onb-tour-button');
     const sub = document.getElementById('onb-tour-subtext');
     if (!btn || !sub) return;
@@ -576,6 +583,7 @@ function renderComputerChoice() {
 // ── Idle-miner KPI poll (stretch goal D) ─────────────────────────────────────
 
 async function renderIdleMinerPoll() {
+  const runGeneration = _wizardRunGeneration;
   const generation = renderContent(`
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
     <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
@@ -614,9 +622,11 @@ async function renderIdleMinerPoll() {
 
   for (let i = 0; i < MAX_POLLS; i++) {
     await new Promise((r) => setTimeout(r, INTERVAL_MS));
+    if (!isCurrentWizardRun(runGeneration)) return;
 
     try {
       const data = await fetchJSON(`/api/capabilities/suggestions?userId=${encodeURIComponent(userId)}`);
+      if (!isCurrentWizardRun(runGeneration)) return;
       const suggestions = data.suggestions ?? [];
       if (suggestions.length > 0) {
         const first = suggestions[0];
@@ -698,12 +708,14 @@ function renderAboutMeConversational() {
 }
 
 async function kickConversation() {
+  const runGeneration = _wizardRunGeneration;
   const userId = getCurrentUserId();
   if (!userId || !_wizardState) return;
 
   addChatBubble('assistant', '…');
   try {
     const resp = await postOnboardingDialogue(userId, [], {});
+    if (!isCurrentWizardRun(runGeneration)) return;
     removeTypingBubble();
     if (resp.kind === 'question') {
       addChatBubble('assistant', resp.question);
@@ -713,6 +725,7 @@ async function kickConversation() {
     }
     setWizardBusy(false, 'Your first question is ready.');
   } catch {
+    if (!isCurrentWizardRun(runGeneration)) return;
     removeTypingBubble();
     addChatBubble('assistant', 'What do you do for work?');
     if (_wizardState) {
@@ -723,6 +736,7 @@ async function kickConversation() {
 }
 
 async function handleChatSend(text) {
+  const runGeneration = _wizardRunGeneration;
   if (!_wizardState) return;
   const userId = getCurrentUserId();
   if (!userId) return;
@@ -735,6 +749,7 @@ async function handleChatSend(text) {
 
   try {
     const resp = await postOnboardingDialogue(userId, _wizardState.history, {});
+    if (!isCurrentWizardRun(runGeneration)) return;
     removeTypingBubble();
 
     if (resp.kind === 'question') {
@@ -745,6 +760,7 @@ async function handleChatSend(text) {
     }
     setWizardBusy(false, 'Next question is ready.');
   } catch {
+    if (!isCurrentWizardRun(runGeneration)) return;
     removeTypingBubble();
     addChatBubble('assistant', 'Got it — let me figure out a good setup for you.');
     setWizardBusy(false, 'Continuing with a starter setup.');
@@ -985,6 +1001,7 @@ async function renderRecipePreview() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function loadDependencyGraph(userId, generation = _renderGeneration) {
+  const runGeneration = _wizardRunGeneration;
   const container = document.getElementById('onb-dep-graph');
   if (!container) return;
 
@@ -992,6 +1009,7 @@ async function loadDependencyGraph(userId, generation = _renderGeneration) {
   if (!window.d3) {
     try {
       await loadScript('https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js');
+      if (!isCurrentWizardRun(runGeneration)) return;
     } catch {
       container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Dependency graph unavailable offline.</div>`;
       setWizardBusy(false, 'Capability graph unavailable offline.', generation);
@@ -1002,6 +1020,7 @@ async function loadDependencyGraph(userId, generation = _renderGeneration) {
   let graphData;
   try {
     graphData = await fetchCapabilityDependencyGraph(userId);
+    if (!isCurrentWizardRun(runGeneration)) return;
   } catch {
     container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Could not load graph.</div>`;
     setWizardBusy(false, 'Capability graph could not be loaded.', generation);
@@ -1098,6 +1117,7 @@ function renderD3Graph(container, nodes, edges) {
 // ── Installing ────────────────────────────────────────────────────────────────
 
 async function handleInstallRecipe(slug, btn) {
+  const runGeneration = _wizardRunGeneration;
   if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
   transitionTo('installing');
   setWizardBusy(true, 'Installing your starter capabilities…');
@@ -1106,11 +1126,14 @@ async function handleInstallRecipe(slug, btn) {
 
   try {
     const { jobs } = await installCapabilityRecipe(userId, slug);
+    if (!isCurrentWizardRun(runGeneration)) return;
     const count = jobs?.length ?? 0;
     await postOnboardingComplete(userId, getFirstRunChoice(), slug);
+    if (!isCurrentWizardRun(runGeneration)) return;
     renderInstallComplete(slug, count);
     setWizardBusy(false, 'Installation queued.');
   } catch (err) {
+    if (!isCurrentWizardRun(runGeneration)) return;
     renderContent(`
       <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:block;">
         Install failed: ${escapeHtml(err?.message || 'unknown error')}
@@ -1168,7 +1191,7 @@ async function finishWizard(userId, choice, recipeSlug) {
 }
 
 function hideWizard() {
-  _wizardRunGeneration += 1;
+  invalidateOnboardingRun();
   const overlay = document.getElementById('onboarding-overlay');
   if (overlay) overlay.style.display = 'none';
   // Sample onboarding state is tab-scoped. Only promote the real account's
@@ -1268,6 +1291,7 @@ async function transitionTo(screen) {
  */
 export async function renderOnboarding(container, onComplete) {
   const runGeneration = ++_wizardRunGeneration;
+  window.skyTwinCancelOnboarding = invalidateOnboardingRun;
   ensureWizardListener();
   _onCompleteCallback = onComplete;
 

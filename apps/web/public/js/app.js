@@ -87,6 +87,9 @@ function needsOnboarding() {
  */
 function hideOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
+  if (typeof window.skyTwinCancelOnboarding === 'function') {
+    window.skyTwinCancelOnboarding();
+  }
   if (overlay) overlay.style.display = 'none';
   if (_onboardingEscHandler) {
     document.removeEventListener('keydown', _onboardingEscHandler);

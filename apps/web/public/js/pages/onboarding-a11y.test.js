@@ -19,6 +19,8 @@ describe('onboarding accessibility contract', () => {
     expect(onboarding).toContain('if (!isCurrentWizardRun(runGeneration)) return');
     expect(onboarding).toContain('const runGeneration = ++_wizardRunGeneration');
     expect(onboarding).toContain('_wizardRunGeneration += 1');
+    expect(onboarding).toContain('export function invalidateOnboardingRun()');
+    expect(onboarding).toContain('if (!isCurrentWizardRun(runGeneration)) return;');
     expect(onboarding).toContain('if (generation !== _renderGeneration) return');
     expect(onboarding).toContain("setWizardBusy(true, 'Loading your first question…')");
   });
@@ -49,6 +51,7 @@ describe('onboarding accessibility contract', () => {
     expect(app).toContain("document.addEventListener('keydown', handleOnboardingKeydown)");
     expect(app).toContain("document.removeEventListener('keydown', handleOnboardingKeydown)");
     expect(app).toContain("overlay.style.display === 'none'");
+    expect(app).toContain('window.skyTwinCancelOnboarding()');
     expect(app).toContain("document.activeElement?.getAttribute('tabindex') === '-1'");
   });
 });
