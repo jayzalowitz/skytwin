@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "083-execution-dispatch-ambiguities.sql",
+  "asOfMigration": "084-rollback-admission-ledger.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -701,6 +701,7 @@
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
@@ -1178,6 +1179,7 @@
           "packages/db/src/backup/backup.ts",
           "packages/db/src/repositories/decision-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
@@ -1234,6 +1236,7 @@
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
@@ -1773,6 +1776,7 @@
         "auditedCallsites": [
           "packages/db/src/repositories/credential-dispatch-lease-repository.ts",
           "packages/db/src/repositories/execution-admission-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
@@ -1842,6 +1846,7 @@
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/execution-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
           "packages/db/src/seeds/legacy-decision-cleanup.ts"
@@ -1889,6 +1894,7 @@
           "packages/db/src/repositories/execution-admission-repository.ts",
           "packages/db/src/repositories/explanation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/rollback-admission-repository.ts",
           "packages/db/src/repositories/routine-non-action-repository.ts",
           "packages/db/src/repositories/user-purge-repository.ts",
           "packages/db/src/repositories/user-repository.ts",
@@ -4144,6 +4150,25 @@
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "rollback_admissions",
+      "owner": "user_child",
+      "boundary": {"current": "repository_sql", "target": "ownership_required", "auditedCallsites": ["packages/db/src/repositories/rollback-admission-repository.ts"]},
+      "groups": [
+        {"classification": "locally_exposed_metadata", "columns": ["adapter_name", "candidate_action_id", "created_at", "decision_outcome_id", "execution_result_id", "id", "provider_plan_id", "user_id"], "currentProtection": "Locally readable rollback claim identity, ownership, provider routing metadata, linkage, and timestamp.", "targetProtection": "Remain locally readable for owner-bound admission, uniqueness, terminal reconciliation, and deletion; disclose inference leakage.", "migrationStage": "disclosed-local-metadata", "rationale": "Required to admit exactly one rollback claim for the owned execution graph and route reconciliation to the recorded provider plan."}
+      ],
+      "ownershipNotes": "Child of a user-owned candidate action; repository admission requires an exact user, decision, action, outcome, result, adapter, and provider plan graph."
+    },
+    {
+      "table": "rollback_terminal_ledger",
+      "owner": "user_child",
+      "boundary": {"current": "repository_sql", "target": "ownership_required", "auditedCallsites": ["packages/db/src/repositories/rollback-admission-repository.ts"]},
+      "groups": [
+        {"classification": "locally_exposed_metadata", "columns": ["admission_id", "decision_id", "explanation_id", "status", "terminal_at", "user_id"], "currentProtection": "Locally readable terminal status, ownership, immutable linkage, and timestamp.", "targetProtection": "Remain locally readable for terminal replay, owner checks, uniqueness, and audit joins.", "migrationStage": "disclosed-local-metadata", "rationale": "Required to make repeated terminal replay read-only and preserve one terminal state per admitted rollback."},
+        {"classification": "deferred_source", "columns": ["result"], "currentProtection": "Rollback provider result evidence is plaintext JSONB in CockroachDB today.", "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelope with authenticated row/table/column context.", "migrationStage": "slice-5-remaining-user-content", "rationale": "Provider result evidence may contain source-bearing or user-specific response data and is retained only as the terminal audit result.", "searchableDerivatives": []}
+      ],
+      "ownershipNotes": "Child of an owner-bound rollback admission; terminal explanation and result are retained for audit and replay safety."
     },
     {
       "table": "worker_dead_letter",
