@@ -70,7 +70,7 @@ Once a `DecisionObject` exists, the engine generates `CandidateAction[]` -- the 
 Each situation type has a dedicated candidate generator:
 
 **Email Triage Candidates:**
-- `archive_email` -- archive the email for later review
+- `archive_email` -- propose moving one account-bound message out of the Inbox; this action is quarantined from generic adapter execution
 - `label_email` -- apply appropriate labels based on content analysis
 - `send_reply` -- send a brief acknowledgment reply (only generated when the email requires a response)
 
@@ -400,7 +400,7 @@ Twin Profile:
   - Spend norms: n/a
 
 Candidates:
-  1. archive_email (confidence: CONFIRMED, risk: negligible, reversible: true)
+  1. archive_email (confidence: CONFIRMED, overall risk: moderate, reversible: true)
   2. label_email (confidence: MODERATE, risk: negligible, reversible: true)
 
 Selected: archive_email
@@ -416,6 +416,14 @@ Outcome: Propose archive. Log explanation: "Suggested archiving the newsletter
 from TechCrunch Daily. Based on: user has archived all 47 previous emails from
 this sender. Confirmation is required before the Inbox changes."
 ```
+
+Current source stops at consent. The dedicated approval route records the
+owner-scoped response and returns `execution: null`; the Gmail caller kernel,
+recovery worker, and feedback projection remain intentionally unwired. The
+canonical risk and proposal shape live in
+[`gmail-archive-proposal.ts`](../packages/decision-engine/src/gmail-archive-proposal.ts),
+and the generic execution quarantine lives in
+[`action-safety.ts`](../packages/shared-types/src/action-safety.ts).
 
 The confirmation rule is enforced by
 [`evaluateInjectionGuard`](../packages/shared-types/src/action-safety.ts).

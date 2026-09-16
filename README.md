@@ -29,6 +29,14 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
 > capability rows and imported account-backed tool bundles are also withheld
 > from activation. Connector code in the source tree is not a support claim.
 
+The source tree also contains a default-off Gmail archive proposal experiment
+(`SKYTWIN_GMAIL_ARCHIVE_ENABLED=true`) for unsupported account-connected
+development. It can persist an owner-bound proposal and record an explicit
+approval or rejection, but the response deliberately reports
+`execution: null`: no Gmail mutation caller, recovery worker, or feedback
+projection is wired into runtime yet. Enabling the flag is not an execution or
+release-support claim.
+
 ## How It Works
 
 This is the source architecture and intended connected-account pipeline. The
@@ -285,6 +293,7 @@ packages/
   ironclaw-adapter/               Execution adapter with HMAC auth, retries, circuit breaker
   execution-router/               Adapter selection, fallback chains, risk modifiers, plugin discovery
   llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
+  near-confidential/              Fail-closed contract for verified confidential inference (provider not yet enabled)
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
   connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors; account providers disabled in supported preview
@@ -408,10 +417,10 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
 | [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, decision-event capture, developer verifier, trust boundary, and current UI/export limitations |
-| [Confidential Inference](./docs/confidential-inference.md) | Local-first admission, TrustedRouter and NEAR AI verification requirements, and the unavailable-by-default remote boundary |
+| [Confidential Inference](./docs/confidential-inference.md) | Local-first admission plus fail-closed TrustedRouter and NEAR AI verifier requirements; remote confidential inference remains unavailable |
 | [Decision Engine](./docs/decision-engine.md) | Situation interpretation, risk assessment, confidence scoring |
 | [IronClaw Integration](./docs/ironclaw-integration.md) | Execution adapter, HMAC auth, failure handling |
-| [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design (18+ tables), query patterns, versioning |
+| [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design, query patterns, versioning, receipt and effect boundaries |
 | [Evals](./docs/evals.md) | Evaluation harness, scenario simulation, calibration metrics |
 | [Launch Plan](./docs/launch-plan.md) | Procurement + sequencing to public download links |
 | [Launch-Readiness Report](./docs/launch-readiness-report.md) | Historical audit with a current account-free launch override; the claim ledger remains authoritative |

@@ -86,24 +86,26 @@ memory_rooms
 |-------|---------|---------------|-------------|
 | `users` | User identity and autonomy settings | Low frequency (settings changes) | Per-decision (load user context) |
 | `reasoning_mode_settings` | Per-user reasoning-mode selection | On settings change | Before constructing a decision-event LLM client |
-| `oauth_tokens` | OAuth tokens + connected accounts (the source of truth; keyed `(user, provider, account_email)` for multi-account) | On connect / token refresh | Per-poll (connectors), coverage panel |
+| `oauth_tokens` | Provider credentials and their verified account binding | On connect / token refresh | Per-poll connectors and credential dispatch |
 | `oauth_connection_authority` | Per-user, per-provider generation that fences known-owner OAuth redirects | On reconnect or invalidation | OAuth callback admission |
 | `oauth_account_connection_authority` | Short-lived account-key generation/tombstone for redirects whose owner is not known yet | On account resolution or invalidation | OAuth callback admission; TTL expiry |
 | `oauth_new_user_authorizations` | Short-lived one-shot authority for a new-user OAuth flow before identity binding | On authorization issue and claim | OAuth callback claim; TTL expiry |
-| `connected_accounts` | Legacy — superseded by `oauth_tokens`; retained in schema but unwritten | — | — |
+| `connected_accounts` | Opaque, owner-bound provider identity and lifecycle anchor; credentials reference it from `oauth_tokens` | On OAuth identity verification, reconnect, and disconnect | Connector/account resolution and message-evidence ownership checks |
 | `twin_profiles` | Current twin state | On every feedback event | Per-decision |
 | `twin_profile_versions` | Historical twin snapshots | On every twin mutation | Audit, replay, debugging |
 | `preferences` | Individual preferences with evidence | On feedback and learning | Per-decision (domain-filtered) |
 | `decisions` | Decision objects (interpreted events) | Per-event | History queries, replay |
 | `candidate_actions` | Generated candidate actions per decision | Per-event (batch insert) | Explanation generation, audit |
 | `decision_outcomes` | Selected action and execution determination | Per-event | Audit, replay, evals |
+| `decision_receipts` | Owner-bound root for a joined, append-only decision evidence chain | Once per decision receipt | Audit, backup, and receipt reconstruction |
+| `decision_receipt_revisions` | Digest-chained snapshots joining proposal, approval, effect, terminal, and feedback stages | Append on a validated lifecycle transition | Truthful current-state receipt and correction history |
 | `action_policies` | User-configured policy rules | Low frequency | Per-decision (policy evaluation) |
 | `approval_requests` | Pending and completed approval requests | On escalation | User review queue |
 | `assistant_threads` | Per-user conversational thread metadata | First turn, message activity, deletion | Owner-scoped thread listing and lookup |
 | `assistant_messages` | Chat turns; new writes carry owner-scoped request identity and processing metadata, with owner equality enforced against the parent thread | Once per logical turn | Thread history and completed retry replay |
-| `execution_plans` | Plans sent to IronClaw | On auto-execute | Status tracking |
+| `execution_plans` | Admitted execution plans for a specific adapter path | On admitted execution preparation | Status tracking and reconciliation |
 | `watches` | No-code routines (#519) — read-only signal watchers (digest/notify on a schedule) | On create / edit / pause | Per-user listing, scheduler `listDue` |
-| `watch_runs` | Canonical firing history for Watches, including matched signal refs and summary text | On each meaningful Watch firing | Briefing projection, Watches run history |
+| `watch_runs` | Durable scheduled slots created before an exact-window signal read, with database-clock leases, retries, and any resulting summary | Every due slot, including zero-match audit slots | Worker claims; positive history projection; bounded zero-match audit retention |
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
 | `inference_receipts` | Signed reasoning-path records for completed decision-event model calls, ordered by durable capture completion | Atomic batch finalization before approval or execution | Owner-scoped metadata read, backup, audit |
@@ -111,8 +113,12 @@ memory_rooms
 | `decision_ingest_guards` | Captured continuation snapshot and guarded effect state for one decision | Finalized with receipt authority, then advanced by guarded claims | Retry/reconciliation without replaying ambiguous effects |
 | `execution_policy_authority` | Installation-wide revision fencing policy changes from stale dispatch claims | On global execution-policy invalidation | Every external-dispatch lease admission |
 | `execution_admission_barriers` | One-shot, graph-bound admission snapshot for memory and approval execution | Immediately before an effect-bearing dispatch | Reconciliation and duplicate-dispatch prevention |
+| `pre_effect_barriers` | One-shot reservation for an exact owner-bound external effect and its policy snapshot | Before any dedicated effect claim | Dispatch fencing, truthful failure/result evidence, and reconciliation |
 | `credential_dispatch_leases` | Committed request-start authority bound to credential, vault, policy, user, and execution generations | Immediately before an external adapter request; terminal update afterward | Disconnect fencing and ambiguous-request reconciliation |
 | `feedback_events` | User responses (approve/reject/edit/undo) | On user interaction | Twin model updates, evals |
+| `twin_feedback_applications` | Idempotency ledger binding one feedback event to input/output profile versions | On a composed feedback projection | Replay-safe twin update audit; the Gmail archive projection is not runtime-wired yet |
+| `gmail_message_refs` | Opaque app-facing reference to one owner/account-bound Gmail message and its provider IDs | On verified Gmail signal ingestion | Proposal binding and dedicated recovery/observation repositories |
+| `gmail_archive_recovery_leases` | Fenced leases and finite observation state for archive recovery work | By a future dedicated recovery worker | Recovery candidate claim and provider-observation reconciliation; worker is currently unwired |
 | `memory_wings` | Top-level memory palace groupings by domain | On new domain encountered | Palace status, memory retrieval |
 | `memory_rooms` | Topics within a wing | On new topic encountered | Memory filing, tunnel detection |
 | `memory_drawers` | Individual memory chunks (atomic unit) | Per-signal, per-decision | Search, L2/L3 retrieval |
@@ -450,6 +456,14 @@ and dispatch authority revisions. A disconnect or authority revision therefore
 fences a stale claimant; an interrupted request remains ambiguous rather than
 being replayed automatically.
 
+The newer joined receipt path anchors the complete decision lifecycle in
+`decision_receipts` and appends digest-chained `decision_receipt_revisions`.
+Dedicated effects first reserve `pre_effect_barriers`, so proposal, consent,
+dispatch, terminalization, and feedback projection cannot be confused with one
+another. The Gmail archive slice currently uses this model only through
+proposal and consent: its approval route returns `execution: null`, while the
+caller kernel, recovery worker, and feedback projection remain unwired.
+
 ## Event Storage Design
 
 Events (decisions) are append-only. We do not update or delete decision records. This supports:
@@ -682,16 +696,14 @@ Connection configuration comes from environment variables. See `.env.example`.
 
 ### Migration Files
 
-Migrations are sequential SQL files in `packages/db/migrations/`:
+Migrations are sequential SQL files in `packages/db/src/migrations/`:
 
 ```
-packages/db/migrations/
-  001_create_users.sql
-  002_create_twin_profiles.sql
-  003_create_decisions.sql
-  004_create_policies.sql
-  005_create_execution.sql
-  006_create_feedback.sql
+packages/db/src/migrations/
+  001-initial.ts              # ordered runner
+  002-add-api-key.sql
+  ...
+  094-account-signal-persistence.sql
   ...
 ```
 
@@ -704,16 +716,13 @@ packages/db/migrations/
 
 ### Migration Runner
 
-The migration runner tracks applied migrations in a `schema_migrations` table:
-
-```sql
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INT PRIMARY KEY,
-  applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-```
-
-The runner applies each unapplied migration in order within a transaction.
+[`001-initial.ts`](../packages/db/src/migrations/001-initial.ts) applies the
+base schema, then reads every sibling `.sql` migration in lexical order and
+executes it statement by statement. It does not use a `schema_migrations`
+ledger; rerun safety depends on explicit idempotent DDL and a narrow set of
+duplicate-object SQLSTATEs. Unique violations are never swallowed. The
+desktop-owned path uses fixed direct connections and rechecks child-process
+authority before every write.
 
 ### CockroachDB-Specific Considerations
 

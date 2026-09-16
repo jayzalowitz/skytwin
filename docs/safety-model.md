@@ -179,7 +179,21 @@ listing path. This is distinct from read-only Watches.
 
 **`escalate_to_user` is a non-executing terminal.** Some candidates are *not* actions to run but a deliberate hand-off to the human: the inbound `SECURITY_ALERT` escalation (Safety Invariant 8), the scope gate's "connect write access" downgrade (#485), and a recognized-but-not-yet-autonomous chat intent (e.g. "decline that meeting" — the intent is understood but the specific event isn't resolved). `PolicyEvaluator.evaluate()` forces `requiresApproval` for **every** `escalate_to_user` regardless of trust tier, risk, autonomy, or provenance, so `autoExecute` (`= !requiresApproval && shouldAutoExecute(...)`) is always false. This is enforced server-side rather than relying on the action happening to be high-risk or untrusted-origin: a HIGH-confidence, reversible, zero-cost escalation on a *trusted* path (a user's own chat message, `user_originated`) would otherwise clear `shouldAutoExecute` and be routed to the execution router, where `escalate_to_user` has no real handler and dead-ends. The Approvals queue renders an escalation as a "tell me what to do" card alongside the alternative candidates the decision considered (`apps/api/src/routes/approvals.ts`).
 
-**Awareness disposition gate (opt-in, `AWARENESS_DISPOSITION_GATE=on`, default off).** At `observer`/`suggest` tier the trust-tier gate forces approval on *every* selected action, so routine awareness -- newsletters, automated notices, the user's own re-ingested sent mail, "no action required" calendar updates -- floods the Approvals queue with cards that aren't decisions. When enabled, the gate records such an outcome as `requiresApproval: false` at write time, so it surfaces as **FYI in the digest** (still visible, still explained) rather than an approval card. It runs on both write paths: the ingest route (`apps/api/src/services/awareness-disposition.ts`) and the memory action loop (`isAwarenessOnlyMemoryAction` in `apps/worker/src/jobs/memory-action-loop.ts`, which additionally skips execution). Both share one predicate (`isPassiveAwarenessShape` in `packages/shared-types/src/awareness-disposition.ts`) so they cannot drift. It is deliberately narrow and never weakens a real gate: it only disposes a **passive, reversible, verified-zero-cost** action (note / acknowledge / label / archive) from awareness-tier or untrusted-external content, and it **never** gates an injection-guard escalation (a set `confirmationLevel`), a non-passive / irreversible / costed action, or human inbound mail. The injection guard (Safety Invariant 8) stays the security boundary; this gate only removes queue noise below it.
+**Awareness disposition gate (opt-in, `AWARENESS_DISPOSITION_GATE=on`, default off).** At `observer`/`suggest` tier the trust-tier gate forces approval on *every* selected action, so routine awareness -- newsletters, automated notices, the user's own re-ingested sent mail, "no action required" calendar updates -- floods the Approvals queue with cards that aren't decisions. When enabled, the gate records such an outcome as `requiresApproval: false` at write time, so it surfaces as **FYI in the digest** (still visible, still explained) rather than an approval card. It runs on both write paths: the ingest route (`apps/api/src/services/awareness-disposition.ts`) and the memory action loop (`isAwarenessOnlyMemoryAction` in `apps/worker/src/jobs/memory-action-loop.ts`, which additionally skips execution). Both share one predicate (`isPassiveAwarenessShape` in `packages/shared-types/src/awareness-disposition.ts`) so they cannot drift. It is deliberately narrow and never weakens a real gate: it only disposes a **passive, reversible, verified-zero-cost** note, acknowledgement, dismissal, or label from awareness-tier or untrusted-external content, and it **never** gates an injection-guard escalation (a set `confirmationLevel`), a non-passive / irreversible / costed action, or human inbound mail. The legacy shape allowlist still names `archive_email`, but the destructive-action guard always adds confirmation, so archive cannot satisfy the complete disposition gate. The injection guard (Safety Invariant 8) stays the security boundary; this gate only removes queue noise below it.
+
+**Gmail archive is proposal/consent-only in current source.** The default-off
+`SKYTWIN_GMAIL_ARCHIVE_ENABLED=true` experiment builds one canonical,
+owner-bound proposal with overall `MODERATE` risk. `archive_email` is a
+destructive marker and always requires one explicit confirmation. The
+dedicated approval response records consent and feedback intent, reserves the
+effect boundary, and returns `execution: null`; it never falls through to the
+generic IronClaw, OpenClaw, or Direct adapters. The caller kernel, recovery
+worker, and twin-feedback projection remain intentionally unwired. Approval
+responses are also excluded from the PWA offline mutation queue, and any stale
+queued response is discarded rather than replayed. Sources:
+[`gmail-archive-proposal.ts`](../packages/decision-engine/src/gmail-archive-proposal.ts),
+[`approvals.ts`](../apps/api/src/routes/approvals.ts), and
+[`sw-policy.js`](../apps/web/public/js/pwa/sw-policy.js).
 
 ### Layer 7: Global pause + per-user pause (#379)
 
@@ -197,7 +211,7 @@ The per-user pause complements but does NOT replace the "demote to observer" tie
 Every user can wipe their entire footprint from Settings → "Delete everything about me." Two-stage confirm (window.confirm → window.prompt "type DELETE"), then `DELETE /api/users/:userId?confirm=delete-my-data` runs the full purge inside a single CRDB serializable transaction via `userPurgeRepository.purgeUser`:
 
 - Leaves of the dependency graph go first (execution_results, execution_events, execution_plans, explanation_records, decision_outcomes, candidate_actions, twin_profile_versions, knowledge_triples)
-- Then the final `DELETE FROM users` cascades through the 32 user_id FKs from migration 061 (#413) and collapses the rest of the footprint — twin profile, decisions, memory pages, knowledge entities, episodic memories, preferences, OAuth tokens, sessions, spend records, etc. — in one statement
+- Then the final `DELETE FROM users` cascades through the owner-bound foreign-key graph and collapses the rest of the footprint — twin profile, decisions, receipts, effect barriers, memory pages, knowledge entities, episodic memories, preferences, OAuth tokens, sessions, spend records, etc. — in one statement
 
 Either the whole delete completes or the transaction rolls back; there is no partial-delete state. Cascade behaviour is exercised end-to-end by `cascade-cleanup.e2e.test.ts`. The endpoint is gated by `sessionAuth + requireUserParamOwnership` in `apps/api/src/routes/users.ts`, so user A cannot delete user B whether `:userId` is passed as a UUID or the authenticated user's own email.
 
@@ -283,7 +297,7 @@ How much money is at stake?
 
 | Rating | Meaning | Examples |
 |--------|---------|---------|
-| Negligible | $0 | Archive, reschedule |
+| Negligible | $0 | Add a local label, create a note |
 | Low | < $10 | Small subscription renewal |
 | Moderate | $10-$100 | Grocery order, service renewal |
 | High | $100-$1000 | Flight booking, major purchase |
@@ -307,7 +321,7 @@ Does this action involve private or sensitive information?
 
 | Rating | Meaning | Examples |
 |--------|---------|---------|
-| Negligible | No private data involved | Archive newsletter |
+| Negligible | No private data involved | Create a content-free local reminder |
 | Low | Routine personal data | Calendar management |
 | Moderate | Sensitive personal data | Email with personal content |
 | High | Highly sensitive data | Financial records, health info |
@@ -319,7 +333,7 @@ Could this action affect a relationship if done wrong?
 
 | Rating | Meaning | Examples |
 |--------|---------|---------|
-| Negligible | No interpersonal impact | Archive, organize |
+| Negligible | No interpersonal impact | Add a local label, organize a private note |
 | Low | Routine professional interaction | Accept meeting, send receipt |
 | Moderate | Interaction with known contacts | Reply to colleague email |
 | High | Sensitive interpersonal context | Decline invitation, respond to complaint |
@@ -401,7 +415,7 @@ When an action requires approval:
    - Reversible actions: May auto-execute if confidence is high and urgency is pressing
    - Irreversible actions: Never auto-execute on expiry. Notify user of missed window.
 
-4. **On approval:** Execute the action via IronClaw. Record approval as positive feedback.
+4. **On approval:** Ordinary supported actions may proceed through their admitted execution path and record positive feedback. Gmail archive is a deliberate exception in current source: its dedicated path records consent and returns `execution: null`, with no generic IronClaw/OpenClaw fallback.
 
 5. **On rejection:** Cancel the action. Record rejection as negative feedback. Include user's reason if provided.
 

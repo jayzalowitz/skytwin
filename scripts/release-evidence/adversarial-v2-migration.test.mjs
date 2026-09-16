@@ -53,9 +53,9 @@ describe('v2 adversarial scenario migration', () => {
     expect(result.stderr).toMatch(/--trusted-commit is required/i);
   });
 
-  it('preserves v1 provenance while keeping both successors reserved and non-claiming', () => {
+  it('preserves v1 provenance while keeping the remaining successor reserved and non-claiming', () => {
     const result = verifyAdversarialV2Migration({ trustedRoot: ROOT });
-    expect(result).toMatchObject({ status: 'reserved', activeSuccessors: 0 });
+    expect(result).toMatchObject({ status: 'reserved', activeSuccessors: 1 });
     expect(Object.keys(result.baseline.retiredHarnessFingerprints)).toEqual([
       'adv-v1-approvals-untrusted-account-dual',
       'adv-v1-capability-regret-no-dispatch',
