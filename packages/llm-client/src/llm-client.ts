@@ -36,7 +36,6 @@ import {
   snapshotInferenceTrace,
   snapshotProviderExecutionMetadata,
 } from './inference-trace.js';
-import { isZeroCostProvider } from './cost.js';
 import { redactPromptPii } from './redact.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
@@ -145,12 +144,37 @@ function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOpt
 function providerGenerateOptions(
   provider: ProviderEntry,
   options: Readonly<GenerateOptions>,
+  reasoningMode: ReasoningMode,
 ): Readonly<GenerateOptions> {
-  if (isZeroCostProvider(provider.name) || options.systemPrompt === undefined) return options;
+  if (!providerNeedsRedaction(provider, reasoningMode) || options.systemPrompt === undefined) return options;
   return Object.freeze({
     ...options,
     systemPrompt: redactPromptPii(options.systemPrompt),
   });
+}
+
+/** Apply the same boundary to native chat system messages (assistant path). */
+function providerGeneratePrompt(
+  provider: ProviderEntry,
+  prompt: string | ChatMessage[],
+  reasoningMode: ReasoningMode,
+): string | ChatMessage[] {
+  if (!providerNeedsRedaction(provider, reasoningMode) || typeof prompt === 'string') return prompt;
+  return Object.freeze(prompt.map((message) => Object.freeze({
+    role: message.role,
+    content: message.role === 'system' ? redactPromptPii(message.content) : message.content,
+  }))) as unknown as ChatMessage[];
+}
+
+/**
+ * Pricing is not a privacy signal: Ollama can point at a remote endpoint while
+ * still being zero-cost. Use the adapter-derived execution facts instead.
+ */
+function providerNeedsRedaction(provider: ProviderEntry, reasoningMode: ReasoningMode): boolean {
+  const capabilities = providerPrivacyCapabilities(provider, reasoningMode);
+  return capabilities.executionLocation !== 'on_device'
+    || capabilities.networkScope === 'external'
+    || capabilities.confidentiality !== 'device_local';
 }
 
 const DEFAULT_ENDPOINTS: Record<AIProviderName, string> = {
@@ -313,12 +337,12 @@ export class LlmClient {
         const content = await generateFn(
           provider.apiKey,
           provider.model,
-          invocationPrompt,
+          providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
           providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
-          })),
+          }), this.reasoningMode),
         );
         const successfulPath = [
           ...executionPath,
@@ -405,12 +429,12 @@ export class LlmClient {
         for await (const chunk of streamFn(
           provider.apiKey,
           provider.model,
-          invocationPrompt,
+          providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
           providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
-          })),
+          }), this.reasoningMode),
         )) {
           if (chunk.length === 0) continue;
           collected.push(chunk);

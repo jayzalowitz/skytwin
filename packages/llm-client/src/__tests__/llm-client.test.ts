@@ -133,6 +133,80 @@ describe('LlmClient', () => {
     );
   });
 
+  it('redacts system-role assistant context in sync chat messages for cloud providers', async () => {
+    const { LlmClient } = await freshImport();
+    mockAnthropicGenerate.mockResolvedValue('ok');
+    const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider]);
+    await client.generate([
+      { role: 'system', content: 'Memory: alice@example.com' },
+      { role: 'user', content: 'What do you know?' },
+    ], { invocationKind: 'interactive' });
+
+    expect(mockAnthropicGenerate).toHaveBeenCalledWith(
+      anthropicProvider.apiKey,
+      anthropicProvider.model,
+      [
+        { role: 'system', content: 'Memory: [redacted:email]' },
+        { role: 'user', content: 'What do you know?' },
+      ],
+      expect.anything(),
+    );
+  });
+
+  it('redacts remote Ollama despite its zero-cost pricing', async () => {
+    const { LlmClient } = await freshImport();
+    mockOllamaGenerate.mockResolvedValue('ok');
+    const remoteOllama: ProviderEntry = {
+      name: 'ollama', apiKey: '', model: 'llama3', baseUrl: 'https://ollama.example.test',
+    };
+    const client = LlmClient.forReasoningMode('bring_your_own_provider', [remoteOllama]);
+    await client.generate([
+      { role: 'system', content: 'Memory: alice@example.com' },
+    ], { invocationKind: 'interactive' });
+
+    expect(mockOllamaGenerate).toHaveBeenCalledWith(
+      '', 'llama3', [{ role: 'system', content: 'Memory: [redacted:email]' }], expect.anything(),
+    );
+  });
+
+  it('keeps loopback Ollama assistant context intact in on-device mode', async () => {
+    const { LlmClient } = await freshImport();
+    mockOllamaGenerate.mockResolvedValue('ok');
+    const localOllama: ProviderEntry = {
+      name: 'ollama', apiKey: '', model: 'llama3', baseUrl: 'http://127.0.0.1:11434',
+    };
+    const client = LlmClient.forReasoningMode('on_device', [localOllama]);
+    await client.generate([
+      { role: 'system', content: 'Memory: alice@example.com' },
+    ], { invocationKind: 'interactive' });
+
+    expect(mockOllamaGenerate).toHaveBeenCalledWith(
+      '', 'llama3', [{ role: 'system', content: 'Memory: alice@example.com' }], expect.anything(),
+    );
+  });
+
+  it('redacts system-role assistant context in streaming cloud chat messages', async () => {
+    const { LlmClient } = await freshImport();
+    mockAnthropicStream.mockReturnValue(fromChunks(['ok']));
+    const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider]);
+    for await (const _event of client.generateStream([
+      { role: 'system', content: 'Memory: bob@example.com' },
+      { role: 'user', content: 'Tell me more' },
+    ], { invocationKind: 'interactive' })) {
+      // Drain the stream so the provider call completes.
+    }
+
+    expect(mockAnthropicStream).toHaveBeenCalledWith(
+      anthropicProvider.apiKey,
+      anthropicProvider.model,
+      [
+        { role: 'system', content: 'Memory: [redacted:email]' },
+        { role: 'user', content: 'Tell me more' },
+      ],
+      expect.anything(),
+    );
+  });
+
   describe('generate - happy path', () => {
     it('returns response from the first provider on success', async () => {
       const { LlmClient } = await freshImport();
