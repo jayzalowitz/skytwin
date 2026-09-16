@@ -18,7 +18,10 @@
 > SHA-256 digests, and publishes it immediately from the same gated job. Evidence IDs
 > are deliberately not committed to this ledger: doing so would change the SHA
 > they attest and create an impossible hash cycle. The release job now generates
-> the external manifest from current-run GitHub API metadata. Downstream
+> the tag-bound release path is implemented to generate the external manifest
+> from current-run GitHub API metadata and to generate/attach updater manifests;
+> no qualifying tagged release has independently proved or published those
+> manifests. Downstream
 > evidence-matrix jobs include the canonical three-platform packaged-sample
 > verifier with GitHub API discovery separated from package execution and a
 > strict allowlisted child environment. The artifact-verification lane also has

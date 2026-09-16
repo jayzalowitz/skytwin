@@ -82,7 +82,7 @@ submission.
 
 Follow [`release-procedure.md`](./release-procedure.md) only after `VERSION`, the package metadata, and the ledger all authorize the same `v0.7.0-beta` release. The workflow rejects a tag whose commit is not already merged into the current `main` branch.
 
-The `release` job in `.github/workflows/build.yml` takes over after the three desktop package jobs. It can publish only after the ledger is ready and current-run CI, machine, signing, model, checksum, provenance, and exact artifact-set evidence pass. It creates an unpublished draft, verifies every attached name and digest against the evidence manifest, and immediately publishes from the same controlled job. Do not publish a draft manually. Today the open stop-ship conditions intentionally prevent this path from reaching draft creation.
+The `release` job in `.github/workflows/build.yml` takes over after the three desktop package jobs. The tag-bound CI path is implemented to generate and attach updater manifests, but no qualifying tagged release has independently proved or published them. It can publish only after the ledger is ready and current-run CI, machine, signing, model, checksum, provenance, and exact artifact-set evidence pass. It creates an unpublished draft, verifies every attached name and digest against the evidence manifest, and immediately publishes from the same controlled job. Do not publish a draft manually. Today the open stop-ship conditions intentionally prevent this path from reaching draft creation; the beta remains blocked.
 
 The full, step-by-step runbook (including these gaps and the clean-machine verification) lives in [`release-procedure.md`](./release-procedure.md).
 

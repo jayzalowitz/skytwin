@@ -71,7 +71,7 @@ items in this historical inventory are explicitly non-blocking and deferred.
    source-field migration, packaged verification, and bake evidence are still
    required. See [§ Encryption and key-management detail](#encryption-and-key-management-detail).
    Other partial code-side items remain tracked under #357 and in the inventory below.
-5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems. The source-tree checks below do not substitute for this gate.
+5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems, including independent proof that the tag-bound CI path generated and attached updater manifests. The source-tree checks below do not substitute for this gate; no qualifying tagged release has yet proved or published those manifests, and the beta remains blocked.
 
 ---
 
