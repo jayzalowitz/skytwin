@@ -58,4 +58,15 @@ describe('onboarding accessibility contract', () => {
     expect(app).toContain('window.skyTwinCancelOnboarding()');
     expect(app).toContain("document.activeElement?.getAttribute('tabindex') === '-1'");
   });
+
+  it('guards side-effecting async continuations and delayed fallback work', () => {
+    expect(onboarding).toContain('const runGeneration = _wizardRunGeneration;');
+    expect(onboarding).toContain('const result = await createUser(email, name, \'suggest\');');
+    expect(onboarding).toContain('await postOnboardingComplete(userId || getCurrentUserId(), \'computer\');');
+    expect(onboarding).toContain('const session = await startDemoSession();');
+    expect(onboarding).toContain('await postDeterministicPick(userId, _detAnswers);');
+    expect(onboarding).toContain('await postOnboardingComplete(userId, choice, recipeSlug);');
+    expect(onboarding).toContain('if (isCurrentWizardRun(runGeneration)) handleFinalFromHistory()');
+    expect(onboarding).toContain('if (!isCurrentWizardRun(runGeneration)) return;');
+  });
 });

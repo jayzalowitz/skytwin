@@ -196,6 +196,7 @@ async function handleOnboardingClick(e) {
 
     // ── Email choice ────────────────────────────────────────────────────────
     case 'onb-email-submit': {
+      const runGeneration = _wizardRunGeneration;
       const emailInput = document.getElementById('onb-email-input');
       const nameInput = document.getElementById('onb-name-input');
       if (!emailInput) break;
@@ -211,12 +212,14 @@ async function handleOnboardingClick(e) {
       btn.textContent = 'Setting up…';
       try {
         const result = await createUser(email, name, 'suggest');
+        if (!isCurrentWizardRun(runGeneration)) return;
         const newUserId = result.user.id || email;
         localStorage.setItem(KEY_USER_ID, newUserId);
         if (_wizardState) _wizardState.userId = newUserId;
         // Email path goes straight to recipe preview via about-me LLM/deterministic
         transitionTo('about_me_choice');
       } catch (err) {
+        if (!isCurrentWizardRun(runGeneration)) return;
         showWizardError(err.message || 'Something went wrong. Please try again.');
         btn.disabled = false;
         btn.textContent = 'Continue';
@@ -226,13 +229,16 @@ async function handleOnboardingClick(e) {
 
     // ── Computer / idle-miner choice ────────────────────────────────────────
     case 'onb-enable-idle-miner': {
+      const runGeneration = _wizardRunGeneration;
       const btn = target;
       btn.disabled = true;
       btn.textContent = 'Enabling…';
       try {
         await postOnboardingComplete(userId || getCurrentUserId(), 'computer');
+        if (!isCurrentWizardRun(runGeneration)) return;
         transitionTo('idle_miner_poll');
       } catch (err) {
+        if (!isCurrentWizardRun(runGeneration)) return;
         showWizardError(err.message || 'Could not enable idle miner.');
         btn.disabled = false;
         btn.textContent = 'Enable and continue';
@@ -296,10 +302,13 @@ async function handleOnboardingClick(e) {
 
     // ── Tour mode ───────────────────────────────────────────────────────────
     case 'onb-start-tour': {
+      const runGeneration = _wizardRunGeneration;
       try {
         const info = await fetchDemoInfo();
+        if (!isCurrentWizardRun(runGeneration)) return;
         if (info?.available && info?.userId) {
           const session = await startDemoSession();
+          if (!isCurrentWizardRun(runGeneration)) return;
           if (!session?.token || session.userId !== info.userId) {
             throw new Error('Sample session could not be verified.');
           }
@@ -316,6 +325,7 @@ async function handleOnboardingClick(e) {
           );
         }
       } catch {
+        if (!isCurrentWizardRun(runGeneration)) return;
         showWizardError('Sample profile not available.');
       }
       break;
@@ -667,6 +677,7 @@ async function renderIdleMinerPoll() {
   }
 
   // Timeout
+  if (!isCurrentWizardRun(runGeneration)) return;
   const statusEl = document.getElementById('onb-poll-status');
   const timeoutEl = document.getElementById('onb-poll-timeout');
   if (statusEl) statusEl.style.display = 'none';
@@ -1180,9 +1191,12 @@ function renderInstallComplete(slug, count) {
 // ── Complete ──────────────────────────────────────────────────────────────────
 
 async function finishWizard(userId, choice, recipeSlug) {
+  const runGeneration = _wizardRunGeneration;
   try {
     await postOnboardingComplete(userId, choice, recipeSlug);
+    if (!isCurrentWizardRun(runGeneration)) return;
   } catch {
+    if (!isCurrentWizardRun(runGeneration)) return;
     // non-fatal — wizard still completes
   }
   localStorage.setItem(KEY_ONBOARDED, 'true');
