@@ -92,6 +92,11 @@ export { approvalRepository } from './approval-repository.js';
 export { patternRepository } from './pattern-repository.js';
 
 export { executionRepository } from './execution-repository.js';
+export { rollbackAdmissionRepository } from './rollback-admission-repository.js';
+export type {
+  RollbackAdmissionInput, RollbackAdmissionRow, RollbackTerminalStatus,
+  RollbackTerminalRow, RecordRollbackTerminalInput,
+} from './rollback-admission-repository.js';
 export type {
   CreateExecutionPlanInput,
   CreateExecutionResultInput,

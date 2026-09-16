@@ -175,6 +175,7 @@ export {
   watchRepository,
   watchRunRepository,
   executionAdmissionRepository,
+  rollbackAdmissionRepository,
 } from './repositories/index.js';
 export type {
   CredentialDispatchGrant,
@@ -220,6 +221,11 @@ export type {
   ExecutionAdmissionScope,
   ExecutionAdmissionStatus,
   ObserveExecutionInput,
+  RollbackAdmissionInput,
+  RollbackAdmissionRow,
+  RollbackTerminalStatus,
+  RollbackTerminalRow,
+  RecordRollbackTerminalInput,
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';
