@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Glossary — SkyTwin</title>
+    <meta
+      name="description"
+      content="Plain-language definitions for SkyTwin’s decision, policy, safety, and inference vocabulary."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/glossary.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a href="start.html">Start</a><a href="how-to-use.html">How to use</a
+          ><a href="docs.html">Docs</a><a href="agents.html">Agents</a
+          ><a class="keep" href="https://github.com/jayzalowitz/skytwin"
+            >GitHub</a
+          >
+        </div>
+      </div>
+    </nav>
+    <main class="wrap page">
+      <aside class="toc">
+        <p>Glossary</p>
+        <a href="#decision">Decision terms</a><a href="#safety">Safety terms</a
+        ><a href="#inference">Inference terms</a
+        ><a href="#integration">Integration terms</a>
+      </aside>
+      <article class="content">
+        <p class="eyebrow">Plain-language glossary</p>
+        <span class="status">Vocabulary, not marketing</span>
+        <h1>The words that determine whether something can act.</h1>
+        <p class="lede">
+          SkyTwin’s terms carry operational meaning. This glossary points to the
+          deeper source and public guides where a word affects behavior or a
+          release claim.
+        </p>
+        <h2 id="decision">Decision terms</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Term</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Signal</td>
+              <td>
+                An input the system can interpret, such as a connector event or
+                local source record. Its origin matters.
+              </td>
+            </tr>
+            <tr>
+              <td>Decision context</td>
+              <td>
+                The typed situation enriched with a twin profile, policies,
+                history, and relevant constraints.
+              </td>
+            </tr>
+            <tr>
+              <td>Candidate action</td>
+              <td>
+                A structured possible response. It must include risk assessment
+                and reversibility; it is not permission to execute.
+              </td>
+            </tr>
+            <tr>
+              <td>Decision outcome</td>
+              <td>
+                The selected result: admitted execution, a request for approval,
+                or an explained non-action.
+              </td>
+            </tr>
+            <tr>
+              <td>Explanation record</td>
+              <td>
+                The human-readable account of what happened, which evidence and
+                preferences mattered, and how to correct it.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="safety">Safety terms</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Term</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Trust tier</td>
+              <td>
+                The user-granted level of autonomy. New users start as
+                observers; higher tiers do not bypass other policy checks.
+              </td>
+            </tr>
+            <tr>
+              <td>Provenance</td>
+              <td>
+                Where an action-relevant input came from. Missing provenance
+                fails safe as untrusted external content.
+              </td>
+            </tr>
+            <tr>
+              <td>Risk assessment</td>
+              <td>
+                Mandatory evaluation of a candidate’s consequences and
+                reasoning. Risk is not optional model metadata.
+              </td>
+            </tr>
+            <tr>
+              <td>Spend limit</td>
+              <td>
+                A hard per-action or daily financial bound. An amount above it
+                must escalate.
+              </td>
+            </tr>
+            <tr>
+              <td>Admission</td>
+              <td>
+                The separate determination that an action is allowed to reach an
+                execution adapter after policy and safety checks.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="inference">Inference terms</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Term</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>On-device / local inference</td>
+              <td>
+                Reasoning performed through a locally available runtime and
+                model. It does not silently fall through to a hosted provider.
+              </td>
+            </tr>
+            <tr>
+              <td>Hosted provider</td>
+              <td>
+                A configured remote model provider. Using one is an explicit
+                network choice.
+              </td>
+            </tr>
+            <tr>
+              <td>Remote-attested inference</td>
+              <td>
+                A future route in which SkyTwin would verify evidence about a
+                remote execution environment. It is unavailable today.
+              </td>
+            </tr>
+            <tr>
+              <td>Inference receipt</td>
+              <td>
+                A structured record for a completed model-call attempt. It is
+                not a claim that prompt content is encrypted or that a provider
+                is confidential.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="integration">Integration terms</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Term</th>
+              <th>Meaning</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>MCP</td>
+              <td>
+                A local protocol surface for giving an agent scoped context and
+                proposal capability. It is not universal delegation.
+              </td>
+            </tr>
+            <tr>
+              <td>Connector</td>
+              <td>
+                A component that can normalize a service’s information into
+                signals. Source code for a connector is not a release-support
+                claim.
+              </td>
+            </tr>
+            <tr>
+              <td>Execution router</td>
+              <td>
+                The component that selects from admitted adapters and provides a
+                safety backstop; it does not replace policy.
+              </td>
+            </tr>
+            <tr>
+              <td>DXT</td>
+              <td>
+                A planned desktop extension transfer artifact for moving
+                configuration between machines, not OAuth secrets.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="footnotes">
+          <a href="architecture.html">Architecture</a> ·
+          <a href="safety.html">Safety</a> ·
+          <a href="inference.html">Inference</a> ·
+          <a href="integrations.html">Integrations</a>
+        </p>
+      </article>
+    </main>
+    <footer class="wrap">
+      <p>
+        SkyTwin is Apache-2.0 open source. Questions or security reports:
+        <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue</a
+        >.
+      </p>
+    </footer>
+  </body>
+</html>

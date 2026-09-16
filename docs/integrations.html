@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Integrations and capability boundaries — SkyTwin</title>
+    <meta
+      name="description"
+      content="What SkyTwin can expose locally, what is unavailable in the preview, and how integrations stay approval- and policy-gated."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/integrations.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a href="start.html">Start</a><a href="how-to-use.html">How to use</a
+          ><a href="docs.html">Docs</a><a href="agents.html">Agents</a
+          ><a class="keep" href="https://github.com/jayzalowitz/skytwin"
+            >GitHub</a
+          >
+        </div>
+      </div>
+    </nav>
+    <main class="wrap page">
+      <aside class="toc">
+        <p>Integrations</p>
+        <a href="#status">Current status</a><a href="#mcp">Local MCP</a
+        ><a href="#execution">Execution boundary</a
+        ><a href="#transfer">Capability transfer</a>
+      </aside>
+      <article class="content">
+        <p class="eyebrow">Integrations and tools</p>
+        <span class="status">Boundary first</span>
+        <h1>Expose context carefully. Admit execution separately.</h1>
+        <p class="lede">
+          An integration can read, propose, subscribe, or execute. Those are
+          different powers. SkyTwin documents them separately and does not treat
+          connector code or a model response as authorization.
+        </p>
+        <h2 id="status">Current status</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Surface</th>
+              <th>What a source evaluator can inspect</th>
+              <th>Supported-preview status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Fictional sample</td>
+              <td>
+                Briefings, decisions, approvals, controls, and explanations
+                using made-up data.
+              </td>
+              <td>Available and account-free.</td>
+            </tr>
+            <tr>
+              <td>Gmail and Microsoft accounts</td>
+              <td>Connector architecture and source tests.</td>
+              <td>
+                Unavailable. The preview does not request account access or ship
+                a managed OAuth client.
+              </td>
+            </tr>
+            <tr>
+              <td>Local MCP server</td>
+              <td>
+                Scoped context, proposals, and subscriptions for a local agent.
+              </td>
+              <td>
+                Documented for source builders; policy and approval remain
+                mandatory.
+              </td>
+            </tr>
+            <tr>
+              <td>Execution adapters</td>
+              <td>
+                Admission, fallback, provenance, risk, and policy structure.
+              </td>
+              <td>
+                Only admitted work may enter an adapter. A proposal is not
+                execution authority.
+              </td>
+            </tr>
+            <tr>
+              <td>DXT transfer</td>
+              <td>
+                Source artifact format and intended configuration-transfer
+                design.
+              </td>
+              <td>
+                Forward-looking. Do not treat it as a current public workflow.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="mcp">Local MCP is scoped, not delegated autonomy</h2>
+        <p>
+          The Twin MCP server is a local, token-scoped surface for agents. A
+          safe agent reads context, proposes an action with source and
+          reasoning, and waits for normal policy and approval processing. It
+          must not bypass policy, fabricate provenance, or reinterpret a tool
+          result as permission.
+        </p>
+        <p>
+          The <a href="agents.html">agent guide</a> covers setup, scopes, tool
+          classes, failure handling, and a recommended safe loop. For the raw
+          contract, use
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/twin-mcp-protocol.md"
+            >the MCP protocol reference</a
+          >.
+        </p>
+        <h2 id="execution">The execution boundary</h2>
+        <p>
+          Candidate actions travel through typed risk assessment, provenance
+          checks, trust-tier rules, hard spend limits, and an explanation
+          requirement. Untrusted-origin destructive work escalates to a person;
+          absent provenance fails safe. The execution router selects only from
+          admitted adapters and backs up the policy-engine decision rather than
+          replacing it.
+        </p>
+        <div class="callout">
+          <strong>Important:</strong> a current default-off Gmail archive
+          proposal experiment may persist an owner-bound proposal and explicit
+          approval or rejection, but it deliberately reports
+          <code>execution: null</code>. No Gmail mutation caller, recovery
+          worker, or feedback projection is wired into runtime. Enabling its
+          development flag is not a support or execution claim.
+        </div>
+        <h2 id="transfer">Configuration transfer is not secret transfer</h2>
+        <p>
+          The DXT design describes moving capability configuration between
+          machines. It intentionally excludes OAuth tokens, which must be
+          re-authorized on the target. Live federation is deferred; read the
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/dxt-transfer.md"
+            >DXT reference</a
+          >
+          before treating a source artifact as a supported product feature.
+        </p>
+        <p class="footnotes">
+          <a href="safety.html">Safety model</a> ·
+          <a href="operations.html">Operations</a> · <a href="faq.html">FAQ</a>
+        </p>
+      </article>
+    </main>
+    <footer class="wrap">
+      <p>
+        SkyTwin is Apache-2.0 open source. Questions or security reports:
+        <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue</a
+        >.
+      </p>
+    </footer>
+  </body>
+</html>

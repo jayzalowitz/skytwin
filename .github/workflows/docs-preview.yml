@@ -4,9 +4,9 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'docs/**'
-      - 'README.md'
-      - '.github/workflows/docs-preview.yml'
+      - "docs/**"
+      - "README.md"
+      - ".github/workflows/docs-preview.yml"
 
 permissions:
   contents: read
@@ -24,7 +24,41 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node --input-type=module -e 'import { readdirSync, readFileSync, existsSync } from "node:fs"; const files = readdirSync("docs").filter((file) => file.endsWith(".html")); const missing = []; for (const file of files) { const html = readFileSync(`docs/${file}`, "utf8"); if (!html.includes("<title>")) missing.push(`${file} has no title`); for (const match of html.matchAll(/href="([^"]+)"/g)) { const href = match[1]; if (!href.includes("://") && !href.startsWith("#") && !href.startsWith("mailto:")) { const target = href.split("#")[0]; if (target && !existsSync(`docs/${target}`)) missing.push(`${file} -> ${href}`); } } } if (missing.length) { console.error(missing.join("\n")); process.exit(1); } console.log(`verified ${files.length} static Pages documents`);'
+          node --input-type=module <<'NODE'
+          import { existsSync, readdirSync, readFileSync } from 'node:fs';
+
+          const docsRoot = 'docs';
+          const pages = readdirSync(docsRoot).filter((file) => file.endsWith('.html'));
+          const missing = [];
+          const readPage = (page) => readFileSync(`${docsRoot}/${page}`, 'utf8');
+
+          for (const page of pages) {
+            const html = readPage(page);
+            if (!html.includes('<title>')) missing.push(`${page} has no title`);
+
+            for (const match of html.matchAll(/href="([^"]+)"/g)) {
+              const href = match[1];
+              if (href.includes('://') || href.startsWith('mailto:')) continue;
+
+              const [target = '', fragment] = href.split('#', 2);
+              const targetPage = target || page;
+              if (!targetPage.endsWith('.html')) continue;
+              if (!existsSync(`${docsRoot}/${targetPage}`)) {
+                missing.push(`${page} -> ${href}`);
+                continue;
+              }
+              if (fragment && !new RegExp(`\\bid=["']${fragment}["']`).test(readPage(targetPage))) {
+                missing.push(`${page} -> ${href} (missing fragment)`);
+              }
+            }
+          }
+
+          if (missing.length) {
+            console.error(missing.join('\n'));
+            process.exit(1);
+          }
+          console.log(`verified ${pages.length} static Pages documents and local fragments`);
+          NODE
 
       - name: Upload viewable static-site artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4

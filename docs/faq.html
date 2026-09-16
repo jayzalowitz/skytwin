@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Frequently asked questions — SkyTwin</title>
+    <meta
+      name="description"
+      content="Plain-language answers about the SkyTwin developer preview, its fictional sample, privacy, inference, and release status."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/faq.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a href="start.html">Start</a><a href="how-to-use.html">How to use</a
+          ><a href="docs.html">Docs</a><a href="agents.html">Agents</a
+          ><a class="keep" href="https://github.com/jayzalowitz/skytwin"
+            >GitHub</a
+          >
+        </div>
+      </div>
+    </nav>
+    <main class="wrap page">
+      <aside class="toc">
+        <p>Questions</p>
+        <a href="#start">Getting started</a
+        ><a href="#privacy">Privacy &amp; data</a
+        ><a href="#inference">Inference</a
+        ><a href="#actions">Actions &amp; agents</a
+        ><a href="#release">Release status</a>
+      </aside>
+      <article class="content">
+        <p class="eyebrow">Frequently asked questions</p>
+        <span class="status">Developer preview</span>
+        <h1>What you can try today, and what you should not assume.</h1>
+        <p class="lede">
+          These answers are intentionally narrower than a product promise. When
+          an answer is not proven across the release surface, the site says so.
+        </p>
+        <h2 id="start">Getting started</h2>
+        <details open>
+          <summary>Can I try it without connecting an account?</summary>
+          <p>
+            Yes. Current source includes an isolated fictional-data sample. It
+            is the supported evaluation surface: no Gmail, Microsoft, or other
+            account is required; sample interactions have no provider,
+            connector, or execution-adapter effect. Start with the
+            <a href="how-to-use.html">five-minute walkthrough</a>.
+          </p>
+        </details>
+        <details>
+          <summary>Should I use a published desktop installer?</summary>
+          <p>
+            Not for the guarded sample evaluation. Older unsigned
+            technical-preview installers predate parts of the current source
+            path. The <a href="start.html">source guide</a> explains the local
+            development route and the release boundary.
+          </p>
+        </details>
+        <details>
+          <summary>Do I need an AI API key or a local model first?</summary>
+          <p>
+            No for the fictional sample. A model-backed path needs either a
+            compatible local runtime and model or an explicitly configured
+            hosted provider. Neither choice is implicit. See
+            <a href="inference.html">where inference runs</a>.
+          </p>
+        </details>
+        <h2 id="privacy">Privacy &amp; data</h2>
+        <details>
+          <summary>Is all of my data encrypted at rest?</summary>
+          <p>
+            No. OAuth-token storage is mixed: the credential vault can encrypt
+            new or reconnected grants when it is initialized and unlocked, while
+            legacy plaintext token columns remain possible without that state.
+            Current local twin-profile, preference, and memory content should be
+            treated as readable by someone who can read the local database
+            files. Use full-disk encryption and read the
+            <a href="privacy.html">privacy policy</a> before adding personal
+            data.
+          </p>
+        </details>
+        <details>
+          <summary>Can I back up a twin?</summary>
+          <p>
+            Source users can use the encrypted <code>skytwin-backup</code> CLI.
+            It exports twin data into a passphrase-protected archive,
+            deliberately excludes OAuth tokens and machine-local authority
+            records, and restores only onto a fresh install. The exact commands
+            and failure behavior are in the
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/backup-restore.md"
+              >backup reference</a
+            >.
+          </p>
+        </details>
+        <details>
+          <summary>Can I delete my data?</summary>
+          <p>
+            The product model includes pause, audit, deletion, and recovery
+            controls. Read the <a href="safety.html">safety guide</a> for the
+            user-control model and the
+            <a href="privacy.html">privacy policy</a> for current storage
+            disclosures. Do not infer release-wide verified deletion behavior
+            from a source-only demonstration.
+          </p>
+        </details>
+        <h2 id="inference">Inference</h2>
+        <details>
+          <summary>Does “local-first” mean no network traffic?</summary>
+          <p>
+            No. Storage location, reasoning location, and network use are
+            separate facts. A local model can run without a hosted inference
+            call; a hosted provider is an explicit network choice; other
+            application features can have their own documented network behavior.
+            The <a href="inference.html">inference guide</a> separates these
+            terms.
+          </p>
+        </details>
+        <details>
+          <summary>
+            Does TrustedRouter or NEAR AI make an inference confidential in
+            SkyTwin today?
+          </summary>
+          <p>
+            No. Their external materials can inform a future integration, but
+            SkyTwin does not currently make a verified remote-attested inference
+            call. The route is deliberately unavailable until the application
+            can verify the evidence itself. See the
+            <a href="inference.html">review checklist</a> and
+            <a href="https://trust.trustedrouter.com/"
+              >TrustedRouter Trust Center</a
+            >.
+          </p>
+        </details>
+        <h2 id="actions">Actions &amp; agents</h2>
+        <details>
+          <summary>Will SkyTwin act on an LLM suggestion?</summary>
+          <p>
+            Not by suggestion alone. Candidate actions must carry risk and
+            provenance, pass policy, respect trust and spend limits, and either
+            enter an admitted execution path or stop for a person. Missing
+            provenance fails safe as untrusted external content. Read
+            <a href="safety.html">the safety model</a>.
+          </p>
+        </details>
+        <details>
+          <summary>Can another AI agent control it?</summary>
+          <p>
+            The local MCP surface can provide scoped context, proposals, and
+            subscriptions. It is not blanket delegation authority, and an agent
+            must not execute around policy. The
+            <a href="agents.html">agent guide</a> defines the authority contract
+            and recommended loop.
+          </p>
+        </details>
+        <details>
+          <summary>Are Gmail or Microsoft connections available?</summary>
+          <p>
+            No on the supported preview. The source tree contains connector and
+            experimental code, but code presence is not a support claim.
+            Account-backed capabilities are denied before adapter preparation or
+            dispatch while the boundary is active.
+          </p>
+        </details>
+        <h2 id="release">Release status</h2>
+        <details>
+          <summary>Is this public beta ready?</summary>
+          <p>
+            No. The planned <code>v0.7.0-beta</code> remains blocked by signing,
+            notarization, clean-machine proof, and release-wide evidence gates.
+            The <a href="release.html">release guide</a> and machine-checked
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
+              >claim ledger</a
+            >
+            state what is still required.
+          </p>
+        </details>
+        <details>
+          <summary>
+            Where should I report a bug, safety concern, or documentation
+            mistake?
+          </summary>
+          <p>
+            Open a
+            <a href="https://github.com/jayzalowitz/skytwin/issues"
+              >GitHub issue</a
+            >. For a security-sensitive report, follow the repository’s
+            security-reporting guidance instead of including secrets or personal
+            records in a public issue.
+          </p>
+        </details>
+        <p class="footnotes">
+          <a href="docs.html">Documentation hub</a> ·
+          <a href="reference.html">Reference center</a> ·
+          <a href="release.html">Release evidence</a>
+        </p>
+      </article>
+    </main>
+    <footer class="wrap">
+      <p>
+        SkyTwin is Apache-2.0 open source. Questions or security reports:
+        <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue</a
+        >.
+      </p>
+    </footer>
+  </body>
+</html>

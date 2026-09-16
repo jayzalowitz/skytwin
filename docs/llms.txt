@@ -7,6 +7,12 @@
 
 - [Overview](https://jayzalowitz.github.io/skytwin/): product boundary, source-first evaluation path, architecture, and public limitations.
 - [Start locally](https://jayzalowitz.github.io/skytwin/start.html): prerequisites, source installation, and evaluation boundary.
+- [Fictional-sample walkthrough](https://jayzalowitz.github.io/skytwin/how-to-use.html): plain-language tour with current source-run screenshots and no-account boundary.
+- [FAQ](https://jayzalowitz.github.io/skytwin/faq.html): preview, privacy, inference, action, agent, and release questions answered with qualified boundaries.
+- [Data and memory guide](https://jayzalowitz.github.io/skytwin/data.html): storage disclosure, memory backends, backups, restore, and user-control boundaries.
+- [Integration status](https://jayzalowitz.github.io/skytwin/integrations.html): current connector, local MCP, adapter, and DXT boundaries.
+- [Troubleshooting](https://jayzalowitz.github.io/skytwin/troubleshooting.html): local source-run diagnostics, migrations, seed, ports, and build-output recovery.
+- [Glossary](https://jayzalowitz.github.io/skytwin/glossary.html): constrained meanings of decision, policy, inference, and integration terms.
 - [Agent guide](https://jayzalowitz.github.io/skytwin/agents.html): MCP setup, safe proposal loop, authority limits, and source-of-truth links.
 - [Reference center](https://jayzalowitz.github.io/skytwin/reference.html): architecture, operations, privacy, safety, and release evidence map.
 - [Documentation home](https://jayzalowitz.github.io/skytwin/docs.html): choose a human or machine path through the full public guide set.
