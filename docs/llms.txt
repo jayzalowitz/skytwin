@@ -9,6 +9,12 @@
 - [Start locally](https://jayzalowitz.github.io/skytwin/start.html): prerequisites, source installation, and evaluation boundary.
 - [Agent guide](https://jayzalowitz.github.io/skytwin/agents.html): MCP setup, safe proposal loop, authority limits, and source-of-truth links.
 - [Reference center](https://jayzalowitz.github.io/skytwin/reference.html): architecture, operations, privacy, safety, and release evidence map.
+- [Documentation home](https://jayzalowitz.github.io/skytwin/docs.html): choose a human or machine path through the full public guide set.
+- [Architecture guide](https://jayzalowitz.github.io/skytwin/architecture.html): typed decision pipeline, component responsibilities, API map, storage, and development commands.
+- [Safety guide](https://jayzalowitz.github.io/skytwin/safety.html): trust, policy, provenance, approvals, pause, audit, deletion, and recovery behavior.
+- [Inference guide](https://jayzalowitz.github.io/skytwin/inference.html): local, conventional-provider, and deliberately unavailable attested-remote routes.
+- [Operations guide](https://jayzalowitz.github.io/skytwin/operations.html): local run commands, health probes, metrics, alerting, and known observability limits.
+- [Release evidence guide](https://jayzalowitz.github.io/skytwin/release.html): claim ledger, release gates, tagged workflow, and artifact review rules.
 - [Demo](https://jayzalowitz.github.io/skytwin/demo.html): fictional-data, account-free preview boundary.
 - [Repository](https://github.com/jayzalowitz/skytwin): source, issues, and contribution history.
 
