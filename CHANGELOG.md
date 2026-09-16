@@ -199,9 +199,11 @@ All notable changes to SkyTwin will be documented in this file.
   production and full graphs audit clean. Vitest 5 runs only canonical source
   tests instead of rediscovering compiled `dist` copies. MCP SDK, PostgreSQL,
   ESLint, Turbo, Prettier, YAML, TSX, and related safe updates are included;
-  GitHub's Node, pnpm, Java, and Gradle setup actions move to their reviewed,
-  immutable current release SHAs. Installed-graph contract tests continue to
-  protect deliberate parser and glob-version boundaries.
+  GitHub's Node, Java, and Gradle setup actions move to their reviewed,
+  immutable current release SHAs. pnpm/action-setup remains pinned to v5
+  because v6's native self-update shim is incompatible with the release-claim
+  runtime's fail-closed JavaScript launcher binding. Installed-graph contract
+  tests continue to protect deliberate parser and glob-version boundaries.
 
 - **The external gbrain adapter understands current gbrain 0.50 search
   results.** CLI search now normalizes the current `slug`/`chunk_text` schema,
