@@ -319,7 +319,22 @@ async function handleOnboardingClick(e) {
 
 function renderContent(html) {
   const el = document.getElementById('onboarding-content');
-  if (el) el.innerHTML = html;
+  if (!el) return;
+  el.setAttribute('aria-busy', 'true');
+  el.innerHTML = html;
+  const title = el.querySelector('.onboarding-title');
+  if (title) {
+    title.id = 'onb-dialog-title';
+    title.setAttribute('tabindex', '-1');
+    document.getElementById('onboarding-overlay')?.setAttribute('aria-labelledby', 'onb-dialog-title');
+    document.getElementById('onboarding-overlay')?.removeAttribute('aria-label');
+  } else {
+    document.getElementById('onboarding-overlay')?.removeAttribute('aria-labelledby');
+    document.getElementById('onboarding-overlay')?.setAttribute('aria-label', 'Onboarding');
+  }
+  const focusTarget = title || el.querySelector('input, button, [tabindex]');
+  if (focusTarget instanceof HTMLElement) requestAnimationFrame(() => focusTarget.focus());
+  el.setAttribute('aria-busy', 'false');
 }
 
 function showWizardError(msg) {
@@ -327,6 +342,9 @@ function showWizardError(msg) {
   if (el) {
     el.textContent = msg;
     el.style.display = 'block';
+    el.setAttribute('role', 'alert');
+    const status = document.getElementById('onb-wizard-status');
+    if (status) status.textContent = msg;
   }
 }
 
@@ -356,7 +374,7 @@ function renderWelcome() {
          connections stay visible as an unavailable neutral state, never as
          an action affordance. -->
     <div style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1rem;">
-      <button id="onb-tour-button" class="btn btn-primary btn-lg" disabled
+      <button type="button" id="onb-tour-button" class="btn btn-primary btn-lg" disabled
               style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
               data-action="onb-start-tour"
               title="Sample profile not seeded — run pnpm db:seed">
@@ -471,20 +489,20 @@ function renderEmailChoice() {
       <summary style="cursor:pointer;color:var(--text-muted);font-size:0.85rem;">Continue with an email address</summary>
       <div style="margin-top:0.75rem;padding:0.75rem;border:1px solid var(--border);border-radius:var(--radius-sm);">
         <div class="form-group">
-          <label style="font-size:0.85rem;">Your name</label>
+          <label for="onb-name-input" style="font-size:0.85rem;">Your name</label>
           <input class="form-input" id="onb-name-input" type="text" placeholder="Jane">
         </div>
         <div class="form-group">
-          <label style="font-size:0.85rem;">Your email</label>
+          <label for="onb-email-input" style="font-size:0.85rem;">Your email</label>
           <input class="form-input" id="onb-email-input" type="email" placeholder="you@example.com">
         </div>
-        <button class="btn btn-outline" style="width:100%;margin-top:0.5rem;" data-action="onb-email-submit">
+        <button type="button" class="btn btn-outline" style="width:100%;margin-top:0.5rem;" data-action="onb-email-submit">
           Continue with email
         </button>
       </div>
     </details>
 
-    <button class="btn-link" data-action="onb-back-welcome"
+    <button type="button" class="btn-link" data-action="onb-back-welcome"
             style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
       ← Back
     </button>
@@ -519,16 +537,16 @@ function renderComputerChoice() {
     </div>
 
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button class="btn btn-primary" data-action="onb-enable-idle-miner">
+      <button type="button" class="btn btn-primary" data-action="onb-enable-idle-miner">
         Enable and continue
       </button>
-      <button class="btn btn-outline" data-action="onb-skip-idle-miner" style="color:var(--text-muted);">
+      <button type="button" class="btn btn-outline" data-action="onb-skip-idle-miner" style="color:var(--text-muted);">
         Not now
       </button>
     </div>
 
     <div style="margin-top:0.75rem;">
-      <button class="btn-link" data-action="onb-back-welcome"
+      <button type="button" class="btn-link" data-action="onb-back-welcome"
               style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
         ← Back
       </button>
@@ -553,14 +571,14 @@ async function renderIdleMinerPoll() {
     </div>
     <div id="onb-poll-result" style="display:none;"></div>
     <div id="onb-poll-actions" style="margin-top:1rem;display:none;">
-      <button class="btn btn-primary" data-action="onb-install-recipe" data-slug="">Install suggested recipe</button>
-      <button class="btn btn-outline" data-action="onb-skip-recipe" style="margin-left:0.5rem;">Skip for now</button>
+      <button type="button" class="btn btn-primary" data-action="onb-install-recipe" data-slug="">Install suggested recipe</button>
+      <button type="button" class="btn btn-outline" data-action="onb-skip-recipe" style="margin-left:0.5rem;">Skip for now</button>
     </div>
     <div id="onb-poll-timeout" style="display:none;margin-top:1rem;">
       <div style="font-size:0.85rem;color:var(--text-muted);margin-bottom:0.5rem;">
         Still scanning — I'll keep looking in the background. Let's continue to the dashboard.
       </div>
-      <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard</button>
+      <button type="button" class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard</button>
     </div>
   `);
 
@@ -641,11 +659,12 @@ function renderAboutMeConversational() {
     <div id="onb-chat-history" style="min-height:120px;max-height:260px;overflow-y:auto;display:flex;flex-direction:column;gap:0.5rem;margin-bottom:0.75rem;padding:0.5rem;background:var(--bg);border-radius:var(--radius-sm);border:1px solid var(--border);">
     </div>
     <div style="display:flex;gap:0.4rem;">
+      <label class="sr-only" for="onb-chat-input">Your answer</label>
       <input class="form-input" id="onb-chat-input" type="text" placeholder="Type your answer…" style="flex:1;">
-      <button class="btn btn-primary" data-action="onb-send-chat">Send</button>
+      <button type="button" class="btn btn-primary" data-action="onb-send-chat">Send</button>
     </div>
     <div style="margin-top:0.75rem;">
-      <button class="btn-link" data-action="onb-back-welcome"
+      <button type="button" class="btn-link" data-action="onb-back-welcome"
               style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
         ← Back
       </button>
@@ -810,7 +829,7 @@ function renderDeterministicStep() {
     <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.75rem;">${escapeHtml(q.text)}</div>
     <div style="display:flex;flex-direction:column;gap:0.4rem;">
       ${q.options.map((opt) => `
-        <button class="btn btn-outline" style="text-align:left;"
+        <button type="button" class="btn btn-outline" style="text-align:left;"
                 data-action="onb-deterministic-answer"
                 data-question-key="${escapeHtml(q.key)}"
                 data-answer="${escapeHtml(opt.value)}">
@@ -819,7 +838,7 @@ function renderDeterministicStep() {
       `).join('')}
     </div>
     <div style="margin-top:0.75rem;">
-      <button class="btn-link" data-action="onb-back-welcome"
+      <button type="button" class="btn-link" data-action="onb-back-welcome"
               style="font-size:0.82rem;color:var(--text-muted);background:none;border:none;cursor:pointer;padding:0;">
         ← Back
       </button>
@@ -918,10 +937,10 @@ async function renderRecipePreview() {
     </div>
 
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button class="btn btn-primary" data-action="onb-install-recipe" data-slug="${escapeHtml(slug)}">
+      <button type="button" class="btn btn-primary" data-action="onb-install-recipe" data-slug="${escapeHtml(slug)}">
         Install this bundle
       </button>
-      <button class="btn btn-outline" data-action="onb-skip-recipe" style="color:var(--text-muted);">
+      <button type="button" class="btn btn-outline" data-action="onb-skip-recipe" style="color:var(--text-muted);">
         Skip for now
       </button>
     </div>
@@ -1060,7 +1079,7 @@ async function handleInstallRecipe(slug, btn) {
       <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:block;">
         Install failed: ${escapeHtml(err?.message || 'unknown error')}
       </div>
-      <button class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard anyway</button>
+      <button type="button" class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard anyway</button>
     `);
   }
 }
@@ -1086,7 +1105,7 @@ function renderInstallComplete(slug, count) {
       <div class="onboarding-desc" style="font-size:0.85rem;margin-bottom:1.25rem;">
         ${count} capability${count !== 1 ? 's' : ''} ${count > 0 ? 'will be installed — some need OAuth authorisation which will happen when you first use them.' : 'queued.'}
       </div>
-      <button class="btn btn-primary btn-lg" data-action="onb-go-dashboard">Go to dashboard</button>
+      <button type="button" class="btn btn-primary btn-lg" data-action="onb-go-dashboard">Go to dashboard</button>
     </div>
   `);
 }
@@ -1287,8 +1306,8 @@ function renderResumePrompt(savedScreen, savedAt) {
       Looks like you stopped at <strong>${escapeHtml(friendlyScreen)}</strong>${when}. Want to resume, or start over?
     </div>
     <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
-      <button class="btn btn-primary" data-action="onboarding-resume" data-screen="${escapeHtml(savedScreen)}">Resume</button>
-      <button class="btn btn-outline" data-action="onboarding-restart">Start over</button>
+      <button type="button" class="btn btn-primary" data-action="onboarding-resume" data-screen="${escapeHtml(savedScreen)}">Resume</button>
+      <button type="button" class="btn btn-outline" data-action="onboarding-restart">Start over</button>
     </div>
   `);
 }

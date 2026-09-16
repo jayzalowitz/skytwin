@@ -93,9 +93,14 @@ function hideOnboarding() {
     _onboardingEscHandler = null;
   }
   updateConnectionStatus();
+  if (_onboardingReturnFocus instanceof HTMLElement) {
+    _onboardingReturnFocus.focus();
+    _onboardingReturnFocus = null;
+  }
 }
 
 let _onboardingEscHandler = null;
+let _onboardingReturnFocus = null;
 
 /**
  * Dismiss the modal as "skipped" — user pressed Esc, the X button, or
@@ -129,6 +134,9 @@ window.skyTwinTeardownOnboardingEsc = () => {
  */
 function showOnboarding() {
   const overlay = document.getElementById('onboarding-overlay');
+  _onboardingReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
   overlay.style.display = 'flex';
 
   // Esc-to-dismiss. Wired once per show, torn down by hideOnboarding so
