@@ -1,0 +1,35 @@
+name: Documentation Preview
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - '.github/workflows/docs-preview.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package-preview:
+    name: Package viewable documentation preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410e181273ba90b1 # v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Verify static documentation links
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module -e 'import { readdirSync, readFileSync, existsSync } from "node:fs"; const files = readdirSync("docs").filter((file) => file.endsWith(".html")); const missing = []; for (const file of files) { const html = readFileSync(`docs/${file}`, "utf8"); if (!html.includes("<title>")) missing.push(`${file} has no title`); for (const match of html.matchAll(/href="([^"]+)"/g)) { const href = match[1]; if (!href.includes("://") && !href.startsWith("#") && !href.startsWith("mailto:")) { const target = href.split("#")[0]; if (target && !existsSync(`docs/${target}`)) missing.push(`${file} -> ${href}`); } } } if (missing.length) { console.error(missing.join("\n")); process.exit(1); } console.log(`verified ${files.length} static Pages documents`);'
+
+      - name: Upload viewable static-site artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
+        with:
+          name: skytwin-documentation-preview
+          path: docs
+          if-no-files-found: error
+          retention-days: 14

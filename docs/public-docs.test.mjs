@@ -8,18 +8,26 @@ const index = read('docs/index.html');
 const start = read('docs/start.html');
 const agents = read('docs/agents.html');
 const llms = read('docs/llms.txt');
+const docsHome = read('docs/docs.html');
 
 describe('public developer-preview documentation', () => {
   it('keeps the human and machine paths published together', () => {
-    for (const path of ['docs/index.html', 'docs/start.html', 'docs/agents.html', 'docs/reference.html', 'docs/llms.txt']) {
+    for (const path of [
+      'docs/index.html', 'docs/start.html', 'docs/docs.html', 'docs/architecture.html',
+      'docs/safety.html', 'docs/inference.html', 'docs/agents.html', 'docs/operations.html',
+      'docs/release.html', 'docs/contributing.html', 'docs/reference.html', 'docs/llms.txt',
+      'docs/guides.css',
+    ]) {
       expect(existsSync(resolve(root, path))).toBe(true);
     }
     expect(index).toContain('href="start.html"');
     expect(index).toContain('href="agents.html"');
     expect(index).toContain('href="reference.html"');
     expect(index).toContain('href="llms.txt"');
-    expect(agents).toContain('Twin MCP server');
+    expect(agents).toContain('local MCP server');
     expect(llms).toContain('Agent safety requirements');
+    expect(docsHome).toContain('architecture.html');
+    expect(docsHome).toContain('release.html');
   });
 
   it('keeps source evaluation and release boundaries explicit', () => {
@@ -28,7 +36,7 @@ describe('public developer-preview documentation', () => {
     expect(start).toContain('not a supported installer path');
     expect(start).toContain('Google and Microsoft account connections are unavailable');
     expect(agents).toContain('Do not execute around policy.');
-    expect(agents).toContain('Missing provenance is untrusted external.');
+    expect(agents).toContain('Missing action provenance is');
   });
 
   it('does not present remote provider material as an active confidential route', () => {
@@ -44,5 +52,14 @@ describe('public developer-preview documentation', () => {
     expect(reference).toContain('Deliberately unavailable');
     expect(reference).toContain('docs/beta-claim-ledger.json');
     expect(reference).toContain('docs/technical-spec.md');
+  });
+
+  it('keeps the full guide set source-grounded and clear about supported boundaries', () => {
+    expect(read('docs/architecture.html')).toContain('typed candidate action');
+    expect(read('docs/safety.html')).toContain('Missing action provenance is');
+    expect(read('docs/inference.html')).toContain('remote attested inference is deliberately unavailable');
+    expect(read('docs/operations.html')).toContain('skytwin_db_pool_waiting');
+    expect(read('docs/release.html')).toContain('v0.7.0-beta');
+    expect(read('docs/contributing.html')).toContain('Never auto-execute without a policy check.');
   });
 });
