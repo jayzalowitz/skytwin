@@ -3,11 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SkyTwin — a digital twin that learns what you'd want and does it</title>
-  <meta name="description" content="SkyTwin is an open-source, local-first personal assistant project. The supported technical preview is an isolated account-free sample with fictional decisions, explanations, and no external effects; Google and Microsoft account connections are unavailable.">
+  <title>SkyTwin — open-source local-first decision software</title>
+  <meta name="description" content="SkyTwin is an open-source, local-first decision system. Start with the isolated account-free fictional-data sample; the planned public beta remains blocked by release evidence gates.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/">
-  <meta property="og:title" content="SkyTwin — it acts, it doesn't chat">
-  <meta property="og:description" content="Open-source, local-first digital twin technical preview: explore an isolated account-free sample with fictional data and no external effects. Google and Microsoft account connections are unavailable.">
+  <meta property="og:title" content="SkyTwin — open-source local-first decision software">
+  <meta property="og:description" content="A source-first developer preview with fictional-data evaluation, policy gates, and explicit local and network boundaries.">
   <meta property="og:type" content="website">
   <meta property="og:url" content="https://jayzalowitz.github.io/skytwin/">
   <!-- No external font fetch: the --font-* vars fall back to the system stack,
@@ -98,6 +98,31 @@
     .card .tag { display: inline-block; font-size: .72rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); margin-bottom: .5rem; }
     .card.safe .tag { color: var(--safe); }
 
+    /* Developer-preview path: in-flow status and evaluation cues. These make
+       the launch boundary legible without hiding the caveats behind a modal. */
+    .status { display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .65rem; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text-muted); font-size: .8rem; }
+    .status::before { content: ""; width: .48rem; height: .48rem; border-radius: 50%; background: var(--warning, #E7B14C); }
+    .path-grid, .boundary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1.4rem; }
+    .step { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.35rem; }
+    .step-number { display: inline-grid; place-items: center; width: 1.65rem; height: 1.65rem; margin-bottom: .85rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent-hover); font: 600 .78rem var(--font-data); }
+    .step h3, .boundary h3 { margin: 0 0 .45rem; font-size: 1.05rem; }
+    .step p, .boundary p { margin: 0; color: var(--text-muted); font-size: .94rem; }
+    .step code { display: block; margin-top: .9rem; padding: .7rem; overflow-x: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font-size: .78rem; }
+    .boundary { padding: 1.2rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+    .boundary .state { margin-bottom: .55rem; color: var(--safe); font: 500 .72rem var(--font-data); letter-spacing: .04em; text-transform: uppercase; }
+    .boundary.pending .state { color: var(--warning, #E7B14C); }
+    .boundary.network .state { color: var(--danger); }
+    .flow { display: grid; grid-template-columns: repeat(6, 1fr); gap: .55rem; margin-top: 1.4rem; align-items: stretch; }
+    .flow-node { position: relative; min-height: 7.2rem; padding: .85rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: .83rem; }
+    .flow-node strong { display: block; margin-bottom: .35rem; font-size: .9rem; }
+    .flow-node:not(:last-child)::after { content: "→"; position: absolute; right: -.55rem; top: 50%; z-index: 1; color: var(--text-dim); transform: translateY(-50%); }
+    .flow-node.gate { border-color: var(--accent); background: var(--accent-soft); }
+    .callout { margin-top: 1.25rem; padding: 1rem 1.1rem; border-left: 3px solid var(--accent); background: var(--surface); color: var(--text-muted); }
+    .facts { display: grid; grid-template-columns: 1.2fr .8fr; gap: 1rem; margin-top: 1.4rem; }
+    .facts details { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: .9rem 1rem; }
+    .facts summary { cursor: pointer; color: var(--text); font-weight: 600; }
+    .facts p, .facts ul { color: var(--text-muted); font-size: .94rem; }
+
     /* Scopes table (Google OAuth review) */
     .scopes { width: 100%; border-collapse: collapse; margin-top: 1.2rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
     .scopes th, .scopes td { padding: .8rem 1rem; text-align: left; border-bottom: 1px solid var(--border); font-size: .94rem; vertical-align: top; }
@@ -113,7 +138,9 @@
     footer a { color: var(--text-muted); }
 
     @media (max-width: 680px) {
-      .grid, .shot-grid { grid-template-columns: 1fr; }
+      .grid, .shot-grid, .path-grid, .boundary-grid, .facts, .flow { grid-template-columns: 1fr; }
+      .flow-node { min-height: auto; }
+      .flow-node:not(:last-child)::after { content: "↓"; top: auto; right: 50%; bottom: -.8rem; transform: translateX(50%); }
       .nav-links a:not(.button) { display: none; }
     }
   </style>
@@ -125,6 +152,9 @@
         <span class="brand-mark">S</span><span>SkyTwin</span>
       </a>
       <div class="nav-links">
+        <a href="start.html">Start</a>
+        <a href="agents.html">For agents</a>
+        <a href="reference.html">Reference</a>
         <a href="demo.html">Demo</a>
         <a href="deck.html">Deck</a>
         <a href="connect-gmail.html">Google status</a>
@@ -137,15 +167,28 @@
   <main>
     <section class="hero wrap">
       <p class="eyebrow">Open source · local-first · Apache 2.0</p>
-      <h1>A digital twin that learns what you'd want — and does it.</h1>
-      <p class="lede">The supported technical preview is an isolated, account-free sample with fictional decisions and no external effects. It demonstrates SkyTwin's preference, policy, approval, and explanation model without connecting a private account. Google and Microsoft account connections are unavailable; supported real-account access remains deferred. The planned <code>v0.7.0-beta</code> remains blocked by the evidence and release gates in the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a>.</p>
+      <span class="status">Developer preview — source and fictional sample first</span>
+      <h1>Build a personal agent that can explain why it stopped.</h1>
+      <p class="lede">SkyTwin is an open-source, local-first decision system: it turns signals into candidate actions, runs policy and trust checks, and either asks for approval or records why it did not proceed. Start with the isolated account-free sample; it uses fictional decisions and has no external effects. The planned <code>v0.7.0-beta</code> remains blocked by the evidence and release gates in the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a>.</p>
       <div class="actions">
-        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Download technical preview</a>
-        <a class="button" href="demo.html">See the 5-minute demo</a>
+        <a class="button primary" href="start.html">Start from source</a>
+        <a class="button" href="demo.html">See the fictional-data demo</a>
+        <a class="button" href="agents.html">Read the agent guide</a>
         <a class="button" href="https://github.com/jayzalowitz/skytwin">View source</a>
-        <span class="note">Published installers predate the guarded account-free sample now in source.</span>
+        <span class="note"><a href="https://github.com/jayzalowitz/skytwin/releases/latest">Download technical preview</a> artifacts are older than the guarded source sample.</span>
       </div>
-      <p class="section-lede">Historical product captures are withheld until replacement images pass the public-copy audit.</p>
+      <p class="section-lede">This is not a hosted service, a supported installer release, or a promise that a remote provider is private. It is a repository you can inspect, run locally, and challenge.</p>
+    </section>
+
+    <section class="wrap" id="evaluate">
+      <h2>Evaluate it in three honest steps</h2>
+      <p class="section-lede">The fastest path is source first. It makes the current boundary visible instead of asking you to trust a download badge.</p>
+      <div class="path-grid">
+        <article class="step"><span class="step-number">01</span><h3>Run the source tree</h3><p>macOS, Linux, or WSL. The installer bootstraps local dependencies, starts the API, worker, and dashboard, and opens the dashboard on localhost.</p><code>git clone https://github.com/jayzalowitz/skytwin.git<br>cd skytwin &amp;&amp; ./install.sh</code></article>
+        <article class="step"><span class="step-number">02</span><h3>Use fictional data first</h3><p>Inspect the account-free sample and its explanations before considering any private account or provider configuration. The sample is deliberately isolated and non-destructive.</p><a class="button" style="margin-top:.9rem" href="demo.html">Walk the demo boundary</a></article>
+        <article class="step"><span class="step-number">03</span><h3>Inspect the controls</h3><p>Read the policy, provenance, local-model, and provider-boundary documentation before enabling an integration. If a boundary is not proven, SkyTwin should make it unavailable.</p><a class="button" style="margin-top:.9rem" href="agents.html">Read machine-facing rules</a></article>
+      </div>
+      <div class="callout"><strong>Before you run it:</strong> this installer can install prerequisites and starts local services. It is a source/developer path, not a sandboxed browser demo. Read <a href="start.html">Start</a> for prerequisites, ports, data locations, and removal guidance.</div>
     </section>
 
     <section class="wrap">
@@ -175,14 +218,53 @@
       </div>
     </section>
 
+    <section class="wrap" id="boundaries">
+      <h2>The important part is where it refuses to act</h2>
+      <p class="section-lede">A local-first label is not enough. The project separates local execution, ordinary network providers, and future attested remote routes—and does not silently cross between them.</p>
+      <div class="boundary-grid">
+        <article class="boundary"><p class="state">Default boundary</p><h3>On this device</h3><p>The embedded runtime and source-qualified loopback Ollama are the local route. Managed setup verifies the downloaded artifact; an explicit local model is still local, but is not represented as artifact-verified. No remote fallback.</p></article>
+        <article class="boundary network"><p class="state">Explicit opt-in</p><h3>My configured provider</h3><p>A chosen hosted provider may receive prompts under its own terms. This is a network boundary, not a confidential-computing claim, and it is never selected by a local failure.</p></article>
+        <article class="boundary pending"><p class="state">Deliberately unavailable</p><h3>Remote attested inference</h3><p>TrustedRouter and NEAR AI materials are documented, but SkyTwin does not send a prompt in its verified-private mode until a verifier-owned, same-connection adapter exists.</p></article>
+      </div>
+      <p class="section-lede" style="margin-top:1rem">Read the full <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md">confidential-inference boundary</a>, including the <a href="https://trust.trustedrouter.com/">TrustedRouter live trust record</a> and why provider evidence is not automatically a SkyTwin product claim.</p>
+    </section>
+
+    <section class="wrap" id="architecture">
+      <h2>A decision path with gates, not a prompt-to-action shortcut</h2>
+      <p class="section-lede">This is the contract to evaluate in the source. A candidate action is not executable merely because a model or connector suggested it.</p>
+      <div class="flow" role="img" aria-label="Signals become a decision context, candidate action, policy and provenance gate, approval or execution, explanation, then feedback">
+        <div class="flow-node"><strong>Signals</strong>Fictional sample or configured sources</div>
+        <div class="flow-node"><strong>Context</strong>Preferences, memory, confidence, and provenance</div>
+        <div class="flow-node"><strong>Candidate</strong>Risk assessment and reversibility are required</div>
+        <div class="flow-node gate"><strong>Policy gate</strong>Trust tier, spend, provenance, and injection checks</div>
+        <div class="flow-node"><strong>Approval / route</strong>Escalate, execute through an admitted adapter, or refuse</div>
+        <div class="flow-node"><strong>Explanation + feedback</strong>Record supported outcomes and learn from corrections</div>
+      </div>
+      <div class="facts">
+        <details open><summary>What an external agent may do</summary><p>The Twin MCP surface is scoped and token-gated. It can expose read-only context and propose actions for review; it is not a blanket authority to operate connected accounts. See the <a href="agents.html#mcp">agent guide</a>.</p></details>
+        <details><summary>What an untrusted input cannot do</summary><p>Untrusted-origin destructive-shaped actions are escalated. Missing provenance fails safe to untrusted external; the action generator cannot self-assign trusted provenance. See the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/safety-model.md">safety model</a>.</p></details>
+      </div>
+    </section>
+
     <section class="wrap">
       <h2>See it before you connect anything</h2>
-      <p class="section-lede">Current source includes a guarded account-free sample for packaged desktop builds, so a stranger can inspect fictional decisions and explanations without touching a private inbox. Product data remains read-only; approve, reject, correct, and learn interactions run only in a disposable session-local simulation with no external effects. Published installers predate this path. <a href="demo.html">See the demo boundaries and storyboard →</a></p>
+      <p class="section-lede">Current source includes a guarded account-free sample for packaged desktop builds, so a stranger can inspect fictional decisions and explanations without touching a private inbox. Product data remains read-only; approve, reject, correct, and learn interactions run only in a disposable session-local simulation with no external effects. Published installers predate the guarded account-free sample now in source. <a href="demo.html">See the demo boundaries and storyboard →</a></p>
       <div class="shot-grid">
         <figure><figcaption>Onboarding capture withheld pending replacement after the public-copy audit.</figcaption></figure>
         <figure><figcaption>Approvals capture withheld pending replacement after the public-copy audit.</figcaption></figure>
         <figure><figcaption>Settings capture withheld pending replacement after the public-copy audit.</figcaption></figure>
         <figure><figcaption>Briefing capture withheld pending replacement after the public-copy audit.</figcaption></figure>
+      </div>
+    </section>
+
+    <section class="wrap" id="docs">
+      <h2>Documentation for people and the agents they build</h2>
+      <p class="section-lede">The public Pages guides explain how to evaluate the project without assuming product context. The repository documents remain the source of truth for implementation details, tests, and release evidence.</p>
+      <div class="grid">
+        <div class="card safe"><span class="tag">Start here</span><h3>Human evaluation guide</h3><p>Prerequisites, transparent source install, local services, fictional-data sample, and the data/network boundaries to read before configuration.</p><p style="margin-top:.7rem"><a href="start.html">Open Start →</a></p></div>
+        <div class="card"><span class="tag">Machine-facing</span><h3>Agent integration guide</h3><p>Scoped Twin MCP setup, proposal-versus-execution rules, provenance requirements, ambiguity handling, and sources to retrieve next.</p><p style="margin-top:.7rem"><a href="agents.html">Open agent guide →</a> · <a href="llms.txt">llms.txt</a></p></div>
+        <div class="card"><span class="tag">Reference</span><h3>Architecture, operations, and evidence</h3><p>A navigable map of the technical specification, safety model, data boundaries, release evidence, troubleshooting, and source locations.</p><p style="margin-top:.7rem"><a href="reference.html">Open reference center →</a> · <a href="deck.html">evidence deck</a></p></div>
+        <div class="card"><span class="tag">Contribute</span><h3>Make a narrow, testable change</h3><p>Use issues and pull requests for feedback. Code that affects policy, privacy, or claims should include its tests and its relevant documentation boundary.</p><p style="margin-top:.7rem"><a href="https://github.com/jayzalowitz/skytwin/issues">Open issues →</a></p></div>
       </div>
     </section>
 
@@ -211,6 +293,7 @@
         <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/technical-spec.md">Technical spec</a> — architecture, data flow, schema</li>
         <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/product-spec.md">Product spec</a> — what we will and won't ship, and why</li>
         <li><a href="demo.html">Demo storyboard</a> — and the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">operator script</a> behind it</li>
+        <li><a href="start.html">Start locally</a> · <a href="agents.html">Agent guide</a> · <a href="reference.html">Reference center</a> · <a href="llms.txt">llms.txt</a></li>
         <li><a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms of service</a></li>
       </ul>
     </section>
