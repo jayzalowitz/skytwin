@@ -1,5 +1,17 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.103.0] - 2026-09-16
+
+### Changed
+
+- **You can configure verified private-cloud reasoning from Settings or the
+  first-run screen.** TrustedRouter now verifies the live gateway and signed
+  response receipt against workload identity pinned in this SkyTwin build
+  before showing an answer. NEAR AI appears as verification-pending but remains
+  unavailable because its public evidence does not yet pin the dynamically
+  selected inference workload. All failure paths stop without falling back to
+  a conventional provider.
+
 ## [Unreleased] — Fail-closed action entry paths
 
 ### Fixed (post-review)
