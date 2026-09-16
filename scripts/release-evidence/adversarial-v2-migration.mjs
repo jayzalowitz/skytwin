@@ -2,7 +2,7 @@
 
 import { createHash } from 'node:crypto';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { readStableRegularFile } from '../release-artifacts/file-integrity.mjs';
 import { createTrustedGit } from './trusted-git.mjs';
 
@@ -17,15 +17,26 @@ const V2_ID = /^adv-v2-[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 const ASSERTION_FILE = /^apps\/api\/src\/__tests__\/[a-z0-9._-]+\.test\.ts$/u;
 const V1_FIXTURE_PATH = 'packages/evals/fixtures/v1/adversarial-scenarios.json';
 const V1_BASELINE_PATH = 'scripts/release-evidence/adversarial-source-checkout-baseline.json';
-const V1_FIXTURE_SHA256 = '3b0125d632a18cb92c2c8a7630ced35c4d369ccc7e777f8a1697f7b0c8c473a8';
-const V1_BASELINE_SHA256 = '60133bfd2e0bf5b731e4bb1b51ac3bd4741b99ae8bd11998f7506f81dae12598';
-const MIGRATION_BASE_COMMIT = '7c39fa4aa36bbb6716a305c21f7c733a7a99bc41';
+const V1_FIXTURE_SHA256 = 'f2516491256be3de4cf5fd40237994e9cc0711f4ec5705eef6a0c8340a89dfea';
+const V1_BASELINE_SHA256 = '91359a1d6a4d59338f0d726490974805a1988ad69e9b894b2c43bd5e0f18d5a3';
+const MIGRATION_BASE_COMMIT = '0714aa2315669356f255a4ceb2ec7a2bf76cb8ed';
 const REQUIRED_SUPERSESSIONS = new Map([
   ['adv-v1-approvals-untrusted-account-dual', 'adv-v2-approvals-preflight-explanation'],
   ['adv-v1-capability-regret-no-dispatch', 'adv-v2-capability-regret-explanation'],
 ]);
+const GENESIS_ASSERTIONS = new Map([
+  [
+    'apps/api/src/__tests__/adversarial-approvals-untrusted-account-dual.test.ts',
+    '3f45c701538f5f1a529b5a99b36a9cb7e40208615936635daa8490f7a87c1781',
+  ],
+  [
+    'apps/api/src/__tests__/adversarial-capability-regret.test.ts',
+    '0b4ea3ff180108e12e3d2067e5f425c1e30c2c84260bdc925084e58a5e99faa9',
+  ],
+]);
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ASSERTION_BYTES = 4 * 1024 * 1024;
+const INTERNAL_SELF_CHECK = Symbol('internal v2 migration self-check');
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
@@ -174,15 +185,38 @@ function gitBytes(root, commit, path) {
   return result.stdout;
 }
 
-function assertAncestor(root, commit) {
+function assertCommitAncestor(root, ancestor, descendant, label) {
   const git = createTrustedGit(root);
-  const result = git.spawn(['merge-base', '--is-ancestor', commit, 'HEAD'], {
+  const result = git.spawn(['merge-base', '--is-ancestor', ancestor, descendant], {
     encoding: 'utf8',
     maxBuffer: 64 * 1024,
     timeout: 60_000,
   });
   if (result.error || result.status !== 0) {
-    throw new Error('last-valid commit is not an ancestor of the current checkout');
+    throw new Error(`${label} is not an ancestor of ${descendant}`);
+  }
+}
+
+function assertAncestor(root, commit) {
+  assertCommitAncestor(root, commit, 'HEAD', 'trusted commit');
+}
+
+function assertAuditedGenesis(root, trustedCommit) {
+  assertCommitAncestor(
+    root,
+    MIGRATION_BASE_COMMIT,
+    trustedCommit,
+    'migration last-valid commit',
+  );
+  const expected = new Map([
+    [V1_FIXTURE_PATH, V1_FIXTURE_SHA256],
+    [V1_BASELINE_PATH, V1_BASELINE_SHA256],
+    ...GENESIS_ASSERTIONS,
+  ]);
+  for (const [path, digest] of expected) {
+    if (sha256(gitBytes(root, trustedCommit, path)) !== digest) {
+      throw new Error(`trusted genesis base does not retain audited v1 bytes: ${path}`);
+    }
   }
 }
 
@@ -390,9 +424,38 @@ function assertFingerprintMap(current, expected, label) {
   }
 }
 
-function trustedBaselineFromCommit(root, commit) {
+function commitContainsPath(root, commit, path) {
+  const git = createTrustedGit(root);
+  const result = git.spawn(['ls-tree', '--name-only', commit, '--', path], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024,
+    timeout: 60_000,
+  });
+  if (result.error || result.status !== 0) {
+    throw new Error(`trusted v2 commit could not be inspected for ${path}`);
+  }
+  const output = result.stdout.trim();
+  if (output !== '' && output !== path) {
+    throw new Error(`trusted v2 commit returned an unexpected path for ${path}`);
+  }
+  return output === path;
+}
+
+function trustedBaselineFromCommit(root, commit, allowGenesisIfTrustedAbsent) {
   if (!COMMIT.test(commit)) throw new Error('trusted v2 commit must be a full lowercase commit SHA');
   assertAncestor(root, commit);
+  const hasFixture = commitContainsPath(root, commit, V2_MIGRATION_PATH);
+  const hasBaseline = commitContainsPath(root, commit, V2_BASELINE_PATH);
+  if (hasFixture !== hasBaseline) {
+    throw new Error('trusted v2 commit contains only one migration input');
+  }
+  if (!hasFixture) {
+    if (!allowGenesisIfTrustedAbsent) {
+      throw new Error('trusted v2 commit has no migration inputs; audited genesis is not permitted');
+    }
+    assertAuditedGenesis(root, commit);
+    return null;
+  }
   const fixtureBytes = gitBytes(root, commit, V2_MIGRATION_PATH);
   const baseline = parseJsonBytes(
     gitBytes(root, commit, V2_BASELINE_PATH),
@@ -464,11 +527,20 @@ export function verifyAdversarialV2Migration({
   baselinePath = V2_BASELINE_PATH,
   trustedRoot,
   trustedCommit,
+  allowGenesisIfTrustedAbsent = false,
   trustedFixturePath = V2_MIGRATION_PATH,
   trustedBaselinePath = V2_BASELINE_PATH,
+  _internalSelfCheck,
 } = {}) {
   if (trustedRoot !== undefined && trustedCommit !== undefined) {
     throw new Error('trustedRoot and trustedCommit are mutually exclusive');
+  }
+  if (trustedRoot === undefined && trustedCommit === undefined &&
+      _internalSelfCheck !== INTERNAL_SELF_CHECK) {
+    throw new Error('v2 migration verification requires a trusted root or commit');
+  }
+  if (allowGenesisIfTrustedAbsent && trustedCommit === undefined) {
+    throw new Error('audited genesis requires a trusted commit');
   }
   const expected = buildAdversarialV2MigrationBaseline({ root, fixturePath });
   const { value: baseline } = readJson(root, baselinePath, 'v2 migration baseline');
@@ -505,10 +577,16 @@ export function verifyAdversarialV2Migration({
       root: trustedRoot,
       fixturePath: trustedFixturePath,
       baselinePath: trustedBaselinePath,
+      _internalSelfCheck: INTERNAL_SELF_CHECK,
     });
     assertAppendOnly(baseline, trusted.baseline);
   } else if (trustedCommit) {
-    assertAppendOnly(baseline, trustedBaselineFromCommit(root, trustedCommit));
+    const trusted = trustedBaselineFromCommit(
+      root,
+      trustedCommit,
+      allowGenesisIfTrustedAbsent,
+    );
+    if (trusted !== null) assertAppendOnly(baseline, trusted);
   }
   const activeSuccessors = Object.keys(baseline.activationFingerprints).length;
   return {
@@ -520,11 +598,31 @@ export function verifyAdversarialV2Migration({
   };
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function parseCliArgs(args) {
+  let root = DEFAULT_ROOT;
+  let trustedCommit;
+  let allowGenesisIfTrustedAbsent = false;
+  while (args.length > 0) {
+    const flag = args.shift();
+    if (flag === '--allow-genesis-if-trusted-absent') {
+      allowGenesisIfTrustedAbsent = true;
+      continue;
+    }
+    const value = args.shift();
+    if (!value) throw new Error(`${flag} requires a value`);
+    if (flag === '--root') root = resolve(value);
+    else if (flag === '--trusted-commit') trustedCommit = value;
+    else throw new Error(`unsupported option ${flag}`);
+  }
+  if (trustedCommit === undefined) {
+    throw new Error('--trusted-commit is required for v2 migration verification');
+  }
+  return { root, trustedCommit, allowGenesisIfTrustedAbsent };
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
-    const root = process.argv[2] ? resolve(process.argv[2]) : DEFAULT_ROOT;
-    const trustedCommit = process.argv[3];
-    const result = verifyAdversarialV2Migration({ root, trustedCommit });
+    const result = verifyAdversarialV2Migration(parseCliArgs(process.argv.slice(2)));
     process.stdout.write(
       `v2 adversarial migration verified: ${Object.keys(result.baseline.retiredHarnessFingerprints).length} retired, ` +
       `${Object.keys(result.baseline.successorReservationFingerprints).length} reserved, ` +

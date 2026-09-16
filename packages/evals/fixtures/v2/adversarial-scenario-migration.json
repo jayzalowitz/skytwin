@@ -4,16 +4,16 @@
   "predecessor": {
     "fixturesVersion": "v1",
     "fixturePath": "packages/evals/fixtures/v1/adversarial-scenarios.json",
-    "fixtureSha256": "3b0125d632a18cb92c2c8a7630ced35c4d369ccc7e777f8a1697f7b0c8c473a8",
+    "fixtureSha256": "f2516491256be3de4cf5fd40237994e9cc0711f4ec5705eef6a0c8340a89dfea",
     "baselinePath": "scripts/release-evidence/adversarial-source-checkout-baseline.json",
-    "baselineSha256": "60133bfd2e0bf5b731e4bb1b51ac3bd4741b99ae8bd11998f7506f81dae12598"
+    "baselineSha256": "91359a1d6a4d59338f0d726490974805a1988ad69e9b894b2c43bd5e0f18d5a3"
   },
   "retiredHarnesses": [
     {
       "v1ScenarioId": "adv-v1-approvals-untrusted-account-dual",
       "assertionFile": "apps/api/src/__tests__/adversarial-approvals-untrusted-account-dual.test.ts",
       "assertionSha256": "3f45c701538f5f1a529b5a99b36a9cb7e40208615936635daa8490f7a87c1781",
-      "lastValidCommit": "7c39fa4aa36bbb6716a305c21f7c733a7a99bc41",
+      "lastValidCommit": "0714aa2315669356f255a4ceb2ec7a2bf76cb8ed",
       "supersededBy": "adv-v2-approvals-preflight-explanation",
       "reason": "The v1 safety harness has a deliberately closed database mock and cannot prove the new fail-closed persistence dependency without rewriting retained evidence."
     },
@@ -21,7 +21,7 @@
       "v1ScenarioId": "adv-v1-capability-regret-no-dispatch",
       "assertionFile": "apps/api/src/__tests__/adversarial-capability-regret.test.ts",
       "assertionSha256": "0b4ea3ff180108e12e3d2067e5f425c1e30c2c84260bdc925084e58a5e99faa9",
-      "lastValidCommit": "7c39fa4aa36bbb6716a305c21f7c733a7a99bc41",
+      "lastValidCommit": "0714aa2315669356f255a4ceb2ec7a2bf76cb8ed",
       "supersededBy": "adv-v2-capability-regret-explanation",
       "reason": "The v1 report-only harness has a deliberately closed database mock and cannot prove the new atomic non-action writer without rewriting retained evidence."
     }

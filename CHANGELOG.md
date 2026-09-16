@@ -22,7 +22,7 @@ All notable changes to SkyTwin will be documented in this file.
   requires any later activation to append its final assertion hash and commit.
   The generator and independent verifier reject missing, rewritten, forged,
   or mismatched supersession provenance. Both successors remain skipped and
-  uncounted, so explanation coverage stays 3/10, the claim stays limited, and
+  uncounted, so explanation coverage stays 6/10, the claim stays limited, and
   release readiness stays blocked.
 
 - **Internal source evaluation now has an immutable, non-public preparation
@@ -300,6 +300,14 @@ All notable changes to SkyTwin will be documented in this file.
   protection claim.
 
 ### Fixed (post-review)
+
+- **V2 adversarial migration verification now requires immutable external
+  trust.** Direct verification fails closed without an explicit trusted commit
+  or filesystem root. Normal eval CI derives the reviewed head and trusted PR
+  base or push predecessor from GitHub's event payload, and permits the single
+  bootstrap only when both v2 inputs are absent from the protected base and
+  that commit retains every exact audited v1 input. Coordinated
+  fixture-plus-baseline rewrites now fail through that standard CI command.
 
 - **Hosted release-claim evidence resolves pnpm/action-setup without relaxing
   runtime identity.** Runtime capture accepts only the generated POSIX shim's

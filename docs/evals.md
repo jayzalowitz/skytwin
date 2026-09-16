@@ -459,11 +459,31 @@ persistence-aware mock exports. The v1 harnesses remain active until those
 successors are activated.
 
 Reservations are deliberately not executable coverage. Activation is a later
-append-only record binding the final assertion hash and activation commit; the
-v2 verifier rejects missing, rewritten, forged, or mismatched predecessor,
-retirement, reservation, and activation provenance. Until activation, the v1
-catalog remains the active execution contract and the current 3/10 explanation
-coverage, seven gaps, limited claim, and blocked release status do not change.
+append-only record binding the final assertion hash and activation commit. The
+v2 verifier enforces append-only provenance only against an immutable trusted
+root or commit and fails closed when normal verification omits that trust.
+Normal eval CI does not accept a caller-selected fallback: it derives the PR
+base or push predecessor and reviewed head from GitHub's event payload. The
+only bootstrap exception requires both v2 inputs to be absent from the
+protected base while that commit retains every exact audited v1 fixture,
+baseline, and mapped assertion byte; a partial input or altered v1 input fails.
+With that trust supplied, the verifier rejects missing, rewritten, forged, or
+mismatched predecessor, retirement, reservation, and activation provenance.
+
+For an explicit local comparison, pass a full immutable commit that already
+contains the v2 fixture and baseline:
+
+```bash
+node scripts/release-evidence/adversarial-v2-migration.mjs \
+  --trusted-commit "$(git rev-parse origin/main)"
+```
+
+The standard CI entry point is
+`scripts/release-evidence/verify-adversarial-v2-ci.mjs`; it requires the
+GitHub-provided `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` and verifies that
+the checkout is the event's exact reviewed head. Until activation, the v1
+catalog remains the active execution contract and the current 6/10 explanation
+coverage, four gaps, limited claim, and blocked release status do not change.
 
 In code, use the `EvalRunner` class directly:
 
