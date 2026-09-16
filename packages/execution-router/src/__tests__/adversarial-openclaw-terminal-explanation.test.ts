@@ -52,7 +52,7 @@ const risk: RiskAssessment = {
 
 afterEach(() => vi.unstubAllGlobals());
 
-it('adv-v1-openclaw-terminal-explanation records finite ambiguity without retry or fallback', async () => {
+it('records finite OpenClaw ambiguity without retry or fallback', async () => {
   const fetchMock = vi.fn().mockRejectedValue(new Error('SECRET_MARKER response lost'));
   vi.stubGlobal('fetch', fetchMock);
   const terminalize = vi.fn(async () => true);

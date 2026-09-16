@@ -39,7 +39,7 @@ const risk: RiskAssessment = {
   reasoning: 'Bounded test risk', assessedAt: new Date('2026-09-15T00:00:00.000Z'),
 };
 
-it('adv-v1-ironclaw-terminal-explanation records finite ambiguity without retry or fallback', async () => {
+it('records finite IronClaw ambiguity without retry or fallback', async () => {
   const execute = vi.fn(async () => { throw new Error('SECRET_MARKER response lost'); });
   const adapter = {
     canHandle: () => true,

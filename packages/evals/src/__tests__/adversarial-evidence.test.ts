@@ -49,18 +49,18 @@ describe('adversarial evidence catalog', () => {
       cleanTree: true,
     }, passingTests);
     const mapped = report.results.filter(({ evidenceMode }) => evidenceMode === 'mapped_regression');
-    expect(mapped).toHaveLength(14);
+    expect(mapped).toHaveLength(12);
     expect(mapped.every(({ status, executableTestStatus }) =>
       status === 'passed' && executableTestStatus === 'passed')).toBe(true);
     expect(report.structuralCoverage).toMatchObject({
-      scenarios: { covered: 23, total: 23 },
+      scenarios: { covered: 21, total: 21 },
       runtimeEntryPaths: { covered: 10, total: 10 },
       adapters: { covered: 4, total: 4 },
       criticalShapes: { covered: 8, total: 8 },
       origins: { covered: 7, total: 7 },
     });
     expect(report.testSummary).toEqual({
-      passed: 23,
+      passed: 21,
       failed: 0,
       uncovered: 0,
     });
@@ -103,8 +103,8 @@ describe('adversarial evidence catalog', () => {
       ref: 'test',
       cleanTree: true,
     }, failing);
-    expect(report.structuralCoverage.scenarios).toEqual({ covered: 23, total: 23 });
-    expect(report.testSummary).toEqual({ passed: 22, failed: 1, uncovered: 0 });
+    expect(report.structuralCoverage.scenarios).toEqual({ covered: 21, total: 21 });
+    expect(report.testSummary).toEqual({ passed: 20, failed: 1, uncovered: 0 });
     expect(report.developmentStatus).toBe('incomplete');
   });
 

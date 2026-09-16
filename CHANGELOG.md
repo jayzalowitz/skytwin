@@ -51,10 +51,10 @@ All notable changes to SkyTwin will be documented in this file.
   observations are idempotent, expired or legacy ambiguous leases repair
   through the same bounded transaction, and later reconciliation may record
   known terminal truth without erasing the historical ambiguity. Automatic
-  replay and fallback remain disabled. The router regressions use mocked
-  authority ports to prove finite classification and no retry or fallback;
-  they do not count as durable explanation-persistence coverage until the
-  Cockroach integration evidence runs.
+  replay and fallback remain disabled. The router regressions remain
+  standalone, non-claiming coverage: they are not appended to the frozen v1
+  catalog and do not activate either reserved v2 successor, so release
+  explanation coverage remains 6/10 with four explicit gaps.
 
 - **Tag pushes now produce a bounded release-safety sidecar without advancing
   the safety claim.** A canonical inventory binds the ten runtime entry paths

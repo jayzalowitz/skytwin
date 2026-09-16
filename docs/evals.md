@@ -434,10 +434,10 @@ additional regressions bind replay suppression to its captured explanation,
 the router backstop's generated explanation to receipt finalization before
 router preparation and its separate atomic preparation disposition, and a
 missing-origin send proposal to untrusted provenance plus its approval-bound
-continuation. The OpenClaw and IronClaw terminal
-scenarios prove finite router classification and no retry or fallback through
-mocked authority ports; real Cockroach persistence evidence is still required
-before those paths can count. Four explanation gaps remain explicit.
+continuation. The OpenClaw and IronClaw terminal regressions prove finite router
+classification and no retry or fallback as standalone, non-claiming tests.
+They are not appended to the frozen v1 catalog and do not activate either
+reserved v2 successor. Four explanation gaps therefore remain explicit.
 The tests use declared mocks and do not provide network or clock containment,
 and the sidecar has not been produced by an immutable tag run. The final
 publication consumer now binds the exact four members and their hashes to the

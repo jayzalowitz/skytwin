@@ -37,10 +37,7 @@
     {
       "id": "execution_router.openclaw_response",
       "sourceFiles": ["packages/execution-router/src/openclaw-adapter.ts"],
-      "safetyScenarioIds": [
-        "adv-v1-openclaw-credential-schema",
-        "adv-v1-openclaw-terminal-explanation"
-      ],
+      "safetyScenarioIds": ["adv-v1-openclaw-credential-schema"],
       "explanationScenarioIds": []
     },
     {
@@ -55,10 +52,7 @@
     {
       "id": "ironclaw_adapter.execute",
       "sourceFiles": ["packages/ironclaw-adapter/src/real-adapter.ts"],
-      "safetyScenarioIds": [
-        "adv-v1-ironclaw-terminal-explanation",
-        "adv-v1-ironclaw-transport-ambiguous"
-      ],
+      "safetyScenarioIds": ["adv-v1-ironclaw-transport-ambiguous"],
       "explanationScenarioIds": []
     },
     {
@@ -87,7 +81,7 @@
   ],
   "limitations": [
     "The inventory is limited to the ten runtime entry paths declared by the v1 adversarial catalog; aliases, computed dispatch, direct provider effects, and future entry paths require an explicit inventory update.",
-    "An entry path is explanation-covered only when its integrity-bound mapped regression asserts a persisted or deliberately contained explanation outcome; the OpenClaw and IronClaw terminal scenarios use mocked authority ports to prove classification and no retry or fallback, so they require real Cockroach persistence evidence before they count.",
+    "An entry path is explanation-covered only when its integrity-bound mapped regression asserts a persisted or deliberately contained explanation outcome; generic generator tests do not count.",
     "This source-checkout evidence does not certify a packaged artifact or a published release.",
     "Mapped regressions use declared mocks and do not sandbox network access or control the process clock.",
     "The report and its companion inputs share one tag-only CI artifact, but the final publication consumer does not yet re-verify this sidecar against that artifact's immutable GitHub identity."
