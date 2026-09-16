@@ -36,6 +36,7 @@ import {
   snapshotInferenceTrace,
   snapshotProviderExecutionMetadata,
 } from './inference-trace.js';
+import { redactPromptPii } from './redact.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   anthropic: anthropicGenerate,
@@ -130,6 +131,50 @@ function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOpt
     timeoutMs: options.timeoutMs,
     invocationKind: options.invocationKind,
   });
+}
+
+/**
+ * Apply the provider trust boundary to system context immediately before a
+ * provider call. Assistant memory is intentionally kept intact for local
+ * providers (the user may be asking for an exact private fact), but cloud
+ * providers receive the existing high-precision email redaction. Keeping this
+ * here, after provider selection, avoids masking the local-first path and
+ * ensures fallback calls are each evaluated against their actual provider.
+ */
+function providerGenerateOptions(
+  provider: ProviderEntry,
+  options: Readonly<GenerateOptions>,
+  reasoningMode: ReasoningMode,
+): Readonly<GenerateOptions> {
+  if (!providerNeedsRedaction(provider, reasoningMode) || options.systemPrompt === undefined) return options;
+  return Object.freeze({
+    ...options,
+    systemPrompt: redactPromptPii(options.systemPrompt),
+  });
+}
+
+/** Apply the same boundary to native chat system messages (assistant path). */
+function providerGeneratePrompt(
+  provider: ProviderEntry,
+  prompt: string | ChatMessage[],
+  reasoningMode: ReasoningMode,
+): string | ChatMessage[] {
+  if (!providerNeedsRedaction(provider, reasoningMode) || typeof prompt === 'string') return prompt;
+  return Object.freeze(prompt.map((message) => Object.freeze({
+    role: message.role,
+    content: message.role === 'system' ? redactPromptPii(message.content) : message.content,
+  }))) as unknown as ChatMessage[];
+}
+
+/**
+ * Pricing is not a privacy signal: Ollama can point at a remote endpoint while
+ * still being zero-cost. Use the adapter-derived execution facts instead.
+ */
+function providerNeedsRedaction(provider: ProviderEntry, reasoningMode: ReasoningMode): boolean {
+  const capabilities = providerPrivacyCapabilities(provider, reasoningMode);
+  return capabilities.executionLocation !== 'on_device'
+    || capabilities.networkScope === 'external'
+    || capabilities.confidentiality !== 'device_local';
 }
 
 const DEFAULT_ENDPOINTS: Record<AIProviderName, string> = {
@@ -292,12 +337,12 @@ export class LlmClient {
         const content = await generateFn(
           provider.apiKey,
           provider.model,
-          invocationPrompt,
-          Object.freeze({
+          providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
+          providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
-          }),
+          }), this.reasoningMode),
         );
         const successfulPath = [
           ...executionPath,
@@ -384,12 +429,12 @@ export class LlmClient {
         for await (const chunk of streamFn(
           provider.apiKey,
           provider.model,
-          invocationPrompt,
-          Object.freeze({
+          providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
+          providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
-          }),
+          }), this.reasoningMode),
         )) {
           if (chunk.length === 0) continue;
           collected.push(chunk);
