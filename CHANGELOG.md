@@ -8,9 +8,10 @@ All notable changes to SkyTwin will be documented in this file.
   archive.** The documented command opts into a fail-closed archive mode that
   derives its install directory from `install.sh`, ignores inherited install
   destinations, refuses Git metadata, and cannot enter clone, fetch, or merge
-  handling. An executable regression runs the documented path with a decoy
-  home/install directory and a fail-on-use Git shim, proving the extracted
-  source reaches dependency setup without consulting moving `main`.
+  handling or require a Git binary. An executable regression runs the
+  documented path with a decoy home/install directory and a deliberately
+  Git-free `PATH`, proving the extracted source reaches dependency setup
+  without consulting moving `main`.
 
 ### Changed
 

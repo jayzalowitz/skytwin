@@ -53,9 +53,9 @@ SKYTWIN_SOURCE_ARCHIVE=true ./install.sh
 
 The explicit archive mode resolves the install directory from the extracted
 `install.sh` itself, ignores any inherited `SKYTWIN_INSTALL_DIR`, refuses Git
-metadata, and never enters the clone/fetch/merge path. It can still download
-missing public prerequisites such as Node.js or CockroachDB, so this is not an
-offline or no-network installation claim.
+metadata, does not require a Git binary, and never enters the clone/fetch/merge
+path. It can still download missing public prerequisites such as Node.js or
+CockroachDB, so this is not an offline or no-network installation claim.
 
 For source inspection without packaging, pin and verify a detached checkout:
 

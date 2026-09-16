@@ -11,7 +11,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
@@ -276,19 +276,28 @@ describe("internal source candidate packager", () => {
     expect(installer).not.toContain("Google OAuth Client ID");
   });
 
-  it("installs the extracted archive in place without reaching Git or moving main", () => {
+  it("installs the extracted archive in place without Git or moving main", () => {
     const holder = mkdtempSync(join(tmpdir(), "skytwin-archive-install-"));
     cleanup.push(holder);
     const staging = join(holder, "staging");
     const extracted = join(holder, "extracted");
-    const fakePath = join(holder, "fake-path");
+    const archivePath = join(holder, "archive-path");
     const decoyInstall = join(holder, "must-not-be-used");
     const marker = join(holder, "archive-source-used");
-    const gitLog = join(holder, "git-was-called");
     const archive = join(holder, "candidate.tar.gz");
     mkdirSync(join(staging, "bin"), { recursive: true });
     mkdirSync(extracted);
-    mkdirSync(fakePath);
+    mkdirSync(archivePath);
+    for (const command of ["dirname", "grep", "ls", "uname"]) {
+      const executable = (process.env.PATH ?? "")
+        .split(delimiter)
+        .map((directory) => resolve(directory, command))
+        .find((candidate) => existsSync(candidate));
+      if (!executable) {
+        throw new Error(`test prerequisite is unavailable: ${command}`);
+      }
+      symlinkSync(executable, join(archivePath, command));
+    }
     copyFileSync(join(sourceRoot, "install.sh"), join(staging, "install.sh"));
     chmodSync(join(staging, "install.sh"), 0o755);
     writeFileSync(
@@ -297,12 +306,6 @@ describe("internal source candidate packager", () => {
       "utf8",
     );
     chmodSync(join(staging, "bin", "skytwin-install"), 0o755);
-    writeFileSync(
-      join(fakePath, "git"),
-      '#!/bin/sh\nprintf "%s\\n" "$*" >> "$GIT_TEST_LOG"\nexit 97\n',
-      "utf8",
-    );
-    chmodSync(join(fakePath, "git"), 0o755);
     execFileSync("tar", ["-czf", archive, "-C", staging, "."]);
     execFileSync("tar", ["-xzf", archive, "-C", extracted]);
 
@@ -310,18 +313,20 @@ describe("internal source candidate packager", () => {
       cwd: extracted,
       encoding: "utf8",
       env: {
-        PATH: `${fakePath}:/usr/bin:/bin`,
+        PATH: archivePath,
         HOME: join(holder, "home"),
         SKYTWIN_INSTALL_DIR: decoyInstall,
         SKYTWIN_SOURCE_ARCHIVE: "true",
         ARCHIVE_TEST_MARKER: marker,
-        GIT_TEST_LOG: gitLog,
       },
     });
 
+    const gitProbe = spawnSync("/bin/sh", ["-c", "command -v git"], {
+      env: { PATH: archivePath },
+    });
+    expect(gitProbe.status).not.toBe(0);
     expect(result.status).toBe(23);
     expect(readFileSync(marker, "utf8")).toBe("archive\n");
-    expect(existsSync(gitLog)).toBe(false);
     expect(existsSync(decoyInstall)).toBe(false);
     expect(result.stdout).toContain("Using immutable source archive in place");
     expect(result.stdout).not.toContain("pulling latest");

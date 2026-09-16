@@ -88,11 +88,6 @@ esac
 
 step "SkyTwin installer (detected $OS)"
 
-# Required for cloning.
-if ! command -v git >/dev/null 2>&1; then
-  fail "git is required but not installed. Install from https://git-scm.com/ and re-run."
-fi
-
 # ── Step 1: clone or update the repo ───────────────────────────────────
 
 step "Selecting SkyTwin source at $INSTALL_DIR"
@@ -117,31 +112,38 @@ elif [ "$SOURCE_ARCHIVE_MODE" = "true" ]; then
     fail "Source-archive mode requires the extracted candidate directory."
   fi
   ok "Using immutable source archive in place (no clone, fetch, or merge)"
-elif [ -e "$INSTALL_DIR/.git" ]; then
-  # `-e` (not `-d`) so Conductor worktrees and any other gitlink-based
-  # setup match here. In a worktree, `.git` is a 75-byte file pointing
-  # at the shared object store, not a directory; `git -C` follows the
-  # gitlink transparently so the fetch+merge below works either way.
-  # The header comment above promised this behaviour; the previous `-d`
-  # check silently fell through to the "no .git directory" branch and
-  # skipped fetch+merge.
-  ok "Already cloned — pulling latest"
-  # Tolerate offline / sandboxed environments (validation containers, etc.)
-  # where `origin` may not be reachable. The on-disk version is then used
-  # as-is, which is exactly what the validation harness wants.
-  if git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet 2>/dev/null; then
-    # Use --ff-only so we never overwrite uncommitted local changes.
-    if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH" 2>/dev/null; then
-      warn "Local changes detected — keeping your version, skipping pull."
-    fi
-  else
-    warn "Could not reach $REPO_URL — using the on-disk version as-is."
-  fi
-elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
-  ok "Found existing source at $INSTALL_DIR (no .git directory) — using as-is"
 else
-  git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
-  ok "Cloned"
+  # Git is required only for the normal clone/update route. An extracted
+  # source candidate is complete and intentionally has no Git dependency.
+  if ! command -v git >/dev/null 2>&1; then
+    fail "git is required but not installed. Install from https://git-scm.com/ and re-run."
+  fi
+  if [ -e "$INSTALL_DIR/.git" ]; then
+    # `-e` (not `-d`) so Conductor worktrees and any other gitlink-based
+    # setup match here. In a worktree, `.git` is a 75-byte file pointing
+    # at the shared object store, not a directory; `git -C` follows the
+    # gitlink transparently so the fetch+merge below works either way.
+    # The header comment above promised this behaviour; the previous `-d`
+    # check silently fell through to the "no .git directory" branch and
+    # skipped fetch+merge.
+    ok "Already cloned — pulling latest"
+    # Tolerate offline / sandboxed environments (validation containers, etc.)
+    # where `origin` may not be reachable. The on-disk version is then used
+    # as-is, which is exactly what the validation harness wants.
+    if git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet 2>/dev/null; then
+      # Use --ff-only so we never overwrite uncommitted local changes.
+      if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH" 2>/dev/null; then
+        warn "Local changes detected — keeping your version, skipping pull."
+      fi
+    else
+      warn "Could not reach $REPO_URL — using the on-disk version as-is."
+    fi
+  elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+    ok "Found existing source at $INSTALL_DIR (no .git directory) — using as-is"
+  else
+    git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    ok "Cloned"
+  fi
 fi
 
 cd "$INSTALL_DIR"
