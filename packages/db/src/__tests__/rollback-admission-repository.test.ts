@@ -40,12 +40,9 @@ describe('rollbackAdmissionRepository', () => {
     expect(clientQuery.mock.calls[0]![0]).toContain("er.outputs->>'adapter_plan_id'");
   });
 
-  it('writes explanation and terminal ledger in the same transaction', async () => {
-    clientQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ id: 'd' }] }).mockResolvedValueOnce({ rows: [], rowCount: 0 }).mockResolvedValueOnce({ rows: [{ id: 'x' }] }).mockResolvedValueOnce({ rows: [{ admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'failed', result: {}, explanation_id: 'x', terminal_at: new Date() }] });
-    const row = await rollbackAdmissionRepository.recordTerminal({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'failed', explanation: { whatHappened: 'Rollback failed', confidenceReasoning: 'Provider response', actionRationale: 'Requested by user', correctionGuidance: 'Retry manually' } });
-    expect(row.status).toBe('failed');
-    expect(clientQuery.mock.calls[3]![0]).toContain('INSERT INTO explanation_records');
-    expect(clientQuery.mock.calls[4]![0]).toContain('INSERT INTO rollback_terminal_ledger');
+  it('rejects legacy terminalization before it can bypass the claim lifecycle', async () => {
+    await expect(rollbackAdmissionRepository.recordTerminal({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'failed', explanation: { whatHappened: 'Rollback failed', confidenceReasoning: 'Provider response', actionRationale: 'Requested by user', correctionGuidance: 'Retry manually' } })).rejects.toThrow('Legacy rollback terminalization is disabled');
+    expect(clientQuery).toHaveBeenCalledTimes(1);
   });
 
   it('terminal replay is read-only', async () => {
@@ -54,16 +51,62 @@ describe('rollbackAdmissionRepository', () => {
     expect(clientQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('rolls back the losing explanation before replaying a concurrent terminal', async () => {
+  it('does not query or write when a legacy terminalization has no existing terminal', async () => {
+    await expect(rollbackAdmissionRepository.recordTerminal({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'failed', explanation: { whatHappened: 'loser', confidenceReasoning: 'loser', actionRationale: 'loser', correctionGuidance: 'loser' } })).rejects.toThrow('Legacy rollback terminalization is disabled');
+    expect(clientQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims once and returns busy while the bounded claim is live', async () => {
     clientQuery.mockResolvedValueOnce({ rows: [] })
-      .mockResolvedValueOnce({ rows: [{ id: 'd' }] })
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-      .mockResolvedValueOnce({ rows: [{ id: 'loser-explanation' }] })
-      .mockRejectedValueOnce(Object.assign(new Error('duplicate terminal'), { code: '23505' }))
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-      .mockResolvedValueOnce({ rows: [{ admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'rolled_back', result: {}, explanation_id: 'winner-explanation', terminal_at: new Date() }] });
-    const row = await rollbackAdmissionRepository.recordTerminal({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'failed', explanation: { whatHappened: 'loser', confidenceReasoning: 'loser', actionRationale: 'loser', correctionGuidance: 'loser' } });
-    expect(row.explanationId).toBe('winner-explanation');
-    expect(clientQuery.mock.calls.map((call) => call[0])).toContain('ROLLBACK TO SAVEPOINT rollback_terminal_insert');
+      .mockResolvedValueOnce({ rows: [{ lifecycle_status: 'admitted', claim_expires_at: null }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    const result = await rollbackAdmissionRepository.claim({ admissionId: 'ad', userId: 'u', decisionId: 'd', now: new Date('2026-01-01T00:00:00Z') });
+    expect(result.kind).toBe('claimed');
+    expect((result as { kind: 'claimed'; claim: { claimToken: string; claimExpiresAt: Date } }).claim.claimToken).toHaveLength(43);
+    expect(clientQuery.mock.calls[2]![0]).toContain("lifecycle_status = 'claimed'");
+  });
+
+  it('recovers an expired claim to unknown with an explanation and terminal ledger', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ lifecycle_status: 'claimed', claim_expires_at: new Date('2025-12-31T23:59:00Z') }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'explanation' }] })
+      .mockResolvedValueOnce({ rows: [{ admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'unknown', result: { reason: 'claim_expired' }, explanation_id: 'explanation', terminal_at: new Date() }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    const result = await rollbackAdmissionRepository.claim({ admissionId: 'ad', userId: 'u', decisionId: 'd', now: new Date('2026-01-01T00:00:00Z') });
+    expect(result).toMatchObject({ kind: 'terminal', terminal: { status: 'unknown', explanationId: 'explanation' } });
+    expect(clientQuery.mock.calls[2]![0]).toContain('INSERT INTO explanation_records');
+    expect(clientQuery.mock.calls[3]![0]).toContain("status, result, explanation_id");
+    expect(clientQuery.mock.calls[4]![0]).toContain("lifecycle_status = 'terminal'");
+  });
+
+  it('consumes the exact claim before writing the terminal explanation and result', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: 'ad' }] })
+      .mockResolvedValueOnce({ rows: [{ id: 'explanation' }] })
+      .mockResolvedValueOnce({ rows: [], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [{ admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'rolled_back', result: { provider: 'confirmed' }, explanation_id: 'explanation', terminal_at: new Date() }] });
+    const result = await rollbackAdmissionRepository.terminalizeClaim({
+      admissionId: 'ad', userId: 'u', decisionId: 'd', claimToken: 'claim-token', status: 'rolled_back',
+      result: { provider: 'confirmed' }, now: new Date('2026-01-01T00:00:00Z'),
+      explanation: { whatHappened: 'Rollback completed', confidenceReasoning: 'Provider receipt', actionRationale: 'User requested rollback', correctionGuidance: 'Review the result.' },
+    });
+    expect(result.status).toBe('rolled_back');
+    expect(clientQuery.mock.calls[1]![0]).toContain("claim_token_hash = $3");
+    expect(clientQuery.mock.calls[3]![0]).toContain("lifecycle_status = 'terminal'");
+  });
+
+  it('returns the exact terminal on terminalize replay without consuming the claim again', async () => {
+    const terminal = { admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'failed' as const, result: { reason: 'provider_rejected' }, explanation_id: 'x', terminal_at: new Date() };
+    clientQuery.mockResolvedValueOnce({ rows: [terminal] });
+    const result = await rollbackAdmissionRepository.terminalizeClaim({ admissionId: 'ad', userId: 'u', decisionId: 'd', claimToken: 'different-token', status: 'rolled_back', explanation: { whatHappened: 'ignored', confidenceReasoning: 'ignored', actionRationale: 'ignored', correctionGuidance: 'ignored' } });
+    expect(result).toEqual({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'failed', result: { reason: 'provider_rejected' }, explanationId: 'x', terminalAt: terminal.terminal_at });
+    expect(clientQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an expired or mismatched token without explanation or terminal writes', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    await expect(rollbackAdmissionRepository.terminalizeClaim({ admissionId: 'ad', userId: 'u', decisionId: 'd', claimToken: 'expired-token', status: 'failed', explanation: { whatHappened: 'should not write', confidenceReasoning: 'none', actionRationale: 'none', correctionGuidance: 'none' } })).rejects.toThrow('expired, replayed, or not owned');
+    expect(clientQuery).toHaveBeenCalledTimes(2);
+    expect(clientQuery.mock.calls.some((call) => String(call[0]).includes('INSERT INTO explanation_records'))).toBe(false);
   });
 });

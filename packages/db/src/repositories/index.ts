@@ -95,7 +95,8 @@ export { executionRepository } from './execution-repository.js';
 export { rollbackAdmissionRepository } from './rollback-admission-repository.js';
 export type {
   RollbackAdmissionInput, RollbackAdmissionRow, RollbackTerminalStatus,
-  RollbackTerminalRow, RecordRollbackTerminalInput,
+  RollbackTerminalRow, RecordRollbackTerminalInput, RollbackAdmissionLifecycleStatus,
+  RollbackClaimInput, RollbackClaimRow, RollbackClaimResult,
 } from './rollback-admission-repository.js';
 export type {
   CreateExecutionPlanInput,
