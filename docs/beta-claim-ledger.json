@@ -490,6 +490,26 @@
       "ocrDisposition": "reviewed-no-text"
     },
     {
+      "path": "docs/assets/demo-current/approvals-source-demo.png",
+      "sha256": "f294b6d94fcf56652bf5933fa0c56410d41cc4d5d1b0c17c788d329775f959f0",
+      "ocrDisposition": "reviewed-current-source"
+    },
+    {
+      "path": "docs/assets/demo-current/decisions-source-demo.png",
+      "sha256": "aadd477d086922fd94635dddc3055abb2390749f9b55ec9a6ecd3bcc8e448f67",
+      "ocrDisposition": "reviewed-current-source"
+    },
+    {
+      "path": "docs/assets/demo-current/onboarding-source-demo.png",
+      "sha256": "77a8a84677bb62bfe44a7ceb067245dfc41ca7d83c0561df38a8151534ca25bb",
+      "ocrDisposition": "reviewed-current-source"
+    },
+    {
+      "path": "docs/assets/demo-current/settings-source-demo.png",
+      "sha256": "0ab23f7932fe607e485218fcd20953f56f4118040fb218b832bc5bc1d0126cfc",
+      "ocrDisposition": "reviewed-current-source"
+    },
+    {
       "path": "docs/screenshots/approvals.png",
       "sha256": "39d97b021f527b1b8aed3e444c1c43b134369db021d3bc1acfcb19ee7c0260a1",
       "ocrDisposition": "prohibited-stale"
@@ -531,7 +551,7 @@
     }
   ],
   "binaryAssetAudit": {
-    "reviewedOn": "2026-09-10",
+    "reviewedOn": "2026-09-16",
     "method": "Tesseract OCR plus human inspection at each recorded SHA-256; any byte change requires a new review",
     "scope": "Repository-owned visual binaries under docs, apps/web/public, apps/desktop/assets, and apps/mobile/assets. SVG is treated as text and scanned with the other public claim surfaces."
   },
@@ -1419,8 +1439,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "aec96ca799e53c332db7f9b9ff6de4af5a4865acbf861253cac625a88b91f6fd",
-          "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator, re-verifies the exact four-member safety artifact with both independent verifiers, emits the digest of the stable manifest bytes it checked, and validates every other bounded release material and source report binding at publication"
+          "sha256": "2929d39a774169069dd38b14e4e3a7ab47ef6c1c04d46ba5dfd56b7c8d1248fb",
+          "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator; enforces the audited inventory for every public visual binary; re-verifies the exact four-member safety artifact with both independent verifiers; emits the digest of the stable manifest bytes it checked; and validates every other bounded release material and source report binding at publication"
         }
       ],
       "verification": [

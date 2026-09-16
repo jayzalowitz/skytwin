@@ -29,6 +29,34 @@ SkyTwin is different. It builds a structured model of your preferences, risk tol
 > capability rows and imported account-backed tool bundles are also withheld
 > from activation. Connector code in the source tree is not a support claim.
 
+## Start safely in a few minutes
+
+You do not need to connect an inbox, share credentials, or enable an AI provider
+to understand the project. Start with the fictional-data sample in current
+source. It lets you inspect a decision, its explanation, the approval controls,
+and the safety boundaries without external effects.
+
+1. **Choose source over an older download.** The latest source contains the
+   guarded sample path; published unsigned technical-preview installers predate
+   portions of it. The [Start guide](https://jayzalowitz.github.io/skytwin/start.html)
+   explains what the installer changes locally.
+2. **Look at fictional data first.** The sample is intentionally separate from
+   real accounts. Its product views are read-only; its approve/reject/correct
+   interactions are session-local simulations with no provider, connector, or
+   execution-adapter effects.
+3. **Read why an action stopped.** A candidate action is evaluated against
+   policy, trust, spend, risk, reversibility, and provenance. A model suggestion
+   is never the authority to run work.
+4. **Keep the boundary explicit.** Local reasoning does not fall through to a
+   hosted provider. A hosted provider is an explicit network choice. Remote
+   attested inference is unavailable until SkyTwin can verify it itself.
+
+For a plain-language walkthrough, begin with [how to use the fictional sample](https://jayzalowitz.github.io/skytwin/how-to-use.html), then use the [documentation site](https://jayzalowitz.github.io/skytwin/docs.html):
+[how to start](https://jayzalowitz.github.io/skytwin/start.html),
+[how safety works](https://jayzalowitz.github.io/skytwin/safety.html),
+[where inference runs](https://jayzalowitz.github.io/skytwin/inference.html),
+and the [five-minute fictional-data demo](https://jayzalowitz.github.io/skytwin/demo.html).
+
 ## How It Works
 
 This is the source architecture and intended connected-account pipeline. The
@@ -403,6 +431,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 | Document | What's Inside |
 |----------|---------------|
+| [How to Use the Fictional Sample](https://jayzalowitz.github.io/skytwin/how-to-use.html) | A plain-language, screenshot-led tour of the current source development sample. It identifies its fictional data and distinguishes it from published technical-preview installers. |
 | [Documentation Site](https://jayzalowitz.github.io/skytwin/docs.html) | Human evaluation guides plus architecture, safety, inference/privacy, MCP-agent, operations, release-evidence, and contribution references. The Pages site is source-first; GitHub remains canonical for implementation details. |
 | [The Deck](https://jayzalowitz.github.io/skytwin/deck.html) | 22 slides: every capability claim paired with the mechanism that constrains it. Each claim-and-gate slide carries a collapsible source block citing the file and lines it came from; the "why now" and positioning slides cite external sources instead, and three narrative slides carry no citation block ([source](./docs/deck.html)) |
 | [Product Spec](./docs/product-spec.md) | Vision, target user, operating principles, example workflows |

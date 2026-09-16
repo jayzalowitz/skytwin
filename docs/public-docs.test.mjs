@@ -9,11 +9,12 @@ const start = read('docs/start.html');
 const agents = read('docs/agents.html');
 const llms = read('docs/llms.txt');
 const docsHome = read('docs/docs.html');
+const howToUse = read('docs/how-to-use.html');
 
 describe('public developer-preview documentation', () => {
   it('keeps the human and machine paths published together', () => {
     for (const path of [
-      'docs/index.html', 'docs/start.html', 'docs/docs.html', 'docs/architecture.html',
+      'docs/index.html', 'docs/start.html', 'docs/how-to-use.html', 'docs/docs.html', 'docs/architecture.html',
       'docs/safety.html', 'docs/inference.html', 'docs/agents.html', 'docs/operations.html',
       'docs/release.html', 'docs/contributing.html', 'docs/reference.html', 'docs/llms.txt',
       'docs/guides.css',
@@ -28,6 +29,7 @@ describe('public developer-preview documentation', () => {
     expect(llms).toContain('Agent safety requirements');
     expect(docsHome).toContain('architecture.html');
     expect(docsHome).toContain('release.html');
+    expect(howToUse).toContain('assets/demo-current/onboarding-source-demo.png');
   });
 
   it('keeps source evaluation and release boundaries explicit', () => {
@@ -37,6 +39,7 @@ describe('public developer-preview documentation', () => {
     expect(start).toContain('Google and Microsoft account connections are unavailable');
     expect(agents).toContain('Do not execute around policy.');
     expect(agents).toContain('Missing action provenance is');
+    expect(howToUse).toContain('fictional sample data');
   });
 
   it('does not present remote provider material as an active confidential route', () => {

@@ -153,6 +153,7 @@
       </a>
       <div class="nav-links">
         <a href="start.html">Start</a>
+        <a href="how-to-use.html">How to use</a>
         <a href="docs.html">Docs</a>
         <a href="agents.html">For agents</a>
         <a href="reference.html">Reference</a>
@@ -173,7 +174,7 @@
       <p class="lede">SkyTwin is an open-source, local-first decision system: it turns signals into candidate actions, runs policy and trust checks, and either asks for approval or records why it did not proceed. Start with the isolated account-free sample; it uses fictional decisions and has no external effects. The planned <code>v0.7.0-beta</code> remains blocked by the evidence and release gates in the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a>.</p>
       <div class="actions">
         <a class="button primary" href="start.html">Start from source</a>
-        <a class="button" href="demo.html">See the fictional-data demo</a>
+        <a class="button" href="how-to-use.html">See the fictional-data demo</a>
         <a class="button" href="agents.html">Read the agent guide</a>
         <a class="button" href="https://github.com/jayzalowitz/skytwin">View source</a>
         <span class="note"><a href="https://github.com/jayzalowitz/skytwin/releases/latest">Download technical preview</a> artifacts are older than the guarded source sample.</span>
@@ -186,7 +187,7 @@
       <p class="section-lede">The fastest path is source first. It makes the current boundary visible instead of asking you to trust a download badge.</p>
       <div class="path-grid">
         <article class="step"><span class="step-number">01</span><h3>Run the source tree</h3><p>macOS, Linux, or WSL. The installer bootstraps local dependencies, starts the API, worker, and dashboard, and opens the dashboard on localhost.</p><code>git clone https://github.com/jayzalowitz/skytwin.git<br>cd skytwin &amp;&amp; ./install.sh</code></article>
-        <article class="step"><span class="step-number">02</span><h3>Use fictional data first</h3><p>Inspect the account-free sample and its explanations before considering any private account or provider configuration. The sample is deliberately isolated and non-destructive.</p><a class="button" style="margin-top:.9rem" href="demo.html">Walk the demo boundary</a></article>
+        <article class="step"><span class="step-number">02</span><h3>Use fictional data first</h3><p>Inspect the account-free sample and its explanations before considering any private account or provider configuration. The sample is deliberately isolated and non-destructive.</p><a class="button" style="margin-top:.9rem" href="how-to-use.html">Walk the demo with fresh screenshots</a></article>
         <article class="step"><span class="step-number">03</span><h3>Inspect the controls</h3><p>Read the policy, provenance, local-model, and provider-boundary documentation before enabling an integration. If a boundary is not proven, SkyTwin should make it unavailable.</p><a class="button" style="margin-top:.9rem" href="agents.html">Read machine-facing rules</a></article>
       </div>
       <div class="callout"><strong>Before you run it:</strong> this installer can install prerequisites and starts local services. It is a source/developer path, not a sandboxed browser demo. Read <a href="start.html">Start</a> for prerequisites, ports, data locations, and removal guidance.</div>
@@ -262,6 +263,7 @@
       <h2>Documentation for people and the agents they build</h2>
       <p class="section-lede">The public Pages guides explain how to evaluate the project without assuming product context. The repository documents remain the source of truth for implementation details, tests, and release evidence.</p>
       <div class="grid">
+        <div class="card safe"><span class="tag">No account needed</span><h3>Five-minute fictional-data tour</h3><p>See the source-run onboarding, briefing, decision history, and controls with plain-language instructions and current screenshots.</p><p style="margin-top:.7rem"><a href="how-to-use.html">Open the walkthrough →</a></p></div>
         <div class="card safe"><span class="tag">Start here</span><h3>Human evaluation guide</h3><p>Prerequisites, transparent source install, local services, fictional-data sample, and the data/network boundaries to read before configuration.</p><p style="margin-top:.7rem"><a href="start.html">Open Start →</a></p></div>
         <div class="card"><span class="tag">Machine-facing</span><h3>Agent integration guide</h3><p>Scoped Twin MCP setup, proposal-versus-execution rules, provenance requirements, ambiguity handling, and sources to retrieve next.</p><p style="margin-top:.7rem"><a href="agents.html">Open agent guide →</a> · <a href="llms.txt">llms.txt</a></p></div>
         <div class="card"><span class="tag">Reference</span><h3>Architecture, operations, and evidence</h3><p>A navigable map of the technical specification, safety model, data boundaries, release evidence, troubleshooting, and source locations.</p><p style="margin-top:.7rem"><a href="reference.html">Open reference center →</a> · <a href="deck.html">evidence deck</a></p></div>
