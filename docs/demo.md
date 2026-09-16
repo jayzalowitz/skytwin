@@ -4,13 +4,16 @@ This is the walkthrough we use to show someone what SkyTwin does for the first
 time. Aim for five minutes end-to-end. Hand it to a friend with a phone in
 their other hand and read along.
 
-> **Screenshots:** the live-UI captures the launch will use are tracked as
-> a follow-up to this PR. The repository still contains historical captures,
-> but public use is withheld pending replacement after the claim audit. A fresh
-> capture run against the post-Tier-2-polish UI is what
-> the launch video needs. The text walkthrough below is independently
+> **Screenshots:** the repository's historical captures are retained under
+> `docs/screenshots/` for audit provenance only. They are prohibited stale
+> release assets and are not linked, embedded, or suitable for launch use. A
+> fresh capture run against the current UI must be re-audited before any image
+> is published. The text walkthrough below is independently
 > runnable against a fresh dev install. If you're recording the launch
 > video, this file is the script.
+
+> The [`beta claim ledger`](./beta-claim-ledger.json) remains the authority for
+> release status and asset disposition; its beta status is currently blocked.
 
 > **Scope:** this operator script exercises the development seed after
 > `pnpm db:seed`; it is not a description of the currently published desktop

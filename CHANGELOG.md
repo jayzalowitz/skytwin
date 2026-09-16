@@ -4,6 +4,13 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **Release materials now state the blocked beta status at their public entry
+  points.** README, the launch-readiness report, the demo walkthrough, and the
+  GitHub Pages index link the machine-checked claim ledger instead of implying
+  that a qualifying `v0.7.0-beta` release exists. Historical captures remain
+  present for audit provenance but are explicitly quarantined as prohibited
+  stale assets; no replacement screenshots or claim-state changes are implied.
+
 - **Broad hosted release-claim tests now retain the history required for
   adversarial evidence ancestry checks.** The release-claim job checks out full
   history so GitHub's synthetic pull-request merge commit can prove its trusted

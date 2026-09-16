@@ -79,6 +79,13 @@ Supported decision paths can persist explanation and feedback records. Release-w
 
 ## Screenshots
 
+The historical captures under `docs/screenshots/` are retained for audit
+provenance only. They are prohibited release assets and are intentionally not
+linked or embedded here; do not use them in launch, release, or marketing
+materials. A replacement capture must be freshly recorded and re-audited
+before it can be published. See the [`beta-claim-ledger.json`](./docs/beta-claim-ledger.json)
+asset dispositions.
+
 <table>
 <tr>
 <td width="50%">
