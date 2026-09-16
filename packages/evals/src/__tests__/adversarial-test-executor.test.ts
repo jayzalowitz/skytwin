@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { delimiter, dirname, join } from 'node:path';
@@ -73,14 +73,20 @@ function fixture(): { root: string; testId: string; catalog: AdversarialCatalog 
 }
 
 function runner(assertions: Array<{ fullName: string; status: string }>, status = 0): TestProcessRunner {
-  return () => ({
-    pid: 1,
-    output: [JSON.stringify({ testResults: [{ assertionResults: assertions }] }), ''],
-    stdout: JSON.stringify({ testResults: [{ assertionResults: assertions }] }),
-    stderr: '',
-    status,
-    signal: null,
-  } as SpawnSyncReturns<string>);
+  return (_command, args) => {
+    const outputFileIndex = args.indexOf('--outputFile');
+    const outputFile = args[outputFileIndex + 1];
+    if (outputFileIndex === -1 || !outputFile) throw new Error('missing JSON output file');
+    writeFileSync(outputFile, JSON.stringify({ testResults: [{ assertionResults: assertions }] }));
+    return {
+      pid: 1,
+      output: ['', ''],
+      stdout: '',
+      stderr: '',
+      status,
+      signal: null,
+    } as SpawnSyncReturns<string>;
+  };
 }
 
 describe('exact mapped adversarial test execution', () => {
@@ -178,12 +184,12 @@ describe('exact mapped adversarial test execution', () => {
   it('bounds every mapped test subprocess with a hard kill', () => {
     const { root, catalog } = fixture();
     let observedOptions: Parameters<TestProcessRunner>[2] | undefined;
-    const boundedRunner: TestProcessRunner = (_command, _args, options) => {
+    const boundedRunner: TestProcessRunner = (_command, args, options) => {
       observedOptions = options;
       return runner([{
         fullName: catalog.scenarios[0]!.executableTestId.split('::')[2]!,
         status: 'passed',
-      }])('', [], options);
+      }])('', args, options);
     };
     executeMappedAdversarialTests(catalog, root, boundedRunner);
     expect(observedOptions).toMatchObject({
@@ -199,6 +205,27 @@ describe('exact mapped adversarial test execution', () => {
       LC_ALL: 'C.UTF-8',
       TZ: 'UTC',
     });
+  });
+
+  it('uses an isolated JSON report file and removes it after parsing', () => {
+    const { root, catalog } = fixture();
+    let observedReportPath: string | undefined;
+    let observedNamePattern: string | undefined;
+    const fileReporter: TestProcessRunner = (_command, args, options) => {
+      const outputFileIndex = args.indexOf('--outputFile');
+      observedReportPath = args[outputFileIndex + 1];
+      observedNamePattern = args[args.indexOf('-t') + 1];
+      return runner([{
+        fullName: catalog.scenarios[0]!.executableTestId.split('::')[2]!,
+        status: 'passed',
+      }])('', args, options);
+    };
+    executeMappedAdversarialTests(catalog, root, fileReporter);
+    expect(observedReportPath).toMatch(/\.vitest-adversarial-[^/]+\/report\.json$/);
+    expect(existsSync(observedReportPath!)).toBe(false);
+    expect(new RegExp(observedNamePattern!).test(
+      'suite > exact no-op test [observes disposition=blocked_before_dispatch confirmation=dual severity=extreme]',
+    )).toBe(true);
   });
 
   it('fails closed when a mapped test reaches its timeout', () => {
