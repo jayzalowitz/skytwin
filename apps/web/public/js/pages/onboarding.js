@@ -690,6 +690,7 @@ function renderAboutMeConversational() {
   setWizardBusy(true, 'Loading your first question…');
 
   // Kick off the first question
+  setWizardBusy(true, 'Loading your first question…');
   kickConversation();
 }
 
