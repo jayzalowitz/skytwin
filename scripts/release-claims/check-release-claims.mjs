@@ -474,7 +474,7 @@ export const RELEASE_PUBLISHER_ACTION =
 
 const CANONICAL_RELEASE_JOB_ACTIONS = new Set([
   "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
-  "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+  "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
   RELEASE_PUBLISHER_ACTION,
 ]);
@@ -3580,7 +3580,7 @@ release-claims-ci/release-safety-evidence.json
     checkoutStep.with["persist-credentials"] !== false ||
     !hasExactKeys(setupNodeStep, ["uses", "with"]) ||
     setupNodeStep.uses !==
-      "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38" ||
+      "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020" ||
     !hasExactKeys(setupNodeStep.with, ["node-version"]) ||
     setupNodeStep.with["node-version"] !== "${{ env.NODE_VERSION }}" ||
     !hasExactKeys(downloadStep, ["name", "uses", "with"]) ||
@@ -3665,7 +3665,7 @@ release-claims-ci/release-safety-evidence.json
     (step) =>
       isRecord(step) &&
       step.uses ===
-        "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38",
+        "actions/setup-node@820762786026740c76f36085b0efc47a31fe5020",
   );
   const downloadIndex = releaseSteps.findIndex(
     (step) =>
