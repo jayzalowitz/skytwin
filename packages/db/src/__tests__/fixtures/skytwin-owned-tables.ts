@@ -17,6 +17,7 @@ export const SKYTWIN_OWNED_TABLES = [
   'entity_codes', 'episodic_memories', 'escalation_triggers', 'eval_runs',
   'execution_admission_barriers', 'execution_dispatch_ambiguities', 'execution_events', 'execution_plans',
   'execution_policy_authority', 'execution_results', 'explanation_records',
+  'rollback_admissions', 'rollback_terminal_ledger',
   'external_agent_tokens',
   'federation_pairing_codes', 'federation_peers', 'feedback_events',
   'forwarded_signals', 'fs_file_index', 'fs_scan_roots',
