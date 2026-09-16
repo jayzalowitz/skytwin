@@ -1772,7 +1772,7 @@ function renderReasoningLocation(settingsAvailable = true) {
         TrustedRouter and NEAR AI publish confidential-computing and attestation materials. SkyTwin does not enable either route merely because a key or endpoint is entered: this build has no verifier-owned remote adapter, so no prompt is sent in verified-private mode.
         <div style="display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.45rem;">
           <a href="https://trustedrouter.com/docs" target="_blank" rel="noopener noreferrer">TrustedRouter docs</a>
-          <a href="https://trustedrouter.com/trust" target="_blank" rel="noopener noreferrer">TrustedRouter attestation</a>
+          <a href="https://trust.trustedrouter.com/" target="_blank" rel="noopener noreferrer">TrustedRouter live trust record</a>
           <a href="https://github.com/nearai/nearai-cloud-verifier" target="_blank" rel="noopener noreferrer">NEAR AI verifier</a>
           <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md" target="_blank" rel="noopener noreferrer">SkyTwin verification guide</a>
         </div>

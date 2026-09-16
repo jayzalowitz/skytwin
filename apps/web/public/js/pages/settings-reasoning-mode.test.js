@@ -41,6 +41,7 @@ describe('reasoning-location settings boundary', () => {
     expect(source).toContain('Set up local model');
     expect(source).toContain('Confidential remote inference options');
     expect(source).toContain('TrustedRouter docs');
+    expect(source).toContain('TrustedRouter live trust record');
     expect(source).toContain('NEAR AI verifier');
     expect(source).toContain('no prompt is sent in verified-private mode');
   });

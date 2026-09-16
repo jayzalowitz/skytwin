@@ -43,8 +43,30 @@ privacy. Use the provider materials to evaluate the route, not as a SkyTwin
 availability claim:
 
 - [TrustedRouter API and confidential-routing documentation](https://trustedrouter.com/docs)
-- [TrustedRouter attestation procedure](https://trustedrouter.com/trust)
+- [TrustedRouter live trust record: attestation, accepted measurements, and signed release provenance](https://trust.trustedrouter.com/)
 - [TrustedRouter signed-receipt format and limitations](https://trustedrouter.com/docs/receipts)
+
+The trust portal is especially relevant to a future adapter: it publishes the
+accepted measurements and describes checking a fresh attestation's issuer,
+audience, image digest, and TLS-certificate binding. Its scope is the hosted
+gateway workload; it does not turn every downstream model route into an
+attested model-provider claim. In particular, the portal describes
+user-provided-model routes as leaving that gateway boundary. SkyTwin must keep
+those distinctions in its route policy rather than inferring them from a model
+name. The portal also distinguishes a measured image from mutable launch-time
+configuration; a future adapter must pin the full policy it relies on.
+
+## Boundary comparison
+
+| Route | What SkyTwin can establish today | What a future remote adapter must establish | Availability in this build |
+| --- | --- | --- | --- |
+| **On this device** | A managed artifact can be digest-checked; an explicit local model is local-only but not artifact-verified. | Compatible runtime admission; no remote fallback. | Available when the selected local runtime/model can run. |
+| **TrustedRouter remote route** | The provider publishes a trust portal, a confidential-routing floor, attestation material, and receipts. | A fresh TLS-bound gateway attestation against an accepted measurement, the required route policy, and a nonce-bound exact-byte receipt. | Unavailable — SkyTwin has not yet wired a verifier-owned transport. |
+| **NEAR AI remote route** | The provider publishes verifier tooling and direct-endpoint attestation material. | Pinned verifier, fresh endpoint policy, TLS/TEE evidence, and response-signature checks. | Unavailable — SkyTwin has not yet wired a verifier-owned transport. |
+
+This is a comparison of evidence boundaries, not a statement that remote and
+local execution are interchangeable. A remote route remains unavailable until
+SkyTwin verifies the evidence for that exact call and fails closed otherwise.
 
 ### NEAR AI
 
