@@ -46,6 +46,9 @@ heap_profiler/
 
 # Screenshots from QA/review sessions
 *.png
+!docs/assets/
+!docs/assets/demo-current/
+!docs/assets/demo-current/*.png
 
 # Volatile session lock metadata — runtime artifact, never commit
 .claude/scheduled_tasks.lock
