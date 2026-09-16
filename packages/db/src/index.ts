@@ -226,6 +226,10 @@ export type {
   RollbackTerminalStatus,
   RollbackTerminalRow,
   RecordRollbackTerminalInput,
+  RollbackAdmissionLifecycleStatus,
+  RollbackClaimInput,
+  RollbackClaimRow,
+  RollbackClaimResult,
 } from './repositories/index.js';
 
 export { signalRepository, proposalRepository, skillGapRepository, proactiveScanRepository } from './repositories/index.js';

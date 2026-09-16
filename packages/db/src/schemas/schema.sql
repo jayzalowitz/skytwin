@@ -255,9 +255,15 @@ CREATE TABLE IF NOT EXISTS rollback_admissions (
   execution_result_id UUID NOT NULL REFERENCES execution_results(id),
   adapter_name STRING NOT NULL,
   provider_plan_id STRING NOT NULL,
+  lifecycle_status STRING NOT NULL DEFAULT 'admitted',
+  claim_token_hash STRING,
+  claimed_at TIMESTAMPTZ,
+  claim_expires_at TIMESTAMPTZ,
+  terminalized_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   CONSTRAINT rollback_admission_one_claim_per_action UNIQUE (candidate_action_id),
   CONSTRAINT rollback_admission_owner_graph UNIQUE (id, user_id)
+  ,CONSTRAINT rollback_admission_lifecycle_status_ck CHECK (lifecycle_status IN ('admitted', 'claimed', 'terminal'))
 );
 
 CREATE TABLE IF NOT EXISTS execution_events (
@@ -333,6 +339,10 @@ CREATE TABLE IF NOT EXISTS rollback_terminal_ledger (
 );
 CREATE INDEX IF NOT EXISTS rollback_admissions_owner_idx
   ON rollback_admissions (user_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS rollback_admissions_claim_token_idx
+  ON rollback_admissions (claim_token_hash) WHERE claim_token_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS rollback_admissions_claim_expiry_idx
+  ON rollback_admissions (claim_expires_at) WHERE lifecycle_status = 'claimed';
 
 -- ============================================================================
 -- Feedback
