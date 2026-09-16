@@ -1298,8 +1298,8 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "b81f87cd8d9638e7b2ff94e131457a41d1fba4ecd3762f594f748239956a71da",
-          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence"
+          "sha256": "ac28895197ba6abd48c3e732618a2a9053c3075c97cbdb39291850ec773002be",
+          "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence, while the release-claim test checkout retains the history needed for fail-closed predecessor ancestry checks"
         },
         {
           "path": "apps/desktop/package.json",
@@ -1339,8 +1339,8 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "b81f87cd8d9638e7b2ff94e131457a41d1fba4ecd3762f594f748239956a71da",
-          "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, and guarded publisher graph"
+          "sha256": "ac28895197ba6abd48c3e732618a2a9053c3075c97cbdb39291850ec773002be",
+          "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, guarded publisher graph, and full-history release-claim checkout required for immutable predecessor ancestry proof"
         },
         {
           "path": "scripts/release-claims/release-constants.mjs",
@@ -1419,8 +1419,8 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "ee09dea45d273650e6196e1671f32812b15e92d09b253309f0ae16952455900b",
-          "why": "Pins the CI producer sources, structurally locks its runner and sole result uploader alongside the materials producer and exact-ID signing report aggregator, re-verifies the exact four-member safety artifact with both independent verifiers, emits the digest of the stable manifest bytes it checked, and validates every other bounded release material and source report binding at publication"
+          "sha256": "69b1690dc4822d4ee1888bab58df37b13cb7d582d81a31678af397549abc4355",
+          "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator, re-verifies the exact four-member safety artifact with both independent verifiers, emits the digest of the stable manifest bytes it checked, and validates every other bounded release material and source report binding at publication"
         }
       ],
       "verification": [

@@ -565,6 +565,9 @@ jobs:
     name: release-claim-ci
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
       - name: Capture release claim CI runtime
         id: capture-release-claim-runtime
         env:
@@ -2203,6 +2206,22 @@ ${step}`,
     );
     expect(verifyCanonicalReleasePublisher(root)).toContain(
       "release claim CI producer must use the exact tag-push-only frozen harness and pinned artifact upload",
+    );
+  });
+
+  it("requires full history for v2 ancestry checks under synthetic PR merge refs", () => {
+    const root = makeRoot();
+    writeValidFixture(root);
+    const path = join(root, ".github/workflows/build.yml");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8").replace(
+        "          fetch-depth: 0\n",
+        "          fetch-depth: 1\n",
+      ),
+    );
+    expect(verifyCanonicalReleasePublisher(root)).toContain(
+      "release claim CI producer checkout must use the pinned action with full history",
     );
   });
 

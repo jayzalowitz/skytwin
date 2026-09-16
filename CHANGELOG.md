@@ -4,6 +4,12 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **Broad hosted release-claim tests now retain the history required for
+  adversarial evidence ancestry checks.** The release-claim job checks out full
+  history so GitHub's synthetic pull-request merge commit can prove its trusted
+  predecessor ancestry, and the canonical workflow checker rejects a return to
+  a shallow checkout. The verifier remains fail closed.
+
 - **Immutable source-candidate installation now stays inside the extracted
   archive.** The documented command opts into a fail-closed archive mode that
   derives its install directory from `install.sh`, ignores inherited install

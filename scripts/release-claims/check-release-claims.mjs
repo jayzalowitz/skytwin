@@ -2471,6 +2471,11 @@ export function verifyCanonicalReleasePublisher(root) {
     expectedKeys.every((key) => Object.hasOwn(value, key));
   const ciJob = canonicalWorkflow.jobs?.test;
   const ciSteps = isRecord(ciJob) ? asArray(ciJob.steps) : [];
+  const ciCheckoutIndexes = ciSteps
+    .map((step, index) => ({ step, index }))
+    .filter(({ step }) =>
+      String(step?.uses ?? "").startsWith("actions/checkout@"),
+    );
   const ciRuntimeCaptureIndexes = ciSteps
     .map((step, index) => ({ step, index }))
     .filter(({ step }) => step?.name === "Capture release claim CI runtime");
@@ -2501,6 +2506,7 @@ export function verifyCanonicalReleasePublisher(root) {
   const ciRuntimeCapture = ciRuntimeCaptureIndexes[0]?.step;
   const ciUpload = ciUploadIndexes[0]?.step;
   const ciReadiness = ciReadinessIndexes[0]?.step;
+  const ciCheckout = ciCheckoutIndexes[0]?.step;
   const ciTagCondition =
     "always() && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')";
   const ciReadinessRun = `if [[ "\${GITHUB_REF_TYPE}" == "tag" && "\${GITHUB_REF_NAME}" == v* ]]; then
@@ -2565,6 +2571,18 @@ release-claims-ci/adversarial-evidence.json
 release-claims-ci/adversarial-evidence.json.sha256
 release-claims-ci/release-safety-evidence.json
 `;
+  if (
+    ciCheckoutIndexes.length !== 1 ||
+    ciCheckoutIndexes[0]?.index !== 0 ||
+    !hasExactKeys(ciCheckout, ["uses", "with"]) ||
+    ciCheckout.uses !== PINNED_RELEASE_WORKFLOW_ACTIONS.checkout ||
+    !hasExactKeys(ciCheckout.with, ["fetch-depth"]) ||
+    ciCheckout.with["fetch-depth"] !== 0
+  )
+    addError(
+      errors,
+      "release claim CI producer checkout must use the pinned action with full history",
+    );
   const artifactNameCanResolveTo = (value, expected) => {
     if (typeof value !== "string") return false;
     const expressionPattern = /\$\{\{[\s\S]*?\}\}/gu;
