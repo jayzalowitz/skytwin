@@ -22,10 +22,14 @@
 #   6. Starts CockroachDB, the API, the dashboard, and the worker.
 #   7. Opens http://localhost:3200 in your browser.
 #
-# Re-running this script is safe — it pulls latest, restarts services, and
-# opens the dashboard.
+# Re-running the normal branch install is safe — it pulls latest, restarts
+# services, and opens the dashboard. Source-archive mode always stays on the
+# extracted source instead.
 #
 # Opt-in env vars (advanced):
+#   SKYTWIN_SOURCE_ARCHIVE=true
+#                               Install this extracted, non-Git source tree in
+#                               place without cloning, fetching, or merging.
 #   SKYTWIN_USE_DOCKER=true     Use Docker for CRDB instead of the native
 #                               binary (CI / legacy workflows).
 #   SKYTWIN_WITH_OLLAMA=true    Also install Ollama + pull the gemma4
@@ -34,8 +38,17 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+SOURCE_ARCHIVE_MODE="${SKYTWIN_SOURCE_ARCHIVE:-false}"
 REPO_URL="${SKYTWIN_REPO_URL:-https://github.com/jayzalowitz/skytwin.git}"
-INSTALL_DIR="${SKYTWIN_INSTALL_DIR:-$HOME/skytwin}"
+if [ "$SOURCE_ARCHIVE_MODE" = "true" ]; then
+  # An extracted source candidate must be installed in place. Do not let a
+  # default or inherited install directory redirect this invocation to a clone
+  # of moving main.
+  INSTALL_DIR="$SCRIPT_DIR"
+else
+  INSTALL_DIR="${SKYTWIN_INSTALL_DIR:-$HOME/skytwin}"
+fi
 BRANCH="${SKYTWIN_BRANCH:-main}"
 
 RED='\033[0;31m'
@@ -75,15 +88,12 @@ esac
 
 step "SkyTwin installer (detected $OS)"
 
-# Required for cloning.
-if ! command -v git >/dev/null 2>&1; then
-  fail "git is required but not installed. Install from https://git-scm.com/ and re-run."
-fi
-
 # ── Step 1: clone or update the repo ───────────────────────────────────
 
-step "Fetching the SkyTwin repo into $INSTALL_DIR"
-# Three states to handle:
+step "Selecting SkyTwin source at $INSTALL_DIR"
+# Modes and source states to handle:
+#   - explicit source-archive mode → use the script's extracted directory and
+#     refuse Git metadata, without clone/fetch/merge.
 #   - $INSTALL_DIR doesn't exist → clone from $REPO_URL.
 #   - $INSTALL_DIR has a real .git directory → fetch + ff-only merge.
 #   - $INSTALL_DIR has source but no .git directory (Conductor worktree
@@ -92,31 +102,48 @@ step "Fetching the SkyTwin repo into $INSTALL_DIR"
 # a shared object store, so `[ -d $INSTALL_DIR/.git ]` returns false even
 # though the repo is fully present. The `-e` check + `ls -A` fallback
 # covers that and also handles a hand-extracted source tree.
-if [ -e "$INSTALL_DIR/.git" ]; then
-  # `-e` (not `-d`) so Conductor worktrees and any other gitlink-based
-  # setup match here. In a worktree, `.git` is a 75-byte file pointing
-  # at the shared object store, not a directory; `git -C` follows the
-  # gitlink transparently so the fetch+merge below works either way.
-  # The header comment above promised this behaviour; the previous `-d`
-  # check silently fell through to the "no .git directory" branch and
-  # skipped fetch+merge.
-  ok "Already cloned — pulling latest"
-  # Tolerate offline / sandboxed environments (validation containers, etc.)
-  # where `origin` may not be reachable. The on-disk version is then used
-  # as-is, which is exactly what the validation harness wants.
-  if git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet 2>/dev/null; then
-    # Use --ff-only so we never overwrite uncommitted local changes.
-    if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH" 2>/dev/null; then
-      warn "Local changes detected — keeping your version, skipping pull."
-    fi
-  else
-    warn "Could not reach $REPO_URL — using the on-disk version as-is."
+if [ "$SOURCE_ARCHIVE_MODE" != "true" ] && [ "$SOURCE_ARCHIVE_MODE" != "false" ]; then
+  fail "SKYTWIN_SOURCE_ARCHIVE must be exactly 'true' or 'false'."
+elif [ "$SOURCE_ARCHIVE_MODE" = "true" ]; then
+  if [ -e "$INSTALL_DIR/.git" ]; then
+    fail "Source-archive mode refuses a Git checkout. Extract the verified candidate archive first."
   fi
-elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
-  ok "Found existing source at $INSTALL_DIR (no .git directory) — using as-is"
+  if [ ! -d "$INSTALL_DIR" ] || [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+    fail "Source-archive mode requires the extracted candidate directory."
+  fi
+  ok "Using immutable source archive in place (no clone, fetch, or merge)"
 else
-  git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
-  ok "Cloned"
+  # Git is required only for the normal clone/update route. An extracted
+  # source candidate is complete and intentionally has no Git dependency.
+  if ! command -v git >/dev/null 2>&1; then
+    fail "git is required but not installed. Install from https://git-scm.com/ and re-run."
+  fi
+  if [ -e "$INSTALL_DIR/.git" ]; then
+    # `-e` (not `-d`) so Conductor worktrees and any other gitlink-based
+    # setup match here. In a worktree, `.git` is a 75-byte file pointing
+    # at the shared object store, not a directory; `git -C` follows the
+    # gitlink transparently so the fetch+merge below works either way.
+    # The header comment above promised this behaviour; the previous `-d`
+    # check silently fell through to the "no .git directory" branch and
+    # skipped fetch+merge.
+    ok "Already cloned — pulling latest"
+    # Tolerate offline / sandboxed environments (validation containers, etc.)
+    # where `origin` may not be reachable. The on-disk version is then used
+    # as-is, which is exactly what the validation harness wants.
+    if git -C "$INSTALL_DIR" fetch origin "$BRANCH" --quiet 2>/dev/null; then
+      # Use --ff-only so we never overwrite uncommitted local changes.
+      if ! git -C "$INSTALL_DIR" merge --ff-only "origin/$BRANCH" 2>/dev/null; then
+        warn "Local changes detected — keeping your version, skipping pull."
+      fi
+    else
+      warn "Could not reach $REPO_URL — using the on-disk version as-is."
+    fi
+  elif [ -d "$INSTALL_DIR" ] && [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+    ok "Found existing source at $INSTALL_DIR (no .git directory) — using as-is"
+  else
+    git clone --branch "$BRANCH" --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    ok "Cloned"
+  fi
 fi
 
 cd "$INSTALL_DIR"
@@ -279,17 +306,10 @@ echo -e "  Stop:         ${YELLOW}cd $INSTALL_DIR && ./bin/skytwin-dev --stop${N
 echo -e "  Restart:      ${YELLOW}cd $INSTALL_DIR && ./install.sh${NC}"
 echo ""
 
-# Tailor the next-step message to whether Google credentials are wired up.
-# /api/credentials/status returns { google: { configured: bool }, ... } and
-# is reachable on localhost without auth in dev mode.
-GOOGLE_STATUS="$(curl -sf "http://localhost:3100/api/credentials/status" 2>/dev/null || true)"
-if echo "$GOOGLE_STATUS" | grep -q '"configured":true'; then
-  echo "Next: open the dashboard and click 'Continue with Google' to sign in."
-  echo "Your twin will start learning from your inbox and calendar right away."
-else
-  echo "Next: open the dashboard. You'll see a 'Set up Google access' card —"
-  echo "click it for a 5-minute walkthrough that wires up your Gmail + Calendar."
-  echo ""
-  echo "Already done that elsewhere? Paste your existing Google OAuth Client ID"
-  echo "and Secret in Setup → Google account credentials and you're off."
-fi
+echo "Next: open the dashboard and choose 'Just show me around' to use the"
+echo "account-free development demo. Google and Microsoft account connections are"
+echo "not supported in this preview, and no provider credentials are needed for"
+echo "the demo."
+echo ""
+echo "The retained Google implementation is available only through the exact"
+echo "SKYTWIN_GOOGLE_CONNECTION_MODE=experimental unsupported source-development experiment."

@@ -53,6 +53,13 @@ The supported beta topology is one non-demo human owner per installation.
 Installation credentials are shared configuration, so multi-owner local installs
 and hosted service deployments are outside this release procedure.
 
+Internal source candidates are a separate, non-public evaluation mechanism.
+They use an exact commit archive, contain no packaged application artifacts,
+and have no tag, GitHub Release, upload, or publication capability. See
+[`internal-source-candidates.md`](./internal-source-candidates.md). Creating one
+does not satisfy or bypass any claim-ledger, signing, evidence, or protected
+environment requirement below.
+
 The intended post-build contract is explicit: the tagged `build.yml` run
 must produce `release-claims-ci` and `release-evidence` artifacts. The former
 is emitted only for a real `push` of a `v*` tag by the `release-claim-ci` job;
