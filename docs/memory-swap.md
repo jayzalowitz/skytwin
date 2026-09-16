@@ -240,11 +240,12 @@ pnpm --filter @skytwin/memory-gbrain-crdb-adapter test:crdb
 
 The script (`packages/memory-gbrain-crdb-adapter/scripts/run-crdb-integration.sh`):
 
-1. Spins up `cockroachdb/cockroach:latest-v23.2` on a non-default port
-   bound to host loopback only (26259 by default; override `PORT` if another
-   workspace owns it). The harness bypasses the image's secure-init entrypoint
-   for this explicitly insecure, disposable test node and runs the image's own
-   SQL client, so no host `psql` installation is required.
+1. Spins up `cockroachdb/cockroach:latest-v23.2` with Docker assigning an
+   ephemeral host port bound to loopback by default. Set `PORT=26259` (or any
+   other available port via `PORT`) to request a fixed host port. The harness
+   bypasses the image's secure-init entrypoint for this explicitly insecure,
+   disposable test node and runs the image's own SQL client, so no host `psql`
+   installation is required.
 2. Creates a `skytwin_test` database + a minimal `users` table for the FK.
 3. Applies the brain-specific migration chain that can run in isolation (`040`,
    `043`, `044`, and `052`). The repository's full migration/rollback CI lane
