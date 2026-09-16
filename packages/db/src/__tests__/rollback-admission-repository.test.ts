@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 
 const clientQuery = vi.fn();
 const pooledQuery = vi.fn();
@@ -19,6 +20,17 @@ describe('rollbackAdmissionRepository', () => {
     expect(clientQuery).not.toHaveBeenCalled();
   });
 
+  it('binds the execution plan to the same decision as the outcome', async () => {
+    clientQuery.mockResolvedValueOnce({ rows: [target] }).mockResolvedValueOnce({ rows: [{ id: 'ad' }] }).mockResolvedValueOnce({ rows: [admission] }).mockResolvedValueOnce({ rows: [] });
+    await rollbackAdmissionRepository.admit({ userId: 'u', decisionId: 'd', candidateActionId: 'a', outcomeId: 'o', executionResultId: 'r', adapterName: 'ironclaw', providerPlanId: 'provider-1' });
+    expect(clientQuery.mock.calls[0]![0]).toContain('ep.decision_id = d.id');
+  });
+
+  it('declares the explanation composite key before the terminal ledger FK', () => {
+    const schema = readFileSync(new URL('../schemas/schema.sql', import.meta.url), 'utf8');
+    expect(schema.indexOf('explanation_records_id_decision_idx')).toBeLessThan(schema.indexOf('rollback_terminal_explanation_fk'));
+  });
+
   it('returns the existing claim as a non-winner on replay', async () => {
     clientQuery.mockResolvedValueOnce({ rows: [target] }).mockResolvedValueOnce({ rows: [], rowCount: 0 }).mockResolvedValueOnce({ rows: [admission] }).mockResolvedValueOnce({ rows: [], rowCount: 0 });
     const input = { userId: 'u', decisionId: 'd', candidateActionId: 'a', outcomeId: 'o', executionResultId: 'r', adapterName: 'ironclaw', providerPlanId: 'provider-1' };
@@ -29,10 +41,10 @@ describe('rollbackAdmissionRepository', () => {
   });
 
   it('writes explanation and terminal ledger in the same transaction', async () => {
-    clientQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ id: 'd' }] }).mockResolvedValueOnce({ rows: [{ id: 'x' }] }).mockResolvedValueOnce({ rows: [], rowCount: 0 }).mockResolvedValueOnce({ rows: [{ admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'failed', result: {}, explanation_id: 'x', terminal_at: new Date() }] });
+    clientQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [{ id: 'd' }] }).mockResolvedValueOnce({ rows: [], rowCount: 0 }).mockResolvedValueOnce({ rows: [{ id: 'x' }] }).mockResolvedValueOnce({ rows: [{ admission_id: 'ad', user_id: 'u', decision_id: 'd', status: 'failed', result: {}, explanation_id: 'x', terminal_at: new Date() }] });
     const row = await rollbackAdmissionRepository.recordTerminal({ admissionId: 'ad', userId: 'u', decisionId: 'd', status: 'failed', explanation: { whatHappened: 'Rollback failed', confidenceReasoning: 'Provider response', actionRationale: 'Requested by user', correctionGuidance: 'Retry manually' } });
     expect(row.status).toBe('failed');
-    expect(clientQuery.mock.calls[2]![0]).toContain('INSERT INTO explanation_records');
+    expect(clientQuery.mock.calls[3]![0]).toContain('INSERT INTO explanation_records');
     expect(clientQuery.mock.calls[4]![0]).toContain('INSERT INTO rollback_terminal_ledger');
   });
 

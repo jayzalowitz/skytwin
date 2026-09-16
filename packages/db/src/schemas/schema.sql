@@ -313,6 +313,10 @@ CREATE TABLE IF NOT EXISTS explanation_records (
   INDEX (decision_id)
 );
 
+-- Required before rollback_terminal_ledger's composite explanation FK.
+CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx
+  ON explanation_records (id, decision_id);
+
 CREATE TABLE IF NOT EXISTS rollback_terminal_ledger (
   admission_id UUID PRIMARY KEY REFERENCES rollback_admissions(id),
   user_id UUID NOT NULL,
@@ -542,8 +546,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS decision_outcomes_id_decision_action_idx
   ON decision_outcomes (id, decision_id, selected_action_id);
 CREATE UNIQUE INDEX IF NOT EXISTS execution_plans_id_decision_action_idx
   ON execution_plans (id, decision_id, action_id);
-CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx
-  ON explanation_records (id, decision_id);
 CREATE TABLE IF NOT EXISTS execution_admission_barriers (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
