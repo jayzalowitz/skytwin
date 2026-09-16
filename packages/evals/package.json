@@ -14,7 +14,7 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run && node --test ../../scripts/release-evidence/verify-adversarial-evidence.test.mjs",
+    "test": "vitest run && pnpm exec vitest run --root ../.. scripts/release-evidence/adversarial-v2-migration.test.mjs && node --test ../../scripts/release-evidence/verify-adversarial-evidence.test.mjs",
     "test:vitest": "vitest run",
     "lint": "tsc --noEmit",
     "eval": "pnpm eval:adversarial",

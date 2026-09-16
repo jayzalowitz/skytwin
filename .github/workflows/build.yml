@@ -71,6 +71,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          # The v2 evidence verifier proves that its immutable predecessor is
+          # an ancestor of the checked-out commit. Pull requests are tested at
+          # GitHub's synthetic merge commit, so both parent histories must be
+          # available for that proof during the broad test suite.
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 

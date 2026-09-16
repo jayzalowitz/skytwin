@@ -89,6 +89,11 @@ jobs:
             --expected-commit "$EXPECTED_COMMIT" \
             --trusted-commit "$TRUSTED_COMMIT" \
             --require-clean
+          # The v2 migration verifier derives the same protected base/before
+          # and reviewed head directly from GITHUB_EVENT_PATH. Its one genesis
+          # exception requires the protected base to lack both v2 inputs while
+          # retaining every exact audited v1 fixture/baseline/assertion byte.
+          node scripts/release-evidence/verify-adversarial-v2-ci.mjs
 
       - name: Upload adversarial source-checkout evidence
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6

@@ -4,6 +4,12 @@ All notable changes to SkyTwin will be documented in this file.
 
 ### Fixed (post-review)
 
+- **Broad hosted release-claim tests now retain the history required for
+  adversarial evidence ancestry checks.** The release-claim job checks out full
+  history so GitHub's synthetic pull-request merge commit can prove its trusted
+  predecessor ancestry, and the canonical workflow checker rejects a return to
+  a shallow checkout. The verifier remains fail closed.
+
 - **Immutable source-candidate installation now stays inside the extracted
   archive.** The documented command opts into a fail-closed archive mode that
   derives its install directory from `install.sh`, ignores inherited install
@@ -14,6 +20,16 @@ All notable changes to SkyTwin will be documented in this file.
   without consulting moving `main`.
 
 ### Changed
+
+- **Adversarial route harnesses now have an append-only v2 migration path.**
+  The immutable v1 assertion bytes remain intact. A separate reserved v2
+  fixture binds two proposed v1 harness retirements to their assertion hashes
+  and last-valid commit, reserves persistence-aware successors, and
+  requires any later activation to append its final assertion hash and commit.
+  The generator and independent verifier reject missing, rewritten, forged,
+  or mismatched supersession provenance. Both successors remain skipped and
+  uncounted, so explanation coverage stays 6/10, the claim stays limited, and
+  release readiness stays blocked.
 
 - **Internal source evaluation now has an immutable, non-public preparation
   path without weakening the beta release gate.** The exact-SHA-only packager
@@ -290,6 +306,14 @@ All notable changes to SkyTwin will be documented in this file.
   protection claim.
 
 ### Fixed (post-review)
+
+- **V2 adversarial migration verification now requires immutable external
+  trust.** Direct verification fails closed without an explicit trusted commit
+  or filesystem root. Normal eval CI derives the reviewed head and trusted PR
+  base or push predecessor from GitHub's event payload, and permits the single
+  bootstrap only when both v2 inputs are absent from the protected base and
+  that commit retains every exact audited v1 input. Coordinated
+  fixture-plus-baseline rewrites now fail through that standard CI command.
 
 - **Hosted release-claim evidence resolves pnpm/action-setup without relaxing
   runtime identity.** Runtime capture accepts only the generated POSIX shim's
