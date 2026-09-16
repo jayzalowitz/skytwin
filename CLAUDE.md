@@ -61,9 +61,9 @@ This shows up most often after rebasing across changes to `packages/shared-types
 
 ### Test gotcha: a package-local vitest config silently disables the dist exclusion
 
-`vitest.config.ts` at the repo root sets `exclude: [...configDefaults.exclude, '**/dist/**']`. That exclusion is **not optional** — 34 packages compile their `__tests__/` directory into `dist/`, and Vitest 4 removed the `dist` glob from its built-in defaults (v3 shipped it; v4's defaults are only `node_modules` and `.git`). Without it, every one of those suites runs twice: once from `src/*.test.ts`, once from the stale compiled `dist/*.test.js`.
+`vitest.config.ts` at the repo root sets `exclude: [...configDefaults.exclude, '**/dist/**']`. That exclusion is **not optional** — 34 packages compile their `__tests__/` directory into `dist/`, and current Vitest defaults do not exclude `dist`. Without it, every one of those suites runs twice: once from `src/*.test.ts`, once from the stale compiled `dist/*.test.js`.
 
-A package-local `vitest.config.ts` **replaces** the root config; it does not merge with it. So the moment a package needs any local setting (a jsdom environment, an alias, `fileParallelism`), it silently loses the dist exclusion:
+A package-local `vitest.config.ts` **replaces** the root config; it does not merge with it. Package test scripts therefore pass the exclusion explicitly, and every package-local config must retain it too:
 
 ```ts
 // apps/<pkg>/vitest.config.ts

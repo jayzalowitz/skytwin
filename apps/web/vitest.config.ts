@@ -6,9 +6,9 @@ import { defineConfig } from 'vitest/config';
  *    env + the minimal DOM stubs in `test/setup.ts` (#499/#511).
  *  - `src/**` — accessibility tests (#402) that mount markup into a real DOM
  *    (jsdom) before handing it to axe-core.
- * Vitest 4 removed `environmentMatchGlobs`, so model the split as explicit
- * projects. The root `passWithNoTests` keeps the script green if tests are ever
- * moved out; Vitest 4 intentionally excludes that option from project configs.
+ * Current Vitest releases do not support `environmentMatchGlobs`, so model the
+ * split as explicit projects. The root `passWithNoTests` keeps the script green
+ * if tests are ever moved out; project configs do not accept that option.
  */
 export default defineConfig({
   test: {
