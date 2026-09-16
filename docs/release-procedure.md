@@ -100,7 +100,7 @@ requires that digest after draft creation. The consumer deliberately does not
 re-download and independently hash the artifact archive itself; it relies on
 the pinned GitHub download action, GitHub's artifact API digest, and exact local
 member hashes. Until an immutable tag run passes this path, the current 10/10
-cataloged safety result and 8/10 explanation-boundary result leave
+cataloged safety result and 6/10 explanation-boundary result leave
 `safety.explanation-coverage` limited and the release blocked.
 
 The CI-result producer runs on a fresh GitHub-hosted runner. Its filesystem
@@ -199,7 +199,7 @@ constraints for this candidate.
 
 `build.yml` triggers on `push: tags: ['v*']`. The relevant jobs:
 
-1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The general eval workflow remains separate, but a `v*` tag now reruns the exact v1 adversarial catalog, independently verifies it, and adds a bounded release-safety sidecar to `release-claims-ci`. The final publication verifier consumes and independently re-verifies that exact sidecar, but it still discloses two explanation-coverage gaps and therefore does not close the release-evals stop-ship.
+1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The general eval workflow remains separate, but a `v*` tag now reruns the exact v1 adversarial catalog, independently verifies it, and adds a bounded release-safety sidecar to `release-claims-ci`. The final publication verifier consumes and independently re-verifies that exact sidecar, but it still discloses four explanation-coverage gaps and therefore does not close the release-evals stop-ship.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
 4. **`release`** (`needs:` `test`, the three desktop jobs, and the verified evidence aggregator) — when the ledger is ready, verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus twelve machine reports (thirteen durable report files total), the three adversarial/release-safety sidecars, checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID and the checker's exact manifest digest, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public. The open stop-ship conditions currently prevent this path from creating a draft or publishing those assets.

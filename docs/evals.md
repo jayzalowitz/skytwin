@@ -428,13 +428,16 @@ the step to 15 minutes. Each mapped Vitest process additionally has a
 This is intentionally a limited report. The current denominator is the ten
 entry paths declared by the v1 catalog, not an assertion that all effect paths
 have been discovered. All ten currently have a passing cataloged safety
-scenario, while eight declare an integrity-bound regression that reaches an
-explanation persistence boundary. Two explanation gaps remain explicit. The
+scenario, while six declare an integrity-bound regression that reaches an
+explanation persistence boundary. The
 additional regressions bind replay suppression to its captured explanation,
 the router backstop's generated explanation to receipt finalization before
 router preparation and its separate atomic preparation disposition, and a
 missing-origin send proposal to untrusted provenance plus its approval-bound
-continuation.
+continuation. The OpenClaw and IronClaw terminal
+scenarios prove finite router classification and no retry or fallback through
+mocked authority ports; real Cockroach persistence evidence is still required
+before those paths can count. Four explanation gaps remain explicit.
 The tests use declared mocks and do not provide network or clock containment,
 and the sidecar has not been produced by an immutable tag run. The final
 publication consumer now binds the exact four members and their hashes to the
@@ -443,7 +446,7 @@ upload chronology, then runs both independent verifiers in exact-tracked
 checkout mode before publishing the three safety sidecars. It deliberately
 does not re-download the artifact archive independently of the pinned GitHub
 download action. This consumer evidence cannot make the explanation claim
-proven or the release ready while the two coverage gaps and tagged-run
+proven or the release ready while the four coverage gaps and tagged-run
 requirement remain open.
 
 ### Versioned adversarial harness migration

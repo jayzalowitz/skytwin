@@ -130,8 +130,8 @@ describe("release safety evidence", () => {
     expect(result).toMatchObject({
       status: "limited",
       entryPaths: 10,
-      explanationsCovered: 8,
-      failures: 2,
+      explanationsCovered: 6,
+      failures: 4,
     });
     expect(
       report.entryPaths
@@ -141,9 +141,7 @@ describe("release safety evidence", () => {
       "api.assistant",
       "api.events_ingest",
       "api.routines",
-      "execution_router.openclaw_response",
       "execution_router.pre_dispatch_guard",
-      "ironclaw_adapter.execute",
       "shared_types.injection_guard",
       "worker.memory_action_loop",
     ]);
@@ -154,6 +152,14 @@ describe("release safety evidence", () => {
       }),
       expect.objectContaining({
         entryPath: "api.capability_regret",
+        kind: "explanation",
+      }),
+      expect.objectContaining({
+        entryPath: "execution_router.openclaw_response",
+        kind: "explanation",
+      }),
+      expect.objectContaining({
+        entryPath: "ironclaw_adapter.execute",
         kind: "explanation",
       }),
     ]);
