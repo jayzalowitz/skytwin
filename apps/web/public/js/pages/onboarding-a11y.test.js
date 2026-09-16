@@ -11,8 +11,9 @@ describe('onboarding accessibility contract', () => {
     expect(index).toContain('role="dialog" aria-modal="true" aria-labelledby="onb-dialog-title"');
     expect(index).toContain('id="onboarding-content" aria-busy="false"');
     expect(index).toContain('id="onb-wizard-status" role="status" aria-live="polite"');
-    expect(onboarding).toContain("el.setAttribute('aria-busy', 'true')");
-    expect(onboarding).toContain("el.setAttribute('aria-busy', 'false')");
+    expect(onboarding).toContain("renderContent(html, { busy = false, status = '' } = {})");
+    expect(onboarding).toContain("setWizardBusy(false, 'Onboarding options ready.')");
+    expect(onboarding).toContain("setWizardBusy(true, 'Scanning for project signals…')");
   });
 
   it('gives every onboarding action button an explicit non-submit type', () => {
@@ -32,5 +33,14 @@ describe('onboarding accessibility contract', () => {
     expect(onboarding).toContain('document.addEventListener(\'click\', handleOnboardingClick)');
     expect(onboarding).toContain('Just show me around');
     expect(onboarding).toContain('data-action="onb-start-tour"');
+  });
+
+  it('contains keyboard focus only while the visible dialog is active', () => {
+    const app = fs.readFileSync(path.join(root, 'js/app.js'), 'utf8');
+    expect(app).toContain('function handleOnboardingKeydown(e)');
+    expect(app).toContain("e.key !== 'Tab'");
+    expect(app).toContain("document.addEventListener('keydown', handleOnboardingKeydown)");
+    expect(app).toContain("document.removeEventListener('keydown', handleOnboardingKeydown)");
+    expect(app).toContain("overlay.style.display === 'none'");
   });
 });

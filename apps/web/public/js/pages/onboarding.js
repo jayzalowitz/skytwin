@@ -317,10 +317,17 @@ async function handleOnboardingClick(e) {
 // Screen renderers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function renderContent(html) {
+function setWizardBusy(busy, message = '') {
+  const content = document.getElementById('onboarding-content');
+  if (content) content.setAttribute('aria-busy', String(busy));
+  const status = document.getElementById('onb-wizard-status');
+  if (status && message) status.textContent = message;
+}
+
+function renderContent(html, { busy = false, status = '' } = {}) {
   const el = document.getElementById('onboarding-content');
   if (!el) return;
-  el.setAttribute('aria-busy', 'true');
+  el.setAttribute('aria-busy', String(busy));
   el.innerHTML = html;
   const title = el.querySelector('.onboarding-title');
   if (title) {
@@ -334,7 +341,7 @@ function renderContent(html) {
   }
   const focusTarget = title || el.querySelector('input, button, [tabindex]');
   if (focusTarget instanceof HTMLElement) requestAnimationFrame(() => focusTarget.focus());
-  el.setAttribute('aria-busy', 'false');
+  if (status) setWizardBusy(busy, status);
 }
 
 function showWizardError(msg) {
@@ -425,11 +432,11 @@ function renderWelcome() {
         Skip for now
       </button>
     </div>
-  `);
+  `, { busy: true, status: 'Loading onboarding options…' });
 
   // Recommend an artifact without claiming the separate llama.cpp runtime is
   // ready. Best-effort: if the probe fails, keep the generic checking line.
-  fetchLocalModelRecommendation()
+  const modelCheck = fetchLocalModelRecommendation()
     .then((rec) => {
       const el = document.getElementById('onb-ai-text');
       if (!el) return;
@@ -470,9 +477,10 @@ function renderWelcome() {
     }
   };
 
-  fetchDemoInfo()
+  const demoCheck = fetchDemoInfo()
     .then((info) => updateTourButton(!!info?.available))
     .catch(() => updateTourButton(false));
+  Promise.allSettled([modelCheck, demoCheck]).then(() => setWizardBusy(false, 'Onboarding options ready.'));
 }
 
 // ── Email choice ──────────────────────────────────────────────────────────────
@@ -580,10 +588,11 @@ async function renderIdleMinerPoll() {
       </div>
       <button type="button" class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard</button>
     </div>
-  `);
+  `, { busy: true, status: 'Scanning for project signals…' });
 
   const userId = getCurrentUserId();
   if (!userId) {
+    setWizardBusy(false, 'Scanning skipped.');
     transitionTo('complete');
     return;
   }
@@ -628,6 +637,7 @@ async function renderIdleMinerPoll() {
           _wizardState.recipeSlug = 'productivity-pack';
           _wizardState.recommendedRegistryIds = [];
         }
+        setWizardBusy(false, 'Project signal found.');
         return;
       }
     } catch {
@@ -640,6 +650,7 @@ async function renderIdleMinerPoll() {
   const timeoutEl = document.getElementById('onb-poll-timeout');
   if (statusEl) statusEl.style.display = 'none';
   if (timeoutEl) timeoutEl.style.display = 'block';
+  setWizardBusy(false, 'Scanning is continuing in the background.');
 }
 
 // ── About-me (conversational or deterministic) ────────────────────────────────
@@ -944,7 +955,7 @@ async function renderRecipePreview() {
         Skip for now
       </button>
     </div>
-  `);
+  `, { busy: true, status: 'Loading capability suggestions…' });
 
   // Load the D3 dependency graph async — non-blocking
   loadDependencyGraph(getCurrentUserId());
@@ -964,6 +975,7 @@ async function loadDependencyGraph(userId) {
       await loadScript('https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js');
     } catch {
       container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Dependency graph unavailable offline.</div>`;
+      setWizardBusy(false, 'Capability graph unavailable offline.');
       return;
     }
   }
@@ -973,6 +985,7 @@ async function loadDependencyGraph(userId) {
     graphData = await fetchCapabilityDependencyGraph(userId);
   } catch {
     container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Could not load graph.</div>`;
+    setWizardBusy(false, 'Capability graph could not be loaded.');
     return;
   }
 
@@ -980,10 +993,12 @@ async function loadDependencyGraph(userId) {
   const edges = graphData.edges ?? [];
   if (nodes.length === 0) {
     container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">No capability data yet.</div>`;
+    setWizardBusy(false, 'Capability graph is ready.');
     return;
   }
 
   renderD3Graph(container, nodes, edges);
+  setWizardBusy(false, 'Capability graph is ready.');
 }
 
 function loadScript(src) {
@@ -1066,6 +1081,7 @@ function renderD3Graph(container, nodes, edges) {
 async function handleInstallRecipe(slug, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'Installing…'; }
   transitionTo('installing');
+  setWizardBusy(true, 'Installing your starter capabilities…');
 
   const userId = getCurrentUserId();
 
@@ -1074,6 +1090,7 @@ async function handleInstallRecipe(slug, btn) {
     const count = jobs?.length ?? 0;
     await postOnboardingComplete(userId, getFirstRunChoice(), slug);
     renderInstallComplete(slug, count);
+    setWizardBusy(false, 'Installation queued.');
   } catch (err) {
     renderContent(`
       <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:block;">
@@ -1081,6 +1098,7 @@ async function handleInstallRecipe(slug, btn) {
       </div>
       <button type="button" class="btn btn-primary" data-action="onb-go-dashboard">Continue to dashboard anyway</button>
     `);
+    setWizardBusy(false, 'Installation failed.');
   }
 }
 
@@ -1090,7 +1108,7 @@ function renderInstalling() {
       <div class="loading" style="margin-bottom:0.75rem;"></div>
       Setting up your capabilities…
     </div>
-  `);
+  `, { busy: true, status: 'Installing your starter capabilities…' });
 }
 
 function renderInstallComplete(slug, count) {

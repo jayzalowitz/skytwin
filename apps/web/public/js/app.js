@@ -97,10 +97,33 @@ function hideOnboarding() {
     _onboardingReturnFocus.focus();
     _onboardingReturnFocus = null;
   }
+  document.removeEventListener('keydown', handleOnboardingKeydown);
 }
 
 let _onboardingEscHandler = null;
 let _onboardingReturnFocus = null;
+
+function handleOnboardingKeydown(e) {
+  const overlay = document.getElementById('onboarding-overlay');
+  if (!overlay || overlay.style.display === 'none' || e.key !== 'Tab') return;
+  const focusable = [...overlay.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+  )].filter((el) => el instanceof HTMLElement && el.offsetParent !== null);
+  if (focusable.length === 0) {
+    e.preventDefault();
+    overlay.querySelector('.onboarding-card')?.focus();
+    return;
+  }
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (e.shiftKey && document.activeElement === first) {
+    e.preventDefault();
+    last.focus();
+  } else if (!e.shiftKey && document.activeElement === last) {
+    e.preventDefault();
+    first.focus();
+  }
+}
 
 /**
  * Dismiss the modal as "skipped" — user pressed Esc, the X button, or
@@ -127,6 +150,7 @@ window.skyTwinTeardownOnboardingEsc = () => {
     document.removeEventListener('keydown', _onboardingEscHandler);
     _onboardingEscHandler = null;
   }
+  document.removeEventListener('keydown', handleOnboardingKeydown);
 };
 
 /**
@@ -151,6 +175,7 @@ function showOnboarding() {
     };
     document.addEventListener('keydown', _onboardingEscHandler);
   }
+  document.addEventListener('keydown', handleOnboardingKeydown);
 
   renderOnboarding(
     document.getElementById('onboarding-content'),
