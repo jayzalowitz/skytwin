@@ -280,7 +280,10 @@ function normalizeGbrainHit(value: unknown): SemanticHit | null {
     id: hit.slug,
     score: hit.score,
     content: hit.chunk_text,
-    source: hit.slug,
+    source:
+      typeof hit.source_id === 'string' && hit.source_id.length > 0
+        ? hit.source_id
+        : hit.slug,
     metadata,
   };
 }

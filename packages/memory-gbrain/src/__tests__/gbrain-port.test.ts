@@ -89,7 +89,7 @@ describe('GbrainMemoryPort', () => {
           id: 'projects/skytwin',
           score: 0.95,
           content: 'result text',
-          source: 'projects/skytwin',
+          source: 'main',
           metadata: {
             source_id: 'main',
             title: 'SkyTwin',
@@ -101,6 +101,27 @@ describe('GbrainMemoryPort', () => {
           },
         },
       ]);
+    });
+
+    it('falls back to the slug when a current gbrain hit has no source id', async () => {
+      mockIsInstalled.mockReturnValue(true);
+      mockExecFileSync.mockReturnValue(
+        JSON.stringify([
+          {
+            slug: 'projects/skytwin',
+            score: 0.95,
+            chunk_text: 'result text',
+          },
+        ]),
+      );
+
+      const port = new GbrainMemoryPort();
+      const result = await port.searchSemantic('query', 10);
+
+      expect(result[0]).toMatchObject({
+        id: 'projects/skytwin',
+        source: 'projects/skytwin',
+      });
     });
 
     it('retains compatibility with the legacy gbrain hit shape', async () => {
