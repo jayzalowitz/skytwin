@@ -34,6 +34,7 @@ BRAIN_MIGRATIONS=(
   packages/db/src/migrations/044-brain-tier-weighting-default-on.sql
   packages/db/src/migrations/052-brain-pages-metadata-index.sql
 )
+CONTAINER_ID=""
 
 crdb_sql() {
   docker exec "$CONTAINER_NAME" "$COCKROACH_BIN" sql \
@@ -47,17 +48,24 @@ if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
 fi
 
 cleanup() {
-  echo "[harness] tearing down $CONTAINER_NAME"
-  docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  if [ -z "$CONTAINER_ID" ]; then
+    return
+  fi
+  echo "[harness] tearing down $CONTAINER_ID ($CONTAINER_NAME)"
+  docker rm -f "$CONTAINER_ID" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
 echo "[harness] starting cockroachdb container on port $PORT"
-docker run -d --name "$CONTAINER_NAME" \
+CONTAINER_ID=$(docker run -d --name "$CONTAINER_NAME" \
   -p "127.0.0.1:${PORT}:26257" \
   --entrypoint "$COCKROACH_BIN" \
   "$COCKROACH_IMAGE" \
-  start-single-node --insecure --listen-addr=0.0.0.0:26257 >/dev/null
+  start-single-node --insecure --listen-addr=0.0.0.0:26257)
+if [ -z "$CONTAINER_ID" ]; then
+  echo "[harness] docker did not return a container id; aborting" >&2
+  exit 1
+fi
 
 echo "[harness] waiting for cockroach to accept connections"
 ready=0
@@ -70,7 +78,7 @@ for i in {1..30}; do
 done
 if [ "$ready" = "0" ]; then
   echo "[harness] cockroach failed to accept connections within 30s; aborting"
-  docker logs "$CONTAINER_NAME" 2>&1 | tail -20 || true
+  docker logs "$CONTAINER_ID" 2>&1 | tail -20 || true
   exit 1
 fi
 
