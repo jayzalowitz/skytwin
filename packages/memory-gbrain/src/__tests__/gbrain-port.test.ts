@@ -65,7 +65,7 @@ describe('GbrainMemoryPort', () => {
       expect(mockExecFileSync).not.toHaveBeenCalled();
     });
 
-    it('normalizes gbrain 0.50 SearchResult output', async () => {
+    it('normalizes upstream gbrain v0.50.5.0 SearchResult output', async () => {
       mockIsInstalled.mockReturnValue(true);
       const hits = [
         {

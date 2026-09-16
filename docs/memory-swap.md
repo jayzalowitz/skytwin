@@ -234,16 +234,19 @@ and gated on `RUN_DB_TESTS=1`.
 To exercise them against a hermetic local CRDB:
 
 ```bash
-# From the repo root. Requires Docker + psql client.
+# From the repo root. Requires Docker; the container supplies the SQL client.
 pnpm --filter @skytwin/memory-gbrain-crdb-adapter test:crdb
 ```
 
 The script (`packages/memory-gbrain-crdb-adapter/scripts/run-crdb-integration.sh`):
 
 1. Spins up `cockroachdb/cockroach:latest-v23.2` on a non-default port
-   (26259, so it doesn't collide with a dev cluster).
+   bound to host loopback only (26259 by default; override `PORT` if another
+   workspace owns it). The harness bypasses the image's secure-init entrypoint
+   for this explicitly insecure, disposable test node and runs the image's own
+   SQL client, so no host `psql` installation is required.
 2. Creates a `skytwin_test` database + a minimal `users` table for the FK.
-3. Applies `040-gbrain-memory.sql`.
+3. Applies the current brain schema chain (`040`, `043`, `044`, and `052`).
 4. Seeds one test user.
 5. Runs the integration suite with `RUN_DB_TESTS=1` and the right `DATABASE_*`
    env vars.
@@ -271,25 +274,33 @@ issue is resolved. The `/api/mempalace` REST surface continues to work
 regardless of backend selection — it queries memory_* tables directly,
 not via `MemoryPort`.
 
-## Why not run gbrain externally?
+## Upstream gbrain boundary
 
-Issue #197 originally targeted the upstream `gbrain` CLI. We ship an
-in-process embedded port instead because:
+Issue #197 originally targeted the upstream `gbrain` CLI. SkyTwin's default
+`EmbeddedGbrainMemoryPort` is a CRDB-native, gbrain-compatible implementation,
+not a vendored copy of the upstream runtime. We keep that boundary because:
 
 1. **No second Postgres.** Upstream gbrain defaults to PGLite or Supabase.
    Running PGLite alongside CRDB means two databases per install — a
    nontrivial operational burden. The CRDB adapter (in this repo) lets
    gbrain run against the database SkyTwin already has.
-2. **No second install step.** Users don't need to `brew install gbrain`
-   or `npm install -g gbrain` — the backend is a pnpm dep.
+2. **No second runtime or install step.** Upstream gbrain v0.50.5.0 requires
+   Bun and is installed from GitHub; its maintainers explicitly warn that the
+   npm package named `gbrain` is unrelated. SkyTwin's default remains Node-only.
 3. **Same retrieval primitives.** RRF over vector + tsvector is well-defined
    without depending on upstream gbrain's specific implementation.
 
-The CLI shell-out path is still available (`@skytwin/memory-gbrain`'s
-`GbrainMemoryPort`) for users who already run gbrain externally and want to
-consume their existing brain via a thin wrapper. The dashboard surfaces
-"Your existing gbrain detected" prompts (via
-`hasExternalGbrainConfig()`) when `~/.config/gbrain/` is present.
+The real upstream CLI path remains available as
+`@skytwin/memory-gbrain`'s `GbrainMemoryPort`. The adapter shells out without a
+command shell and translates upstream `SearchResult` JSON into SkyTwin's
+`MemoryPort` search shape. It is intentionally opt-in and is not selected by
+the API backend factory: automatic adoption would bypass per-user CRDB custody,
+and the adapter does not implement SkyTwin's write, episode, or graph contract.
+
+The dashboard only discloses that a separate installation was detected (via
+`hasExternalGbrainConfig()` / `isGbrainInstalled()`). Selecting `hybrid` still
+means SkyTwin CRDB memory plus SkyTwin MemPalace; it never imports or queries the
+external brain without an explicit future integration.
 
 ## References
 

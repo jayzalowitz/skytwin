@@ -195,11 +195,14 @@ describe.skipIf(!SHOULD_RUN)('integration — CRDB-backed repository', () => {
       );
       expect(exhausted.rows[0]?.id).toBeDefined();
       await leaseEmbeddingJob();
-      const terminal = await query<{ status: string; attempts: number }>(
+      // pg intentionally returns CockroachDB INT8 values as strings to avoid
+      // silently truncating integers outside JavaScript's safe range.
+      const terminal = await query<{ status: string; attempts: string }>(
         `SELECT status, attempts FROM brain_embedding_jobs WHERE id = $1`,
         [exhausted.rows[0]!.id],
       );
-      expect(terminal.rows[0]).toMatchObject({ status: 'failed', attempts: 3 });
+      expect(terminal.rows[0]?.status).toBe('failed');
+      expect(Number(terminal.rows[0]?.attempts)).toBe(3);
     } finally {
       await query(`DELETE FROM brain_pages WHERE id = $1 AND user_id = $2`, [page.id, TEST_USER]);
     }

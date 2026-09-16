@@ -44,8 +44,8 @@ export class NotImplementedError extends Error {
  * Live gbrain CLI integration is best-effort: if the CLI is not installed or
  * returns an error, all search methods return [] (empty, not an error) so the
  * HybridMemoryPort can fall back to MemPalace without disruption. The result
- * normalizer accepts both the legacy `id`/`content` shape and gbrain 0.50's
- * `slug`/`chunk_text` SearchResult shape.
+ * normalizer accepts both the legacy `id`/`content` shape and upstream
+ * gbrain v0.50.5.0's `slug`/`chunk_text` SearchResult shape.
  *
  * Unimplemented methods (walkGraph, getEpisodes, getTriples, summarize,
  * compress, and all write methods) throw NotImplementedError. The hybrid

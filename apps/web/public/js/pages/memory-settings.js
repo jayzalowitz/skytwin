@@ -238,8 +238,8 @@ export async function renderMemorySettings(container, userId) {
   const showSmarterNotice =
     data.backend === 'hybrid' && data.hybridNotificationDismissed === false;
   const suggest = data.suggestion ?? {};
-  const showHybridSuggestion =
-    suggest.suggest && data.backend !== 'hybrid' && !data.hybridNotificationDismissed;
+  const showExternalGbrainNotice =
+    suggest.suggest && !data.hybridNotificationDismissed;
 
   const diagBlock = diagnostics?.diagnostics
     ? `<div class="card" style="margin-top: 1rem;">
@@ -267,11 +267,12 @@ export async function renderMemorySettings(container, userId) {
         </div>
       </div>
     ` : ''}
-    ${showHybridSuggestion ? `
+    ${showExternalGbrainNotice ? `
       <div class="card" style="border-left: 3px solid var(--info); margin-bottom: 1rem;">
-        <strong>You already have a gbrain set up locally.</strong>
-        Switch to hybrid mode to combine your existing brain with mempalace's
-        spatial + AAAK features.
+        <strong>A separate upstream gbrain installation was detected.</strong>
+        SkyTwin does not read or import that brain automatically. Its gbrain
+        backend stays in CockroachDB, and hybrid mode adds SkyTwin's internal
+        mempalace features; it does not connect the external installation.
       </div>
     ` : ''}
     <div class="card">

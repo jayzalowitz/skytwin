@@ -209,12 +209,17 @@ All notable changes to SkyTwin will be documented in this file.
   Installed-graph contract tests continue to protect deliberate parser and
   glob-version boundaries.
 
-- **The external gbrain adapter understands current gbrain 0.50 search
+- **The external gbrain adapter understands upstream gbrain v0.50.5.0 search
   results.** CLI search now normalizes the current `slug`/`chunk_text` schema,
   retains useful source and chunk metadata, rejects non-finite scores, and
-  remains compatible with the legacy `id`/`content` response. The embedded
-  gbrain and internal MemPalace backends remain workspace implementations, not
-  independently versioned third-party packages.
+  remains compatible with the legacy `id`/`content` response. A contract probe
+  against the upstream v0.50.5.0 release confirms the exact CLI argv and JSON
+  boundary. The embedded gbrain-compatible and internal MemPalace backends
+  remain workspace implementations, not independently versioned third-party
+  packages; hybrid mode does not silently adopt a detected external brain.
+  The CockroachDB integration harness now uses the container's own SQL client,
+  applies the complete current brain migration chain, and passes all 165
+  adapter tests against a disposable live node without requiring host `psql`.
 
 - **The model-delivery evidence lane now has a fail-closed Linux verifier in
   source.** It binds the sole maintained model recommendation to its immutable
