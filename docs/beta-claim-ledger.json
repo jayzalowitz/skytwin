@@ -1298,7 +1298,7 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "ac28895197ba6abd48c3e732618a2a9053c3075c97cbdb39291850ec773002be",
+          "sha256": "4b37703b6c630cac439ea28a7a6d7273f116c8fbb8dd3c55576ef58a0a22dae1",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence, while the release-claim test checkout retains the history needed for fail-closed predecessor ancestry checks"
         },
         {
@@ -1339,7 +1339,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "ac28895197ba6abd48c3e732618a2a9053c3075c97cbdb39291850ec773002be",
+          "sha256": "4b37703b6c630cac439ea28a7a6d7273f116c8fbb8dd3c55576ef58a0a22dae1",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, guarded publisher graph, and full-history release-claim checkout required for immutable predecessor ancestry proof"
         },
         {
