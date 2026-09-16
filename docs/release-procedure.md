@@ -17,8 +17,11 @@
 > verifies that draft by its numeric release ID, exact asset names, and GitHub
 > SHA-256 digests, and publishes it immediately from the same gated job. Evidence IDs
 > are deliberately not committed to this ledger: doing so would change the SHA
-> they attest and create an impossible hash cycle. The release job now generates
-> the external manifest from current-run GitHub API metadata. Downstream
+> they attest and create an impossible hash cycle. The tag-bound release path is
+> implemented to generate the external manifest from current-run GitHub API
+> metadata and to generate/attach updater manifests;
+> no qualifying tagged release has independently proved or published those
+> manifests. Downstream
 > evidence-matrix jobs include the canonical three-platform packaged-sample
 > verifier with GitHub API discovery separated from package execution and a
 > strict allowlisted child environment. The artifact-verification lane also has
@@ -151,7 +154,7 @@ each subject. This lets proof be generated after packaging without changing
 the source SHA it attests.
 One CI result and twelve machine reports — thirteen durable report files total —
 plus the checksum inventory, SPDX SBOM, verification guide, provenance bundles,
-and generated manifest are attached to the GitHub Release. Wildcards are used
+and, once the ledger is ready, the generated manifest is attached to the GitHub Release. Wildcards are used
 only for the manifest-validated verification directory and package outputs; the
 controlled publisher rejects missing, extra, duplicate, or digest-changed assets.
 
@@ -199,7 +202,7 @@ constraints for this candidate.
 1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The general eval workflow remains separate, but a `v*` tag now reruns the exact v1 adversarial catalog, independently verifies it, and adds a bounded release-safety sidecar to `release-claims-ci`. The final publication verifier consumes and independently re-verifies that exact sidecar, but it still discloses four explanation-coverage gaps and therefore does not close the release-evals stop-ship.
 2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
-4. **`release`** (`needs:` `test`, the three desktop jobs, and the verified evidence aggregator) — verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus twelve machine reports (thirteen durable report files total), the three adversarial/release-safety sidecars, checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID and the checker's exact manifest digest, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public.
+4. **`release`** (`needs:` `test`, the three desktop jobs, and the verified evidence aggregator) — when the ledger is ready, verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus twelve machine reports (thirteen durable report files total), the three adversarial/release-safety sidecars, checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID and the checker's exact manifest digest, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public. The open stop-ship conditions currently prevent this path from creating a draft or publishing those assets.
 
 Do not publish drafts manually. If exact verification fails, the draft remains private for diagnosis; delete it before retrying the tag workflow.
 
@@ -365,11 +368,11 @@ The desktop package jobs set `CSC_IDENTITY_AUTO_DISCOVERY: 'false'` and skip sig
 
 Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the README documents the right-click→Open / More-info→Run-anyway bypass).
 
-### 2. Auto-update manifests now ship — but the path is live only after signing (#370)
+### 2. Auto-update manifests are generated by the tagged path — but the path is live only after signing (#370)
 
-`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the `release` job **now attaches the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests** electron-updater polls (the remaining code half of #370 — electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). So an installed app *can* discover the next version. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so *discovery* could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
+`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the tagged `release` job is designed to attach the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests electron-updater polls (electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). This describes the release path, not the currently published technical-preview assets: the beta gate is blocked and no qualifying tagged release is published. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so *discovery* could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
 
-The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. The manifests shipping early is harmless — verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
+The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. Once a qualifying release exists, verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
 
 ### 3. Account connections are deferred from this release
 

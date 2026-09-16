@@ -71,7 +71,7 @@ items in this historical inventory are explicitly non-blocking and deferred.
    source-field migration, packaged verification, and bake evidence are still
    required. See [§ Encryption and key-management detail](#encryption-and-key-management-detail).
    Other partial code-side items remain tracked under #357 and in the inventory below.
-5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems. The source-tree checks below do not substitute for this gate.
+5. **Artifact verification** — build fresh installers from the intended release head and validate their exact behavior on clean supported systems, including independent proof that the tag-bound CI path generated and attached updater manifests. The source-tree checks below do not substitute for this gate; no qualifying tagged release has yet proved or published those manifests, and the beta remains blocked.
 
 ---
 
@@ -100,7 +100,7 @@ items in this historical inventory are explicitly non-blocking and deferred.
 | 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; current source adds isolated packaged approve/reject/correct interactions, but a fresh artifact still needs validation |
 | 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |
 | 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
-| 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
+| 10 | Receive auto-updates | 🟡 source/CI path implemented — the tagged workflow generates and is designed to attach manifests (#370), and the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; no qualifying tagged release is published, and signed-build e2e remains gated on #368 |
 
 ## Encryption and key-management detail
 
@@ -180,7 +180,7 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 | [#361](https://github.com/jayzalowitz/skytwin/issues/361) | 🟡 partial | — | yes | Epic D: #375 decision-path redactor shipped (#524). Remaining: #374 (encryption — design resolved by #401/ADR 0001; production activation remains) + #375 follow-ups (assistant block, number/name). |
 | [#368](https://github.com/jayzalowitz/skytwin/issues/368) | ⛔ external | **YES** | — | Code-signing certs + notarization (external) |
 | [#369](https://github.com/jayzalowitz/skytwin/issues/369) | 🟡 partial | **YES** | partly | EAS config + CI rewrite (code) · real icons + store accounts (external) |
-| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | ✅ closed | done | yes | Code complete + closed: manifests + curl-latest CI + the user-facing banner + "Check for Updates…" menu all shipped (#523). Only signed-build e2e remains, tracked under #368. |
+| [#370](https://github.com/jayzalowitz/skytwin/issues/370) | ✅ closed | done | yes | Source/CI implementation complete: manifest generation/attachment plumbing, curl-latest CI, user-facing banner, and "Check for Updates…" menu shipped (#523). No qualifying tagged release has proven or published those manifests; signed-build e2e remains tracked under #368. |
 | [#374](https://github.com/jayzalowitz/skytwin/issues/374) | 🟡 partial | **YES** | yes | Accepted design + broker/custody/session-authority foundation shipped; source clients, owner-wide revoke barrier, migration, packaged verification, and bake remain |
 | [#375](https://github.com/jayzalowitz/skytwin/issues/375) | 🟡 partial | — | yes | Decision-pipeline redactor shipped (#524): `redactPromptPii` masks email addresses in `PromptBuilder` by default, ReDoS-hardened. Remaining: assistant memory-context block (needs provider-trust gating) + number/name masking. |
 | [#386](https://github.com/jayzalowitz/skytwin/issues/386) | ✅ closed | done | yes | Shipped + closed: resumable chunked voice upload end-to-end — `voice-chunker.ts` + `transcribeChunked()` (per-chunk retry, progress, cancel) + server `/upload/session`/`/chunk`/finalize + 3 test files. Only the airplane-mode manual smoke is device-only. |
@@ -224,4 +224,4 @@ Verdict legend: ✅ shipped · 🟡 partial · ⬜ not started · ⛔ external (
 
 Google account review (#351) and mobile store work (#360) are post-launch tracks.
 
-**Done since the 2026-06-14 audit (2026-06-16 update):** auto-update code half + user-facing banner/menu (#370, #523 — closed); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.
+**Done since the 2026-06-14 audit (2026-06-16 update):** auto-update source/CI implementation + user-facing banner/menu (#370, #523 — closed; no qualifying tagged release has yet proven or published the manifests); the 10 dependabot bumps batched + merged (#522, #469–#494 closed); decision-pipeline LLM prompt redaction (#375 decision-path, #524); resumable chunked voice upload verified shipped (#386 — closed); deep-link notification routing verified shipped (#387 routing half); and the Inbox-Intelligence read layer (#324/#474/#478/#481/#482/#485/#486/#487) verified shipped + closed.
