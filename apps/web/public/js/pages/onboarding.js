@@ -867,7 +867,6 @@ function renderDeterministicStep() {
       </button>
     </div>
   `);
-  setWizardBusy(true, 'Loading your first question…');
 }
 
 async function handleDeterministicAnswer(questionKey, answer) {
@@ -895,6 +894,7 @@ async function submitDeterministicPick() {
     transitionTo('welcome');
     return;
   }
+  setWizardBusy(true, 'Finding the right setup…');
   try {
     const result = await postDeterministicPick(userId, _detAnswers);
     _wizardState.recipeSlug = result.recipeSlug;
