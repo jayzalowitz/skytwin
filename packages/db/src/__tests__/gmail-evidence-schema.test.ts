@@ -55,15 +55,27 @@ describe('Gmail evidence schema', () => {
     expect(migration).toContain("WHEN 'outlook_calendar' THEN 'microsoft'");
   });
 
-  it('limits the connector cursor schema-unlock window to the primary-key swap', () => {
-    const unlock = migration.indexOf('ALTER TABLE connector_cursors SET (schema_locked = false)');
+  it('limits the connector cursor schema-unlock window to required schema changes', () => {
+    const unlocks = [...migration.matchAll(/ALTER TABLE connector_cursors SET \(schema_locked = false\)/g)]
+      .map((match) => match.index);
+    const relocks = [...migration.matchAll(/ALTER TABLE connector_cursors SET \(schema_locked = true\)/g)]
+      .map((match) => match.index);
+    const firstAddedColumn = migration.indexOf('ALTER TABLE connector_cursors ADD COLUMN IF NOT EXISTS id');
+    const firstBackfill = migration.indexOf('UPDATE connector_cursors AS c');
     const swap = migration.indexOf('DROP CONSTRAINT IF EXISTS connector_cursors_pkey');
-    const relock = migration.indexOf('ALTER TABLE connector_cursors SET (schema_locked = true)');
     const firstSecondaryIndex = migration.indexOf('CREATE UNIQUE INDEX IF NOT EXISTS connector_cursors_legacy_key');
-    expect(unlock).toBeGreaterThan(0);
-    expect(unlock).toBeLessThan(swap);
-    expect(relock).toBeGreaterThan(swap);
-    expect(relock).toBeLessThan(firstSecondaryIndex);
+    const accountForeignKey = migration.indexOf('ADD CONSTRAINT connector_cursors_account_fk');
+    const messageRefs = migration.indexOf('CREATE TABLE IF NOT EXISTS gmail_message_refs');
+    expect(unlocks).toHaveLength(2);
+    expect(relocks).toHaveLength(2);
+    expect(unlocks[0]).toBeLessThan(firstAddedColumn);
+    expect(relocks[0]).toBeGreaterThan(firstAddedColumn);
+    expect(relocks[0]).toBeLessThan(firstBackfill);
+    expect(unlocks[1]).toBeLessThan(swap);
+    expect(relocks[1]).toBeGreaterThan(swap);
+    expect(relocks[1]).toBeGreaterThan(firstSecondaryIndex);
+    expect(relocks[1]).toBeGreaterThan(accountForeignKey);
+    expect(relocks[1]).toBeLessThan(messageRefs);
   });
 
   it('never adds content, tokens, or provider-response storage to message refs', () => {

@@ -58,16 +58,15 @@ describe("watchRepository atomic active-filter guards", () => {
     });
   });
 
-  it("checks recognized nonblank entries in the activation UPDATE itself", async () => {
+  it("checks normalized recognized entries in the activation UPDATE itself", async () => {
     mockQuery.mockResolvedValue({ rows: [] });
     await watchRepository.setStatus("watch", "user", "active", new Date());
     const [sql] = mockQuery.mock.calls[0]!;
-    expect(sql).toContain("$.sources[*]");
-    expect(sql).toContain("$.fromContains[*]");
-    expect(sql).toContain("$.keywords[*]");
-    expect(sql).toContain("$.domains[*]");
-    expect(sql).not.toContain("$.*[*]");
-    expect(sql).toContain('@.type() == "string"');
+    expect(sql).toContain("jsonb_array_length(filter->'sources') > 0");
+    expect(sql).toContain("jsonb_array_length(filter->'fromContains') > 0");
+    expect(sql).toContain("jsonb_array_length(filter->'keywords') > 0");
+    expect(sql).toContain("jsonb_array_length(filter->'domains') > 0");
+    expect(sql).not.toContain("jsonb_path_exists");
   });
 
   it("gates an active spec edit in the UPDATE without a read/check/write gap", async () => {

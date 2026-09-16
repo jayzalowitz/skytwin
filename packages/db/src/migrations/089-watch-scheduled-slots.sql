@@ -15,22 +15,38 @@ ALTER TABLE watches ALTER COLUMN schedule_revision SET NOT NULL;
 -- unknown keys are not part of the Watch filter contract.
 UPDATE watches
    SET filter = jsonb_build_object(
-     'sources', jsonb_path_query_array(
-       CASE WHEN jsonb_typeof(filter->'sources') = 'array' THEN filter ELSE '{}'::JSONB END,
-       '$.sources[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-     ),
-     'fromContains', jsonb_path_query_array(
-       CASE WHEN jsonb_typeof(filter->'fromContains') = 'array' THEN filter ELSE '{}'::JSONB END,
-       '$.fromContains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-     ),
-     'keywords', jsonb_path_query_array(
-       CASE WHEN jsonb_typeof(filter->'keywords') = 'array' THEN filter ELSE '{}'::JSONB END,
-       '$.keywords[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-     ),
-     'domains', jsonb_path_query_array(
-       CASE WHEN jsonb_typeof(filter->'domains') = 'array' THEN filter ELSE '{}'::JSONB END,
-       '$.domains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-     )
+     'sources', COALESCE((
+       SELECT jsonb_agg(value)
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(filter->'sources') = 'array'
+             THEN filter->'sources' ELSE '[]'::JSONB END
+         ) AS entry(value)
+        WHERE jsonb_typeof(value) = 'string' AND btrim(value #>> '{}') <> ''
+     ), '[]'::JSONB),
+     'fromContains', COALESCE((
+       SELECT jsonb_agg(value)
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(filter->'fromContains') = 'array'
+             THEN filter->'fromContains' ELSE '[]'::JSONB END
+         ) AS entry(value)
+        WHERE jsonb_typeof(value) = 'string' AND btrim(value #>> '{}') <> ''
+     ), '[]'::JSONB),
+     'keywords', COALESCE((
+       SELECT jsonb_agg(value)
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(filter->'keywords') = 'array'
+             THEN filter->'keywords' ELSE '[]'::JSONB END
+         ) AS entry(value)
+        WHERE jsonb_typeof(value) = 'string' AND btrim(value #>> '{}') <> ''
+     ), '[]'::JSONB),
+     'domains', COALESCE((
+       SELECT jsonb_agg(value)
+         FROM jsonb_array_elements(
+           CASE WHEN jsonb_typeof(filter->'domains') = 'array'
+             THEN filter->'domains' ELSE '[]'::JSONB END
+         ) AS entry(value)
+        WHERE jsonb_typeof(value) = 'string' AND btrim(value #>> '{}') <> ''
+     ), '[]'::JSONB)
    );
 
 -- Close the read/check/write race between activating a Watch and editing its
@@ -39,22 +55,10 @@ UPDATE watches
 UPDATE watches
    SET status = 'draft', next_run_at = NULL, updated_at = now()
  WHERE status = 'active'
-   AND NOT jsonb_path_exists(
-     filter,
-     '$.sources[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-   )
-   AND NOT jsonb_path_exists(
-     filter,
-     '$.fromContains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-   )
-   AND NOT jsonb_path_exists(
-     filter,
-     '$.keywords[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-   )
-   AND NOT jsonb_path_exists(
-     filter,
-     '$.domains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")'
-   );
+   AND jsonb_array_length(filter->'sources') = 0
+   AND jsonb_array_length(filter->'fromContains') = 0
+   AND jsonb_array_length(filter->'keywords') = 0
+   AND jsonb_array_length(filter->'domains') = 0;
 
 ALTER TABLE watches ADD CONSTRAINT IF NOT EXISTS watches_active_filter_chk
   CHECK (
@@ -64,16 +68,12 @@ ALTER TABLE watches ADD CONSTRAINT IF NOT EXISTS watches_active_filter_chk
     AND jsonb_typeof(filter->'keywords') = 'array'
     AND jsonb_typeof(filter->'domains') = 'array'
     AND (filter - 'sources' - 'fromContains' - 'keywords' - 'domains') = '{}'::JSONB
-    AND NOT jsonb_path_exists(
-      filter,
-      '$.*[*] ? (!(@.type() == "string") || !(@ like_regex ".*\\S.*"))'
-    )
     AND (
       status <> 'active'
-      OR jsonb_path_exists(filter, '$.sources[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
-      OR jsonb_path_exists(filter, '$.fromContains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
-      OR jsonb_path_exists(filter, '$.keywords[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
-      OR jsonb_path_exists(filter, '$.domains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
+      OR jsonb_array_length(filter->'sources') > 0
+      OR jsonb_array_length(filter->'fromContains') > 0
+      OR jsonb_array_length(filter->'keywords') > 0
+      OR jsonb_array_length(filter->'domains') > 0
     )
   );
 

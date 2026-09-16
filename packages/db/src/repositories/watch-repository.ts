@@ -129,10 +129,10 @@ export const watchRepository = {
         WHERE id = $1 AND user_id = $2
           AND (
             $3 <> 'active'
-            OR jsonb_path_exists(filter, '$.sources[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
-            OR jsonb_path_exists(filter, '$.fromContains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
-            OR jsonb_path_exists(filter, '$.keywords[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
-            OR jsonb_path_exists(filter, '$.domains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
+            OR jsonb_array_length(filter->'sources') > 0
+            OR jsonb_array_length(filter->'fromContains') > 0
+            OR jsonb_array_length(filter->'keywords') > 0
+            OR jsonb_array_length(filter->'domains') > 0
           )
       RETURNING *`,
       [id, userId, status, effectiveNext, randomUUID()],
