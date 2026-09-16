@@ -408,6 +408,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
 | [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, decision-event capture, developer verifier, trust boundary, and current UI/export limitations |
+| [Confidential Inference](./docs/confidential-inference.md) | Local-first admission, TrustedRouter and NEAR AI verification requirements, and the unavailable-by-default remote boundary |
 | [Decision Engine](./docs/decision-engine.md) | Situation interpretation, risk assessment, confidence scoring |
 | [IronClaw Integration](./docs/ironclaw-integration.md) | Execution adapter, HMAC auth, failure handling |
 | [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design (18+ tables), query patterns, versioning |
