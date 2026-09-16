@@ -36,6 +36,8 @@ import {
   snapshotInferenceTrace,
   snapshotProviderExecutionMetadata,
 } from './inference-trace.js';
+import { isZeroCostProvider } from './cost.js';
+import { redactPromptPii } from './redact.js';
 
 const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   anthropic: anthropicGenerate,
@@ -129,6 +131,25 @@ function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOpt
     systemPrompt: options.systemPrompt,
     timeoutMs: options.timeoutMs,
     invocationKind: options.invocationKind,
+  });
+}
+
+/**
+ * Apply the provider trust boundary to system context immediately before a
+ * provider call. Assistant memory is intentionally kept intact for local
+ * providers (the user may be asking for an exact private fact), but cloud
+ * providers receive the existing high-precision email redaction. Keeping this
+ * here, after provider selection, avoids masking the local-first path and
+ * ensures fallback calls are each evaluated against their actual provider.
+ */
+function providerGenerateOptions(
+  provider: ProviderEntry,
+  options: Readonly<GenerateOptions>,
+): Readonly<GenerateOptions> {
+  if (isZeroCostProvider(provider.name) || options.systemPrompt === undefined) return options;
+  return Object.freeze({
+    ...options,
+    systemPrompt: redactPromptPii(options.systemPrompt),
   });
 }
 
@@ -293,11 +314,11 @@ export class LlmClient {
           provider.apiKey,
           provider.model,
           invocationPrompt,
-          Object.freeze({
+          providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
-          }),
+          })),
         );
         const successfulPath = [
           ...executionPath,
@@ -385,11 +406,11 @@ export class LlmClient {
           provider.apiKey,
           provider.model,
           invocationPrompt,
-          Object.freeze({
+          providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
-          }),
+          })),
         )) {
           if (chunk.length === 0) continue;
           collected.push(chunk);

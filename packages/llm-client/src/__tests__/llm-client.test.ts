@@ -76,6 +76,63 @@ describe('LlmClient', () => {
     model: 'gemini-2.0-flash',
   };
 
+  it('redacts assistant memory email addresses only at a cloud provider boundary', async () => {
+    const { LlmClient } = await freshImport();
+    mockAnthropicGenerate.mockResolvedValue('ok');
+    const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider]);
+    await client.generate('question', {
+      systemPrompt: 'Memory: Contact Alice at alice@example.com about 2026-06-15. Phone 555-0100.',
+      invocationKind: 'interactive',
+    });
+    expect(mockAnthropicGenerate).toHaveBeenCalledWith(
+      anthropicProvider.apiKey,
+      anthropicProvider.model,
+      'question',
+      expect.objectContaining({
+        systemPrompt: 'Memory: Contact Alice at [redacted:email] about 2026-06-15. Phone 555-0100.',
+      }),
+    );
+  });
+
+  it('preserves assistant memory context for local providers', async () => {
+    const { LlmClient } = await freshImport();
+    const ollamaProvider: ProviderEntry = { name: 'ollama', apiKey: '', model: 'local-model' };
+    mockOllamaGenerate.mockResolvedValue('ok');
+    const client = LlmClient.forReasoningMode('on_device', [ollamaProvider]);
+    await client.generate('question', {
+      systemPrompt: 'Memory: alice@example.com and Alice 555-0100.',
+      invocationKind: 'interactive',
+    });
+    expect(mockOllamaGenerate).toHaveBeenCalledWith(
+      '',
+      'local-model',
+      'question',
+      expect.objectContaining({ systemPrompt: 'Memory: alice@example.com and Alice 555-0100.' }),
+    );
+  });
+
+  it('applies the same cloud redaction boundary to streaming assistant replies', async () => {
+    const { LlmClient } = await freshImport();
+    mockAnthropicStream.mockReturnValue(fromChunks(['ok']));
+    const client = LlmClient.forReasoningMode('bring_your_own_provider', [anthropicProvider]);
+
+    const events: unknown[] = [];
+    for await (const event of client.generateStream('question', {
+      systemPrompt: 'Memory: bob@example.com',
+      invocationKind: 'interactive',
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(mockAnthropicStream).toHaveBeenCalledWith(
+      anthropicProvider.apiKey,
+      anthropicProvider.model,
+      'question',
+      expect.objectContaining({ systemPrompt: 'Memory: [redacted:email]' }),
+    );
+  });
+
   describe('generate - happy path', () => {
     it('returns response from the first provider on success', async () => {
       const { LlmClient } = await freshImport();
