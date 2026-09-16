@@ -14,8 +14,8 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "test": "vitest run && pnpm exec vitest run --root ../.. scripts/release-evidence/adversarial-v2-migration.test.mjs && node --test ../../scripts/release-evidence/verify-adversarial-evidence.test.mjs",
-    "test:vitest": "vitest run",
+    "test": "vitest run --exclude '**/dist/**' && pnpm exec vitest run --root ../.. scripts/release-evidence/adversarial-v2-migration.test.mjs && node --test ../../scripts/release-evidence/verify-adversarial-evidence.test.mjs",
+    "test:vitest": "vitest run --exclude '**/dist/**'",
     "lint": "tsc --noEmit",
     "eval": "pnpm eval:adversarial",
     "eval:adversarial": "tsx src/adversarial-cli.ts"
@@ -31,8 +31,8 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "tsx": "^4.22.4",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "5.0.1"
   }
 }

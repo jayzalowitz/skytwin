@@ -22,7 +22,7 @@ const passingTests = new Map<string, ExecutableTestResult>(loaded.catalog.scenar
 ));
 
 describe('adversarial evidence catalog', () => {
-  it.each(policyScenarios)('evaluates $id', (scenario) => {
+  it.each(policyScenarios)("evaluates '$id'", (scenario) => {
     expect(evaluateAdversarialScenario(scenario, passingTests.get(scenario.executableTestId)!)).toMatchObject({
       id: scenario.id,
       status: 'passed',

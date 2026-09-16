@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { delimiter, dirname, join, resolve, sep } from 'node:path';
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { readStableRegularFile } from '../../../scripts/release-artifacts/file-integrity.mjs';
@@ -80,6 +80,13 @@ function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+function vitestNamePattern(value: string): string {
+  // Vitest 5 filters against a hierarchy rendered with ` > ` while its JSON
+  // reporter still flattens that hierarchy with spaces. Permit the separator
+  // only at existing word boundaries; the JSON result is matched exactly below.
+  return value.split(' ').map(escapeRegex).join(' (?:> )?');
+}
+
 export function executeMappedAdversarialTests(
   catalog: AdversarialCatalog,
   repoRoot: string,
@@ -126,30 +133,49 @@ export function executeMappedAdversarialTests(
     const packagePath = packagePaths.get(first.packageName)!;
     const vitest = join(packagePath, 'node_modules', '.bin', 'vitest');
     if (!existsSync(vitest)) throw new Error(`vitest is unavailable for ${first.packageName}`);
-    const namePattern = `^(?:${items.map(({ fullName }) => escapeRegex(fullName)).join('|')})$`;
+    const namePattern = `^(?:${items.map(({ fullName }) => vitestNamePattern(fullName)).join('|')})$`;
     const trustedNodeDirectory = dirname(process.execPath);
-    const child = run(vitest, ['run', first.file, '-t', namePattern, '--reporter=json'], {
-      cwd: packagePath,
-      encoding: 'utf8',
-      env: {
-        PATH: [trustedNodeDirectory, '/usr/bin', '/bin'].join(delimiter),
-        CI: 'true',
-        NO_COLOR: '1',
-        LANG: 'C.UTF-8',
-        LC_ALL: 'C.UTF-8',
-        TZ: 'UTC',
-      },
-      timeout: MAPPED_TEST_TIMEOUT_MS,
-      killSignal: 'SIGKILL',
-      maxBuffer: MAPPED_TEST_MAX_BUFFER_BYTES,
-    });
-    if ((child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
-      throw new Error(`test subprocess timed out for ${first.packageName}`);
+    const reportDirectory = mkdtempSync(join(packagePath, '.vitest-adversarial-'));
+    const reportPath = join(reportDirectory, 'report.json');
+    let child: SpawnSyncReturns<string>;
+    let reportBytes: Buffer;
+    try {
+      child = run(
+        vitest,
+        ['run', first.file, '-t', namePattern, '--reporter=json', '--outputFile', reportPath],
+        {
+          cwd: packagePath,
+          encoding: 'utf8',
+          env: {
+            PATH: [trustedNodeDirectory, '/usr/bin', '/bin'].join(delimiter),
+            CI: 'true',
+            NO_COLOR: '1',
+            LANG: 'C.UTF-8',
+            LC_ALL: 'C.UTF-8',
+            TZ: 'UTC',
+          },
+          timeout: MAPPED_TEST_TIMEOUT_MS,
+          killSignal: 'SIGKILL',
+          maxBuffer: MAPPED_TEST_MAX_BUFFER_BYTES,
+        },
+      );
+      if ((child.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT') {
+        throw new Error(`test subprocess timed out for ${first.packageName}`);
+      }
+      if (child.error) throw new Error(`test subprocess could not start for ${first.packageName}`);
+      try {
+        reportBytes = readStableRegularFile(packagePath, reportPath, {
+          maxBytes: MAPPED_TEST_MAX_BUFFER_BYTES,
+        }).bytes;
+      } catch {
+        throw new Error(`test subprocess did not emit JSON for ${first.packageName}`);
+      }
+    } finally {
+      rmSync(reportDirectory, { recursive: true, force: true });
     }
-    if (child.error) throw new Error(`test subprocess could not start for ${first.packageName}`);
     let report: unknown;
     try {
-      report = JSON.parse(child.stdout);
+      report = JSON.parse(reportBytes.toString('utf8'));
     } catch {
       throw new Error(`test subprocess did not emit JSON for ${first.packageName}`);
     }

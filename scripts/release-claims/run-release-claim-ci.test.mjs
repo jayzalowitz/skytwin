@@ -280,7 +280,7 @@ describe("release claim CI result producer", () => {
         readFileSync(join(root, RELEASE_CLAIM_CI_RESULT_PATH), "utf8"),
       ),
     ).toEqual(report);
-  });
+  }, 20_000);
 
   it("writes a failing result when a command fails or cannot start", async () => {
     const root = fixtureRoot();

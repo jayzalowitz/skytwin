@@ -52,13 +52,13 @@
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "eslint": "^10.6.0",
-    "prettier": "^3.9.4",
-    "tsx": "^4.22.4",
-    "turbo": "^2.10.4",
+    "eslint": "^10.10.0",
+    "prettier": "^3.9.6",
+    "tsx": "^4.23.13",
+    "turbo": "^2.10.13",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10",
-    "yaml": "2.9.0"
+    "vitest": "5.0.1",
+    "yaml": "2.9.1"
   },
   "packageManager": "pnpm@9.1.0",
   "pnpm": {
@@ -82,10 +82,10 @@
       "shell-quote": "1.10.0",
       "tar": "7.5.21",
       "uuid": "11.1.1",
-      "vitest": "4.1.11"
+      "vitest": "5.0.1"
     }
   },
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=20.19.4"
   }
 }

@@ -22,9 +22,10 @@ export function isGbrainInstalled(): boolean {
 
 /**
  * Detect whether the user has an existing gbrain configuration directory.
- * The presence of `~/.config/gbrain/` (or `~/.gbrain/` on older installs) is
- * the signal SkyTwin uses to surface the "your twin can use your existing
- * brain" hybrid-mode prompt.
+ * Current upstream gbrain uses `~/.gbrain/`; `~/.config/gbrain/` is retained
+ * for compatibility with older installations. This is an informational signal
+ * only: SkyTwin never treats directory presence as permission to read or import
+ * that separate brain.
  *
  * Issue #197 AC #7 — opt-in surfacing.
  */

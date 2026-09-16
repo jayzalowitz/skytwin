@@ -464,8 +464,9 @@ export async function setUserBackend(userId: string, backend: BackendChoice): Pr
 }
 
 /**
- * Heuristic the dashboard uses to surface a "your existing gbrain detected"
- * prompt — lets the user opt into hybrid mode.
+ * Heuristic the dashboard uses to disclose a separately installed upstream
+ * gbrain. Detection is informational only: SkyTwin's `hybrid` backend combines
+ * its CRDB-native memory with MemPalace and does not read the external brain.
  */
 export function suggestHybridUpgrade(): {
   suggest: boolean;

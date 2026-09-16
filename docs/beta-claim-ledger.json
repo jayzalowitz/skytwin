@@ -791,7 +791,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "26291cdb555fb8b2e596cfd33bbc12331e566efd310708d5d760dbb97116c9e4",
+          "sha256": "a467957416639e75f74f23c9282da447ab2f54f50a14919b599416dcab661434",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
@@ -1267,12 +1267,12 @@
         },
         {
           "path": "packages/evals/src/adversarial-test-executor.ts",
-          "sha256": "8d6b86f2a492c08be7798730899c0dfbb7ab53d4364cc3eb229b1a17d36496f0",
-          "why": "Runs each exact mapped assertion with a closed child environment, captured-Node PATH, bounded output, and a 60-second hard-kill timeout"
+          "sha256": "e868641887868f0e6a6f5c31120d1e55552e29d10d8e93fd567597f70aa7864b",
+          "why": "Runs each exact mapped assertion with a closed child environment, captured-Node PATH, an isolated bounded JSON report, and a 60-second hard-kill timeout"
         },
         {
           "path": "packages/evals/src/__tests__/adversarial-test-executor.test.ts",
-          "sha256": "0d48f0aece0c415623dc9f2533fc495d96be7950a1dba155bfdb46c320399ec7",
+          "sha256": "ea2b47ca7fce2c0fee41b31ea9d0b3e7a16aa8335bfa7c6039b8a5c0e0580664",
           "why": "Locks the mapped subprocess environment and timeout contract and proves timeout fails closed"
         }
       ],
@@ -1298,12 +1298,12 @@
       "evidence": [
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "4b37703b6c630cac439ea28a7a6d7273f116c8fbb8dd3c55576ef58a0a22dae1",
+          "sha256": "4d88984f75e09521f59abd9838b82418b5fb229cf35d70adc5d700fbcf6189d2",
           "why": "Packaging jobs set CSC_IDENTITY_AUTO_DISCOVERY=false and expose exact upload artifact ID/digest outputs; the guarded publisher requires attempt-bound source reports and current-attempt producer/upload evidence, while the release-claim test checkout retains the history needed for fail-closed predecessor ancestry checks"
         },
         {
           "path": "apps/desktop/package.json",
-          "sha256": "6cdc1273a1bd6c5871c19768addb4d56cad7ebbebdcca455add0e0170c21caee",
+          "sha256": "4e90d44ed5476dc68ff57973f6c6ca10cc9cd4cd7de7790b5afff5e6ea509e2a",
           "why": "Defines the current platform build targets and publishing metadata"
         },
         {
@@ -1339,7 +1339,7 @@
         },
         {
           "path": ".github/workflows/build.yml",
-          "sha256": "4b37703b6c630cac439ea28a7a6d7273f116c8fbb8dd3c55576ef58a0a22dae1",
+          "sha256": "4d88984f75e09521f59abd9838b82418b5fb229cf35d70adc5d700fbcf6189d2",
           "why": "Defines the least-privilege tag-only materials producer, independent verifier input, exclusive evidence aggregator, guarded publisher graph, and full-history release-claim checkout required for immutable predecessor ancestry proof"
         },
         {
@@ -1419,7 +1419,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "69b1690dc4822d4ee1888bab58df37b13cb7d582d81a31678af397549abc4355",
+          "sha256": "aec96ca799e53c332db7f9b9ff6de4af5a4865acbf861253cac625a88b91f6fd",
           "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator, re-verifies the exact four-member safety artifact with both independent verifiers, emits the digest of the stable manifest bytes it checked, and validates every other bounded release material and source report binding at publication"
         }
       ],

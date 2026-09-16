@@ -67,7 +67,7 @@ export interface EmbeddedGbrainOptions {
 }
 
 /**
- * EmbeddedGbrainMemoryPort — the real, in-process gbrain backend.
+ * EmbeddedGbrainMemoryPort — SkyTwin's in-process, gbrain-compatible backend.
  *
  * Implements `MemoryPort` against the `brain_*` CockroachDB tables (or an
  * in-memory store for tests). Provides:
@@ -84,10 +84,13 @@ export interface EmbeddedGbrainOptions {
  * (mempalace-only). The hybrid composer routes those to the secondary
  * (mempalace) backend.
  *
- * Why this exists: PR #215 shipped a CLI shell-out skeleton that returns []
- * unless `gbrain` is on the host PATH. This embedded variant runs against the
- * SkyTwin DB stack natively — no separate process, no separate Postgres, no
- * extra install step. It's what we ship as the default per-user backend.
+ * Why this exists: upstream gbrain is a separately installed Bun runtime whose
+ * storage engines are PGLite and Postgres/pgvector. Importing that runtime would
+ * add a second datastore and cannot satisfy SkyTwin's CockroachDB source-of-truth
+ * boundary. This implementation keeps the compatible retrieval primitives in
+ * the SkyTwin DB stack — no separate process, Postgres, or install step. The
+ * optional GbrainMemoryPort CLI adapter is the boundary for an existing real
+ * upstream brain; the API backend factory does not select it automatically.
  */
 export class EmbeddedGbrainMemoryPort implements MemoryPort {
   private readonly userId: string;

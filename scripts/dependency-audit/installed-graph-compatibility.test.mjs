@@ -105,12 +105,11 @@ describe("installed dependency graph compatibility", () => {
       "@expo/plist",
     ]);
     const xmldomContext = follow(expoPlist.require, ["@xmldom/xmldom"]);
-    // Expo SDK 57's CLI declares @expo/plist ^0.8.1; keep this assertion tied
-    // to that compatibility contract rather than a single lockfile patch.
+    // Keep both the SDK contract and the reviewed concrete graph fail-closed.
     expect(expoCli.metadata.dependencies["@expo/plist"]).toBe("^0.8.1");
-    expect(expoPlist.metadata.version).toMatch(/^0\.8\./);
+    expect(expoPlist.metadata.version).toBe("0.8.1");
     expect(expoPlist.metadata.dependencies["@xmldom/xmldom"]).toBe("^0.8.8");
-    expect(xmldomContext.metadata.version).toMatch(/^0\.8\./);
+    expect(xmldomContext.metadata.version).toBe("0.8.15");
     const plist = unwrapDefault(expoPlist.load());
     expect(
       plist.parse(plist.build({ name: "SkyTwin", enabled: true })),
@@ -120,17 +119,15 @@ describe("installed dependency graph compatibility", () => {
     });
   });
 
-  it("keeps React Navigation query-string 7 on a callable CommonJS decoder", () => {
-    const queryString = follow(mobileRequire, [
+  it("keeps React Navigation off the vulnerable query-string decoder chain", () => {
+    const navigationCore = follow(mobileRequire, [
       "@react-navigation/native",
       "@react-navigation/core",
-      "query-string",
     ]);
-    const decoder = follow(queryString.require, ["decode-uri-component"]);
-    expect(queryString.metadata.version).toBe("7.1.3");
-    expect(decoder.metadata.version).toBe("0.2.2");
-    expect(queryString.load().parse("route=approval%20detail")).toEqual({
-      route: "approval detail",
-    });
+    expect(navigationCore.metadata.version).toBe("7.22.1");
+    expect(navigationCore.metadata.dependencies).not.toHaveProperty(
+      "query-string",
+    );
+    expect(() => navigationCore.require.resolve("query-string")).toThrow();
   });
 });

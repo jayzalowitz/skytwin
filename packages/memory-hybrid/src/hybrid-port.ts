@@ -89,8 +89,10 @@ export interface HybridMemoryPortOptions {
  *   never bubble up. A primary write failure propagates normally.
  *
  * Migration:
- *   exportAll and importAll are routed to the secondary (MemPalace) only,
- *   since GbrainMemoryPort does not implement them.
+ *   exportAll and importAll are routed to the secondary only. In SkyTwin's
+ *   production hybrid this is MemPalace, the canonical migration surface;
+ *   the primary embedded CRDB port still implements these methods when used
+ *   directly.
  */
 export class HybridMemoryPort implements MemoryPort {
   private readonly primary: MemoryPort;

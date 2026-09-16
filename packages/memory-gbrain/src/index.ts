@@ -3,15 +3,17 @@
  *
  * Two complementary surfaces:
  *
- *   1. `EmbeddedGbrainMemoryPort` — full in-process implementation against
- *      the brain_* CockroachDB tables (or an in-memory store for tests).
- *      This is the production default; it ships with hash-trick embeddings
- *      that work zero-config and an OpenAI-compatible HTTP provider for
- *      production-grade recall.
+ *   1. `EmbeddedGbrainMemoryPort` — SkyTwin's gbrain-compatible in-process
+ *      implementation against the brain_* CockroachDB tables (or an in-memory
+ *      store for tests). This is the production default; it ships with
+ *      hash-trick embeddings that work zero-config and an OpenAI-compatible
+ *      HTTP provider for production-grade recall. It is not the separately
+ *      installed upstream Bun runtime.
  *
- *   2. `GbrainMemoryPort` (CLI variant) — a thin shell-out to the upstream
- *      `gbrain` CLI for users who already run gbrain externally and want to
- *      consume their existing brain. Returns [] when the CLI is absent.
+ *   2. `GbrainMemoryPort` (CLI variant) — the interoperability adapter for the
+ *      real upstream `gbrain` CLI. It translates upstream SearchResult values
+ *      into SkyTwin's MemoryPort contract and returns [] when the CLI is absent.
+ *      The API backend factory does not select this adapter automatically.
  *
  * The hybrid composer (`@skytwin/memory-hybrid`) routes per-capability between
  * the gbrain backend (semantic + code-aware + graph + episodic) and a

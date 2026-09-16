@@ -13,7 +13,7 @@
     "start": "electron .",
     "dev": "tsc && electron .",
     "build": "node -e \"console.log('Desktop build requires: pnpm --filter skytwin-desktop package:[mac|win|linux]')\"",
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/dist/**'",
     "prepackage": "bash scripts/build-single-binary.sh",
     "package:mac": "tsc && pnpm run prepackage && electron-builder --mac",
     "package:win": "tsc && pnpm run prepackage && electron-builder --win",
@@ -146,6 +146,6 @@
     "electron-builder": "^26.15.3",
     "electron-builder-squirrel-windows": "26.15.3",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "5.0.1"
   }
 }

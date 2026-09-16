@@ -22,10 +22,6 @@ concurrency:
 
 env:
   NODE_VERSION: '20'
-  # Turbo remote cache — uses the GitHub Actions cache as the backend via
-  # dtinth/setup-github-actions-caching-for-turbo. No external account needed.
-  # All build jobs share cached package outputs, so the second job onward gets
-  # `pnpm build` as cache hits.
   TURBO_TELEMETRY_DISABLED: '1'
 
 jobs:
@@ -80,16 +76,10 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      # Turbo cache is opportunistic; GitHub cache API failures must not fail
-      # correctness gates after install/build/test pass.
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - name: Capture release claim CI runtime
         id: capture-release-claim-runtime
@@ -235,7 +225,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -293,14 +283,10 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -399,15 +385,10 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      # Turbo remote cache action is skipped on Windows — dtinth/setup-...@v1
-      # writes to /tmp/turbogha.log which doesn't exist on Windows runners
-      # (ENOENT on D:\tmp\turbogha.log). Electron-builder packaging dominates
-      # wall-clock here; missing the TS-compile cache is negligible.
 
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -501,14 +482,10 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - name: Cache electron-builder + CRDB downloads
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -681,18 +658,18 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
 
-      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961
+      - uses: actions/setup-java@de7274f081f381c8f8158605e0321c36c376e2e6
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - name: Set up Gradle (cached)
-        uses: gradle/actions/setup-gradle@3f131e8634966bd73d06cc69884922b02e6faf92
+        uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699
@@ -700,10 +677,6 @@ jobs:
           # The action's default also requests the retired `tools` package,
           # which is absent from current hosted-runner SDK repositories.
           packages: 'platform-tools'
-
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - run: pnpm install --frozen-lockfile
 
@@ -747,14 +720,10 @@ jobs:
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-
-      - name: Set up Turbo remote cache
-        uses: dtinth/setup-github-actions-caching-for-turbo@cc723b4600e40a6b8815b65701d8614b91e2669e
-        continue-on-error: true
 
       - name: Cache CocoaPods
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
@@ -1059,7 +1028,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
         with:
           node-version: ${{ env.NODE_VERSION }}
 

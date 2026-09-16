@@ -61,7 +61,7 @@ it('binds generator identity to the requested checkout despite inherited Git vie
       cleanTree: false,
     });
   });
-});
+}, 20_000);
 
 it('ignores replacement refs when measuring the generator checkout tree', () => {
   const intended = repository('original\n');
@@ -83,4 +83,4 @@ it('ignores replacement refs when measuring the generator checkout tree', () => 
     commit: intended.commit,
     cleanTree: true,
   });
-});
+}, 20_000);

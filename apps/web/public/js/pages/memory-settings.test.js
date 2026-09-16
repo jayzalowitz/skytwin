@@ -15,4 +15,10 @@ describe('memory settings page storage keys', () => {
     expect(source).not.toContain('skytwin.userId');
     expect(source).not.toContain('skytwin.sessionToken');
   });
+
+  it('does not claim hybrid mode imports a separately installed gbrain', () => {
+    expect(source).toContain('SkyTwin does not read or import that brain automatically');
+    expect(source).toContain('it does not connect the external installation');
+    expect(source).not.toContain('combine your existing brain with mempalace');
+  });
 });

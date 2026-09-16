@@ -192,22 +192,34 @@ All notable changes to SkyTwin will be documented in this file.
   local; API authority remains session-scoped while worker grants remain empty,
   no source repository consumes the broker, and no encryption claim advances.
 
-- **Release-facing runtime and packaging dependencies now use patched parser,
-  URL, archive, HTTP, and test-runner versions.** The desktop, API, LLM, MCP,
-  and mobile dependency graph no longer resolves the audited vulnerable
-  `fast-uri`, `ip-address`, Hono, `js-yaml`, `qs`, `tar`, Undici, or legacy
-  electron-builder peer lines. The idle miner constrains its optional Electron
-  integration to supported desktop majors, while the desktop pins the Squirrel
-  helper to the matching electron-builder release. Expo/Metro still carries
-  `image-size` advisories with no patched upstream release, and React
-  Navigation's CommonJS `query-string` line cannot consume the fixed ESM-only
-  `decode-uri-component`; both are mobile-only paths rather than dependencies
-  loaded by the desktop beta application runtime. CI now rejects every new
-  production or build-tool advisory plus changes to a reviewed advisory's
-  identity, reachability, remediation, or risk metadata, and expires those
-  three narrowly reviewed mobile exceptions on October 15, 2026;
-  installed-graph contract tests also protect the deliberate parser and
+- **Release-facing runtime, mobile, CI, and test dependencies are current on
+  their compatible release lines.** Expo SDK 57 and React Navigation 7 remove
+  the vulnerable Metro `image-size` and CommonJS `query-string` paths, so the
+  fail-closed dependency-audit policy now permits zero exceptions and both the
+  production and full graphs audit clean. Vitest 5 runs only canonical source
+  tests instead of rediscovering compiled `dist` copies. MCP SDK, PostgreSQL,
+  ESLint, Turbo, Prettier, YAML, TSX, and related safe updates are included;
+  GitHub's Node, Java, and Gradle setup actions move to their reviewed,
+  immutable current release SHAs. pnpm/action-setup remains pinned to v5
+  because v6's native self-update shim is incompatible with the release-claim
+  runtime's fail-closed JavaScript launcher binding. The abandoned Turbo cache
+  sidecar action is removed rather than replaced with a maintained fork whose
+  bundled dependency graph still contains current high-severity advisories;
+  caching remains an optimization, never a correctness dependency.
+  Installed-graph contract tests continue to protect deliberate parser and
   glob-version boundaries.
+
+- **The external gbrain adapter understands upstream gbrain v0.50.5.0 search
+  results.** CLI search now normalizes the current `slug`/`chunk_text` schema,
+  retains useful source and chunk metadata, rejects non-finite scores, and
+  remains compatible with the legacy `id`/`content` response. A contract probe
+  against the upstream v0.50.5.0 release confirms the exact CLI argv and JSON
+  boundary. The embedded gbrain-compatible and internal MemPalace backends
+  remain workspace implementations, not independently versioned third-party
+  packages; hybrid mode does not silently adopt a detected external brain.
+  The CockroachDB integration harness now uses the container's own SQL client,
+  applies the complete current brain migration chain, and passes all 165
+  adapter tests against a disposable live node without requiring host `psql`.
 
 - **The model-delivery evidence lane now has a fail-closed Linux verifier in
   source.** It binds the sole maintained model recommendation to its immutable

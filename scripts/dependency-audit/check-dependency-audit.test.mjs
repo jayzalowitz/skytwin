@@ -5,7 +5,43 @@ import {
   validateDependencyAuditReport,
 } from "./check-dependency-audit.mjs";
 
-const policy = loadDependencyAuditPolicy();
+const repositoryPolicy = loadDependencyAuditPolicy();
+const policy = {
+  ...repositoryPolicy,
+  advisories: [
+    {
+      scope: "production",
+      ghsa: "GHSA-w3rx-r6r6-pgpr",
+      cve: "CVE-2025-71330",
+      package: "image-size",
+      version: "1.2.1",
+      severity: "high",
+      title:
+        "image-size: ICNS parser allows denial of service through an infinite loop",
+      vulnerableVersions: "<=2.0.2",
+      patchedVersions: "<0.0.0",
+      recommendation: "None",
+      cvss: {
+        score: 7.5,
+        vectorString: "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H",
+      },
+      cwes: ["CWE-835"],
+      advisoryUrl: "https://github.com/advisories/GHSA-w3rx-r6r6-pgpr",
+      upstreamTracking:
+        "https://github.com/github/advisory-database/issues/9028",
+      expiresOn: repositoryPolicy.expiresOn,
+      rationale:
+        "Synthetic reviewed-advisory fixture that keeps fail-closed policy validation covered after the live dependency graph became clean.",
+      pathConstraint: {
+        rootImporter: "apps/mobile",
+        requiredSuffix: [
+          { package: "metro", version: "0.84.4" },
+          { package: "image-size", version: "1.2.1" },
+        ],
+      },
+    },
+  ],
+};
 const beforeExpiry = new Date("2026-10-14T23:59:59.000Z");
 
 function advisoryFromPolicy(entry) {
@@ -58,7 +94,30 @@ function clone(value) {
 }
 
 describe("dependency advisory policy", () => {
-  it("accepts the exact reviewed production and empty development reports", () => {
+  it("ships with no reviewed exceptions after dependency remediation", () => {
+    expect(repositoryPolicy.advisories).toEqual([]);
+    expect(
+      validateDependencyAuditReport({
+        report: {
+          advisories: {},
+          metadata: {
+            vulnerabilities: {
+              info: 0,
+              low: 0,
+              moderate: 0,
+              high: 0,
+              critical: 0,
+            },
+          },
+        },
+        scope: "production",
+        policy: repositoryPolicy,
+        now: beforeExpiry,
+      }),
+    ).toEqual({ scope: "production", advisories: 0 });
+  });
+
+  it("accepts exact reviewed-fixture production and empty development reports", () => {
     expect(
       validateDependencyAuditReport({
         report: reportFor("production"),
@@ -66,7 +125,7 @@ describe("dependency advisory policy", () => {
         policy,
         now: beforeExpiry,
       }),
-    ).toEqual({ scope: "production", advisories: 3 });
+    ).toEqual({ scope: "production", advisories: 1 });
     expect(
       validateDependencyAuditReport({
         report: reportFor("development"),
@@ -276,7 +335,7 @@ describe("dependency advisory policy", () => {
       }),
     ).toEqual({
       scope: "production",
-      advisories: 3,
+      advisories: 1,
     });
     expect(() =>
       parseAuditCommandResult({
