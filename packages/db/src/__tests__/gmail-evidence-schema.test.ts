@@ -55,20 +55,31 @@ describe('Gmail evidence schema', () => {
     expect(migration).toContain("WHEN 'outlook_calendar' THEN 'microsoft'");
   });
 
+  it('limits the connector cursor schema-unlock window to the primary-key swap', () => {
+    const unlock = migration.indexOf('ALTER TABLE connector_cursors SET (schema_locked = false)');
+    const swap = migration.indexOf('DROP CONSTRAINT IF EXISTS connector_cursors_pkey');
+    const relock = migration.indexOf('ALTER TABLE connector_cursors SET (schema_locked = true)');
+    const firstSecondaryIndex = migration.indexOf('CREATE UNIQUE INDEX IF NOT EXISTS connector_cursors_legacy_key');
+    expect(unlock).toBeGreaterThan(0);
+    expect(unlock).toBeLessThan(swap);
+    expect(relock).toBeGreaterThan(swap);
+    expect(relock).toBeLessThan(firstSecondaryIndex);
+  });
+
   it('never adds content, tokens, or provider-response storage to message refs', () => {
     const table = migration.split('CREATE TABLE IF NOT EXISTS gmail_message_refs')[1]?.split(');')[0] ?? '';
     expect(table).not.toMatch(/\b(body|snippet|access_token|refresh_token|provider_response)\b/i);
   });
 
-  it('drops evidence and cursor children before connected_accounts on down', () => {
+  it('includes connector evidence in the derived owned-table rollback batch', () => {
     const source = read('../migrations/001-initial.ts');
-    const refs = source.indexOf("'gmail_message_refs'");
-    const cursors = source.indexOf("'connector_cursors'");
-    const accounts = source.indexOf("'connected_accounts'");
-    expect(refs).toBeGreaterThan(-1);
-    expect(cursors).toBeGreaterThan(-1);
-    expect(refs).toBeLessThan(accounts);
-    expect(cursors).toBeLessThan(accounts);
+    expect(source).toContain('getSkyTwinOwnedTableManifest().current');
+    expect(source).toContain('DROP TABLE ${qualifiedTables}');
+    expect(migration).toContain('CREATE TABLE IF NOT EXISTS gmail_message_refs');
+    expect(read('../migrations/024-connector-cursors.sql')).toContain(
+      'CREATE TABLE IF NOT EXISTS connector_cursors',
+    );
+    expect(schema).toContain('CREATE TABLE IF NOT EXISTS connected_accounts');
   });
 
   it('makes connector evidence an explicit purge concern and excludes it from portable backup', () => {

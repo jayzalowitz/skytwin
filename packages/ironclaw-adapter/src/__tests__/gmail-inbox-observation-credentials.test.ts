@@ -55,7 +55,7 @@ describe('DbGmailInboxObservationCredentials', () => {
   });
 
   it('uses one account-bound Google token store and returns only frozen narrow credentials', async () => {
-    const keyCache = { get: vi.fn(), has: vi.fn(), set: vi.fn() };
+    const keyCache = { get: vi.fn(), getGeneration: vi.fn(), has: vi.fn(), set: vi.fn() };
     const auditLog = { recordAccess: vi.fn() };
     const credentials = new DbGmailInboxObservationCredentials({
       googleOAuthConfig: {
@@ -101,7 +101,7 @@ describe('DbGmailInboxObservationCredentials', () => {
       clientId: 'client', clientSecret: 'secret', redirectUri: 'http://localhost',
     };
     const keyCache: NonNullable<DbGmailInboxObservationCredentialsOptions['keyCache']> = {
-      get: originalGet, has: vi.fn(() => false), set: vi.fn(),
+      get: originalGet, getGeneration: vi.fn(() => null), has: vi.fn(() => false), set: vi.fn(),
     };
     const auditLog: NonNullable<DbGmailInboxObservationCredentialsOptions['auditLog']> = {
       recordAccess: originalRecord,

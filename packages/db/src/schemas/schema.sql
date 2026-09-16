@@ -682,14 +682,12 @@ CREATE TABLE IF NOT EXISTS memory_action_opportunities (
   status STRING NOT NULL DEFAULT 'suggested'
     CHECK (status IN (
       'suggested',
-      'processing',
       'queued_approval',
       'auto_executed',
       'blocked_by_policy',
       'learning_needed',
       'execution_failed',
       'execution_ambiguous',
-      'execution_unknown',
       'noted_awareness',
       'skipped'
     )),

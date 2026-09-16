@@ -30,7 +30,21 @@ export interface GmailConnectorEvidence {
   messageTimestamp: string;
 }
 
-export type ConnectorEvidence = GmailConnectorEvidence;
+/**
+ * Ownership evidence for account-bound connectors that do not need a
+ * provider-resource reference. The API resolves this account id against its
+ * own active, identity-verified account row before accepting the signal.
+ */
+export interface AccountConnectorEvidence {
+  kind: 'account_signal';
+  connectorAccountId: string;
+  provider: 'google' | 'microsoft';
+  source: 'google_calendar' | 'outlook' | 'outlook_calendar';
+  authoringTier: AuthoringTier;
+  observedAt: string;
+}
+
+export type ConnectorEvidence = GmailConnectorEvidence | AccountConnectorEvidence;
 
 /**
  * A handler function that processes incoming signals.

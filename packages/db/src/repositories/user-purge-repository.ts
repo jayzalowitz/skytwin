@@ -200,6 +200,8 @@ export async function assertNoActiveExecutionsWithClient(
     `SELECT (
        (SELECT count(*) FROM execution_admission_barriers
          WHERE user_id = $1 AND status IN ('in_progress', 'ambiguous'))
+       + (SELECT count(*) FROM pre_effect_barriers
+         WHERE user_id = $1 AND status IN ('in_progress', 'unknown'))
        + (SELECT count(*) FROM credential_dispatch_leases
          WHERE user_id = $1 AND state IN ('request_started', 'ambiguous'))
        + (SELECT count(*) FROM decision_ingest_guards g
@@ -207,7 +209,7 @@ export async function assertNoActiveExecutionsWithClient(
          WHERE d.user_id = $1 AND g.effect_state = 'running')
        + (SELECT count(*) FROM execution_plans ep
          JOIN decisions d ON d.id = ep.decision_id
-         WHERE d.user_id = $1 AND ep.status = 'running'
+         WHERE d.user_id = $1 AND ep.status IN ('running', 'in_progress')
            AND NOT EXISTS (
              SELECT 1 FROM execution_admission_barriers b
              WHERE b.execution_plan_id = ep.id AND b.user_id = $1

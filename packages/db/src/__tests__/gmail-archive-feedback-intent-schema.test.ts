@@ -20,8 +20,8 @@ describe('Gmail archive feedback intent schema', () => {
   });
 
   it('fails dirty links before enforcing exact owner, decision, and approval identity', () => {
-    const ownerPreflight = migration.indexOf('migration_086_approval_owner_preflight');
-    const preflight = migration.indexOf('migration_086_feedback_relationship_preflight');
+    const ownerPreflight = migration.indexOf('migration_092_approval_owner_preflight');
+    const preflight = migration.indexOf('migration_092_feedback_relationship_preflight');
     const foreignKey = migration.indexOf('feedback_events_approval_owner_decision_fk');
     expect(ownerPreflight).toBeGreaterThan(-1);
     expect(preflight).toBeGreaterThan(-1);
@@ -51,8 +51,8 @@ describe('Gmail archive feedback intent schema', () => {
     expect(migration).toContain(
       'ADD CONSTRAINT IF NOT EXISTS feedback_events_approval_owner_decision_fk',
     );
-    expect(migration).toContain('migration_086_approval_owner_fk_preflight');
-    expect(migration).toContain('migration_086_feedback_relationship_fk_preflight');
+    expect(migration).toContain('migration_092_approval_owner_fk_preflight');
+    expect(migration).toContain('migration_092_feedback_relationship_fk_preflight');
   });
 
   it('verifies exact unique key sequences and the partial predicate', () => {
@@ -60,7 +60,7 @@ describe('Gmail archive feedback intent schema', () => {
       'CREATE UNIQUE INDEX IF NOT EXISTS feedback_events_approval_request_unique_idx',
     );
     expect(migration).toContain('WHERE approval_request_id IS NOT NULL');
-    expect(migration).toContain('migration_086_feedback_unique_index_preflight');
+    expect(migration).toContain('migration_092_feedback_unique_index_preflight');
     expect(migration).toContain("index_metadata.indnkeyatts = 3");
     expect(migration).toContain("index_metadata.indnkeyatts = 1");
     expect(migration).toContain("'approval_request_id IS NOT NULL'");

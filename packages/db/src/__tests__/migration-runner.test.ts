@@ -232,14 +232,13 @@ describe('splitSqlStatements', () => {
 });
 
 describe('stacked migration reservations', () => {
-  it('drops inference completion before receipt rows during initial rollback', () => {
-    const source = readFileSync(fileURLToPath(new URL('../migrations/001-initial.ts', import.meta.url)), 'utf8');
-    const completion = source.indexOf("'inference_receipt_completions'");
-    const receipts = source.indexOf("'inference_receipts'");
-    const explanations = source.indexOf("'explanation_records'");
-    expect(completion).toBeGreaterThan(-1);
-    expect(receipts).toBeGreaterThan(completion);
-    expect(explanations).toBeGreaterThan(receipts);
+  it('derives inference evidence tables into the initial rollback manifest', () => {
+    const manifest = getSkyTwinOwnedTableManifest();
+    expect(manifest.current).toEqual(expect.arrayContaining([
+      'inference_receipt_completions',
+      'inference_receipts',
+      'explanation_records',
+    ]));
   });
 
   it('keeps reserved ordinals unique and places pre-effect barriers after the active stack', () => {
@@ -263,6 +262,15 @@ describe('stacked migration reservations', () => {
     const sql = readFileSync(`${migrationDir}/086-pre-effect-barriers.sql`, 'utf8');
     expect(sql).toContain('pre_effect_barrier_explanation_required');
     expect(sql).toContain("CHECK (status = 'reserved' OR explanation_id IS NOT NULL)");
+  });
+
+  it('preserves the current memory-action status contract', () => {
+    const migrationDir = fileURLToPath(new URL('../migrations/', import.meta.url));
+    const sql = readFileSync(`${migrationDir}/086-pre-effect-barriers.sql`, 'utf8');
+    const memoryStatusCheck = sql.split('ADD CONSTRAINT check_status')[1] ?? '';
+    expect(memoryStatusCheck).toContain("'execution_ambiguous'");
+    expect(memoryStatusCheck).not.toContain("'processing'");
+    expect(memoryStatusCheck).not.toContain("'execution_unknown'");
   });
 });
 describe('isIdempotentError', () => {

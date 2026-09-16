@@ -12,7 +12,7 @@ ALTER TABLE feedback_events
 -- An approval must itself belong to the owner of its decision. The historical
 -- single-column FK proves only that the decision exists, so fail closed rather
 -- than silently relabelling any cross-owner approval.
-SELECT 1 / 0 AS migration_086_approval_owner_preflight
+SELECT 1 / 0 AS migration_092_approval_owner_preflight
 WHERE EXISTS (
   SELECT 1
     FROM approval_requests approval
@@ -26,7 +26,7 @@ WHERE EXISTS (
 -- applied/retried deployment. A portable division-by-zero makes the migration
 -- fail loudly before installing constraints if a populated link is missing or
 -- disagrees with its approval's owner/decision.
-SELECT 1 / 0 AS migration_086_feedback_relationship_preflight
+SELECT 1 / 0 AS migration_092_feedback_relationship_preflight
 WHERE EXISTS (
   SELECT 1
     FROM feedback_events feedback
@@ -64,7 +64,7 @@ ALTER TABLE feedback_events
 
 -- Assert exact non-storing key sequences, uniqueness, and predicates rather
 -- than accepting a stale same-named object that IF NOT EXISTS skipped.
-SELECT 1 / 0 AS migration_086_decision_owner_index_preflight
+SELECT 1 / 0 AS migration_092_decision_owner_index_preflight
 WHERE NOT (
   (SELECT count(*) FROM [SHOW INDEXES FROM decisions]
     WHERE index_name = 'decisions_id_user_id_idx'
@@ -96,7 +96,7 @@ WHERE NOT (
   )
 );
 
-SELECT 1 / 0 AS migration_086_approval_tuple_index_preflight
+SELECT 1 / 0 AS migration_092_approval_tuple_index_preflight
 WHERE NOT (
   (SELECT count(*) FROM [SHOW INDEXES FROM approval_requests]
     WHERE index_name = 'approval_requests_id_owner_decision_idx'
@@ -134,7 +134,7 @@ WHERE NOT (
   )
 );
 
-SELECT 1 / 0 AS migration_086_feedback_unique_index_preflight
+SELECT 1 / 0 AS migration_092_feedback_unique_index_preflight
 WHERE NOT (
   (SELECT count(*) FROM [SHOW INDEXES FROM feedback_events]
     WHERE index_name = 'feedback_events_approval_request_unique_idx'
@@ -163,7 +163,7 @@ WHERE NOT (
 
 -- IF NOT EXISTS must never turn a malformed namesake into a successful
 -- migration. Verify the exact foreign-key shapes after every startup rerun.
-SELECT 1 / 0 AS migration_086_approval_owner_fk_preflight
+SELECT 1 / 0 AS migration_092_approval_owner_fk_preflight
 WHERE NOT EXISTS (
   SELECT 1 FROM [SHOW CONSTRAINTS FROM approval_requests]
    WHERE constraint_name = 'approval_requests_decision_owner_fk'
@@ -172,7 +172,7 @@ WHERE NOT EXISTS (
        'FOREIGN KEY (decision_id, user_id) REFERENCES decisions(id, user_id)'
      AND validated = true
 );
-SELECT 1 / 0 AS migration_086_feedback_relationship_fk_preflight
+SELECT 1 / 0 AS migration_092_feedback_relationship_fk_preflight
 WHERE NOT EXISTS (
   SELECT 1 FROM [SHOW CONSTRAINTS FROM feedback_events]
    WHERE constraint_name = 'feedback_events_approval_owner_decision_fk'

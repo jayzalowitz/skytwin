@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  validateAccountConnectorEvidence,
   validateEventIngest,
   validateGmailConnectorEvidence,
 } from '../validators/event-ingest.js';
@@ -205,6 +206,35 @@ describe('validateEventIngest', () => {
         expect(fields).toEqual(['data', 'trustTier', 'urgency', 'userId']);
       }
     });
+  });
+});
+
+describe('validateAccountConnectorEvidence', () => {
+  const valid = {
+    kind: 'account_signal',
+    connectorAccountId: '11111111-1111-4111-8111-111111111111',
+    provider: 'microsoft',
+    source: 'outlook',
+    authoringTier: 'inbox_personal',
+    observedAt: '2026-09-11T12:00:00.000Z',
+  };
+
+  it('accepts an exact source/provider-bound envelope', () => {
+    expect(validateAccountConnectorEvidence(valid)).toMatchObject({ ok: true });
+  });
+
+  it('rejects source/provider substitution and extra fields', () => {
+    expect(validateAccountConnectorEvidence({ ...valid, provider: 'google' }))
+      .toEqual({ ok: false, message: 'connectorEvidence source/provider is invalid' });
+    expect(validateAccountConnectorEvidence({ ...valid, accessToken: 'secret' }))
+      .toEqual({ ok: false, message: 'connectorEvidence has an invalid shape' });
+  });
+
+  it('rejects unknown tiers and non-canonical timestamps', () => {
+    expect(validateAccountConnectorEvidence({ ...valid, authoringTier: 'trusted' }))
+      .toMatchObject({ ok: false });
+    expect(validateAccountConnectorEvidence({ ...valid, observedAt: '2026-09-11' }))
+      .toMatchObject({ ok: false });
   });
 });
 

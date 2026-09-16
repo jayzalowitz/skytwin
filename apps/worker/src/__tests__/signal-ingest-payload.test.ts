@@ -39,4 +39,30 @@ describe('buildSignalIngestPayload', () => {
     expect(payload).not.toHaveProperty('threadId');
     expect(payload).not.toHaveProperty('data');
   });
+
+  it('forwards account evidence with an account-scoped non-Gmail signal', () => {
+    const connectorAccountId = '22222222-2222-4222-8222-222222222222';
+    const connectorEvidence = {
+      kind: 'account_signal' as const,
+      connectorAccountId,
+      provider: 'microsoft' as const,
+      source: 'outlook' as const,
+      authoringTier: 'inbox_personal' as const,
+      observedAt: '2026-09-16T12:00:00.000Z',
+    };
+    const payload = buildSignalIngestPayload({
+      id: `sig_outlook_message_${connectorAccountId}`,
+      source: 'outlook',
+      type: 'work_email',
+      timestamp: new Date(connectorEvidence.observedAt),
+      data: { from: 'sender@example.com', subject: 'Status' },
+      connectorEvidence,
+    }, '11111111-1111-4111-8111-111111111111');
+
+    expect(payload).toMatchObject({
+      source: 'outlook',
+      signalId: `sig_outlook_message_${connectorAccountId}`,
+      connectorEvidence,
+    });
+  });
 });

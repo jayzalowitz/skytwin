@@ -305,6 +305,7 @@ function expectedExplanation(input: {
 }): Omit<ExplanationRecordRow, 'id' | 'created_at'> {
   return {
     decision_id: input.state.decision.id,
+    type: 'action',
     what_happened: input.allowed
       ? 'Rechecked current policy after approval and prepared the Inbox archive; no external action was attempted.'
       : 'Rechecked current policy after approval and blocked the Inbox archive; no external action was attempted.',

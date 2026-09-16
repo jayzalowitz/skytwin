@@ -75,6 +75,10 @@ const actionId = 'aaaaaaaa-bbbb-4ccc-8ddd-000000000abc';
 function app(): Express {
   const instance = express();
   instance.use(express.json());
+  instance.use((req, _res, next) => {
+    req.authenticatedUserId = userId;
+    next();
+  });
   instance.use('/api/approvals', createApprovalsRouter());
   instance.use((error: Error, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
     response.status(500).json({ error: error.message });

@@ -33,6 +33,7 @@ import {
   executionAdmissionRepository,
   gmailMessageRefRepository,
   gmailArchiveProposalRepository,
+  signalRepository,
 } from '@skytwin/db';
 import type {
   DecisionContext,
@@ -69,7 +70,11 @@ import { recordMcpActionSpend } from '../mcp-action-spend.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 import { sseManager } from '../sse.js';
-import { validateEventIngest, validateGmailConnectorEvidence } from '../validators/event-ingest.js';
+import {
+  validateAccountConnectorEvidence,
+  validateEventIngest,
+  validateGmailConnectorEvidence,
+} from '../validators/event-ingest.js';
 import { getMemoryPortForUser } from '../memory-setup.js';
 import type { DecisionObject as _DecisionObject } from '@skytwin/shared-types';
 import {
@@ -124,6 +129,32 @@ function sanitizedGmailSignalData(event: Record<string, unknown>): Record<string
     if (event[key] !== undefined) data[key] = event[key];
   }
   return data;
+}
+
+const SIGNAL_ENVELOPE_KEYS = new Set([
+  'connectorEvidence',
+  'messageRefId',
+  'signalId',
+  'source',
+  'type',
+  'userId',
+]);
+
+/** Remove routing/authority fields before a raw event becomes durable Watch evidence. */
+function sanitizedSignalData(event: Record<string, unknown>): Record<string, unknown> {
+  const nested = event['data'];
+  if (nested && typeof nested === 'object' && !Array.isArray(nested)) {
+    return { ...(nested as Record<string, unknown>) };
+  }
+  return Object.fromEntries(
+    Object.entries(event).filter(([key]) => !SIGNAL_ENVELOPE_KEYS.has(key)),
+  );
+}
+
+function domainForSignal(source: string): 'email' | 'calendar' | 'general' {
+  if (source === 'gmail' || source === 'outlook') return 'email';
+  if (source === 'google_calendar' || source === 'outlook_calendar') return 'calendar';
+  return 'general';
 }
 
 function stripProviderTargetIds(value: unknown, depth = 0): unknown {
@@ -295,6 +326,7 @@ export function createEventsRouter(): Router {
       const rawEvent = validation.event;
       const userId = validation.userId;
       let gmailOwnedSignalId: string | null = null;
+      let signalAlreadyPersisted = false;
 
       // connectorEvidence is authority-bearing only on the loopback service
       // credential path. A human session presenting the same JSON shape must
@@ -377,6 +409,7 @@ export function createEventsRouter(): Router {
         // though the request reached us before the idempotency lookup.
         for (const key of Object.keys(rawEvent)) delete rawEvent[key];
         gmailOwnedSignalId = persisted.signal.id;
+        signalAlreadyPersisted = true;
         Object.assign(rawEvent, sanitizedGmailSignalData(persisted.signal.data), {
           userId,
           source: 'gmail',
@@ -485,8 +518,49 @@ export function createEventsRouter(): Router {
           }
         }
       } else if (presentedEvidence !== undefined) {
-        res.status(400).json({ error: 'connectorEvidence is only valid for Gmail signals' });
-        return;
+        const evidenceValidation = validateAccountConnectorEvidence(presentedEvidence);
+        const sourceSignalId = rawEvent['signalId'];
+        if (!evidenceValidation.ok) {
+          res.status(400).json({ error: evidenceValidation.message });
+          return;
+        }
+        const evidence = evidenceValidation.evidence;
+        if (normalizedSource !== evidence.source) {
+          res.status(400).json({ error: 'connectorEvidence source does not match the signal source' });
+          return;
+        }
+        if (typeof sourceSignalId !== 'string' || sourceSignalId.length < 1 || sourceSignalId.length > 2048) {
+          res.status(400).json({ error: 'Account-bound connector ingest requires a valid signalId' });
+          return;
+        }
+        const signalData = sanitizedSignalData(rawEvent);
+        signalData['authoringTier'] = evidence.authoringTier;
+        signalData['observedAt'] = evidence.observedAt.toISOString();
+        const persisted = await signalRepository.persistAccountConnectorSignal({
+          userId,
+          provider: evidence.provider,
+          source: evidence.source,
+          signalType: typeof rawEvent['type'] === 'string' ? rawEvent['type'] : 'connector_event',
+          domain: domainForSignal(evidence.source) as 'email' | 'calendar',
+          signalData,
+          timestamp: evidence.observedAt,
+          connectorAccountId: evidence.connectorAccountId,
+          sourceSignalId,
+        });
+        if (!persisted) {
+          res.status(409).json({ error: 'Connector account is unavailable, unverified, or not owned by this user' });
+          return;
+        }
+        for (const key of Object.keys(rawEvent)) delete rawEvent[key];
+        Object.assign(rawEvent, persisted.signal.data, {
+          userId,
+          source: persisted.signal.source,
+          type: persisted.signal.type,
+          signalId: persisted.signal.source_signal_id,
+          authoringTier: persisted.signal.data['authoringTier'],
+          observedAt: persisted.signal.timestamp.toISOString(),
+        });
+        signalAlreadyPersisted = true;
       } else if (normalizedSource === 'gmail') {
         // Human/session callers cannot assert connector provenance. Preserve
         // the content event for backwards compatibility, but force the least-
@@ -496,6 +570,62 @@ export function createEventsRouter(): Router {
         Object.assign(rawEvent, stripped, {
           source: 'gmail',
           authoringTier: 'inbox_automated',
+        });
+      } else {
+        // A service credential alone does not establish an account boundary.
+        // Known account-backed sources must carry the exact evidence envelope;
+        // other service/session events are treated as untrusted inputs.
+        if (
+          req.serviceAuthenticated === true &&
+          (normalizedSource === 'google_calendar' || normalizedSource === 'outlook' || normalizedSource === 'outlook_calendar')
+        ) {
+          res.status(400).json({ error: 'Account-bound connector ingest requires connectorEvidence' });
+          return;
+        }
+        delete rawEvent['authoringTier'];
+        const nestedData = rawEvent['data'];
+        if (nestedData && typeof nestedData === 'object' && !Array.isArray(nestedData)) {
+          const cleanData = { ...(nestedData as Record<string, unknown>) };
+          delete cleanData['authoringTier'];
+          rawEvent['data'] = cleanData;
+        }
+      }
+
+      if (typeof rawEvent['signalId'] !== 'string' || rawEvent['signalId'].trim().length === 0) {
+        rawEvent['signalId'] = randomUUID();
+      }
+
+      if (!signalAlreadyPersisted) {
+        const source = typeof rawEvent['source'] === 'string' && rawEvent['source'].trim()
+          ? rawEvent['source'].trim().toLowerCase()
+          : 'unknown';
+        const sourceSignalId = rawEvent['signalId'] as string;
+        const preserveNestedData = rawEvent['data'] !== null &&
+          typeof rawEvent['data'] === 'object' && !Array.isArray(rawEvent['data']);
+        const signalData = sanitizedSignalData(rawEvent);
+        if (typeof rawEvent['authoringTier'] === 'string') {
+          signalData['authoringTier'] = rawEvent['authoringTier'];
+        }
+        const persisted = await signalRepository.persistUnboundSignal({
+          userId,
+          source,
+          type: typeof rawEvent['type'] === 'string' ? rawEvent['type'] : 'event',
+          domain: domainForSignal(source),
+          data: signalData,
+          // Unbound callers cannot choose the Watch window in which evidence
+          // lands. Account connectors use their verified observedAt above.
+          timestamp: new Date(),
+          sourceSignalId,
+        });
+        for (const key of Object.keys(rawEvent)) delete rawEvent[key];
+        Object.assign(rawEvent, preserveNestedData ? { data: persisted.signal.data } : persisted.signal.data, {
+          userId,
+          source: persisted.signal.source,
+          type: persisted.signal.type,
+          signalId: persisted.signal.source_signal_id,
+          ...(typeof persisted.signal.data['authoringTier'] === 'string'
+            ? { authoringTier: persisted.signal.data['authoringTier'] }
+            : {}),
         });
       }
 

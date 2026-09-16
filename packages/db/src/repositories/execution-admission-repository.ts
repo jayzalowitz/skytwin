@@ -167,6 +167,26 @@ export interface ExecutionPolicyDenialRecord {
   evidence: Record<string, unknown>;
 }
 
+export type ApprovalPreflightDisposition =
+  | 'policy_denied'
+  | 'execution_paused'
+  | 'dual_confirmation_required';
+
+export interface RecordApprovalPreflightNonActionInput {
+  userId: string;
+  approvalId: string;
+  decisionId: string;
+  actionId: string;
+  adapterName: string;
+  disposition: ApprovalPreflightDisposition;
+  reason: string;
+  sourceActionSnapshot: Record<string, unknown>;
+  sourceRiskSnapshot: Record<string, unknown>;
+  actionSnapshot: Record<string, unknown>;
+  riskSnapshot: Record<string, unknown>;
+  policySnapshot: Record<string, unknown>;
+}
+
 export interface ReceiptPreparationDispositionInput {
   userId: string;
   decisionId: string;
@@ -191,6 +211,112 @@ export interface ReceiptExecutionDisposition {
  * transaction as admission, before an adapter can be invoked.
  */
 export const executionAdmissionRepository = {
+  /**
+   * Persist the exact reason an approval remained pending after its current
+   * execution path was prepared. This is deliberately separate from
+   * `recordPolicyDenial`: preflight has not consumed the approval, so there is
+   * no approved authority to close and no adapter request may have started.
+   */
+  async recordApprovalPreflightNonAction(
+    input: RecordApprovalPreflightNonActionInput,
+  ): Promise<ExecutionPolicyDenialRecord | null> {
+    const adapterName = normalizeMemoryActionAdapterName(input.adapterName);
+    const reason = normalizeMemoryActionText(input.reason);
+    if (!adapterName || !reason || input.sourceRiskSnapshot['actionId'] !== input.actionId ||
+        input.riskSnapshot['actionId'] !== input.actionId ||
+        input.sourceActionSnapshot['id'] !== input.actionId ||
+        input.actionSnapshot['id'] !== input.actionId ||
+        input.actionSnapshot['decisionId'] !== input.decisionId) {
+      throw new Error('Approval preflight non-action evidence is incomplete.');
+    }
+
+    const snapshots = {
+      sourceAction: JSON.parse(JSON.stringify(input.sourceActionSnapshot)) as Record<string, unknown>,
+      sourceRisk: JSON.parse(JSON.stringify(input.sourceRiskSnapshot)) as Record<string, unknown>,
+      action: JSON.parse(JSON.stringify(input.actionSnapshot)) as Record<string, unknown>,
+      risk: JSON.parse(JSON.stringify(input.riskSnapshot)) as Record<string, unknown>,
+      policy: JSON.parse(JSON.stringify(input.policySnapshot)) as Record<string, unknown>,
+    };
+    const digest = (value: unknown): string => createHash('sha256')
+      .update(canonicalJson(value), 'utf8')
+      .digest('hex');
+    const evidence: Record<string, unknown> = {
+      schemaVersion: 1,
+      kind: 'approval_preflight_non_action',
+      approvalId: input.approvalId,
+      decisionId: input.decisionId,
+      actionId: input.actionId,
+      adapterName,
+      disposition: input.disposition,
+      reason,
+      sourceActionSnapshotSha256: digest(snapshots.sourceAction),
+      sourceRiskSnapshotSha256: digest(snapshots.sourceRisk),
+      actionSnapshotSha256: digest(snapshots.action),
+      riskSnapshotSha256: digest(snapshots.risk),
+      policySnapshotSha256: digest(snapshots.policy),
+    };
+
+    return withTransaction(async (client) => {
+      const authority = await client.query<{
+        candidate_action: Record<string, unknown>;
+        risk_assessment: Record<string, unknown>;
+      }>(
+        `SELECT ar.candidate_action, ca.risk_assessment
+           FROM users u
+           JOIN approval_requests ar ON ar.user_id = u.id
+           JOIN decisions d ON d.id = ar.decision_id AND d.user_id = u.id
+           JOIN candidate_actions ca ON ca.id = $4 AND ca.decision_id = d.id
+          WHERE u.id = $1 AND ar.id = $2 AND d.id = $3
+            AND ar.status = 'pending'
+            AND ar.candidate_action->>'id' = $4::STRING
+          FOR UPDATE OF u, ar, d, ca`,
+        [input.userId, input.approvalId, input.decisionId, input.actionId],
+      );
+      const row = authority.rows[0];
+      if (!row) return null;
+      if (canonicalJson(row.candidate_action) !== canonicalJson(snapshots.sourceAction) ||
+          canonicalJson(row.risk_assessment) !== canonicalJson(snapshots.sourceRisk)) {
+        throw new Error('Approval preflight source snapshots conflict with persisted authority.');
+      }
+
+      const existing = await client.query<{ id: string; evidence_used: unknown }>(
+        `SELECT id, evidence_used
+           FROM explanation_records
+          WHERE decision_id = $1 AND type = 'approval_preflight_non_action'
+            AND evidence_used->0->>'approvalId' = $2
+            AND evidence_used->0->>'disposition' = $3
+          ORDER BY created_at ASC LIMIT 1
+          FOR UPDATE`,
+        [input.decisionId, input.approvalId, input.disposition],
+      );
+      if (existing.rows[0]) {
+        if (canonicalJson(existing.rows[0].evidence_used) !== canonicalJson([evidence])) {
+          throw new Error('Existing approval preflight evidence conflicts with requested evidence.');
+        }
+        return { explanationId: existing.rows[0].id, evidence };
+      }
+
+      const explanation = await client.query<{ id: string }>(
+        `INSERT INTO explanation_records (
+           decision_id, type, what_happened, evidence_used, preferences_invoked,
+           confidence_reasoning, action_rationale, escalation_rationale,
+           correction_guidance
+         ) VALUES (
+           $1, 'approval_preflight_non_action',
+           'SkyTwin kept this approval pending because its exact current execution path was not authorized.',
+           $2::JSONB, ARRAY[]::STRING[],
+           'The prepared adapter path was re-evaluated against current risk and policy before approval consumption.',
+           'No approval state or external effect was consumed.', $3,
+           'Review the current policy and risk evidence, then create or confirm a newly authorized request.'
+         ) RETURNING id`,
+        [input.decisionId, JSON.stringify([evidence]), reason],
+      );
+      const explanationId = explanation.rows[0]?.id;
+      if (!explanationId) throw new Error('Approval preflight explanation was not persisted.');
+      return { explanationId, evidence };
+    });
+  },
+
   /** Close a ready receipt after routing proves no request, or retain an
    * ambiguous non-replay state when preparation cannot prove that boundary. */
   async recordReceiptPreparationDisposition(

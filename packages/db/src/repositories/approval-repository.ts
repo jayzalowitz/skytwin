@@ -131,10 +131,12 @@ export const approvalRepository = {
     return result.rows;
   },
 
-  async findById(id: string): Promise<ApprovalRequestRow | null> {
+  async findById(id: string, userId?: string): Promise<ApprovalRequestRow | null> {
     const result = await query<ApprovalRequestRow>(
-      'SELECT * FROM approval_requests WHERE id = $1',
-      [id],
+      userId === undefined
+        ? 'SELECT * FROM approval_requests WHERE id = $1'
+        : 'SELECT * FROM approval_requests WHERE id = $1 AND user_id = $2',
+      userId === undefined ? [id] : [id, userId],
     );
     return result.rows[0] ?? null;
   },

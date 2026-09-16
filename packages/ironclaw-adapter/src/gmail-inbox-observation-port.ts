@@ -5,7 +5,6 @@ import {
 } from '@skytwin/connectors';
 import {
   GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
-  gmailInboxObservationTargetRepository,
   oauthRepository,
   type GmailInboxObservationTarget,
 } from '@skytwin/db';
@@ -48,8 +47,9 @@ const MAX_ACCESS_TOKEN_LENGTH = 16 * 1024;
 
 interface KeyCacheLike {
   get(userId: string): Buffer | null;
+  getGeneration(userId: string): string | null;
   has(userId: string): boolean;
-  set(userId: string, key: Buffer): void;
+  set(userId: string, key: Buffer, generation?: string | null): void;
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -112,6 +112,7 @@ export class DbGmailInboxObservationCredentials implements GmailInboxObservation
     });
     this.keyCache = options.keyCache ? Object.freeze({
       get: options.keyCache.get.bind(options.keyCache),
+      getGeneration: options.keyCache.getGeneration.bind(options.keyCache),
       has: options.keyCache.has.bind(options.keyCache),
       set: options.keyCache.set.bind(options.keyCache),
     }) : null;
@@ -419,7 +420,7 @@ export interface GmailArchiveRecoveryObservationTargetResolver {
 export interface GmailArchiveRecoveryObservationCoordinatorOptions {
   leaseRepository: GmailArchiveRecoveryLeaseRepository;
   credentials: GmailInboxObservationCredentialsPort;
-  targetResolver?: GmailArchiveRecoveryObservationTargetResolver;
+  targetResolver: GmailArchiveRecoveryObservationTargetResolver;
   fetch?: FetchLike;
   timeoutMs?: number;
 }
@@ -578,7 +579,7 @@ export class GmailArchiveRecoveryObservationCoordinator {
     this.beginObservation = options.leaseRepository.beginObservation.bind(options.leaseRepository);
     this.recordObservation = options.leaseRepository.recordObservation.bind(options.leaseRepository);
     this.materializeCredential = options.credentials.materialize.bind(options.credentials);
-    const resolver = options.targetResolver ?? gmailInboxObservationTargetRepository;
+    const resolver = options.targetResolver;
     this.resolveInitial = resolver.resolveInitial.bind(resolver);
     this.resolveFinal = resolver.resolveFinal.bind(resolver);
     this.fetchFn = options.fetch ?? globalThis.fetch;

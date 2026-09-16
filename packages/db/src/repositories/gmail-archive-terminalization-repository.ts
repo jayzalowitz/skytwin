@@ -610,6 +610,7 @@ function terminalExplanation(input: {
   return {
     id: input.id,
     decision_id: input.state.decision.id,
+    type: 'action',
     what_happened: semantics.whatHappened,
     evidence_used: [buildTerminalResultEnvelope(input.result, input.attemptPhase)],
     preferences_invoked: [...policyIds].sort(),

@@ -18,6 +18,7 @@ const {
 } = await import(
   '../repositories/oauth-repository.js'
 );
+const { digestProviderSubject } = await import('../repositories/connected-account-repository.js');
 
 function fakeRow(
   overrides: Partial<{
@@ -118,6 +119,7 @@ describe('oauthRepository (multi-account)', () => {
         if (sql.includes('SELECT id FROM oauth_tokens')) return Promise.resolve({ rows: [] });
         if (sql.includes('user_credential_vault_meta')) return Promise.resolve({ rows: [] });
         if (sql.includes('SELECT * FROM oauth_tokens')) return Promise.resolve({ rows: [] });
+        if (sql.includes('SELECT t.* FROM oauth_tokens AS t')) return Promise.resolve({ rows: [] });
         return Promise.resolve({ rows: [row], rowCount: 1 });
       });
 
@@ -330,6 +332,65 @@ describe('oauthRepository (multi-account)', () => {
         String(sql).includes('INSERT INTO connected_accounts'))).toBe(false);
     });
 
+    it('rebinds the existing credential when a verified subject changes display email', async () => {
+      const oldToken = fakeRow({
+        id: 'tok-stable-subject',
+        account_email: 'old@example.com',
+        account_provider_id: 'stable-subject',
+        connector_account_id: 'account-stable',
+      });
+      const saved = fakeRow({
+        ...oldToken,
+        account_email: 'new@example.com',
+        access_token: 'new-access',
+        refresh_token: 'new-refresh',
+      });
+      mockQuery.mockImplementation((sql: string) => {
+        if (sql.includes('SELECT id FROM users')) return Promise.resolve({ rows: [{ id: 'user-1' }] });
+        if (sql.includes("dispatch_state = 'disconnecting'")) return Promise.resolve({ rows: [] });
+        if (sql.includes('user_credential_vault_meta')) return Promise.resolve({ rows: [] });
+        if (sql.includes('lower(account_email) = lower($3)')) return Promise.resolve({ rows: [] });
+        if (sql.includes('SELECT t.* FROM oauth_tokens AS t')) {
+          return Promise.resolve({ rows: [oldToken], rowCount: 1 });
+        }
+        if (sql.includes('active_count')) {
+          return Promise.resolve({ rows: [{ active_count: '0', retry_after: null }] });
+        }
+        if (sql.includes('SELECT * FROM connected_accounts')) {
+          return Promise.resolve({ rows: [{
+            id: 'account-stable',
+            identity_verified: true,
+            provider_subject_digest: digestProviderSubject('google', 'stable-subject'),
+          }], rowCount: 1 });
+        }
+        if (sql.includes('INSERT INTO connected_accounts')) {
+          return Promise.resolve({ rows: [{ id: 'account-stable' }], rowCount: 1 });
+        }
+        if (sql.includes('SET account_email = $1')) {
+          return Promise.resolve({ rows: [], rowCount: 1 });
+        }
+        if (sql.includes('INSERT INTO oauth_tokens')) {
+          return Promise.resolve({ rows: [saved], rowCount: 1 });
+        }
+        return Promise.resolve({ rows: [], rowCount: 1 });
+      });
+
+      await expect(oauthRepository.saveTokenForAccount({
+        userId: 'user-1', provider: 'google', accountEmail: 'new@example.com',
+        accountProviderId: 'stable-subject', accessToken: 'new-access', refreshToken: 'new-refresh',
+        expiresAt: saved.expires_at, scopes: ['gmail.readonly'],
+      })).resolves.toMatchObject({ id: 'tok-stable-subject', account_email: 'new@example.com' });
+
+      const emailRebind = mockQuery.mock.calls.find(([sql]) =>
+        String(sql).includes('SET account_email = $1'));
+      expect(emailRebind?.[1]).toEqual([
+        'new@example.com', 'tok-stable-subject', 'user-1', 'google',
+      ]);
+      const insertedArgs = mockQuery.mock.calls.find(([sql]) =>
+        String(sql).includes('INSERT INTO oauth_tokens'))?.[1] as unknown[];
+      expect(insertedArgs[13]).toBe('account-stable');
+    });
+
     it('retries a serialization failure around the complete identity transaction', async () => {
       let failOnce = true;
       const row = fakeRow();
@@ -342,6 +403,7 @@ describe('oauthRepository (multi-account)', () => {
         if (sql.includes('SELECT id FROM oauth_tokens')) return Promise.resolve({ rows: [] });
         if (sql.includes('user_credential_vault_meta')) return Promise.resolve({ rows: [] });
         if (sql.includes('SELECT * FROM oauth_tokens')) return Promise.resolve({ rows: [] });
+        if (sql.includes('SELECT t.* FROM oauth_tokens AS t')) return Promise.resolve({ rows: [] });
         if (sql.includes('INSERT INTO connected_accounts')) {
           return Promise.resolve({ rows: [{ id: 'account-1' }], rowCount: 1 });
         }

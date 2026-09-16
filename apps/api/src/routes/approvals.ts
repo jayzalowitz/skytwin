@@ -505,11 +505,18 @@ export function createApprovalsRouter(
         res.status(403).json({ error: 'You can only respond to your own approval requests.' });
         return;
       }
+      if (!authenticatedOwner) {
+        res.status(401).json({
+          error: 'Authentication required',
+          code: 'APPROVAL_AUTH_REQUIRED',
+        });
+        return;
+      }
 
       // Read once to select the reserved workflow. The dedicated repository's
       // transition is itself owner-scoped and revalidates the full canonical
       // graph atomically before recording consent.
-      const existing = await approvalRepository.findById(requestId);
+      const existing = await approvalRepository.findById(requestId, authenticatedOwner);
       if (!existing) {
         res.status(404).json({ error: 'Approval request not found' });
         return;
@@ -520,13 +527,6 @@ export function createApprovalsRouter(
       // routing, barrier, SSE, or execution paths.
       const gmailArchiveClassification = classifyGmailArchiveApproval(existing.candidate_action);
       if (gmailArchiveClassification.kind !== 'other') {
-        if (!authenticatedOwner) {
-          res.status(401).json({
-            error: 'Authentication required',
-            code: 'GMAIL_ARCHIVE_APPROVAL_AUTH_REQUIRED',
-          });
-          return;
-        }
         if (body.userId !== authenticatedOwner || existing.user_id !== authenticatedOwner) {
           res.status(403).json({
             error: 'You can only respond to your own approval requests.',
@@ -741,23 +741,6 @@ export function createApprovalsRouter(
           approvedRiskAssessment,
           readAutonomy(currentUser),
         );
-        if (!approvedPolicyResult.allowed || executionIsPaused(currentUser, approvedPolicyEvaluator)) {
-          res.status(403).json({
-            error: 'Action blocked by current policy.',
-            reason: approvedPolicyResult.reason,
-            requestId,
-          });
-          return;
-        }
-        if (approvedPolicyResult.confirmationLevel === 'dual' &&
-            existing.confirmation_level !== 'dual') {
-          res.status(409).json({
-            error: 'confirmation_level_changed',
-            message: 'The edited action now requires two confirmations. Re-trigger it for review.',
-            requestId,
-          });
-          return;
-        }
         approvedActionSnapshot = {
           decisionId: existing.decision_id,
           ...serializeApprovalCandidate(
@@ -765,6 +748,63 @@ export function createApprovalsRouter(
             approvedCandidateAction.parameters,
           ),
         };
+        const preflightPaused = executionIsPaused(currentUser, approvedPolicyEvaluator);
+        const preflightDualMismatch = approvedPolicyResult.confirmationLevel === 'dual' &&
+          existing.confirmation_level !== 'dual';
+        if (!approvedPolicyResult.allowed || preflightPaused || preflightDualMismatch) {
+          const disposition = preflightPaused
+            ? 'execution_paused' as const
+            : preflightDualMismatch
+              ? 'dual_confirmation_required' as const
+              : 'policy_denied' as const;
+          const denialReason = preflightPaused
+            ? 'Execution paused by user or operator policy.'
+            : preflightDualMismatch
+              ? 'The exact prepared action now requires dual confirmation.'
+              : approvedPolicyResult.reason;
+          const preflightEvidence = await executionAdmissionRepository
+            .recordApprovalPreflightNonAction({
+              userId: body.userId,
+              approvalId: existing.id,
+              decisionId: existing.decision_id,
+              actionId: approvedCandidateAction.id,
+              adapterName: approvedPreparedExecution.adapterName,
+              disposition,
+              reason: denialReason,
+              sourceActionSnapshot: preStoredAction,
+              sourceRiskSnapshot: preflightRiskAssessment as unknown as Record<string, unknown>,
+              actionSnapshot: approvedActionSnapshot,
+              riskSnapshot: approvedRiskAssessment as unknown as Record<string, unknown>,
+              policySnapshot: {
+                ...approvedPolicyResult,
+                effectiveAllowed: false,
+                executionPaused: preflightPaused,
+                confirmationLevelMismatch: preflightDualMismatch,
+                denialReason,
+              },
+            });
+          if (!preflightEvidence) {
+            throw new Error('Approval preflight non-action evidence could not be persisted.');
+          }
+        }
+        if (!approvedPolicyResult.allowed || preflightPaused) {
+          res.status(403).json({
+            error: 'Action blocked by current policy.',
+            reason: preflightPaused
+              ? 'Execution paused by user or operator policy.'
+              : approvedPolicyResult.reason,
+            requestId,
+          });
+          return;
+        }
+        if (preflightDualMismatch) {
+          res.status(409).json({
+            error: 'confirmation_level_changed',
+            message: 'The edited action now requires two confirmations. Re-trigger it for review.',
+            requestId,
+          });
+          return;
+        }
         approvedOutcomeSnapshot = {
           decisionId: existing.decision_id,
           selectedAction: approvedActionSnapshot,

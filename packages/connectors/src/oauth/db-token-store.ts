@@ -107,6 +107,18 @@ interface OAuthRepositoryLike {
     accessToken: string;
     expiresAt: Date;
   }): Promise<boolean>;
+  rotateTokenIfCurrent?(input: {
+    id: string;
+    userId: string;
+    provider: string;
+    expectedAccessToken: string | null;
+    expectedRefreshToken: string;
+    expectedCredentialRevision: string;
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: Date;
+    scopes: string[];
+  }): Promise<unknown>;
   /** Prove that this process's cached key still belongs to the live vault generation. */
   validateVaultSession?(userId: string, vaultGeneration: string): Promise<boolean>;
   /** Distinguish an uninitialized vault from a durable locked vault. */
@@ -136,6 +148,16 @@ interface OAuthRepositoryLike {
     encryptedAccessToken: Buffer;
     expiresAt: Date;
   }) => Promise<boolean>;
+  rotateEncryptedTokenIfCurrent?: (input: {
+    id: string;
+    userId: string;
+    provider: string;
+    expectedCredentialRevision: string;
+    expectedVaultGeneration: string;
+    encryptedAccessToken: Buffer;
+    encryptedRefreshToken?: Buffer;
+    expiresAt: Date;
+  }) => Promise<unknown>;
   updateAccessTokenByConnectorAccount?: (
     userId: string,
     provider: string,
@@ -655,8 +677,9 @@ export class DbTokenStore implements OAuthTokenStore {
     // provider's endpoint. Never fall back to Google for a non-Google token:
     // that would POST the refresh token to the wrong vendor (the token-leak
     // class fixed in the disconnect routes). For non-rotating Microsoft
-    // tokens the stored refresh token is reused (rotation persistence is a
-    // follow-up); the access token is updated below.
+    // tokens the stored refresh token is reused; when Microsoft does rotate
+    // one, the exact refreshed grant is committed below under the same
+    // credential/vault generation fences as the access token.
     // `switch` with a `default: throw` makes the no-fallback property
     // structural: an unrecognized provider can NEVER reach the Google branch,
     // so a future reorder/addition can't silently reintroduce the cross-vendor
@@ -712,21 +735,39 @@ export class DbTokenStore implements OAuthTokenStore {
       if (!refreshSnapshot.encrypted_access_token || !refreshSnapshot.encrypted_refresh_token ||
           key === null || vaultGeneration === null ||
           !this.repo.validateVaultSession ||
-          !await this.repo.validateVaultSession(userId, vaultGeneration) ||
-          !this.repo.updateEncryptedAccessTokenIfCurrent) {
+          !await this.repo.validateVaultSession(userId, vaultGeneration)) {
         throw new Error('credentials unavailable; credential-vault authority changed during refresh');
       }
-      const packed = packEncrypted(encrypt(refreshed.accessToken, key));
       signal?.throwIfAborted();
-      persisted = await this.repo.updateEncryptedAccessTokenIfCurrent({
-        id: refreshRowId,
-        userId,
-        provider,
-        expectedCredentialRevision: refreshRevision,
-        expectedVaultGeneration: vaultGeneration,
-        encryptedAccessToken: packed,
-        expiresAt: refreshed.expiresAt,
-      });
+      const encryptedAccessToken = packEncrypted(encrypt(refreshed.accessToken, key));
+      if (refreshed.refreshToken !== existing.refreshToken) {
+        if (!this.repo.rotateEncryptedTokenIfCurrent) {
+          throw new Error('OAuth repository does not support revision-fenced encrypted grant rotation.');
+        }
+        persisted = Boolean(await this.repo.rotateEncryptedTokenIfCurrent({
+          id: refreshRowId,
+          userId,
+          provider,
+          expectedCredentialRevision: refreshRevision,
+          expectedVaultGeneration: vaultGeneration,
+          encryptedAccessToken,
+          encryptedRefreshToken: packEncrypted(encrypt(refreshed.refreshToken, key)),
+          expiresAt: refreshed.expiresAt,
+        }));
+      } else {
+        if (!this.repo.updateEncryptedAccessTokenIfCurrent) {
+          throw new Error('OAuth repository does not support revision-fenced encrypted refresh persistence.');
+        }
+        persisted = await this.repo.updateEncryptedAccessTokenIfCurrent({
+          id: refreshRowId,
+          userId,
+          provider,
+          expectedCredentialRevision: refreshRevision,
+          expectedVaultGeneration: vaultGeneration,
+          encryptedAccessToken,
+          expiresAt: refreshed.expiresAt,
+        });
+      }
     } else if (key !== null) {
       const vaultAuthority = this.repo.getVaultAuthorityState
         ? await this.repo.getVaultAuthorityState(userId)
@@ -751,7 +792,23 @@ export class DbTokenStore implements OAuthTokenStore {
       });
     } else {
       signal?.throwIfAborted();
-      if (this.connectorAccountId) {
+      if (refreshed.refreshToken !== existing.refreshToken) {
+        if (!this.repo.rotateTokenIfCurrent) {
+          throw new Error('OAuth repository does not support revision-fenced grant rotation.');
+        }
+        persisted = Boolean(await this.repo.rotateTokenIfCurrent({
+          id: refreshRowId,
+          userId,
+          provider,
+          expectedCredentialRevision: refreshRevision,
+          expectedAccessToken: refreshSnapshot.access_token,
+          expectedRefreshToken: existing.refreshToken,
+          accessToken: refreshed.accessToken,
+          refreshToken: refreshed.refreshToken,
+          expiresAt: refreshed.expiresAt,
+          scopes: refreshed.scopes,
+        }));
+      } else if (this.connectorAccountId) {
         if (!this.repo.updateAccessTokenByConnectorAccount) {
           throw new Error('Account-bound token store requires revision-fenced refresh persistence.');
         }
@@ -781,20 +838,7 @@ export class DbTokenStore implements OAuthTokenStore {
       throw new Error('OAuth credential changed while refresh was in flight; refusing stale refresh result.');
     }
 
-    // TODO(outlook-connector): persist a ROTATED Microsoft refresh token.
-    // The persist above only writes the access token, and this returns the
-    // original refresh token. Google never rotates, so this is correct there;
-    // Microsoft is non-rotating by default but CAN rotate under some
-    // conditional-access configs — when it does, the new refresh token is
-    // currently dropped, so the next poll re-submits the stale one and the
-    // grant dies (permanent MicrosoftOAuthRefreshError) until re-auth. The
-    // Outlook signal connector PR must persist `refreshed.refreshToken` (and
-    // return it) when it differs from `existing.refreshToken`, handling the
-    // encrypted-column path too.
-    return {
-      ...refreshed,
-      refreshToken: existing.refreshToken,
-    };
+    return refreshed;
   }
 
   /**

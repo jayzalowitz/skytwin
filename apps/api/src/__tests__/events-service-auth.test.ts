@@ -46,6 +46,8 @@ const { savedEnv, mocks, SERVICE_TOKEN, TEST_USER_ID } = vi.hoisted(() => {
       authenticateAndMaintain: vi.fn(),
       runWithRequestContext: vi.fn(),
       persistEvidence: vi.fn(),
+      persistAccountConnectorSignal: vi.fn(),
+      persistUnboundSignal: vi.fn(),
       buildArchiveProposal: vi.fn(),
       persistArchiveProposal: vi.fn(),
       findBySignalId: vi.fn(),
@@ -154,6 +156,10 @@ vi.mock('@skytwin/db', () => ({
   oauthRepository: { getToken: mocks.oauthGetToken },
   gmailMessageRefRepository: { persistEvidence: mocks.persistEvidence },
   gmailArchiveProposalRepository: { persist: mocks.persistArchiveProposal },
+  signalRepository: {
+    persistAccountConnectorSignal: mocks.persistAccountConnectorSignal,
+    persistUnboundSignal: mocks.persistUnboundSignal,
+  },
   executionRepository: {
     createPlan: mocks.executionCreatePlan,
     createEvent: mocks.executionCreateEvent,
@@ -474,6 +480,31 @@ describe('/api/events/ingest behind the production auth chain', () => {
         },
       },
     });
+    mocks.persistAccountConnectorSignal.mockResolvedValue({
+      created: true,
+      signal: {
+        id: '77777777-7777-4777-8777-777777777777',
+        source: 'outlook',
+        type: 'work_email',
+        source_signal_id: 'sig-outlook-account-message',
+        timestamp: new Date('2026-09-16T12:00:00.000Z'),
+        data: {
+          from: 'sender@example.com',
+          subject: 'Status',
+          authoringTier: 'inbox_personal',
+          observedAt: '2026-09-16T12:00:00.000Z',
+        },
+      },
+    });
+    mocks.persistUnboundSignal.mockImplementation(async (input: Record<string, unknown>) => ({
+      created: true,
+      signal: {
+        source: input['source'],
+        type: input['type'],
+        source_signal_id: input['sourceSignalId'],
+        data: input['data'],
+      },
+    }));
   });
 
   it('rejects an unauthenticated loopback POST (the packaged-build regression)', async () => {
@@ -539,6 +570,55 @@ describe('/api/events/ingest behind the production auth chain', () => {
     expect(interpreted).not.toHaveProperty('messageId');
     expect(interpreted).not.toHaveProperty('emailId');
     expect(interpreted).not.toHaveProperty('threadId');
+  });
+
+  it('persists an Outlook signal only through verified account evidence', async () => {
+    const connectorAccountId = '11111111-1111-4111-8111-111111111111';
+    const res = await post(
+      { 'X-SkyTwin-Service-Token': SERVICE_TOKEN },
+      {
+        userId: TEST_USER_ID,
+        source: 'outlook',
+        type: 'work_email',
+        signalId: 'sig-outlook-account-message',
+        from: 'sender@example.com',
+        subject: 'Status',
+        authoringTier: 'user_sent_originated',
+        connectorEvidence: {
+          kind: 'account_signal',
+          connectorAccountId,
+          provider: 'microsoft',
+          source: 'outlook',
+          authoringTier: 'inbox_personal',
+          observedAt: '2026-09-16T12:00:00.000Z',
+        },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(mocks.persistAccountConnectorSignal).toHaveBeenCalledWith(expect.objectContaining({
+      userId: TEST_USER_ID,
+      connectorAccountId,
+      provider: 'microsoft',
+      source: 'outlook',
+      sourceSignalId: 'sig-outlook-account-message',
+      signalData: expect.objectContaining({ authoringTier: 'inbox_personal' }),
+    }));
+    expect(mocks.interpret).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'outlook',
+      signalId: 'sig-outlook-account-message',
+      authoringTier: 'inbox_personal',
+    }));
+  });
+
+  it('rejects account-backed service signals without ownership evidence', async () => {
+    const res = await post(
+      { 'X-SkyTwin-Service-Token': SERVICE_TOKEN },
+      { userId: TEST_USER_ID, source: 'outlook', type: 'work_email', signalId: 'unbound' },
+    );
+    expect(res.status).toBe(400);
+    expect(mocks.persistAccountConnectorSignal).not.toHaveBeenCalled();
+    expect(mocks.interpret).not.toHaveBeenCalled();
   });
 
   it.each(['TRUE', '1', 'on', ' true '])('keeps the proposal path off for non-exact flag value %s', async (value) => {

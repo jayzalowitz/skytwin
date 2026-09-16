@@ -4,7 +4,7 @@
 -- from portable backups and from joined-receipt v1 projections. Runtime
 -- activation and receipt finalization are separate slices.
 
-SELECT 1 / 0 AS migration_087_profile_version_duplicate_preflight
+SELECT 1 / 0 AS migration_093_profile_version_duplicate_preflight
 WHERE EXISTS (
   SELECT profile_id, version
     FROM twin_profile_versions
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS twin_feedback_applications (
 -- A partially applied or manually populated namesake must never be accepted.
 -- Relationship FKs and CHECK constraints cover future writes; this preflight
 -- also rejects dirty rows created before those constraints were installed.
-SELECT 1 / 0 AS migration_087_application_relationship_preflight
+SELECT 1 / 0 AS migration_093_application_relationship_preflight
 WHERE EXISTS (
   SELECT 1
     FROM twin_feedback_applications application
@@ -73,7 +73,7 @@ WHERE EXISTS (
 
 -- Verify IF NOT EXISTS did not accept malformed namesakes. These exact key
 -- checks intentionally reject storing columns, changed order, or predicates.
-SELECT 1 / 0 AS migration_087_profile_owner_index_preflight
+SELECT 1 / 0 AS migration_093_profile_owner_index_preflight
 WHERE NOT (
   (SELECT count(*) FROM [SHOW INDEXES FROM twin_profiles]
     WHERE index_name = 'twin_profiles_id_user_id_idx'
@@ -92,7 +92,7 @@ WHERE NOT (
   )
 );
 
-SELECT 1 / 0 AS migration_087_profile_version_index_preflight
+SELECT 1 / 0 AS migration_093_profile_version_index_preflight
 WHERE NOT (
   (SELECT count(*) FROM [SHOW INDEXES FROM twin_profile_versions]
     WHERE index_name = 'twin_profile_versions_profile_version_idx'
@@ -111,7 +111,7 @@ WHERE NOT (
   )
 );
 
-SELECT 1 / 0 AS migration_087_feedback_identity_index_preflight
+SELECT 1 / 0 AS migration_093_feedback_identity_index_preflight
 WHERE NOT (
   (SELECT count(*) FROM [SHOW INDEXES FROM feedback_events]
     WHERE index_name = 'feedback_events_id_owner_decision_idx'
@@ -136,7 +136,7 @@ WHERE NOT (
   )
 );
 
-SELECT 1 / 0 AS migration_087_application_feedback_unique_preflight
+SELECT 1 / 0 AS migration_093_application_feedback_unique_preflight
 WHERE NOT (
   (SELECT count(*) FROM [SHOW INDEXES FROM twin_feedback_applications]
     WHERE index_name = 'twin_feedback_applications_feedback_unique'
@@ -150,7 +150,7 @@ WHERE NOT (
   )
 );
 
-SELECT 1 / 0 AS migration_087_application_feedback_fk_preflight
+SELECT 1 / 0 AS migration_093_application_feedback_fk_preflight
 WHERE NOT EXISTS (
   SELECT 1 FROM [SHOW CONSTRAINTS FROM twin_feedback_applications]
    WHERE constraint_name = 'twin_feedback_applications_feedback_owner_decision_fk'
@@ -159,7 +159,7 @@ WHERE NOT EXISTS (
        'FOREIGN KEY (feedback_event_id, user_id, decision_id) REFERENCES feedback_events(id, user_id, decision_id) ON DELETE CASCADE'
 );
 
-SELECT 1 / 0 AS migration_087_application_profile_fk_preflight
+SELECT 1 / 0 AS migration_093_application_profile_fk_preflight
 WHERE NOT EXISTS (
   SELECT 1 FROM [SHOW CONSTRAINTS FROM twin_feedback_applications]
    WHERE constraint_name = 'twin_feedback_applications_profile_owner_fk'
@@ -168,7 +168,7 @@ WHERE NOT EXISTS (
        'FOREIGN KEY (profile_id, user_id) REFERENCES twin_profiles(id, user_id)'
 );
 
-SELECT 1 / 0 AS migration_087_application_checks_preflight
+SELECT 1 / 0 AS migration_093_application_checks_preflight
 WHERE NOT (
   EXISTS (
     SELECT 1 FROM [SHOW CONSTRAINTS FROM twin_feedback_applications]

@@ -55,39 +55,27 @@ export type {
   PersistGmailArchiveProposalInput,
   PersistGmailArchiveProposalResult,
 } from './gmail-archive-proposal-repository.js';
-export { gmailArchiveApprovalResponseRepository } from './gmail-archive-approval-response-repository.js';
 export type {
   GmailArchiveApprovalResponseBundle,
   RespondGmailArchiveApprovalInput,
   RespondGmailArchiveApprovalResult,
 } from './gmail-archive-approval-response-repository.js';
-export { gmailArchivePreparationRepository } from './gmail-archive-preparation-repository.js';
 export type {
   GmailArchivePreparationBundle,
   PrepareGmailArchiveInput,
   PrepareGmailArchiveResult,
 } from './gmail-archive-preparation-repository.js';
-export { gmailArchiveClaimRepository } from './gmail-archive-claim-repository.js';
 export type {
   ClaimPreparedGmailArchiveInput,
   ClaimPreparedGmailArchiveResult,
 } from './gmail-archive-claim-repository.js';
-export { gmailArchiveDispatchGateRepository } from './gmail-archive-dispatch-gate-repository.js';
-export {
-  GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS,
-  gmailArchiveRecoveryRepository,
-} from './gmail-archive-recovery-repository.js';
-export {
-  GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS,
-  gmailArchiveRecoveryLeaseRepository,
-} from './gmail-archive-recovery-lease-repository.js';
-export { gmailInboxObservationTargetRepository } from './gmail-inbox-observation-target-repository.js';
+export { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from './gmail-archive-recovery-repository.js';
+export { GMAIL_ARCHIVE_RECOVERY_OBSERVATION_DEADLINE_SECONDS } from './gmail-archive-recovery-lease-repository.js';
 export type { GmailInboxObservationTarget } from './gmail-inbox-observation-target-repository.js';
 export {
   buildGmailArchiveReconciliationTerminalEnvelope,
   gmailArchiveReconciliationEvidenceAllowedForPhase,
   gmailArchiveReconciliationExplanationSemantics,
-  gmailArchiveReconciliationRepository,
   parseGmailArchiveReconciliationExplanationEvidence,
   parseGmailArchiveReconciliationTerminalEnvelope,
   validateStoredGmailArchiveReconciliationTerminal,
@@ -104,7 +92,6 @@ export {
   buildGmailArchiveTerminalContent,
   buildGmailArchiveTerminalResultEnvelope,
   gmailArchiveResultAllowedForAttemptPhase,
-  gmailArchiveTerminalizationRepository,
   parseGmailArchiveTerminalEvidence,
   parseGmailArchiveTerminalExplanationBinding,
   parseGmailArchiveTerminalExplanationEvidence,
@@ -222,7 +209,12 @@ export type {
 } from './execution-repository.js';
 
 export { signalRepository } from './signal-repository.js';
-export type { CreateSignalInput, PersistConnectorSignalInput } from './signal-repository.js';
+export type {
+  CreateSignalInput,
+  PersistAccountConnectorSignalInput,
+  PersistConnectorSignalInput,
+  PersistUnboundSignalInput,
+} from './signal-repository.js';
 export { gmailMessageRefRepository } from './gmail-message-ref-repository.js';
 export type {
   PersistGmailEvidenceInput,
@@ -449,7 +441,6 @@ export type { WatchRow, CreateWatchInput } from './watch-repository.js';
 export { watchRunRepository } from './watch-run-repository.js';
 export type {
   WatchRunRow,
-  CreateWatchRunInput,
   WatchSlotStatus,
   ClaimedWatchSlot,
   ClaimNextWatchSlotInput,

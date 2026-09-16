@@ -176,7 +176,10 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
       costZeroIntent: 'verified_zero',
       provenance: 'untrusted_external',
     };
-    databaseQuery.mockResolvedValueOnce({
+    clientQuery
+      .mockResolvedValueOnce({ rows: [{ id: '77777777-7777-4777-8777-777777777777' }], rowCount: 1 })
+      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+      .mockResolvedValueOnce({
       rows: [{
         id: '66666666-6666-4666-8666-666666666666',
         decision_id: '77777777-7777-4777-8777-777777777777',
@@ -190,7 +193,7 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
         created_at: new Date(),
       }],
       rowCount: 1,
-    });
+      });
 
     await decisionRepositoryAdapter.saveCandidates([{
       id: '66666666-6666-4666-8666-666666666666',
@@ -211,9 +214,10 @@ describe('gmailMessageRefRepository Inbox mutation binding', () => {
       provenance: 'untrusted_external',
       capabilityProvenanceNodeId: undefined,
     }]);
-    const persistedJson = (databaseQuery.mock.calls[0]?.[1] as unknown[])[4];
+    const persistedJson = (clientQuery.mock.calls[2]?.[1] as unknown[])[4];
     expect(JSON.parse(String(persistedJson))).toEqual(storedParameters);
 
+    clientQuery.mockReset();
     clientQuery.mockResolvedValueOnce({
       rows: [{
         connector_account_id: input.connectorAccountId,

@@ -72,6 +72,10 @@ const actionId = 'aaaaaaaa-bbbb-4ccc-8ddd-000000000abc';
 function app(): Express {
   const instance = express();
   instance.use(express.json());
+  instance.use((req, _res, next) => {
+    req.authenticatedUserId = userId;
+    next();
+  });
   instance.use('/api/approvals', createApprovalsRouter());
   instance.use((error: Error, _request: express.Request, response: express.Response, _next: express.NextFunction) => {
     response.status(500).json({ error: error.message });
@@ -105,11 +109,11 @@ async function approve(instance: Express): Promise<{ status: number; body: unkno
 }
 
 /**
- * Reserved v2 route contract. Activation replaces only `it.skip` with `it`
- * after the persistence implementation lands, then appends the final source
- * digest and activation commit to the v2 migration fixture.
+ * Active v2 route contract. The migration fixture binds this exact source to
+ * the activation commit after the authenticated preflight persistence path
+ * landed.
  */
-it.skip('adv-v2-approvals-preflight-explanation persists before returning', async () => {
+it('adv-v2-approvals-preflight-explanation persists before returning', async () => {
   const storedAction = {
     id: actionId,
     actionType: 'delete_account',

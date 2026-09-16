@@ -506,18 +506,51 @@ export const oauthRepository = {
             currentVaultGeneration !== storage.vaultGeneration))) {
         throw new CredentialVaultLockedError();
       }
-      const existing = await client.query<OAuthTokenRow>(
+      const emailMatches = await client.query<OAuthTokenRow>(
         `SELECT * FROM oauth_tokens
           WHERE user_id = $1 AND provider = $2 AND lower(account_email) = lower($3)
           ORDER BY updated_at DESC, id DESC
           FOR UPDATE`,
         [input.userId, provider, accountEmail],
       );
-      if (existing.rows.length > 1) {
+      if (emailMatches.rows.length > 1) {
         throw new OAuthAccountBindingConflictError(
           'Multiple credentials match this display email; operator reconciliation is required.',
         );
       }
+      const providerSubjectDigest = input.accountProviderId?.trim()
+        ? digestProviderSubject(provider, input.accountProviderId)
+        : null;
+      const subjectMatches = providerSubjectDigest
+        ? await client.query<OAuthTokenRow>(
+            `SELECT t.* FROM oauth_tokens AS t
+              JOIN connected_accounts AS ca
+                ON ca.id = t.connector_account_id
+               AND ca.user_id = t.user_id
+               AND ca.provider = t.provider
+             WHERE t.user_id = $1 AND t.provider = $2
+               AND ca.provider_subject_digest = $3
+             ORDER BY t.updated_at DESC, t.id DESC
+             FOR UPDATE`,
+            [input.userId, provider, providerSubjectDigest],
+          )
+        : { rows: [] as OAuthTokenRow[] };
+      if (subjectMatches.rows.length > 1) {
+        throw new OAuthAccountBindingConflictError(
+          'Multiple credentials match this verified provider subject; operator reconciliation is required.',
+        );
+      }
+      const emailMatch = emailMatches.rows[0];
+      const subjectMatch = subjectMatches.rows[0];
+      if (emailMatch && subjectMatch && emailMatch.id !== subjectMatch.id) {
+        throw new OAuthAccountBindingConflictError(
+          'Display email and verified provider subject resolve to different credentials.',
+        );
+      }
+      // Provider subject is the durable identity. Display email/UPN is mutable,
+      // so a re-consent after an alias change must update the same credential
+      // instead of attempting to insert a second row for the same account.
+      const existing = subjectMatch ?? emailMatch;
       const activeDispatch = await hasActiveCredentialDispatchWithClient(
         client,
         { userId: input.userId, provider },
@@ -525,12 +558,12 @@ export const oauthRepository = {
       if (activeDispatch.active) {
         throw new CredentialDispatchConflictError(activeDispatch.retryAfter);
       }
-      if (existing.rows[0]) await assertTokenIdle(client, existing.rows[0]);
+      if (existing) await assertTokenIdle(client, existing);
 
-      const priorAccount = existing.rows[0]?.connector_account_id
+      const priorAccount = existing?.connector_account_id
         ? await connectedAccountRepository.findOwnedActive(
             input.userId,
-            existing.rows[0].connector_account_id,
+            existing.connector_account_id,
             provider,
             client,
           )
@@ -576,6 +609,14 @@ export const oauthRepository = {
               SET is_active = false, disconnected_at = now(), updated_at = now()
             WHERE id = $1 AND user_id = $2 AND provider = $3`,
           [priorAccount.id, input.userId, provider],
+        );
+      }
+      if (subjectMatch && subjectMatch.account_email !== accountEmail) {
+        await client.query(
+          `UPDATE oauth_tokens
+              SET account_email = $1, updated_at = now()
+            WHERE id = $2 AND user_id = $3 AND provider = $4`,
+          [accountEmail, subjectMatch.id, input.userId, provider],
         );
       }
 

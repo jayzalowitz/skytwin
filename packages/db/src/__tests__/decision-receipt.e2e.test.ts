@@ -1,5 +1,5 @@
 /**
- * Real CockroachDB proof for migration 081. The default unit suite truthfully
+ * Real CockroachDB proof for migration 087. The default unit suite truthfully
  * skips this file when no live DB is selected. Reliable disposable local run:
  *
  *   cockroach start-single-node --insecure --listen-addr=127.0.0.1:26359 \

@@ -72,6 +72,7 @@ const {
   },
   fakeExecutionAdmissionRepo: {
     admitApprovalExecution: vi.fn(),
+    recordApprovalPreflightNonAction: vi.fn(),
     isDispatchable: vi.fn(),
     findByScope: vi.fn(),
     observeTerminal: vi.fn(),
@@ -343,6 +344,10 @@ beforeEach(() => {
   fakeExecutionAdmissionRepo.recordPolicyDenial.mockResolvedValue({
     explanationId: 'policy-denial-explanation-1',
     evidence: { kind: 'execution_policy_denial' },
+  });
+  fakeExecutionAdmissionRepo.recordApprovalPreflightNonAction.mockResolvedValue({
+    explanationId: 'preflight-explanation-1',
+    evidence: { kind: 'approval_preflight_non_action' },
   });
   fakeExecutionRepo.finalizeAdmittedPlan.mockResolvedValue({});
   fakeWithTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>

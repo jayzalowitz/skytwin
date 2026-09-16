@@ -434,6 +434,7 @@ function reconciliationExplanation(input: {
   return {
     id: input.id,
     decision_id: input.state.decision.id,
+    type: 'action',
     what_happened: semantics.whatHappened,
     evidence_used: [input.envelope],
     preferences_invoked: [...policyIds].sort(),

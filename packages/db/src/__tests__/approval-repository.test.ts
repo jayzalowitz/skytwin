@@ -347,6 +347,17 @@ describe('approvalRepository', () => {
       const result = await approvalRepository.findById('ghost');
       expect(result).toBeNull();
     });
+
+    it('can scope the lookup to the authenticated owner', async () => {
+      const row = fakeApprovalRow();
+      mockQuery.mockResolvedValue({ rows: [row], rowCount: 1 });
+
+      await expect(approvalRepository.findById('ar-001', 'u-001')).resolves.toEqual(row);
+      expect(mockQuery).toHaveBeenCalledWith(
+        'SELECT * FROM approval_requests WHERE id = $1 AND user_id = $2',
+        ['ar-001', 'u-001'],
+      );
+    });
   });
 
   // -----------------------------------------------------------------------

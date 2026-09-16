@@ -405,7 +405,7 @@ export const executionRepository = {
       occurredAt: row.occurred_at,
       executionPlanId: row.execution_plan_id,
       adapterUsed: normalizeMemoryActionAdapterName(row.adapter_used),
-    }));
+    })));
   },
 
   /**

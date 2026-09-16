@@ -292,8 +292,10 @@ export class OutlookCalendarConnector implements SignalConnector {
       attendeeCount: event.attendees?.length ?? 0,
     });
 
+    const timestamp = new Date(updated === 'unknown' ? Date.now() : updated);
+    const baseId = `sig_outlook_cal_${event.id}_${version || 'unknown'}`;
     return {
-      id: `sig_outlook_cal_${event.id}_${version || 'unknown'}`,
+      id: this.connectorAccountId ? `${baseId}_${this.connectorAccountId}` : baseId,
       source: 'outlook_calendar',
       type: needsResponse ? 'meeting_invite' : 'calendar_event',
       data: {
@@ -318,7 +320,19 @@ export class OutlookCalendarConnector implements SignalConnector {
         htmlLink: event.webLink ?? '',
         authoringTier,
       },
-      timestamp: new Date(updated === 'unknown' ? Date.now() : updated),
+      timestamp,
+      ...(this.connectorAccountId
+        ? {
+            connectorEvidence: {
+              kind: 'account_signal' as const,
+              connectorAccountId: this.connectorAccountId,
+              provider: 'microsoft' as const,
+              source: 'outlook_calendar' as const,
+              authoringTier,
+              observedAt: timestamp.toISOString(),
+            },
+          }
+        : {}),
     };
   }
 

@@ -1,9 +1,34 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connectors';
 import {
+  buildAccountConnectorTopology,
   buildUserOAuthConnectors,
   loadUserOAuthConnections,
 } from '../connector-discovery.js';
+
+describe('buildAccountConnectorTopology', () => {
+  it('constructs every provider surface for every admitted account', () => {
+    const connectors = buildAccountConnectorTopology({
+      googleAccounts: [{ id: 'google-a' }, { id: 'google-b' }],
+      microsoftAccounts: [{ id: 'microsoft-a' }, { id: 'microsoft-b' }],
+      createGmail: ({ id }) => `gmail:${id}`,
+      createGoogleCalendar: ({ id }) => `google-calendar:${id}`,
+      createOutlookMail: ({ id }) => `outlook-mail:${id}`,
+      createOutlookCalendar: ({ id }) => `outlook-calendar:${id}`,
+    });
+
+    expect(connectors).toEqual([
+      'gmail:google-a',
+      'google-calendar:google-a',
+      'gmail:google-b',
+      'google-calendar:google-b',
+      'outlook-mail:microsoft-a',
+      'outlook-calendar:microsoft-a',
+      'outlook-mail:microsoft-b',
+      'outlook-calendar:microsoft-b',
+    ]);
+  });
+});
 
 const googleConfig: GoogleOAuthConfig = {
   clientId: 'google-client',

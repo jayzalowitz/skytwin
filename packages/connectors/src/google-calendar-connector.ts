@@ -255,8 +255,10 @@ export class GoogleCalendarConnector implements SignalConnector {
       attendeeCount: event.attendees?.length ?? 0,
     });
 
+    const timestamp = new Date(event.updated ?? event.created);
+    const baseId = `sig_cal_${event.id}_${version || 'unknown'}`;
     return {
-      id: `sig_cal_${event.id}_${version || 'unknown'}`,
+      id: this.connectorAccountId ? `${baseId}_${this.connectorAccountId}` : baseId,
       source: 'google_calendar',
       type: needsResponse ? 'meeting_invite' : 'calendar_event',
       data: {
@@ -282,7 +284,19 @@ export class GoogleCalendarConnector implements SignalConnector {
         htmlLink: event.htmlLink,
         authoringTier,
       },
-      timestamp: new Date(event.updated ?? event.created),
+      timestamp,
+      ...(this.connectorAccountId
+        ? {
+            connectorEvidence: {
+              kind: 'account_signal' as const,
+              connectorAccountId: this.connectorAccountId,
+              provider: 'google' as const,
+              source: 'google_calendar' as const,
+              authoringTier,
+              observedAt: timestamp.toISOString(),
+            },
+          }
+        : {}),
     };
   }
 

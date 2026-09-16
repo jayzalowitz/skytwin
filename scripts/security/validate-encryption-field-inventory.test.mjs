@@ -156,6 +156,32 @@ test("schema reconstruction applies column and table DDL in statement order", ()
   assert.deepEqual([...ttlTable.get("expiring")].sort(), ["expires_at", "id"]);
 });
 
+test("schema reconstruction accepts reviewed Cockroach index and table options", () => {
+  const schema = new Map();
+  applySchemaSql(
+    schema,
+    `
+      CREATE TABLE guarded (
+        id UUID PRIMARY KEY,
+        owner_id UUID NOT NULL,
+        source_key STRING,
+        UNIQUE INDEX guarded_owner_source (owner_id, source_key)
+          WHERE source_key IS NOT NULL
+      );
+      ALTER TABLE guarded
+        ADD CONSTRAINT guarded_owner_fk FOREIGN KEY (owner_id) REFERENCES users (id),
+        ADD CONSTRAINT guarded_source_check CHECK (source_key <> '');
+      ALTER TABLE guarded SET (schema_locked = true);
+    `,
+  );
+
+  assert.deepEqual([...schema.get("guarded")].sort(), [
+    "id",
+    "owner_id",
+    "source_key",
+  ]);
+});
+
 test("schema reconstruction rejects table DDL it cannot fully consume", () => {
   for (const sql of [
     "ALTER TABLE users ADD COLUMN first STRING, ADD COLUMN second STRING;",
@@ -600,6 +626,23 @@ test("dynamic SQL annotations must match their literal table declarations", () =
     auditDynamicSqlFile(
       "packages/db/src/seeds/legacy-decision-cleanup.ts",
       staleAnnotation,
+      schema,
+    ).errors.some((error) => error.includes("literal loop table set")),
+  );
+
+  const finiteConditional = `
+    // @encryption-inventory-dynamic-sql tables=preferences,signals
+    const table = kind === "signal" ? "signals" : "preferences";
+    query(\`SELECT * FROM \${table}\`);
+  `;
+  assert.deepEqual(
+    auditDynamicSqlFile("probe.ts", finiteConditional, schema).errors,
+    [],
+  );
+  assert.ok(
+    auditDynamicSqlFile(
+      "probe.ts",
+      finiteConditional.replace("preferences,signals", "signals"),
       schema,
     ).errors.some((error) => error.includes("literal loop table set")),
   );

@@ -29,8 +29,9 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 
 interface KeyCacheLike {
   get(userId: string): Buffer | null;
+  getGeneration(userId: string): string | null;
   has(userId: string): boolean;
-  set(userId: string, key: Buffer): void;
+  set(userId: string, key: Buffer, generation?: string | null): void;
 }
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -216,6 +217,7 @@ export class GmailInboxMutationService implements GmailInboxMutationPort {
       const cache = options.keyCache;
       this.keyCache = Object.freeze({
         get: cache.get.bind(cache),
+        getGeneration: cache.getGeneration.bind(cache),
         has: cache.has.bind(cache),
         set: cache.set.bind(cache),
       });

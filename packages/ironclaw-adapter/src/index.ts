@@ -21,7 +21,9 @@ export {
 
 // Direct execution adapter: local handler dispatch (fallback when IronClaw is unavailable)
 export { DirectExecutionAdapter } from './direct-execution-adapter.js';
-export { GmailInboxMutationService, gmailInboxMutationLimits } from './gmail-inbox-mutation-port.js';
+// The Gmail mutation implementation remains internal until the reviewed
+// coordinator is activated. Export only its inert limits and port types.
+export { gmailInboxMutationLimits } from './gmail-inbox-mutation-port.js';
 export {
   DbGmailInboxObservationCredentials,
   GmailInboxObservationService,
@@ -47,7 +49,6 @@ export type {
   GmailInboxObservationResult,
   GmailInboxObservationUnavailableCode,
 } from '@skytwin/shared-types';
-export type { GmailInboxMutationServiceOptions } from './gmail-inbox-mutation-port.js';
 export type {
   DbGmailInboxObservationCredentialsOptions,
   GmailInboxObservationCredential,

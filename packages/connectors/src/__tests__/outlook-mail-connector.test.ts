@@ -84,22 +84,28 @@ describe('OutlookMailConnector', () => {
     const getForAccount = vi.fn(async () => 'BOUND-OLD');
     const saveForAccount = vi.fn(async () => undefined);
     const cursor: CursorStore = { get, save, getForAccount, saveForAccount };
-    fetchMock.mockResolvedValueOnce(res(200, { value: [], '@odata.deltaLink': 'BOUND-NEW' }));
+    fetchMock.mockResolvedValueOnce(res(200, { value: [gmsg()], '@odata.deltaLink': 'BOUND-NEW' }));
+    const accountId = '11111111-1111-4111-8111-111111111111';
     const conn = new OutlookMailConnector(
-      'user-1', makeStubStore(VALID_TOKEN), cursor, 'account-1',
+      'user-1', makeStubStore(VALID_TOKEN), cursor, accountId,
     );
 
     await conn.connect();
-    await conn.poll();
+    const [signal] = await conn.poll();
 
     expect(getForAccount).toHaveBeenCalledWith(
-      'user-1', 'account-1', 'outlook', 'delta_link',
+      'user-1', accountId, 'outlook', 'delta_link',
     );
     expect(saveForAccount).not.toHaveBeenCalled();
     await conn.commitCursor();
     expect(saveForAccount).toHaveBeenCalledWith(
-      'user-1', 'account-1', 'outlook', 'delta_link', 'BOUND-NEW',
+      'user-1', accountId, 'outlook', 'delta_link', 'BOUND-NEW',
     );
+    expect(signal?.id).toContain(accountId);
+    expect(signal?.connectorEvidence).toMatchObject({
+      kind: 'account_signal', connectorAccountId: accountId,
+      provider: 'microsoft', source: 'outlook',
+    });
     expect(get).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
   });

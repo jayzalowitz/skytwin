@@ -295,8 +295,10 @@ export class OutlookMailConnector implements SignalConnector {
     });
 
     const receivedAt = msg.receivedDateTime ?? new Date().toISOString();
+    const timestamp = new Date(receivedAt);
+    const baseId = `sig_outlook_${msg.id}`;
     return {
-      id: `sig_outlook_${msg.id}`,
+      id: this.connectorAccountId ? `${baseId}_${this.connectorAccountId}` : baseId,
       source: 'outlook',
       type,
       data: {
@@ -314,7 +316,19 @@ export class OutlookMailConnector implements SignalConnector {
         receivedAt,
         requiresResponse: type === 'work_email' || type === 'meeting_invite',
       },
-      timestamp: new Date(receivedAt),
+      timestamp,
+      ...(this.connectorAccountId
+        ? {
+            connectorEvidence: {
+              kind: 'account_signal' as const,
+              connectorAccountId: this.connectorAccountId,
+              provider: 'microsoft' as const,
+              source: 'outlook' as const,
+              authoringTier,
+              observedAt: timestamp.toISOString(),
+            },
+          }
+        : {}),
     };
   }
 

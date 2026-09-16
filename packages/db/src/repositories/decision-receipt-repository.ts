@@ -310,6 +310,7 @@ async function linkageIsOwned(
   const evidenceByKind = new Map<'signal' | 'preference', string[]>([
     ['signal', []], ['preference', []],
   ]);
+  // @encryption-inventory-dynamic-sql tables=preferences,signals
   for (const ref of content.evidence) evidenceByKind.get(ref.kind)!.push(ref.id);
   for (const [kind, ids] of evidenceByKind) {
     if (evaluationPreviouslyValidated) continue;

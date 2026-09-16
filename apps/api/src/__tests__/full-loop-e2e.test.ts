@@ -55,6 +55,12 @@ const {
 vi.mock('@skytwin/db', () => {
   const decisionStore = new Map<string, Record<string, unknown>>();
   return {
+    signalRepository: {
+      persistUnboundSignal: vi.fn(async (input: Record<string, unknown>) => ({
+        created: true,
+        signal: { source: input['source'], type: input['type'], source_signal_id: input['sourceSignalId'], data: input['data'] },
+      })),
+    },
     query: fakeQuery,
     withTransaction: vi.fn().mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
       fn({ query: fakeQuery }),
@@ -281,6 +287,7 @@ function buildApp(): Express {
   app.use(express.json());
   app.use((req, _res, next) => {
     (req as unknown as { user: { id: string } }).user = { id: USER_ID };
+    req.authenticatedUserId = USER_ID;
     next();
   });
   app.use('/api/events', createEventsRouter());

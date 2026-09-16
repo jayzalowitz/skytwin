@@ -88,9 +88,6 @@ ALTER TABLE oauth_tokens ALTER COLUMN connector_account_id SET NOT NULL;
 -- Replace the legacy natural primary key with a surrogate id. Partial unique
 -- indexes preserve the legacy unbound cursor contract for Calendar/Outlook
 -- while allowing one Gmail history cursor per connected account.
--- CockroachDB locks primary-key tables against this class of schema change;
--- unlock only for the migration window and restore the lock afterward.
-ALTER TABLE connector_cursors SET (schema_locked = false);
 ALTER TABLE connector_cursors ADD COLUMN IF NOT EXISTS id UUID DEFAULT gen_random_uuid();
 ALTER TABLE connector_cursors ADD COLUMN IF NOT EXISTS connector_account_id UUID;
 
@@ -148,9 +145,13 @@ UPDATE connector_cursors AS c
 ALTER TABLE connector_cursors ALTER COLUMN id SET NOT NULL;
 -- Cockroach requires the old PK drop and replacement to share one schema
 -- transaction; separate runner statements hit unimplemented issue #48026.
+-- Keep schema_locked disabled only around that one statement. Earlier
+-- backfills and later indexes/FKs must fail with the table re-locked.
+ALTER TABLE connector_cursors SET (schema_locked = false);
 ALTER TABLE connector_cursors
   DROP CONSTRAINT IF EXISTS connector_cursors_pkey,
   ADD CONSTRAINT connector_cursors_pkey PRIMARY KEY (id);
+ALTER TABLE connector_cursors SET (schema_locked = true);
 
 CREATE UNIQUE INDEX IF NOT EXISTS connector_cursors_legacy_key
   ON connector_cursors (user_id, provider, cursor_kind)
@@ -165,8 +166,6 @@ ALTER TABLE connector_cursors
   ADD CONSTRAINT connector_cursors_account_fk
   FOREIGN KEY (connector_account_id, user_id)
   REFERENCES connected_accounts (id, user_id) ON DELETE CASCADE;
-ALTER TABLE connector_cursors SET (schema_locked = true);
-
 CREATE TABLE IF NOT EXISTS gmail_message_refs (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,

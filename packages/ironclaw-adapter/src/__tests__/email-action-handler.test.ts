@@ -5,7 +5,6 @@ import {
 } from '@skytwin/shared-types';
 import { NoopCredentialProvider, type CredentialProvider } from '../credential-provider.js';
 import { EmailActionHandler } from '../handlers/email-action-handler.js';
-import type { CredentialProvider } from '../credential-provider.js';
 
 function makeStep(overrides: Partial<ExecutionStep> = {}): ExecutionStep {
   return {
@@ -58,7 +57,11 @@ describe('EmailActionHandler outbound sends', () => {
   });
 
   it.each([
-    ['archive_email', { actionType: 'archive_email', accessToken: 'token-1' }, 'Missing emailId'],
+    [
+      'archive_email',
+      { actionType: 'archive_email', accessToken: 'token-1' },
+      'reserved for its dedicated lifecycle',
+    ],
     ['send_email', { actionType: 'send_email', accessToken: 'token-1' }, 'Missing to'],
     ['send_reply', {
       actionType: 'send_reply', accessToken: 'token-1', emailId: 'msg-1', body: 'Reply',

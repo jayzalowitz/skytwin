@@ -1288,7 +1288,8 @@ describe('restoreBackup guards', () => {
     await expect(restoreBackup(payload)).resolves.toMatchObject({ success: true });
     const explanationInsert = clientQuery.mock.calls.find(([sql]) =>
       typeof sql === 'string' && sql.includes('INSERT INTO explanation_records'));
-    expect(explanationInsert?.[1]?.[2]).toBe('execution_policy_denial');
+    const explanationParams = explanationInsert?.[1] as unknown[] | undefined;
+    expect(explanationParams?.[2]).toBe('execution_policy_denial');
   });
 
   it('aborts instead of reporting a receipt whose linkage insert affected no row', async () => {

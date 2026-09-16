@@ -306,7 +306,8 @@ describe('canonical Gmail archive approval response route', () => {
     });
 
     expect(response.status).toBe(401);
-    expect(response.body['code']).toBe('GMAIL_ARCHIVE_APPROVAL_AUTH_REQUIRED');
+    expect(response.body['code']).toBe('APPROVAL_AUTH_REQUIRED');
+    expect(approvalRepo.findById).not.toHaveBeenCalled();
     expect(archiveResponder.respond).not.toHaveBeenCalled();
     expectNoGenericSideEffects();
   });

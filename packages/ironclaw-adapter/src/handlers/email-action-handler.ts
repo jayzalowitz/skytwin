@@ -150,16 +150,16 @@ export class EmailActionHandler implements ActionHandler {
   }
 
   async rollback(step: ExecutionStep): Promise<StepResult> {
+    const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
+    if (step.type === 'archive_email' || step.type === 'rollback_archive_email' ||
+        originalAction === 'archive_email') {
+      return { success: false, error: 'archive_email rollback requires its dedicated lifecycle' };
+    }
     if (this.credentialProvider) {
       return {
         success: false,
         error: 'Credential-backed rollback requires a separately admitted dispatch authority.',
       };
-    }
-    const originalAction = (step.parameters['originalActionType'] as string) ?? step.type;
-    if (step.type === 'archive_email' || step.type === 'rollback_archive_email' ||
-        originalAction === 'archive_email') {
-      return { success: false, error: 'archive_email rollback requires its dedicated lifecycle' };
     }
     const { accessToken } = await this.resolveAccessToken(step);
     const messageId = step.parameters['emailId'] as string | undefined;

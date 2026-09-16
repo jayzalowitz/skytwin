@@ -227,6 +227,19 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(mockClient.query).toHaveBeenCalledWith('ROLLBACK');
   });
 
+  it('fences the dedicated Gmail lifecycle and its in-progress execution plan', async () => {
+    setupDeleteCounts({ users: 1 });
+
+    await userPurgeRepository.purgeUser(USER_ID);
+
+    const activeFenceSql = mockClient.query.mock.calls
+      .map((call) => typeof call[0] === 'string' ? call[0] : '')
+      .find((sql) => sql.includes('AS active_count'));
+    expect(activeFenceSql).toContain('FROM pre_effect_barriers');
+    expect(activeFenceSql).toContain("status IN ('in_progress', 'unknown')");
+    expect(activeFenceSql).toContain("ep.status IN ('running', 'in_progress')");
+  });
+
   it('advances only the deleted owner account tombstones before removing the user', async () => {
     setupDeleteCounts({ users: 1 });
     mockClient.query.mockImplementation((sql: string) => {

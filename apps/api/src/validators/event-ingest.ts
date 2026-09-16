@@ -33,6 +33,19 @@ const GMAIL_EVIDENCE_KEYS = [
   'providerMessageId',
   'providerThreadId',
 ] as const;
+const ACCOUNT_EVIDENCE_KEYS = [
+  'authoringTier',
+  'connectorAccountId',
+  'kind',
+  'observedAt',
+  'provider',
+  'source',
+] as const;
+const ACCOUNT_SOURCE_PROVIDERS = new Map([
+  ['google_calendar', 'google'],
+  ['outlook', 'microsoft'],
+  ['outlook_calendar', 'microsoft'],
+] as const);
 
 export interface ValidatedGmailConnectorEvidence {
   connectorAccountId: string;
@@ -47,6 +60,65 @@ export interface ValidatedGmailConnectorEvidence {
 export type GmailEvidenceValidationResult =
   | { ok: true; evidence: ValidatedGmailConnectorEvidence }
   | { ok: false; message: string };
+
+export interface ValidatedAccountConnectorEvidence {
+  connectorAccountId: string;
+  provider: 'google' | 'microsoft';
+  source: 'google_calendar' | 'outlook' | 'outlook_calendar';
+  authoringTier: string;
+  observedAt: Date;
+}
+
+export type AccountEvidenceValidationResult =
+  | { ok: true; evidence: ValidatedAccountConnectorEvidence }
+  | { ok: false; message: string };
+
+/** Validate ownership metadata for non-Gmail account-bound signals. */
+export function validateAccountConnectorEvidence(raw: unknown): AccountEvidenceValidationResult {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, message: 'connectorEvidence must be an object' };
+  }
+  const record = raw as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== ACCOUNT_EVIDENCE_KEYS.length ||
+    keys.some((key, index) => key !== ACCOUNT_EVIDENCE_KEYS[index])
+  ) {
+    return { ok: false, message: 'connectorEvidence has an invalid shape' };
+  }
+  if (record['kind'] !== 'account_signal' || typeof record['source'] !== 'string') {
+    return { ok: false, message: 'connectorEvidence kind/source is invalid' };
+  }
+  const expectedProvider = ACCOUNT_SOURCE_PROVIDERS.get(
+    record['source'] as 'google_calendar' | 'outlook' | 'outlook_calendar',
+  );
+  if (!expectedProvider || record['provider'] !== expectedProvider) {
+    return { ok: false, message: 'connectorEvidence source/provider is invalid' };
+  }
+  if (typeof record['connectorAccountId'] !== 'string' || !UUID_REGEX.test(record['connectorAccountId'])) {
+    return { ok: false, message: 'connectorEvidence.connectorAccountId must be a UUID' };
+  }
+  if (typeof record['authoringTier'] !== 'string' || !GMAIL_AUTHORING_TIERS.has(record['authoringTier'])) {
+    return { ok: false, message: 'connectorEvidence.authoringTier is invalid' };
+  }
+  if (typeof record['observedAt'] !== 'string') {
+    return { ok: false, message: 'connectorEvidence.observedAt must be an ISO timestamp' };
+  }
+  const observedAt = new Date(record['observedAt']);
+  if (Number.isNaN(observedAt.getTime()) || observedAt.toISOString() !== record['observedAt']) {
+    return { ok: false, message: 'connectorEvidence.observedAt must be a canonical ISO timestamp' };
+  }
+  return {
+    ok: true,
+    evidence: {
+      connectorAccountId: record['connectorAccountId'],
+      provider: expectedProvider,
+      source: record['source'] as ValidatedAccountConnectorEvidence['source'],
+      authoringTier: record['authoringTier'],
+      observedAt,
+    },
+  };
+}
 
 /** Validate the exact server-to-server evidence envelope; extra keys fail closed. */
 export function validateGmailConnectorEvidence(raw: unknown): GmailEvidenceValidationResult {

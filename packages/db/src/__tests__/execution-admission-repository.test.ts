@@ -118,6 +118,74 @@ describe('executionAdmissionRepository', () => {
     expect(mockTransactionQuery).not.toHaveBeenCalled();
   });
 
+  it('persists approval preflight non-action evidence before leaving approval pending', async () => {
+    const sourceAction = { ...BARRIER.action_snapshot };
+    const sourceRisk = { ...BARRIER.risk_snapshot };
+    const input = {
+      userId: BARRIER.user_id,
+      approvalId: '99999999-9999-4999-8999-999999999999',
+      decisionId: BARRIER.decision_id,
+      actionId: BARRIER.action_id,
+      adapterName: BARRIER.adapter_name,
+      disposition: 'dual_confirmation_required' as const,
+      reason: 'The exact prepared action now requires dual confirmation.',
+      sourceActionSnapshot: sourceAction,
+      sourceRiskSnapshot: sourceRisk,
+      actionSnapshot: sourceAction,
+      riskSnapshot: { ...sourceRisk, overallTier: 'high' },
+      policySnapshot: { allowed: true, effectiveAllowed: false, confirmationLevel: 'dual' },
+    };
+    mockTransactionQuery
+      .mockResolvedValueOnce({ rows: [{ candidate_action: sourceAction, risk_assessment: sourceRisk }] })
+      .mockResolvedValueOnce({ rows: [] })
+      .mockResolvedValueOnce({ rows: [{ id: BARRIER.explanation_id }] });
+
+    await expect(executionAdmissionRepository.recordApprovalPreflightNonAction(input))
+      .resolves.toMatchObject({
+        explanationId: BARRIER.explanation_id,
+        evidence: {
+          kind: 'approval_preflight_non_action',
+          disposition: 'dual_confirmation_required',
+          approvalId: input.approvalId,
+        },
+      });
+
+    expect(mockTransactionQuery.mock.calls[0]![0]).toContain("ar.status = 'pending'");
+    expect(mockTransactionQuery.mock.calls[0]![0]).toContain('FOR UPDATE OF u, ar, d, ca');
+    expect(mockTransactionQuery.mock.calls[2]![0]).toContain('INSERT INTO explanation_records');
+    expect(mockTransactionQuery.mock.calls.map(([sql]) => String(sql)).join('\n'))
+      .not.toContain('UPDATE approval_requests');
+  });
+
+  it('fails closed when approval preflight authority or source snapshots are stale', async () => {
+    const sourceAction = { ...BARRIER.action_snapshot };
+    const input = {
+      userId: BARRIER.user_id,
+      approvalId: '99999999-9999-4999-8999-999999999999',
+      decisionId: BARRIER.decision_id,
+      actionId: BARRIER.action_id,
+      adapterName: BARRIER.adapter_name,
+      disposition: 'policy_denied' as const,
+      reason: 'Current policy denied this exact path.',
+      sourceActionSnapshot: sourceAction,
+      sourceRiskSnapshot: BARRIER.risk_snapshot,
+      actionSnapshot: sourceAction,
+      riskSnapshot: BARRIER.risk_snapshot,
+      policySnapshot: { allowed: false, effectiveAllowed: false },
+    };
+    mockTransactionQuery.mockResolvedValueOnce({ rows: [] });
+    await expect(executionAdmissionRepository.recordApprovalPreflightNonAction(input))
+      .resolves.toBeNull();
+
+    vi.clearAllMocks();
+    mockTransactionQuery.mockResolvedValueOnce({
+      rows: [{ candidate_action: sourceAction, risk_assessment: { ...BARRIER.risk_snapshot, overallTier: 'critical' } }],
+    });
+    await expect(executionAdmissionRepository.recordApprovalPreflightNonAction(input))
+      .rejects.toThrow('source snapshots conflict with persisted authority');
+    expect(mockTransactionQuery).toHaveBeenCalledTimes(1);
+  });
+
   it('atomically admits a memory execution and freezes the opportunity before dispatch', async () => {
     mockTransactionQuery
       .mockResolvedValueOnce({ rows: [{ id: BARRIER.user_id }] })

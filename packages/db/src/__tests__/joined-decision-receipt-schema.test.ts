@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
@@ -7,9 +7,17 @@ function read(relative: string): string {
 }
 
 describe('joined decision receipt schema parity', () => {
-  it('defines migration 081 and fresh schema with owner-bound roots and repository append keys', () => {
+  it('defines migration 087 and the composed schema with owner-bound roots and repository append keys', () => {
     const migration = read('../migrations/087-joined-decision-receipts.sql');
     const fresh = read('../schemas/schema.sql');
+    const migrationsDirectory = fileURLToPath(new URL('../migrations/', import.meta.url));
+    const composedFreshDatabase = [
+      fresh,
+      ...readdirSync(migrationsDirectory)
+        .filter((name) => name.endsWith('.sql'))
+        .sort()
+        .map((name) => read(`../migrations/${name}`)),
+    ].join('\n');
     for (const sql of [migration, fresh]) {
       expect(sql).toContain('CREATE TABLE IF NOT EXISTS decision_receipts');
       expect(sql).toContain('CREATE TABLE IF NOT EXISTS decision_receipt_revisions');
@@ -20,9 +28,11 @@ describe('joined decision receipt schema parity', () => {
       expect(sql).toContain('revision_digest STRING NOT NULL');
       expect(sql).not.toMatch(/UPDATE\s+decision_receipt/iu);
     }
-    expect(fresh).toContain('CREATE TABLE IF NOT EXISTS inference_receipts');
-    expect(fresh).toContain('CREATE TABLE IF NOT EXISTS inference_receipt_completions');
-    expect(fresh).toContain('CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx');
+    expect(composedFreshDatabase).toContain('CREATE TABLE IF NOT EXISTS inference_receipts');
+    expect(composedFreshDatabase).toContain('CREATE TABLE IF NOT EXISTS inference_receipt_completions');
+    expect(composedFreshDatabase).toContain(
+      'CREATE UNIQUE INDEX IF NOT EXISTS explanation_records_id_decision_idx',
+    );
   });
 
   it('keeps the composed fresh schema free of the duplicate execution-plan index artifact', () => {

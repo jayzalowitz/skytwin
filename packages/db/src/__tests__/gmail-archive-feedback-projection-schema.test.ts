@@ -25,7 +25,7 @@ describe('Gmail archive feedback projection schema', () => {
   });
 
   it('enforces unique profile versions and changed/no-op version shapes', () => {
-    expect(migration).toContain('migration_087_profile_version_duplicate_preflight');
+    expect(migration).toContain('migration_093_profile_version_duplicate_preflight');
     expect(migration).toContain(
       'CREATE UNIQUE INDEX IF NOT EXISTS twin_profile_versions_profile_version_idx',
     );
@@ -42,14 +42,14 @@ describe('Gmail archive feedback projection schema', () => {
 
   it('requires a canonical digest and validates all IF NOT EXISTS namesakes', () => {
     expect(migration).toContain("output_digest ~ '^[0-9a-f]{64}$'");
-    expect(migration).toContain('migration_087_application_relationship_preflight');
-    expect(migration).toContain('migration_087_profile_owner_index_preflight');
-    expect(migration).toContain('migration_087_profile_version_index_preflight');
-    expect(migration).toContain('migration_087_feedback_identity_index_preflight');
-    expect(migration).toContain('migration_087_application_feedback_unique_preflight');
-    expect(migration).toContain('migration_087_application_feedback_fk_preflight');
-    expect(migration).toContain('migration_087_application_profile_fk_preflight');
-    expect(migration).toContain('migration_087_application_checks_preflight');
+    expect(migration).toContain('migration_093_application_relationship_preflight');
+    expect(migration).toContain('migration_093_profile_owner_index_preflight');
+    expect(migration).toContain('migration_093_profile_version_index_preflight');
+    expect(migration).toContain('migration_093_feedback_identity_index_preflight');
+    expect(migration).toContain('migration_093_application_feedback_unique_preflight');
+    expect(migration).toContain('migration_093_application_feedback_fk_preflight');
+    expect(migration).toContain('migration_093_application_profile_fk_preflight');
+    expect(migration).toContain('migration_093_application_checks_preflight');
   });
 
   it('keeps application state installation-local and the leaf unwired', () => {

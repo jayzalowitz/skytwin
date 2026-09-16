@@ -235,7 +235,7 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
   });
 
   it('loads and saves sync tokens through the bound connector account', async () => {
-    vi.stubGlobal('fetch', (async () => jsonResponse({ items: [], nextSyncToken: 'next-bound' })) as typeof fetch);
+    vi.stubGlobal('fetch', (async () => jsonResponse({ items: [makeEvent()], nextSyncToken: 'next-bound' })) as typeof fetch);
     const get = vi.fn(async () => null);
     const save = vi.fn(async () => undefined);
     const getForAccount = vi.fn(async () => 'prior-bound');
@@ -244,23 +244,29 @@ describe('GoogleCalendarConnector syncToken persistence', () => {
     const tokenStore = makeStubStore({
       accessToken: 'a', refreshToken: 'r', expiresAt: new Date(Date.now() + 60_000),
     });
+    const accountId = '11111111-1111-4111-8111-111111111111';
     const conn = new GoogleCalendarConnector(
-      'user-1', tokenStore, cursor, 'primary', 'account-1',
+      'user-1', tokenStore, cursor, 'primary', accountId,
     );
 
     await conn.connect();
-    await conn.poll();
+    const [signal] = await conn.poll();
 
     expect(getForAccount).toHaveBeenCalledWith(
-      'user-1', 'account-1', 'google_calendar', 'sync_token',
+      'user-1', accountId, 'google_calendar', 'sync_token',
     );
     // Poll only stages the cursor. The worker commits after every returned
     // signal has been accepted, preserving at-least-once delivery.
     expect(saveForAccount).not.toHaveBeenCalled();
     await conn.commitCursor();
     expect(saveForAccount).toHaveBeenCalledWith(
-      'user-1', 'account-1', 'google_calendar', 'sync_token', 'next-bound',
+      'user-1', accountId, 'google_calendar', 'sync_token', 'next-bound',
     );
+    expect(signal?.id).toContain(accountId);
+    expect(signal?.connectorEvidence).toMatchObject({
+      kind: 'account_signal', connectorAccountId: accountId,
+      provider: 'google', source: 'google_calendar',
+    });
     expect(get).not.toHaveBeenCalled();
     expect(save).not.toHaveBeenCalled();
   });

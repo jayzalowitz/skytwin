@@ -132,7 +132,8 @@ function installQueryStore(): void {
     if (sql.includes('FROM decision_outcomes')) return { rows: store.outcome ? [store.outcome] : [] };
     if (sql.includes('INSERT INTO explanation_records')) {
       store.explanation = {
-        id: String(params[0]), decision_id: String(params[1]), what_happened: String(params[2]),
+        id: String(params[0]), decision_id: String(params[1]), type: 'action',
+        what_happened: String(params[2]),
         evidence_used: JSON.parse(String(params[3])), preferences_invoked: [],
         confidence_reasoning: String(params[4]), action_rationale: String(params[5]),
         escalation_rationale: String(params[6]), correction_guidance: String(params[7]),
@@ -158,7 +159,8 @@ function installQueryStore(): void {
         candidate_action: JSON.parse(String(params[3])), reason: String(params[4]), urgency: 'medium',
         status: 'pending', requested_at: requestedAt, expires_at: expiresAt, responded_at: null,
         response: null, batch_id: null, confirmation_level: 'single', first_confirmed_at: null,
-        confirmation_token: null,
+        confirmation_token: null, execution_denied_at: null,
+        execution_denial_explanation_id: null,
       };
       return { rows: [store.approval] };
     }

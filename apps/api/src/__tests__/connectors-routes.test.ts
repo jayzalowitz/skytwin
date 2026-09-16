@@ -179,7 +179,7 @@ describe('GET /connectors/:userId/status', () => {
     mockConnectorHealthRepository.findByUser.mockResolvedValue([
       {
         user_id: USER_ID,
-        connector_name: 'gmail',
+        connector_name: 'gmail:11111111-1111-4111-8111-111111111111',
         status: 'needs_reauth',
         error_code: 'invalid_grant',
         last_success_at: null,
@@ -188,7 +188,7 @@ describe('GET /connectors/:userId/status', () => {
       },
       {
         user_id: USER_ID,
-        connector_name: 'outlook_mail',
+        connector_name: 'outlook_mail:22222222-2222-4222-8222-222222222222',
         status: 'needs_reauth',
         error_code: 'invalid_grant',
         last_success_at: null,

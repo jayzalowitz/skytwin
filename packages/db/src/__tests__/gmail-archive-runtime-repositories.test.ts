@@ -39,6 +39,15 @@ describe('Gmail archive runtime repository facade', () => {
     for (const barrel of barrels) {
       expect(barrel).toContain('gmailArchiveRuntimeRepositories');
       for (const forbidden of [
+        'gmailArchiveApprovalResponseRepository',
+        'gmailArchivePreparationRepository',
+        'gmailArchiveClaimRepository',
+        'gmailArchiveDispatchGateRepository',
+        'gmailArchiveRecoveryRepository',
+        'gmailArchiveRecoveryLeaseRepository',
+        'gmailInboxObservationTargetRepository',
+        'gmailArchiveReconciliationRepository',
+        'gmailArchiveTerminalizationRepository',
         'gmailArchiveRecoveryCandidateRepository',
         'gmailArchiveRecordedObservationReconciliationRepository',
         'gmailArchiveTerminalStatusRepository',
@@ -47,5 +56,14 @@ describe('Gmail archive runtime repository facade', () => {
         'gmailArchiveTerminalStatusTestHooks',
       ]) expect(barrel).not.toContain(forbidden);
     }
+  });
+
+  it('keeps the provider mutation implementation out of the adapter barrel', async () => {
+    const barrel = await readFile(
+      new URL('../../../ironclaw-adapter/src/index.ts', import.meta.url),
+      'utf8',
+    );
+    expect(barrel).not.toContain('GmailInboxMutationService');
+    expect(barrel).toContain('gmailInboxMutationLimits');
   });
 });

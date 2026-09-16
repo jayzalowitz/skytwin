@@ -8,7 +8,6 @@ import {
   OutlookMailConnector,
   OutlookCalendarConnector,
   DbTokenStore,
-  OAuthRefreshError,
   type CursorStore,
   type LabelObserver,
   type GoogleOAuthConfig,
@@ -49,13 +48,13 @@ import {
 } from './jobs/capability-inference.js';
 import { runWatchSchedulerJob, watchSchedulerEnabled, shouldRunWatchScheduler } from './jobs/watch-scheduler.js';
 import { extractErrorCode } from './oauth-error-code.js';
-import { recordPermanentOAuthFailure } from './oauth-circuit.js';
+import { isPermanentOAuthRefreshError, recordPermanentOAuthFailure } from './oauth-circuit.js';
 import { DeadLetterTracker, reportDeadLetterRetentionFailure } from './dead-letter.js';
 import { createWorkerGenerationAdmission, isWorkerGenerationRevoked } from './generation-admission.js';
 import { forwardSignalToApi as forwardSignalUnderAdmission } from './signal-forwarder.js';
 import { createWorkerLifecycle } from './worker-lifecycle.js';
 import { installGenerationFetch } from './generation-fetch.js';
-import { loadUserOAuthConnections } from './connector-discovery.js';
+import { buildAccountConnectorTopology, loadUserOAuthConnections } from './connector-discovery.js';
 import { buildSignalIngestPayload } from './signal-ingest-payload.js';
 import { connectorHealthName, connectorRuntimeKey, sameConnectorTopology } from './connector-runtime-key.js';
 
@@ -295,7 +294,7 @@ async function pollUser(userConnectors: UserConnectors): Promise<void> {
       if (isWorkerGenerationRevoked(error) || !generationAdmission.isActive()) return;
       thisConnectorFailed = true;
 
-      if (error instanceof OAuthRefreshError && error.permanent) {
+      if (isPermanentOAuthRefreshError(error)) {
         log.error(
           `Permanent OAuth failure for user ${userConnectors.userId} on ${connector.name} — user must re-authorize`,
           {
@@ -486,7 +485,7 @@ async function connectUserConnectors(discovered: UserConnectors[]): Promise<User
         breaker.recordSuccess();
       } catch (error) {
         if (isWorkerGenerationRevoked(error) || !generationAdmission.isActive()) break;
-        if (error instanceof OAuthRefreshError && error.permanent) {
+        if (isPermanentOAuthRefreshError(error)) {
           log.error(`Permanent OAuth failure for user ${uc.userId} on ${connector.name} — user must re-authorize`, {
             error: error.message,
             statusCode: error.statusCode,
@@ -582,43 +581,39 @@ async function discoverUsers(): Promise<UserConnectors[]> {
         return tokenStore;
       };
 
-      if (usableGoogle) {
-        for (const token of googleTokens) {
+      connectors.push(...buildAccountConnectorTopology<
+        (typeof googleTokens)[number],
+        (typeof microsoftTokens)[number],
+        SignalConnector
+      >({
+        googleAccounts: usableGoogle ? googleTokens : [],
+        microsoftAccounts: usableMicrosoft ? microsoftTokens : [],
+        createGmail: (token) => {
           const tokenStore = createBoundTokenStore(token.connector_account_id);
-          connectors.push(
-            new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver, {
-              connectorAccountId: token.connector_account_id,
-            }),
-          );
-        }
-        // Calendar has not moved to account-specific cursors in this slice.
-        // Keep one stable, explicitly-bound calendar connector rather than
-        // silently selecting the most recently updated Google credential.
-        const firstGoogle = googleTokens[0];
-        if (firstGoogle) {
-          connectors.push(
-            new GoogleCalendarConnector(
-              userId,
-              createBoundTokenStore(firstGoogle.connector_account_id),
-              gmailCursorStore,
-              'primary',
-              firstGoogle.connector_account_id,
-            ),
-          );
-        }
-      }
-      if (usableMicrosoft) {
-        const firstMicrosoft = microsoftTokens[0];
-        if (firstMicrosoft) {
-          const tokenStore = createBoundTokenStore(firstMicrosoft.connector_account_id);
-          connectors.push(
-            new OutlookMailConnector(userId, tokenStore, gmailCursorStore, firstMicrosoft.connector_account_id),
-          );
-          connectors.push(
-            new OutlookCalendarConnector(userId, tokenStore, gmailCursorStore, firstMicrosoft.connector_account_id),
-          );
-        }
-      }
+          return new GmailConnector(userId, tokenStore, gmailCursorStore, gmailLabelObserver, {
+            connectorAccountId: token.connector_account_id,
+          });
+        },
+        createGoogleCalendar: (token) => new GoogleCalendarConnector(
+          userId,
+          createBoundTokenStore(token.connector_account_id),
+          gmailCursorStore,
+          'primary',
+          token.connector_account_id,
+        ),
+        createOutlookMail: (token) => new OutlookMailConnector(
+          userId,
+          createBoundTokenStore(token.connector_account_id),
+          gmailCursorStore,
+          token.connector_account_id,
+        ),
+        createOutlookCalendar: (token) => new OutlookCalendarConnector(
+          userId,
+          createBoundTokenStore(token.connector_account_id),
+          gmailCursorStore,
+          token.connector_account_id,
+        ),
+      }));
 
       if (connectors.length > 0) {
         result.push({ userId, connectors });

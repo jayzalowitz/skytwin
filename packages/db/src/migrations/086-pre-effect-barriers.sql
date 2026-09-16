@@ -38,14 +38,12 @@ ALTER TABLE pre_effect_barriers ADD CONSTRAINT pre_effect_barrier_explanation_re
 ALTER TABLE memory_action_opportunities DROP CONSTRAINT IF EXISTS check_status;
 ALTER TABLE memory_action_opportunities ADD CONSTRAINT check_status CHECK (status IN (
   'suggested',
-  'processing',
   'queued_approval',
   'auto_executed',
   'blocked_by_policy',
   'learning_needed',
   'execution_failed',
   'execution_ambiguous',
-  'execution_unknown',
   'noted_awareness',
   'skipped'
 ));
