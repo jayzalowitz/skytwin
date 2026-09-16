@@ -27,7 +27,7 @@
     "demo:fixture": "tsx src/seeds/demo-fixture.ts",
     "backup": "tsx src/bin/backup-cli.ts",
     "generate": "tsc --declaration --emitDeclarationOnly",
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/dist/**'",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -38,13 +38,13 @@
     "@skytwin/policy-engine": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
-    "pg": "^8.22.0"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "@types/node": "^26.1.0",
-    "@types/pg": "^8.10.9",
-    "tsx": "^4.22.4",
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "5.0.1"
   }
 }

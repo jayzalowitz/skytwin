@@ -7,7 +7,7 @@
     "dev": "NODE_OPTIONS='--max-old-space-size=768' tsx watch src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "vitest run",
+    "test": "vitest run --exclude '**/dist/**'",
     "lint": "tsc --noEmit"
   },
   "dependencies": {
@@ -38,7 +38,7 @@
     "@skytwin/routines": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
-    "bonjour-service": "^1.4.2",
+    "bonjour-service": "^1.4.4",
     "express": "^5.2.1",
     "tweetnacl": "^1.0.3",
     "undici": "^7.29.0"
@@ -46,8 +46,8 @@
   "devDependencies": {
     "@types/express": "^5.0.6",
     "@types/node": "^26.1.0",
-    "tsx": "^4.22.4",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
+    "vitest": "5.0.1"
   }
 }

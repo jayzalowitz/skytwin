@@ -38,18 +38,14 @@ export class NotImplementedError extends Error {
 }
 
 /**
- * GbrainMemoryPort — a MemoryPort skeleton that shells out to the `gbrain`
+ * GbrainMemoryPort — a MemoryPort adapter that shells out to the `gbrain`
  * CLI for semantic and code-aware search.
  *
- * SKELETON: This is a partial scaffold for v1.0.5. Live gbrain CLI integration
- * is best-effort: if the CLI is not installed or returns an error, all search
- * methods return [] (empty, not an error) so the HybridMemoryPort can fall
- * back to MemPalace without disruption.
- *
- * Deferred:
- *   - CRDB driver shim (@skytwin/memory-gbrain-crdb-adapter) — v1.0.5
- *   - Full gbrain MCP integration — v1.0.5
- *   - federated_sources (gbrain v1.1+)
+ * Live gbrain CLI integration is best-effort: if the CLI is not installed or
+ * returns an error, all search methods return [] (empty, not an error) so the
+ * HybridMemoryPort can fall back to MemPalace without disruption. The result
+ * normalizer accepts both the legacy `id`/`content` shape and gbrain 0.50's
+ * `slug`/`chunk_text` SearchResult shape.
  *
  * Unimplemented methods (walkGraph, getEpisodes, getTriples, summarize,
  * compress, and all write methods) throw NotImplementedError. The hybrid
@@ -143,20 +139,13 @@ export class GbrainMemoryPort implements MemoryPort {
 
       const hits: SemanticHit[] = [];
       for (const item of parsed) {
-        if (isGbrainHit(item)) {
+        const hit = normalizeGbrainHit(item);
+        if (hit) {
           if (tierFilter) {
-            const metaTier = (item.metadata as Record<string, unknown> | undefined)?.[
-              'authoringTier'
-            ];
+            const metaTier = hit.metadata?.['authoringTier'];
             if (typeof metaTier !== 'string' || !tierFilter.has(metaTier)) continue;
           }
-          hits.push({
-            id: item.id,
-            score: item.score,
-            content: item.content,
-            source: item.source,
-            metadata: item.metadata,
-          });
+          hits.push(hit);
           if (hits.length >= k) break;
         }
       }
@@ -223,7 +212,7 @@ export class GbrainMemoryPort implements MemoryPort {
 
 // ── Type guard for gbrain JSON output ────────────────────────────────────────
 
-interface GbrainHit {
+interface LegacyGbrainHit {
   id: string;
   score: number;
   content: string;
@@ -231,13 +220,67 @@ interface GbrainHit {
   metadata?: Record<string, unknown>;
 }
 
-function isGbrainHit(value: unknown): value is GbrainHit {
-  if (typeof value !== 'object' || value === null) return false;
+interface CurrentGbrainHit {
+  slug: string;
+  score: number;
+  chunk_text: string;
+  source_id?: string;
+  title?: string;
+  type?: string;
+  page_id?: number;
+  chunk_id?: number;
+  chunk_index?: number;
+  stale?: boolean;
+  metadata?: Record<string, unknown>;
+}
+
+function normalizeGbrainHit(value: unknown): SemanticHit | null {
+  if (typeof value !== 'object' || value === null) return null;
   const v = value as Record<string, unknown>;
-  return (
+  if (
     typeof v['id'] === 'string' &&
-    typeof v['score'] === 'number' &&
+    typeof v['score'] === 'number' && Number.isFinite(v['score']) &&
     typeof v['content'] === 'string' &&
     typeof v['source'] === 'string'
-  );
+  ) {
+    const hit = v as unknown as LegacyGbrainHit;
+    return {
+      id: hit.id,
+      score: hit.score,
+      content: hit.content,
+      source: hit.source,
+      metadata: hit.metadata,
+    };
+  }
+
+  if (
+    typeof v['slug'] !== 'string' ||
+    typeof v['score'] !== 'number' ||
+    !Number.isFinite(v['score']) ||
+    typeof v['chunk_text'] !== 'string'
+  ) {
+    return null;
+  }
+
+  const hit = v as unknown as CurrentGbrainHit;
+  const metadata: Record<string, unknown> = { ...(hit.metadata ?? {}) };
+  for (const key of [
+    'source_id',
+    'title',
+    'type',
+    'page_id',
+    'chunk_id',
+    'chunk_index',
+    'stale',
+  ] as const) {
+    const item = hit[key];
+    if (item !== undefined) metadata[key] = item;
+  }
+  return {
+    id: hit.slug,
+    score: hit.score,
+    content: hit.chunk_text,
+    source: hit.slug,
+    metadata,
+  };
 }

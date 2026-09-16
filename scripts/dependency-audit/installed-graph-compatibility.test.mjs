@@ -104,7 +104,7 @@ describe("installed dependency graph compatibility", () => {
       "@expo/plist",
     ]);
     const xmldomContext = follow(expoPlist.require, ["@xmldom/xmldom"]);
-    expect(expoPlist.metadata.version).toBe("0.7.0");
+    expect(expoPlist.metadata.version).toBe("0.8.1");
     expect(xmldomContext.metadata.version).toBe("0.8.15");
     const plist = unwrapDefault(expoPlist.load());
     expect(
@@ -115,17 +115,15 @@ describe("installed dependency graph compatibility", () => {
     });
   });
 
-  it("keeps React Navigation query-string 7 on a callable CommonJS decoder", () => {
-    const queryString = follow(mobileRequire, [
+  it("keeps React Navigation off the vulnerable query-string decoder chain", () => {
+    const navigationCore = follow(mobileRequire, [
       "@react-navigation/native",
       "@react-navigation/core",
-      "query-string",
     ]);
-    const decoder = follow(queryString.require, ["decode-uri-component"]);
-    expect(queryString.metadata.version).toBe("7.1.3");
-    expect(decoder.metadata.version).toBe("0.2.2");
-    expect(queryString.load().parse("route=approval%20detail")).toEqual({
-      route: "approval detail",
-    });
+    expect(navigationCore.metadata.version).toBe("7.22.1");
+    expect(navigationCore.metadata.dependencies).not.toHaveProperty(
+      "query-string",
+    );
+    expect(() => navigationCore.require.resolve("query-string")).toThrow();
   });
 });
