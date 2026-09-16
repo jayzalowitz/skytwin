@@ -299,7 +299,7 @@ packages/
   routines/                       No-code Watches: plain-language → read-only digest/notify with scheduler, run history, briefing/chat/web surfaces
   mempalace/                      Legacy memory: episodic, knowledge graph, 4-layer retrieval (opt-in backend)
   memory-port/                    Backend-agnostic MemoryPort interface + capability negotiation
-  memory-gbrain/                  Default memory backend — vector + tsvector RRF on CRDB brain_* tables
+  memory-gbrain/                  Default gbrain-compatible backend on CRDB; optional upstream CLI adapter
   memory-gbrain-crdb-adapter/     CRDB driver for gbrain — tier-weighted RRF, pin/hide, embedding providers
   memory-hybrid/                  Composes any two MemoryPort impls — per-capability read routing
   memory-mempalace/               MemoryPort adapter for the legacy mempalace classes
@@ -447,7 +447,7 @@ outside the beta support boundary.
 - Mode-scoped model reasoning: on-device embedded/Ollama or an explicitly selected provider chain, with fallback contained inside the selected location boundary, request-scoped local-only enforcement for Ollama, and deterministic rules when no eligible provider responds
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
-- Swappable memory backend: gbrain (default — vector + tsvector RRF on CRDB) plus optional hybrid mode that adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
+- Swappable memory backend: SkyTwin's gbrain-compatible implementation is the default, running vector + tsvector RRF directly on CRDB; the real upstream gbrain CLI remains an explicit opt-in adapter because its PostgreSQL/pgvector runtime is not CRDB-compatible and is never auto-selected. Optional hybrid mode adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
 - Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
 - Desktop build targets for macOS, Windows, and Linux; current artifacts are unsigned and not yet in the beta support matrix
 - Mobile source/development app (iOS, Android) with QR pairing, push notifications, and voice capture that sends audio to the paired desktop for transcription
