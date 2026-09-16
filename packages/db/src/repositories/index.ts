@@ -213,7 +213,6 @@ export type {
   CreateSignalInput,
   PersistAccountConnectorSignalInput,
   PersistConnectorSignalInput,
-  PersistUnboundSignalInput,
 } from './signal-repository.js';
 export { gmailMessageRefRepository } from './gmail-message-ref-repository.js';
 export type {

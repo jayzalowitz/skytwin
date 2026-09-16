@@ -36,10 +36,6 @@ export interface PersistAccountConnectorSignalInput {
   sourceSignalId: string;
 }
 
-export interface PersistUnboundSignalInput extends CreateSignalInput {
-  sourceSignalId: string;
-}
-
 export const signalRepository = {
   async persist(input: CreateSignalInput): Promise<SignalRow> {
     const retentionInterval = `${input.retentionDays ?? 30} days`;
@@ -109,43 +105,6 @@ export const signalRepository = {
       [input.userId, input.source, input.connectorAccountId, input.sourceSignalId, input.provider],
     );
     return existing.rows[0] ? { signal: existing.rows[0], created: false } : null;
-  },
-
-  /** Durable idempotent persistence for session, idle, and other unbound input. */
-  async persistUnboundSignal(
-    input: PersistUnboundSignalInput,
-  ): Promise<{ signal: SignalRow; created: boolean }> {
-    const retentionInterval = `${input.retentionDays ?? 30} days`;
-    const inserted = await query<SignalRow>(
-      `INSERT INTO signals (
-         user_id, source, type, domain, data, timestamp, retention_until,
-         source_signal_id, connector_account_id, resource_ref_id
-       ) VALUES ($1, $2, $3, $4, $5, $6, now() + $7::INTERVAL, $8, NULL, NULL)
-       ON CONFLICT (user_id, source, source_signal_id)
-         WHERE source_signal_id IS NOT NULL AND connector_account_id IS NULL
-       DO NOTHING
-       RETURNING *`,
-      [
-        input.userId,
-        input.source,
-        input.type,
-        input.domain,
-        JSON.stringify(input.data),
-        input.timestamp,
-        retentionInterval,
-        input.sourceSignalId,
-      ],
-    );
-    if (inserted.rows[0]) return { signal: inserted.rows[0], created: true };
-    const existing = await query<SignalRow>(
-      `SELECT * FROM signals
-        WHERE user_id = $1 AND source = $2 AND source_signal_id = $3
-          AND connector_account_id IS NULL`,
-      [input.userId, input.source, input.sourceSignalId],
-    );
-    const signal = existing.rows[0];
-    if (!signal) throw new Error('Unbound signal idempotency lookup failed');
-    return { signal, created: false };
   },
 
   /**

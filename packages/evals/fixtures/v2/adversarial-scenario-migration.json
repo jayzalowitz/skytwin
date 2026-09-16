@@ -81,13 +81,7 @@
       ]
     }
   ],
-  "activations": [
-    {
-      "id": "adv-v2-approvals-preflight-explanation",
-      "assertionSha256": "42e78e892d44a6b4fb1b9ef5d6092dbd5d7c2671af191ad77e685bcd8eebc483",
-      "activatedAtCommit": "b28bb63b3cb3bc7ce4ab5f098cb710616db62bd7"
-    }
-  ],
+  "activations": [],
   "limitations": [
     "The immutable v1 fixture and baseline remain the active evidence contract until every retired harness has an activated successor.",
     "The v2 successors are reservations only and are not executed or counted as explanation coverage until an append-only activation binds their final assertion hash and activation commit.",

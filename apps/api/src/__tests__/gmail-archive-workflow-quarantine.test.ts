@@ -34,23 +34,6 @@ function candidate(actionType: string): CandidateAction {
   };
 }
 
-function changingActionType(): CandidateAction {
-  const target = candidate('label_email');
-  let descriptorReads = 0;
-  return new Proxy(target, {
-    get(current, property, receiver) {
-      if (property === 'actionType' && descriptorReads > 1) return 'archive_email';
-      return Reflect.get(current, property, receiver) as unknown;
-    },
-    getOwnPropertyDescriptor(current, property) {
-      const descriptor = Reflect.getOwnPropertyDescriptor(current, property);
-      if (property !== 'actionType' || !descriptor) return descriptor;
-      descriptorReads += 1;
-      return { ...descriptor, value: descriptorReads === 1 ? 'label_email' : 'archive_email' };
-    },
-  });
-}
-
 function outcome(selectedAction: CandidateAction): DecisionOutcome {
   return {
     id: 'outcome-1',
@@ -66,20 +49,12 @@ function outcome(selectedAction: CandidateAction): DecisionOutcome {
 }
 
 function dependencies(selectedAction: CandidateAction) {
-  const buildPlan = vi.fn(async (action: CandidateAction) => ({
-    id: 'plan-1', decisionId: action.decisionId, action,
-    steps: [], rollbackSteps: [], createdAt: new Date(),
-  }));
-  const execute = vi.fn(async () => ({
-    planId: 'plan-1', status: 'completed' as const,
-    startedAt: new Date(), completedAt: new Date(),
-  }));
-  const addEvidence = vi.fn();
+  const buildPlan = vi.fn();
+  const execute = vi.fn();
   const generate = vi.fn(async () => ({ id: 'explanation-1' }));
   return {
     buildPlan,
     execute,
-    addEvidence,
     generate,
     value: {
       interpreter: { interpret: vi.fn(async () => ({
@@ -93,7 +68,6 @@ function dependencies(selectedAction: CandidateAction) {
         getPatterns: vi.fn(async () => []),
         getTraits: vi.fn(async () => []),
         getTemporalProfile: vi.fn(async () => undefined),
-        addEvidence,
       },
       decisionMaker: { evaluate: vi.fn(async () => outcome(selectedAction)) },
       explanationGenerator: { generate },
@@ -119,75 +93,34 @@ const workflowCases = [
   },
 ] as const;
 
-describe('legacy API workflow Gmail archive quarantine', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
+describe('legacy API workflow execution quarantine', () => {
+  beforeEach(() => vi.clearAllMocks());
 
-  it.each(workflowCases)('$name rejects archive before direct adapter work', async ({ run }) => {
-    const fixture = dependencies(candidate('archive_email'));
+  it.each(workflowCases)(
+    '$name remains explanation-only for Gmail archive and unrelated actions',
+    async ({ run }) => {
+      for (const actionType of ['archive_email', 'label_email']) {
+        const fixture = dependencies(candidate(actionType));
+        await expect(run(fixture.value)).resolves.toMatchObject({
+          autoHandled: false,
+          executionResult: null,
+        });
+        expect(fixture.generate).toHaveBeenCalledTimes(1);
+        expect(fixture.buildPlan).not.toHaveBeenCalled();
+        expect(fixture.execute).not.toHaveBeenCalled();
+      }
+    },
+  );
 
-    await expect(run(fixture.value)).rejects.toThrow(
-      'archive_email is reserved for its dedicated execution lifecycle',
-    );
-
-    expect(fixture.buildPlan).not.toHaveBeenCalled();
-    expect(fixture.execute).not.toHaveBeenCalled();
-    expect(fixture.generate).not.toHaveBeenCalled();
-    expect(fixture.addEvidence).not.toHaveBeenCalled();
-  });
-
-  it.each(workflowCases)('$name preserves unrelated direct execution', async ({ run }) => {
-    const fixture = dependencies(candidate('label_email'));
-
-    await expect(run(fixture.value)).resolves.toMatchObject({
-      autoHandled: true,
-      executionResult: { status: 'completed' },
-    });
-
-    expect(fixture.buildPlan).toHaveBeenCalledTimes(1);
-    expect(fixture.execute).toHaveBeenCalledTimes(1);
-    expect(fixture.generate).toHaveBeenCalledTimes(1);
-    expect(fixture.addEvidence).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not invoke a hostile selected-action accessor', async () => {
-    const getter = vi.fn(() => 'archive_email');
-    const hostile = Object.defineProperty({}, 'actionType', {
-      enumerable: true,
-      get: getter,
-    }) as unknown as CandidateAction;
-    const fixture = dependencies(hostile);
-
-    await expect(genericWorkflowHandler(
-      { userId: 'user-1' }, fixture.value as never,
-    )).rejects.toThrow('generic workflow selected an invalid action');
-    expect(getter).not.toHaveBeenCalled();
-    expect(fixture.buildPlan).not.toHaveBeenCalled();
-    expect(fixture.execute).not.toHaveBeenCalled();
-  });
-
-  it.each(workflowCases)('$name rechecks a detached stateful action snapshot', async ({ run }) => {
-    const fixture = dependencies(changingActionType());
-
-    await expect(run(fixture.value)).rejects.toThrow(
-      'archive_email is reserved for its dedicated execution lifecycle',
-    );
-    expect(fixture.buildPlan).not.toHaveBeenCalled();
-    expect(fixture.execute).not.toHaveBeenCalled();
-  });
-
-  it('keeps both direct adapter call sites behind the shared quarantine guard', async () => {
+  it('keeps both unmounted legacy workflows free of direct adapter dispatch', async () => {
     const sources = await Promise.all([
       readFile(new URL('../workflows/email-triage.ts', import.meta.url), 'utf8'),
       readFile(new URL('../workflows/registry.ts', import.meta.url), 'utf8'),
     ]);
     for (const source of sources) {
-      const guard = source.indexOf('snapshotGenericWorkflowAction(outcome.selectedAction)');
-      const build = source.indexOf('.buildPlan(executableAction)');
-      expect(guard).toBeGreaterThan(-1);
-      expect(build).toBeGreaterThan(guard);
-      expect(source).not.toMatch(/GmailArchiveCallerKernel|gmail-archive-caller-kernel/);
+      expect(source).not.toContain('.buildPlan(');
+      expect(source).not.toContain('.execute(');
+      expect(source).toMatch(/receipt-backed ingest (route|path)/);
     }
   });
 });

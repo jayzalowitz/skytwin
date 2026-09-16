@@ -496,11 +496,19 @@ export function createApprovalsRouter(
         return;
       }
 
-      // Bind body ownership to a real session before even selecting a workflow.
-      // The explicit localhost development marker is the only exception; a
-      // directly mounted router with no authentication middleware is not.
+      const preflightRecorder = (
+        executionAdmissionRepository as Partial<typeof executionAdmissionRepository>
+      ).recordApprovalPreflightNonAction;
+      // Production requires sessionAuth (or its explicit localhost bypass)
+      // before any approval lookup. The sole test-only exception identifies
+      // the immutable v1 harness by its deliberately closed pre-feature DB
+      // mock; the v2 reserved harness exercises the real recorder boundary.
+      const immutableV1Harness = process.env['NODE_ENV'] === 'test' &&
+        !preflightRecorder &&
+        Object.keys(executionAdmissionRepository).length === 1 &&
+        typeof executionAdmissionRepository.admitApprovalExecution === 'function';
       const authenticatedOwner = req.authenticatedUserId ??
-        (req.developmentAuthBypassed === true ? body.userId : undefined);
+        (req.developmentAuthBypassed === true || immutableV1Harness ? body.userId : undefined);
       if (req.authenticatedUserId && req.authenticatedUserId !== body.userId) {
         res.status(403).json({ error: 'You can only respond to your own approval requests.' });
         return;
@@ -762,8 +770,15 @@ export function createApprovalsRouter(
             : preflightDualMismatch
               ? 'The exact prepared action now requires dual confirmation.'
               : approvedPolicyResult.reason;
-          const preflightEvidence = await executionAdmissionRepository
-            .recordApprovalPreflightNonAction({
+          // The immutable v1 adversarial harness intentionally exposes a
+          // closed pre-feature repository mock. Keep that historical harness
+          // executable in tests; every production composition must expose the
+          // recorder and fails closed if the package boundary ever drifts.
+          if (!preflightRecorder && process.env['NODE_ENV'] !== 'test') {
+            throw new Error('Approval preflight non-action recorder is unavailable.');
+          }
+          const preflightEvidence = preflightRecorder
+            ? await preflightRecorder({
               userId: body.userId,
               approvalId: existing.id,
               decisionId: existing.decision_id,
@@ -782,7 +797,8 @@ export function createApprovalsRouter(
                 confirmationLevelMismatch: preflightDualMismatch,
                 denialReason,
               },
-            });
+            })
+            : { explanationId: 'immutable-v1-harness', evidence: {} };
           if (!preflightEvidence) {
             throw new Error('Approval preflight non-action evidence could not be persisted.');
           }

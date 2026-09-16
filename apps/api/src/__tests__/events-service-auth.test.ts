@@ -47,7 +47,6 @@ const { savedEnv, mocks, SERVICE_TOKEN, TEST_USER_ID } = vi.hoisted(() => {
       runWithRequestContext: vi.fn(),
       persistEvidence: vi.fn(),
       persistAccountConnectorSignal: vi.fn(),
-      persistUnboundSignal: vi.fn(),
       buildArchiveProposal: vi.fn(),
       persistArchiveProposal: vi.fn(),
       findBySignalId: vi.fn(),
@@ -158,7 +157,6 @@ vi.mock('@skytwin/db', () => ({
   gmailArchiveProposalRepository: { persist: mocks.persistArchiveProposal },
   signalRepository: {
     persistAccountConnectorSignal: mocks.persistAccountConnectorSignal,
-    persistUnboundSignal: mocks.persistUnboundSignal,
   },
   executionRepository: {
     createPlan: mocks.executionCreatePlan,
@@ -496,15 +494,6 @@ describe('/api/events/ingest behind the production auth chain', () => {
         },
       },
     });
-    mocks.persistUnboundSignal.mockImplementation(async (input: Record<string, unknown>) => ({
-      created: true,
-      signal: {
-        source: input['source'],
-        type: input['type'],
-        source_signal_id: input['sourceSignalId'],
-        data: input['data'],
-      },
-    }));
   });
 
   it('rejects an unauthenticated loopback POST (the packaged-build regression)', async () => {

@@ -439,8 +439,8 @@ router preparation and its separate atomic preparation disposition, and a
 missing-origin send proposal to untrusted provenance plus its approval-bound
 continuation. The OpenClaw and IronClaw terminal regressions prove finite router
 classification and no retry or fallback as standalone, non-claiming tests.
-They are not appended to the frozen v1 catalog and do not change its release
-denominator. Four explanation gaps therefore remain explicit.
+They are not appended to the frozen v1 catalog and do not activate either
+reserved v2 successor. Four explanation gaps therefore remain explicit.
 The tests use declared mocks and do not provide network or clock containment,
 and the sidecar has not been produced by an immutable tag run. The final
 publication consumer now binds the exact four members and their hashes to the
@@ -459,13 +459,10 @@ new fail-closed dependency that its original closed mock did not expose. The
 reserved v2 migration contract in
 `packages/evals/fixtures/v2/adversarial-scenario-migration.json` preserves each
 proposed v1 harness retirement: scenario ID, assertion path and hash, and the
-exact last-valid commit. Each entry has one v2 successor with its complete
-scenario semantics, reserved assertion source hash, and required
-persistence-aware mock exports. The approval-preflight successor is active and
-binds its final assertion hash to the implementation commit; the
-capability-regret successor remains reserved. The frozen v1 catalog remains
-the release-report contract until the migration is complete and that report is
-updated explicitly.
+exact last-valid commit. Each entry has one reserved v2 successor with its
+complete scenario semantics, assertion source hash, and required
+persistence-aware mock exports. The v1 harnesses remain active until those
+successors are activated.
 
 Reservations are deliberately not executable coverage. Activation is a later
 append-only record binding the final assertion hash and activation commit. The
@@ -490,8 +487,8 @@ node scripts/release-evidence/adversarial-v2-migration.mjs \
 The standard CI entry point is
 `scripts/release-evidence/verify-adversarial-v2-ci.mjs`; it requires the
 GitHub-provided `GITHUB_EVENT_NAME` and `GITHUB_EVENT_PATH` and verifies that
-the checkout is the event's exact reviewed head. Partial v2 activation does not
-silently rewrite the frozen v1 release inventory: the current 6/10 explanation
+the checkout is the event's exact reviewed head. Until activation, the v1
+catalog remains the active execution contract and the current 6/10 explanation
 coverage, four gaps, limited claim, and blocked release status do not change.
 
 In code, use the `EvalRunner` class directly:

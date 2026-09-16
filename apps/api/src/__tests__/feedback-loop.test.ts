@@ -767,6 +767,13 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       error: 'Action blocked by current policy.',
       reason: expect.stringMatching(/paused by user/i),
     });
+    expect(fakeExecutionAdmissionRepo.recordApprovalPreflightNonAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: 'app-1',
+        disposition: 'execution_paused',
+        policySnapshot: expect.objectContaining({ effectiveAllowed: false }),
+      }),
+    );
     expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
     expect(fakeExecutionAdmissionRepo.admitApprovalExecution).not.toHaveBeenCalled();
     expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
@@ -802,6 +809,13 @@ describe('feedback loop — approval records an episode for memory boost', () =>
 
     expect(res.status).toBe(409);
     expect(res.body).toMatchObject({ error: 'confirmation_level_changed' });
+    expect(fakeExecutionAdmissionRepo.recordApprovalPreflightNonAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        approvalId: 'app-1',
+        disposition: 'dual_confirmation_required',
+        policySnapshot: expect.objectContaining({ effectiveAllowed: false }),
+      }),
+    );
     expect(fakeExecutionRouter.prepareExecution).toHaveBeenCalledTimes(1);
     expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
     expect(fakeFeedbackRepo.create).not.toHaveBeenCalled();

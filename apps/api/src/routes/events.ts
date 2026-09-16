@@ -326,7 +326,6 @@ export function createEventsRouter(): Router {
       const rawEvent = validation.event;
       const userId = validation.userId;
       let gmailOwnedSignalId: string | null = null;
-      let signalAlreadyPersisted = false;
 
       // connectorEvidence is authority-bearing only on the loopback service
       // credential path. A human session presenting the same JSON shape must
@@ -409,7 +408,6 @@ export function createEventsRouter(): Router {
         // though the request reached us before the idempotency lookup.
         for (const key of Object.keys(rawEvent)) delete rawEvent[key];
         gmailOwnedSignalId = persisted.signal.id;
-        signalAlreadyPersisted = true;
         Object.assign(rawEvent, sanitizedGmailSignalData(persisted.signal.data), {
           userId,
           source: 'gmail',
@@ -560,7 +558,6 @@ export function createEventsRouter(): Router {
           authoringTier: persisted.signal.data['authoringTier'],
           observedAt: persisted.signal.timestamp.toISOString(),
         });
-        signalAlreadyPersisted = true;
       } else if (normalizedSource === 'gmail') {
         // Human/session callers cannot assert connector provenance. Preserve
         // the content event for backwards compatibility, but force the least-
@@ -593,40 +590,6 @@ export function createEventsRouter(): Router {
 
       if (typeof rawEvent['signalId'] !== 'string' || rawEvent['signalId'].trim().length === 0) {
         rawEvent['signalId'] = randomUUID();
-      }
-
-      if (!signalAlreadyPersisted) {
-        const source = typeof rawEvent['source'] === 'string' && rawEvent['source'].trim()
-          ? rawEvent['source'].trim().toLowerCase()
-          : 'unknown';
-        const sourceSignalId = rawEvent['signalId'] as string;
-        const preserveNestedData = rawEvent['data'] !== null &&
-          typeof rawEvent['data'] === 'object' && !Array.isArray(rawEvent['data']);
-        const signalData = sanitizedSignalData(rawEvent);
-        if (typeof rawEvent['authoringTier'] === 'string') {
-          signalData['authoringTier'] = rawEvent['authoringTier'];
-        }
-        const persisted = await signalRepository.persistUnboundSignal({
-          userId,
-          source,
-          type: typeof rawEvent['type'] === 'string' ? rawEvent['type'] : 'event',
-          domain: domainForSignal(source),
-          data: signalData,
-          // Unbound callers cannot choose the Watch window in which evidence
-          // lands. Account connectors use their verified observedAt above.
-          timestamp: new Date(),
-          sourceSignalId,
-        });
-        for (const key of Object.keys(rawEvent)) delete rawEvent[key];
-        Object.assign(rawEvent, preserveNestedData ? { data: persisted.signal.data } : persisted.signal.data, {
-          userId,
-          source: persisted.signal.source,
-          type: persisted.signal.type,
-          signalId: persisted.signal.source_signal_id,
-          ...(typeof persisted.signal.data['authoringTier'] === 'string'
-            ? { authoringTier: persisted.signal.data['authoringTier'] }
-            : {}),
-        });
       }
 
       // Resolve every known duplicate before interpretation. A finalized row

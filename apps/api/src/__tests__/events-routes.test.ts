@@ -129,12 +129,6 @@ vi.mock('@skytwin/explanations', () => ({
 }));
 
 vi.mock('@skytwin/db', () => ({
-  signalRepository: {
-    persistUnboundSignal: vi.fn(async (input: Record<string, unknown>) => ({
-      created: true,
-      signal: { source: input['source'], type: input['type'], source_signal_id: input['sourceSignalId'], data: input['data'] },
-    })),
-  },
   approvalRepository: {
     create: mockApprovalCreate,
     findByDecisionId: mockApprovalFindByDecisionId,

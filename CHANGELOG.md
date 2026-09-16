@@ -8,9 +8,9 @@ All notable changes to SkyTwin will be documented in this file.
   return.** Current-policy denial, a current pause, and a newly required dual
   confirmation are recorded atomically against the still-pending,
   owner-scoped approval and exact stored/current action, risk, policy, and
-  adapter snapshots. The first reserved v2 adversarial successor is activated
-  against that implementation; approval state remains unconsumed and no
-  adapter request may start.
+  adapter snapshots. Approval state remains unconsumed and no adapter request
+  may start; the reserved v2 successor stays non-claiming until its separate
+  append-only activation review.
 
 - **Release materials now state the blocked beta status at their public entry
   points.** README, the launch-readiness report, the demo walkthrough, and the
@@ -50,11 +50,11 @@ All notable changes to SkyTwin will be documented in this file.
   signals; Gmail signals expose only opaque application references outside the
   repository boundary. Every verified Google account expands to Gmail and
   Calendar, every verified Microsoft account expands to Outlook mail and
-  Calendar, account identity participates in deduplication, and accepted
-  unbound/manual signals are also persisted idempotently. The Watch scheduler
-  reserves an immutable exact-window slot before reading signals, uses
-  database-clock leases and fencing for retry safety, projects only positive
-  completed runs, and prunes internal zero-match audit slots after 30 days.
+  Calendar, and account identity participates in deduplication. The Watch
+  scheduler reserves an immutable exact-window slot before reading signals,
+  uses database-clock leases and fencing for retry safety, projects only
+  positive completed runs, and prunes internal zero-match audit slots after 30
+  days.
 
 - **The encryption-boundary inventory now covers migrations 086–094 and their
   complete SQL callsite surface.** New receipt, pre-effect, Gmail evidence,
@@ -70,10 +70,9 @@ All notable changes to SkyTwin will be documented in this file.
   and last-valid commit, reserves persistence-aware successors, and
   requires any later activation to append its final assertion hash and commit.
   The generator and independent verifier reject missing, rewritten, forged,
-  or mismatched supersession provenance. The approval-preflight successor is
-  now active; the capability-regret successor remains skipped and uncounted.
-  The frozen v1 release inventory is unchanged, so its explanation coverage
-  stays 6/10, the claim stays limited, and release readiness stays blocked.
+  or mismatched supersession provenance. Both successors remain skipped and
+  uncounted, so explanation coverage stays 6/10, the claim stays limited, and
+  release readiness stays blocked.
 
 - **Internal source evaluation now has an immutable, non-public preparation
   path without weakening the beta release gate.** The exact-SHA-only packager
@@ -97,8 +96,8 @@ All notable changes to SkyTwin will be documented in this file.
   known terminal truth without erasing the historical ambiguity. Automatic
   replay and fallback remain disabled. The router regressions remain
   standalone, non-claiming coverage: they are not appended to the frozen v1
-  catalog and do not change the release denominator, so release explanation
-  coverage remains 6/10 with four explicit gaps.
+  catalog and do not activate either reserved v2 successor, so release
+  explanation coverage remains 6/10 with four explicit gaps.
 
 - **Tag pushes now produce a bounded release-safety sidecar without advancing
   the safety claim.** A canonical inventory binds the ten runtime entry paths

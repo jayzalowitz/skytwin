@@ -74,21 +74,4 @@ describe('signalRepository account persistence', () => {
       .mockResolvedValueOnce({ rows: [], rowCount: 0 });
     await expect(signalRepository.persistAccountConnectorSignal(accountInput)).resolves.toBeNull();
   });
-
-  it('makes unbound signal retries immutable', async () => {
-    databaseQuery
-      .mockResolvedValueOnce({ rows: [], rowCount: 0 })
-      .mockResolvedValueOnce({ rows: [row({ connector_account_id: null })], rowCount: 1 });
-    const result = await signalRepository.persistUnboundSignal({
-      userId: accountInput.userId,
-      source: 'manual',
-      type: 'note',
-      domain: 'general',
-      data: { text: 'changed replay' },
-      timestamp: accountInput.timestamp,
-      sourceSignalId: accountInput.sourceSignalId,
-    });
-    expect(result.created).toBe(false);
-    expect(databaseQuery.mock.calls[0]![0]).toContain('connector_account_id IS NULL');
-  });
 });

@@ -13,10 +13,4 @@ describe('account signal persistence schema', () => {
     expect(migration).toContain('FOREIGN KEY (connector_account_id, user_id)');
     expect(migration).toContain('REFERENCES connected_accounts (id, user_id) ON DELETE CASCADE');
   });
-
-  it('gives unbound signals their own partial idempotency key', () => {
-    expect(migration).toContain('signals_unbound_source_key');
-    expect(migration).toContain('(user_id, source, source_signal_id)');
-    expect(migration).toContain('connector_account_id IS NULL');
-  });
 });
