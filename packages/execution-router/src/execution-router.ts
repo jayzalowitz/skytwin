@@ -1095,6 +1095,7 @@ export class ExecutionRouter {
         const result = await state.adapter.execute(plan, state.preparation);
         if (result.planId !== plan.id ||
             (result.status !== 'completed' && result.status !== 'failed')) {
+          ambiguity = { phase: 'adapter_execute', reasonCode: 'adapter_result_unbound' };
           throw new Error('Adapter returned unbound terminal truth.');
         }
         await this.terminalizeDispatch(userId, plan.id, grant, result.status);
