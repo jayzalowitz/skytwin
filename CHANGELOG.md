@@ -12,6 +12,12 @@ All notable changes to SkyTwin will be documented in this file.
   selected inference workload. All failure paths stop without falling back to
   a conventional provider.
 
+### Fixed (post-review)
+
+- **CockroachDB integration suites no longer compete for runner resources in
+  the package-wide test job.** Unit files still run in parallel, then the four
+  fresh-node integration files run serially in their own Vitest project.
+
 ## [Unreleased] — Fail-closed action entry paths
 
 ### Fixed (post-review)
