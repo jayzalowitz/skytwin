@@ -1,9 +1,4 @@
-import type {
-  DecisionContext,
-  DecisionOutcome,
-  ExplanationRecord,
-  ExecutionResult,
-} from '@skytwin/shared-types';
+import type { DecisionContext, DecisionOutcome, ExplanationRecord, ExecutionResult } from '@skytwin/shared-types';
 import { TrustTier, SituationType } from '@skytwin/shared-types';
 import type { SituationInterpreter, DecisionMaker } from '@skytwin/decision-engine';
 import type { TwinService } from '@skytwin/twin-model';
@@ -85,11 +80,7 @@ export async function genericWorkflowHandler(
 
   const decision = await deps.interpreter.interpret(event);
   await deps.twinService.getOrCreateProfile(userId);
-  const preferences = await deps.twinService.getRelevantPreferences(
-    userId,
-    decision.domain,
-    decision.summary,
-  );
+  const preferences = await deps.twinService.getRelevantPreferences(userId, decision.domain, decision.summary);
 
   const [patterns, traits, temporalProfile] = await Promise.all([
     deps.twinService.getPatterns(userId),
@@ -113,11 +104,7 @@ export async function genericWorkflowHandler(
 
   const outcome = await deps.decisionMaker.evaluate(context);
 
-  const explanation = await deps.explanationGenerator.generate(
-    decision,
-    outcome,
-    context,
-  );
+  const explanation = await deps.explanationGenerator.generate(decision, outcome, context);
 
   // This legacy registry is not mounted by the ingest route. Its former direct
   // adapter call bypassed durable admission, so it remains explanation-only.

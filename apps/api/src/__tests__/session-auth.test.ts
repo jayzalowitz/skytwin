@@ -176,6 +176,7 @@ describe('sessionAuth middleware', () => {
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBe('user-abc');
     expect(req.authenticatedSessionId).toBe('session-1');
+    expect(req.developmentAuthBypassed).toBeUndefined();
   });
 
   it('mints request authority only after exact live-session revalidation', async () => {
@@ -278,6 +279,7 @@ describe('sessionAuth middleware', () => {
 
     expect(next).toHaveBeenCalled();
     expect(req.authenticatedUserId).toBeUndefined(); // no session in bypass mode
+    expect(req.developmentAuthBypassed).toBe(true);
     expect(req.sourceKeySessionAuthority).toBeUndefined();
     expect(mockBroker.grantSession).not.toHaveBeenCalled();
   });
@@ -1095,6 +1097,7 @@ describe('sessionAuth middleware', () => {
       // No human identity is bound — the daemons act for every user.
       expect(req.authenticatedUserId).toBeUndefined();
       expect(req.authenticatedSessionId).toBeUndefined();
+      expect(req.developmentAuthBypassed).toBeUndefined();
       expect(mockBroker.grantSession).not.toHaveBeenCalled();
     });
 

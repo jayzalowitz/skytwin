@@ -8,14 +8,10 @@ import type {
   ExplanationRecord,
   RiskAssessment,
 } from '@skytwin/shared-types';
-import { ConfidenceLevel, SituationType, TrustTier } from '@skytwin/shared-types';
+import { classifyGmailArchiveGenericAction, ConfidenceLevel, SituationType, TrustTier } from '@skytwin/shared-types';
 import { PolicyEvaluator, type PolicyDecision } from '@skytwin/policy-engine';
 import { RiskAssessor } from '@skytwin/decision-engine';
-import {
-  policyRepositoryAdapter,
-  routineNonActionRepository,
-  userRepository,
-} from '@skytwin/db';
+import { policyRepositoryAdapter, routineNonActionRepository, userRepository } from '@skytwin/db';
 import { getIronClawEnhancedAdapter } from '../execution-setup.js';
 import { readAutonomy } from '../cost-gate.js';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
@@ -36,7 +32,6 @@ const FREE_ROUTINE_ACTION_TYPES = new Set<string>([
   'set_reminder',
   'snooze_reminder',
   'label_email',
-  'archive_email',
   'acknowledge',
   'dismiss',
 ]);
@@ -44,8 +39,7 @@ const FREE_ROUTINE_ACTION_TYPES = new Set<string>([
 const REGISTRATION_UNAVAILABLE: PolicyDecision = {
   allowed: false,
   requiresApproval: false,
-  reason:
-    'Unattended routines are disabled until every scheduled run has runtime policy and explanation admission.',
+  reason: 'Unattended routines are disabled until every scheduled run has runtime policy and explanation admission.',
 };
 
 const DELETION_UNAVAILABLE: PolicyDecision = {
@@ -93,13 +87,22 @@ export function createRoutinesRouter(): Router {
         res.status(400).json({ error: 'Plan must include an action with an actionType.' });
         return;
       }
+      // Scheduled archive execution belongs exclusively to the dedicated
+      // approval/recovery lifecycle. Keep this guard even while generic
+      // routine registration is disabled so reactivation cannot bypass it.
+      const actionClassification = classifyGmailArchiveGenericAction(plan.action);
+      if (actionClassification.kind === 'archive') {
+        res.status(409).json({
+          error: 'archive_email is reserved for its dedicated execution lifecycle.',
+        });
+        return;
+      }
 
       const user = await userRepository.findById(userId);
       if (!user) {
         res.status(404).json({ error: 'User not found.' });
         return;
       }
-
       const artifacts = buildRegistrationArtifacts(
         userId,
         schedule,
@@ -107,7 +110,7 @@ export function createRoutinesRouter(): Router {
         actionType,
         routineRegistrationIdempotencyKey(req.get('idempotency-key'), schedule, actionType, plan.action),
       );
-      const policies = await policyRepositoryAdapter.getAllPolicies();
+      const policies = await policyRepositoryAdapter.getAllPolicies(userId);
       const policy = await policyEvaluator.evaluate(
         artifacts.action,
         policies,
@@ -115,12 +118,8 @@ export function createRoutinesRouter(): Router {
         artifacts.risk,
         readAutonomy(user),
       );
-      const effectivePolicy = policy.allowed && !policy.requiresApproval
-        ? REGISTRATION_UNAVAILABLE
-        : policy;
-      const disposition: RoutineDisposition = effectivePolicy.requiresApproval
-        ? 'requires-approval'
-        : 'blocked';
+      const effectivePolicy = policy.allowed && !policy.requiresApproval ? REGISTRATION_UNAVAILABLE : policy;
+      const disposition: RoutineDisposition = effectivePolicy.requiresApproval ? 'requires-approval' : 'blocked';
 
       const created = await persistRoutineNonAction(
         artifacts,
@@ -183,29 +182,24 @@ export function createRoutinesRouter(): Router {
   router.delete('/:routineId', async (req, res, next) => {
     try {
       const { routineId } = req.params;
-      if (
-        !routineId ||
-        routineId.length > MAX_ROUTINE_ID_LENGTH ||
-        /[\u0000-\u001f\u007f]/u.test(routineId)
-      ) {
+      if (!routineId || routineId.length > MAX_ROUTINE_ID_LENGTH || /[\u0000-\u001f\u007f]/u.test(routineId)) {
         res.status(400).json({ error: 'Invalid routine id.' });
         return;
       }
 
       const bodyUserId = (req.body as Record<string, unknown>)?.['userId'];
       const queryUserId = req.query['userId'];
-      const suppliedUserId = typeof bodyUserId === 'string'
-        ? bodyUserId
-        : typeof queryUserId === 'string'
-          ? queryUserId
-          : undefined;
+      const suppliedUserId =
+        typeof bodyUserId === 'string' ? bodyUserId : typeof queryUserId === 'string' ? queryUserId : undefined;
       const authenticatedUserId = req.authenticatedUserId;
       if (
         typeof authenticatedUserId === 'string' &&
         suppliedUserId !== undefined &&
         suppliedUserId !== authenticatedUserId
       ) {
-        res.status(403).json({ error: 'Routine owner does not match the authenticated user.' });
+        res.status(403).json({
+          error: 'Routine owner does not match the authenticated user.',
+        });
         return;
       }
       const userId = authenticatedUserId ?? suppliedUserId;
@@ -221,7 +215,7 @@ export function createRoutinesRouter(): Router {
       }
 
       const artifacts = buildDeletionArtifacts(userId, routineId);
-      const policies = await policyRepositoryAdapter.getAllPolicies();
+      const policies = await policyRepositoryAdapter.getAllPolicies(userId);
       const policy = await policyEvaluator.evaluate(
         artifacts.action,
         policies,
@@ -229,12 +223,8 @@ export function createRoutinesRouter(): Router {
         artifacts.risk,
         readAutonomy(user),
       );
-      const effectivePolicy = policy.allowed && !policy.requiresApproval
-        ? DELETION_UNAVAILABLE
-        : policy;
-      const disposition: RoutineDisposition = effectivePolicy.requiresApproval
-        ? 'requires-approval'
-        : 'blocked';
+      const effectivePolicy = policy.allowed && !policy.requiresApproval ? DELETION_UNAVAILABLE : policy;
+      const disposition: RoutineDisposition = effectivePolicy.requiresApproval ? 'requires-approval' : 'blocked';
       const created = await persistRoutineNonAction(
         artifacts,
         buildRoutineOutcome(artifacts, effectivePolicy, disposition),
@@ -253,9 +243,7 @@ export function createRoutinesRouter(): Router {
           error: policy.requiresApproval
             ? 'Routine deletion requires manual approval and was not dispatched.'
             : 'Routine deletion was blocked by policy.',
-          code: policy.requiresApproval
-            ? 'routine_requires_approval'
-            : 'routine_blocked_by_policy',
+          code: policy.requiresApproval ? 'routine_requires_approval' : 'routine_blocked_by_policy',
           reason: policy.reason,
         });
         return;
@@ -306,16 +294,15 @@ function buildRegistrationArtifacts(
     actionType,
     description: typeof rawAction.description === 'string' ? rawAction.description : '',
     domain: typeof rawAction.domain === 'string' ? rawAction.domain : 'general',
-    parameters: rawAction.parameters && typeof rawAction.parameters === 'object'
-      ? { ...rawAction.parameters, userId }
-      : { userId },
+    parameters:
+      rawAction.parameters && typeof rawAction.parameters === 'object'
+        ? { ...rawAction.parameters, userId }
+        : { userId },
     estimatedCostCents: 0,
     costZeroIntent: knownSafe ? 'verified_zero' : 'unknown',
     reversible: knownSafe,
     confidence: ConfidenceLevel.LOW,
-    reasoning: typeof rawAction.reasoning === 'string'
-      ? rawAction.reasoning
-      : 'Scheduled routine action',
+    reasoning: typeof rawAction.reasoning === 'string' ? rawAction.reasoning : 'Scheduled routine action',
     provenance: 'untrusted_external',
   };
   const decision: DecisionObject = {
@@ -354,9 +341,7 @@ function buildDeletionArtifacts(userId: string, routineId: string): RoutineArtif
     reasoning: 'The user directly requested deletion of this exact routine identifier.',
     provenance: 'user_originated',
   };
-  const idempotencyKey = createHash('sha256')
-    .update(`${userId}\u0000${routineId}`)
-    .digest('hex');
+  const idempotencyKey = createHash('sha256').update(`${userId}\u0000${routineId}`).digest('hex');
   const decision: DecisionObject = {
     id: decisionId,
     situationType: SituationType.GENERIC,
@@ -451,19 +436,22 @@ function buildExplanation(
     decisionId: artifacts.decision.id,
     userId,
     summary,
-    evidenceUsed: [{
-      evidenceId: artifacts.action.id,
-      source: 'routine_request',
-      summary: evidenceSummary,
-      relevance,
-    }],
+    evidenceUsed: [
+      {
+        evidenceId: artifacts.action.id,
+        source: 'routine_request',
+        summary: evidenceSummary,
+        relevance,
+      },
+    ],
     preferencesInvoked: [],
     confidenceReasoning: artifacts.risk.reasoning,
     actionRationale: `${artifacts.action.reasoning} Policy result: ${policy.reason}`,
     escalationRationale: policy.reason,
-    correctionGuidance: disposition === 'requires-approval'
-      ? 'Use a supported approval flow before trying this operation again.'
-      : 'Review the policy result and retry only after this operation is supported.',
+    correctionGuidance:
+      disposition === 'requires-approval'
+        ? 'Use a supported approval flow before trying this operation again.'
+        : 'Review the policy result and retry only after this operation is supported.',
     riskTier: artifacts.risk.overallTier,
     overallConfidence: artifacts.action.confidence,
     createdAt: new Date(),
@@ -476,12 +464,14 @@ function routineRegistrationIdempotencyKey(
   actionType: string,
   action: ExecutionPlan['action'],
 ): string {
-  const material = suppliedKey?.trim() || stableJson({
-    schedule,
-    actionType,
-    domain: action.domain,
-    parameters: action.parameters,
-  });
+  const material =
+    suppliedKey?.trim() ||
+    stableJson({
+      schedule,
+      actionType,
+      domain: action.domain,
+      parameters: action.parameters,
+    });
   return createHash('sha256').update(material).digest('hex');
 }
 

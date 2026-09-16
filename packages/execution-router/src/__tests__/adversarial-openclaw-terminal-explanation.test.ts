@@ -14,7 +14,7 @@ const mappedScenario = {
   runtimeEntryPath: 'execution_router.openclaw_response',
   adapter: 'openclaw',
   criticalShape: 'send',
-  action: { actionType: 'archive_email', reversible: true, parameters: {} },
+  action: { actionType: 'label_email', reversible: true, parameters: {} },
   origin: { kind: 'user', source: 'user_request' },
   provenance: 'user_originated',
 } as const;
@@ -23,7 +23,7 @@ const action: CandidateAction = {
   id: 'action-1',
   decisionId: 'decision-1',
   actionType: mappedScenario.action.actionType,
-  description: 'Archive one message',
+  description: 'Label one message',
   domain: 'email',
   parameters: {
     messageId: 'message-1',

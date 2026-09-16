@@ -14,6 +14,112 @@ const VALID_URGENCIES = new Set(['low', 'medium', 'high', 'critical']);
 // here at the boundary so the DB layer doesn't crash with a 500 on every
 // typo'd test client or stale session token.
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const GMAIL_AUTHORING_TIERS = new Set([
+  'user_sent_originated',
+  'user_sent_reply',
+  'inbox_personal',
+  'inbox_broadcast',
+  'inbox_newsletter',
+  'inbox_automated',
+]);
+const GMAIL_EVIDENCE_KEYS = [
+  'authoringTier',
+  'connectorAccountId',
+  'kind',
+  'messageTimestamp',
+  'observedAt',
+  'observedInInbox',
+  'provider',
+  'providerMessageId',
+  'providerThreadId',
+] as const;
+
+export interface ValidatedGmailConnectorEvidence {
+  connectorAccountId: string;
+  providerMessageId: string;
+  providerThreadId: string | null;
+  authoringTier: string;
+  observedInInbox: boolean;
+  observedAt: Date;
+  messageTimestamp: Date;
+}
+
+export type GmailEvidenceValidationResult =
+  | { ok: true; evidence: ValidatedGmailConnectorEvidence }
+  | { ok: false; message: string };
+
+/** Validate the exact server-to-server evidence envelope; extra keys fail closed. */
+export function validateGmailConnectorEvidence(raw: unknown): GmailEvidenceValidationResult {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, message: 'connectorEvidence must be an object' };
+  }
+  const record = raw as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  if (
+    keys.length !== GMAIL_EVIDENCE_KEYS.length ||
+    keys.some((key, index) => key !== GMAIL_EVIDENCE_KEYS[index])
+  ) {
+    return { ok: false, message: 'connectorEvidence has an invalid shape' };
+  }
+  if (record['kind'] !== 'gmail_message' || record['provider'] !== 'google') {
+    return { ok: false, message: 'connectorEvidence kind/provider is invalid' };
+  }
+  if (typeof record['connectorAccountId'] !== 'string' || !UUID_REGEX.test(record['connectorAccountId'])) {
+    return { ok: false, message: 'connectorEvidence.connectorAccountId must be a UUID' };
+  }
+  if (
+    typeof record['providerMessageId'] !== 'string' ||
+    record['providerMessageId'].length < 1 ||
+    record['providerMessageId'].length > 1024
+  ) {
+    return { ok: false, message: 'connectorEvidence.providerMessageId is invalid' };
+  }
+  if (
+    record['providerThreadId'] !== null &&
+    (
+      typeof record['providerThreadId'] !== 'string' ||
+      record['providerThreadId'].length < 1 ||
+      record['providerThreadId'].length > 1024
+    )
+  ) {
+    return { ok: false, message: 'connectorEvidence.providerThreadId is invalid' };
+  }
+  if (typeof record['authoringTier'] !== 'string' || !GMAIL_AUTHORING_TIERS.has(record['authoringTier'])) {
+    return { ok: false, message: 'connectorEvidence.authoringTier is invalid' };
+  }
+  if (typeof record['observedInInbox'] !== 'boolean') {
+    return { ok: false, message: 'connectorEvidence.observedInInbox must be boolean' };
+  }
+  if (typeof record['observedAt'] !== 'string') {
+    return { ok: false, message: 'connectorEvidence.observedAt must be an ISO timestamp' };
+  }
+  const observedAt = new Date(record['observedAt']);
+  if (Number.isNaN(observedAt.getTime()) || observedAt.toISOString() !== record['observedAt']) {
+    return { ok: false, message: 'connectorEvidence.observedAt must be a canonical ISO timestamp' };
+  }
+  if (typeof record['messageTimestamp'] !== 'string') {
+    return { ok: false, message: 'connectorEvidence.messageTimestamp must be an ISO timestamp' };
+  }
+  const messageTimestamp = new Date(record['messageTimestamp']);
+  if (
+    Number.isNaN(messageTimestamp.getTime()) ||
+    messageTimestamp.toISOString() !== record['messageTimestamp']
+  ) {
+    return { ok: false, message: 'connectorEvidence.messageTimestamp must be a canonical ISO timestamp' };
+  }
+  return {
+    ok: true,
+    evidence: {
+      connectorAccountId: record['connectorAccountId'],
+      providerMessageId: record['providerMessageId'],
+      providerThreadId: record['providerThreadId'] as string | null,
+      authoringTier: record['authoringTier'],
+      observedInInbox: record['observedInInbox'],
+      observedAt,
+      messageTimestamp,
+    },
+  };
+}
 
 /** Discriminated result type. Errors are field-keyed so the API can echo
  *  them back to the caller without leaking internal structure. */
@@ -47,22 +153,11 @@ export function validateEventIngest(raw: unknown): EventIngestValidationResult {
     errors.push({ field: 'type', message: 'type must be a string when provided' });
   }
 
-  // `source` and `authoringTier` are the inputs the situation interpreter
-  // feeds into `resolveActionProvenance` — the documentary-poisoning trust
-  // axis. They ARE accepted from the caller here, unlike `trustTier` below.
-  // The trust model that makes this safe:
-  //   1. This endpoint is mounted behind `sessionAuth + requireOwnership` —
-  //      the caller is an authenticated user acting on their own data.
-  //   2. The legitimate caller is the worker forwarding connector signals,
-  //      and connectors derive `authoringTier` from AUTHORITATIVE upstream
-  //      state (Gmail's `SENT` / `INBOX` labels) — not from anything the
-  //      sender of an inbound email controls. An attacker who emails the
-  //      user cannot land their message in the SENT folder, so external
-  //      content can never be classified into the `user_sent_*` tiers.
-  //   3. An unknown / garbage `authoringTier` is harmless: `resolveAction-
-  //      Provenance` falls through to `untrusted_external` (fail safe).
-  // We still type-check it (consistency with `source`/`type`) so a
-  // non-string value can't reach the interpreter.
+  // `authoringTier` influences action provenance, so the route treats it as
+  // authoritative only inside a service-authenticated connector envelope.
+  // Session-originated Gmail events are forced to the least-trusted tier
+  // after validation. Type-check here as a first boundary guard; the route
+  // applies the authority rule after it knows which authentication path won.
   if (
     'authoringTier' in event &&
     event['authoringTier'] !== undefined &&

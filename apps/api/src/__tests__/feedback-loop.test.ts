@@ -32,6 +32,10 @@ const {
   fakeExecutionAdmissionRepo,
   fakeExecutionRepo,
   fakeWithTransaction,
+  fakeBarrierRepo,
+  fakeExplanationRepo,
+  fakePolicyGetAll,
+  fakeTransactionQuery,
 } = vi.hoisted(() => ({
   fakeApprovalRepo: {
     findById: vi.fn(),
@@ -62,6 +66,7 @@ const {
   fakeExecutionRouter: {
     executeWithRoutingStreaming: vi.fn(async function* () {}),
     executeWithRouting: vi.fn(),
+    route: vi.fn(),
     prepareExecution: vi.fn(),
     executePrepared: vi.fn(),
   },
@@ -77,6 +82,15 @@ const {
     finalizeAdmittedPlan: vi.fn(),
   },
   fakeWithTransaction: vi.fn(),
+  fakeBarrierRepo: {
+    reserve: vi.fn(),
+    markPrepared: vi.fn(),
+    claimPrepared: vi.fn(),
+    markTerminal: vi.fn(),
+  },
+  fakeExplanationRepo: { save: vi.fn() },
+  fakePolicyGetAll: vi.fn().mockResolvedValue([]),
+  fakeTransactionQuery: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
@@ -96,13 +110,21 @@ vi.mock('@skytwin/db', () => ({
         financial_impact: { tier: 'low', score: 0.2, reasoning: 'test' },
         legal_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
         privacy_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
-        relationship_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        relationship_sensitivity: {
+          tier: 'low',
+          score: 0.2,
+          reasoning: 'test',
+        },
         operational_risk: { tier: 'low', score: 0.2, reasoning: 'test' },
       },
       reasoning: 'test assessment',
       assessedAt: new Date(),
     })),
+    saveRiskAssessment: vi.fn().mockImplementation(async (risk: unknown) => risk),
+    saveOutcome: vi.fn().mockImplementation(async (outcome: unknown) => outcome),
   },
+  explanationRepositoryAdapter: fakeExplanationRepo,
+  preEffectBarrierRepository: fakeBarrierRepo,
   feedbackRepository: fakeFeedbackRepo,
   mempalaceRepository: fakeMempalaceRepo,
   memoryActionOpportunityRepository: fakeMemoryActionOpportunityRepo,
@@ -112,31 +134,39 @@ vi.mock('@skytwin/db', () => ({
   userRepository: fakeUserRepo,
   TwinRepositoryAdapter: vi.fn(function TwinRepositoryAdapter() {
     return {
-    getProfile: vi.fn().mockResolvedValue({ id: 'p', userId: 'u', version: 1, preferences: [], inferences: [], createdAt: new Date(), updatedAt: new Date() }),
-    createProfile: vi.fn().mockImplementation(async (p: unknown) => p),
-    updateProfile: vi.fn().mockImplementation(async (p: unknown) => p),
-    getPreferences: vi.fn().mockResolvedValue([]),
-    getPreferencesByDomain: vi.fn().mockResolvedValue([]),
-    upsertPreference: vi.fn(),
-    getInferences: vi.fn().mockResolvedValue([]),
-    upsertInference: vi.fn(),
-    addEvidence: vi.fn(),
-    getEvidence: vi.fn().mockResolvedValue([]),
-    getEvidenceByIds: vi.fn().mockResolvedValue([]),
-    addFeedback: vi.fn(),
-    getFeedback: vi.fn().mockResolvedValue([]),
+      getProfile: vi.fn().mockResolvedValue({
+        id: 'p',
+        userId: 'u',
+        version: 1,
+        preferences: [],
+        inferences: [],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      }),
+      createProfile: vi.fn().mockImplementation(async (p: unknown) => p),
+      updateProfile: vi.fn().mockImplementation(async (p: unknown) => p),
+      getPreferences: vi.fn().mockResolvedValue([]),
+      getPreferencesByDomain: vi.fn().mockResolvedValue([]),
+      upsertPreference: vi.fn(),
+      getInferences: vi.fn().mockResolvedValue([]),
+      upsertInference: vi.fn(),
+      addEvidence: vi.fn(),
+      getEvidence: vi.fn().mockResolvedValue([]),
+      getEvidenceByIds: vi.fn().mockResolvedValue([]),
+      addFeedback: vi.fn(),
+      getFeedback: vi.fn().mockResolvedValue([]),
     };
   }),
   PatternRepositoryAdapter: vi.fn(function PatternRepositoryAdapter() {
     return {
-    getPatterns: vi.fn().mockResolvedValue([]),
-    upsertPattern: vi.fn(),
-    getTraits: vi.fn().mockResolvedValue([]),
-    upsertTrait: vi.fn(),
+      getPatterns: vi.fn().mockResolvedValue([]),
+      upsertPattern: vi.fn(),
+      getTraits: vi.fn().mockResolvedValue([]),
+      upsertTrait: vi.fn(),
     };
   }),
   policyRepositoryAdapter: {
-    getAllPolicies: vi.fn().mockResolvedValue([]),
+    getAllPolicies: fakePolicyGetAll,
     getEnabledPolicies: vi.fn().mockResolvedValue([]),
     getPolicy: vi.fn().mockResolvedValue(null),
     getPoliciesByDomain: vi.fn().mockResolvedValue([]),
@@ -164,7 +194,12 @@ vi.mock('@skytwin/core', async () => {
   const actual: typeof import('@skytwin/core') = await vi.importActual('@skytwin/core');
   return {
     ...actual,
-    createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+    createLogger: () => ({
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+    }),
   };
 });
 
@@ -176,7 +211,7 @@ function buildApp(): Express {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as unknown as { user: { id: string } }).user = { id: USER_ID };
+    req.authenticatedUserId = USER_ID;
     next();
   });
   app.use('/api/approvals', createApprovalsRouter());
@@ -186,11 +221,7 @@ function buildApp(): Express {
   return app;
 }
 
-async function postJson(
-  app: Express,
-  path: string,
-  body: unknown,
-): Promise<{ status: number; body: unknown }> {
+async function postJson(app: Express, path: string, body: unknown): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
       const addr = server.address();
@@ -219,18 +250,33 @@ async function postJson(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  fakeTransactionQuery.mockResolvedValue({ rows: [], rowCount: 0 });
   fakeApprovalRepo.findById.mockResolvedValue({
     id: 'app-1',
     user_id: USER_ID,
     decision_id: 'dec-1',
-    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+    candidate_action: {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'label_email',
+      description: 'Label',
+      domain: 'email',
+      parameters: {},
+      reversible: true,
+    },
     status: 'pending',
   });
   fakeApprovalRepo.respond.mockResolvedValue({
     id: 'app-1',
     user_id: USER_ID,
     decision_id: 'dec-1',
-    candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+    candidate_action: {
+      id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+      actionType: 'label_email',
+      description: 'Label',
+      domain: 'email',
+      parameters: {},
+      reversible: true,
+    },
     status: 'approved',
     responded_at: new Date(),
   });
@@ -242,7 +288,7 @@ beforeEach(() => {
     user_id: USER_ID,
     situation_type: 'email_triage',
     raw_event: {},
-    interpreted_situation: { summary: 'archive newsletter from sender X' },
+    interpreted_situation: { summary: 'label newsletter from sender X' },
     domain: 'email',
     urgency: 'low',
     metadata: {},
@@ -250,7 +296,9 @@ beforeEach(() => {
     created_at: new Date(),
   });
   fakeUserRepo.findById.mockResolvedValue({
-    id: USER_ID, trust_tier: 'moderate_autonomy', ironclaw_channel: 'skytwin',
+    id: USER_ID,
+    trust_tier: 'moderate_autonomy',
+    ironclaw_channel: 'skytwin',
     execution_authority_revision: 'authority-revision-1',
   });
   fakeOauthRepo.getToken.mockResolvedValue(null);
@@ -262,19 +310,20 @@ beforeEach(() => {
     error: 'no execution in test',
     output: {},
   });
-  fakeExecutionRouter.prepareExecution.mockImplementation(async (
-    _action: unknown,
-    risk: Record<string, unknown>,
-  ) => ({
-    handle: {}, adapterName: 'direct',
+  fakeExecutionRouter.prepareExecution.mockImplementation(async (_action: unknown, risk: Record<string, unknown>) => ({
+    handle: {},
+    adapterName: 'direct',
     planId: '44444444-4444-4444-8444-444444444444',
-    riskAssessment: risk, streaming: false,
-    routingDecision: { selectedAdapter: 'direct', reasoning: 'Direct prepared.' },
+    riskAssessment: risk,
+    streaming: false,
+    routingDecision: {
+      selectedAdapter: 'direct',
+      reasoning: 'Direct prepared.',
+    },
   }));
-  fakeExecutionRouter.executePrepared.mockImplementation(async (
-    _prepared: unknown,
-    ...args: unknown[]
-  ) => fakeExecutionRouter.executeWithRouting(...args));
+  fakeExecutionRouter.executePrepared.mockImplementation(async (_prepared: unknown, ...args: unknown[]) =>
+    fakeExecutionRouter.executeWithRouting(...args),
+  );
   fakeExecutionAdmissionRepo.admitApprovalExecution.mockResolvedValue({
     created: true,
     barrier: {
@@ -288,18 +337,140 @@ beforeEach(() => {
   fakeExecutionAdmissionRepo.observeTerminal.mockResolvedValue({});
   fakeExecutionAdmissionRepo.findByScope.mockResolvedValue(null);
   fakeExecutionAdmissionRepo.isDispatchable.mockResolvedValue(true);
-  fakeExecutionAdmissionRepo.failBeforeDispatch.mockResolvedValue({ status: 'failed' });
+  fakeExecutionAdmissionRepo.failBeforeDispatch.mockResolvedValue({
+    status: 'failed',
+  });
   fakeExecutionAdmissionRepo.recordPolicyDenial.mockResolvedValue({
     explanationId: 'policy-denial-explanation-1',
     evidence: { kind: 'execution_policy_denial' },
   });
   fakeExecutionRepo.finalizeAdmittedPlan.mockResolvedValue({});
   fakeWithTransaction.mockImplementation(async (fn: (client: unknown) => Promise<unknown>) =>
-    fn({ query: vi.fn() }),
+    fn({ query: fakeTransactionQuery }),
   );
 });
 
 describe('feedback loop — approval records an episode for memory boost', () => {
+  it.each(['approve', 'reject'] as const)(
+    'keeps a %s response for the bounded Gmail Inbox proposal out of the generic responder',
+    async (action) => {
+      fakeApprovalRepo.findById.mockResolvedValueOnce({
+        id: 'app-1',
+        user_id: USER_ID,
+        decision_id: 'dec-1',
+        candidate_action: {
+          id: 'aaaaaaaa-bbbb-4ccc-8ddd-000000000abc',
+          actionType: 'archive_email',
+          description: 'Archive this email',
+          domain: 'email',
+          parameters: {
+            schema: 'gmail_inbox_mutation_v1',
+            messageRefId: '11111111-1111-4111-8111-111111111111',
+            operation: 'archive',
+          },
+          estimatedCostCents: 0,
+          costZeroIntent: 'verified_zero',
+          provenance: 'untrusted_external',
+          reversible: true,
+        },
+        status: 'pending',
+      });
+      const app = buildApp();
+
+      const response = await postJson(app, '/api/approvals/app-1/respond', {
+        action,
+        userId: USER_ID,
+      });
+
+      expect(response.status).toBe(409);
+      expect(response.body).toMatchObject({
+        code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_STATE',
+      });
+      expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+      expect(fakeFeedbackRepo.create).not.toHaveBeenCalled();
+      expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
+      expect(fakeExecutionRouter.route).not.toHaveBeenCalled();
+      expect(fakeExecutionRouter.prepareExecution).not.toHaveBeenCalled();
+      expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+      expect(fakeExecutionRouter.executePrepared).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { label: 'parameter-free', action: { actionType: 'archive_email' } },
+    {
+      label: 'legacy',
+      action: {
+        actionType: 'archive_email',
+        parameters: { emailId: 'provider-id', folder: 'archive' },
+      },
+    },
+    { label: 'empty', action: { actionType: 'archive_email', parameters: {} } },
+    {
+      label: 'mixed',
+      action: {
+        actionType: 'archive_email',
+        parameters: { schema: 'other', operation: 'restore' },
+      },
+    },
+  ])('quarantines a $label archive approval before every generic side effect', async ({ action }) => {
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: action,
+      status: 'pending',
+    });
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({
+      code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_STATE',
+    });
+    expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+    expect(fakeFeedbackRepo.create).not.toHaveBeenCalled();
+    expect(fakeMempalaceRepo.createEpisode).not.toHaveBeenCalled();
+    expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
+    expect(fakePolicyGetAll).not.toHaveBeenCalled();
+    expect(fakeBarrierRepo.reserve).not.toHaveBeenCalled();
+    expect(fakeExplanationRepo.save).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.route).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.prepareExecution).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executePrepared).not.toHaveBeenCalled();
+  });
+
+  it('fails closed on a hostile stored action without invoking its accessor', async () => {
+    const getter = vi.fn(() => 'archive_email');
+    const candidateAction = Object.defineProperty({}, 'actionType', {
+      enumerable: true,
+      get: getter,
+    });
+    fakeApprovalRepo.findById.mockResolvedValueOnce({
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: candidateAction,
+      status: 'pending',
+    });
+
+    const response = await postJson(buildApp(), '/api/approvals/app-1/respond', {
+      action: 'approve',
+      userId: USER_ID,
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body).toMatchObject({ code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_STATE' });
+    expect(getter).not.toHaveBeenCalled();
+    expect(fakeApprovalRepo.respond).not.toHaveBeenCalled();
+    expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
+    expect(fakeBarrierRepo.reserve).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.route).not.toHaveBeenCalled();
+    expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
+  });
+
   it('approve → mempalaceRepository.createEpisode is called with utility 0.9', async () => {
     const app = buildApp();
     await postJson(app, '/api/approvals/app-1/respond', {
@@ -309,13 +480,13 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     expect(fakeMempalaceRepo.createEpisode).toHaveBeenCalledTimes(1);
     const call = fakeMempalaceRepo.createEpisode.mock.calls[0]![0];
     expect(call.userId).toBe(USER_ID);
-    expect(call.actionTaken).toBe('archive_email');
+    expect(call.actionTaken).toBe('label_email');
     expect(call.feedbackType).toBe('approve');
     expect(call.utilityScore).toBe(0.9);
     expect(call.decisionId).toBe('dec-1');
     expect(call.domain).toBe('email');
     expect(call.situationType).toBe('email_triage');
-    expect(call.situationSummary).toBe('archive newsletter from sender X');
+    expect(call.situationSummary).toBe('label newsletter from sender X');
   });
 
   it('reject → mempalaceRepository.createEpisode is called with utility 0.0', async () => {
@@ -323,7 +494,14 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       id: 'app-1',
       user_id: USER_ID,
       decision_id: 'dec-1',
-      candidate_action: { id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc', actionType: 'archive_email', description: 'Archive', domain: 'email', parameters: {}, reversible: true },
+      candidate_action: {
+        id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+        actionType: 'label_email',
+        description: 'Label',
+        domain: 'email',
+        parameters: {},
+        reversible: true,
+      },
       status: 'rejected',
       responded_at: new Date(),
     });
@@ -363,7 +541,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     const memoryEvent = calls.find((c) => c[1] === 'memory:episode-recorded');
     expect(memoryEvent).toBeDefined();
     const payload = memoryEvent![2] as Record<string, unknown>;
-    expect(payload['actionType']).toBe('archive_email');
+    expect(payload['actionType']).toBe('label_email');
     expect(payload['feedbackType']).toBe('approve');
     expect(payload['decisionId']).toBe('dec-1');
   });
@@ -388,7 +566,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
     const call = fakeMempalaceRepo.createEpisode.mock.calls[0]![0];
     // Synthetic summary mentions the user action and the action type
-    expect(call.situationSummary).toMatch(/approved.*archive_email|archive_email/);
+    expect(call.situationSummary).toMatch(/approved.*label_email|label_email/);
   });
 
   it('approve preserves stored cost intent and provenance when reconstructing the candidate', async () => {
@@ -487,17 +665,27 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       provenance: 'user_originated',
     };
     fakeApprovalRepo.findById.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+      confirmation_level: 'single',
     });
     fakeApprovalRepo.respond.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'approved', responded_at: new Date(),
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'approved',
+      responded_at: new Date(),
       confirmation_level: 'single',
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID, editedBody: 'send exactly this body',
+      action: 'approve',
+      userId: USER_ID,
+      editedBody: 'send exactly this body',
     });
 
     expect(res.status).toBe(200);
@@ -537,14 +725,23 @@ describe('feedback loop — approval records an episode for memory boost', () =>
   it('rechecks current pause authority after an edited draft becomes an irreversible send', async () => {
     const storedAction = {
       id: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
-      actionType: 'draft_email', description: 'Draft reply', domain: 'email',
+      actionType: 'draft_email',
+      description: 'Draft reply',
+      domain: 'email',
       parameters: { to: 'outside@example.test', draftBody: 'old' },
-      estimatedCostCents: 0, reversible: true, confidence: 'high',
-      reasoning: 'inbound request', provenance: 'untrusted_external',
+      estimatedCostCents: 0,
+      reversible: true,
+      confidence: 'high',
+      reasoning: 'inbound request',
+      provenance: 'untrusted_external',
     };
     fakeApprovalRepo.findById.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+      confirmation_level: 'single',
     });
     fakeUserRepo.findById.mockResolvedValue({
       id: USER_ID,
@@ -555,7 +752,9 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID, editedBody: 'send this externally',
+      action: 'approve',
+      userId: USER_ID,
+      editedBody: 'send this externally',
     });
 
     expect(res.status).toBe(403);
@@ -583,12 +782,17 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       provenance: 'user_originated',
     };
     fakeApprovalRepo.findById.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+      confirmation_level: 'single',
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(409);
@@ -617,12 +821,20 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       provenance: 'user_originated',
     };
     fakeApprovalRepo.findById.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'pending', confirmation_level: 'single',
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
+      confirmation_level: 'single',
     });
     fakeApprovalRepo.respond.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'approved', responded_at: new Date(),
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'approved',
+      responded_at: new Date(),
     });
     fakeUserRepo.findById
       .mockResolvedValueOnce({
@@ -641,7 +853,8 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
@@ -659,8 +872,13 @@ describe('feedback loop — approval records an episode for memory boost', () =>
         scope: 'approval',
         approvalId: 'app-1',
         adapterName: 'direct',
-        riskSnapshot: expect.objectContaining({ actionId: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc' }),
-        policySnapshot: expect.objectContaining({ allowed: false, dispatchDenied: true }),
+        riskSnapshot: expect.objectContaining({
+          actionId: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
+        }),
+        policySnapshot: expect.objectContaining({
+          allowed: false,
+          dispatchDenied: true,
+        }),
       }),
     );
     expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
@@ -674,7 +892,9 @@ describe('feedback loop — approval records an episode for memory boost', () =>
 
   it('refuses dispatch if admitted canonical parameters are tampered before the final fence', async () => {
     fakeExecutionAdmissionRepo.admitApprovalExecution.mockImplementationOnce(async (input) => {
-      const snapshot = input.actionSnapshot as { parameters: Record<string, unknown> };
+      const snapshot = input.actionSnapshot as {
+        parameters: Record<string, unknown>;
+      };
       snapshot.parameters['target'] = 'tampered-after-admission';
       return {
         created: true,
@@ -689,12 +909,16 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
-      execution: { status: 'failed', error: 'Execution authority was revoked before dispatch' },
+      execution: {
+        status: 'failed',
+        error: 'Execution authority was revoked before dispatch',
+      },
     });
     expect(fakeExecutionAdmissionRepo.isDispatchable).not.toHaveBeenCalled();
     expect(fakeExecutionRouter.executeWithRouting).not.toHaveBeenCalled();
@@ -769,24 +993,37 @@ describe('feedback loop — approval records an episode for memory boost', () =>
       provenance: 'user_originated',
     };
     fakeApprovalRepo.findById.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'pending',
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'pending',
     });
     fakeApprovalRepo.respond.mockResolvedValueOnce({
-      id: 'app-1', user_id: USER_ID, decision_id: 'dec-1',
-      candidate_action: storedAction, status: 'approved', responded_at: new Date(),
+      id: 'app-1',
+      user_id: USER_ID,
+      decision_id: 'dec-1',
+      candidate_action: storedAction,
+      status: 'approved',
+      responded_at: new Date(),
     });
     fakeExecutionRouter.executeWithRouting.mockResolvedValueOnce({
-      planId: 'adapter-plan-unresolved', status: 'running', startedAt: new Date(),
+      planId: 'adapter-plan-unresolved',
+      status: 'running',
+      startedAt: new Date(),
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
-      execution: { status: 'ambiguous', error: 'Execution outcome requires reconciliation' },
+      execution: {
+        status: 'ambiguous',
+        error: 'Execution outcome requires reconciliation',
+      },
     });
     expect(fakeExecutionRepo.finalizeAdmittedPlan).not.toHaveBeenCalled();
     expect(fakeMemoryActionOpportunityRepo.markStatus).toHaveBeenCalledWith(
@@ -799,18 +1036,20 @@ describe('feedback loop — approval records an episode for memory boost', () =>
 
   it('preserves a completed result and admitted plan when terminal writes lose their responses', async () => {
     fakeExecutionRouter.executeWithRouting.mockResolvedValueOnce({
-      planId: 'adapter-plan-completed', status: 'completed', startedAt: new Date(),
-      completedAt: new Date(), output: { adapter_used: 'direct' },
+      planId: 'adapter-plan-completed',
+      status: 'completed',
+      startedAt: new Date(),
+      completedAt: new Date(),
+      output: { adapter_used: 'direct' },
     });
     fakeExecutionAdmissionRepo.observeTerminal.mockRejectedValueOnce(
       new Error('terminal barrier commit response lost'),
     );
-    fakeExecutionRepo.finalizeAdmittedPlan.mockRejectedValueOnce(
-      new Error('execution ledger commit response lost'),
-    );
+    fakeExecutionRepo.finalizeAdmittedPlan.mockRejectedValueOnce(new Error('execution ledger commit response lost'));
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
@@ -828,18 +1067,19 @@ describe('feedback loop — approval records an episode for memory boost', () =>
 
   it('preserves an explicit failed result when terminal persistence is unavailable', async () => {
     fakeExecutionRouter.executeWithRouting.mockResolvedValueOnce({
-      planId: 'adapter-plan-failed', status: 'failed', startedAt: new Date(),
-      completedAt: new Date(), output: { adapter_used: 'direct' }, error: 'remote rejected',
+      planId: 'adapter-plan-failed',
+      status: 'failed',
+      startedAt: new Date(),
+      completedAt: new Date(),
+      output: { adapter_used: 'direct' },
+      error: 'remote rejected',
     });
-    fakeExecutionAdmissionRepo.observeTerminal.mockRejectedValueOnce(
-      new Error('terminal store unavailable'),
-    );
-    fakeExecutionRepo.finalizeAdmittedPlan.mockRejectedValueOnce(
-      new Error('result store unavailable'),
-    );
+    fakeExecutionAdmissionRepo.observeTerminal.mockRejectedValueOnce(new Error('terminal store unavailable'));
+    fakeExecutionRepo.finalizeAdmittedPlan.mockRejectedValueOnce(new Error('result store unavailable'));
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
@@ -860,7 +1100,9 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (candidate) => {
       expect(candidate.parameters).not.toHaveProperty('accessToken');
       return {
-        planId: 'adapter-plan-failed', status: 'failed', startedAt: new Date(),
+        planId: 'adapter-plan-failed',
+        status: 'failed',
+        startedAt: new Date(),
         completedAt: new Date(),
         output: {
           adapter_used: 'direct',
@@ -876,7 +1118,8 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(fakeExecutionAdmissionRepo.isDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
@@ -899,13 +1142,17 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (candidate) => {
       expect(candidate.parameters).not.toHaveProperty('accessToken');
       return {
-        planId: 'adapter-plan-completed', status: 'completed', startedAt: new Date(),
-        completedAt: new Date(), output: { adapter_used: 'direct' },
+        planId: 'adapter-plan-completed',
+        status: 'completed',
+        startedAt: new Date(),
+        completedAt: new Date(),
+        output: { adapter_used: 'direct' },
       };
     });
 
     await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(fakeOauthRepo.getToken).not.toHaveBeenCalled();
@@ -923,7 +1170,8 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     });
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
@@ -944,7 +1192,7 @@ describe('feedback loop — approval records an episode for memory boost', () =>
         userId: USER_ID,
         decisionId: 'dec-1',
         actionId: 'aaaaaaaa-bbbb-cccc-dddd-000000000abc',
-        steps: [{ type: 'archive_email', status: 'pending' }],
+        steps: [{ type: 'label_email', status: 'pending' }],
       }),
     );
   });
@@ -953,7 +1201,8 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     fakeExecutionAdmissionRepo.isDispatchable.mockResolvedValueOnce(false);
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
@@ -978,7 +1227,8 @@ describe('feedback loop — approval records an episode for memory boost', () =>
     );
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
@@ -1002,32 +1252,41 @@ describe('feedback loop — approval records an episode for memory boost', () =>
   it('lets request-start refuse an approval channel revision changed during a final await', async () => {
     let channelChanged = false;
     fakeUserRepo.findById.mockResolvedValue({
-      id: USER_ID, trust_tier: 'moderate_autonomy', autonomy_settings: {},
-      ironclaw_channel: 'old-channel', execution_authority_revision: 'old-channel-revision',
+      id: USER_ID,
+      trust_tier: 'moderate_autonomy',
+      autonomy_settings: {},
+      ironclaw_channel: 'old-channel',
+      execution_authority_revision: 'old-channel-revision',
     });
     fakeExecutionAdmissionRepo.isDispatchable.mockImplementationOnce(async () => {
       channelChanged = true;
       return true;
     });
-    fakeExecutionRouter.executeWithRouting.mockImplementationOnce(async (
-      action: { parameters: Record<string, unknown> },
-      _risk: unknown,
-      _userId: string,
-      context: { ironclawChannel?: string },
-    ) => {
-      expect(channelChanged).toBe(true);
-      expect(action.parameters['credentialAuthorityRevision']).toBe('old-channel-revision');
-      expect(context.ironclawChannel).toBe('old-channel');
-      throw new NoRequestExecutionError('channel authority changed before request start');
-    });
+    fakeExecutionRouter.executeWithRouting.mockImplementationOnce(
+      async (
+        action: { parameters: Record<string, unknown> },
+        _risk: unknown,
+        _userId: string,
+        context: { ironclawChannel?: string },
+      ) => {
+        expect(channelChanged).toBe(true);
+        expect(action.parameters['credentialAuthorityRevision']).toBe('old-channel-revision');
+        expect(context.ironclawChannel).toBe('old-channel');
+        throw new NoRequestExecutionError('channel authority changed before request start');
+      },
+    );
 
     const res = await postJson(buildApp(), '/api/approvals/app-1/respond', {
-      action: 'approve', userId: USER_ID,
+      action: 'approve',
+      userId: USER_ID,
     });
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
-      execution: { status: 'failed', error: 'Execution was refused before request start' },
+      execution: {
+        status: 'failed',
+        error: 'Execution was refused before request start',
+      },
     });
     expect(fakeExecutionAdmissionRepo.failBeforeDispatch).toHaveBeenCalledOnce();
     expect(fakeExecutionAdmissionRepo.observeTerminal).not.toHaveBeenCalled();

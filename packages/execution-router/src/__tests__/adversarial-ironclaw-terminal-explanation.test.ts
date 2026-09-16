@@ -15,14 +15,14 @@ const mappedScenario = {
   runtimeEntryPath: 'ironclaw_adapter.execute',
   adapter: 'ironclaw',
   criticalShape: 'send',
-  action: { actionType: 'archive_email', reversible: true, parameters: {} },
+  action: { actionType: 'label_email', reversible: true, parameters: {} },
   origin: { kind: 'user', source: 'user_request' },
   provenance: 'user_originated',
 } as const;
 
 const action: CandidateAction = {
   id: 'action-1', decisionId: 'decision-1', actionType: mappedScenario.action.actionType,
-  description: 'Archive one message', domain: 'email', estimatedCostCents: 0,
+  description: 'Label one message', domain: 'email', estimatedCostCents: 0,
   reversible: mappedScenario.action.reversible, confidence: ConfidenceLevel.HIGH,
   reasoning: 'Adversarial terminal ambiguity regression', provenance: mappedScenario.provenance,
   parameters: {

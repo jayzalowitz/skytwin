@@ -27,6 +27,12 @@ declare global {
       authenticatedUserId?: string;
       /** The sessionId from the validated session. */
       authenticatedSessionId?: string;
+      /**
+       * True only when `sessionAuth` admitted this localhost request through
+       * the explicit development bypass. Sensitive handlers use this marker
+       * to distinguish that narrow mode from missing authentication middleware.
+       */
+      developmentAuthBypassed?: boolean;
       /** Opaque Electron grant available only to this revalidated real session. */
       sourceKeySessionAuthority?: SourceKeyBrokerSessionAuthority;
       /**
@@ -553,7 +559,10 @@ export async function sessionAuth(
       );
       bypassWarned = true;
     }
-    // No authenticatedUserId set — ownership middleware will skip checks in bypass mode
+    // No authenticatedUserId is available in this explicit localhost-only
+    // mode. Mark it so a sensitive handler cannot mistake an accidentally
+    // unprotected router mount for the configured development bypass.
+    req.developmentAuthBypassed = true;
     next();
     return;
   }

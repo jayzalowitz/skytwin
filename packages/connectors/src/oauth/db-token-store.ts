@@ -8,6 +8,7 @@ import { encrypt, decrypt, IV_LENGTH, TAG_LENGTH } from '@skytwin/credential-vau
 import { createLogger } from '@skytwin/core';
 
 const log = createLogger('connectors:db-token-store');
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 /**
  * Counter for lazy-migration failures, exposed for observability tests.
@@ -62,22 +63,27 @@ function unpackEncrypted(packed: Buffer): { iv: Buffer; tag: Buffer; ciphertext:
  * Interface matching the @skytwin/db oauthRepository shape.
  * Defined here to avoid a direct dependency on the DB package from connectors.
  */
-interface OAuthCredentialRow {
-    id?: string;
-    credential_revision?: string;
-    access_token: string | null;
-    refresh_token: string | null;
-    expires_at: Date;
-    scopes: string[];
-    encrypted_access_token?: Buffer | null;
-    encrypted_refresh_token?: Buffer | null;
-    encryption_iv?: Buffer | null;
-    encryption_tag?: Buffer | null;
-    encryption_key_version?: number;
+interface OAuthRepositoryTokenRow {
+  id?: string;
+  credential_revision?: string;
+  access_token: string | null;
+  refresh_token: string | null;
+  expires_at: Date;
+  scopes: string[];
+  encrypted_access_token?: Buffer | null;
+  encrypted_refresh_token?: Buffer | null;
+  encryption_iv?: Buffer | null;
+  encryption_tag?: Buffer | null;
+  encryption_key_version?: number;
 }
 
 interface OAuthRepositoryLike {
-  getToken(userId: string, provider: string): Promise<OAuthCredentialRow | null>;
+  getToken(userId: string, provider: string): Promise<OAuthRepositoryTokenRow | null>;
+  getTokenByConnectorAccount?: (
+    userId: string,
+    provider: string,
+    connectorAccountId: string,
+  ) => Promise<OAuthRepositoryTokenRow | null>;
   saveToken(
     userId: string,
     provider: string,
@@ -130,6 +136,23 @@ interface OAuthRepositoryLike {
     encryptedAccessToken: Buffer;
     expiresAt: Date;
   }) => Promise<boolean>;
+  updateAccessTokenByConnectorAccount?: (
+    userId: string,
+    provider: string,
+    connectorAccountId: string,
+    accessToken: string,
+    expiresAt: Date,
+    expectedCredentialRevision: string,
+  ) => Promise<unknown>;
+}
+
+interface TokenMaterializationOptions {
+  /** Exact key snapshot held for a refresh operation. */
+  key?: Buffer | null;
+  /** Vault generation paired with the exact key snapshot. */
+  vaultGeneration?: string | null;
+  /** Ordinary reads migrate in the background; refresh owns its one write. */
+  lazyMigrate?: boolean;
 }
 
 /**
@@ -142,6 +165,56 @@ export interface KeyCacheLike {
   getGeneration(userId: string): string | null;
   has(userId: string): boolean;
   set(userId: string, key: Buffer, generation?: string | null): void;
+}
+
+/** Minimum account-bound bearer snapshot plus the exact revision that materialized it. */
+export interface RevisionBoundOAuthTokenSet {
+  accessToken: string;
+  expiresAt: Date;
+  scopes: string[];
+  provider: OAuthTokenSet['provider'];
+  credentialRevision: string;
+}
+
+function canonicalScopes(scopes: string[]): string[] | null {
+  try {
+    if (!Array.isArray(scopes) || Object.getPrototypeOf(scopes) !== Array.prototype ||
+        Object.getOwnPropertySymbols(scopes).length !== 0 ||
+        scopes.length < 1 || scopes.length > 128) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(scopes);
+    if (Object.getOwnPropertyNames(descriptors).length !== scopes.length + 1) return null;
+    const canonical: string[] = [];
+    const unique = new Set<string>();
+    for (let index = 0; index < scopes.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, 'value') ||
+          descriptor.enumerable !== true) return null;
+      const scope = descriptor.value as unknown;
+      if (typeof scope !== 'string' || scope.length === 0 || scope.length > 512 ||
+          unique.has(scope)) return null;
+      unique.add(scope);
+      canonical.push(scope);
+    }
+    return canonical.sort();
+  } catch {
+    return null;
+  }
+}
+
+function sameScopeSet(left: string[], right: string[]): boolean {
+  const leftScopes = canonicalScopes(left);
+  const rightScopes = canonicalScopes(right);
+  return leftScopes !== null && rightScopes !== null &&
+    leftScopes.length === rightScopes.length &&
+    leftScopes.every((scope, index) => scope === rightScopes[index]);
+}
+
+function sameTokenSnapshot(left: OAuthTokenSet, right: OAuthTokenSet): boolean {
+  return left.accessToken === right.accessToken &&
+    left.refreshToken === right.refreshToken &&
+    left.expiresAt.getTime() === right.expiresAt.getTime() &&
+    left.provider === right.provider &&
+    sameScopeSet(left.scopes, right.scopes);
 }
 
 /**
@@ -184,7 +257,6 @@ export interface AuditLogPort {
      * timer, not in response to a request), but the port surface is
      * uniform with `accessLogRepository.record` so a future
      * request-scoped caller can pass it through without a wider type
-     * change.
      */
     requestId?: string | null;
   }): void | Promise<void>;
@@ -211,6 +283,8 @@ export class DbTokenStore implements OAuthTokenStore {
      * wrong vendor; the same token-leak class fixed in the disconnect routes).
      */
     private readonly microsoftConfig?: MicrosoftOAuthConfig,
+    /** Fixed stable account identity for worker-side multi-account polling. */
+    private readonly connectorAccountId?: string,
   ) {}
 
   /**
@@ -238,21 +312,27 @@ export class DbTokenStore implements OAuthTokenStore {
   private auditLogActor = 'unknown';
 
   async getToken(userId: string, provider: string): Promise<OAuthTokenSet | null> {
-    const row = await this.repo.getToken(userId, provider);
+    const row = this.connectorAccountId
+      ? await this.getBoundRow(userId, provider)
+      : await this.repo.getToken(userId, provider);
     if (!row) return null;
-
-    return this.resolveTokenRow(userId, provider, row);
+    return this.materializeToken(userId, provider, row);
   }
 
-  private async resolveTokenRow(
+  /** Decode one exact row snapshot; refresh uses this to avoid a second read. */
+  private async materializeToken(
     userId: string,
     provider: string,
-    row: OAuthCredentialRow,
-    options: { lazyMigrate?: boolean } = {},
+    row: OAuthRepositoryTokenRow,
+    options: TokenMaterializationOptions = {},
   ): Promise<OAuthTokenSet | null> {
-
-    const key = this.keyCache?.get(userId) ?? null;
-    const vaultGeneration = this.keyCache?.getGeneration(userId) ?? null;
+    const key = Object.prototype.hasOwnProperty.call(options, 'key')
+      ? options.key ?? null
+      : this.keyCache?.get(userId) ?? null;
+    const vaultGeneration = Object.prototype.hasOwnProperty.call(options, 'vaultGeneration')
+      ? options.vaultGeneration ?? null
+      : this.keyCache?.getGeneration(userId) ?? null;
+    const lazyMigrate = options.lazyMigrate ?? true;
     const vaultAuthority = this.repo.getVaultAuthorityState
       ? await this.repo.getVaultAuthorityState(userId)
       : null;
@@ -318,7 +398,7 @@ export class DbTokenStore implements OAuthTokenStore {
       if (vaultGeneration === null || !vaultSessionValid) {
         throw new Error('credentials unavailable; cached credential-vault authority is stale');
       }
-      if (options.lazyMigrate !== false && row.id && row.credential_revision &&
+      if (lazyMigrate && row.id && row.credential_revision &&
           this.repo.updateEncryptedIfCurrent) {
         // Fire-and-forget migration — do not block the caller. Failures are
         // surfaced via createLogger.warn AND a counter so downstream
@@ -371,6 +451,13 @@ export class DbTokenStore implements OAuthTokenStore {
     return null;
   }
 
+  private async getBoundRow(userId: string, provider: string) {
+    if (!this.connectorAccountId || !this.repo.getTokenByConnectorAccount) {
+      throw new Error('Account-bound token store requires getTokenByConnectorAccount.');
+    }
+    return this.repo.getTokenByConnectorAccount(userId, provider, this.connectorAccountId);
+  }
+
   /**
    * Encrypt access and refresh tokens independently (each gets a fresh IV)
    * and write them to the encrypted columns, clearing the plaintext columns.
@@ -412,6 +499,9 @@ export class DbTokenStore implements OAuthTokenStore {
   }
 
   async saveToken(userId: string, provider: string, tokenSet: OAuthTokenSet): Promise<void> {
+    if (this.connectorAccountId) {
+      throw new Error('Account-bound worker token stores cannot create OAuth identities.');
+    }
     await this.repo.saveToken(
       userId,
       provider,
@@ -423,6 +513,9 @@ export class DbTokenStore implements OAuthTokenStore {
   }
 
   async deleteToken(userId: string, provider: string): Promise<void> {
+    if (this.connectorAccountId) {
+      throw new Error('Account-bound worker token stores cannot disconnect OAuth identities.');
+    }
     await this.repo.deleteToken(userId, provider);
   }
 
@@ -430,6 +523,7 @@ export class DbTokenStore implements OAuthTokenStore {
     userId: string,
     provider: string,
     signal?: AbortSignal,
+    options: { lazyMigrate?: boolean } = {},
   ): Promise<OAuthTokenSet> {
     signal?.throwIfAborted();
     // Validate the provider up-front — fail loud on an unsupported provider
@@ -439,45 +533,58 @@ export class DbTokenStore implements OAuthTokenStore {
       throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
     }
 
-    const sourceRow = await this.repo.getToken(userId, provider);
+    // Capture the exact credential version before any network request. The
+    // write after refresh is a compare-and-swap against this exact revision, so a
+    // disconnect/reconnect or another refresh that wins while Google is in
+    // flight makes this attempt fail closed.
+    let refreshSnapshot = this.connectorAccountId
+      ? await this.getBoundRow(userId, provider)
+      : await this.repo.getToken(userId, provider);
     signal?.throwIfAborted();
-    if (!sourceRow) {
+    if (!refreshSnapshot) {
       throw new Error(`No OAuth token found for user ${userId} provider ${provider}`);
     }
-    // Do not launch the normal fire-and-forget lazy migration here. A refresh
-    // must own the exact source revision and atomically persist the refreshed
-    // access token with the encrypted refresh token under that same revision.
-    const existing = await this.resolveTokenRow(userId, provider, sourceRow, { lazyMigrate: false });
+    // Hold the key and its authority generation as one operation snapshot. A
+    // refresh must never decrypt with one cached key and persist with a later
+    // replacement key merely because rotation happened during provider I/O.
+    const operationKey = this.keyCache?.get(userId) ?? null;
+    const operationVaultGeneration = this.keyCache?.getGeneration(userId) ?? null;
+
+    // Do not launch a background lazy migration here. Refresh owns the exact
+    // source revision, while the unexpired path below performs any required
+    // migration synchronously before returning a live grant.
+    let existing = await this.materializeToken(userId, provider, refreshSnapshot, {
+      key: operationKey,
+      vaultGeneration: operationVaultGeneration,
+      lazyMigrate: false,
+    });
     signal?.throwIfAborted();
     if (!existing) throw new Error('Stored OAuth credential is unusable.');
 
-    // If not expired yet (with 60s buffer), return only after a legacy
-    // plaintext row under an initialized vault has been durably migrated.
-    // Signal connectors call this method directly, so relying on getToken's
-    // fire-and-forget migration would otherwise leave live grants plaintext.
     const bufferMs = 60 * 1000;
     if (existing.expiresAt.getTime() > Date.now() + bufferMs) {
-      if (!sourceRow.encrypted_access_token && !sourceRow.encrypted_refresh_token &&
-          this.keyCache?.get(userId)) {
-        const key = this.keyCache.get(userId);
-        const vaultGeneration = this.keyCache.getGeneration(userId);
+      if (options.lazyMigrate !== false &&
+          !refreshSnapshot.encrypted_access_token && !refreshSnapshot.encrypted_refresh_token &&
+          operationKey !== null) {
+        const key = operationKey;
+        const vaultGeneration = operationVaultGeneration;
         const vaultAuthority = this.repo.getVaultAuthorityState
           ? await this.repo.getVaultAuthorityState(userId)
           : null;
-        if (key === null || vaultGeneration === null || !sourceRow.id ||
-            !sourceRow.credential_revision || !sourceRow.access_token ||
-            !sourceRow.refresh_token || vaultAuthority?.state !== 'unlocked' ||
+        if (key === null || vaultGeneration === null || !refreshSnapshot.id ||
+            !refreshSnapshot.credential_revision || !refreshSnapshot.access_token ||
+            !refreshSnapshot.refresh_token || vaultAuthority?.state !== 'unlocked' ||
             vaultAuthority.generation !== vaultGeneration ||
             vaultAuthority.keyVersion === null) {
           throw new Error('credentials unavailable; credential-vault authority changed during migration');
         }
         const migrated = await this._lazyMigrate(
-          sourceRow.id,
+          refreshSnapshot.id,
           userId,
           provider,
-          sourceRow.credential_revision,
-          sourceRow.access_token,
-          sourceRow.refresh_token,
+          refreshSnapshot.credential_revision,
+          refreshSnapshot.access_token,
+          refreshSnapshot.refresh_token,
           vaultAuthority.keyVersion,
           key,
           vaultGeneration,
@@ -488,8 +595,60 @@ export class DbTokenStore implements OAuthTokenStore {
       }
       return existing;
     }
-    if (!sourceRow.id || !sourceRow.credential_revision) {
+
+    if (!refreshSnapshot.id || !refreshSnapshot.credential_revision) {
       throw new Error('OAuth credential is missing required revision identity.');
+    }
+    let refreshRowId = refreshSnapshot.id;
+    let refreshRevision = refreshSnapshot.credential_revision;
+
+    // An expired legacy plaintext credential under an unlocked vault needs two
+    // revision-fenced transitions: migrate the exact source revision first,
+    // then refresh the now-encrypted row. updateEncryptedIfCurrent deliberately
+    // does not update expiry, so attempting to combine these operations would
+    // leave a fresh bearer paired with the stale expiry or bypass vault fencing.
+    if (!refreshSnapshot.encrypted_access_token && !refreshSnapshot.encrypted_refresh_token &&
+        operationKey !== null) {
+      const vaultAuthority = this.repo.getVaultAuthorityState
+        ? await this.repo.getVaultAuthorityState(userId)
+        : null;
+      if (operationVaultGeneration === null || !refreshSnapshot.access_token ||
+          !refreshSnapshot.refresh_token || vaultAuthority?.state !== 'unlocked' ||
+          vaultAuthority.generation !== operationVaultGeneration ||
+          vaultAuthority.keyVersion === null) {
+        throw new Error('credentials unavailable; credential-vault authority changed during refresh');
+      }
+      const migrated = await this._lazyMigrate(
+        refreshSnapshot.id,
+        userId,
+        provider,
+        refreshSnapshot.credential_revision,
+        refreshSnapshot.access_token,
+        refreshSnapshot.refresh_token,
+        vaultAuthority.keyVersion,
+        operationKey,
+        operationVaultGeneration,
+      );
+      if (!migrated) {
+        throw new Error('OAuth credential changed while vault migration was in flight.');
+      }
+      const migratedRow = this.connectorAccountId
+        ? await this.getBoundRow(userId, provider)
+        : await this.repo.getToken(userId, provider);
+      if (!migratedRow || migratedRow.id !== refreshSnapshot.id ||
+          !migratedRow.credential_revision || !migratedRow.encrypted_access_token ||
+          !migratedRow.encrypted_refresh_token) {
+        throw new Error('OAuth credential changed while vault migration was in flight.');
+      }
+      refreshSnapshot = migratedRow;
+      refreshRowId = migratedRow.id;
+      refreshRevision = migratedRow.credential_revision;
+      existing = await this.materializeToken(userId, provider, migratedRow, {
+        key: operationKey,
+        vaultGeneration: operationVaultGeneration,
+        lazyMigrate: false,
+      });
+      if (!existing) throw new Error('Stored OAuth credential is unusable after vault migration.');
     }
 
     // Token is expired or about to expire — refresh it via the RIGHT
@@ -511,9 +670,10 @@ export class DbTokenStore implements OAuthTokenStore {
               'Construct DbTokenStore with a microsoftConfig to support Outlook.',
           );
         }
-        refreshed = signal
-          ? await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken, signal)
-          : await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken);
+        refreshed = await refreshMicrosoftAccessToken(this.microsoftConfig, existing.refreshToken, {
+          persistedScopes: [...existing.scopes],
+          signal,
+        });
         break;
       case 'google':
         if (!this.oauthConfig) {
@@ -522,25 +682,34 @@ export class DbTokenStore implements OAuthTokenStore {
               'Construct DbTokenStore with a googleConfig.',
           );
         }
-        refreshed = signal
-          ? await refreshAccessToken(this.oauthConfig, existing.refreshToken, signal)
-          : await refreshAccessToken(this.oauthConfig, existing.refreshToken);
+        refreshed = await refreshAccessToken(this.oauthConfig, existing.refreshToken, {
+          persistedScopes: [...existing.scopes],
+          signal,
+        });
         break;
       default:
         throw new Error(`DbTokenStore: unsupported provider '${provider}' for token refresh.`);
     }
     signal?.throwIfAborted();
 
+    // This repository updates bearer material and expiry, but not the stored
+    // authority grant. Persisting a bearer returned with a changed scope set
+    // would pair it with stale scopes on the next materialization. Reject any
+    // added, removed, duplicated, or malformed scope before the credential CAS.
+    if (!sameScopeSet(existing.scopes, refreshed.scopes)) {
+      throw new Error('OAuth token refresh returned a changed or invalid scope grant.');
+    }
+
     // Persist the new access token. If the row is currently stored
     // encrypted (key cache populated AND row has encrypted_access_token),
     // write the new token to the ENCRYPTED column — otherwise getToken
     // would keep returning the old, still-encrypted access token while
     // the new plaintext sat unread.
-    const key = this.keyCache?.get(userId) ?? null;
-    const vaultGeneration = this.keyCache?.getGeneration(userId) ?? null;
+    const key = operationKey;
+    const vaultGeneration = operationVaultGeneration;
     let persisted = false;
-    if (sourceRow.encrypted_access_token || sourceRow.encrypted_refresh_token) {
-      if (!sourceRow.encrypted_access_token || !sourceRow.encrypted_refresh_token ||
+    if (refreshSnapshot.encrypted_access_token || refreshSnapshot.encrypted_refresh_token) {
+      if (!refreshSnapshot.encrypted_access_token || !refreshSnapshot.encrypted_refresh_token ||
           key === null || vaultGeneration === null ||
           !this.repo.validateVaultSession ||
           !await this.repo.validateVaultSession(userId, vaultGeneration) ||
@@ -550,10 +719,10 @@ export class DbTokenStore implements OAuthTokenStore {
       const packed = packEncrypted(encrypt(refreshed.accessToken, key));
       signal?.throwIfAborted();
       persisted = await this.repo.updateEncryptedAccessTokenIfCurrent({
-        id: sourceRow.id,
+        id: refreshRowId,
         userId,
         provider,
-        expectedCredentialRevision: sourceRow.credential_revision,
+        expectedCredentialRevision: refreshRevision,
         expectedVaultGeneration: vaultGeneration,
         encryptedAccessToken: packed,
         expiresAt: refreshed.expiresAt,
@@ -569,10 +738,10 @@ export class DbTokenStore implements OAuthTokenStore {
         throw new Error('credentials unavailable; credential-vault authority changed during refresh');
       }
       persisted = await this.repo.updateEncryptedIfCurrent({
-        id: sourceRow.id,
+        id: refreshRowId,
         userId,
         provider,
-        expectedCredentialRevision: sourceRow.credential_revision,
+        expectedCredentialRevision: refreshRevision,
         expectedVaultGeneration: vaultGeneration,
         encryptedAccessToken: packEncrypted(encrypt(refreshed.accessToken, key)),
         encryptedRefreshToken: packEncrypted(encrypt(existing.refreshToken, key)),
@@ -581,17 +750,32 @@ export class DbTokenStore implements OAuthTokenStore {
         keyVersion: vaultAuthority.keyVersion,
       });
     } else {
-      if (!this.repo.updateAccessTokenIfCurrent) {
-        throw new Error('OAuth repository does not support revision-fenced refresh persistence.');
+      signal?.throwIfAborted();
+      if (this.connectorAccountId) {
+        if (!this.repo.updateAccessTokenByConnectorAccount) {
+          throw new Error('Account-bound token store requires revision-fenced refresh persistence.');
+        }
+        persisted = Boolean(await this.repo.updateAccessTokenByConnectorAccount(
+          userId,
+          provider,
+          this.connectorAccountId,
+          refreshed.accessToken,
+          refreshed.expiresAt,
+          refreshRevision,
+        ));
+      } else {
+        if (!this.repo.updateAccessTokenIfCurrent) {
+          throw new Error('OAuth repository does not support revision-fenced refresh persistence.');
+        }
+        persisted = await this.repo.updateAccessTokenIfCurrent({
+          id: refreshRowId,
+          userId,
+          provider,
+          expectedCredentialRevision: refreshRevision,
+          accessToken: refreshed.accessToken,
+          expiresAt: refreshed.expiresAt,
+        });
       }
-      persisted = await this.repo.updateAccessTokenIfCurrent({
-        id: sourceRow.id,
-        userId,
-        provider,
-        expectedCredentialRevision: sourceRow.credential_revision,
-        accessToken: refreshed.accessToken,
-        expiresAt: refreshed.expiresAt,
-      });
     }
     if (!persisted) {
       throw new Error('OAuth credential changed while refresh was in flight; refusing stale refresh result.');
@@ -611,5 +795,43 @@ export class DbTokenStore implements OAuthTokenStore {
       ...refreshed,
       refreshToken: existing.refreshToken,
     };
+  }
+
+  /**
+   * Materialize an account-bound bearer and prove which credential revision
+   * currently stores that exact bearer. Lazy migration is disabled for this
+   * operation so it cannot rotate the revision after the proof is returned.
+   */
+  async refreshIfExpiredWithRevision(
+    userId: string,
+    provider: string,
+  ): Promise<RevisionBoundOAuthTokenSet> {
+    if (!this.connectorAccountId) {
+      throw new Error('Revision-bound token materialization requires a connector account.');
+    }
+    const token = await this.refreshIfExpired(userId, provider, undefined, { lazyMigrate: false });
+    const row = await this.getBoundRow(userId, provider);
+    if (!row?.credential_revision || !UUID.test(row.credential_revision)) {
+      throw new Error('Account-bound OAuth row is missing its credential revision.');
+    }
+    const key = this.keyCache?.get(userId) ?? null;
+    const vaultGeneration = this.keyCache?.getGeneration(userId) ?? null;
+    const current = await this.materializeToken(userId, provider, row, {
+      key,
+      vaultGeneration,
+      lazyMigrate: false,
+    });
+    if (!current || !sameTokenSnapshot(current, token)) {
+      throw new Error('OAuth credential changed during token materialization.');
+    }
+    const scopes = [...current.scopes];
+    Object.freeze(scopes);
+    return Object.freeze({
+      accessToken: current.accessToken,
+      expiresAt: current.expiresAt,
+      provider: current.provider,
+      scopes,
+      credentialRevision: row.credential_revision,
+    });
   }
 }

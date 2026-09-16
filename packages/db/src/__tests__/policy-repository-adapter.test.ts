@@ -2,7 +2,6 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 const mockQuery = vi.fn();
 const mockPolicyRepository = {
-  findById: vi.fn(),
   createPolicy: vi.fn(),
   updatePolicy: vi.fn(),
   hardDeletePolicy: vi.fn(),
@@ -51,10 +50,14 @@ describe('policyRepositoryAdapter', () => {
       rowCount: 1,
     });
 
-    const policies = await policyRepositoryAdapter.getAllPolicies();
+    const policies = await policyRepositoryAdapter.getAllPolicies('user-1');
 
     expect(policies[0]?.priority).toBe(10);
     expect(typeof policies[0]?.priority).toBe('number');
+    expect(mockQuery).toHaveBeenCalledWith(
+      'SELECT * FROM action_policies WHERE user_id = $1 ORDER BY priority DESC',
+      ['user-1'],
+    );
   });
 
   it('normalizes direct getEnabledPolicies priority values from Cockroach INT8 strings', async () => {
@@ -63,10 +66,14 @@ describe('policyRepositoryAdapter', () => {
       rowCount: 1,
     });
 
-    const policies = await policyRepositoryAdapter.getEnabledPolicies();
+    const policies = await policyRepositoryAdapter.getEnabledPolicies('user-2');
 
     expect(policies[0]?.priority).toBe(20);
     expect(typeof policies[0]?.priority).toBe('number');
+    expect(mockQuery).toHaveBeenCalledWith(
+      'SELECT * FROM action_policies WHERE user_id = $1 AND is_active = true ORDER BY priority DESC',
+      ['user-2'],
+    );
   });
 
   it('normalizes direct getPoliciesByDomain priority values from Cockroach INT8 strings', async () => {
@@ -75,25 +82,42 @@ describe('policyRepositoryAdapter', () => {
       rowCount: 1,
     });
 
-    const policies = await policyRepositoryAdapter.getPoliciesByDomain('email');
+    const policies = await policyRepositoryAdapter.getPoliciesByDomain('email', 'user-3');
 
     expect(policies[0]?.priority).toBe(30);
     expect(typeof policies[0]?.priority).toBe('number');
     expect(mockQuery).toHaveBeenCalledWith(
-      'SELECT * FROM action_policies WHERE domain = $1 AND is_active = true ORDER BY priority DESC',
-      ['email'],
+      'SELECT * FROM action_policies WHERE domain = $1 AND user_id = $2 AND is_active = true ORDER BY priority DESC',
+      ['email', 'user-3'],
     );
   });
 
   it('normalizes repository-backed getPolicy priority values defensively', async () => {
-    mockPolicyRepository.findById.mockResolvedValue({
-      ...fakePolicyRow(),
-      priority: '40' as unknown as number,
+    mockQuery.mockResolvedValue({
+      rows: [{ ...fakePolicyRow(), priority: '40' as unknown as number }],
+      rowCount: 1,
     });
 
-    const policy = await policyRepositoryAdapter.getPolicy('policy-1');
+    const policy = await policyRepositoryAdapter.getPolicy('policy-1', 'user-4');
 
     expect(policy?.priority).toBe(40);
     expect(typeof policy?.priority).toBe('number');
+    expect(mockQuery).toHaveBeenCalledWith(
+      'SELECT * FROM action_policies WHERE id = $1 AND user_id = $2',
+      ['policy-1', 'user-4'],
+    );
+  });
+
+  it('returns no policy when the owner-scoped lookup finds no row', async () => {
+    mockQuery.mockResolvedValue({ rows: [], rowCount: 0 });
+
+    await expect(policyRepositoryAdapter.getPolicy('policy-1', 'other-user')).resolves.toBeNull();
+  });
+
+  it('fails before querying when an owner ID is empty', async () => {
+    await expect(policyRepositoryAdapter.getEnabledPolicies('')).rejects.toThrow(
+      'Policy reads require a non-empty owner ID.',
+    );
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 });

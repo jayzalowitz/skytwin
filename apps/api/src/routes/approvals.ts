@@ -17,6 +17,11 @@ import {
   PatternRepositoryAdapter,
   policyRepositoryAdapter,
   getPolicyAuthorityRevision,
+  gmailArchiveRuntimeRepositories,
+} from '@skytwin/db';
+import type {
+  RespondGmailArchiveApprovalInput,
+  RespondGmailArchiveApprovalResult,
 } from '@skytwin/db';
 import { TwinService } from '@skytwin/twin-model';
 import { PolicyEvaluator } from '@skytwin/policy-engine';
@@ -36,6 +41,7 @@ import type {
 } from '@skytwin/shared-types';
 import {
   ConfidenceLevel,
+  GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA,
   normalizeAdapterOutput,
   normalizeExecutionError,
   TrustTier,
@@ -59,8 +65,70 @@ import {
   isOutboundEmailAction,
   prepareEmailActionForExecution,
 } from '../email-attribution.js';
+import { classifyGmailArchiveApproval } from './gmail-archive-approval.js';
 
 const log = createLogger('api:approvals');
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const GMAIL_ARCHIVE_ACTION_KEYS = [
+  'actionType',
+  'confidence',
+  'costZeroIntent',
+  'decisionId',
+  'description',
+  'domain',
+  'estimatedCostCents',
+  'id',
+  'parameters',
+  'provenance',
+  'reasoning',
+  'reversible',
+] as const;
+const GMAIL_ARCHIVE_PARAMETER_KEYS = ['messageRefId', 'operation', 'schema'] as const;
+
+function ownDataSnapshot(
+  value: unknown,
+  expectedKeys: readonly string[],
+): Record<string, unknown> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(descriptors).sort();
+    const expectedNames = [...expectedKeys].sort();
+    if (names.length !== expectedKeys.length ||
+        names.some((name, index) => name !== expectedNames[index])) return null;
+    const snapshot: Record<string, unknown> = {};
+    for (const name of names) {
+      const descriptor = descriptors[name];
+      if (!descriptor || descriptor.enumerable !== true ||
+          !Object.prototype.hasOwnProperty.call(descriptor, 'value')) return null;
+      snapshot[name] = descriptor.value;
+    }
+    return snapshot;
+  } catch {
+    return null;
+  }
+}
+
+/** Positive authority for entering the dedicated archive response lifecycle. */
+function isCanonicalGmailArchiveApproval(value: unknown): boolean {
+  const action = ownDataSnapshot(value, GMAIL_ARCHIVE_ACTION_KEYS);
+  if (!action || typeof action['id'] !== 'string' || !UUID.test(action['id']) ||
+      typeof action['decisionId'] !== 'string' || !UUID.test(action['decisionId']) ||
+      action['actionType'] !== 'archive_email' || action['domain'] !== 'email' ||
+      typeof action['description'] !== 'string' || action['description'].trim().length === 0 ||
+      action['estimatedCostCents'] !== 0 || action['costZeroIntent'] !== 'verified_zero' ||
+      action['reversible'] !== true || action['confidence'] !== 'moderate' ||
+      typeof action['reasoning'] !== 'string' || action['reasoning'].trim().length === 0 ||
+      action['provenance'] !== 'untrusted_external') return false;
+  const parameters = ownDataSnapshot(action['parameters'], GMAIL_ARCHIVE_PARAMETER_KEYS);
+  return parameters !== null &&
+    parameters['schema'] === GMAIL_INBOX_MUTATION_CANDIDATE_SCHEMA &&
+    typeof parameters['messageRefId'] === 'string' && UUID.test(parameters['messageRefId']) &&
+    parameters['operation'] === 'archive';
+}
 
 async function bestEffortApprovalLedger(
   label: string,
@@ -231,7 +299,15 @@ function approvalMemoryCopy(input: {
 /**
  * Create the approvals handling router.
  */
-export function createApprovalsRouter(): Router {
+export interface ApprovalsRouterDependencies {
+  gmailArchiveApprovalResponder?: {
+    respond(input: RespondGmailArchiveApprovalInput): Promise<RespondGmailArchiveApprovalResult>;
+  };
+}
+
+export function createApprovalsRouter(
+  dependencies: ApprovalsRouterDependencies = {},
+): Router {
   const router = Router();
   bindUserIdParamValidator(router);
   bindUserIdParamOwnership(router);
@@ -420,12 +496,118 @@ export function createApprovalsRouter(): Router {
         return;
       }
 
-      // Verify ownership before mutating state
+      // Bind body ownership to a real session before even selecting a workflow.
+      // The explicit localhost development marker is the only exception; a
+      // directly mounted router with no authentication middleware is not.
+      const authenticatedOwner = req.authenticatedUserId ??
+        (req.developmentAuthBypassed === true ? body.userId : undefined);
+      if (req.authenticatedUserId && req.authenticatedUserId !== body.userId) {
+        res.status(403).json({ error: 'You can only respond to your own approval requests.' });
+        return;
+      }
+
+      // Read once to select the reserved workflow. The dedicated repository's
+      // transition is itself owner-scoped and revalidates the full canonical
+      // graph atomically before recording consent.
       const existing = await approvalRepository.findById(requestId);
       if (!existing) {
         res.status(404).json({ error: 'Approval request not found' });
         return;
       }
+
+      // Broad classification is the quarantine boundary: archive and invalid
+      // shapes cannot enter generic confirmation, feedback, policy, credential,
+      // routing, barrier, SSE, or execution paths.
+      const gmailArchiveClassification = classifyGmailArchiveApproval(existing.candidate_action);
+      if (gmailArchiveClassification.kind !== 'other') {
+        if (!authenticatedOwner) {
+          res.status(401).json({
+            error: 'Authentication required',
+            code: 'GMAIL_ARCHIVE_APPROVAL_AUTH_REQUIRED',
+          });
+          return;
+        }
+        if (body.userId !== authenticatedOwner || existing.user_id !== authenticatedOwner) {
+          res.status(403).json({
+            error: 'You can only respond to your own approval requests.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_FORBIDDEN',
+          });
+          return;
+        }
+        if (gmailArchiveClassification.kind === 'invalid' ||
+            !isCanonicalGmailArchiveApproval(existing.candidate_action)) {
+          res.status(409).json({
+            error: 'This Inbox approval cannot be processed because its persisted proposal is invalid.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_STATE',
+            requestId,
+          });
+          return;
+        }
+
+        const responseResult = await (
+          dependencies.gmailArchiveApprovalResponder ??
+          gmailArchiveRuntimeRepositories.approvalResponse
+        ).respond({
+          approvalId: requestId,
+          userId: authenticatedOwner,
+          action: body.action,
+          ...(body.reason === undefined ? {} : { reason: body.reason }),
+        });
+        if (!responseResult.ok) {
+          if (responseResult.error === 'invalid_input') {
+            res.status(400).json({
+              error: 'The approval response is invalid.',
+              code: 'GMAIL_ARCHIVE_APPROVAL_INVALID_REQUEST',
+              requestId,
+            });
+            return;
+          }
+          if (responseResult.error === 'not_found') {
+            res.status(404).json({
+              error: 'Approval request not found',
+              code: 'GMAIL_ARCHIVE_APPROVAL_NOT_FOUND',
+              requestId,
+            });
+            return;
+          }
+          if (responseResult.error === 'not_pending_or_expired') {
+            res.status(409).json({
+              error: 'Approval request is no longer pending or has expired.',
+              code: 'GMAIL_ARCHIVE_APPROVAL_NOT_PENDING_OR_EXPIRED',
+              requestId,
+            });
+            return;
+          }
+          res.status(409).json({
+            error: 'This approval was already resolved with a different response.',
+            code: 'GMAIL_ARCHIVE_APPROVAL_RESPONSE_CONFLICT',
+            requestId,
+          });
+          return;
+        }
+
+        const approval = responseResult.response.approval;
+        res.json({
+          workflow: 'gmail_archive',
+          status: 'approval_recorded',
+          requestId,
+          action: body.action,
+          reason: body.reason ?? null,
+          approval: {
+            id: approval.id,
+            status: approval.status,
+            respondedAt: approval.responded_at,
+          },
+          execution: null,
+          replayed: !responseResult.created,
+          processedAt: approval.responded_at,
+        });
+        return;
+      }
+
+      // Preserve generic behavior for ordinary actions. Production ownership
+      // middleware already binds authenticated requests; direct test/dev mounts
+      // still retain this row/body owner check.
       if (existing.user_id !== body.userId) {
         res.status(403).json({ error: 'You can only respond to your own approval requests.' });
         return;
@@ -550,7 +732,7 @@ export function createApprovalsRouter(): Router {
           },
         );
         approvedRiskAssessment = approvedPreparedExecution.riskAssessment;
-        const currentPolicies = await policyRepositoryAdapter.getAllPolicies();
+        const currentPolicies = await policyRepositoryAdapter.getAllPolicies(body.userId);
         const approvedPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
         approvedPolicyResult = await approvedPolicyEvaluator.evaluate(
           approvedCandidateAction,
@@ -728,7 +910,7 @@ export function createApprovalsRouter(): Router {
             const admissionUser = await userRepository.findById(body.userId);
             const prepared = approvedPreparedExecution!;
             const admissionRisk = prepared.riskAssessment;
-            const admissionPolicies = await policyRepositoryAdapter.getAllPolicies();
+            const admissionPolicies = await policyRepositoryAdapter.getAllPolicies(body.userId);
             const admissionPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
             const admissionPolicy = await admissionPolicyEvaluator.evaluate(
               candidateAction,
@@ -829,7 +1011,7 @@ export function createApprovalsRouter(): Router {
 
             const dispatchUser = await userRepository.findById(body.userId);
             const dispatchPolicyRevision = await getPolicyAuthorityRevision();
-            const dispatchPolicies = await policyRepositoryAdapter.getAllPolicies();
+            const dispatchPolicies = await policyRepositoryAdapter.getAllPolicies(body.userId);
             const dispatchPolicyEvaluator = new PolicyEvaluator(policyRepositoryAdapter);
             const dispatchPolicy = await dispatchPolicyEvaluator.evaluate(
               candidateAction,

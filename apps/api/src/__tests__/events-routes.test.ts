@@ -90,7 +90,10 @@ vi.mock('@skytwin/decision-engine', () => ({
     return { interpret: mockInterpret };
   }),
   DecisionMaker: vi.fn(function DecisionMaker() {
-    return { evaluate: mockEvaluate, reevaluatePreparedCandidates: mockReevaluate };
+    return {
+      evaluate: mockEvaluate,
+      reevaluatePreparedCandidates: mockReevaluate,
+    };
   }),
   LlmSituationStrategy: vi.fn(),
   LlmCandidateGenerator: vi.fn(),
@@ -104,11 +107,11 @@ vi.mock('@skytwin/decision-engine', () => ({
 vi.mock('@skytwin/twin-model', () => ({
   TwinService: vi.fn(function TwinService() {
     return {
-    getOrCreateProfile: vi.fn().mockResolvedValue({}),
-    getRelevantPreferences: vi.fn().mockResolvedValue([]),
-    getPatterns: vi.fn().mockResolvedValue([]),
-    getTraits: vi.fn().mockResolvedValue([]),
-    getTemporalProfile: vi.fn().mockResolvedValue({}),
+      getOrCreateProfile: vi.fn().mockResolvedValue({}),
+      getRelevantPreferences: vi.fn().mockResolvedValue([]),
+      getPatterns: vi.fn().mockResolvedValue([]),
+      getTraits: vi.fn().mockResolvedValue([]),
+      getTemporalProfile: vi.fn().mockResolvedValue({}),
     };
   }),
 }));
@@ -177,7 +180,11 @@ vi.mock('@skytwin/db', () => ({
         financial_impact: { tier: 'low', score: 0.2, reasoning: 'test' },
         legal_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
         privacy_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
-        relationship_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        relationship_sensitivity: {
+          tier: 'low',
+          score: 0.2,
+          reasoning: 'test',
+        },
         operational_risk: { tier: 'low', score: 0.2, reasoning: 'test' },
       },
       reasoning: 'test assessment',
@@ -196,20 +203,22 @@ vi.mock('@skytwin/llm-client', () => ({
 }));
 
 vi.mock('../lib/user-llm-client.js', () => ({
-  resolveUserLlmClient: vi.fn(async (
-    userId: string,
-    options: { onInferenceTrace?: (trace: unknown) => void },
-  ) => {
+  resolveUserLlmClient: vi.fn(async (userId: string, options: { onInferenceTrace?: (trace: unknown) => void }) => {
     const providers = await mockGetProviders();
     if (providers.length === 0) {
-      return { state: 'no_provider', client: null, reason: 'No provider in test' };
+      return {
+        state: 'no_provider',
+        client: null,
+        reason: 'No provider in test',
+      };
     }
     return {
       state: 'ready',
       client: mockLlmClient(providers, userId, options),
-      mode: providers[0]?.provider === 'embedded' || providers[0]?.provider === 'ollama'
-        ? 'on_device'
-        : 'bring_your_own_provider',
+      mode:
+        providers[0]?.provider === 'embedded' || providers[0]?.provider === 'ollama'
+          ? 'on_device'
+          : 'bring_your_own_provider',
     };
   }),
 }));
@@ -220,29 +229,38 @@ vi.mock('../workflows/registry.js', () => ({
   }),
 }));
 
-vi.mock('../workflows/calendar-conflict.js', () => ({ processCalendarConflict: vi.fn() }));
-vi.mock('../workflows/subscription-renewal.js', () => ({ processSubscriptionRenewal: vi.fn() }));
-vi.mock('../workflows/grocery-reorder.js', () => ({ processGroceryReorder: vi.fn() }));
-vi.mock('../workflows/travel-decision.js', () => ({ processTravelDecision: vi.fn() }));
+vi.mock('../workflows/calendar-conflict.js', () => ({
+  processCalendarConflict: vi.fn(),
+}));
+vi.mock('../workflows/subscription-renewal.js', () => ({
+  processSubscriptionRenewal: vi.fn(),
+}));
+vi.mock('../workflows/grocery-reorder.js', () => ({
+  processGroceryReorder: vi.fn(),
+}));
+vi.mock('../workflows/travel-decision.js', () => ({
+  processTravelDecision: vi.fn(),
+}));
 
 vi.mock('../execution-setup.js', () => ({
   getExecutionRouter: async (...args: unknown[]) => {
-    const router = await mockGetExecutionRouter(...args) as Record<string, unknown>;
+    const router = (await mockGetExecutionRouter(...args)) as Record<string, unknown>;
     if (typeof router['prepareExecution'] === 'function') return router;
-    const stream = router['executeWithRoutingStreaming'] as (
-      ...streamArgs: unknown[]
-    ) => AsyncIterable<unknown>;
+    const stream = router['executeWithRoutingStreaming'] as (...streamArgs: unknown[]) => AsyncIterable<unknown>;
     return {
       ...router,
       prepareExecution: vi.fn(async (_action: unknown, risk: Record<string, unknown>) => ({
-        handle: {}, adapterName: 'ironclaw', planId: 'plan-1',
-        riskAssessment: risk, streaming: true,
-        routingDecision: { selectedAdapter: 'ironclaw', reasoning: 'IronClaw prepared.' },
+        handle: {},
+        adapterName: 'ironclaw',
+        planId: 'plan-1',
+        riskAssessment: risk,
+        streaming: true,
+        routingDecision: {
+          selectedAdapter: 'ironclaw',
+          reasoning: 'IronClaw prepared.',
+        },
       })),
-      executePreparedStreaming: vi.fn((
-        _prepared: unknown,
-        ...streamArgs: unknown[]
-      ) => stream(...streamArgs)),
+      executePreparedStreaming: vi.fn((_prepared: unknown, ...streamArgs: unknown[]) => stream(...streamArgs)),
     };
   },
 }));
@@ -279,16 +297,28 @@ function buildApp(): Express {
 
 function ingestState(
   effectState: 'non_effect' | 'ready' | 'running' | 'completed' | 'failed' | 'restored_non_replay',
-  continuationKind: 'auto_execute' | 'approval' | 'non_effect' =
-    effectState === 'ready' || effectState === 'running' || effectState === 'completed' || effectState === 'failed'
-      ? 'auto_execute'
-      : 'non_effect',
+  continuationKind: 'auto_execute' | 'approval' | 'non_effect' = effectState === 'ready' ||
+  effectState === 'running' ||
+  effectState === 'completed' ||
+  effectState === 'failed'
+    ? 'auto_execute'
+    : 'non_effect',
 ) {
-  const selectedAction = continuationKind === 'non_effect' ? null : {
-    id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
-    description: 'Create calendar event', domain: 'calendar', parameters: {},
-    reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
-  };
+  const selectedAction =
+    continuationKind === 'non_effect'
+      ? null
+      : {
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'create_calendar_event',
+          description: 'Create calendar event',
+          domain: 'calendar',
+          parameters: {},
+          reversible: true,
+          estimatedCostCents: 0,
+          confidence: 'high',
+          reasoning: 'test',
+        };
   return {
     receiptCaptureComplete: true,
     receiptExplanationId: 'explanation-1',
@@ -300,21 +330,32 @@ function ingestState(
     sourceExecutionPlanId: effectState === 'completed' || effectState === 'failed' ? 'plan-prev' : null,
     continuation: {
       outcome: {
-        id: 'outcome-1', decisionId: 'decision-1', selectedAction,
-        allCandidates: selectedAction ? [selectedAction] : [], riskAssessment: null,
+        id: 'outcome-1',
+        decisionId: 'decision-1',
+        selectedAction,
+        allCandidates: selectedAction ? [selectedAction] : [],
+        riskAssessment: null,
         autoExecute: continuationKind === 'auto_execute',
         requiresApproval: continuationKind === 'approval',
         reasoning: continuationKind === 'non_effect' ? 'No action needed' : 'Previous run',
       },
       explanation: {
-        id: 'explanation-1', decisionId: 'decision-1', summary: 'Previous explanation',
-        riskTier: 'low', overallConfidence: 0.9,
+        id: 'explanation-1',
+        decisionId: 'decision-1',
+        summary: 'Previous explanation',
+        riskTier: 'low',
+        overallConfidence: 0.9,
       },
     },
   };
 }
 
-async function request(app: Express, method: string, path: string, body?: unknown): Promise<{ status: number; body: unknown }> {
+async function request(
+  app: Express,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
       const addr = server.address();
@@ -327,14 +368,16 @@ async function request(app: Express, method: string, path: string, body?: unknow
         method,
         headers: { 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
-      }).then(async (res) => {
-        const json = await res.json().catch(() => null);
-        server.close();
-        resolve({ status: res.status, body: json });
-      }).catch((error) => {
-        server.close();
-        reject(error);
-      });
+      })
+        .then(async (res) => {
+          const json = await res.json().catch(() => null);
+          server.close();
+          resolve({ status: res.status, body: json });
+        })
+        .catch((error) => {
+          server.close();
+          reject(error);
+        });
     });
   });
 }
@@ -396,8 +439,10 @@ describe('Events API routes', () => {
     mockGetOAuthToken.mockResolvedValue(null);
     mockGetAllPolicies.mockResolvedValue([]);
     mockFindUser.mockResolvedValue({
-      id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer',
-      ironclaw_channel: 'skytwin', execution_authority_revision: 'authority-revision-1',
+      id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      trust_tier: 'observer',
+      ironclaw_channel: 'skytwin',
+      execution_authority_revision: 'authority-revision-1',
     });
     mockRecordSignal.mockResolvedValue(undefined);
     mockCurrentPolicyEvaluate.mockResolvedValue({
@@ -405,13 +450,17 @@ describe('Events API routes', () => {
       requiresApproval: false,
       reason: 'Current policy allows automatic execution.',
     });
-    mockCreateReceipts.mockImplementation(async (
-      _userId: unknown,
-      inputs: unknown[],
-      completion: { continuation: unknown },
-    ) => ({ receipts: inputs, continuation: completion.continuation }));
+    mockCreateReceipts.mockImplementation(
+      async (_userId: unknown, inputs: unknown[], completion: { continuation: unknown }) => ({
+        receipts: inputs,
+        continuation: completion.continuation,
+      }),
+    );
     mockGetIngestState.mockResolvedValue(null);
-    mockClaimExecution.mockResolvedValue({ id: 'plan-1', dispatchAuthorityUpdatedAt: new Date() });
+    mockClaimExecution.mockResolvedValue({
+      id: 'plan-1',
+      dispatchAuthorityUpdatedAt: new Date(),
+    });
     mockIsExecutionDispatchable.mockResolvedValue(true);
     mockMarkExecutionTerminal.mockResolvedValue(true);
     mockMarkExecutionFailedBeforeDispatch.mockResolvedValue(true);
@@ -431,7 +480,10 @@ describe('Events API routes', () => {
       created: true,
     });
     mockGetExplanation.mockResolvedValue(null);
-    mockEmitReceipt.mockReturnValue({ exportVersion: 1, receipt: { id: 'receipt-1' } });
+    mockEmitReceipt.mockReturnValue({
+      exportVersion: 1,
+      receipt: { id: 'receipt-1' },
+    });
     mockLlmClient.mockImplementation(function MockLlmClient() {
       return { hasProviders: true };
     });
@@ -445,49 +497,77 @@ describe('Events API routes', () => {
       options: { onInferenceTrace: (trace: unknown) => void },
     ) {
       options.onInferenceTrace({
-        id: 'receipt-1', status: 'conventional',
+        id: 'receipt-1',
+        status: 'conventional',
         execution: { reasoningMode: 'bring_your_own_provider' },
         endpointIdentity: 'https://api.openai.com',
-        request: Buffer.from('request'), response: Buffer.from('response'),
-        cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
+        request: Buffer.from('request'),
+        response: Buffer.from('response'),
+        cost: { basis: 'unknown' },
+        createdAt: '2026-09-10T00:00:00.000Z',
         verifierVersion: 'boundary-v1',
       });
       return { hasProviders: true };
     });
     mockGenerate.mockResolvedValue({
       id: '44444444-4444-4444-8444-444444444444',
-      riskTier: 'low', summary: 'Low risk', overallConfidence: 0.9,
+      riskTier: 'low',
+      summary: 'Low risk',
+      overallConfidence: 0.9,
     });
     mockEvaluate.mockResolvedValue({
-      autoExecute: false, requiresApproval: true, reasoning: 'Needs approval',
+      autoExecute: false,
+      requiresApproval: true,
+      reasoning: 'Needs approval',
       selectedAction: {
-        id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
-        description: 'Create calendar event', domain: 'calendar', parameters: {},
-        reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+        id: 'action-1',
+        decisionId: 'decision-1',
+        actionType: 'create_calendar_event',
+        description: 'Create calendar event',
+        domain: 'calendar',
+        parameters: {},
+        reversible: true,
+        estimatedCostCents: 0,
+        confidence: 'high',
+        reasoning: 'test',
       },
       allCandidates: [],
     });
-    mockCreateReceipts.mockImplementationOnce(async (
-      _userId: unknown,
-      _inputs: unknown[],
-      completion: { continuation: unknown },
-    ) => ({ receipts: [{ id: 'receipt-1' }], continuation: completion.continuation }));
-    mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-1' }, created: true });
+    mockCreateReceipts.mockImplementationOnce(
+      async (_userId: unknown, _inputs: unknown[], completion: { continuation: unknown }) => ({
+        receipts: [{ id: 'receipt-1' }],
+        continuation: completion.continuation,
+      }),
+    );
+    mockApprovalCreate.mockResolvedValue({
+      row: { id: 'approval-1' },
+      created: true,
+    });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
-    expect(mockEmitReceipt).toHaveBeenCalledWith(expect.objectContaining({ id: 'receipt-1' }), {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-      decisionId: 'decision-1', explanationId: '44444444-4444-4444-8444-444444444444',
-    }, expect.objectContaining({ keyId: expect.any(String) }));
+    expect(mockEmitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'receipt-1' }),
+      {
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        decisionId: 'decision-1',
+        explanationId: '44444444-4444-4444-8444-444444444444',
+      },
+      expect.objectContaining({ keyId: expect.any(String) }),
+    );
     expect(mockCreateReceipts).toHaveBeenCalledTimes(1);
     expect(mockCreateReceipts).toHaveBeenCalledWith(
       'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
       expect.any(Array),
-      expect.objectContaining({ continuationKind: 'approval', confirmationLevel: 'single' }),
+      expect.objectContaining({
+        continuationKind: 'approval',
+        confirmationLevel: 'single',
+      }),
     );
     expect(mockCreateReceipts.mock.invocationCallOrder[0]).toBeLessThan(
       mockApprovalCreate.mock.invocationCallOrder[0]!,
@@ -495,23 +575,26 @@ describe('Events API routes', () => {
   });
 
   it('snapshots callback traces before later mutation can affect receipt emission', async () => {
-    mockGetProviders.mockResolvedValue([
-      { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
-    ]);
+    mockGetProviders.mockResolvedValue([{ provider: 'openai', api_key: 'key', model: 'model', base_url: null }]);
     mockLlmClient.mockImplementation(function MockMutatingLlmClient(
       _providers: unknown,
       _userId: unknown,
       options: { onInferenceTrace: (trace: Record<string, unknown>) => void },
     ) {
       const callbackVisible = {
-        id: 'receipt-original', status: 'conventional',
+        id: 'receipt-original',
+        status: 'conventional',
         execution: {
-          reasoningMode: 'bring_your_own_provider', provider: 'openai', model: 'original-model',
+          reasoningMode: 'bring_your_own_provider',
+          provider: 'openai',
+          model: 'original-model',
           executionPath: [{ provider: 'openai', outcome: 'succeeded' }],
         },
         endpointIdentity: 'https://api.openai.com',
-        request: Uint8Array.from([1, 2, 3]), response: Uint8Array.from([4, 5, 6]),
-        cost: { basis: 'unknown' }, createdAt: '2026-09-10T00:00:00.000Z',
+        request: Uint8Array.from([1, 2, 3]),
+        response: Uint8Array.from([4, 5, 6]),
+        cost: { basis: 'unknown' },
+        createdAt: '2026-09-10T00:00:00.000Z',
         verifierVersion: 'boundary-v1',
       };
       options.onInferenceTrace(callbackVisible);
@@ -523,38 +606,53 @@ describe('Events API routes', () => {
       return { hasProviders: true };
     });
     mockEvaluate.mockResolvedValue({
-      id: 'outcome-1', decisionId: 'decision-1', selectedAction: null,
-      allCandidates: [], autoExecute: false, requiresApproval: false,
+      id: 'outcome-1',
+      decisionId: 'decision-1',
+      selectedAction: null,
+      allCandidates: [],
+      autoExecute: false,
+      requiresApproval: false,
       reasoning: 'No action needed',
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
     expect(mockSnapshotTrace).toHaveBeenCalledOnce();
-    expect(mockEmitReceipt).toHaveBeenCalledWith(expect.objectContaining({
-      id: 'receipt-original',
-      execution: expect.objectContaining({ provider: 'openai', model: 'original-model' }),
-      request: Uint8Array.from([1, 2, 3]),
-      response: Uint8Array.from([4, 5, 6]),
-    }), expect.any(Object), expect.any(Object));
+    expect(mockEmitReceipt).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'receipt-original',
+        execution: expect.objectContaining({
+          provider: 'openai',
+          model: 'original-model',
+        }),
+        request: Uint8Array.from([1, 2, 3]),
+        response: Uint8Array.from([4, 5, 6]),
+      }),
+      expect.any(Object),
+      expect.any(Object),
+    );
   });
 
   it.each([
     ['calendar', 'create_calendar_event'],
     ['email', 'draft_email'],
-  ] as const)('keeps credentialed %s execution separate from captured authority', async (
-    _domain,
-    actionType,
-  ) => {
+  ] as const)('keeps credentialed %s execution separate from captured authority', async (_domain, actionType) => {
     const action = {
-      id: 'action-1', decisionId: 'decision-1', actionType,
+      id: 'action-1',
+      decisionId: 'decision-1',
+      actionType,
       description: actionType === 'draft_email' ? 'Draft reply' : 'Create calendar event',
       domain: actionType === 'draft_email' ? 'email' : 'calendar',
       parameters: actionType === 'draft_email' ? { draftBody: 'Hello there' } : { title: 'Planning' },
-      reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+      reversible: true,
+      estimatedCostCents: 0,
+      confidence: 'high',
+      reasoning: 'test',
     };
     const assessment = {
       actionId: action.id,
@@ -564,21 +662,36 @@ describe('Events API routes', () => {
         financial_impact: { tier: 'low', score: 0.2, reasoning: 'test' },
         legal_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
         privacy_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
-        relationship_sensitivity: { tier: 'low', score: 0.2, reasoning: 'test' },
+        relationship_sensitivity: {
+          tier: 'low',
+          score: 0.2,
+          reasoning: 'test',
+        },
         operational_risk: { tier: 'low', score: 0.2, reasoning: 'test' },
       },
-      reasoning: 'test assessment', assessedAt: new Date(),
+      reasoning: 'test assessment',
+      assessedAt: new Date(),
     };
     const initialOutcome = {
-      id: 'outcome-1', decisionId: 'decision-1', selectedAction: action,
-      allCandidates: [action], riskAssessment: assessment, allRiskAssessments: [assessment],
-      autoExecute: true, requiresApproval: false, reasoning: 'Allowed by policy',
-      policyVerdicts: { [action.id]: 'allowed' }, decidedAt: new Date(),
+      id: 'outcome-1',
+      decisionId: 'decision-1',
+      selectedAction: action,
+      allCandidates: [action],
+      riskAssessment: assessment,
+      allRiskAssessments: [assessment],
+      autoExecute: true,
+      requiresApproval: false,
+      reasoning: 'Allowed by policy',
+      policyVerdicts: { [action.id]: 'allowed' },
+      decidedAt: new Date(),
     };
     mockEvaluate.mockResolvedValue(initialOutcome);
     mockReevaluate.mockImplementation(async (_context, candidates: typeof initialOutcome.allCandidates) => {
       const selectedAction = candidates[0]!;
-      const reevaluatedRisk = { ...assessment, actionId: selectedAction.id };
+      const reevaluatedRisk = {
+        ...assessment,
+        actionId: selectedAction.id,
+      };
       return {
         ...initialOutcome,
         selectedAction,
@@ -591,33 +704,39 @@ describe('Events API routes', () => {
     mockGetOAuthToken.mockResolvedValue({ access_token: 'secret-token' });
 
     let captured: { outcome: typeof initialOutcome; explanation: unknown } | undefined;
-    mockCreateReceipts.mockImplementation(async (
-      _userId: unknown,
-      inputs: unknown[],
-      completion: { continuation: typeof captured },
-    ) => {
-      captured = structuredClone(completion.continuation!);
-      return { receipts: inputs, continuation: structuredClone(completion.continuation!) };
-    });
+    mockCreateReceipts.mockImplementation(
+      async (_userId: unknown, inputs: unknown[], completion: { continuation: typeof captured }) => {
+        captured = structuredClone(completion.continuation!);
+        return {
+          receipts: inputs,
+          continuation: structuredClone(completion.continuation!),
+        };
+      },
+    );
     let claimed: { outcome: typeof initialOutcome; explanation: unknown } | undefined;
-    mockClaimExecution.mockImplementation(async (
-      _userId: unknown,
-      _decisionId: unknown,
-      continuation: typeof claimed,
-    ) => {
-      claimed = structuredClone(continuation!);
-      return { id: 'plan-1', dispatchAuthorityUpdatedAt: new Date() };
-    });
+    mockClaimExecution.mockImplementation(
+      async (_userId: unknown, _decisionId: unknown, continuation: typeof claimed) => {
+        claimed = structuredClone(continuation!);
+        return { id: 'plan-1', dispatchAuthorityUpdatedAt: new Date() };
+      },
+    );
     let executed: Record<string, unknown> | undefined;
     mockGetExecutionRouter.mockResolvedValue({
       executeWithRoutingStreaming: vi.fn(async function* (candidate: Record<string, unknown>) {
         executed = structuredClone(candidate);
-        yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+        yield {
+          planId: 'plan-1',
+          eventType: 'plan_completed',
+          timestamp: new Date(),
+          payload: {},
+        };
       }),
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -626,10 +745,10 @@ describe('Events API routes', () => {
     expect(capturedAction.parameters).not.toHaveProperty('accessToken');
     expect(capturedAction.parameters).not.toHaveProperty('executionPlanId');
     expect(claimedAction).toEqual(capturedAction);
-    expect((executed!['parameters'] as Record<string, unknown>)).toMatchObject({
+    expect(executed!['parameters'] as Record<string, unknown>).toMatchObject({
       executionPlanId: 'plan-1',
     });
-    expect((executed!['parameters'] as Record<string, unknown>)).not.toHaveProperty('accessToken');
+    expect(executed!['parameters'] as Record<string, unknown>).not.toHaveProperty('accessToken');
     expect(mockGetOAuthToken).not.toHaveBeenCalled();
     if (actionType === 'draft_email') {
       expect(mockReevaluate).toHaveBeenCalledTimes(1);
@@ -647,7 +766,9 @@ describe('Events API routes', () => {
     mockGetProviders.mockResolvedValue([{ provider: 'openai', api_key: 'key', model: 'model', base_url: null }]);
     mockCreateReceipts.mockResolvedValue(null);
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
     expect(res.status).toBe(500);
     expect(mockApprovalCreate).not.toHaveBeenCalled();
@@ -656,7 +777,12 @@ describe('Events API routes', () => {
 
   it('converts auto-execution into a pending approval when the prepared adapter raises risk', async () => {
     const executePreparedStreaming = vi.fn(async function* () {
-      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {},
+      };
     });
     mockGetExecutionRouter.mockResolvedValue({
       prepareExecution: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
@@ -680,7 +806,9 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -688,14 +816,16 @@ describe('Events API routes', () => {
       actionId: 'action-1',
       overallTier: 'critical',
     });
-    expect(mockEscalateExecutionToApproval).toHaveBeenCalledWith(expect.objectContaining({
-      reason: expect.stringContaining('selected adapter raises this action'),
-      confirmationLevel: 'single',
-      dispatch: expect.objectContaining({
-        adapterName: 'openclaw',
-        riskSnapshot: expect.objectContaining({ overallTier: 'critical' }),
+    expect(mockEscalateExecutionToApproval).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: expect.stringContaining('selected adapter raises this action'),
+        confirmationLevel: 'single',
+        dispatch: expect.objectContaining({
+          adapterName: 'openclaw',
+          riskSnapshot: expect.objectContaining({ overallTier: 'critical' }),
+        }),
       }),
-    }));
+    );
     expect(mockApprovalCreate).not.toHaveBeenCalled();
     expect(mockMarkNonEffect).not.toHaveBeenCalled();
     expect(mockClaimExecution).not.toHaveBeenCalled();
@@ -704,7 +834,12 @@ describe('Events API routes', () => {
 
   it('durably closes a prepared adapter risk denial as a blocked non-effect', async () => {
     const executePreparedStreaming = vi.fn(async function* () {
-      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {},
+      };
     });
     mockGetExecutionRouter.mockResolvedValue({
       prepareExecution: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
@@ -728,7 +863,9 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -737,15 +874,17 @@ describe('Events API routes', () => {
       planId: null,
       error: 'The prepared execution path was blocked by current policy.',
     });
-    expect(mockRecordPolicyDenial).toHaveBeenCalledWith(expect.objectContaining({
-      scope: 'receipt',
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-      decisionId: 'decision-1',
-      actionId: 'action-1',
-      adapterName: 'openclaw',
-      riskSnapshot: expect.objectContaining({ overallTier: 'critical' }),
-      policySnapshot: expect.objectContaining({ allowed: false }),
-    }));
+    expect(mockRecordPolicyDenial).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scope: 'receipt',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        decisionId: 'decision-1',
+        actionId: 'action-1',
+        adapterName: 'openclaw',
+        riskSnapshot: expect.objectContaining({ overallTier: 'critical' }),
+        policySnapshot: expect.objectContaining({ allowed: false }),
+      }),
+    );
     expect(mockClaimExecution).not.toHaveBeenCalled();
     expect(mockApprovalCreate).not.toHaveBeenCalled();
     expect(executePreparedStreaming).not.toHaveBeenCalled();
@@ -761,9 +900,9 @@ describe('Events API routes', () => {
 
   it('durably closes a proven pre-request preparation refusal without claiming execution', async () => {
     mockGetExecutionRouter.mockResolvedValue({
-      prepareExecution: vi.fn().mockRejectedValue(
-        new NoRequestExecutionError('No exact ready adapter can handle this action.'),
-      ),
+      prepareExecution: vi
+        .fn()
+        .mockRejectedValue(new NoRequestExecutionError('No exact ready adapter can handle this action.')),
     });
     mockRecordPreparationDisposition.mockResolvedValue({
       explanationId: 'preparation-refusal-explanation-1',
@@ -772,7 +911,9 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -781,12 +922,14 @@ describe('Events API routes', () => {
       planId: null,
       error: '[redacted:execution-error]',
     });
-    expect(mockRecordPreparationDisposition).toHaveBeenCalledWith(expect.objectContaining({
-      decisionId: 'decision-1',
-      actionId: 'action-1',
-      ambiguous: false,
-      reason: '[redacted:execution-error]',
-    }));
+    expect(mockRecordPreparationDisposition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decisionId: 'decision-1',
+        actionId: 'action-1',
+        ambiguous: false,
+        reason: '[redacted:execution-error]',
+      }),
+    );
     expect(mockClaimExecution).not.toHaveBeenCalled();
   });
 
@@ -801,7 +944,9 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -810,42 +955,60 @@ describe('Events API routes', () => {
       planId: null,
       error: 'Adapter preparation outcome could not be classified before dispatch.',
     });
-    expect(mockRecordPreparationDisposition).toHaveBeenCalledWith(expect.objectContaining({
-      decisionId: 'decision-1', actionId: 'action-1', ambiguous: true,
-    }));
+    expect(mockRecordPreparationDisposition).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decisionId: 'decision-1',
+        actionId: 'action-1',
+        ambiguous: true,
+      }),
+    );
     expect(mockClaimExecution).not.toHaveBeenCalled();
   });
 
   it('does not claim or dispatch when atomic prepared-risk escalation loses its authority', async () => {
     mockGetExecutionRouter.mockResolvedValue({
       prepareExecution: vi.fn(async (_action: unknown, sourceRisk: Record<string, unknown>) => ({
-        handle: {}, adapterName: 'openclaw', planId: 'plan-1', streaming: true,
+        handle: {},
+        adapterName: 'openclaw',
+        planId: 'plan-1',
+        streaming: true,
         riskAssessment: { ...sourceRisk, overallTier: 'critical' },
-        routingDecision: { selectedAdapter: 'openclaw', reasoning: 'OpenClaw prepared.' },
+        routingDecision: {
+          selectedAdapter: 'openclaw',
+          reasoning: 'OpenClaw prepared.',
+        },
       })),
       executePreparedStreaming: vi.fn(),
     });
     mockCurrentPolicyEvaluate.mockResolvedValue({
-      allowed: true, requiresApproval: true, reason: 'Prepared risk requires approval.',
+      allowed: true,
+      requiresApproval: true,
+      reason: 'Prepared risk requires approval.',
       confirmationLevel: 'single',
     });
     mockEscalateExecutionToApproval.mockResolvedValue(null);
     mockGetIngestState.mockResolvedValue(ingestState('running', 'auto_execute'));
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
     expect((res.body as { execution: unknown }).execution).toEqual({
-      status: 'ambiguous', planId: null,
+      status: 'ambiguous',
+      planId: null,
     });
     expect(mockClaimExecution).not.toHaveBeenCalled();
     expect(mockApprovalCreate).not.toHaveBeenCalled();
   });
 
   it('suppresses retry and hydrates the persisted prepared-risk denial projection', async () => {
-    mockSaveDecision.mockImplementation(async (decision: unknown) => ({ decision, created: false }));
+    mockSaveDecision.mockImplementation(async (decision: unknown) => ({
+      decision,
+      created: false,
+    }));
     mockGetIngestState.mockResolvedValue(ingestState('non_effect', 'auto_execute'));
     mockFindExecutionDisposition.mockResolvedValue({
       explanationId: 'execution-policy-denial-1',
@@ -856,13 +1019,17 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
       reIngested: true,
-      outcome: { reasoning: 'The selected adapter is above the current policy ceiling.' },
+      outcome: {
+        reasoning: 'The selected adapter is above the current policy ceiling.',
+      },
       explanation: {
         summary: 'Execution was blocked before dispatch.',
         riskTier: 'critical',
@@ -886,19 +1053,37 @@ describe('Events API routes', () => {
       created: saveCount++ === 0,
     }));
     mockEvaluate.mockResolvedValue({
-      id: 'outcome-1', decisionId: 'decision-1', autoExecute: false, requiresApproval: true,
-      reasoning: 'Needs approval', selectedAction: {
-        id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
-        description: 'Create calendar event', domain: 'calendar', parameters: {},
-        reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
-      }, allCandidates: [], riskAssessment: null,
+      id: 'outcome-1',
+      decisionId: 'decision-1',
+      autoExecute: false,
+      requiresApproval: true,
+      reasoning: 'Needs approval',
+      selectedAction: {
+        id: 'action-1',
+        decisionId: 'decision-1',
+        actionType: 'create_calendar_event',
+        description: 'Create calendar event',
+        domain: 'calendar',
+        parameters: {},
+        reversible: true,
+        estimatedCostCents: 0,
+        confidence: 'high',
+        reasoning: 'test',
+      },
+      allCandidates: [],
+      riskAssessment: null,
     });
     mockCreateReceipts.mockRejectedValueOnce(new Error('commit response lost'));
     mockGetIngestState.mockResolvedValue(ingestState('non_effect', 'approval'));
-    mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-1', status: 'pending' }, created: true });
+    mockApprovalCreate.mockResolvedValue({
+      row: { id: 'approval-1', status: 'pending' },
+      created: true,
+    });
     const app = buildApp();
     const body = {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     };
 
     expect((await request(app, 'POST', '/api/events/ingest', body)).status).toBe(500);
@@ -914,8 +1099,12 @@ describe('Events API routes', () => {
     let saveCount = 0;
     let firstSaveStarted!: () => void;
     let secondSaveStarted!: () => void;
-    const firstAtSave = new Promise<void>((resolve) => { firstSaveStarted = resolve; });
-    const secondAtSave = new Promise<void>((resolve) => { secondSaveStarted = resolve; });
+    const firstAtSave = new Promise<void>((resolve) => {
+      firstSaveStarted = resolve;
+    });
+    const secondAtSave = new Promise<void>((resolve) => {
+      secondSaveStarted = resolve;
+    });
     mockSaveDecision.mockImplementation(async (decision: unknown) => {
       const call = saveCount++;
       if (call === 0) {
@@ -926,11 +1115,16 @@ describe('Events API routes', () => {
       secondSaveStarted();
       return { decision, created: false };
     });
-    mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-first' }, created: true });
+    mockApprovalCreate.mockResolvedValue({
+      row: { id: 'approval-first' },
+      created: true,
+    });
     const app = buildApp();
     const body = {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', signalId: 'signal-race',
-      source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      signalId: 'signal-race',
+      source: 'test',
+      type: 'calendar_event',
     };
 
     const firstRequest = request(app, 'POST', '/api/events/ingest', body);
@@ -1009,16 +1203,17 @@ describe('Events API routes', () => {
         expect.anything(),
       );
       // Outcome re-saved with requires_approval flipped to false (digest FYI).
-      expect(mockSaveOutcome).toHaveBeenCalledWith(
-        expect.objectContaining({ requiresApproval: false }),
-      );
+      expect(mockSaveOutcome).toHaveBeenCalledWith(expect.objectContaining({ requiresApproval: false }));
       expect((res.body as { approval: unknown }).approval).toBeNull();
     });
 
     it('still creates the approval row when the flag is off (Phase 0 no-op)', async () => {
       delete process.env['AWARENESS_DISPOSITION_GATE'];
       setupNewsletter();
-      mockApprovalCreate.mockResolvedValue({ row: { id: 'ar-1', status: 'pending' }, created: true });
+      mockApprovalCreate.mockResolvedValue({
+        row: { id: 'ar-1', status: 'pending' },
+        created: true,
+      });
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -1059,7 +1254,10 @@ describe('Events API routes', () => {
         },
         allCandidates: [],
       });
-      mockApprovalCreate.mockResolvedValue({ row: { id: 'ar-1', status: 'pending' }, created: true });
+      mockApprovalCreate.mockResolvedValue({
+        row: { id: 'ar-1', status: 'pending' },
+        created: true,
+      });
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -1142,7 +1340,10 @@ describe('Events API routes', () => {
       // including ON CONFLICT DO NOTHING. A re-ingested signal would
       // re-flash the badge for an approval the user has already seen.
       setupApprovalFlow();
-      mockApprovalCreate.mockResolvedValue({ row: approvalRow, created: false });
+      mockApprovalCreate.mockResolvedValue({
+        row: approvalRow,
+        created: false,
+      });
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -1154,7 +1355,9 @@ describe('Events API routes', () => {
       // The route response still surfaces the (existing) approval so the
       // API caller's bookkeeping is consistent — only the SSE emit is
       // suppressed.
-      const body = res.body as { approval: { id: string; status: string } | null };
+      const body = res.body as {
+        approval: { id: string; status: string } | null;
+      };
       expect(body.approval).toEqual({ id: 'ar-1', status: 'pending' });
       // No approval:new emission.
       expect(mockSseManager.emit).not.toHaveBeenCalledWith(
@@ -1219,9 +1422,7 @@ describe('Events API routes', () => {
         summary: 'Previously captured signal',
       });
       mockGetIngestState.mockResolvedValue(ingestState('completed'));
-      mockGetProviders.mockResolvedValue([
-        { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
-      ]);
+      mockGetProviders.mockResolvedValue([{ provider: 'openai', api_key: 'key', model: 'model', base_url: null }]);
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -1231,10 +1432,7 @@ describe('Events API routes', () => {
       });
 
       expect(res.status).toBe(200);
-      expect(mockFindBySignalId).toHaveBeenCalledWith(
-        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-        'signal-finalized',
-      );
+      expect(mockFindBySignalId).toHaveBeenCalledWith('b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'signal-finalized');
       expect(mockGetProviders).not.toHaveBeenCalled();
       expect(mockLlmClient).not.toHaveBeenCalled();
       expect(mockInterpret).not.toHaveBeenCalled();
@@ -1261,9 +1459,7 @@ describe('Events API routes', () => {
         interpretedAt: new Date('2026-09-10T00:00:00.000Z'),
       });
       mockGetIngestState.mockResolvedValue(null);
-      mockGetProviders.mockResolvedValue([
-        { provider: 'openai', api_key: 'key', model: 'model', base_url: null },
-      ]);
+      mockGetProviders.mockResolvedValue([{ provider: 'openai', api_key: 'key', model: 'model', base_url: null }]);
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
         userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
@@ -1299,32 +1495,53 @@ describe('Events API routes', () => {
     });
 
     it('resumes approval creation after committed receipt capture without repeating inference', async () => {
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
       mockGetOutcome.mockResolvedValue({
-        decisionId: 'decision-1', selectedAction: {
-          id: 'action-1', decisionId: 'decision-1', actionType: 'label_email',
-          description: 'Label', parameters: {}, reversible: true,
+        decisionId: 'decision-1',
+        selectedAction: {
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'label_email',
+          description: 'Label',
+          parameters: {},
+          reversible: true,
         },
-        autoExecute: false, requiresApproval: true, reasoning: 'Previous partial run',
+        autoExecute: false,
+        requiresApproval: true,
+        reasoning: 'Previous partial run',
         allCandidates: [],
       });
       mockApprovalFindByDecisionId.mockResolvedValue(null);
       mockGetIngestState.mockResolvedValue(ingestState('non_effect', 'approval'));
       mockGetExplanation.mockResolvedValue({
-        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+        id: 'explanation-1',
+        summary: 'Previous explanation',
+        riskTier: 'low',
+        overallConfidence: 0.9,
       });
-      mockApprovalCreate.mockResolvedValue({ row: { id: 'approval-1', status: 'pending' }, created: true });
+      mockApprovalCreate.mockResolvedValue({
+        row: { id: 'approval-1', status: 'pending' },
+        created: true,
+      });
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'test',
+        type: 'calendar_event',
       });
       expect(res.status).toBe(200);
       expect(mockEvaluate).not.toHaveBeenCalled();
       expect(mockCreateReceipts).not.toHaveBeenCalled();
       expect(mockGetOutcome).not.toHaveBeenCalled();
       expect(mockGetExplanation).not.toHaveBeenCalled();
-      expect(mockApprovalCreate).toHaveBeenCalledWith(expect.objectContaining({
-        decisionId: 'decision-1', confirmationLevel: 'dual',
-      }));
+      expect(mockApprovalCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decisionId: 'decision-1',
+          confirmationLevel: 'dual',
+        }),
+      );
     });
 
     it('skips evaluate / saveCandidates / approvalCreate when a previous outcome is recoverable', async () => {
@@ -1384,18 +1601,30 @@ describe('Events API routes', () => {
     });
 
     it('resumes committed informational work without repeating inference or receipt capture', async () => {
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
       mockGetOutcome.mockResolvedValue({
-        decisionId: 'decision-1', selectedAction: null, autoExecute: false,
-        requiresApproval: false, reasoning: 'No action needed', allCandidates: [],
+        decisionId: 'decision-1',
+        selectedAction: null,
+        autoExecute: false,
+        requiresApproval: false,
+        reasoning: 'No action needed',
+        allCandidates: [],
       });
       mockGetExplanation.mockResolvedValue({
-        id: 'explanation-1', summary: 'No action needed', riskTier: 'low', overallConfidence: 0.9,
+        id: 'explanation-1',
+        summary: 'No action needed',
+        riskTier: 'low',
+        overallConfidence: 0.9,
       });
       mockGetIngestState.mockResolvedValue(ingestState('non_effect'));
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'travel_decision',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'test',
+        type: 'travel_decision',
       });
 
       expect(res.status).toBe(200);
@@ -1423,7 +1652,11 @@ describe('Events API routes', () => {
         reasoning: 'Auto-executed on first ingest',
       });
       mockExecutionRepository.getByDecisionId.mockResolvedValue({
-        plan: { id: 'plan-prev', decision_id: 'decision-1', status: 'completed' },
+        plan: {
+          id: 'plan-prev',
+          decision_id: 'decision-1',
+          status: 'completed',
+        },
         result: { plan_id: 'plan-prev', success: true },
       });
       mockGetIngestState.mockResolvedValue(ingestState('completed'));
@@ -1440,7 +1673,10 @@ describe('Events API routes', () => {
         execution: { status: string; planId: string } | null;
       };
       expect(body.reIngested).toBe(true);
-      expect(body.execution).toEqual({ status: 'completed', planId: 'plan-prev' });
+      expect(body.execution).toEqual({
+        status: 'completed',
+        planId: 'plan-prev',
+      });
 
       // The action MUST NOT have run a second time.
       expect(mockEvaluate).not.toHaveBeenCalled();
@@ -1497,20 +1733,41 @@ describe('Events API routes', () => {
 
     it('resumes a committed ready execution with one claim and no repeated inference', async () => {
       async function* completedStream() {
-        yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+        yield {
+          planId: 'plan-1',
+          eventType: 'plan_completed',
+          timestamp: new Date(),
+          payload: {},
+        };
       }
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
       mockGetOutcome.mockResolvedValue({
         decisionId: 'decision-1',
         selectedAction: {
-          id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
-          description: 'Create calendar event', domain: 'calendar', parameters: {},
-          reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'create_calendar_event',
+          description: 'Create calendar event',
+          domain: 'calendar',
+          parameters: {},
+          reversible: true,
+          estimatedCostCents: 0,
+          confidence: 'high',
+          reasoning: 'test',
         },
-        autoExecute: true, requiresApproval: false, reasoning: 'Previous ready run', allCandidates: [],
+        autoExecute: true,
+        requiresApproval: false,
+        reasoning: 'Previous ready run',
+        allCandidates: [],
       });
       mockGetExplanation.mockResolvedValue({
-        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+        id: 'explanation-1',
+        summary: 'Previous explanation',
+        riskTier: 'low',
+        overallConfidence: 0.9,
       });
       mockGetIngestState.mockResolvedValue(ingestState('ready'));
       mockGetExecutionRouter.mockResolvedValue({
@@ -1518,7 +1775,9 @@ describe('Events API routes', () => {
       });
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'gmail', type: 'email',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'email',
       });
 
       expect(res.status).toBe(200);
@@ -1531,71 +1790,129 @@ describe('Events API routes', () => {
       expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
       expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
       expect(mockMarkExecutionTerminal).toHaveBeenCalledWith(
-        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', 'decision-1', 'completed', 'plan-1',
+        'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        'decision-1',
+        'completed',
+        'plan-1',
       );
     });
 
     it('does not claim recovered ready work after a user or operator pause', async () => {
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
       mockGetOutcome.mockResolvedValue({
         decisionId: 'decision-1',
         selectedAction: {
-          id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
-          description: 'Create calendar event', domain: 'calendar', parameters: {},
-          reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'create_calendar_event',
+          description: 'Create calendar event',
+          domain: 'calendar',
+          parameters: {},
+          reversible: true,
+          estimatedCostCents: 0,
+          confidence: 'high',
+          reasoning: 'test',
         },
-        autoExecute: true, requiresApproval: false, reasoning: 'Previous ready run', allCandidates: [],
+        autoExecute: true,
+        requiresApproval: false,
+        reasoning: 'Previous ready run',
+        allCandidates: [],
       });
       mockGetExplanation.mockResolvedValue({
-        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+        id: 'explanation-1',
+        summary: 'Previous explanation',
+        riskTier: 'low',
+        overallConfidence: 0.9,
       });
       mockGetIngestState.mockResolvedValue(ingestState('ready'));
       mockCurrentPolicyEvaluate.mockResolvedValueOnce({
-        allowed: false, requiresApproval: true, reason: 'Auto-execution paused by user.',
+        allowed: false,
+        requiresApproval: true,
+        reason: 'Auto-execution paused by user.',
       });
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'gmail', type: 'email',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'email',
       });
 
       expect(res.status).toBe(200);
       expect((res.body as { execution: { status: string } }).execution.status).toBe('blocked');
       expect(mockClaimExecution).not.toHaveBeenCalled();
       expect(mockGetExecutionRouter).toHaveBeenCalledTimes(1);
-      expect(mockRecordPolicyDenial).toHaveBeenCalledWith(expect.objectContaining({
-        scope: 'receipt',
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
-        decisionId: 'decision-1',
-        actionId: 'action-1',
-        policySnapshot: expect.objectContaining({ allowed: false }),
-      }));
+      expect(mockRecordPolicyDenial).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'receipt',
+          userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+          decisionId: 'decision-1',
+          actionId: 'action-1',
+          policySnapshot: expect.objectContaining({ allowed: false }),
+        }),
+      );
     });
 
     it('fences a policy change after recovered work is claimed but before dispatch', async () => {
       const stream = vi.fn(async function* () {
-        yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+        yield {
+          planId: 'plan-1',
+          eventType: 'plan_completed',
+          timestamp: new Date(),
+          payload: {},
+        };
       });
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
       mockGetOutcome.mockResolvedValue({
         decisionId: 'decision-1',
         selectedAction: {
-          id: 'action-1', decisionId: 'decision-1', actionType: 'create_calendar_event',
-          description: 'Create calendar event', domain: 'calendar', parameters: {},
-          reversible: true, estimatedCostCents: 0, confidence: 'high', reasoning: 'test',
+          id: 'action-1',
+          decisionId: 'decision-1',
+          actionType: 'create_calendar_event',
+          description: 'Create calendar event',
+          domain: 'calendar',
+          parameters: {},
+          reversible: true,
+          estimatedCostCents: 0,
+          confidence: 'high',
+          reasoning: 'test',
         },
-        autoExecute: true, requiresApproval: false, reasoning: 'Previous ready run', allCandidates: [],
+        autoExecute: true,
+        requiresApproval: false,
+        reasoning: 'Previous ready run',
+        allCandidates: [],
       });
       mockGetExplanation.mockResolvedValue({
-        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+        id: 'explanation-1',
+        summary: 'Previous explanation',
+        riskTier: 'low',
+        overallConfidence: 0.9,
       });
       mockGetIngestState.mockResolvedValue(ingestState('ready'));
-      mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+      mockGetExecutionRouter.mockResolvedValue({
+        executeWithRoutingStreaming: stream,
+      });
       mockCurrentPolicyEvaluate
-        .mockResolvedValueOnce({ allowed: true, requiresApproval: false, reason: 'Allowed at claim.' })
-        .mockResolvedValueOnce({ allowed: false, requiresApproval: true, reason: 'Operator paused.' });
+        .mockResolvedValueOnce({
+          allowed: true,
+          requiresApproval: false,
+          reason: 'Allowed at claim.',
+        })
+        .mockResolvedValueOnce({
+          allowed: false,
+          requiresApproval: true,
+          reason: 'Operator paused.',
+        });
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'gmail', type: 'email',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'gmail',
+        type: 'email',
       });
 
       expect(res.status).toBe(200);
@@ -1608,21 +1925,37 @@ describe('Events API routes', () => {
     });
 
     it('never resumes a ready execution after a fail-closed approval exists', async () => {
-      mockSaveDecision.mockImplementation(async (d: unknown) => ({ decision: d, created: false }));
+      mockSaveDecision.mockImplementation(async (d: unknown) => ({
+        decision: d,
+        created: false,
+      }));
       mockGetOutcome.mockResolvedValue({
-        decisionId: 'decision-1', selectedAction: {
-          id: 'action-1', actionType: 'create_calendar_event', description: 'Create event',
+        decisionId: 'decision-1',
+        selectedAction: {
+          id: 'action-1',
+          actionType: 'create_calendar_event',
+          description: 'Create event',
         },
-        autoExecute: true, requiresApproval: false, reasoning: 'Originally automatic',
+        autoExecute: true,
+        requiresApproval: false,
+        reasoning: 'Originally automatic',
       });
-      mockApprovalFindByDecisionId.mockResolvedValue({ id: 'approval-1', status: 'pending' });
+      mockApprovalFindByDecisionId.mockResolvedValue({
+        id: 'approval-1',
+        status: 'pending',
+      });
       mockGetExplanation.mockResolvedValue({
-        id: 'explanation-1', summary: 'Previous explanation', riskTier: 'low', overallConfidence: 0.9,
+        id: 'explanation-1',
+        summary: 'Previous explanation',
+        riskTier: 'low',
+        overallConfidence: 0.9,
       });
       mockGetIngestState.mockResolvedValue(ingestState('ready'));
 
       const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+        userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+        source: 'test',
+        type: 'calendar_event',
       });
 
       expect(res.status).toBe(200);
@@ -1630,7 +1963,6 @@ describe('Events API routes', () => {
       expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
       expect(mockGetExecutionRouter).not.toHaveBeenCalled();
     });
-
   });
 
   it('does not dispatch when the ready execution claim is ambiguous or already consumed', async () => {
@@ -1638,7 +1970,9 @@ describe('Events API routes', () => {
     mockGetIngestState.mockResolvedValue(ingestState('running'));
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1652,7 +1986,9 @@ describe('Events API routes', () => {
     mockGetIngestState.mockResolvedValue(ingestState('running'));
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1666,7 +2002,12 @@ describe('Events API routes', () => {
     ['throw after commit', new Error('terminal response lost')],
   ] as const)('does not surface terminal truth after a %s', async (_label, terminalResponse) => {
     async function* completedStream() {
-      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {},
+      };
     }
     mockGetExecutionRouter.mockResolvedValue({
       executeWithRoutingStreaming: vi.fn(() => completedStream()),
@@ -1678,17 +2019,20 @@ describe('Events API routes', () => {
     }
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
-    expect(mockExecutionRepository.createResult).toHaveBeenCalledWith(expect.objectContaining({
-      planId: 'plan-1', success: true,
-    }));
-    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
-    expect(mockSseManager.emit).not.toHaveBeenCalledWith(
-      expect.anything(), 'decision:executed', expect.anything(),
+    expect(mockExecutionRepository.createResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planId: 'plan-1',
+        success: true,
+      }),
     );
+    expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
+    expect(mockSseManager.emit).not.toHaveBeenCalledWith(expect.anything(), 'decision:executed', expect.anything());
   });
 
   it('leaves execution ambiguous when the stream throws without a typed no-effect result', async () => {
@@ -1715,7 +2059,10 @@ describe('Events API routes', () => {
     );
     expect(mockExecutionRepository.createPlan).not.toHaveBeenCalled();
     const body = res.body as { execution: { status: string; planId: string } };
-    expect(body.execution).toMatchObject({ status: 'ambiguous', planId: 'plan-1' });
+    expect(body.execution).toMatchObject({
+      status: 'ambiguous',
+      planId: 'plan-1',
+    });
   });
 
   it('redacts echoed credentials and arbitrary adapter bodies from event, result, and SSE evidence', async () => {
@@ -1736,16 +2083,18 @@ describe('Events API routes', () => {
         },
       };
     });
-    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: stream,
+    });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
-    expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(
-      stream.mock.invocationCallOrder[0]!,
-    );
+    expect(mockIsExecutionDispatchable.mock.invocationCallOrder[0]).toBeLessThan(stream.mock.invocationCallOrder[0]!);
     expect(mockGetOAuthToken).not.toHaveBeenCalled();
     const stepSse = mockSseManager.emit.mock.calls.find((call) => call[1] === 'decision:step');
     const evidence = JSON.stringify({
@@ -1766,32 +2115,49 @@ describe('Events API routes', () => {
   it('does not persist or emit an adapter-authored token-shaped step identity', async () => {
     const stream = vi.fn(async function* () {
       yield {
-        planId: 'plan-1', stepId: 'ya29.adapter-secret',
-        eventType: 'step_started', timestamp: new Date(), payload: {},
+        planId: 'plan-1',
+        stepId: 'ya29.adapter-secret',
+        eventType: 'step_started',
+        timestamp: new Date(),
+        payload: {},
       };
     });
-    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: stream,
+    });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
     expect((res.body as { execution: { status: string } }).execution.status).toBe('ambiguous');
     expect(mockExecutionRepository.createEvent).not.toHaveBeenCalled();
-    expect(mockSseManager.emit.mock.calls.some((call) =>
-      JSON.stringify(call).includes('ya29.adapter-secret'))).toBe(false);
+    expect(mockSseManager.emit.mock.calls.some((call) => JSON.stringify(call).includes('ya29.adapter-secret'))).toBe(
+      false,
+    );
   });
 
   it('delegates credential lookup to the streaming adapter boundary', async () => {
     const stream = vi.fn(async function* (candidate: Record<string, unknown>) {
       expect(candidate['parameters']).not.toHaveProperty('accessToken');
-      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {},
+      };
     });
-    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: stream,
+    });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1801,13 +2167,22 @@ describe('Events API routes', () => {
 
   it('records a terminal no-effect failure when the exact gate refuses before router invocation', async () => {
     const stream = vi.fn(async function* () {
-      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {},
+      };
     });
-    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: stream,
+    });
     mockIsExecutionDispatchable.mockResolvedValueOnce(false);
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1824,14 +2199,21 @@ describe('Events API routes', () => {
 
   it('rejects a terminal event from a different execution plan', async () => {
     async function* stalePlanStream() {
-      yield { planId: 'stale-plan', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
+      yield {
+        planId: 'stale-plan',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {},
+      };
     }
     mockGetExecutionRouter.mockResolvedValue({
       executeWithRoutingStreaming: vi.fn(() => stalePlanStream()),
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1843,15 +2225,27 @@ describe('Events API routes', () => {
 
   it('does not terminalize a stream with conflicting terminal events', async () => {
     async function* conflictingStream() {
-      yield { planId: 'plan-1', eventType: 'plan_completed', timestamp: new Date(), payload: {} };
-      yield { planId: 'plan-1', eventType: 'plan_failed', timestamp: new Date(), payload: {} };
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_completed',
+        timestamp: new Date(),
+        payload: {},
+      };
+      yield {
+        planId: 'plan-1',
+        eventType: 'plan_failed',
+        timestamp: new Date(),
+        payload: {},
+      };
     }
     mockGetExecutionRouter.mockResolvedValue({
       executeWithRoutingStreaming: vi.fn(() => conflictingStream()),
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1870,7 +2264,9 @@ describe('Events API routes', () => {
     });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1888,8 +2284,10 @@ describe('Events API routes', () => {
     let finalPolicyAwaited = false;
     let policyReads = 0;
     mockFindUser.mockResolvedValue({
-      id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', trust_tier: 'observer',
-      ironclaw_channel: 'old-channel', execution_authority_revision: 'old-channel-revision',
+      id: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      trust_tier: 'observer',
+      ironclaw_channel: 'old-channel',
+      execution_authority_revision: 'old-channel-revision',
     });
     mockGetAllPolicies.mockImplementation(async () => {
       policyReads += 1;
@@ -1907,10 +2305,14 @@ describe('Events API routes', () => {
       expect(context.ironclawChannel).toBe('old-channel');
       throw new NoRequestExecutionError('channel authority changed before request start');
     });
-    mockGetExecutionRouter.mockResolvedValue({ executeWithRoutingStreaming: stream });
+    mockGetExecutionRouter.mockResolvedValue({
+      executeWithRoutingStreaming: stream,
+    });
 
     const res = await request(buildApp(), 'POST', '/api/events/ingest', {
-      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e', source: 'test', type: 'calendar_event',
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'test',
+      type: 'calendar_event',
     });
 
     expect(res.status).toBe(200);
@@ -1918,5 +2320,80 @@ describe('Events API routes', () => {
     expect(mockMarkExecutionFailedBeforeDispatch).toHaveBeenCalledOnce();
     expect(mockMarkExecutionTerminal).not.toHaveBeenCalled();
     expect((res.body as { execution: { status: string } }).execution.status).toBe('failed');
+  });
+
+  it('rejects connectorEvidence without the loopback service-auth authority', async () => {
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'gmail',
+      type: 'email',
+      signalId: 'sig-forged',
+      connectorEvidence: {
+        kind: 'gmail_message',
+        connectorAccountId: '11111111-1111-4111-8111-111111111111',
+        provider: 'google',
+        providerMessageId: 'forged-provider-id',
+        providerThreadId: null,
+        authoringTier: 'user_sent_originated',
+        observedInInbox: false,
+        observedAt: '2026-09-11T12:00:00.000Z',
+      },
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockInterpret).not.toHaveBeenCalled();
+  });
+
+  it('forces normal-session Gmail claims to untrusted and recursively removes authority keys', async () => {
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'GMAIL',
+      type: 'email',
+      signalId: 'session-signal',
+      authoringTier: 'user_sent_originated',
+      messageId: 'flat-target',
+      data: {
+        authoringTier: 'user_sent_originated',
+        nested: {
+          threadId: 'nested-target',
+          messageRefId: 'forged-ref',
+          connectorAccountId: 'forged-account',
+          providerMessageId: 'forged-provider',
+          safe: 'kept',
+        },
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const interpreted = mockInterpret.mock.calls[0]![0] as Record<string, unknown>;
+    expect(interpreted['authoringTier']).toBe('inbox_automated');
+    expect(interpreted['source']).toBe('gmail');
+    expect(interpreted).not.toHaveProperty('messageId');
+    expect(interpreted).toMatchObject({ data: { nested: { safe: 'kept' } } });
+    expect(JSON.stringify(interpreted)).not.toMatch(
+      /nested-target|forged-ref|forged-account|forged-provider|user_sent_originated/,
+    );
+  });
+
+  it('removes connector authoring-tier claims from every normal-session source', async () => {
+    const res = await request(buildApp(), 'POST', '/api/events/ingest', {
+      userId: 'b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e',
+      source: 'custom_mail_bridge',
+      type: 'email',
+      signalId: 'session-signal-custom',
+      authoringTier: 'user_sent_originated',
+      data: {
+        authoringTier: 'user_sent_reply',
+        subject: 'ordinary session event',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    const interpreted = mockInterpret.mock.calls[0]![0] as Record<string, unknown>;
+    expect(interpreted).not.toHaveProperty('authoringTier');
+    expect(interpreted).toMatchObject({
+      data: { subject: 'ordinary session event' },
+    });
+    expect(JSON.stringify(interpreted)).not.toMatch(/user_sent_originated|user_sent_reply/);
   });
 });

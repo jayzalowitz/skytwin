@@ -760,6 +760,9 @@ importers:
       '@skytwin/config':
         specifier: workspace:*
         version: link:../config
+      '@skytwin/connectors':
+        specifier: workspace:*
+        version: link:../connectors
       '@skytwin/db':
         specifier: workspace:*
         version: link:../db

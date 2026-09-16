@@ -121,6 +121,8 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
           occurred_at: occurredAt,
           execution_plan_id: 'plan-1',
           adapter_used: 'ironclaw',
+          action_type: 'label_email',
+          reversible: true,
         },
       ],
       rowCount: 1,
@@ -137,21 +139,36 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     const [sql, params] = mockQuery.mock.calls[0]!;
     expect(sql).toContain('capability_provenance_nodes');
     expect(sql).toContain('decision_outcomes');
+    expect(sql).toContain('candidate_actions');
+    expect(sql).toContain('decision.user_id = pn.user_id');
+    expect(sql).toContain('plan.action_id = candidate.id');
+    expect(sql).toContain("plan.status = 'completed'");
+    expect(sql).toContain('result.success = true');
+    expect(sql).toContain('result.rollback_available = true');
+    expect(sql).toContain("nullif(latest_result.outputs->>'adapter_used', '') IS NOT NULL");
+    expect(sql).toContain('ORDER BY result.completed_at DESC, result.id DESC');
+    expect(sql).toContain('ORDER BY pn.occurred_at DESC, pn.id DESC');
+    expect(sql).toContain('candidate.id = pn.ref_id');
+    expect(sql).not.toContain('candidate.id::STRING = pn.ref_id');
     expect(sql).toContain("outputs->>'adapter_used'");
     expect(params).toEqual(['server-1', since, 'user-1']);
 
     expect(targets).toEqual([
       {
         actionId: 'action-1',
+        actionType: 'label_email',
+        reversible: true,
         payload: { reversible: true },
         occurredAt,
         executionPlanId: 'plan-1',
         adapterUsed: 'ironclaw',
       },
     ]);
+    expect(Object.isFrozen(targets)).toBe(true);
+    expect(Object.isFrozen(targets[0])).toBe(true);
   });
 
-  it('passes through NULL plan id + adapter (no decision_outcomes / result linkage)', async () => {
+  it('preserves exact candidate identity when no result qualifies the plan report', async () => {
     mockQuery.mockResolvedValueOnce({
       rows: [
         {
@@ -160,6 +177,8 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
           occurred_at: new Date(),
           execution_plan_id: null,
           adapter_used: null,
+          action_type: 'label_email',
+          reversible: true,
         },
       ],
       rowCount: 1,
@@ -174,6 +193,8 @@ describe('executionRepository.getRollbackTargetsByServer — #324 rollback join'
     expect(targets).toHaveLength(1);
     expect(targets[0]!.executionPlanId).toBeNull();
     expect(targets[0]!.adapterUsed).toBeNull();
+    expect(targets[0]!.actionType).toBe('label_email');
+    expect(targets[0]!.reversible).toBe(true);
     expect(targets[0]!.payload).toEqual({ reversible: false, irreversibleReason: 'sent' });
   });
 

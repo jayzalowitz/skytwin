@@ -93,9 +93,12 @@ export const approvalRepository = {
    * extreme-severity action that friction is acceptable: "start the whole
    * approval fresh" is the safe behavior, not a re-issued token.
    *
-   * Returns the freshly issued token, or null if the request is no longer
-   * pending, is not a dual-confirmation request, or was already
-   * first-confirmed.
+   * Returns the freshly issued token, or null if the request is expired, is
+   * no longer pending, is not a dual-confirmation request, or was already
+   * first-confirmed. Dedicated archive and malformed stored actions are also
+   * excluded in this same UPDATE. Expiry and generic-action eligibility are
+   * therefore checked atomically, so a stale route read cannot mint a token
+   * after either boundary changes.
    */
   async recordFirstConfirmation(
     id: string,
@@ -106,6 +109,10 @@ export const approvalRepository = {
       `UPDATE approval_requests
        SET first_confirmed_at = now(), confirmation_token = $1
        WHERE id = $2 AND user_id = $3 AND status = 'pending'
+         AND expires_at > now()
+         AND jsonb_typeof(candidate_action) = 'object'
+         AND jsonb_typeof(candidate_action->'actionType') = 'string'
+         AND candidate_action->>'actionType' <> 'archive_email'
          AND confirmation_level = 'dual' AND first_confirmed_at IS NULL
        RETURNING *`,
       [token, id, userId],
@@ -174,12 +181,18 @@ export const approvalRepository = {
     // `confirmation_token = NULL` clears the one-time dual-confirmation token
     // the moment the request resolves — it must not linger in the row after
     // use. Harmless for single-confirmation rows (their token is already
-    // NULL). The `status = 'pending'` guard still makes this the atomic
-    // single-winner for concurrent responses.
+    // NULL). The status, database-clock expiry, and generic-action predicates
+    // make this the atomic single-winner. A stale route read cannot respond if
+    // the stored action becomes dedicated archive work or malformed before
+    // this UPDATE acquires the row.
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
        SET status = $1, responded_at = now(), response = $2, confirmation_token = NULL
        WHERE id = $3 AND status = 'pending' AND user_id = $4
+         AND expires_at > now()
+         AND jsonb_typeof(candidate_action) = 'object'
+         AND jsonb_typeof(candidate_action->'actionType') = 'string'
+         AND candidate_action->>'actionType' <> 'archive_email'
        RETURNING *`,
       [
         action === 'approve' ? 'approved' : 'rejected',
@@ -249,7 +262,9 @@ export const approvalRepository = {
 
   /**
    * Respond to multiple approval requests at once.
-   * Only updates requests owned by the given userId and still pending.
+   * Only updates unexpired generic requests owned by the given userId and still
+   * pending. Dedicated archive and malformed stored actions are excluded by the
+   * same UPDATE, and any one-time confirmation token is cleared on resolution.
    * Returns the updated rows.
    */
   async batchRespond(
@@ -265,8 +280,12 @@ export const approvalRepository = {
 
     const result = await query<ApprovalRequestRow>(
       `UPDATE approval_requests
-       SET status = $1, responded_at = now(), response = $2
+       SET status = $1, responded_at = now(), response = $2, confirmation_token = NULL
        WHERE id IN (${placeholders}) AND status = 'pending' AND user_id = $3
+         AND expires_at > now()
+         AND jsonb_typeof(candidate_action) = 'object'
+         AND jsonb_typeof(candidate_action->'actionType') = 'string'
+         AND candidate_action->>'actionType' <> 'archive_email'
        RETURNING *`,
       [
         status,

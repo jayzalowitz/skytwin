@@ -49,18 +49,18 @@ function makeAction(overrides: Partial<CandidateAction> = {}): CandidateAction {
   return {
     id: 'action-1',
     decisionId: 'decision-1',
-    // archive_email + user_originated: reversible, non-destructive, trusted
+    // label_email + user_originated: reversible, non-destructive, trusted
     // provenance — so the execution-router injection-guard backstop does not
     // fire, keeping these tests focused on routing/fallback mechanics. The
     // backstop itself is covered by injection-guard-backstop.test.ts. The
     // `route()`-only tests below override actionType where they need to.
-    actionType: 'archive_email',
-    description: 'Archive an email',
+    actionType: 'label_email',
+    description: 'Label an email',
     domain: 'email',
     estimatedCostCents: 0,
     reversible: true,
     confidence: ConfidenceLevel.HIGH,
-    reasoning: 'User typically archives newsletters',
+    reasoning: 'User typically labels newsletters',
     provenance: 'user_originated',
     ...rest,
     parameters: {
@@ -381,7 +381,7 @@ describe('ExecutionRouter', () => {
     });
 
     expect(guard).toHaveBeenCalledWith(
-      expect.objectContaining({ actionType: 'archive_email' }),
+      expect.objectContaining({ actionType: 'label_email' }),
       'blocked-user',
       undefined,
     );
@@ -557,7 +557,7 @@ describe('ExecutionRouter', () => {
   });
 
   it('selects IronClaw for standard actions when available', async () => {
-    const ironclawSkills = new Set(['send_email', 'archive_email', 'create_calendar_event']);
+    const ironclawSkills = new Set(['send_email', 'label_email', 'create_calendar_event']);
     registry.register('ironclaw', createMockAdapter('ironclaw', ironclawSkills), IRONCLAW_TRUST_PROFILE, ironclawSkills);
     registry.register('openclaw', createMockAdapter('openclaw', OPENCLAW_SKILLS), OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
     registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
@@ -574,7 +574,7 @@ describe('ExecutionRouter', () => {
   });
 
   it('falls back to OpenClaw when IronClaw cannot handle the action type', async () => {
-    const ironclawSkills = new Set(['send_email', 'archive_email']);
+    const ironclawSkills = new Set(['send_email', 'label_email']);
     registry.register('ironclaw', createMockAdapter('ironclaw', ironclawSkills), IRONCLAW_TRUST_PROFILE, ironclawSkills);
     registry.register('openclaw', createMockAdapter('openclaw', OPENCLAW_SKILLS), OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
 
@@ -605,7 +605,7 @@ describe('ExecutionRouter', () => {
     registry.register('direct', createMockAdapter('direct'), DIRECT_TRUST_PROFILE);
     registry.register('mcp-host', createMockAdapter('mcp-host'), MCP_HOST_TRUST_PROFILE);
     const action = makeAction({
-      parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+      parameters: { mcpServerId: 'server-1', mcpToolName: 'label_email' },
     });
 
     await expect(router.route(action, makeRiskAssessment(), 'user-1')).resolves.toMatchObject({
@@ -720,7 +720,7 @@ describe('ExecutionRouter', () => {
       const localRouter = new ExecutionRouter(localRegistry, authority);
 
       await expect(localRouter.executeWithRouting(makeAction({
-        parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'label_email' },
       }), makeRiskAssessment(), 'user-1')).resolves.toMatchObject({
         status: 'completed',
         output: expect.objectContaining({ adapter_used: 'mcp-host' }),
@@ -729,7 +729,7 @@ describe('ExecutionRouter', () => {
       expect(ironExecute).not.toHaveBeenCalled();
       expect(directExecute).not.toHaveBeenCalled();
       expect(authority.start).toHaveBeenCalledWith(expect.objectContaining({
-        adapterName: 'mcp-host', mcpServerId: 'server-1', mcpToolName: 'archive_email',
+        adapterName: 'mcp-host', mcpServerId: 'server-1', mcpToolName: 'label_email',
       }));
     });
 
@@ -768,7 +768,7 @@ describe('ExecutionRouter', () => {
       const localRouter = new ExecutionRouter(localRegistry, authority);
 
       await expect(localRouter.executeWithRouting(makeAction({
-        parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'label_email' },
       }), makeRiskAssessment(), 'user-1')).rejects.toBeInstanceOf(NoAdapterError);
       expect(authority.start).not.toHaveBeenCalled();
       expect(mcpExecute).not.toHaveBeenCalled();
@@ -794,14 +794,14 @@ describe('ExecutionRouter', () => {
       const events: ExecutionEvent[] = [];
 
       for await (const event of localRouter.executeWithRoutingStreaming(makeAction({
-        parameters: { mcpServerId: 'server-1', mcpToolName: 'archive_email' },
+        parameters: { mcpServerId: 'server-1', mcpToolName: 'label_email' },
       }), makeRiskAssessment(), 'user-1')) events.push(event);
 
       expect(events.map((event) => event.eventType)).toEqual(['plan_completed']);
       expect(mcpStreamRequests).toBe(1);
       expect(directExecute).not.toHaveBeenCalled();
       expect(authority.start).toHaveBeenCalledWith(expect.objectContaining({
-        adapterName: 'mcp-host', mcpServerId: 'server-1', mcpToolName: 'archive_email',
+        adapterName: 'mcp-host', mcpServerId: 'server-1', mcpToolName: 'label_email',
       }));
     });
 
@@ -1669,7 +1669,9 @@ describe('ExecutionRouter', () => {
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
       registry.register('openclaw', openclaw, OPENCLAW_TRUST_PROFILE, OPENCLAW_SKILLS);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.result.success).toBe(true);
       expect(out.adapterUsed).toBe('ironclaw');
@@ -1686,7 +1688,9 @@ describe('ExecutionRouter', () => {
       const directSpy = vi.spyOn(direct, 'rollback');
       registry.register('direct', direct, DIRECT_TRUST_PROFILE);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.noAdapter).toBe(true);
       expect(out.result.success).toBe(false);
@@ -1709,7 +1713,9 @@ describe('ExecutionRouter', () => {
       vi.spyOn(ironclaw, 'rollback').mockRejectedValue(new Error('boom'));
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
@@ -1725,7 +1731,9 @@ describe('ExecutionRouter', () => {
       });
       registry.register('ironclaw', ironclaw, IRONCLAW_TRUST_PROFILE);
 
-      const out = await router.rollback('plan-1', 'ironclaw');
+      const out = await router.rollback('plan-1', 'ironclaw', {
+        actionId: 'action-1', actionType: 'label_email',
+      });
 
       expect(out.noAdapter).toBe(false);
       expect(out.result.success).toBe(false);
@@ -1740,7 +1748,7 @@ describe('ExecutionRouter', () => {
       const adapter = createMockAdapter('openclaw');
       const executeSpy = vi.spyOn(adapter, 'execute');
       localRegistry.register(
-        'openclaw', adapter, OPENCLAW_TRUST_PROFILE, new Set(['archive_email']),
+        'openclaw', adapter, OPENCLAW_TRUST_PROFILE, new Set(['label_email']),
       );
       const authority = createDispatchAuthority();
       return {
@@ -1830,7 +1838,7 @@ describe('ExecutionRouter', () => {
       const selected = createMockAdapter('openclaw');
       localRegistry.register('ironclaw', unavailable, IRONCLAW_TRUST_PROFILE);
       localRegistry.register(
-        'openclaw', selected, OPENCLAW_TRUST_PROFILE, new Set(['archive_email']),
+        'openclaw', selected, OPENCLAW_TRUST_PROFILE, new Set(['label_email']),
       );
       const localRouter = new ExecutionRouter(localRegistry, createDispatchAuthority());
       const action = makeAction();
@@ -1956,7 +1964,7 @@ describe('ExecutionRouter', () => {
       });
       localRegistry.register(
         'openclaw', createMockAdapter('openclaw-replacement'), OPENCLAW_TRUST_PROFILE,
-        new Set(['archive_email']),
+        new Set(['label_email']),
       );
 
       await expect(localRouter.executePrepared(
@@ -2011,7 +2019,7 @@ describe('ExecutionRouter', () => {
       await started;
       localRegistry.register(
         'openclaw', adapter, { ...OPENCLAW_TRUST_PROFILE, riskModifier: 2 },
-        new Set(['archive_email']),
+        new Set(['label_email']),
       );
       releaseBuild();
 
@@ -2114,7 +2122,7 @@ describe('ExecutionRouter', () => {
         'direct',
         new PausingDirectAdapter(handlers, reached, release),
         DIRECT_TRUST_PROFILE,
-        new Set(['archive_email']),
+        new Set(['label_email']),
       );
       return new ExecutionRouter(localRegistry, credentials.authority);
     }
@@ -2125,7 +2133,7 @@ describe('ExecutionRouter', () => {
       const localRegistry = new AdapterRegistry();
       localRegistry.register(
         'direct', new DirectExecutionAdapter(handlers), DIRECT_TRUST_PROFILE,
-        new Set(['archive_email']),
+        new Set(['label_email']),
       );
       const authority = createDispatchAuthority();
       const localRouter = new ExecutionRouter(localRegistry, authority);

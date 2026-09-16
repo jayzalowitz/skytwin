@@ -4,6 +4,7 @@ import {
   resolveMicrosoftEnvConfig,
   providerSupportsRevoke,
   resolveDisconnectToken,
+  validateProviderSubject,
 } from '../routes/oauth.js';
 import { encryptColumn } from '@skytwin/db';
 
@@ -76,18 +77,33 @@ describe('providerSupportsRevoke (token-leak guard for disconnect)', () => {
 describe('resolveDisconnectToken', () => {
   const key = Buffer.alloc(32, 4);
   const base = {
-    id: 'token-1', user_id: 'user-1', provider: 'google', account_email: 'a@example.com',
-    account_provider_id: null, access_token: null, refresh_token: null,
+    id: 'token-1',
+    user_id: 'user-1',
+    provider: 'google',
+    account_email: 'a@example.com',
+    account_provider_id: null,
+    connector_account_id: '22222222-2222-4222-8222-222222222222',
+    access_token: null,
+    refresh_token: null,
     encrypted_access_token: encryptColumn('access-secret', key),
     encrypted_refresh_token: encryptColumn('refresh-secret', key),
-    encryption_iv: null, encryption_tag: null, encryption_key_version: 1,
-    expires_at: new Date(), scopes: [], created_at: new Date(), updated_at: new Date(),
-    credential_revision: 'revision-1', dispatch_generation: 'generation-1',
+    encryption_iv: null,
+    encryption_tag: null,
+    encryption_key_version: 1,
+    expires_at: new Date(),
+    scopes: [],
+    created_at: new Date(),
+    updated_at: new Date(),
+    credential_revision: 'revision-1',
+    dispatch_generation: 'generation-1',
     dispatch_state: 'disconnecting' as const,
   };
 
   it('revokes the decrypted refresh token rather than ciphertext or access token', () => {
-    expect(resolveDisconnectToken(base, key)).toEqual({ success: true, token: 'refresh-secret' });
+    expect(resolveDisconnectToken(base, key)).toEqual({
+      success: true,
+      token: 'refresh-secret',
+    });
   });
 
   it('fails closed while encrypted revocation material is locked', () => {
@@ -98,21 +114,42 @@ describe('resolveDisconnectToken', () => {
   });
 
   it('never revokes a leftover plaintext sibling of encrypted material', () => {
-    expect(resolveDisconnectToken({
-      ...base,
-      encrypted_refresh_token: null,
-      refresh_token: 'stale-plaintext-refresh',
-    }, key)).toEqual({ success: true, token: 'access-secret' });
+    expect(
+      resolveDisconnectToken(
+        {
+          ...base,
+          encrypted_refresh_token: null,
+          refresh_token: 'stale-plaintext-refresh',
+        },
+        key,
+      ),
+    ).toEqual({ success: true, token: 'access-secret' });
 
-    expect(resolveDisconnectToken({
-      ...base,
-      encrypted_refresh_token: null,
-      refresh_token: 'stale-plaintext-refresh',
-    }, null)).toEqual({
+    expect(
+      resolveDisconnectToken(
+        {
+          ...base,
+          encrypted_refresh_token: null,
+          refresh_token: 'stale-plaintext-refresh',
+        },
+        null,
+      ),
+    ).toEqual({
       success: false,
       error: 'credential_vault_locked',
     });
   });
+});
+
+describe('validateProviderSubject', () => {
+  it('normalizes a bounded non-empty provider subject', () => {
+    expect(validateProviderSubject('  stable-subject  ')).toBe('stable-subject');
+  });
+
+  it.each([null, undefined, '', '   ', 'bad\u0000subject', 'x'.repeat(513)])(
+    'rejects malformed upstream identity %p',
+    (value) => expect(validateProviderSubject(value)).toBeNull(),
+  );
 });
 
 describe('fetchMicrosoftUserInfo', () => {
@@ -126,33 +163,54 @@ describe('fetchMicrosoftUserInfo', () => {
   it('queries Graph /me with the bearer token and prefers `mail`', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
-      json: async () => ({ id: 'oid-1', mail: 'work@contoso.com', userPrincipalName: 'work@contoso.onmicrosoft.com', displayName: 'Work User' }),
+      json: async () => ({
+        id: 'oid-1',
+        mail: 'work@contoso.com',
+        userPrincipalName: 'work@contoso.onmicrosoft.com',
+        displayName: 'Work User',
+      }),
     });
     const info = await fetchMicrosoftUserInfo('access-token');
 
     const [url, opts] = fetchMock.mock.calls[0] as [string, { headers: Record<string, string> }];
     expect(url).toBe('https://graph.microsoft.com/v1.0/me');
     expect(opts.headers.Authorization).toBe('Bearer access-token');
-    expect(info).toEqual({ id: 'oid-1', email: 'work@contoso.com', name: 'Work User' });
+    expect(info).toEqual({
+      id: 'oid-1',
+      email: 'work@contoso.com',
+      name: 'Work User',
+    });
   });
 
   it('falls back to userPrincipalName when mail is null (personal Outlook.com accounts)', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
-      json: async () => ({ id: 'oid-2', mail: null, userPrincipalName: 'me@outlook.com', displayName: 'Me' }),
+      json: async () => ({
+        id: 'oid-2',
+        mail: null,
+        userPrincipalName: 'me@outlook.com',
+        displayName: 'Me',
+      }),
     });
     const info = await fetchMicrosoftUserInfo('t');
     expect(info.email).toBe('me@outlook.com');
   });
 
   it('returns an empty email when neither mail nor userPrincipalName is present (caller 502s)', async () => {
-    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ id: 'oid-3' }) });
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ id: 'oid-3' }),
+    });
     const info = await fetchMicrosoftUserInfo('t');
     expect(info.email).toBe('');
   });
 
   it('throws on a non-OK Graph response', async () => {
-    fetchMock.mockResolvedValue({ ok: false, status: 401, statusText: 'Unauthorized' });
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 401,
+      statusText: 'Unauthorized',
+    });
     await expect(fetchMicrosoftUserInfo('t')).rejects.toThrow(/Graph \/me failed: 401/);
   });
 });

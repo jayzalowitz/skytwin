@@ -13,6 +13,7 @@ import {
   CredentialVaultLockedError,
   CredentialConnectionAuthorityError,
   credentialVaultMetaRepository,
+  OAuthAccountBindingConflictError,
   oauthPkcePendingRepository,
   oauthPendingSigninRepository,
   serviceCredentialRepository,
@@ -73,10 +74,7 @@ export const NEW_USER_RATE_LIMIT_MAX_BUCKETS = 5_000;
 const newUserRateBuckets = new Map<string, { count: number; resetAt: number }>();
 const pendingPollRateBuckets = new Map<string, { count: number; resetAt: number }>();
 
-function evictExpiredBuckets(
-  buckets: Map<string, { count: number; resetAt: number }>,
-  now: number,
-): void {
+function evictExpiredBuckets(buckets: Map<string, { count: number; resetAt: number }>, now: number): void {
   for (const [ip, bucket] of buckets) {
     if (bucket.resetAt <= now) buckets.delete(ip);
   }
@@ -111,17 +109,8 @@ function checkBucket(
   return { allowed: true, resetAt: bucket.resetAt };
 }
 
-export function checkNewUserRateLimit(
-  ip: string,
-  now: number = Date.now(),
-): { allowed: boolean; resetAt: number } {
-  return checkBucket(
-    newUserRateBuckets,
-    ip,
-    now,
-    NEW_USER_RATE_LIMIT_MAX,
-    NEW_USER_RATE_LIMIT_WINDOW_MS,
-  );
+export function checkNewUserRateLimit(ip: string, now: number = Date.now()): { allowed: boolean; resetAt: number } {
+  return checkBucket(newUserRateBuckets, ip, now, NEW_USER_RATE_LIMIT_MAX, NEW_USER_RATE_LIMIT_WINDOW_MS);
 }
 
 /**
@@ -130,17 +119,8 @@ export function checkNewUserRateLimit(
  * ?newUser=true bucket's tight 5/minute limit. A poll-friendly 120/min
  * leaves comfortable headroom for jitter and retries.
  */
-export function checkPendingPollRateLimit(
-  ip: string,
-  now: number = Date.now(),
-): { allowed: boolean; resetAt: number } {
-  return checkBucket(
-    pendingPollRateBuckets,
-    ip,
-    now,
-    PENDING_POLL_RATE_LIMIT_MAX,
-    PENDING_POLL_RATE_LIMIT_WINDOW_MS,
-  );
+export function checkPendingPollRateLimit(ip: string, now: number = Date.now()): { allowed: boolean; resetAt: number } {
+  return checkBucket(pendingPollRateBuckets, ip, now, PENDING_POLL_RATE_LIMIT_MAX, PENDING_POLL_RATE_LIMIT_WINDOW_MS);
 }
 
 /** Test helper — clears all rate-limit buckets between cases. */
@@ -164,6 +144,16 @@ interface GoogleUserInfo {
   verified_email?: boolean;
   name?: string;
   picture?: string;
+}
+
+/** Runtime boundary for provider userinfo subjects (TS casts are not validation). */
+export function validateProviderSubject(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const subject = raw.trim();
+  if (subject.length < 1 || subject.length > 512 || /[\u0000-\u001f\u007f]/.test(subject)) {
+    return null;
+  }
+  return subject;
 }
 
 async function fetchGoogleUserInfo(accessToken: string): Promise<GoogleUserInfo> {
@@ -284,9 +274,7 @@ export function isValidPendingKey(value: string): boolean {
 }
 
 function signStatePayload(payload: string, expiresAtMs: number): string {
-  const mac = createHmac('sha256', STATE_SECRET)
-    .update(`${payload}.${expiresAtMs}`)
-    .digest('hex');
+  const mac = createHmac('sha256', STATE_SECRET).update(`${payload}.${expiresAtMs}`).digest('hex');
   return `${STATE_VERSION}.${payload}.${expiresAtMs}.${mac}`;
 }
 
@@ -308,17 +296,12 @@ function parseSignedState(state: string): ParsedState {
     throw new InvalidStateError('expiry not a number');
   }
 
-  const expectedMac = createHmac('sha256', STATE_SECRET)
-    .update(`${payload}.${expiresAtMs}`)
-    .digest('hex');
+  const expectedMac = createHmac('sha256', STATE_SECRET).update(`${payload}.${expiresAtMs}`).digest('hex');
 
   // Constant-time compare so we don't leak the secret one byte at a time.
   const providedBuf = Buffer.from(providedMac, 'hex');
   const expectedBuf = Buffer.from(expectedMac, 'hex');
-  if (
-    providedBuf.length !== expectedBuf.length ||
-    !timingSafeEqual(providedBuf, expectedBuf)
-  ) {
+  if (providedBuf.length !== expectedBuf.length || !timingSafeEqual(providedBuf, expectedBuf)) {
     throw new InvalidStateError('signature mismatch');
   }
 
@@ -479,13 +462,31 @@ export function resolveMicrosoftEnvConfig(env: NodeJS.ProcessEnv = process.env):
 
   const envClientId = env['MICROSOFT_CLIENT_ID'] ?? '';
   if (envClientId) {
-    return { clientId: envClientId, clientSecret: env['MICROSOFT_CLIENT_SECRET'] ?? '', redirectUri, tenant, source: 'user-supplied' };
+    return {
+      clientId: envClientId,
+      clientSecret: env['MICROSOFT_CLIENT_SECRET'] ?? '',
+      redirectUri,
+      tenant,
+      source: 'user-supplied',
+    };
   }
   const bundled = env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'] ?? '';
   if (bundled) {
-    return { clientId: bundled, clientSecret: '', redirectUri, tenant, source: 'bundled' };
+    return {
+      clientId: bundled,
+      clientSecret: '',
+      redirectUri,
+      tenant,
+      source: 'bundled',
+    };
   }
-  return { clientId: '', clientSecret: '', redirectUri, tenant, source: 'unset' };
+  return {
+    clientId: '',
+    clientSecret: '',
+    redirectUri,
+    tenant,
+    source: 'unset',
+  };
 }
 
 /**
@@ -530,43 +531,31 @@ export function providerSupportsRevoke(provider: string): boolean {
 
 export type DisconnectTokenResult =
   | { success: true; token: string | null }
-  | { success: false; error: 'credential_vault_locked' | 'credential_decrypt_failed' };
+  | {
+      success: false;
+      error: 'credential_vault_locked' | 'credential_decrypt_failed';
+    };
 
 /** Materialize the exact fenced token without treating ciphertext as a token. */
-export function resolveDisconnectToken(
-  row: OAuthTokenRowWithEncrypted,
-  key: Buffer | null,
-): DisconnectTokenResult {
+export function resolveDisconnectToken(row: OAuthTokenRowWithEncrypted, key: Buffer | null): DisconnectTokenResult {
   // Once either encrypted representation exists, the row is vault-owned as
   // a whole. Never fall back to a leftover plaintext sibling: it may be an
   // older grant whose invalidation says nothing about the encrypted grant.
   const vaultOwned = Boolean(row.encrypted_refresh_token || row.encrypted_access_token);
-  const refresh = readColumn(
-    row.encrypted_refresh_token,
-    vaultOwned ? null : row.refresh_token,
-    key,
-  );
+  const refresh = readColumn(row.encrypted_refresh_token, vaultOwned ? null : row.refresh_token, key);
   if (!refresh.success) {
     return {
       success: false,
-      error: refresh.error === 'vault_locked'
-        ? 'credential_vault_locked'
-        : 'credential_decrypt_failed',
+      error: refresh.error === 'vault_locked' ? 'credential_vault_locked' : 'credential_decrypt_failed',
     };
   }
   if (refresh.value) return { success: true, token: refresh.value };
 
-  const access = readColumn(
-    row.encrypted_access_token,
-    vaultOwned ? null : row.access_token,
-    key,
-  );
+  const access = readColumn(row.encrypted_access_token, vaultOwned ? null : row.access_token, key);
   if (!access.success) {
     return {
       success: false,
-      error: access.error === 'vault_locked'
-        ? 'credential_vault_locked'
-        : 'credential_decrypt_failed',
+      error: access.error === 'vault_locked' ? 'credential_vault_locked' : 'credential_decrypt_failed',
     };
   }
   return { success: true, token: access.value || null };
@@ -580,8 +569,12 @@ async function resolveDisconnectTokenForUser(
   if (!vaultOwned) return resolveDisconnectToken(row, null);
   const meta = await credentialVaultMetaRepository.getForUser(userId);
   const key = sharedKeyCache.get(userId);
-  if (!meta || meta.vault_state !== 'unlocked' || !key ||
-      sharedKeyCache.getGeneration(userId) !== meta.vault_generation) {
+  if (
+    !meta ||
+    meta.vault_state !== 'unlocked' ||
+    !key ||
+    sharedKeyCache.getGeneration(userId) !== meta.vault_generation
+  ) {
     return { success: false, error: 'credential_vault_locked' };
   }
   return resolveDisconnectToken(row, key);
@@ -601,7 +594,10 @@ async function saveConnectedToken(input: {
 }): Promise<void> {
   const meta = await credentialVaultMetaRepository.getForUser(input.userId);
   if (!meta) {
-    await oauthRepository.saveTokenForAccount({ ...input, credentialStorage: { mode: 'plaintext' } });
+    await oauthRepository.saveTokenForAccount({
+      ...input,
+      credentialStorage: { mode: 'plaintext' },
+    });
     return;
   }
   const key = sharedKeyCache.get(input.userId);
@@ -683,10 +679,10 @@ const CALENDAR_SCOPES_LIST = [
  * UI (so the dashboard can show "Connect Gmail" as a follow-up CTA
  * rather than silently lying about coverage).
  */
-export function resolveRequestedScopes(opts: {
-  source: GoogleConfigSource;
-  includeGmail: boolean;
-}): { scopes: string[]; skipped: Array<{ capability: 'gmail'; reason: string }> } {
+export function resolveRequestedScopes(opts: { source: GoogleConfigSource; includeGmail: boolean }): {
+  scopes: string[];
+  skipped: Array<{ capability: 'gmail'; reason: string }>;
+} {
   const scopes = [...IDENTITY_SCOPES_LIST, ...CALENDAR_SCOPES_LIST];
   const skipped: Array<{ capability: 'gmail'; reason: string }> = [];
 
@@ -865,7 +861,7 @@ export function createOAuthRouter(): Router {
         res.status(503).json({
           error:
             'Google sign-in is not configured. ' +
-            "Open the Connect Gmail walkthrough — the same five-step flow sets up Google sign-in for this build, " +
+            'Open the Connect Gmail walkthrough — the same five-step flow sets up Google sign-in for this build, ' +
             'or rebuild the desktop with SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID set.',
           code: 'NO_GOOGLE_CLIENT_CONFIGURED',
           help: '#/connect-gmail',
@@ -880,9 +876,8 @@ export function createOAuthRouter(): Router {
       // dashboard can render a "Connect Gmail" CTA. The caller can
       // still get Gmail today by pasting their own OAuth credentials
       // into Setup; that's the `source === 'user-supplied'` path.
-      const includeGmail = req.query['include'] === 'gmail'
-        || req.query['scopes'] === 'gmail'
-        || req.query['gmail'] === 'true';
+      const includeGmail =
+        req.query['include'] === 'gmail' || req.query['scopes'] === 'gmail' || req.query['gmail'] === 'true';
 
       const { scopes, skipped } = resolveRequestedScopes({
         source: googleConfig.source,
@@ -913,8 +908,7 @@ export function createOAuthRouter(): Router {
         return;
       }
 
-      const queryUserId =
-        typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
+      const queryUserId = typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined;
       const newAccount = req.query['newAccount'] === 'true';
       const desktop = req.query['desktop'] === 'true';
       // Optional dashboard-deep-link target after the OAuth round-trip.
@@ -923,16 +917,13 @@ export function createOAuthRouter(): Router {
       // can't be coerced into redirecting to a route that doesn't exist
       // (or worse, an attacker-controlled external URL).
       const nextQuery = typeof req.query['next'] === 'string' ? req.query['next'] : undefined;
-      const nextTagValue = nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery)
-        ? nextQuery
-        : undefined;
+      const nextTagValue =
+        nextQuery && Object.prototype.hasOwnProperty.call(NEXT_HASH_ROUTES, nextQuery) ? nextQuery : undefined;
       // Pollable handoff key for desktop new-user flows. Validated to
       // UUIDv4 shape up-front; anything else is dropped silently so a
       // malformed query param can't poison state.
       const pendingKeyQuery = typeof req.query['pendingKey'] === 'string' ? req.query['pendingKey'] : undefined;
-      const pendingKey = pendingKeyQuery && isValidPendingKey(pendingKeyQuery)
-        ? pendingKeyQuery
-        : undefined;
+      const pendingKey = pendingKeyQuery && isValidPendingKey(pendingKeyQuery) ? pendingKeyQuery : undefined;
 
       let stateHead: string;
       if (newUser) {
@@ -940,7 +931,9 @@ export function createOAuthRouter(): Router {
       } else {
         const userId = queryUserId ?? req.authenticatedUserId;
         if (!userId) {
-          res.status(400).json({ error: 'Missing userId. Pass ?userId=… or ?newUser=true.' });
+          res.status(400).json({
+            error: 'Missing userId. Pass ?userId=… or ?newUser=true.',
+          });
           return;
         }
         stateHead = userId;
@@ -949,14 +942,10 @@ export function createOAuthRouter(): Router {
       const expiresAtMs = Date.now() + STATE_TTL_MS;
       const tags: string[] = [];
       if (stateHead === 'new') {
-        const authorizationId = await oauthRepository.issueNewUserAuthorization(
-          'google', new Date(expiresAtMs),
-        );
+        const authorizationId = await oauthRepository.issueNewUserAuthorization('google', new Date(expiresAtMs));
         tags.push(`ng=${authorizationId}`);
       } else {
-        const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(
-          stateHead, 'google',
-        );
+        const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(stateHead, 'google');
         tags.push(`cg=${connectionGeneration}`);
       }
       if (desktop) tags.push('desktop');
@@ -1048,8 +1037,7 @@ export function createOAuthRouter(): Router {
         // stale browser tab where /authorize ran against a different
         // process (Electron restart, etc.).
         res.status(400).json({
-          error:
-            'OAuth verifier expired or missing. Re-start the sign-in flow from the dashboard.',
+          error: 'OAuth verifier expired or missing. Re-start the sign-in flow from the dashboard.',
         });
         return;
       }
@@ -1059,15 +1047,18 @@ export function createOAuthRouter(): Router {
       // the actual account email (rather than guessing from state) and
       // optionally materialize a user.
       const userInfo = await fetchGoogleUserInfo(tokenSet.accessToken);
-      const accountEmail = typeof userInfo.email === 'string'
-        ? userInfo.email.trim().toLowerCase()
-        : '';
-      const accountProviderId = userInfo.id;
+      const accountEmail = typeof userInfo.email === 'string' ? userInfo.email.trim().toLowerCase() : '';
+      const accountProviderId = validateProviderSubject(userInfo.id);
 
       if (!accountEmail) {
         res.status(502).json({
-          error:
-            'Google userinfo did not include an email. Ensure the authorize URL requests "openid email".',
+          error: 'Google userinfo did not include an email. Ensure the authorize URL requests "openid email".',
+        });
+        return;
+      }
+      if (!accountProviderId) {
+        res.status(502).json({
+          error: 'Google userinfo did not include a valid stable account subject.',
         });
         return;
       }
@@ -1101,7 +1092,8 @@ export function createOAuthRouter(): Router {
         });
         userId = claimed.userId;
         newUserAuthorization = {
-          id: parsed.newUserAuthorizationId!, claimGeneration: claimed.claimGeneration,
+          id: parsed.newUserAuthorizationId!,
+          claimGeneration: claimed.claimGeneration,
         };
       } else {
         // A known-owner state is never authority to recreate a deleted user.
@@ -1121,9 +1113,7 @@ export function createOAuthRouter(): Router {
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
-        ...(parsed.connectionGeneration
-          ? { expectedConnectionGeneration: parsed.connectionGeneration }
-          : {}),
+        ...(parsed.connectionGeneration ? { expectedConnectionGeneration: parsed.connectionGeneration } : {}),
         ...(newUserAuthorization ? { newUserAuthorization } : {}),
       });
 
@@ -1238,6 +1228,10 @@ export function createOAuthRouter(): Router {
       // The dashboard hash router reads the bit before `?` as the route.
       res.redirect(`${webBase}/?${topLevel}${hashRoute}?${hashQuery}`);
     } catch (error) {
+      if (error instanceof OAuthAccountBindingConflictError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
       if (handleCredentialSaveConflict(error, res)) return;
       next(error);
     }
@@ -1281,13 +1275,8 @@ export function createOAuthRouter(): Router {
       // State carries only the userId — connect-for-existing-user, no tags.
       // Reuses the same HMAC signing as the Google flow so /microsoft/callback
       // can't be spoofed into attaching an account to another user.
-      const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(
-        userId, 'microsoft',
-      );
-      const state = signStatePayload(
-        `${userId}|cg=${connectionGeneration}`,
-        Date.now() + STATE_TTL_MS,
-      );
+      const connectionGeneration = await oauthRepository.getOrCreateConnectionAuthority(userId, 'microsoft');
+      const state = signStatePayload(`${userId}|cg=${connectionGeneration}`, Date.now() + STATE_TTL_MS);
 
       let codeChallenge: string | undefined;
       if (!config.clientSecret) {
@@ -1328,13 +1317,17 @@ export function createOAuthRouter(): Router {
       try {
         parsed = parseSignedState(state);
       } catch (err) {
-        res.status(400).json({ error: err instanceof InvalidStateError ? err.message : 'Invalid state' });
+        res.status(400).json({
+          error: err instanceof InvalidStateError ? err.message : 'Invalid state',
+        });
         return;
       }
 
       const userId = parsed.userId;
       if (!userId) {
-        res.status(400).json({ error: 'Microsoft connect requires an existing user in the signed state.' });
+        res.status(400).json({
+          error: 'Microsoft connect requires an existing user in the signed state.',
+        });
         return;
       }
       if (!parsed.connectionGeneration) {
@@ -1358,9 +1351,16 @@ export function createOAuthRouter(): Router {
       const tokenSet = await microsoftOAuth.exchangeCode(config, code, codeVerifier);
       const userInfo = await fetchMicrosoftUserInfo(tokenSet.accessToken);
       const accountEmail = userInfo.email.trim();
+      const accountProviderId = validateProviderSubject(userInfo.id);
       if (!accountEmail) {
         res.status(502).json({
           error: 'Microsoft Graph /me returned no mail or userPrincipalName — cannot key the account.',
+        });
+        return;
+      }
+      if (!accountProviderId) {
+        res.status(502).json({
+          error: 'Microsoft Graph /me did not include a valid stable account subject.',
         });
         return;
       }
@@ -1377,21 +1377,26 @@ export function createOAuthRouter(): Router {
         userId,
         provider: 'microsoft',
         accountEmail,
-        accountProviderId: userInfo.id,
+        accountProviderId,
         accessToken: tokenSet.accessToken,
         refreshToken: tokenSet.refreshToken,
         expiresAt: tokenSet.expiresAt,
         scopes: tokenSet.scopes,
-        ...(parsed.connectionGeneration
-          ? { expectedConnectionGeneration: parsed.connectionGeneration }
-          : {}),
+        ...(parsed.connectionGeneration ? { expectedConnectionGeneration: parsed.connectionGeneration } : {}),
       });
 
       const webBase = process.env['WEB_BASE_URL'] ?? `http://localhost:${process.env['WEB_PORT'] ?? '3200'}`;
       const topLevel = new URLSearchParams({ userId }).toString();
-      const hashQuery = new URLSearchParams({ connected: 'microsoft', account: accountEmail }).toString();
+      const hashQuery = new URLSearchParams({
+        connected: 'microsoft',
+        account: accountEmail,
+      }).toString();
       res.redirect(`${webBase}/?${topLevel}#/?${hashQuery}`);
     } catch (error) {
+      if (error instanceof OAuthAccountBindingConflictError) {
+        res.status(409).json({ error: error.code });
+        return;
+      }
       if (handleCredentialSaveConflict(error, res)) return;
       next(error);
     }
@@ -1532,8 +1537,7 @@ export function createOAuthRouter(): Router {
     try {
       const { provider } = req.params;
       const userId =
-        (typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined) ??
-        req.authenticatedUserId;
+        (typeof req.query['userId'] === 'string' ? req.query['userId'] : undefined) ?? req.authenticatedUserId;
       if (!userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;
@@ -1627,9 +1631,10 @@ export function createOAuthRouter(): Router {
         const resolved = await resolveDisconnectTokenForUser(userId, token);
         if (!resolved.success) {
           res.status(resolved.error === 'credential_vault_locked' ? 423 : 500).json({
-            error: resolved.error === 'credential_vault_locked'
-              ? 'Unlock the credential vault before disconnecting this account.'
-              : 'The stored credential could not be decrypted for revocation.',
+            error:
+              resolved.error === 'credential_vault_locked'
+                ? 'Unlock the credential vault before disconnecting this account.'
+                : 'The stored credential could not be decrypted for revocation.',
             code: resolved.error,
           });
           return;
@@ -1648,9 +1653,7 @@ export function createOAuthRouter(): Router {
           }
         }
       }
-      const removed = (await oauthRepository.completeDisconnect(
-        userId, provider, begun.accounts,
-      )) > 0;
+      const removed = (await oauthRepository.completeDisconnect(userId, provider, begun.accounts)) > 0;
       if (!removed) {
         res.status(409).json({
           error: 'Credential changed while disconnect was in progress.',
@@ -1658,7 +1661,11 @@ export function createOAuthRouter(): Router {
         });
         return;
       }
-      res.json({ status: removed ? 'disconnected' : 'not_found', provider, accountEmail: decodedEmail });
+      res.json({
+        status: removed ? 'disconnected' : 'not_found',
+        provider,
+        accountEmail: decodedEmail,
+      });
     } catch (error) {
       next(error);
     }
@@ -1675,8 +1682,7 @@ export function createOAuthRouter(): Router {
     try {
       const { provider } = req.params;
       const userId =
-        (typeof req.body?.['userId'] === 'string' ? req.body['userId'] : undefined) ??
-        req.authenticatedUserId;
+        (typeof req.body?.['userId'] === 'string' ? req.body['userId'] : undefined) ?? req.authenticatedUserId;
       if (!userId) {
         res.status(400).json({ error: 'Missing userId' });
         return;
@@ -1709,9 +1715,10 @@ export function createOAuthRouter(): Router {
           const resolved = await resolveDisconnectTokenForUser(userId, acct);
           if (!resolved.success) {
             res.status(resolved.error === 'credential_vault_locked' ? 423 : 500).json({
-              error: resolved.error === 'credential_vault_locked'
-                ? 'Unlock the credential vault before disconnecting this provider.'
-                : 'A stored credential could not be decrypted for revocation.',
+              error:
+                resolved.error === 'credential_vault_locked'
+                  ? 'Unlock the credential vault before disconnecting this provider.'
+                  : 'A stored credential could not be decrypted for revocation.',
               code: resolved.error,
             });
             return;
@@ -1730,9 +1737,8 @@ export function createOAuthRouter(): Router {
           }
         }
       }
-      const deleted = begun.status === 'ready'
-        ? await oauthRepository.completeDisconnect(userId, provider, begun.accounts)
-        : 0;
+      const deleted =
+        begun.status === 'ready' ? await oauthRepository.completeDisconnect(userId, provider, begun.accounts) : 0;
       if (begun.status === 'ready' && deleted !== accounts.length) {
         res.status(409).json({
           error: 'Credential changed while disconnect was in progress.',
@@ -1747,10 +1753,14 @@ export function createOAuthRouter(): Router {
         // Microsoft has no revoke endpoint, so for it `revoked` is always 0;
         // `deleted` reflects the rows dropped for either provider.
         revoked: providerSupportsRevoke(provider)
-          ? accounts.filter((account) => Boolean(
-            account.encrypted_refresh_token || account.refresh_token ||
-            account.encrypted_access_token || account.access_token,
-          )).length
+          ? accounts.filter((account) =>
+              Boolean(
+                account.encrypted_refresh_token ||
+                account.refresh_token ||
+                account.encrypted_access_token ||
+                account.access_token,
+              ),
+            ).length
           : 0,
         deleted,
       });

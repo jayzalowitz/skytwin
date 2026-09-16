@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   deriveOwnedTableManifest,
@@ -231,6 +231,40 @@ describe('splitSqlStatements', () => {
   });
 });
 
+describe('stacked migration reservations', () => {
+  it('drops inference completion before receipt rows during initial rollback', () => {
+    const source = readFileSync(fileURLToPath(new URL('../migrations/001-initial.ts', import.meta.url)), 'utf8');
+    const completion = source.indexOf("'inference_receipt_completions'");
+    const receipts = source.indexOf("'inference_receipts'");
+    const explanations = source.indexOf("'explanation_records'");
+    expect(completion).toBeGreaterThan(-1);
+    expect(receipts).toBeGreaterThan(completion);
+    expect(explanations).toBeGreaterThan(receipts);
+  });
+
+  it('keeps reserved ordinals unique and places pre-effect barriers after the active stack', () => {
+    const migrationDir = fileURLToPath(new URL('../migrations/', import.meta.url));
+    const names = readdirSync(migrationDir);
+    expect(names).toContain('080-assistant-message-idempotency.sql');
+    expect(names).toContain('086-pre-effect-barriers.sql');
+    expect(names).toContain('087-joined-decision-receipts.sql');
+    expect(names).toContain('093-gmail-archive-feedback-projection.sql');
+    expect(names).not.toContain('077-assistant-message-idempotency.sql');
+    expect(names).not.toContain('080-pre-effect-barriers.sql');
+
+    const sqlMigrations = names.filter((name) => /^\d{3}-.+\.sql$/.test(name));
+    const ordinals = sqlMigrations.map((name) => name.slice(0, 3));
+    expect(new Set(ordinals).size, `duplicate migration ordinal in: ${sqlMigrations.join(', ')}`)
+      .toBe(ordinals.length);
+  });
+
+  it('enforces a durable explanation for every non-reserved pre-effect state', () => {
+    const migrationDir = fileURLToPath(new URL('../migrations/', import.meta.url));
+    const sql = readFileSync(`${migrationDir}/086-pre-effect-barriers.sql`, 'utf8');
+    expect(sql).toContain('pre_effect_barrier_explanation_required');
+    expect(sql).toContain("CHECK (status = 'reserved' OR explanation_id IS NOT NULL)");
+  });
+});
 describe('isIdempotentError', () => {
   it('matches SQLSTATE codes for DDL already-exists conditions', () => {
     expect(isIdempotentError({ code: '42710' })).toBe(true); // duplicate_object

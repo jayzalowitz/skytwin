@@ -1,9 +1,4 @@
-import type {
-  DecisionContext,
-  DecisionOutcome,
-  ExplanationRecord,
-  ExecutionResult,
-} from '@skytwin/shared-types';
+import type { DecisionContext, DecisionOutcome, ExplanationRecord, ExecutionResult } from '@skytwin/shared-types';
 import { TrustTier } from '@skytwin/shared-types';
 import type { SituationInterpreter, DecisionMaker } from '@skytwin/decision-engine';
 import type { TwinService } from '@skytwin/twin-model';
@@ -58,13 +53,7 @@ export async function processEmailEvent(
   event: Record<string, unknown>,
   dependencies: EmailTriageDependencies,
 ): Promise<EmailTriageResult> {
-  const {
-    interpreter,
-    twinService,
-    decisionMaker,
-    explanationGenerator,
-    ironclawAdapter,
-  } = dependencies;
+  const { interpreter, twinService, decisionMaker, explanationGenerator, ironclawAdapter } = dependencies;
 
   const userId = event['userId'] as string;
   if (!userId) {
@@ -78,21 +67,13 @@ export async function processEmailEvent(
     ...event,
   });
 
-  log.info(
-    `Interpreted email: ${decision.situationType} / ${decision.urgency} - "${decision.summary}"`,
-  );
+  log.info(`Interpreted email: ${decision.situationType} / ${decision.urgency} - "${decision.summary}"`);
 
   // Step 2: Get twin profile and relevant preferences
   const profile = await twinService.getOrCreateProfile(userId);
-  const preferences = await twinService.getRelevantPreferences(
-    userId,
-    decision.domain,
-    decision.summary,
-  );
+  const preferences = await twinService.getRelevantPreferences(userId, decision.domain, decision.summary);
 
-  log.info(
-    `Twin profile v${profile.version}: ${preferences.length} relevant preferences`,
-  );
+  log.info(`Twin profile v${profile.version}: ${preferences.length} relevant preferences`);
 
   // Step 3: Build decision context
   // Trust tier must come from DB, never from the event payload
@@ -112,8 +93,8 @@ export async function processEmailEvent(
 
   log.info(
     `Decision outcome: autoExecute=${outcome.autoExecute}, ` +
-    `requiresApproval=${outcome.requiresApproval}, ` +
-    `action=${outcome.selectedAction?.actionType ?? 'none'}`,
+      `requiresApproval=${outcome.requiresApproval}, ` +
+      `action=${outcome.selectedAction?.actionType ?? 'none'}`,
   );
 
   // This legacy workflow is not mounted by the ingest route. Direct adapter
@@ -123,16 +104,9 @@ export async function processEmailEvent(
   void ironclawAdapter;
 
   // Step 6: Generate explanation for audit
-  const explanation = await explanationGenerator.generate(
-    decision,
-    outcome,
-    context,
-  );
+  const explanation = await explanationGenerator.generate(decision, outcome, context);
 
-  log.info(
-    `Explanation generated: risk=${explanation.riskTier}, ` +
-    `confidence=${explanation.overallConfidence}`,
-  );
+  log.info(`Explanation generated: risk=${explanation.riskTier}, ` + `confidence=${explanation.overallConfidence}`);
 
   return {
     decisionId: decision.id,

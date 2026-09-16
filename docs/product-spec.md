@@ -228,9 +228,9 @@ Measures whether the system is actually working. Supports scenario simulation, r
 - Send pre-approved routine reply (meeting confirmation)
 - Escalate with context (unknown sender, ambiguous content)
 
-**Policy check:** Sending any email reply requires at least `LOW_AUTONOMY` trust tier. Drafting is allowed at `SUGGEST`. Archiving newsletters is allowed at `LOW_AUTONOMY` if the user has archived from this sender before.
+**Policy check:** Sending any email reply requires at least `LOW_AUTONOMY` trust tier. Drafting is allowed at `SUGGEST`. An archive preference may raise proposal confidence, but [`archive_email`](../packages/shared-types/src/action-safety.ts) always requires explicit confirmation before the Inbox changes.
 
-**Outcome:** For a known newsletter, auto-archive and log explanation. For a routine manager request, draft a reply and surface it for approval. For an unknown sender, escalate with a one-line summary.
+**Outcome:** For a known newsletter, propose archiving and log the explanation. For a routine manager request, draft a reply and surface it for approval. For an unknown sender, escalate with a one-line summary.
 
 ### Calendar Conflict
 

@@ -9,7 +9,7 @@ import type {
   SkillGap,
 } from '@skytwin/shared-types';
 import { randomUUID } from 'node:crypto';
-import { evaluateInjectionGuard } from '@skytwin/shared-types';
+import { classifyGmailArchiveGenericAction, evaluateInjectionGuard } from '@skytwin/shared-types';
 import { PreRequestExecutionError } from '@skytwin/ironclaw-adapter';
 import type { ExecutionRequestPreparation, IronClawAdapter } from '@skytwin/ironclaw-adapter';
 import type { AdapterRegistry } from './adapter-registry.js';
@@ -29,6 +29,12 @@ export interface ExecutionContext {
   approved?: boolean;
   /** Current persisted IronClaw channel, supplied by the trusted caller. */
   ironclawChannel?: string;
+}
+
+/** Immutable DB-resolved action identity required before generic rollback. */
+export interface RollbackActionIdentity {
+  readonly actionId: string;
+  readonly actionType: string;
 }
 
 export interface PreparedExecution {
@@ -396,6 +402,7 @@ function assertExecutionPermitted(
   action: CandidateAction,
   context?: ExecutionContext,
 ): void {
+  assertGenericExecutionActionAllowed(action);
   const verdict = evaluateInjectionGuard(action);
   if (verdict.escalate && !context?.approved) {
     throw new InvariantViolationError(
@@ -561,6 +568,43 @@ function bindTrustedPlanContext(
       parameters: stripRouterControlParameters(step.parameters),
     })),
   };
+}
+
+/** The dedicated Gmail archive lifecycle is never a generic router skill. */
+function assertGenericExecutionActionAllowed(action: unknown): asserts action is CandidateAction {
+  if (!action) {
+    throw new InvariantViolationError('ExecutionRouter called without a CandidateAction.');
+  }
+  const classification = classifyGmailArchiveGenericAction(action);
+  if (classification.kind !== 'other') {
+    throw new InvariantViolationError(
+      classification.kind === 'archive'
+        ? 'The archive_email action is reserved for its dedicated execution lifecycle.'
+        : 'The generic execution action could not be inspected safely.',
+    );
+  }
+}
+
+function snapshotRollbackActionIdentity(value: unknown): Readonly<RollbackActionIdentity> | null {
+  try {
+    if (!value || typeof value !== 'object' || Array.isArray(value) ||
+        Object.getPrototypeOf(value) !== Object.prototype ||
+        Object.getOwnPropertySymbols(value).length !== 0) return null;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(descriptors).sort();
+    if (names.length !== 2 || names[0] !== 'actionId' || names[1] !== 'actionType') return null;
+    const actionId = descriptors['actionId'];
+    const actionType = descriptors['actionType'];
+    if (!actionId || !Object.prototype.hasOwnProperty.call(actionId, 'value') ||
+        actionId.enumerable !== true || typeof actionId.value !== 'string' ||
+        actionId.value.length === 0 ||
+        !actionType || !Object.prototype.hasOwnProperty.call(actionType, 'value') ||
+        actionType.enumerable !== true || typeof actionType.value !== 'string' ||
+        actionType.value.length === 0) return null;
+    return Object.freeze({ actionId: actionId.value, actionType: actionType.value });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -738,6 +782,7 @@ export class ExecutionRouter {
     riskAssessment: RiskAssessment,
     userId: string,
   ): Promise<RoutingDecision> {
+    assertGenericExecutionActionAllowed(action);
     await this.assertAdmitted(action, userId);
     // An explicit MCP target is execution authority, not descriptive routing
     // metadata. It can only cross the MCP host boundary whose DB claim checks
@@ -1261,7 +1306,12 @@ export class ExecutionRouter {
   async rollback(
     planId: string,
     adapterUsed: string | null | undefined,
+    actionIdentity?: RollbackActionIdentity,
   ): Promise<RollbackRoutingResult> {
+    // Snapshot caller-owned identity before any adapter can observe it. The
+    // argument remains optional at the type boundary for older callers, but an
+    // absent, hostile, or malformed binding can never authorize dispatch.
+    const boundActionIdentity = snapshotRollbackActionIdentity(actionIdentity);
     // Only an adapter that actually executed the plan can roll it back, and the
     // only reliable record of that is the persisted adapter name. An absent or
     // unrecognized name fails safe — never fall back to a different adapter.
@@ -1289,6 +1339,20 @@ export class ExecutionRouter {
         },
         adapterUsed,
         noAdapter: true,
+      };
+    }
+
+    const classification = classifyGmailArchiveGenericAction(boundActionIdentity);
+    if (!boundActionIdentity || classification.kind !== 'other') {
+      return {
+        result: {
+          success: false,
+          message: classification.kind === 'archive'
+            ? 'rollback_action_reserved'
+            : 'rollback_action_identity_invalid',
+        },
+        adapterUsed,
+        noAdapter: false,
       };
     }
 

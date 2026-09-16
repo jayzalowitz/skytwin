@@ -1,5 +1,6 @@
 import { query } from '../connection.js';
 import type { Watch, RoutineSpec, RoutineStatus } from '@skytwin/shared-types';
+import { randomUUID } from 'node:crypto';
 
 /**
  * Repository for **watches** — the persisted form of no-code routines (#519).
@@ -23,6 +24,21 @@ export interface WatchRow {
   updated_at: Date;
   last_run_at: Date | null;
   next_run_at: Date | null;
+  schedule_revision: string;
+}
+
+function isFilterNarrowed(spec: RoutineSpec): boolean {
+  const f = spec.filter;
+  return Boolean(f.sources?.length || f.fromContains?.length || f.keywords?.length || f.domains?.length);
+}
+
+function storedFilter(spec: RoutineSpec): Required<RoutineSpec['filter']> {
+  return {
+    sources: spec.filter.sources ?? [],
+    fromContains: spec.filter.fromContains ?? [],
+    keywords: spec.filter.keywords ?? [],
+    domains: spec.filter.domains ?? [],
+  };
 }
 
 function rowToWatch(r: WatchRow): Watch {
@@ -73,7 +89,7 @@ export const watchRepository = {
         s.cadence,
         s.hourOfDay ?? null,
         s.dayOfWeek ?? null,
-        JSON.stringify(s.filter ?? {}),
+        JSON.stringify(storedFilter(s)),
         s.action,
         status,
         nextRunAt,
@@ -109,10 +125,17 @@ export const watchRepository = {
     const effectiveNext = status === 'active' ? (nextRunAt ?? new Date()) : null;
     const result = await query<WatchRow>(
       `UPDATE watches
-          SET status = $3, next_run_at = $4, updated_at = now()
+          SET status = $3, next_run_at = $4, schedule_revision = $5, updated_at = now()
         WHERE id = $1 AND user_id = $2
+          AND (
+            $3 <> 'active'
+            OR jsonb_path_exists(filter, '$.sources[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
+            OR jsonb_path_exists(filter, '$.fromContains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
+            OR jsonb_path_exists(filter, '$.keywords[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
+            OR jsonb_path_exists(filter, '$.domains[*] ? (@.type() == "string" && @ like_regex ".*\\S.*")')
+          )
       RETURNING *`,
-      [id, userId, status, effectiveNext],
+      [id, userId, status, effectiveNext, randomUUID()],
     );
     return result.rows[0] ? rowToWatch(result.rows[0]) : null;
   },
@@ -128,8 +151,9 @@ export const watchRepository = {
       `UPDATE watches
           SET name = $3, cadence = $4, hour_of_day = $5, day_of_week = $6,
               filter = $7, action = $8, source_text = COALESCE($9, source_text),
-              updated_at = now()
+              schedule_revision = $11, updated_at = now()
         WHERE id = $1 AND user_id = $2
+          AND (status <> 'active' OR $10 = true)
       RETURNING *`,
       [
         id,
@@ -138,9 +162,11 @@ export const watchRepository = {
         spec.cadence,
         spec.hourOfDay ?? null,
         spec.dayOfWeek ?? null,
-        JSON.stringify(spec.filter ?? {}),
+        JSON.stringify(storedFilter(spec)),
         spec.action,
         sourceText === undefined ? null : sourceText,
+        isFilterNarrowed(spec),
+        randomUUID(),
       ],
     );
     return result.rows[0] ? rowToWatch(result.rows[0]) : null;
@@ -154,52 +180,4 @@ export const watchRepository = {
     return result.rows.length > 0;
   },
 
-  /**
-   * List active watches whose next run is due, oldest-first and bounded. This
-   * is a plain READ — it does NOT claim or lock. The scheduler (a later part)
-   * owns claim semantics (a status/next_run_at transition, or
-   * `SELECT … FOR UPDATE SKIP LOCKED`) to avoid double-processing across
-   * concurrent workers.
-   */
-  async listDue(now: Date = new Date(), limit = 100): Promise<Watch[]> {
-    const result = await query<WatchRow>(
-      `SELECT * FROM watches
-        WHERE status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= $1
-        ORDER BY next_run_at ASC
-        LIMIT $2`,
-      [now, limit],
-    );
-    return result.rows.map(rowToWatch);
-  },
-
-  /** Record a firing and schedule the next one (scheduler, a later part). */
-  async markRan(id: string, ranAt: Date, nextRunAt: Date | null): Promise<void> {
-    await query(
-      `UPDATE watches SET last_run_at = $2, next_run_at = $3, updated_at = now() WHERE id = $1`,
-      [id, ranAt, nextRunAt],
-    );
-  },
-
-  /**
-   * Optimistically CLAIM a due watch before processing it: atomically advance
-   * `next_run_at`/`last_run_at`, gated on the `next_run_at` the scheduler saw in
-   * `listDue`. Returns true if this caller won the claim, false if another
-   * worker already advanced it (so the caller skips) — this is what makes the
-   * scheduler safe to run on multiple worker instances without double-firing.
-   */
-  async claimDue(
-    id: string,
-    seenNextRunAt: Date,
-    nextRunAt: Date,
-    ranAt: Date,
-  ): Promise<boolean> {
-    const result = await query<{ id: string }>(
-      `UPDATE watches
-          SET next_run_at = $3, last_run_at = $4, updated_at = now()
-        WHERE id = $1 AND status = 'active' AND next_run_at = $2
-      RETURNING id`,
-      [id, seenNextRunAt, nextRunAt, ranAt],
-    );
-    return result.rows.length > 0;
-  },
 };

@@ -8,6 +8,11 @@ import {
   hasActiveCredentialDispatchWithClient,
   type CredentialMutationLeaseProof,
 } from './credential-dispatch-lease-repository.js';
+import {
+  connectedAccountRepository,
+  canonicalizeScopes,
+  digestProviderSubject,
+} from './connected-account-repository.js';
 
 export class CredentialDispatchConflictError extends Error {
   readonly code = 'credential_dispatch_pending';
@@ -42,6 +47,15 @@ export class CredentialConnectionAuthorityError extends Error {
   constructor() {
     super('This OAuth authorization flow is stale. Start a new connection after disconnect completes.');
     this.name = 'CredentialConnectionAuthorityError';
+  }
+}
+
+export class OAuthAccountBindingConflictError extends Error {
+  readonly code = 'oauth_account_binding_conflict';
+
+  constructor(message = 'The provider account is already bound to a different credential.') {
+    super(message);
+    this.name = 'OAuthAccountBindingConflictError';
   }
 }
 
@@ -170,6 +184,19 @@ export async function invalidateOAuthAccountsForUserWithClient(
     accounts: ordered,
     pendingAuthorizationsDeleted: pendingCleanup.rowCount ?? 0,
   };
+}
+
+async function withSerializableRetry<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await withTransaction(fn);
+    } catch (error) {
+      lastError = error;
+      if ((error as { code?: unknown } | null)?.code !== '40001' || attempt === 2) throw error;
+    }
+  }
+  throw lastError;
 }
 
 /**
@@ -331,6 +358,25 @@ export const oauthRepository = {
     return result.rows[0] ?? null;
   },
 
+  /** Resolve one credential through its stable owner/account binding. */
+  async getTokenByConnectorAccount(
+    userId: string,
+    provider: string,
+    connectorAccountId: string,
+  ): Promise<OAuthTokenRow | null> {
+    const result = await query<OAuthTokenRow>(
+      `SELECT t.* FROM oauth_tokens AS t
+       JOIN connected_accounts AS ca
+         ON ca.id = t.connector_account_id
+        AND ca.user_id = t.user_id
+        AND ca.provider = t.provider
+      WHERE t.user_id = $1 AND t.provider = $2 AND t.connector_account_id = $3
+        AND ca.is_active = true AND ca.identity_verified = true`,
+      [userId, provider, connectorAccountId],
+    );
+    return result.rows[0] ?? null;
+  },
+
   /** All accounts a user has connected for a given provider. */
   async listAccountsForUser(userId: string, provider: string): Promise<OAuthTokenRow[]> {
     const result = await query<OAuthTokenRow>(
@@ -343,9 +389,15 @@ export const oauthRepository = {
   /** Every connection across every user; used by the worker's poll loop. */
   async listAllConnections(): Promise<OAuthTokenRowWithEncrypted[]> {
     const result = await query<OAuthTokenRowWithEncrypted>(
-      `SELECT * FROM oauth_tokens
-        WHERE (refresh_token IS NOT NULL OR encrypted_refresh_token IS NOT NULL)
-          AND dispatch_state = 'active'`,
+      `SELECT t.* FROM oauth_tokens AS t
+       JOIN connected_accounts AS ca
+         ON ca.id = t.connector_account_id
+        AND ca.user_id = t.user_id
+        AND ca.provider = t.provider
+      WHERE ca.is_active = true AND ca.identity_verified = true
+        AND (t.refresh_token IS NOT NULL OR t.encrypted_refresh_token IS NOT NULL)
+        AND t.dispatch_state = 'active'
+      ORDER BY t.user_id, t.provider, t.updated_at DESC, t.id DESC`,
     );
     return result.rows;
   },
@@ -376,7 +428,10 @@ export const oauthRepository = {
           vaultGeneration: string;
         };
   }): Promise<OAuthTokenRow> {
-    return withTransaction(async (client) => {
+    return withSerializableRetry(async (client) => {
+      const provider = input.provider.trim().toLowerCase();
+      const accountEmail = normalizeAccountEmail(input.accountEmail);
+      const scopes = canonicalizeScopes(input.scopes);
       if (!await lockOwner(client, input.userId)) {
         throw new Error('OAuth credential owner is unavailable.');
       }
@@ -453,18 +508,76 @@ export const oauthRepository = {
       }
       const existing = await client.query<OAuthTokenRow>(
         `SELECT * FROM oauth_tokens
-          WHERE user_id = $1 AND provider = $2 AND account_email = $3
+          WHERE user_id = $1 AND provider = $2 AND lower(account_email) = lower($3)
+          ORDER BY updated_at DESC, id DESC
           FOR UPDATE`,
-        [input.userId, input.provider, input.accountEmail],
+        [input.userId, provider, accountEmail],
       );
+      if (existing.rows.length > 1) {
+        throw new OAuthAccountBindingConflictError(
+          'Multiple credentials match this display email; operator reconciliation is required.',
+        );
+      }
       const activeDispatch = await hasActiveCredentialDispatchWithClient(
         client,
-        { userId: input.userId, provider: input.provider },
+        { userId: input.userId, provider },
       );
       if (activeDispatch.active) {
         throw new CredentialDispatchConflictError(activeDispatch.retryAfter);
       }
       if (existing.rows[0]) await assertTokenIdle(client, existing.rows[0]);
+
+      const priorAccount = existing.rows[0]?.connector_account_id
+        ? await connectedAccountRepository.findOwnedActive(
+            input.userId,
+            existing.rows[0].connector_account_id,
+            provider,
+            client,
+          )
+        : null;
+      if (input.accountProviderId?.trim() && priorAccount?.identity_verified) {
+        const expectedDigest = digestProviderSubject(provider, input.accountProviderId);
+        if (priorAccount.provider_subject_digest !== expectedDigest) {
+          throw new OAuthAccountBindingConflictError(
+            'Display email is already bound to a different verified provider subject.',
+          );
+        }
+      }
+      const account = input.accountProviderId?.trim()
+        ? await connectedAccountRepository.upsertVerified({
+            userId: input.userId,
+            provider,
+            providerSubject: input.accountProviderId,
+            accountDisplay: accountEmail,
+            scopes,
+          }, client)
+        : priorAccount ?? await connectedAccountRepository.createUnverified({
+            userId: input.userId,
+            provider,
+            accountDisplay: accountEmail,
+            scopes,
+          }, client);
+      if (priorAccount && priorAccount.id !== account.id) {
+        await client.query(
+          `UPDATE connector_cursors SET connector_account_id = $1, updated_at = now()
+            WHERE connector_account_id = $2 AND user_id = $3`,
+          [account.id, priorAccount.id, input.userId],
+        );
+        await client.query(
+          `DELETE FROM connector_health
+            WHERE user_id = $1 AND connector_name IN (
+              'gmail:' || $2, 'google-calendar:' || $2,
+              'outlook_mail:' || $2, 'outlook_calendar:' || $2
+            )`,
+          [input.userId, priorAccount.id],
+        );
+        await client.query(
+          `UPDATE connected_accounts
+              SET is_active = false, disconnected_at = now(), updated_at = now()
+            WHERE id = $1 AND user_id = $2 AND provider = $3`,
+          [priorAccount.id, input.userId, provider],
+        );
+      }
 
       const result = await client.query<OAuthTokenRow>(
         `INSERT INTO oauth_tokens (
@@ -472,10 +585,11 @@ export const oauthRepository = {
            access_token, refresh_token, expires_at, scopes,
            encrypted_access_token, encrypted_refresh_token,
            encryption_iv, encryption_tag, encryption_key_version,
-           credential_revision, dispatch_generation, dispatch_state
+           credential_revision, dispatch_generation, dispatch_state,
+           connector_account_id
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                 $11, $12, $13, gen_random_uuid(), gen_random_uuid(), 'active')
+                 $11, $12, $13, gen_random_uuid(), gen_random_uuid(), 'active', $14)
          ON CONFLICT (user_id, provider, account_email) DO UPDATE SET
            account_provider_id = COALESCE(EXCLUDED.account_provider_id, oauth_tokens.account_provider_id),
            access_token = EXCLUDED.access_token,
@@ -490,18 +604,20 @@ export const oauthRepository = {
            credential_revision = gen_random_uuid(),
            dispatch_generation = gen_random_uuid(),
            dispatch_state = 'active',
+           connector_account_id = EXCLUDED.connector_account_id,
            updated_at = now()
          RETURNING *`,
-        [input.userId, input.provider, input.accountEmail,
+        [input.userId, provider, accountEmail,
           input.accountProviderId ?? null,
           storage.mode === 'plaintext' ? input.accessToken : null,
           storage.mode === 'plaintext' ? input.refreshToken : null,
-          input.expiresAt, input.scopes,
+          input.expiresAt, scopes,
           storage.mode === 'encrypted' ? storage.encryptedAccessToken : null,
           storage.mode === 'encrypted' ? storage.encryptedRefreshToken : null,
           storage.mode === 'encrypted' ? Buffer.alloc(0) : null,
           storage.mode === 'encrypted' ? Buffer.alloc(0) : null,
-          storage.mode === 'encrypted' ? storage.keyVersion : 1],
+          storage.mode === 'encrypted' ? storage.keyVersion : 1,
+          account.id],
       );
       if (!result.rows[0]) throw new Error('OAuth credential could not be saved.');
       if (input.newUserAuthorization) {
@@ -630,6 +746,22 @@ export const oauthRepository = {
           current.dispatch_generation !== expected.dispatch_generation;
       })) return 0;
       for (const row of rows.rows) await assertTokenIdle(client, row);
+      for (const row of rows.rows) {
+        await client.query(
+          `DELETE FROM connector_health
+            WHERE user_id = $1 AND connector_name IN (
+              'gmail:' || $2, 'google-calendar:' || $2,
+              'outlook_mail:' || $2, 'outlook_calendar:' || $2
+            )`,
+          [userId, row.connector_account_id],
+        );
+        await connectedAccountRepository.deactivateForTokenAccount(
+          userId,
+          provider,
+          row.account_email,
+          client,
+        );
+      }
       const result = await client.query(
         `DELETE FROM oauth_tokens
           WHERE user_id = $1 AND provider = $2
@@ -672,6 +804,12 @@ export const oauthRepository = {
       await assertTokenIdle(client, row);
       await bumpConnectionAuthority(client, userId, row.provider);
       await invalidateAccountConnectionAuthority(client, row.provider, row.account_email);
+      await connectedAccountRepository.deactivateForTokenAccount(
+        userId,
+        row.provider,
+        row.account_email,
+        client,
+      );
       const removed = await client.query(
         'DELETE FROM oauth_tokens WHERE id = $1 AND user_id = $2',
         [id, userId],
@@ -820,6 +958,38 @@ export const oauthRepository = {
         input.provider, input.expectedCredentialRevision],
     );
     return (result.rowCount ?? 0) === 1;
+  },
+
+  async updateAccessTokenByConnectorAccount(
+    userId: string,
+    provider: string,
+    connectorAccountId: string,
+    accessToken: string,
+    expiresAt: Date,
+    expectedCredentialRevision: string,
+  ): Promise<OAuthTokenRow | null> {
+    const result = await query<OAuthTokenRow>(
+      `UPDATE oauth_tokens AS t
+       SET access_token = $1, expires_at = $2,
+           credential_revision = gen_random_uuid(),
+           dispatch_generation = gen_random_uuid(), updated_at = now()
+       FROM connected_accounts AS ca
+       WHERE t.user_id = $3 AND t.provider = $4 AND t.connector_account_id = $5
+         AND ca.id = t.connector_account_id AND ca.user_id = t.user_id
+         AND ca.provider = t.provider AND ca.is_active = true
+         AND ca.identity_verified = true AND t.credential_revision = $6
+         AND t.dispatch_state = 'active'
+         AND NOT EXISTS (
+           SELECT 1 FROM credential_dispatch_leases l
+            WHERE (l.oauth_token_id = t.id OR
+                   (l.oauth_token_id IS NULL AND l.user_id = t.user_id
+                    AND l.provider = t.provider))
+              AND l.state IN ('request_started', 'ambiguous')
+         )
+       RETURNING t.*`,
+      [accessToken, expiresAt, userId, provider, connectorAccountId, expectedCredentialRevision],
+    );
+    return result.rows[0] ?? null;
   },
 
   // ── Backwards-compat shims ─────────────────────────────────────────────
@@ -973,8 +1143,8 @@ export const oauthRepository = {
    */
   async findByIdWithEncrypted(id: string): Promise<OAuthTokenRowWithEncrypted | null> {
     const result = await query<OAuthTokenRowWithEncrypted>(
-      `SELECT id, user_id, provider, account_email, account_provider_id,
-              access_token, refresh_token, expires_at, scopes, created_at, updated_at,
+      `SELECT id, user_id, provider, account_email, account_provider_id, connector_account_id,
+              access_token, refresh_token, expires_at, scopes, credential_revision, created_at, updated_at,
               encrypted_access_token, encrypted_refresh_token,
               encryption_iv, encryption_tag, encryption_key_version,
               credential_revision, dispatch_generation, dispatch_state
@@ -1092,8 +1262,8 @@ export const oauthRepository = {
     userId: string,
     client?: PoolClient,
   ): Promise<OAuthTokenRowWithEncrypted[]> {
-    const sql = `SELECT id, user_id, provider, account_email, account_provider_id,
-              access_token, refresh_token, expires_at, scopes, created_at, updated_at,
+    const sql = `SELECT id, user_id, provider, account_email, account_provider_id, connector_account_id,
+              access_token, refresh_token, expires_at, scopes, credential_revision, created_at, updated_at,
               encrypted_access_token, encrypted_refresh_token,
               encryption_iv, encryption_tag, encryption_key_version,
               credential_revision, dispatch_generation, dispatch_state

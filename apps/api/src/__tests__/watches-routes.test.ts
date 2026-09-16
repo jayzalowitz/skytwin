@@ -262,10 +262,11 @@ describe('watches routes', () => {
     });
 
     it('rejects activating an all-match draft watch', async () => {
+      mockWatchRepository.setStatus.mockResolvedValue(null);
       mockWatchRepository.getForUser.mockResolvedValue({ ...fakeWatch, status: 'draft', filter: {} });
       const res = await request(buildApp(), 'PATCH', `/api/watches/${USER}/${WATCH}`, { status: 'active' });
       expect(res.status).toBe(400);
-      expect(mockWatchRepository.setStatus).not.toHaveBeenCalled();
+      expect(mockWatchRepository.setStatus).toHaveBeenCalledTimes(1);
     });
 
     it('400s on an invalid status', async () => {
@@ -302,12 +303,13 @@ describe('watches routes', () => {
     });
 
     it('rejects editing an active watch into an all-match filter', async () => {
+      mockWatchRepository.updateSpec.mockResolvedValue(null);
       mockWatchRepository.getForUser.mockResolvedValue({ ...fakeWatch, status: 'active' });
       const res = await request(buildApp(), 'PATCH', `/api/watches/${USER}/${WATCH}`, {
         spec: { name: 'Too broad', cadence: 'daily', action: 'digest', filter: {} },
       });
       expect(res.status).toBe(400);
-      expect(mockWatchRepository.updateSpec).not.toHaveBeenCalled();
+      expect(mockWatchRepository.updateSpec).toHaveBeenCalledTimes(1);
     });
 
     it('400s on a non-UUID watchId', async () => {
