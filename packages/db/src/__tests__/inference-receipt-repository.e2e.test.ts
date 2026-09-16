@@ -19,7 +19,7 @@ import { ExplanationGenerator } from '@skytwin/explanations';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { Pool } from 'pg';
 import { closePool, withTransaction } from '../connection.js';
-import { collectBackup, restoreBackup } from '../backup/backup.js';
+import { BACKUP_SCHEMA_VERSION, collectBackup, restoreBackup } from '../backup/backup.js';
 import { inferenceReceiptRepository } from '../repositories/inference-receipt-repository.js';
 import { executionRepository } from '../repositories/execution-repository.js';
 import { executionAdmissionRepository } from '../repositories/execution-admission-repository.js';
@@ -2938,7 +2938,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     )).toBe(true);
   });
 
-  it('round-trips a schema-v3 receipt backup with a non-replay restore tombstone', async () => {
+  it('round-trips a current-schema receipt backup with a non-replay restore tombstone', async () => {
     const owner = await createGraph('backup-owner', 'auto_execute');
     const bundle = receiptBundle(owner);
     const created = await inferenceReceiptRepository.createManyForUser(owner.userId, [{
@@ -2950,7 +2950,7 @@ describe.skipIf(!E2E)('E2E: inference receipt repository', () => {
     const backup = await collectBackup(owner.userId);
     expect(backup.success).toBe(true);
     if (!backup.success) return;
-    expect(backup.data.schemaVersion).toBe(3);
+    expect(backup.data.schemaVersion).toBe(BACKUP_SCHEMA_VERSION);
     expect(backup.data.decisions).toHaveLength(1);
     expect(backup.data.decisions[0]?.inferenceReceipts).toHaveLength(1);
     expect(backup.data.decisions[0]?.inferenceReceipts?.[0]).toMatchObject({
