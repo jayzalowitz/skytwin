@@ -159,7 +159,10 @@ below limits launch support to workflows backed by tagged-artifact evidence.
 
 Current desktop artifacts bundle CockroachDB as a hash-verified native binary,
 but they are unsigned technical previews rather than supported public-beta
-installers. Check the release notes for the exact features in an artifact. In
+installers. The tagged release path can generate and attach updater manifests,
+but no qualifying beta release is currently published; do not infer manifest
+presence or update support from the current preview. Check the release notes for
+the exact features in an artifact. In
 builds from current source, a local model and the `llama.cpp` runtime are not
 bundled: SkyTwin can recommend a maintained artifact for the machine and download
 it only after the user starts the install. A compatible runtime remains a separate

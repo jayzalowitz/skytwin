@@ -100,7 +100,7 @@ items in this historical inventory are explicitly non-blocking and deferred.
 | 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; current source adds isolated packaged approve/reject/correct interactions, but a fresh artifact still needs validation |
 | 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |
 | 9 | Find a "delete my data" button | ✅ connected/development product exposes Settings → **Download** + **Delete my data** (#376); Settings is outside packaged-sample authority |
-| 10 | Receive auto-updates | 🟡 code complete — manifests ship (#370) + the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; only signed-build e2e remains (gated on #368) |
+| 10 | Receive auto-updates | 🟡 source/CI path implemented — the tagged workflow generates and is designed to attach manifests (#370), and the user-facing layer (in-app update banner + "Check for Updates…" menu) landed; no qualifying tagged release is published, and signed-build e2e remains gated on #368 |
 
 ## Encryption and key-management detail
 
