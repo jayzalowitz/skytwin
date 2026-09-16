@@ -6,6 +6,7 @@
 #
 # Usage:
 #   ./scripts/run-crdb-integration.sh
+#   PORT=26259 ./scripts/run-crdb-integration.sh  # optional fixed host port
 #
 # Requirements:
 #   - docker installed and running
@@ -23,8 +24,7 @@ REPO_ROOT="$(cd -- "$SCRIPT_DIR/../../.." && pwd)"
 cd "$REPO_ROOT"
 
 CONTAINER_NAME="${CONTAINER_NAME:-skytwin-gbrain-crdb-test}"
-PORT="${PORT:-26259}"  # non-default so it doesn't collide with a dev cluster
-PG_PORT="$PORT"
+REQUESTED_PORT="${PORT:-}"
 DB_NAME="skytwin_test"
 COCKROACH_IMAGE="${COCKROACH_IMAGE:-cockroachdb/cockroach:latest-v23.2}"
 COCKROACH_BIN="/cockroach/cockroach"
@@ -37,7 +37,7 @@ BRAIN_MIGRATIONS=(
 CONTAINER_ID=""
 
 crdb_sql() {
-  docker exec "$CONTAINER_NAME" "$COCKROACH_BIN" sql \
+  docker exec "$CONTAINER_ID" "$COCKROACH_BIN" sql \
     --insecure --host=127.0.0.1:26257 "$@"
 }
 
@@ -56,9 +56,15 @@ cleanup() {
 }
 trap cleanup EXIT
 
-echo "[harness] starting cockroachdb container on port $PORT"
+PUBLISH_SPEC="127.0.0.1::26257"
+if [ -n "$REQUESTED_PORT" ]; then
+  PUBLISH_SPEC="127.0.0.1:${REQUESTED_PORT}:26257"
+  echo "[harness] starting cockroachdb container on requested port $REQUESTED_PORT"
+else
+  echo "[harness] starting cockroachdb container on a Docker-assigned loopback port"
+fi
 CONTAINER_ID=$(docker run -d --name "$CONTAINER_NAME" \
-  -p "127.0.0.1:${PORT}:26257" \
+  -p "$PUBLISH_SPEC" \
   --entrypoint "$COCKROACH_BIN" \
   "$COCKROACH_IMAGE" \
   start-single-node --insecure --listen-addr=0.0.0.0:26257)
@@ -66,6 +72,19 @@ if [ -z "$CONTAINER_ID" ]; then
   echo "[harness] docker did not return a container id; aborting" >&2
   exit 1
 fi
+
+if [ -n "$REQUESTED_PORT" ]; then
+  PORT="$REQUESTED_PORT"
+else
+  PORT_MAPPING=$(docker port "$CONTAINER_ID" 26257/tcp)
+  PORT="${PORT_MAPPING##*:}"
+  if ! [[ "$PORT" =~ ^[0-9]+$ ]]; then
+    echo "[harness] could not resolve Docker-assigned host port: $PORT_MAPPING" >&2
+    exit 1
+  fi
+  echo "[harness] Docker assigned host port $PORT"
+fi
+PG_PORT="$PORT"
 
 echo "[harness] waiting for cockroach to accept connections"
 ready=0
@@ -95,7 +114,7 @@ crdb_sql --database "$DB_NAME" --execute \
 echo "[harness] applying brain_* migrations"
 for migration in "${BRAIN_MIGRATIONS[@]}"; do
   echo "[harness]   $(basename "$migration")"
-  docker exec -i "$CONTAINER_NAME" "$COCKROACH_BIN" sql \
+  docker exec -i "$CONTAINER_ID" "$COCKROACH_BIN" sql \
     --insecure --host=127.0.0.1:26257 --database "$DB_NAME" \
     < "$migration" >/dev/null
 done
