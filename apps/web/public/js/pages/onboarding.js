@@ -764,7 +764,9 @@ async function handleChatSend(text) {
     removeTypingBubble();
     addChatBubble('assistant', 'Got it — let me figure out a good setup for you.');
     setWizardBusy(false, 'Continuing with a starter setup.');
-    setTimeout(() => handleFinalFromHistory(), 500);
+    setTimeout(() => {
+      if (isCurrentWizardRun(runGeneration)) handleFinalFromHistory();
+    }, 500);
   }
 }
 
@@ -908,6 +910,7 @@ async function handleDeterministicAnswer(questionKey, answer) {
 }
 
 async function submitDeterministicPick() {
+  const runGeneration = _wizardRunGeneration;
   if (!_wizardState) return;
   const userId = getCurrentUserId();
   if (!userId) {
@@ -917,11 +920,13 @@ async function submitDeterministicPick() {
   setWizardBusy(true, 'Finding the right setup…');
   try {
     const result = await postDeterministicPick(userId, _detAnswers);
+    if (!isCurrentWizardRun(runGeneration)) return;
     _wizardState.recipeSlug = result.recipeSlug;
     _wizardState.recommendedRegistryIds = result.recommendedRegistryIds ?? [];
     transitionTo('recipe_preview');
     setWizardBusy(false, 'Your setup suggestion is ready.');
   } catch {
+    if (!isCurrentWizardRun(runGeneration)) return;
     _wizardState.recipeSlug = 'productivity-pack';
     _wizardState.recommendedRegistryIds = [];
     transitionTo('recipe_preview');
@@ -1011,6 +1016,7 @@ async function loadDependencyGraph(userId, generation = _renderGeneration) {
       await loadScript('https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js');
       if (!isCurrentWizardRun(runGeneration)) return;
     } catch {
+      if (!isCurrentWizardRun(runGeneration)) return;
       container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Dependency graph unavailable offline.</div>`;
       setWizardBusy(false, 'Capability graph unavailable offline.', generation);
       return;
@@ -1022,6 +1028,7 @@ async function loadDependencyGraph(userId, generation = _renderGeneration) {
     graphData = await fetchCapabilityDependencyGraph(userId);
     if (!isCurrentWizardRun(runGeneration)) return;
   } catch {
+    if (!isCurrentWizardRun(runGeneration)) return;
     container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Could not load graph.</div>`;
     setWizardBusy(false, 'Capability graph could not be loaded.', generation);
     return;

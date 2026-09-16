@@ -23,6 +23,10 @@ describe('onboarding accessibility contract', () => {
     expect(onboarding).toContain('if (!isCurrentWizardRun(runGeneration)) return;');
     expect(onboarding).toContain('if (generation !== _renderGeneration) return');
     expect(onboarding).toContain("setWizardBusy(true, 'Loading your first question…')");
+    expect(onboarding).toContain('const runGeneration = _wizardRunGeneration');
+    expect(onboarding).toContain('if (isCurrentWizardRun(runGeneration)) handleFinalFromHistory()');
+    expect(onboarding).toContain('const result = await postDeterministicPick(userId, _detAnswers);');
+    expect(onboarding).toContain('if (!isCurrentWizardRun(runGeneration)) return;');
   });
 
   it('gives every onboarding action button an explicit non-submit type', () => {
