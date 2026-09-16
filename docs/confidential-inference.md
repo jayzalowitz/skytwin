@@ -1,4 +1,4 @@
-# Confidential inference
+# Private inference boundaries
 
 SkyTwin defaults to the **On this device** reasoning boundary. It is a policy
 boundary, not a promise that a local model is already running. The managed
@@ -9,7 +9,7 @@ leaves that managed setup unavailable. An explicitly configured local model can
 still run only on the device, but SkyTwin does not represent that user-managed
 path as artifact-verified. Neither path falls back to a remote provider.
 
-## Remote confidential inference
+## Remote attested inference
 
 `verified_private_cloud` is intentionally unavailable in this build. Entering
 an API key, selecting HTTPS, or trusting a provider name does **not** enable it

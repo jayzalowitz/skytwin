@@ -996,8 +996,8 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "78f5b306e271d6c6eee605ad100ff7313806ccdc5dc83617a270996b5e1383ca",
-          "why": "Public disclosure names connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
+          "sha256": "f741f7b79d2f0e66e3120fc760ac666130f7b33ba6856ae8563487457d0b5976",
+          "why": "Public disclosure names local-model, connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
           "path": "apps/api/src/lib/llm-client-factory.ts",
