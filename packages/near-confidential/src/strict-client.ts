@@ -277,6 +277,7 @@ function snapshotEvidence(
     attestation: Object.freeze({
       tdxQuote: Uint8Array.from(tdxQuote),
       tdxVerified: attestation.tdxVerified,
+      tdxStatus: attestation.tdxStatus,
       gpuEvidence: Uint8Array.from(gpuEvidence),
       gpuVerified: attestation.gpuVerified,
       measurement: attestation.measurement,
@@ -300,6 +301,7 @@ function snapshotEvidence(
     snapshot.tlsSpkiSha256,
     snapshot.attestation.measurement,
     snapshot.attestation.modelName,
+    snapshot.attestation.tdxStatus,
     snapshot.attestation.reportData.scheme,
     snapshot.attestation.reportData.signingIdentity,
     snapshot.attestation.reportData.tlsSpkiSha256,
@@ -319,7 +321,9 @@ function snapshotEvidence(
   if (
     typeof snapshot.sameConnection !== "boolean" ||
     typeof snapshot.attestation.tdxVerified !== "boolean" ||
-    typeof snapshot.attestation.gpuVerified !== "boolean"
+    typeof snapshot.attestation.gpuVerified !== "boolean" ||
+    (snapshot.attestation.tdxStatus !== "UpToDate" &&
+      snapshot.attestation.tdxStatus !== "OutOfDate")
   ) {
     throw new Error("Attestation evidence contains malformed scalar fields");
   }
@@ -1016,6 +1020,7 @@ export class StrictConfidentialClient {
         bytes: Uint8Array.from(responseSnapshot),
         chatId: wireResponse.chatId,
         evidence,
+        signature,
       });
     } catch {
       return finish(

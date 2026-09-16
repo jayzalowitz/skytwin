@@ -35,6 +35,8 @@ const RETENTION_POLICIES: Readonly<Record<AIProviderName, string | null>> = {
   google: 'https://ai.google.dev/gemini-api/terms',
   ollama: null,
   embedded: null,
+  trustedrouter: 'https://trustedrouter.com/privacy',
+  nearai: 'https://near.ai/privacy-policy',
 };
 
 function localCapabilities(provider: 'embedded' | 'ollama'): ProviderPrivacyCapabilities {
@@ -56,7 +58,7 @@ function localCapabilities(provider: 'embedded' | 'ollama'): ProviderPrivacyCapa
 }
 
 const PROVIDER_NAMES = new Set<AIProviderName>([
-  'anthropic', 'openai', 'google', 'ollama', 'embedded',
+  'anthropic', 'openai', 'google', 'ollama', 'embedded', 'trustedrouter', 'nearai',
 ]);
 
 function snapshotProvider(provider: ProviderEntry): ProviderEntry {
@@ -156,6 +158,46 @@ export function providerPrivacyCapabilities(
   if (provider.name === 'embedded') {
     return localCapabilities('embedded');
   }
+  if (provider.name === 'trustedrouter') {
+    return {
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      confidentiality: 'attested_tee',
+      attestationPolicy: 'required',
+      retention: {
+        classification: 'provider_declared',
+        summary: 'SkyTwin verifies the attested gateway session and exact-byte receipt; the selected upstream route must independently report a TEE-verified confidential tier.',
+        policyUrl: RETENTION_POLICIES.trustedrouter,
+      },
+      modalities: ['text'],
+      pricing: {
+        kind: 'unknown',
+        unit: 'nano_usd',
+        source: 'unknown',
+        reason: 'not_reported',
+      },
+    };
+  }
+  if (provider.name === 'nearai') {
+    return {
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      confidentiality: 'provider_standard',
+      attestationPolicy: 'not_applicable',
+      retention: {
+        classification: 'provider_declared',
+        summary: 'Unavailable: current base-CVM evidence does not pin the dynamically selected model and proxy workload, so SkyTwin does not send prompts through this adapter.',
+        policyUrl: RETENTION_POLICIES.nearai,
+      },
+      modalities: ['text'],
+      pricing: {
+        kind: 'unknown',
+        unit: 'nano_usd',
+        source: 'unknown',
+        reason: 'not_reported',
+      },
+    };
+  }
   // A local socket alone is not a local-inference guarantee: Ollama can relay
   // cloud models through its loopback API. The on-device client source-
   // qualifies each request as local. Other modes remain conservatively
@@ -240,10 +282,50 @@ function assertConfiguredProvider(provider: ProviderEntry): void {
   // The embedded adapter has no network path and can only truthfully report
   // on-device execution. Reject the mode mismatch before prompt processing;
   // a post-response classification failure would be too late.
-  if (provider.name === 'embedded') {
+  if (provider.name === 'embedded' || provider.name === 'trustedrouter' || provider.name === 'nearai') {
     throw new ProviderModePolicyError(
       'cross_mode_provider',
-      'The embedded provider is eligible only for on-device reasoning',
+      provider.name === 'embedded'
+        ? 'The embedded provider is eligible only for on-device reasoning'
+        : `${provider.name} is eligible only for verified private-cloud reasoning`,
+      provider.name,
+    );
+  }
+}
+
+function assertVerifiedProvider(provider: ProviderEntry): void {
+  if (provider.name === 'nearai') {
+    throw new ProviderModePolicyError(
+      'verification_adapter_required',
+      'NEAR AI remains unavailable because its base-CVM attestation does not pin the dynamically selected inference workload',
+      provider.name,
+    );
+  }
+  if (provider.name !== 'trustedrouter') {
+    throw new ProviderModePolicyError(
+      'verification_adapter_required',
+      `Provider ${provider.name} has no verifier-owned private-cloud adapter`,
+      provider.name,
+    );
+  }
+  if (provider.baseUrl !== undefined) {
+    throw new ProviderModePolicyError(
+      'verification_adapter_required',
+      `${provider.name} confidential mode uses only its pinned production endpoint`,
+      provider.name,
+    );
+  }
+  if (provider.model.trim() === '') {
+    throw new ProviderModePolicyError(
+      'invalid_provider',
+      `${provider.name} confidential mode requires a model`,
+      provider.name,
+    );
+  }
+  if (provider.model !== 'trustedrouter/confidential') {
+    throw new ProviderModePolicyError(
+      'invalid_provider',
+      'TrustedRouter confidential mode requires the pinned confidential route',
       provider.name,
     );
   }
@@ -254,8 +336,10 @@ function assertConfiguredProvider(provider: ProviderEntry): void {
  * rejects a mixed chain instead of silently filtering it: a configuration
  * mistake must not change where a prompt is sent.
  *
- * No current adapter is admitted to `verified_private_cloud`; issue #640 adds
- * the verifier-owned adapter boundary. HTTPS or a custom base URL is not proof.
+ * Only the verifier-owned TrustedRouter adapter is currently admitted to
+ * `verified_private_cloud`. NEAR AI remains represented but unavailable until
+ * its dynamic inference workload can be pinned. HTTPS or a custom base URL is
+ * never proof.
  */
 export function providersForReasoningMode(
   rawMode: unknown,
@@ -270,12 +354,8 @@ export function providersForReasoningMode(
     throw new ProviderModePolicyError('no_providers', `No providers are configured for ${mode}`);
   }
   if (mode === 'verified_private_cloud') {
-    throw new ProviderModePolicyError(
-      'verification_adapter_required',
-      'Verified private cloud requires a verifier-owned provider adapter',
-    );
-  }
-  if (mode === 'on_device') {
+    providerSnapshot.forEach(assertVerifiedProvider);
+  } else if (mode === 'on_device') {
     providerSnapshot.forEach(assertLocalProvider);
   } else {
     providerSnapshot.forEach(assertConfiguredProvider);

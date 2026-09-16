@@ -122,6 +122,112 @@ describe('verifyInferenceReceiptExport', () => {
     });
   });
 
+  it('supports a verified JWS signing input when attestation policy binds its response hash', () => {
+    const value = bundle();
+    const jwsClaims = Buffer.from(JSON.stringify({
+      req: { hash: Buffer.from(value.receipt.requestSha256, 'hex').toString('base64url') },
+      resp: {
+        hash: Buffer.from(value.receipt.responseSha256, 'hex').toString('base64url'),
+        of: 'body',
+      },
+      model: { selected: value.receipt.model },
+    }), 'utf8');
+    const jwsSigningInput = Buffer.from(`protected.${jwsClaims.toString('base64url')}`, 'ascii');
+    const { seal: _seal, ...unsigned } = value.receipt;
+    value.receipt = signInferenceReceipt({
+      ...unsigned,
+      responseSignature: {
+        algorithm: 'Ed25519',
+        keyId: 'provider-1',
+        publicKeyPem: pem(provider.publicKey),
+        signatureBase64: sign(null, jwsSigningInput, provider.privateKey).toString('base64'),
+        scheme: 'jws_signing_input',
+        signedPayloadBase64: jwsSigningInput.toString('base64'),
+      },
+    }, {
+      keyId: 'recorder-1',
+      privateKeyPem: privatePem(recorder.privateKey),
+      publicKeyPem: pem(recorder.publicKey),
+    });
+
+    expect(verifyInferenceReceiptExport(value, trustedOptions())).toMatchObject({
+      valid: true, trusted: true, code: 'PASS',
+    });
+
+    const mismatchedClaims = Buffer.from(JSON.stringify({
+      req: { hash: Buffer.alloc(32).toString('base64url') },
+      resp: {
+        hash: Buffer.from(value.receipt.responseSha256, 'hex').toString('base64url'),
+        of: 'body',
+      },
+      model: { selected: value.receipt.model },
+    }), 'utf8');
+    const mismatchedInput = Buffer.from(`protected.${mismatchedClaims.toString('base64url')}`, 'ascii');
+    const { seal: _secondSeal, ...mismatchedUnsigned } = value.receipt;
+    value.receipt = signInferenceReceipt({
+      ...mismatchedUnsigned,
+      responseSignature: {
+        ...mismatchedUnsigned.responseSignature!,
+        signatureBase64: sign(null, mismatchedInput, provider.privateKey).toString('base64'),
+        signedPayloadBase64: mismatchedInput.toString('base64'),
+      },
+    }, {
+      keyId: 'recorder-1',
+      privateKeyPem: privatePem(recorder.privateKey),
+      publicKeyPem: pem(recorder.publicKey),
+    });
+    expect(verifyInferenceReceiptExport(value, trustedOptions()).code)
+      .toBe('RESPONSE_SIGNATURE_INVALID');
+  });
+
+  it('verifies a provider-signed request/response hash tuple', () => {
+    const value = bundle();
+    const signedText = Buffer.from(
+      `${value.receipt.model}:${value.receipt.requestSha256}:${value.receipt.responseSha256}`,
+      'utf8',
+    );
+    const { seal: _seal, ...unsigned } = value.receipt;
+    value.receipt = signInferenceReceipt({
+      ...unsigned,
+      responseSignature: {
+        algorithm: 'Ed25519',
+        keyId: 'provider-1',
+        publicKeyPem: pem(provider.publicKey),
+        signatureBase64: sign(null, signedText, provider.privateKey).toString('base64'),
+        scheme: 'provider_signed_hashes',
+        signedPayloadBase64: signedText.toString('base64'),
+      },
+    }, {
+      keyId: 'recorder-1',
+      privateKeyPem: privatePem(recorder.privateKey),
+      publicKeyPem: pem(recorder.publicKey),
+    });
+
+    expect(verifyInferenceReceiptExport(value, trustedOptions())).toMatchObject({
+      valid: true, trusted: true, code: 'PASS',
+    });
+
+    const mismatched = Buffer.from(
+      `${value.receipt.model}:${'0'.repeat(64)}:${value.receipt.responseSha256}`,
+      'utf8',
+    );
+    const { seal: _secondSeal, ...mismatchedUnsigned } = value.receipt;
+    value.receipt = signInferenceReceipt({
+      ...mismatchedUnsigned,
+      responseSignature: {
+        ...mismatchedUnsigned.responseSignature!,
+        signatureBase64: sign(null, mismatched, provider.privateKey).toString('base64'),
+        signedPayloadBase64: mismatched.toString('base64'),
+      },
+    }, {
+      keyId: 'recorder-1',
+      privateKeyPem: privatePem(recorder.privateKey),
+      publicKeyPem: pem(recorder.publicKey),
+    });
+    expect(verifyInferenceReceiptExport(value, trustedOptions()).code)
+      .toBe('RESPONSE_SIGNATURE_INVALID');
+  });
+
   it('rejects non-Ed25519 and mismatched recorder signing keys', () => {
     const { seal: _seal, ...unsigned } = conventionalBundle().receipt;
     expect(() => signInferenceReceipt(unsigned, {

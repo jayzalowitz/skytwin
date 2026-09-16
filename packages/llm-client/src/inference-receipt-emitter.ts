@@ -108,6 +108,8 @@ export function emitInferenceReceipt(
     requestBase64: Buffer.from(trace.request).toString('base64'),
     responseBase64: Buffer.from(trace.response).toString('base64'),
     ...(verified ? { evidenceBase64: Buffer.from(verified.evidence).toString('base64') } : {}),
-    disclosure: 'Contains SkyTwin canonical logical inference input/output bytes for independent verification; these are not provider HTTP wire bytes. Protect or delete this export after use.',
+    disclosure: verified
+      ? 'Contains the exact provider HTTP request/response body bytes and verifier evidence used for confidential-inference verification. Protect or delete this export after use.'
+      : 'Contains SkyTwin canonical logical inference input/output bytes for independent verification; these are not provider HTTP wire bytes. Protect or delete this export after use.',
   };
 }

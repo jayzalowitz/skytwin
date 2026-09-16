@@ -25,6 +25,7 @@ export type {
   LlmClientOptions,
   RejectedConfidentialVerification,
   TrustedConfidentialVerification,
+  VerifiedProviderOutput,
 } from './types.js';
 export type { ProviderModePolicyErrorCode } from './provider-privacy.js';
 export type { SafeProviderFetch } from './url-validation.js';

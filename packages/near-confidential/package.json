@@ -21,5 +21,8 @@
     "@types/node": "^26.1.0",
     "typescript": "^6.0.3",
     "vitest": "5.0.1"
+  },
+  "dependencies": {
+    "@phala/dcap-qvl-node": "0.3.3"
   }
 }

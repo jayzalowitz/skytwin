@@ -56,6 +56,8 @@ export interface AttestationProofSummary {
   /** Opaque verified Intel TDX quote bytes, retained for future audit receipts. */
   tdxQuote: Uint8Array;
   tdxVerified: true;
+  /** Intel DCAP-QVL status accepted by the verifier for this exact quote. */
+  tdxStatus: "UpToDate" | "OutOfDate";
   /** Includes NVIDIA evidence validation and its client-nonce match. */
   gpuEvidence: Uint8Array;
   gpuVerified: true;
@@ -110,6 +112,8 @@ export interface VerifiedConfidentialResponse {
   bytes: Uint8Array;
   chatId: string;
   evidence: VerifiedChannelEvidence;
+  /** The provider signature that was verified against the exact wire bytes. */
+  signature: NormalizedResponseSignatureRecord;
 }
 export type ConfidentialResult =
   VerifiedConfidentialResponse | ConfidentialFailure;

@@ -11,6 +11,12 @@ const ollama: ProviderEntry = {
   name: 'ollama', apiKey: '', model: 'qwen', baseUrl: 'http://127.0.0.1:11434',
 };
 const openai: ProviderEntry = { name: 'openai', apiKey: 'secret', model: 'gpt' };
+const trustedrouter: ProviderEntry = {
+  name: 'trustedrouter', apiKey: 'secret', model: 'trustedrouter/confidential',
+};
+const nearai: ProviderEntry = {
+  name: 'nearai', apiKey: 'secret', model: 'deepseek-ai/DeepSeek-V4-Flash',
+};
 
 describe('provider privacy capabilities', () => {
   it('derives local boundaries from concrete local adapters', () => {
@@ -51,6 +57,23 @@ describe('provider privacy capabilities', () => {
       attestationPolicy: 'not_applicable',
       pricing: { kind: 'unknown' },
       retention: { classification: 'provider_declared', policyUrl: null },
+    });
+  });
+
+  it('derives attested capabilities from provider adapters without admitting unavailable routes', () => {
+    expect(providerPrivacyCapabilities(trustedrouter, 'verified_private_cloud')).toMatchObject({
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      confidentiality: 'attested_tee',
+      attestationPolicy: 'required',
+      pricing: { kind: 'unknown' },
+    });
+    expect(providerPrivacyCapabilities(nearai, 'verified_private_cloud')).toMatchObject({
+      executionLocation: 'remote_service',
+      networkScope: 'external',
+      confidentiality: 'provider_standard',
+      attestationPolicy: 'not_applicable',
+      pricing: { kind: 'unknown' },
     });
   });
 
@@ -178,13 +201,34 @@ describe('reasoning-mode provider policy', () => {
     }]).providers[0]?.model).toBe('my-cloud-model');
   });
 
-  it('fails closed for unknown modes, empty chains and unverified private-cloud adapters', () => {
+  it('fails closed for unknown modes, empty chains and conventional private-cloud adapters', () => {
     expect(() => providersForReasoningMode('ON_DEVICE', [embedded]))
       .toThrow(expect.objectContaining({ code: 'unknown_mode' }));
     expect(() => providersForReasoningMode('on_device', []))
       .toThrow(expect.objectContaining({ code: 'no_providers' }));
     expect(() => providersForReasoningMode('verified_private_cloud', [openai]))
       .toThrow(expect.objectContaining({ code: 'verification_adapter_required' }));
+  });
+
+  it('admits only the pinned TrustedRouter adapter in verified-private mode', () => {
+    expect(providersForReasoningMode('verified_private_cloud', [trustedrouter])).toEqual({
+      mode: 'verified_private_cloud', providers: [trustedrouter],
+    });
+    expect(() => providersForReasoningMode('verified_private_cloud', [{
+      ...trustedrouter, baseUrl: 'https://example.test',
+    }])).toThrow(expect.objectContaining({ code: 'verification_adapter_required' }));
+    expect(() => providersForReasoningMode('bring_your_own_provider', [trustedrouter]))
+      .toThrow(expect.objectContaining({ code: 'cross_mode_provider' }));
+    expect(() => providersForReasoningMode('verified_private_cloud', [nearai]))
+      .toThrow(expect.objectContaining({
+        code: 'verification_adapter_required',
+        message: expect.stringMatching(/dynamically selected inference workload/i),
+      }));
+    expect(() => providersForReasoningMode('verified_private_cloud', [{
+      ...trustedrouter, model: 'other-model',
+    }])).toThrow(expect.objectContaining({ code: 'invalid_provider' }));
+    expect(() => providersForReasoningMode('bring_your_own_provider', [nearai]))
+      .toThrow(expect.objectContaining({ code: 'cross_mode_provider' }));
   });
 
   it('admits conventional providers only under the explicit bring-your-own mode', () => {

@@ -20,6 +20,23 @@ export interface TrustedConfidentialVerification {
   readonly freshUntil: string;
 }
 
+/**
+ * Provider output that has already crossed a verifier-owned boundary. The
+ * request/response fields are the exact HTTP body bytes covered by the remote
+ * receipt; ordinary providers continue to return a string.
+ */
+export interface VerifiedProviderOutput {
+  readonly content: string;
+  readonly requestBytes: Readonly<Uint8Array>;
+  readonly responseBytes: Readonly<Uint8Array>;
+  readonly endpointIdentity: string;
+  readonly providerRequestId: string;
+  readonly resolvedModel: string;
+  readonly verification: TrustedConfidentialVerification;
+}
+
+export type ProviderGenerateOutput = string | VerifiedProviderOutput;
+
 export interface RejectedConfidentialVerification {
   outcome: 'verification_failed' | 'verification_unavailable' | 'verification_stale';
   verifierVersion: string;
@@ -133,7 +150,7 @@ export type ProviderGenerateFn = (
   model: string,
   prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string; reasoningMode?: ReasoningMode },
-) => Promise<string>;
+) => Promise<ProviderGenerateOutput>;
 
 /**
  * One streaming event yielded by `LlmClient.generateStream`.

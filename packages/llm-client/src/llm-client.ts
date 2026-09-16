@@ -17,6 +17,8 @@ import type {
   InferenceTrace,
   LlmClientOptions,
   ProviderPricingSnapshot,
+  ProviderGenerateOutput,
+  VerifiedProviderOutput,
 } from './types.js';
 import {
   generate as anthropicGenerate,
@@ -26,6 +28,8 @@ import { generate as openaiGenerate } from './providers/openai.js';
 import { generate as googleGenerate } from './providers/google.js';
 import { generate as ollamaGenerate } from './providers/ollama.js';
 import { generate as embeddedGenerate } from './providers/embedded.js';
+import { generate as trustedRouterGenerate } from './providers/trustedrouter.js';
+import { generate as nearAiGenerate } from './providers/nearai.js';
 import {
   isPricingUsableForUnattended,
   providerPrivacyCapabilities,
@@ -44,6 +48,8 @@ const PROVIDER_FNS: Record<AIProviderName, ProviderGenerateFn> = {
   google: googleGenerate,
   ollama: ollamaGenerate,
   embedded: embeddedGenerate,
+  trustedrouter: trustedRouterGenerate,
+  nearai: nearAiGenerate,
 };
 
 /**
@@ -64,6 +70,8 @@ const PROVIDER_STREAM_FNS: Record<AIProviderName, ProviderStreamFn> = {
   google: makeFallbackStream(googleGenerate),
   ollama: makeFallbackStream(ollamaGenerate),
   embedded: makeFallbackStream(embeddedGenerate),
+  trustedrouter: makeFallbackStream(trustedRouterGenerate),
+  nearai: makeFallbackStream(nearAiGenerate),
 };
 
 /**
@@ -73,9 +81,47 @@ const PROVIDER_STREAM_FNS: Record<AIProviderName, ProviderStreamFn> = {
  */
 function makeFallbackStream(fn: ProviderGenerateFn): ProviderStreamFn {
   return async function* (apiKey, model, prompt, options) {
-    const text = await fn(apiKey, model, prompt, options);
+    const output = await fn(apiKey, model, prompt, options);
+    const text = typeof output === 'string' ? output : output.content;
     if (text) yield text;
   };
+}
+
+function isVerifiedProviderOutput(output: ProviderGenerateOutput): output is VerifiedProviderOutput {
+  return typeof output === 'object'
+    && output !== null
+    && typeof output.content === 'string'
+    && output.requestBytes instanceof Uint8Array
+    && output.responseBytes instanceof Uint8Array
+    && output.requestBytes.byteLength > 0
+    && output.responseBytes.byteLength > 0
+    && typeof output.endpointIdentity === 'string'
+    && output.endpointIdentity.length > 0
+    && typeof output.providerRequestId === 'string'
+    && output.providerRequestId.length > 0
+    && typeof output.resolvedModel === 'string'
+    && output.resolvedModel.length > 0
+    && output.verification?.outcome === 'verified'
+    && typeof output.verification.attestationPolicyVersion === 'string'
+    && output.verification.attestationPolicyVersion.length > 0
+    && typeof output.verification.verifierVersion === 'string'
+    && output.verification.verifierVersion.length > 0
+    && output.verification.evidence instanceof Uint8Array
+    && output.verification.evidence.byteLength > 0
+    && typeof output.verification.measurementIdentity === 'string'
+    && output.verification.measurementIdentity.length > 0
+    && typeof output.verification.verifiedAt === 'string'
+    && Number.isFinite(Date.parse(output.verification.verifiedAt))
+    && typeof output.verification.freshUntil === 'string'
+    && Number.isFinite(Date.parse(output.verification.freshUntil))
+    && Date.parse(output.verification.freshUntil) >= Date.parse(output.verification.verifiedAt)
+    && output.verification.responseSignature?.algorithm === 'Ed25519'
+    && typeof output.verification.responseSignature.keyId === 'string'
+    && output.verification.responseSignature.keyId.length > 0
+    && typeof output.verification.responseSignature.publicKeyPem === 'string'
+    && output.verification.responseSignature.publicKeyPem.length > 0
+    && typeof output.verification.responseSignature.signatureBase64 === 'string'
+    && output.verification.responseSignature.signatureBase64.length > 0;
 }
 
 /**
@@ -183,6 +229,8 @@ const DEFAULT_ENDPOINTS: Record<AIProviderName, string> = {
   google: 'https://generativelanguage.googleapis.com',
   ollama: 'http://127.0.0.1:11434',
   embedded: 'local://embedded',
+  trustedrouter: 'https://api.trustedrouter.com/v1',
+  nearai: 'https://dsv4-flash.completions.near.ai/v1',
 };
 
 function endpointIdentity(provider: ProviderEntry): string {
@@ -270,17 +318,21 @@ export class LlmClient {
     provider: ProviderEntry,
     invocationId: string,
     executionPath: readonly ProviderExecutionAttempt[],
+    output: ProviderGenerateOutput,
   ): ProviderExecutionMetadata {
     const capabilities = providerPrivacyCapabilities(provider, this.reasoningMode);
+    const verified = isVerifiedProviderOutput(output) ? output : null;
     return snapshotProviderExecutionMetadata({
       reasoningMode: this.reasoningMode,
       provider: provider.name,
-      model: provider.model,
-      request: { invocationId, providerRequestId: null },
+      model: verified?.resolvedModel ?? provider.model,
+      request: { invocationId, providerRequestId: verified?.providerRequestId ?? null },
       capabilities,
-      verificationStatus: capabilities.attestationPolicy === 'required'
-        ? 'required_missing'
-        : 'not_applicable',
+      verificationStatus: verified
+        ? 'verified'
+        : capabilities.attestationPolicy === 'required'
+          ? 'required_missing'
+          : 'not_applicable',
       executionPath,
       costBasis: {
         pricing: capabilities.pricing,
@@ -334,7 +386,7 @@ export class LlmClient {
       attempted.push(provider.name);
       const start = Date.now();
       try {
-        const content = await generateFn(
+        const output = await generateFn(
           provider.apiKey,
           provider.model,
           providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
@@ -344,19 +396,20 @@ export class LlmClient {
             reasoningMode: this.reasoningMode,
           }), this.reasoningMode),
         );
+        const content = typeof output === 'string' ? output : output.content;
         const successfulPath = [
           ...executionPath,
           { provider: provider.name, outcome: 'succeeded' as const },
         ];
-        const execution = this.executionMetadata(provider, invocationId, successfulPath);
-        this.recordSuccessfulInference(provider, logicalRequest, content, execution);
+        const execution = this.executionMetadata(provider, invocationId, successfulPath, output);
+        this.recordSuccessfulInference(provider, logicalRequest, output, execution);
         circuitBreaker.recordSuccess();
         executionPath.push({ provider: provider.name, outcome: 'succeeded' });
 
         return {
           content,
           provider: provider.name,
-          model: provider.model,
+          model: execution.model,
           latencyMs: Date.now() - start,
           execution,
         };
@@ -424,37 +477,70 @@ export class LlmClient {
       const start = Date.now();
       const collected: string[] = [];
       let firstChunkSeen = false;
+      let providerOutput: ProviderGenerateOutput | undefined;
+      let bufferedConfidentialContent: string | null = null;
 
       try {
-        for await (const chunk of streamFn(
-          provider.apiKey,
-          provider.model,
-          providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
-          providerGenerateOptions(provider, Object.freeze({
-            ...invocationOptions,
-            baseUrl: provider.baseUrl,
-            reasoningMode: this.reasoningMode,
-          }), this.reasoningMode),
-        )) {
-          if (chunk.length === 0) continue;
-          collected.push(chunk);
-          firstChunkSeen = true;
-          yield { type: 'chunk', content: chunk };
+        const callPrompt = providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode);
+        const callOptions = providerGenerateOptions(provider, Object.freeze({
+          ...invocationOptions,
+          baseUrl: provider.baseUrl,
+          reasoningMode: this.reasoningMode,
+        }), this.reasoningMode);
+        if (provider.name === 'trustedrouter' || provider.name === 'nearai') {
+          // Confidential output is buffered until attestation and the final
+          // exact-byte receipt both verify. No unverified token reaches a UI.
+          providerOutput = await entry.generateFn(
+            provider.apiKey,
+            provider.model,
+            callPrompt,
+            callOptions,
+          );
+          if (!isVerifiedProviderOutput(providerOutput)) {
+            throw new ProviderModePolicyError(
+              'verification_adapter_required',
+              `${provider.name} returned output without verified evidence`,
+              provider.name,
+            );
+          }
+          if (providerOutput.content.length > 0) {
+            collected.push(providerOutput.content);
+            bufferedConfidentialContent = providerOutput.content;
+          }
+        } else {
+          for await (const chunk of streamFn(
+            provider.apiKey,
+            provider.model,
+            callPrompt,
+            callOptions,
+          )) {
+            if (chunk.length === 0) continue;
+            collected.push(chunk);
+            firstChunkSeen = true;
+            yield { type: 'chunk', content: chunk };
+          }
         }
         const content = collected.join('');
+        providerOutput ??= content;
         const successfulPath = [
           ...executionPath,
           { provider: provider.name, outcome: 'succeeded' as const },
         ];
-        const execution = this.executionMetadata(provider, invocationId, successfulPath);
-        this.recordSuccessfulInference(provider, logicalRequest, content, execution);
+        const execution = this.executionMetadata(provider, invocationId, successfulPath, providerOutput);
+        this.recordSuccessfulInference(provider, logicalRequest, providerOutput, execution);
         circuitBreaker.recordSuccess();
         executionPath.push({ provider: provider.name, outcome: 'succeeded' });
+        if (bufferedConfidentialContent !== null) {
+          // The adapter output, execution metadata, and receipt trace are all
+          // validated before confidential text crosses the streaming boundary.
+          firstChunkSeen = true;
+          yield { type: 'chunk', content: bufferedConfidentialContent };
+        }
         yield {
           type: 'done',
           content,
           provider: provider.name,
-          model: provider.model,
+          model: execution.model,
           latencyMs: Date.now() - start,
           execution,
         };
@@ -483,12 +569,18 @@ export class LlmClient {
   private recordSuccessfulInference(
     provider: Readonly<ProviderEntry>,
     logicalRequest: Uint8Array,
-    content: string,
+    output: ProviderGenerateOutput,
     execution: ProviderExecutionMetadata,
   ): void {
-    const request = Uint8Array.from(logicalRequest);
-    const response = Buffer.from(content, 'utf8');
-    const endpoint = endpointIdentity(provider);
+    const verified = isVerifiedProviderOutput(output) ? output : null;
+    const content = typeof output === 'string' ? output : output.content;
+    const request = verified
+      ? Uint8Array.from(verified.requestBytes)
+      : Uint8Array.from(logicalRequest);
+    const response = verified
+      ? Uint8Array.from(verified.responseBytes)
+      : Buffer.from(content, 'utf8');
+    const endpoint = verified?.endpointIdentity ?? endpointIdentity(provider);
     const capabilities = execution.capabilities;
     const status: InferenceTrace['status'] = execution.reasoningMode === 'on_device'
       && capabilities.executionLocation === 'on_device'
@@ -499,6 +591,14 @@ export class LlmClient {
         && capabilities.executionLocation === 'remote_service'
         && capabilities.networkScope === 'external'
         ? 'conventional'
+        : execution.reasoningMode === 'verified_private_cloud'
+          && capabilities.executionLocation === 'remote_service'
+          && capabilities.networkScope === 'external'
+          && capabilities.confidentiality === 'attested_tee'
+          && capabilities.attestationPolicy === 'required'
+          && execution.verificationStatus === 'verified'
+          && verified
+          ? 'verified'
         : (() => {
             throw new ProviderModePolicyError(
               'cross_mode_provider',
@@ -518,7 +618,8 @@ export class LlmClient {
         ? { basis: 'exact', currency: 'USD', amountMinor: 0 }
         : { basis: 'unknown' },
       createdAt: (this.options.now?.() ?? new Date()).toISOString(),
-      verifierVersion: 'skytwin-llm-boundary-v1',
+      verifierVersion: verified?.verification.verifierVersion ?? 'skytwin-llm-boundary-v1',
+      ...(verified ? { verification: verified.verification } : {}),
     });
     this.options.onInferenceTrace?.(trace);
   }
@@ -538,7 +639,7 @@ export class LlmClient {
     }
 
     const start = Date.now();
-    await generateFn(
+    const output = await generateFn(
       admitted.apiKey,
       admitted.model,
       'Respond with exactly: OK',
@@ -549,8 +650,18 @@ export class LlmClient {
         reasoningMode: scoped.mode,
       },
     );
+    if (scoped.mode === 'verified_private_cloud' && !isVerifiedProviderOutput(output)) {
+      throw new ProviderModePolicyError(
+        'verification_adapter_required',
+        'The provider test did not return verified confidential evidence',
+        admitted.name,
+      );
+    }
 
-    return { latencyMs: Date.now() - start, model: admitted.model };
+    return {
+      latencyMs: Date.now() - start,
+      model: isVerifiedProviderOutput(output) ? output.resolvedModel : admitted.model,
+    };
   }
 
   /**
