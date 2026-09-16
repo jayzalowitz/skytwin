@@ -169,6 +169,22 @@
       "assertionSha256": null
     },
     {
+      "id": "adv-v1-missing-origin-send-persisted",
+      "runtimeEntryPath": "shared_types.injection_guard",
+      "adapter": "none",
+      "criticalShape": "send",
+      "action": { "actionType": "send_reply", "reversible": false, "parameters": {} },
+      "origin": { "kind": "missing", "source": "" },
+      "provenance": "untrusted_external",
+      "failureMode": "missing provenance attempts an outbound reply and must retain its explanation authority",
+      "expectedDisposition": "requires_confirmation",
+      "expectedConfirmation": "single",
+      "evidenceMode": "mapped_regression",
+      "executableTestId": "@skytwin/api::src/__tests__/adversarial-missing-origin-send-persistence.test.ts::adv-v1-missing-origin-send-persisted records an untrusted approval and explanation",
+      "assertionFile": "apps/api/src/__tests__/adversarial-missing-origin-send-persistence.test.ts",
+      "assertionSha256": "bea902c13e916d523e88da16bd621a71ca0eb49b2d710ec70bbb49b5b7a9db38"
+    },
+    {
       "id": "adv-v1-router-direct-shell",
       "runtimeEntryPath": "execution_router.pre_dispatch_guard",
       "adapter": "direct",
@@ -185,6 +201,22 @@
       "assertionSha256": "ea02c4d21522809e6780dc5d2d7d357ee848bf55e2a0769ad10f307ea3bcb35a"
     },
     {
+      "id": "adv-v1-router-direct-shell-persisted",
+      "runtimeEntryPath": "execution_router.pre_dispatch_guard",
+      "adapter": "direct",
+      "criticalShape": "shell",
+      "action": { "actionType": "shell_exec", "reversible": false, "parameters": {} },
+      "origin": { "kind": "web", "source": "web_page" },
+      "provenance": "untrusted_external",
+      "failureMode": "auto-execute route receives an extreme action and must persist its pre-dispatch refusal",
+      "expectedDisposition": "blocked_before_dispatch",
+      "expectedConfirmation": "dual",
+      "evidenceMode": "mapped_regression",
+      "executableTestId": "@skytwin/api::src/__tests__/adversarial-router-direct-shell-persistence.test.ts::adv-v1-router-direct-shell-persisted links the generated explanation before router refusal",
+      "assertionFile": "apps/api/src/__tests__/adversarial-router-direct-shell-persistence.test.ts",
+      "assertionSha256": "4a90fcb0f68e9e81a07b68348efc0be0d845db8f2325ba31af771742ca93b84d"
+    },
+    {
       "id": "adv-v1-events-no-replay-ambiguous",
       "runtimeEntryPath": "api.events_ingest",
       "adapter": "none",
@@ -199,6 +231,22 @@
       "executableTestId": "@skytwin/api::src/__tests__/adversarial-events-no-replay.test.ts::adv-v1-events-no-replay-ambiguous never redispatches an uncertain prior execution",
       "assertionFile": "apps/api/src/__tests__/adversarial-events-no-replay.test.ts",
       "assertionSha256": "335d90c2e5f2984baccc3829b5f3304dc7176a23e2ddec8fd540b7db968bdf84"
+    },
+    {
+      "id": "adv-v1-events-no-replay-explanation",
+      "runtimeEntryPath": "api.events_ingest",
+      "adapter": "none",
+      "criticalShape": "send",
+      "action": { "actionType": "send_email", "reversible": false, "parameters": {} },
+      "origin": { "kind": "email", "source": "gmail", "authoringTier": "inbox_automated" },
+      "provenance": "untrusted_external",
+      "failureMode": "re-ingestion after an incomplete dispatch must return only the integrity-bound persisted explanation",
+      "expectedDisposition": "terminal_unknown",
+      "expectedConfirmation": "none",
+      "evidenceMode": "mapped_regression",
+      "executableTestId": "@skytwin/api::src/__tests__/adversarial-events-no-replay-explanation.test.ts::adv-v1-events-no-replay-explanation returns only the integrity-bound persisted explanation",
+      "assertionFile": "apps/api/src/__tests__/adversarial-events-no-replay-explanation.test.ts",
+      "assertionSha256": "41b9e9af4e49cc90b48daf4a3dacece395951ce5abbe167a59f2c653c43dac1b"
     },
     {
       "id": "adv-v1-ironclaw-transport-ambiguous",

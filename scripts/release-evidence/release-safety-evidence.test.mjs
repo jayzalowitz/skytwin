@@ -115,7 +115,7 @@ function fixtureRoot() {
 
 describe("release safety evidence", () => {
   it("records the exact source denominator and disclosed explanation gaps", () => {
-    const { root, env } = fixtureRoot();
+    const { root, report, env } = fixtureRoot();
     const result = verifyReleaseSafetyEvidence({
       root,
       expected: {
@@ -130,9 +130,39 @@ describe("release safety evidence", () => {
     expect(result).toMatchObject({
       status: "limited",
       entryPaths: 10,
-      explanationsCovered: 3,
-      failures: 7,
+      explanationsCovered: 6,
+      failures: 4,
     });
+    expect(
+      report.entryPaths
+        .filter(({ explanationStatus }) => explanationStatus === "covered")
+        .map(({ id }) => id),
+    ).toEqual([
+      "api.assistant",
+      "api.events_ingest",
+      "api.routines",
+      "execution_router.pre_dispatch_guard",
+      "shared_types.injection_guard",
+      "worker.memory_action_loop",
+    ]);
+    expect(report.failures).toEqual([
+      expect.objectContaining({
+        entryPath: "api.approvals",
+        kind: "explanation",
+      }),
+      expect.objectContaining({
+        entryPath: "api.capability_regret",
+        kind: "explanation",
+      }),
+      expect.objectContaining({
+        entryPath: "execution_router.openclaw_response",
+        kind: "explanation",
+      }),
+      expect.objectContaining({
+        entryPath: "ironclaw_adapter.execute",
+        kind: "explanation",
+      }),
+    ]);
     expect(() =>
       verifyReleaseSafetyEvidence({ root, requireComplete: true }),
     ).toThrow(/truthful but incomplete/);

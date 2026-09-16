@@ -2,7 +2,7 @@
   "schemaVersion": "1.0.0",
   "evidenceClass": "source_checkout",
   "fixturesVersion": "v1",
-  "fixtureSha256": "3b0125d632a18cb92c2c8a7630ced35c4d369ccc7e777f8a1697f7b0c8c473a8",
+  "fixtureSha256": "f2516491256be3de4cf5fd40237994e9cc0711f4ec5705eef6a0c8340a89dfea",
   "coverageTargets": {
     "runtimeEntryPaths": [
       "api.approvals",
@@ -69,6 +69,7 @@
     "adv-v1-capability-regret-no-dispatch",
     "adv-v1-email-send-untrusted",
     "adv-v1-events-no-replay-ambiguous",
+    "adv-v1-events-no-replay-explanation",
     "adv-v1-file-database-drop",
     "adv-v1-file-filesystem-purge",
     "adv-v1-ironclaw-transport-ambiguous",
@@ -76,8 +77,10 @@
     "adv-v1-mcp-credential-revoke",
     "adv-v1-memory-loop-untrusted-send",
     "adv-v1-missing-origin-send",
+    "adv-v1-missing-origin-send-persisted",
     "adv-v1-openclaw-credential-schema",
     "adv-v1-router-direct-shell",
+    "adv-v1-router-direct-shell-persisted",
     "adv-v1-routines-unattended-send-blocked",
     "adv-v1-web-purchase-untrusted",
     "adv-v1-web-shell-exec"
@@ -89,6 +92,7 @@
     "adv-v1-capability-regret-no-dispatch": "2e6b66d58864168262014f41f3022de74526ee6c62ac0c031d6b3772a8840b4e",
     "adv-v1-email-send-untrusted": "b7adec6c93e3d9407850b25f1c477d5bca93414387a4a7b8e896139b70f9da17",
     "adv-v1-events-no-replay-ambiguous": "aeaacdb5ff37f4f9aa4e265fd90f0dd627cddb8ef25023e9c6447f8dcf8d2537",
+    "adv-v1-events-no-replay-explanation": "1c293c5defedd3b7e6e333df0b97ea27febc05474a629c322b1590e9f23bab69",
     "adv-v1-file-database-drop": "0e2c8b07198982b5d159503565a84a00f7da73bbdc4550cc40abf50f3afb9e3d",
     "adv-v1-file-filesystem-purge": "df299a1bc07fcdd66002fa75851adf33ccaf68aa7f9de09f33fb146edf62479f",
     "adv-v1-ironclaw-transport-ambiguous": "bca5a1f63eafdc8e45a483b6996cd4207ebbe41bb7a94a016fc215918b408906",
@@ -96,8 +100,10 @@
     "adv-v1-mcp-credential-revoke": "27a2e4ae2c6ca1e8de593e0741badd79c1839a66aed819454634b08bda321e04",
     "adv-v1-memory-loop-untrusted-send": "e77e38e27f1fe624759ffb517d17d7813e716113b7074404b3ffac721008ae98",
     "adv-v1-missing-origin-send": "a7c5f00988af290169600335c14a793bcfe4dcf4edb9f32981ed173934d55391",
+    "adv-v1-missing-origin-send-persisted": "dfcc47d1c4b4cf7adddb8266e2dd071830cbfa01888f0cf7e7c3b18916757c10",
     "adv-v1-openclaw-credential-schema": "7926171c0972cdaeafd85fb7e6bc4157e3c2d24b66f53dc503fd4ad09c6f1bb9",
     "adv-v1-router-direct-shell": "72ba449c23feab5bb3a85714bad8a56274844cac5c6da5c53c7dc46a1fb25d4a",
+    "adv-v1-router-direct-shell-persisted": "20c83d132e7f8997983328ccd3a74173856cd8118efab1958bdbd38ac01bd841",
     "adv-v1-routines-unattended-send-blocked": "ba3c389bdb5cf00e17425d66d6eeb8c635f3f1dbd4074d7e6468cc4681ec1949",
     "adv-v1-web-purchase-untrusted": "bc6776b4819af2420369b0426c2500aaf159c40044884b1aa64e08c784093f20",
     "adv-v1-web-shell-exec": "26e9439fa9c5a6fa01bea0c7330207a20a8201ad798395fb9ab775d0851e5a32"

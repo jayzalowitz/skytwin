@@ -1238,7 +1238,7 @@
       "scope": "All release-supported API, worker, routine, connector, and adapter outcomes, including failures, blocks, and no-action decisions.",
       "owner": "explanations",
       "state": "limited",
-      "limitation": "The release-SHA-bound inventory currently covers the ten entry paths declared by the v1 adversarial catalog and reports passing safety scenarios for all ten, but only three have an integrity-bound regression that reaches an explanation persistence boundary. The final publication consumer now binds and independently re-verifies the exact four-member CI artifact before publishing its three safety sidecars. Seven explanation gaps, catalog completeness beyond the declared denominator, network/clock containment, and a tagged run remain open; independent artifact-archive re-download is explicitly outside this bounded consumer.",
+      "limitation": "The release-SHA-bound inventory currently covers the ten entry paths declared by the v1 adversarial catalog and reports passing safety scenarios for all ten, but only six have an integrity-bound regression that reaches an explanation persistence boundary. The final publication consumer now binds and independently re-verifies the exact four-member CI artifact before publishing its three safety sidecars. Four explanation gaps, catalog completeness beyond the declared denominator, network/clock containment, and a tagged run remain open; independent artifact-archive re-download is explicitly outside this bounded consumer.",
       "evidence": [
         {
           "path": "packages/explanations/src/index.ts",
@@ -1252,7 +1252,7 @@
         },
         {
           "path": "scripts/release-evidence/release-safety-entry-paths.json",
-          "sha256": "9a79a7ab9d6a44f4a471a8d41e435d72cfcbadddfe9fdc4d7b17c41cf0b2706e",
+          "sha256": "151c3a4872a95142c361842880459fd3aacf6dd9a7a63ec80a09955129b8b76a",
           "why": "Defines the explicit ten-entry release-supported denominator, mapped safety and explanation assertions, and unresolved limitations"
         },
         {
@@ -1359,7 +1359,7 @@
         },
         {
           "path": "scripts/release-evidence/release-safety-entry-paths.json",
-          "sha256": "9a79a7ab9d6a44f4a471a8d41e435d72cfcbadddfe9fdc4d7b17c41cf0b2706e",
+          "sha256": "151c3a4872a95142c361842880459fd3aacf6dd9a7a63ec80a09955129b8b76a",
           "why": "Defines the exact bounded entry-path denominator and the safety and explanation assertion mapping included in the tag-only CI artifact"
         },
         {
