@@ -85,6 +85,7 @@ function clearOnboardingState() {
 let _wizardListenerWired = false;
 let _onCompleteCallback = null;   // set by renderOnboarding
 let _wizardState = null;          // { screen, userId, hasLlmProvider, history, recipeSlug, recommendedRegistryIds, firstRunChoice }
+let _renderGeneration = 0;
 
 // The three real entry paths users can take from the welcome screen. We
 // stash the chosen path on _wizardState.firstRunChoice so every
@@ -317,7 +318,8 @@ async function handleOnboardingClick(e) {
 // Screen renderers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function setWizardBusy(busy, message = '') {
+function setWizardBusy(busy, message = '', generation = _renderGeneration) {
+  if (generation !== _renderGeneration) return;
   const content = document.getElementById('onboarding-content');
   if (content) content.setAttribute('aria-busy', String(busy));
   const status = document.getElementById('onb-wizard-status');
@@ -327,6 +329,7 @@ function setWizardBusy(busy, message = '') {
 function renderContent(html, { busy = false, status = '' } = {}) {
   const el = document.getElementById('onboarding-content');
   if (!el) return;
+  const generation = ++_renderGeneration;
   el.setAttribute('aria-busy', String(busy));
   el.innerHTML = html;
   const title = el.querySelector('.onboarding-title');
@@ -341,7 +344,8 @@ function renderContent(html, { busy = false, status = '' } = {}) {
   }
   const focusTarget = title || el.querySelector('input, button, [tabindex]');
   if (focusTarget instanceof HTMLElement) requestAnimationFrame(() => focusTarget.focus());
-  if (status) setWizardBusy(busy, status);
+  if (status) setWizardBusy(busy, status, generation);
+  return generation;
 }
 
 function showWizardError(msg) {
@@ -363,7 +367,7 @@ function hideWizardError() {
 // ── Welcome ──────────────────────────────────────────────────────────────────
 
 function renderWelcome() {
-  renderContent(`
+  const generation = renderContent(`
     <button class="onb-close-x" data-action="onb-dismiss-modal" type="button"
             aria-label="Dismiss onboarding">×</button>
 
@@ -480,7 +484,9 @@ function renderWelcome() {
   const demoCheck = fetchDemoInfo()
     .then((info) => updateTourButton(!!info?.available))
     .catch(() => updateTourButton(false));
-  Promise.allSettled([modelCheck, demoCheck]).then(() => setWizardBusy(false, 'Onboarding options ready.'));
+  Promise.allSettled([modelCheck, demoCheck]).then(() => {
+    setWizardBusy(false, 'Onboarding options ready.', generation);
+  });
 }
 
 // ── Email choice ──────────────────────────────────────────────────────────────
@@ -565,7 +571,7 @@ function renderComputerChoice() {
 // ── Idle-miner KPI poll (stretch goal D) ─────────────────────────────────────
 
 async function renderIdleMinerPoll() {
-  renderContent(`
+  const generation = renderContent(`
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
     <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.5rem;">
       Learning what you work on…
@@ -592,7 +598,7 @@ async function renderIdleMinerPoll() {
 
   const userId = getCurrentUserId();
   if (!userId) {
-    setWizardBusy(false, 'Scanning skipped.');
+    setWizardBusy(false, 'Scanning skipped.', generation);
     transitionTo('complete');
     return;
   }
@@ -637,7 +643,7 @@ async function renderIdleMinerPoll() {
           _wizardState.recipeSlug = 'productivity-pack';
           _wizardState.recommendedRegistryIds = [];
         }
-        setWizardBusy(false, 'Project signal found.');
+        setWizardBusy(false, 'Project signal found.', generation);
         return;
       }
     } catch {
@@ -650,7 +656,7 @@ async function renderIdleMinerPoll() {
   const timeoutEl = document.getElementById('onb-poll-timeout');
   if (statusEl) statusEl.style.display = 'none';
   if (timeoutEl) timeoutEl.style.display = 'block';
-  setWizardBusy(false, 'Scanning is continuing in the background.');
+  setWizardBusy(false, 'Scanning is continuing in the background.', generation);
 }
 
 // ── About-me (conversational or deterministic) ────────────────────────────────
@@ -681,6 +687,7 @@ function renderAboutMeConversational() {
       </button>
     </div>
   `);
+  setWizardBusy(true, 'Loading your first question…');
 
   // Kick off the first question
   kickConversation();
@@ -700,12 +707,14 @@ async function kickConversation() {
     } else if (resp.kind === 'final') {
       handleFinalRecommendation(resp);
     }
+    setWizardBusy(false, 'Your first question is ready.');
   } catch {
     removeTypingBubble();
     addChatBubble('assistant', 'What do you do for work?');
     if (_wizardState) {
       _wizardState.history.push({ role: 'assistant', content: 'What do you do for work?' });
     }
+    setWizardBusy(false, 'Your first question is ready.');
   }
 }
 
@@ -718,6 +727,7 @@ async function handleChatSend(text) {
   _wizardState.history.push({ role: 'user', content: text });
 
   addChatBubble('assistant', '…');
+  setWizardBusy(true, 'Thinking about your answer…');
 
   try {
     const resp = await postOnboardingDialogue(userId, _wizardState.history, {});
@@ -729,9 +739,11 @@ async function handleChatSend(text) {
     } else if (resp.kind === 'final') {
       handleFinalRecommendation(resp);
     }
+    setWizardBusy(false, 'Next question is ready.');
   } catch {
     removeTypingBubble();
     addChatBubble('assistant', 'Got it — let me figure out a good setup for you.');
+    setWizardBusy(false, 'Continuing with a starter setup.');
     setTimeout(() => handleFinalFromHistory(), 500);
   }
 }
@@ -855,6 +867,7 @@ function renderDeterministicStep() {
       </button>
     </div>
   `);
+  setWizardBusy(true, 'Loading your first question…');
 }
 
 async function handleDeterministicAnswer(questionKey, answer) {
@@ -887,10 +900,12 @@ async function submitDeterministicPick() {
     _wizardState.recipeSlug = result.recipeSlug;
     _wizardState.recommendedRegistryIds = result.recommendedRegistryIds ?? [];
     transitionTo('recipe_preview');
+    setWizardBusy(false, 'Your setup suggestion is ready.');
   } catch {
     _wizardState.recipeSlug = 'productivity-pack';
     _wizardState.recommendedRegistryIds = [];
     transitionTo('recipe_preview');
+    setWizardBusy(false, 'Your setup suggestion is ready.');
   }
 }
 
@@ -924,7 +939,7 @@ async function renderRecipePreview() {
   const slug = _wizardState.recipeSlug || 'productivity-pack';
   const meta = RECIPE_META[slug] || { displayName: slug, description: '', category: '' };
 
-  renderContent(`
+  const generation = renderContent(`
     <div id="onb-wizard-error" style="color:var(--danger);font-size:0.85rem;margin-bottom:0.75rem;display:none;"></div>
     <div class="onboarding-title" style="font-size:1.2rem;font-weight:700;margin-bottom:0.25rem;">
       Here's what I'd suggest
@@ -958,14 +973,14 @@ async function renderRecipePreview() {
   `, { busy: true, status: 'Loading capability suggestions…' });
 
   // Load the D3 dependency graph async — non-blocking
-  loadDependencyGraph(getCurrentUserId());
+  loadDependencyGraph(getCurrentUserId(), generation);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // D3 dependency graph (deliverable E)
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function loadDependencyGraph(userId) {
+async function loadDependencyGraph(userId, generation = _renderGeneration) {
   const container = document.getElementById('onb-dep-graph');
   if (!container) return;
 
@@ -975,7 +990,7 @@ async function loadDependencyGraph(userId) {
       await loadScript('https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js');
     } catch {
       container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Dependency graph unavailable offline.</div>`;
-      setWizardBusy(false, 'Capability graph unavailable offline.');
+      setWizardBusy(false, 'Capability graph unavailable offline.', generation);
       return;
     }
   }
@@ -985,7 +1000,7 @@ async function loadDependencyGraph(userId) {
     graphData = await fetchCapabilityDependencyGraph(userId);
   } catch {
     container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">Could not load graph.</div>`;
-    setWizardBusy(false, 'Capability graph could not be loaded.');
+    setWizardBusy(false, 'Capability graph could not be loaded.', generation);
     return;
   }
 
@@ -993,12 +1008,12 @@ async function loadDependencyGraph(userId) {
   const edges = graphData.edges ?? [];
   if (nodes.length === 0) {
     container.innerHTML = `<div style="font-size:0.78rem;color:var(--text-muted);text-align:center;">No capability data yet.</div>`;
-    setWizardBusy(false, 'Capability graph is ready.');
+    setWizardBusy(false, 'Capability graph is ready.', generation);
     return;
   }
 
   renderD3Graph(container, nodes, edges);
-  setWizardBusy(false, 'Capability graph is ready.');
+  setWizardBusy(false, 'Capability graph is ready.', generation);
 }
 
 function loadScript(src) {
@@ -1260,6 +1275,7 @@ export async function renderOnboarding(container, onComplete) {
     recommendedRegistryIds: [],
     rationale: '',
   };
+  setWizardBusy(true, 'Loading onboarding…');
 
   // Fetch onboarding state from the API to determine LLM availability
   const userId = getCurrentUserId();

@@ -14,6 +14,9 @@ describe('onboarding accessibility contract', () => {
     expect(onboarding).toContain("renderContent(html, { busy = false, status = '' } = {})");
     expect(onboarding).toContain("setWizardBusy(false, 'Onboarding options ready.')");
     expect(onboarding).toContain("setWizardBusy(true, 'Scanning for project signals…')");
+    expect(onboarding).toContain('let _renderGeneration = 0');
+    expect(onboarding).toContain('if (generation !== _renderGeneration) return');
+    expect(onboarding).toContain("setWizardBusy(true, 'Loading your first question…')");
   });
 
   it('gives every onboarding action button an explicit non-submit type', () => {
@@ -42,5 +45,6 @@ describe('onboarding accessibility contract', () => {
     expect(app).toContain("document.addEventListener('keydown', handleOnboardingKeydown)");
     expect(app).toContain("document.removeEventListener('keydown', handleOnboardingKeydown)");
     expect(app).toContain("overlay.style.display === 'none'");
+    expect(app).toContain("document.activeElement?.getAttribute('tabindex') === '-1'");
   });
 });

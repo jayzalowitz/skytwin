@@ -116,7 +116,10 @@ function handleOnboardingKeydown(e) {
   }
   const first = focusable[0];
   const last = focusable[focusable.length - 1];
-  if (e.shiftKey && document.activeElement === first) {
+  const activeInsideDialog = document.activeElement instanceof HTMLElement
+    && overlay.contains(document.activeElement);
+  if (e.shiftKey && activeInsideDialog && (document.activeElement === first
+    || document.activeElement?.getAttribute('tabindex') === '-1')) {
     e.preventDefault();
     last.focus();
   } else if (!e.shiftKey && document.activeElement === last) {
