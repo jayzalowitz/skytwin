@@ -20,6 +20,13 @@ const VALID_INTENT = {
   summaryInstruction: 'Summarize matching invoice messages.',
 };
 
+const EXACT_EMBEDDED_READINESS = {
+  state: 'ready',
+  modelName: 'managed.gguf',
+  artifactSha256: 'a'.repeat(64),
+  runtimeVersion: 'llama.cpp-b5000',
+} as const;
+
 function response(content: string, provider = 'embedded', model = 'managed-local') {
   return {
     content,
@@ -34,6 +41,7 @@ function readyResolution(
   generate: ReturnType<typeof vi.fn>,
   mode: ReasoningMode = 'on_device',
   localReadiness?: Extract<UserLlmClientResolution, { state: 'ready' }>['localReadiness'],
+  probeEmbeddedReadiness = vi.fn().mockResolvedValue(EXACT_EMBEDDED_READINESS),
 ): UserLlmClientResolution {
   return {
     state: 'ready',
@@ -43,6 +51,7 @@ function readyResolution(
       hasProviders: true,
     } as unknown as LlmClient,
     ...(localReadiness === undefined ? {} : { localReadiness }),
+    probeEmbeddedReadiness,
   };
 }
 
@@ -113,6 +122,56 @@ describe('workflow authoring LLM boundary', () => {
         modelArtifactSha256: 'a'.repeat(64),
       },
     });
+  });
+
+  it('probes identity after an embedded response from a mixed local provider chain', async () => {
+    const generate = vi.fn().mockResolvedValue(response(JSON.stringify(VALID_INTENT), 'embedded', 'managed'));
+    const probeEmbeddedReadiness = vi.fn().mockResolvedValue(EXACT_EMBEDDED_READINESS);
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(
+        readyResolution(generate, 'on_device', undefined, probeEmbeddedReadiness),
+      ),
+    });
+
+    await expect(service.authorSignalDigest('user-1', 'Summarize invoices daily.'))
+      .resolves.toMatchObject({
+        success: true,
+        inference: {
+          provider: 'embedded',
+          runtimeVersion: 'llama.cpp-b5000',
+          modelArtifactSha256: 'a'.repeat(64),
+        },
+      });
+    expect(probeEmbeddedReadiness).toHaveBeenCalledWith('managed');
+  });
+
+  it.each([
+    [
+      { ...EXACT_EMBEDDED_READINESS, artifactSha256: null },
+      'artifact_unavailable',
+    ],
+    [
+      { ...EXACT_EMBEDDED_READINESS, runtimeVersion: null },
+      'runtime_unavailable',
+    ],
+    [
+      { ...EXACT_EMBEDDED_READINESS, runtimeVersion: 'unreported' },
+      'runtime_unavailable',
+    ],
+    [
+      { ...EXACT_EMBEDDED_READINESS, artifactSha256: 'not-a-digest' },
+      'artifact_unavailable',
+    ],
+  ] as const)('fails closed when an embedded response lacks an exact identity', async (readiness, state) => {
+    const generate = vi.fn().mockResolvedValue(response(JSON.stringify(VALID_INTENT)));
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(
+        readyResolution(generate, 'on_device', undefined, vi.fn().mockResolvedValue(readiness)),
+      ),
+    });
+
+    await expect(service.authorSignalDigest('user-1', 'Summarize invoices daily.'))
+      .resolves.toMatchObject({ success: false, state });
   });
 
   it('asks at most one bounded clarification instead of guessing an essential detail', async () => {
@@ -407,7 +466,8 @@ describe('workflow authoring LLM boundary', () => {
       reasoningMode: 'on_device',
       provider: 'embedded',
       model: 'managed-local',
-      runtimeVersion: 'unreported',
+      runtimeVersion: 'llama.cpp-b5000',
+      modelArtifactSha256: 'a'.repeat(64),
       promptVersion: 1,
       schemaVersion: 1,
     });

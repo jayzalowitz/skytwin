@@ -67,10 +67,16 @@ describe('per-user LLM composition root', () => {
       },
     });
 
-    await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
+    const resolution = await resolveUserLlmClient('user-1');
+    expect(resolution).toMatchObject({
       state: 'ready', client: { hasProviders: true }, mode: 'on_device',
     });
     expect(readinessMock).not.toHaveBeenCalled();
+    if (resolution.state !== 'ready' || resolution.probeEmbeddedReadiness === undefined) {
+      throw new Error('Expected a deferred embedded readiness probe');
+    }
+    await resolution.probeEmbeddedReadiness('managed');
+    expect(readinessMock).toHaveBeenCalledWith('managed');
   });
 
   it('does not route while a legacy mixed chain awaits confirmation', async () => {

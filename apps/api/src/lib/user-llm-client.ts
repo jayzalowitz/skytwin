@@ -36,6 +36,12 @@ export type UserLlmClientResolution =
     client: LlmClient;
     mode: ReasoningMode;
     localReadiness?: EmbeddedProviderReadiness;
+    /**
+     * Deferred identity probe for the embedded provider. Mixed local chains
+     * cannot treat embedded readiness as authoritative until embedded is the
+     * provider that actually answered the request.
+     */
+    probeEmbeddedReadiness?: (model: string) => Promise<EmbeddedProviderReadiness>;
   }
   | {
     state: 'no_provider' | 'confirmation_required' | 'policy_blocked';
@@ -82,6 +88,7 @@ export async function resolveUserLlmClient(
     // Only make the embedded probe authoritative when it is the sole admitted
     // provider. A configured Ollama fallback must still get its real canary.
     const embeddedOnly = providers.length === 1 && providers[0]?.name === 'embedded';
+    const hasEmbedded = providers.some((provider) => provider?.name === 'embedded');
     const localReadiness = embeddedOnly
       ? await probeEmbeddedProviderReadiness(providers[0]?.model)
       : undefined;
@@ -90,6 +97,9 @@ export async function resolveUserLlmClient(
       client,
       mode: setting.mode,
       ...(localReadiness === undefined ? {} : { localReadiness }),
+      ...(hasEmbedded
+        ? { probeEmbeddedReadiness: probeEmbeddedProviderReadiness }
+        : {}),
     };
   } catch (error) {
     if (error instanceof ProviderModePolicyError) {

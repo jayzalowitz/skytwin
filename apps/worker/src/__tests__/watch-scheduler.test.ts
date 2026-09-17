@@ -166,6 +166,23 @@ describe('embeddedRuntimeIdentityMatches', () => {
       reason: 'runtime_binary_missing',
     })).toBe(false);
   });
+
+  it('never treats legacy wildcard pins as an exact embedded identity', () => {
+    const readiness = {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+    } as const;
+
+    expect(embeddedRuntimeIdentityMatches({
+      runtimeVersion: 'unreported',
+      modelArtifactSha256: 'a'.repeat(64),
+    }, readiness)).toBe(false);
+    expect(embeddedRuntimeIdentityMatches({
+      runtimeVersion: 'llama.cpp-b5000',
+    }, readiness)).toBe(false);
+  });
 });
 
 describe('runWatchSchedulerJob', () => {

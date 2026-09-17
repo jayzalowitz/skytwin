@@ -28,6 +28,7 @@ const MAX_JSON_DEPTH = 5;
 const DEFAULT_TIMEOUT_MS = 30_000;
 const MAX_TIMEOUT_MS = 60_000;
 const MAX_REPLAY_SUMMARY_BYTES = 600;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 
 export const AI_SUMMARY_UNAVAILABLE = 'AI summary unavailable' as const;
 
@@ -728,6 +729,88 @@ function failureFromLocalReadiness(
   };
 }
 
+type ReadyUserLlmResolution = Extract<UserLlmClientResolution, { state: 'ready' }>;
+
+type InferenceRuntimeIdentity =
+  | {
+    ok: true;
+    runtimeVersion: string;
+    modelArtifactSha256?: string;
+  }
+  | {
+    ok: false;
+    failure: WorkflowAuthoringFailure;
+  };
+
+/**
+ * Pin local identity only after routing has selected the provider that
+ * actually answered. This keeps mixed embedded/Ollama chains usable while
+ * refusing to persist an embedded workflow without an exact artifact and
+ * runtime identity.
+ */
+async function inferenceRuntimeIdentity(
+  resolution: ReadyUserLlmResolution,
+  response: LlmResponse,
+): Promise<InferenceRuntimeIdentity> {
+  if (response.provider !== 'embedded') {
+    return { ok: true, runtimeVersion: 'provider-managed-unreported' };
+  }
+  if (resolution.probeEmbeddedReadiness === undefined) {
+    return {
+      ok: false,
+      failure: {
+        state: 'runtime_unavailable',
+        reason: 'The responding embedded runtime could not be identity-verified. Nothing was saved.',
+        retryable: true,
+      },
+    };
+  }
+  let readiness: Awaited<ReturnType<NonNullable<ReadyUserLlmResolution['probeEmbeddedReadiness']>>>;
+  try {
+    readiness = await resolution.probeEmbeddedReadiness(response.model);
+  } catch {
+    return {
+      ok: false,
+      failure: {
+        state: 'runtime_unavailable',
+        reason: 'The responding embedded runtime identity probe failed. Nothing was saved.',
+        retryable: true,
+      },
+    };
+  }
+  if (readiness.state !== 'ready') {
+    return { ok: false, failure: failureFromLocalReadiness(readiness)! };
+  }
+  if (readiness.artifactSha256 === null || !SHA256_PATTERN.test(readiness.artifactSha256)) {
+    return {
+      ok: false,
+      failure: {
+        state: 'artifact_unavailable',
+        reason: 'The responding embedded model did not report an exact artifact digest. Nothing was saved.',
+        retryable: false,
+      },
+    };
+  }
+  if (readiness.runtimeVersion === null
+      || readiness.runtimeVersion.length === 0
+      || readiness.runtimeVersion.length > 256
+      || readiness.runtimeVersion === 'unreported') {
+    return {
+      ok: false,
+      failure: {
+        state: 'runtime_unavailable',
+        reason: 'The responding embedded runtime did not report an exact build identity. Nothing was saved.',
+        retryable: true,
+      },
+    };
+  }
+  return {
+    ok: true,
+    runtimeVersion: readiness.runtimeVersion,
+    modelArtifactSha256: readiness.artifactSha256,
+  };
+}
+
 function readinessFailureFromResult(
   result: Exclude<SignalDigestAuthoringResult, { success: true }>,
 ): WorkflowAuthoringFailure {
@@ -965,6 +1048,8 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
     }
 
     const canonicalOutput = JSON.stringify(attempt.intent);
+    const runtimeIdentity = await inferenceRuntimeIdentity(resolution, attempt.response);
+    if (!runtimeIdentity.ok) return { success: false, ...runtimeIdentity.failure };
     return {
       success: true,
       readiness: 'ready',
@@ -972,17 +1057,10 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
       inference: {
         provider: attempt.response.provider,
         model: attempt.response.model,
-        runtimeVersion:
-          attempt.response.provider === 'embedded'
-            ? (resolution.localReadiness?.state === 'ready'
-              ? resolution.localReadiness.runtimeVersion ?? 'unreported'
-              : 'unreported')
-            : 'provider-managed-unreported',
-        ...(attempt.response.provider === 'embedded'
-          && resolution.localReadiness?.state === 'ready'
-          && resolution.localReadiness.artifactSha256 !== null
-          ? { modelArtifactSha256: resolution.localReadiness.artifactSha256 }
-          : {}),
+        runtimeVersion: runtimeIdentity.runtimeVersion,
+        ...(runtimeIdentity.modelArtifactSha256 === undefined
+          ? {}
+          : { modelArtifactSha256: runtimeIdentity.modelArtifactSha256 }),
         reasoningMode: resolution.mode,
         prompt: { name: PROMPT_NAME, version: PROMPT_VERSION, sha256: PROMPT_SHA256 },
         schema: { name: SCHEMA_NAME, version: SCHEMA_VERSION, sha256: SCHEMA_SHA256 },
@@ -1069,6 +1147,8 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
     );
     if (!attempt.success) return attempt;
     const canonicalOutput = JSON.stringify(attempt.intent);
+    const runtimeIdentity = await inferenceRuntimeIdentity(resolution, attempt.response);
+    if (!runtimeIdentity.ok) return { success: false, ...runtimeIdentity.failure };
     return {
       success: true,
       readiness: 'ready',
@@ -1090,17 +1170,10 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
       inference: {
         provider: attempt.response.provider,
         model: attempt.response.model,
-        runtimeVersion:
-          attempt.response.provider === 'embedded'
-            ? (resolution.localReadiness?.state === 'ready'
-              ? resolution.localReadiness.runtimeVersion ?? 'unreported'
-              : 'unreported')
-            : 'provider-managed-unreported',
-        ...(attempt.response.provider === 'embedded'
-          && resolution.localReadiness?.state === 'ready'
-          && resolution.localReadiness.artifactSha256 !== null
-          ? { modelArtifactSha256: resolution.localReadiness.artifactSha256 }
-          : {}),
+        runtimeVersion: runtimeIdentity.runtimeVersion,
+        ...(runtimeIdentity.modelArtifactSha256 === undefined
+          ? {}
+          : { modelArtifactSha256: runtimeIdentity.modelArtifactSha256 }),
         reasoningMode: resolution.mode,
         prompt: {
           name: REVISION_PROMPT_NAME,

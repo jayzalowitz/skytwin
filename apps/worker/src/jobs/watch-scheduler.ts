@@ -200,10 +200,10 @@ export function embeddedRuntimeIdentityMatches(
   readiness: EmbeddedProviderReadiness,
 ): boolean {
   return readiness.state === 'ready'
-    && (pinned.modelArtifactSha256 === undefined
-      || readiness.artifactSha256 === pinned.modelArtifactSha256)
-    && (pinned.runtimeVersion === 'unreported'
-      || readiness.runtimeVersion === pinned.runtimeVersion);
+    && pinned.modelArtifactSha256 !== undefined
+    && pinned.runtimeVersion !== 'unreported'
+    && readiness.artifactSha256 === pinned.modelArtifactSha256
+    && readiness.runtimeVersion === pinned.runtimeVersion;
 }
 
 export function parseWatchSynthesis(raw: string, allowedSignalIds: ReadonlySet<string>): string | null {
