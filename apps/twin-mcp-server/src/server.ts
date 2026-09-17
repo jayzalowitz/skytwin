@@ -29,7 +29,7 @@ function extractBearerToken(authHeader: string | undefined): string | null {
 /**
  * Build a per-request McpServer instance with tools filtered to the token's scope.
  *
-   * We create a fresh McpServer per request (stateless mode) so scope filtering
+ * We create a fresh McpServer per request (stateless mode) so scope filtering
  * is applied at tool-registration time — no stale capabilities from prior requests.
  */
 function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
