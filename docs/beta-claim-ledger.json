@@ -491,22 +491,27 @@
     },
     {
       "path": "docs/assets/demo-current/approvals-source-demo.png",
-      "sha256": "f294b6d94fcf56652bf5933fa0c56410d41cc4d5d1b0c17c788d329775f959f0",
+      "sha256": "5a6c80819fda559a7efd01065d76c04985561eeefa888a04d82f6845d0f03192",
       "ocrDisposition": "reviewed-current-source"
     },
     {
       "path": "docs/assets/demo-current/decisions-source-demo.png",
-      "sha256": "aadd477d086922fd94635dddc3055abb2390749f9b55ec9a6ecd3bcc8e448f67",
+      "sha256": "68d2ef656e1c1469a1925b686c9580c3bbe6641bef115281dfc1caf648111be1",
       "ocrDisposition": "reviewed-current-source"
     },
     {
       "path": "docs/assets/demo-current/onboarding-source-demo.png",
-      "sha256": "77a8a84677bb62bfe44a7ceb067245dfc41ca7d83c0561df38a8151534ca25bb",
+      "sha256": "9f2334502c9739dfdd36d0e0fd951552122e09159f3db04106d012b38d9e9b73",
       "ocrDisposition": "reviewed-current-source"
     },
     {
       "path": "docs/assets/demo-current/settings-source-demo.png",
-      "sha256": "0ab23f7932fe607e485218fcd20953f56f4118040fb218b832bc5bc1d0126cfc",
+      "sha256": "68829335df381ca57eae2211c4d59065a40f200abc5a920cd91946335210a1b4",
+      "ocrDisposition": "reviewed-current-source"
+    },
+    {
+      "path": "docs/assets/demo-current/watches-source-demo.png",
+      "sha256": "f001a766a4f301c9ce38823fe0f4494d8d9c4607e423fecfa6c6329b751756fd",
       "ocrDisposition": "reviewed-current-source"
     },
     {
@@ -1471,7 +1476,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "8479a58075cf8b618c7523d76437d9e7789063a9de0018c5b9cc2d034f9c618f",
+          "sha256": "193256532ed83f76d5c377ebf692d6d321aca655d687035ab1380b9a4b8e8648",
           "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator; enforces the audited inventory for every public visual binary; re-verifies the exact four-member safety artifact with both independent verifiers; emits the digest of the stable manifest bytes it checked; and validates every other bounded release material and source report binding at publication"
         }
       ],

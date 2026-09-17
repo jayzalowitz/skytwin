@@ -693,6 +693,7 @@ const CANONICAL_PUBLIC_BINARY_ASSETS = new Map([
   ["docs/assets/demo-current/decisions-source-demo.png", "reviewed-current-source"],
   ["docs/assets/demo-current/onboarding-source-demo.png", "reviewed-current-source"],
   ["docs/assets/demo-current/settings-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/watches-source-demo.png", "reviewed-current-source"],
   ["docs/screenshots/approvals.png", "prohibited-stale"],
   ["docs/screenshots/briefing.png", "prohibited-stale"],
   ["docs/screenshots/dashboard.png", "prohibited-stale"],
@@ -737,19 +738,23 @@ const CANONICAL_PUBLIC_BINARY_DIGESTS = new Map([
   ],
   [
     "docs/assets/demo-current/approvals-source-demo.png",
-    "f294b6d94fcf56652bf5933fa0c56410d41cc4d5d1b0c17c788d329775f959f0",
+    "5a6c80819fda559a7efd01065d76c04985561eeefa888a04d82f6845d0f03192",
   ],
   [
     "docs/assets/demo-current/decisions-source-demo.png",
-    "aadd477d086922fd94635dddc3055abb2390749f9b55ec9a6ecd3bcc8e448f67",
+    "68d2ef656e1c1469a1925b686c9580c3bbe6641bef115281dfc1caf648111be1",
   ],
   [
     "docs/assets/demo-current/onboarding-source-demo.png",
-    "77a8a84677bb62bfe44a7ceb067245dfc41ca7d83c0561df38a8151534ca25bb",
+    "9f2334502c9739dfdd36d0e0fd951552122e09159f3db04106d012b38d9e9b73",
   ],
   [
     "docs/assets/demo-current/settings-source-demo.png",
-    "0ab23f7932fe607e485218fcd20953f56f4118040fb218b832bc5bc1d0126cfc",
+    "68829335df381ca57eae2211c4d59065a40f200abc5a920cd91946335210a1b4",
+  ],
+  [
+    "docs/assets/demo-current/watches-source-demo.png",
+    "f001a766a4f301c9ce38823fe0f4494d8d9c4607e423fecfa6c6329b751756fd",
   ],
   [
     "docs/screenshots/approvals.png",

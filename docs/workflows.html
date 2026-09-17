@@ -13,6 +13,29 @@
       href="https://jayzalowitz.github.io/skytwin/workflows.html"
     />
     <link rel="stylesheet" href="guides.css" />
+    <style>
+      .capture {
+        margin: 1.6rem 0 2.4rem;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      .capture img {
+        display: block;
+        width: 100%;
+        height: auto;
+        background: #101218;
+      }
+      .capture figcaption {
+        padding: 1rem 1.1rem;
+        color: var(--muted);
+        font-size: 0.94rem;
+      }
+      .capture strong {
+        color: var(--text);
+      }
+    </style>
   </head>
   <body>
     <nav class="nav">
@@ -54,6 +77,21 @@
           therefore fails closed unless an eligible provider and model satisfy
           the checked-in contract.
         </div>
+
+        <figure class="capture">
+          <img
+            src="assets/demo-current/watches-source-demo.png"
+            alt="SkyTwin Watches page in a seeded source-development profile showing Model artifact unavailable, a disabled Preview with AI button, and an Open settings action."
+          />
+          <figcaption>
+            <strong>Cold start fails closed.</strong> This seeded
+            source-development profile has no qualified local model artifact.
+            Watches reports the missing artifact, keeps
+            <em>Preview with AI</em> disabled, and points to Settings instead of
+            silently changing provider or reasoning location. The disposable
+            fictional sample does not expose this authoring surface.
+          </figcaption>
+        </figure>
 
         <h2 id="current">What exists now</h2>
         <p>

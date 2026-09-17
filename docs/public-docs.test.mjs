@@ -126,6 +126,9 @@ describe("public developer-preview documentation", () => {
     expect(howToUse).toContain(
       "assets/demo-current/onboarding-source-demo.png",
     );
+    expect(workflows).toContain(
+      "assets/demo-current/watches-source-demo.png",
+    );
     expect(index).toContain('href="faq.html"');
     expect(index).toContain('href="workflows.html"');
     expect(index).toContain("agents.html#connect");
@@ -146,6 +149,12 @@ describe("public developer-preview documentation", () => {
     expect(agents).toContain("Do not execute around policy.");
     expect(agents).toContain("Missing action provenance is");
     expect(howToUse).toContain("fictional sample data");
+    expect(normalized(howToUse)).toContain(
+      "Settings and Watches are deliberately outside its narrow authority",
+    );
+    expect(normalized(howToUse)).toContain(
+      "Settings and Watches do not accept the disposable sample credential",
+    );
     expect(read("docs/integrations.html")).toContain("execution: null");
     expect(read("docs/data.html")).toContain(
       "legacy plaintext token storage remains",
@@ -211,6 +220,10 @@ describe("public developer-preview documentation", () => {
     expect(workflows).toContain("signal_digest.v1");
     expect(workflows).toContain("Activate explicitly");
     expect(workflows).toContain("CockroachDB is the source of truth");
+    expect(workflows).toContain("Cold start fails closed.");
+    expect(normalized(workflows)).toContain(
+      "This seeded source-development profile has no qualified local model artifact.",
+    );
     expect(normalized(workflows)).toContain(
       "maintained embedded model is available for ordinary local inference but is not qualified for workflow authoring",
     );
