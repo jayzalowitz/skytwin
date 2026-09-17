@@ -20,6 +20,7 @@ import {
   probeEmbeddedProviderReadiness,
   redactPromptPii,
   type EmbeddedProviderReadiness,
+  type LlmResponse,
   type ProviderEntry,
 } from '@skytwin/llm-client';
 import { computeNextRun, matchesFilter, type MatchableSignal } from '@skytwin/routines';
@@ -96,6 +97,15 @@ interface WatchEvaluationState {
 }
 
 const WATCH_SIGNAL_PAGE_SIZE = 500;
+const WATCH_SYNTHESIS_SCHEMA = JSON.stringify({
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  type: 'object',
+  additionalProperties: false,
+  required: ['summary'],
+  properties: {
+    summary: { type: 'string', minLength: 1, maxLength: 2_000 },
+  },
+});
 
 interface AdaptiveSynthesisResult {
   text: string | null;
@@ -218,6 +228,17 @@ export function embeddedRuntimeIdentityMatches(
     && readiness.runtimeVersion === pinned.runtimeVersion;
 }
 
+export function ollamaRuntimeIdentityMatches(
+  pinned: { runtimeVersion: string; modelArtifactSha256?: string },
+  response: Pick<LlmResponse, 'provider' | 'runtimeIdentity'>,
+): boolean {
+  return response.provider === 'ollama'
+    && response.runtimeIdentity?.provider === 'ollama'
+    && pinned.modelArtifactSha256 !== undefined
+    && pinned.runtimeVersion === `ollama-${response.runtimeIdentity.serverVersion}`
+    && pinned.modelArtifactSha256 === response.runtimeIdentity.modelDigestSha256;
+}
+
 export function parseWatchSynthesis(raw: string, allowedSignalIds: ReadonlySet<string>): string | null {
   if (Buffer.byteLength(raw, 'utf8') > 4_096) return null;
   try {
@@ -338,7 +359,34 @@ async function synthesizeAdaptiveRun(
       maxTokens: 500,
       timeoutMs: 30_000,
       invocationKind: 'unattended',
+      jsonSchema: WATCH_SYNTHESIS_SCHEMA,
+      disableReasoning: true,
+      requireExactRuntimeIdentity: true,
     });
+    if (pinnedInference.provider === 'ollama'
+        && !ollamaRuntimeIdentityMatches(pinnedInference, response)) {
+      return {
+        text: null,
+        metadata: {
+          state: 'unavailable',
+          reason: 'runtime_identity_changed',
+          summaryInstructionSha256,
+        },
+      };
+    }
+    if (pinnedInference.provider === 'embedded') {
+      const readiness = await probeEmbeddedProviderReadiness(response.model);
+      if (!embeddedRuntimeIdentityMatches(pinnedInference, readiness)) {
+        return {
+          text: null,
+          metadata: {
+            state: 'unavailable',
+            reason: 'runtime_identity_changed',
+            summaryInstructionSha256,
+          },
+        };
+      }
+    }
     const text = parseWatchSynthesis(
       response.content,
       new Set(evidence.map((item) => item.signalId)),

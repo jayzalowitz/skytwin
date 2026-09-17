@@ -6,6 +6,7 @@ import {
   toMatchable,
   evaluateWatch,
   embeddedRuntimeIdentityMatches,
+  ollamaRuntimeIdentityMatches,
   parseWatchSynthesis,
   runWatchSchedulerJob,
   WATCH_SCHEDULER_INTERVAL_MS,
@@ -206,6 +207,60 @@ describe('embeddedRuntimeIdentityMatches', () => {
     expect(embeddedRuntimeIdentityMatches({
       runtimeVersion: 'llama.cpp-b5000',
     }, readiness)).toBe(false);
+  });
+});
+
+describe('ollamaRuntimeIdentityMatches', () => {
+  const pinned = {
+    runtimeVersion: 'ollama-0.12.3',
+    modelArtifactSha256: 'a'.repeat(64),
+  };
+
+  it('requires the exact responding server version and manifest digest', () => {
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(true);
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.4',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(false);
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'b'.repeat(64),
+      },
+    })).toBe(false);
+  });
+
+  it('rejects missing identity, provider fallback, and legacy wildcard pins', () => {
+    expect(ollamaRuntimeIdentityMatches(pinned, { provider: 'ollama' })).toBe(false);
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'embedded',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(false);
+    expect(ollamaRuntimeIdentityMatches({ runtimeVersion: 'ollama-0.12.3' }, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(false);
   });
 });
 
