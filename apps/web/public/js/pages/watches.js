@@ -646,7 +646,10 @@ function renderRuns(watchId, runs, loading) {
         const matchedCount = Number(run.matched_count ?? run.matchedCount ?? 0);
         const evidence = Array.isArray(run.evidence_snapshot) ? run.evidence_snapshot : [];
         const retainedCount = Number(run.evidence_retained_count ?? matchedCount);
-        const overflow = Math.max(0, retainedCount - Math.min(5, evidence.length));
+        const hiddenRetainedCount = Math.max(0, retainedCount - Math.min(5, evidence.length));
+        const unretainedCount = run.evidence_truncated
+          ? Math.max(0, matchedCount - retainedCount)
+          : 0;
         const synthesis = run.synthesis_metadata;
         const synthesisLabel = synthesis?.state === 'generated'
           ? `AI summary · ${synthesis.provider} / ${synthesis.model}`
@@ -668,8 +671,9 @@ function renderRuns(watchId, runs, loading) {
               <small>${escapeHtml(item.signalId || '')}</small>
             </li>`).join('')}
           </ul>` : ''}
-          ${overflow > 0 ? `<div class="watch-muted">${escapeHtml(String(overflow))} additional matching evidence item${overflow === 1 ? '' : 's'} retained but not displayed.</div>` : ''}
-          ${commitment ? `<div class="watch-run-commitment" title="Full evidence SHA-256">Evidence ${escapeHtml(commitment)}…</div>` : ''}
+          ${hiddenRetainedCount > 0 ? `<div class="watch-muted">${escapeHtml(String(hiddenRetainedCount))} additional matching evidence item${hiddenRetainedCount === 1 ? '' : 's'} retained but not displayed.</div>` : ''}
+          ${unretainedCount > 0 ? `<div class="watch-muted">${escapeHtml(String(unretainedCount))} older match${unretainedCount === 1 ? ' was' : 'es were'} counted but omitted by the evidence retention bound.</div>` : ''}
+          ${commitment ? `<div class="watch-run-commitment" title="Retained evidence SHA-256">Evidence ${escapeHtml(commitment)}…</div>` : ''}
           ${Array.isArray(run.matched_refs) && run.matched_refs.length
             && evidence.length === 0
             ? `<div class="watch-run-refs">${escapeHtml(run.matched_refs.slice(0, 5).join(', '))}</div>`

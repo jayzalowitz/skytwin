@@ -227,8 +227,8 @@ describe('watches routes', () => {
           user_id: USER,
           ran_at: new Date('2026-07-06T09:00:00Z'),
           action: 'digest',
-          matched_count: 2,
-          summary: 'Matched 2 signals',
+          matched_count: 12,
+          summary: 'Matched 12 signals',
           matched_refs: ['sig-1', 'sig-2'],
           evidence_snapshot: Array.from({ length: 8 }, (_, index) => ({
             signalId: `sig-${index + 1}`,
@@ -244,11 +244,16 @@ describe('watches routes', () => {
       expect(res.status).toBe(200);
       expect(mockWatchRunRepository.listForWatch).toHaveBeenCalledWith(WATCH, USER, 5);
       const runs = (res.body as {
-        runs: Array<{ evidence_snapshot: unknown[]; evidence_retained_count: number }>;
+        runs: Array<{
+          evidence_snapshot: unknown[];
+          evidence_retained_count: number;
+          evidence_truncated: boolean;
+        }>;
       }).runs;
       expect(runs).toHaveLength(1);
       expect(runs[0]?.evidence_snapshot).toHaveLength(5);
       expect(runs[0]?.evidence_retained_count).toBe(8);
+      expect(runs[0]?.evidence_truncated).toBe(true);
     });
 
     it('404s run history for a watch the user does not own', async () => {

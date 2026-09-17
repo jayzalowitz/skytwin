@@ -1,5 +1,5 @@
-import type { PoolClient } from 'pg';
-import { query } from '../connection.js';
+import type { PoolClient, QueryResult } from 'pg';
+import { query, withTransaction } from '../connection.js';
 import type { SignalRow } from '../types.js';
 import { databaseSafeInteger } from './database-values.js';
 
@@ -8,6 +8,10 @@ export interface BoundedSignalWindow {
   totalCount: number;
   truncated: boolean;
 }
+
+export type SignalWindowPageVisitor = (
+  records: readonly SignalRow[],
+) => void | Promise<void>;
 
 export interface CreateSignalInput {
   userId: string;
@@ -189,6 +193,47 @@ export const signalRepository = {
       [userId, windowStart, windowEnd],
     );
     return result.rows;
+  },
+
+  /**
+   * Visit an exact Watch window in bounded keyset pages from one read
+   * transaction. Keeping every page on the same CockroachDB snapshot avoids
+   * both an unbounded result allocation and gaps caused by concurrent inserts.
+   */
+  async visitInWindowPages(
+    userId: string,
+    windowStart: Date,
+    windowEnd: Date,
+    pageSize: number,
+    visit: SignalWindowPageVisitor,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 1_000) {
+      throw new TypeError('Signal window page size must be an integer between 1 and 1000');
+    }
+    await withTransaction(async (client) => {
+      let cursorTimestamp: string | null = null;
+      let cursorId: string | null = null;
+      for (;;) {
+        const result: QueryResult<SignalRow & { page_cursor_timestamp: string }> =
+          await client.query<SignalRow & { page_cursor_timestamp: string }>(
+          `SELECT signals.*, timestamp::STRING AS page_cursor_timestamp FROM signals
+            WHERE user_id = $1 AND timestamp > $2 AND timestamp <= $3
+              AND ($4::TIMESTAMPTZ IS NULL OR timestamp < $4
+                OR (timestamp = $4 AND id > $5::UUID))
+            ORDER BY timestamp DESC, id ASC
+            LIMIT $6`,
+          [userId, windowStart, windowEnd, cursorTimestamp, cursorId, pageSize],
+        );
+        if (result.rows.length === 0) return;
+        const records = result.rows.map(({ page_cursor_timestamp: _cursor, ...row }) => row);
+        await visit(records);
+        if (result.rows.length < pageSize) return;
+        const last: SignalRow & { page_cursor_timestamp: string } =
+          result.rows[result.rows.length - 1]!;
+        cursorTimestamp = last.page_cursor_timestamp;
+        cursorId = last.id;
+      }
+    });
   },
 
   /** Bounded replay window with an exact pre-limit count from the same query snapshot. */

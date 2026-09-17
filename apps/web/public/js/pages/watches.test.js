@@ -65,6 +65,13 @@ describe('watches page', () => {
     expect(source).not.toMatch(/catch[\s\S]{0,200}runsByWatchId\.set\(id,\s*\[\]\)/);
   });
 
+  it('distinguishes hidden retained evidence from matches omitted by the retention bound', () => {
+    expect(source).toContain('run.evidence_truncated');
+    expect(source).toContain('additional matching evidence item');
+    expect(source).toContain('counted but omitted by the evidence retention bound');
+    expect(source).toContain('title="Retained evidence SHA-256"');
+  });
+
   it('keeps Watch controls usable on small screens and reduced-motion systems', () => {
     expect(stylesSource).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.watch-input\s*{[^}]*font-size:\s*1rem;/);
     expect(stylesSource).toMatch(/@media \(max-width: 768px\)[\s\S]*?\.watch-example\s*{[^}]*min-height:\s*44px;/);

@@ -78,10 +78,17 @@ function titleOf(row: SignalRow): string {
 export interface WatchEvaluation {
   matchedCount: number;
   matchedRefs: string[];
-  evidenceSha256: string;
   evidenceSnapshot: WatchRunEvidenceSnapshot[];
   summary: string;
 }
+
+interface WatchEvaluationState {
+  matchedCount: number;
+  evidenceSnapshot: WatchRunEvidenceSnapshot[];
+  summaryTitles: string[];
+}
+
+const WATCH_SIGNAL_PAGE_SIZE = 500;
 
 interface AdaptiveSynthesisResult {
   text: string | null;
@@ -101,47 +108,71 @@ export function evaluateWatch(
   windowStart: Date,
   windowEnd: Date,
 ): WatchEvaluation {
-  const matched = signals.filter(
-    (s) =>
-      s.timestamp instanceof Date &&
-      s.timestamp > windowStart &&
-      s.timestamp <= windowEnd &&
-      matchesFilter(toMatchable(s), watch.filter),
+  const state: WatchEvaluationState = {
+    matchedCount: 0,
+    evidenceSnapshot: [],
+    summaryTitles: [],
+  };
+  accumulateWatchEvaluation(
+    state,
+    watch,
+    signals,
+    windowStart,
+    windowEnd,
+  );
+  return finishWatchEvaluation(state, watch.action);
+}
+
+function accumulateWatchEvaluation(
+  state: WatchEvaluationState,
+  watch: RoutineSpec,
+  signals: readonly SignalRow[],
+  windowStart: Date,
+  windowEnd: Date,
+): void {
+  const matched = signals.filter((signal) =>
+    signal.timestamp instanceof Date &&
+    signal.timestamp > windowStart &&
+    signal.timestamp <= windowEnd &&
+    matchesFilter(toMatchable(signal), watch.filter),
   ).sort((left, right) =>
     right.timestamp.getTime() - left.timestamp.getTime() || left.id.localeCompare(right.id));
-  const titles = matched.map(titleOf);
-  const n = matched.length;
-
-  let summary = '';
-  if (n > 0) {
-    if (watch.action === 'notify') {
-      summary = n === 1 ? `New match: ${titles[0]}` : `${n} new matches (e.g. ${titles[0]})`;
-    } else {
-      const shown = titles.slice(0, 5).join('; ');
-      summary = `${n} update${n === 1 ? '' : 's'}: ${shown}${n > 5 ? ' …' : ''}`;
-    }
-  }
-  // matchedCount is the true total; store a bounded slice of refs so a run row
-  // can't balloon on a pathological match set.
-  const evidenceSnapshot = matched.map<WatchRunEvidenceSnapshot>((row) => {
+  for (const row of matched) {
+    state.matchedCount += 1;
+    if (state.summaryTitles.length < 5) state.summaryTitles.push(titleOf(row));
+    if (state.evidenceSnapshot.length >= MAX_STORED_REFS) continue;
     const matchable = toMatchable(row);
-    return {
+    state.evidenceSnapshot.push({
       signalId: row.id,
       source: row.source,
       timestamp: row.timestamp.toISOString(),
       title: titleOf(row).slice(0, 240),
       from: matchable.from.slice(0, 240),
       matchTextSha256: createHash('sha256').update(matchable.text, 'utf8').digest('hex'),
-    };
-  });
-  const evidenceSha256 = createHash('sha256')
-    .update(JSON.stringify(evidenceSnapshot), 'utf8')
-    .digest('hex');
+    });
+  }
+}
+
+function finishWatchEvaluation(
+  state: WatchEvaluationState,
+  action: RoutineSpec['action'],
+): WatchEvaluation {
+  const n = state.matchedCount;
+  const titles = state.summaryTitles;
+
+  let summary = '';
+  if (n > 0) {
+    if (action === 'notify') {
+      summary = n === 1 ? `New match: ${titles[0]}` : `${n} new matches (e.g. ${titles[0]})`;
+    } else {
+      const shown = titles.slice(0, 5).join('; ');
+      summary = `${n} update${n === 1 ? '' : 's'}: ${shown}${n > 5 ? ' …' : ''}`;
+    }
+  }
   return {
     matchedCount: n,
-    matchedRefs: matched.slice(0, MAX_STORED_REFS).map((s) => s.id),
-    evidenceSha256,
-    evidenceSnapshot,
+    matchedRefs: state.evidenceSnapshot.map((item) => item.signalId),
+    evidenceSnapshot: state.evidenceSnapshot,
     summary,
   };
 }
@@ -330,7 +361,7 @@ async function synthesizeAdaptiveRun(
 
 export interface WatchSchedulerDeps {
   runRepo?: Pick<typeof watchRunRepository, 'claimNextDueSlot' | 'completeSlot' | 'failSlot' | 'pruneZeroMatchSlots'>;
-  signalRepo?: Pick<typeof signalRepository, 'listInWindow'>;
+  signalRepo?: Pick<typeof signalRepository, 'visitInWindowPages'>;
   synthesize?: (
     slot: ClaimedWatchSlot,
     evidence: readonly WatchRunEvidenceSnapshot[],
@@ -357,10 +388,28 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
     const slot = await runAdmitted(deps.signal, () => runRepo.claimNextDueSlot({ calculateNextRun: computeNextRun }));
     if (!slot) break;
     try {
-      const signals = await runAdmitted(deps.signal, () =>
-        signalRepo.listInWindow(slot.userId, slot.windowStart, slot.windowEnd),
-      );
-      const evalResult = evaluateWatch(slot.spec, signals, slot.windowStart, slot.windowEnd);
+      const evaluationState: WatchEvaluationState = {
+        matchedCount: 0,
+        evidenceSnapshot: [],
+        summaryTitles: [],
+      };
+      await runAdmitted(deps.signal, () => signalRepo.visitInWindowPages(
+        slot.userId,
+        slot.windowStart,
+        slot.windowEnd,
+        WATCH_SIGNAL_PAGE_SIZE,
+        (signals) => {
+          requireJobAdmission(deps.signal);
+          accumulateWatchEvaluation(
+            evaluationState,
+            slot.spec,
+            signals,
+            slot.windowStart,
+            slot.windowEnd,
+          );
+        },
+      ));
+      const evalResult = finishWatchEvaluation(evaluationState, slot.spec.action);
       let synthesis: AdaptiveSynthesisResult | null = null;
       if (slot.workflowVersionId !== null) {
         try {
@@ -393,7 +442,6 @@ export async function runWatchSchedulerJob(deps: WatchSchedulerDeps = {}): Promi
           matchedCount: evalResult.matchedCount,
           summary,
           matchedRefs: evalResult.matchedRefs,
-          evidenceSha256: evalResult.evidenceSha256,
           evidenceSnapshot: evalResult.evidenceSnapshot,
           synthesisMetadata: synthesis?.metadata ?? null,
         }),

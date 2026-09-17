@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { PoolClient } from "pg";
 import type {
   RoutineActionKind,
@@ -107,7 +107,6 @@ export interface CompleteWatchSlotInput {
   matchedCount: number;
   summary: string;
   matchedRefs: string[];
-  evidenceSha256: string;
   evidenceSnapshot: WatchRunEvidenceSnapshot[];
   synthesisMetadata: WatchRunSynthesisMetadata | null;
 }
@@ -132,6 +131,55 @@ const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const MAX_SUMMARY_LENGTH = 4_000;
 const DEFAULT_ZERO_MATCH_RETENTION_DAYS = 30;
 const MAX_QUARANTINES_PER_CLAIM = 100;
+
+/**
+ * Commit the complete retained-evidence envelope in a fixed key order. The
+ * total match count and truncation bit are included so a bounded snapshot
+ * cannot be transplanted onto a run with different overflow semantics.
+ */
+export function watchRunEvidenceSha256(
+  matchedCount: number,
+  evidenceSnapshot: readonly WatchRunEvidenceSnapshot[],
+): string {
+  const canonical = {
+    schema: "watch_run_evidence.v1",
+    matchedCount,
+    retainedCount: evidenceSnapshot.length,
+    truncated: matchedCount > evidenceSnapshot.length,
+    evidence: evidenceSnapshot.map((item) => ({
+      signalId: item.signalId,
+      source: item.source,
+      timestamp: item.timestamp,
+      title: item.title,
+      from: item.from,
+      matchTextSha256: item.matchTextSha256,
+    })),
+  };
+  return createHash("sha256").update(JSON.stringify(canonical), "utf8").digest("hex");
+}
+
+function validateEvidenceSnapshot(
+  matchedCount: number,
+  matchedRefs: readonly string[],
+  evidenceSnapshot: readonly WatchRunEvidenceSnapshot[],
+): void {
+  if (
+    evidenceSnapshot.length > matchedCount ||
+    evidenceSnapshot.length > MAX_STORED_REFS ||
+    evidenceSnapshot.some((item) =>
+      typeof item.signalId !== "string" || item.signalId.length < 1 || item.signalId.length > 256 ||
+      typeof item.source !== "string" || item.source.length < 1 || item.source.length > 128 ||
+      typeof item.timestamp !== "string" || Number.isNaN(Date.parse(item.timestamp)) ||
+      new Date(item.timestamp).toISOString() !== item.timestamp ||
+      typeof item.title !== "string" || item.title.length > 240 ||
+      typeof item.from !== "string" || item.from.length > 240 ||
+      !SHA256_PATTERN.test(item.matchTextSha256)) ||
+    matchedRefs.length !== evidenceSnapshot.length ||
+    matchedRefs.some((ref, index) => ref !== evidenceSnapshot[index]!.signalId)
+  ) {
+    throw new TypeError("Watch evidence snapshot does not match its bounded reference set");
+  }
+}
 
 function defaultLookbackMs(cadence: RoutineSpec["cadence"]): number {
   if (cadence === "hourly") return HOUR_MS;
@@ -197,7 +245,7 @@ function specFromSnapshot(value: Record<string, unknown>): RoutineSpec {
 }
 
 function normalizeWatchRunRow(row: DatabaseWatchRunRow): WatchRunRow {
-  return {
+  const normalized = {
     ...row,
     matched_count: databaseSafeInteger(row.matched_count, "watch_runs.matched_count"),
     attempt_count: databaseSafeInteger(row.attempt_count, "watch_runs.attempt_count"),
@@ -206,6 +254,21 @@ function normalizeWatchRunRow(row: DatabaseWatchRunRow): WatchRunRow {
       "watch_runs.projection_version",
     ),
   };
+  if (normalized.slot_status === "completed") {
+    validateEvidenceSnapshot(
+      normalized.matched_count,
+      normalized.matched_refs,
+      normalized.evidence_snapshot,
+    );
+    const expected = watchRunEvidenceSha256(
+      normalized.matched_count,
+      normalized.evidence_snapshot,
+    );
+    if (normalized.evidence_sha256 !== expected) {
+      throw new Error("Stored Watch evidence commitment does not match its canonical snapshot");
+    }
+  }
+  return normalized;
 }
 
 function adaptivePayloadFromSnapshot(
@@ -609,24 +672,9 @@ export const watchRunRepository = {
     const matchedRefs = input.matchedRefs
       .filter((ref): ref is string => typeof ref === "string")
       .slice(0, MAX_STORED_REFS);
-    if (!SHA256_PATTERN.test(input.evidenceSha256)) {
-      throw new TypeError("Watch evidence commitment must be a lowercase SHA-256 digest");
-    }
     const evidenceSnapshot = input.evidenceSnapshot;
-    if (
-      evidenceSnapshot.length !== matchedCount ||
-      evidenceSnapshot.some((item) =>
-        typeof item.signalId !== "string" || item.signalId.length < 1 || item.signalId.length > 256 ||
-        typeof item.source !== "string" || item.source.length < 1 || item.source.length > 128 ||
-        typeof item.timestamp !== "string" || Number.isNaN(Date.parse(item.timestamp)) ||
-        typeof item.title !== "string" || item.title.length > 240 ||
-        typeof item.from !== "string" || item.from.length > 240 ||
-        !SHA256_PATTERN.test(item.matchTextSha256)) ||
-      matchedRefs.length !== Math.min(MAX_STORED_REFS, evidenceSnapshot.length) ||
-      matchedRefs.some((ref, index) => ref !== evidenceSnapshot[index]!.signalId)
-    ) {
-      throw new TypeError("Watch evidence snapshot does not match its bounded reference set");
-    }
+    validateEvidenceSnapshot(matchedCount, matchedRefs, evidenceSnapshot);
+    const evidenceSha256 = watchRunEvidenceSha256(matchedCount, evidenceSnapshot);
     const result = await query<{ id: string }>(
       `UPDATE watch_runs
           SET slot_status = 'completed', ran_at = now(), matched_count = $3,
@@ -642,7 +690,7 @@ export const watchRunRepository = {
         matchedCount,
         input.summary.slice(0, MAX_SUMMARY_LENGTH),
         JSON.stringify(matchedRefs),
-        input.evidenceSha256,
+        evidenceSha256,
         JSON.stringify(evidenceSnapshot),
         input.synthesisMetadata === null ? null : JSON.stringify(input.synthesisMetadata),
       ],

@@ -219,10 +219,11 @@ export function createWatchesRouter(): Router {
       const rows = await watchRunRepository.listForWatch(watchId, userId, limit);
       const runs = rows.map((run) => ({
         ...run,
-        // The database retains the exact evidence snapshot so its commitment can
-        // be audited. Keep the routine history response bounded for browsers;
-        // matched_count still describes the full retained snapshot.
+        // The repository verifies this bounded retained snapshot against its
+        // commitment before returning it. matched_count remains the exact full
+        // result count, including matches deliberately omitted from JSONB.
         evidence_retained_count: run.evidence_snapshot.length,
+        evidence_truncated: run.matched_count > run.evidence_snapshot.length,
         evidence_snapshot: run.evidence_snapshot.slice(0, MAX_RETURNED_RUN_EVIDENCE),
       }));
       res.json({ runs });

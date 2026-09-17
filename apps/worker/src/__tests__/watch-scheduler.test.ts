@@ -214,28 +214,86 @@ describe('runWatchSchedulerJob', () => {
     };
   }
 
+  function signalRepoWith(responses: Array<SignalRow[] | Error>) {
+    const visitInWindowPages = vi.fn(async (
+      _userId: string,
+      _windowStart: Date,
+      _windowEnd: Date,
+      _pageSize: number,
+      visit: (records: readonly SignalRow[]) => void | Promise<void>,
+    ) => {
+      const response = responses.shift() ?? [];
+      if (response instanceof Error) throw response;
+      await visit(response);
+    });
+    return { visitInWindowPages };
+  }
+
   it('claims and completes a durable slot when its persisted window matches', async () => {
     const slot = claimedSlot();
     const runRepo = runRepoWith([slot, null]);
-    const listInWindow = vi.fn().mockResolvedValue([
+    const signalRepo = signalRepoWith([[
       signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
-    ]);
+    ]]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow },
+      signalRepo,
     });
-    expect(listInWindow).toHaveBeenCalledWith(slot.userId, WINDOW_START, NOW);
+    expect(signalRepo.visitInWindowPages).toHaveBeenCalledWith(
+      slot.userId,
+      WINDOW_START,
+      NOW,
+      500,
+      expect.any(Function),
+    );
     expect(runRepo.completeSlot).toHaveBeenCalledWith({
       id: slot.id,
       leaseToken: slot.leaseToken,
       matchedCount: 1,
       summary: expect.stringContaining('Q3 budget'),
       matchedRefs: ['a'],
-      evidenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
       evidenceSnapshot: [expect.objectContaining({ signalId: 'a', title: 'Q3 budget' })],
       synthesisMetadata: null,
     });
     expect(runRepo.pruneZeroMatchSlots).toHaveBeenCalledWith(30, 100);
+  });
+
+  it('counts every paged match while retaining only a bounded evidence snapshot', async () => {
+    const slot = claimedSlot();
+    const runRepo = runRepoWith([slot, null]);
+    const firstPage = Array.from({ length: 150 }, (_, index) => signal({
+      id: `first-${String(index).padStart(3, '0')}`,
+      timestamp: new Date(NOW.getTime() - index),
+    }));
+    const secondPage = Array.from({ length: 100 }, (_, index) => signal({
+      id: `second-${String(index).padStart(3, '0')}`,
+      timestamp: new Date(NOW.getTime() - 1_000 - index),
+    }));
+    const visitInWindowPages = vi.fn(async (
+      _userId: string,
+      _windowStart: Date,
+      _windowEnd: Date,
+      _pageSize: number,
+      visit: (records: readonly SignalRow[]) => void | Promise<void>,
+    ) => {
+      await visit(firstPage);
+      await visit(secondPage);
+    });
+
+    await runWatchSchedulerJob({ runRepo, signalRepo: { visitInWindowPages } });
+
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      matchedCount: 250,
+      matchedRefs: expect.any(Array),
+      evidenceSnapshot: expect.any(Array),
+      summary: expect.stringMatching(/^250 updates:/),
+    }));
+    const completion = runRepo.completeSlot.mock.calls[0]![0];
+    expect(completion.matchedRefs).toHaveLength(200);
+    expect(completion.evidenceSnapshot).toHaveLength(200);
+    expect(completion.matchedRefs).toEqual(
+      completion.evidenceSnapshot.map((item) => item.signalId),
+    );
   });
 
   it('labels deterministic adaptive output when unattended AI synthesis is unavailable', async () => {
@@ -252,9 +310,9 @@ describe('runWatchSchedulerJob', () => {
     const runRepo = runRepoWith([slot, null]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([
+      signalRepo: signalRepoWith([[
         signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
-      ]) },
+      ]]),
       synthesize: vi.fn().mockResolvedValue({
         text: null,
         metadata: {
@@ -288,9 +346,9 @@ describe('runWatchSchedulerJob', () => {
     });
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([
+      signalRepo: signalRepoWith([[
         signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
-      ]) },
+      ]]),
       synthesize,
     });
     expect(synthesize).toHaveBeenCalledWith(
@@ -318,7 +376,7 @@ describe('runWatchSchedulerJob', () => {
     const runRepo = runRepoWith([slot, null]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([]) },
+      signalRepo: signalRepoWith([[]]),
       synthesize: vi.fn().mockResolvedValue({
         text: null,
         metadata: {
@@ -345,9 +403,9 @@ describe('runWatchSchedulerJob', () => {
     const runRepo = runRepoWith([slot, null]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([
+      signalRepo: signalRepoWith([[
         signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
-      ]) },
+      ]]),
       synthesize: vi.fn().mockRejectedValue(new Error('model offline')),
     });
     expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
@@ -362,7 +420,7 @@ describe('runWatchSchedulerJob', () => {
     const runRepo = runRepoWith([slot, null]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([]) },
+      signalRepo: signalRepoWith([[]]),
     });
     expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
       id: slot.id,
@@ -377,7 +435,7 @@ describe('runWatchSchedulerJob', () => {
     runRepo.completeSlot.mockResolvedValue(false);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([signal()]) },
+      signalRepo: signalRepoWith([[signal()]]),
     });
     expect(runRepo.completeSlot).toHaveBeenCalledTimes(1);
     expect(runRepo.failSlot).not.toHaveBeenCalled();
@@ -389,25 +447,31 @@ describe('runWatchSchedulerJob', () => {
       windowEnd: new Date('2026-07-05T08:45:00Z'),
     });
     const runRepo = runRepoWith([slot, null]);
-    const listInWindow = vi.fn().mockResolvedValue([]);
+    const signalRepo = signalRepoWith([[]]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow },
+      signalRepo,
     });
-    expect(listInWindow).toHaveBeenCalledWith(slot.userId, slot.windowStart, slot.windowEnd);
+    expect(signalRepo.visitInWindowPages).toHaveBeenCalledWith(
+      slot.userId,
+      slot.windowStart,
+      slot.windowEnd,
+      500,
+      expect.any(Function),
+    );
   });
 
   it('records a failed attempt and continues to the next durable slot', async () => {
     const bad = claimedSlot({ id: 'bad-slot', leaseToken: 'bad-lease' });
     const good = claimedSlot({ id: 'good-slot', leaseToken: 'good-lease' });
     const runRepo = runRepoWith([bad, good, null]);
-    const listInWindow = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('signal read failed'))
-      .mockResolvedValueOnce([signal({ id: 'a' })]);
+    const signalRepo = signalRepoWith([
+      new Error('signal read failed'),
+      [signal({ id: 'a' })],
+    ]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow },
+      signalRepo,
     });
     expect(runRepo.failSlot).toHaveBeenCalledWith({
       id: bad.id,

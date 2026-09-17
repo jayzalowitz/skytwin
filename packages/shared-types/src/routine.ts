@@ -142,9 +142,9 @@ export interface WatchRun {
   matchedCount: number;
   summary: string;
   matchedRefs: string[];
-  /** SHA-256 commitment over every matched evidence snapshot, not only the retained examples. */
+  /** SHA-256 commitment over the canonical retained-evidence envelope and exact matched count. */
   evidenceSha256: string | null;
-  /** Bounded immutable examples. `matchedCount - length` is the disclosed overflow. */
+  /** Bounded immutable examples; `matchedCount - length` is explicitly disclosed as truncation. */
   evidenceSnapshot: WatchRunEvidenceSnapshot[];
   scheduleRevision: string;
   scheduledFor: Date;

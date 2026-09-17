@@ -11,7 +11,7 @@ vi.mock("../connection.js", () => ({
   ) => fn({ query: mockClientQuery }),
 }));
 
-const { watchRunRepository } =
+const { watchRunRepository, watchRunEvidenceSha256 } =
   await import("../repositories/watch-run-repository.js");
 const { signalRepository } =
   await import("../repositories/signal-repository.js");
@@ -347,6 +347,10 @@ describe("watchRunRepository durable slots", () => {
   it("fences completion by token and an unexpired DB-time lease, bounding output", async () => {
     mockQuery.mockResolvedValue({ rows: [{ id: "slot" }] });
     const refs = Array.from({ length: 250 }, (_, i) => `signal-${i}`);
+    const evidenceSnapshot = refs.slice(0, 200).map((signalId) => ({
+      signalId, source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
+      matchTextSha256: "c".repeat(64),
+    }));
     await expect(
       watchRunRepository.completeSlot({
         id: "slot",
@@ -354,11 +358,7 @@ describe("watchRunRepository durable slots", () => {
         matchedCount: 250.9,
         summary: "x".repeat(5_000),
         matchedRefs: refs,
-        evidenceSha256: "a".repeat(64),
-        evidenceSnapshot: refs.map((signalId) => ({
-          signalId, source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
-          matchTextSha256: "c".repeat(64),
-        })),
+        evidenceSnapshot,
         synthesisMetadata: null,
       }),
     ).resolves.toBe(true);
@@ -367,7 +367,8 @@ describe("watchRunRepository durable slots", () => {
     expect(args[2]).toBe(250);
     expect(args[3]).toHaveLength(4_000);
     expect(JSON.parse(args[4])).toHaveLength(200);
-    expect(JSON.parse(args[6])).toHaveLength(250);
+    expect(args[5]).toBe(watchRunEvidenceSha256(250, evidenceSnapshot));
+    expect(JSON.parse(args[6])).toHaveLength(200);
   });
 
   it("releases a failed attempt as pending without retaining its fence token", async () => {
@@ -407,7 +408,6 @@ describe("watchRunRepository durable slots", () => {
         matchedCount: 1,
         summary: "stale",
         matchedRefs: ["signal"],
-        evidenceSha256: "b".repeat(64),
         evidenceSnapshot: [{
           signalId: "signal", source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
           matchTextSha256: "d".repeat(64),
@@ -415,6 +415,22 @@ describe("watchRunRepository durable slots", () => {
         synthesisMetadata: null,
       }),
     ).resolves.toBe(false);
+  });
+
+  it("rejects a completed row whose commitment does not bind its canonical evidence", async () => {
+    mockQuery.mockResolvedValue({ rows: [slotRow({
+      slot_status: "completed",
+      matched_count: "1",
+      matched_refs: ["signal"],
+      evidence_sha256: "a".repeat(64),
+      evidence_snapshot: [{
+        signalId: "signal", source: "gmail", timestamp: DB_NOW.toISOString(), title: "Invoice", from: "",
+        matchTextSha256: "d".repeat(64),
+      }],
+    })] });
+
+    await expect(watchRunRepository.listForWatch("watch", "owner", 1))
+      .rejects.toThrow(/commitment does not match/);
   });
 
   it("prunes only bounded, expired, completed zero-match slots", async () => {
@@ -449,6 +465,50 @@ describe("signalRepository.listInWindow", () => {
       expect.stringContaining("timestamp > $2 AND timestamp <= $3"),
       ["owner", WINDOW_START, DB_NOW],
     );
+  });
+
+  it("visits a stable window in bounded deterministic keyset pages", async () => {
+    const first = [
+      {
+        ...slotRow(), id: "10000000-0000-4000-8000-000000000001", timestamp: DB_NOW,
+        page_cursor_timestamp: "2026-09-11 12:00:00+00:00",
+      },
+      {
+        ...slotRow(), id: "10000000-0000-4000-8000-000000000002", timestamp: WINDOW_START,
+        page_cursor_timestamp: "2026-09-11 10:00:00.123456+00:00",
+      },
+    ];
+    const second = [
+      {
+        ...slotRow(), id: "10000000-0000-4000-8000-000000000003", timestamp: WINDOW_START,
+        page_cursor_timestamp: "2026-09-11 10:00:00.000001+00:00",
+      },
+    ];
+    mockClientQuery
+      .mockResolvedValueOnce({ rows: first })
+      .mockResolvedValueOnce({ rows: second });
+    const visited: string[][] = [];
+
+    await signalRepository.visitInWindowPages(
+      "owner",
+      WINDOW_START,
+      DB_NOW,
+      2,
+      (records) => { visited.push(records.map((record) => record.id)); },
+    );
+
+    expect(visited).toEqual([
+      first.map((row) => row.id),
+      second.map((row) => row.id),
+    ]);
+    expect(mockClientQuery).toHaveBeenCalledTimes(2);
+    expect(mockClientQuery.mock.calls[0]![0]).toContain("ORDER BY timestamp DESC, id ASC");
+    expect(mockClientQuery.mock.calls[0]![1]).toEqual([
+      "owner", WINDOW_START, DB_NOW, null, null, 2,
+    ]);
+    expect(mockClientQuery.mock.calls[1]![1]).toEqual([
+      "owner", WINDOW_START, DB_NOW, first[1]!.page_cursor_timestamp, first[1]!.id, 2,
+    ]);
   });
 
   it("bounds replay rows in SQL while reporting the full window count", async () => {
