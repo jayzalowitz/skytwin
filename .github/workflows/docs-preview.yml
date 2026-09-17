@@ -1,0 +1,89 @@
+name: Documentation Preview
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - "README.md"
+      - ".github/workflows/docs-preview.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  package-preview:
+    name: Package viewable documentation preview
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Reject symlinks in Pages source
+        shell: bash
+        run: |
+          set -euo pipefail
+          symlinks="$(find docs -type l -print)"
+          if [[ -n "$symlinks" ]]; then
+            printf 'Pages source must not contain symlinks:\n%s\n' "$symlinks" >&2
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify public documentation semantics and local assets
+        run: pnpm exec vitest run docs/public-docs.test.mjs
+
+      - name: Build the GitHub Pages payload
+        uses: actions/jekyll-build-pages@44a6e6beabd48582f863aeeb6cb2151cc1716697 # v1.0.13
+        with:
+          source: ./docs
+          destination: ./_site
+
+      - name: Verify packaged Pages boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f _site/index.html
+          test -f _site/workflows.html
+          test -f _site/llms.txt
+          test -f _site/assets/demo-current/onboarding-source-demo.png
+
+          symlinks="$(find _site -type l -print)"
+          if [[ -n "$symlinks" ]]; then
+            printf 'Built Pages artifact must not contain symlinks:\n%s\n' "$symlinks" >&2
+            exit 1
+          fi
+
+          unexpected="$(find _site -type f -print | while IFS= read -r file; do
+            relative="${file#_site/}"
+            case "$relative" in
+              agents.html|architecture.html|connect-gmail.html|contributing.html|data.html|deck.html|demo.html|docs.html|faq.html|glossary.html|how-to-use.html|index.html|inference.html|integrations.html|operations.html|privacy.html|reference.html|release.html|safety.html|start.html|terms.html|troubleshooting.html|workflows.html|guides.css|llms.txt|assets/css/style.css|assets/demo-current/*.png) ;;
+              *) printf '%s\n' "$file" ;;
+            esac
+          done)"
+          if [[ -n "$unexpected" ]]; then
+            printf 'Built Pages artifact contains files outside the public allowlist:\n%s\n' "$unexpected" >&2
+            exit 1
+          fi
+
+          find _site -type f -print | LC_ALL=C sort > _site-manifest.txt
+
+      - name: Upload viewable static-site artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: skytwin-documentation-preview
+          path: |
+            _site
+            _site-manifest.txt
+          if-no-files-found: error
+          retention-days: 14

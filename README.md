@@ -2,7 +2,7 @@
 
 # SkyTwin
 
-**A digital twin that learns what you'd want — and does it.**
+**Open-source, local-first software for understanding and governing personal decision automation.**
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
@@ -14,20 +14,36 @@
 
 ---
 
-Every personal assistant today has amnesia. You tell it you prefer aisle seats three times. It asks again. You archive the same newsletter every morning. It keeps notifying you. Every interaction starts from scratch.
+Most assistants start from zero every time. You repeat a preference, explain a risk tolerance, and then re-check whether an automated suggestion is safe. SkyTwin explores a different model: a personal decision system with explicit memory, policy checks, explanations, and controls.
 
-SkyTwin is different. It builds a structured model of your preferences, risk tolerances, and decision patterns — a **digital twin** — then uses that model to act on your behalf. When it's confident, it just handles things. When it's not, it asks the right question instead of the wrong one.
+It builds a structured model of preferences, risk tolerances, and decision patterns—a **digital twin**—so a candidate action can be evaluated against what matters to its owner rather than a generic prompt. The intended product asks for confirmation when it should, and keeps a record of why it stopped or proceeded.
 
 **The core principle: ask the twin before asking the user.**
 
-> **Current supported preview:** use the isolated, account-free sample. Google
-> and Microsoft account connections are unavailable on this surface. SkyTwin does not ship a managed
-> Google OAuth client, and operator/BYO Google remains unsupported until its
-> callback, client-generation, capability, ownership, and secret-custody gates
-> are complete. Known account-backed email/calendar actions are denied before
-> adapter preparation or dispatch while this boundary is active. Stale account
-> capability rows and imported account-backed tool bundles are also withheld
-> from activation. Connector code in the source tree is not a support claim.
+## Start with the right level of detail
+
+| If you want to… | Start here | Then go deeper |
+|---|---|---|
+| Understand the idea without installing anything | [Documentation site](https://jayzalowitz.github.io/skytwin/) | [Plain-language FAQ](https://jayzalowitz.github.io/skytwin/faq.html) and [glossary](https://jayzalowitz.github.io/skytwin/glossary.html) |
+| See the product model safely | [Five-minute fictional-data walkthrough](https://jayzalowitz.github.io/skytwin/how-to-use.html) | [Safety model](https://jayzalowitz.github.io/skytwin/safety.html) and [data guide](https://jayzalowitz.github.io/skytwin/data.html) |
+| Run and inspect the source | [Source start guide](https://jayzalowitz.github.io/skytwin/start.html) | [Operations guide](https://jayzalowitz.github.io/skytwin/operations.html) and [troubleshooting](https://jayzalowitz.github.io/skytwin/troubleshooting.html) |
+| Extend it with tools or agents | [Agent and MCP guide](https://jayzalowitz.github.io/skytwin/agents.html) | [Architecture](https://jayzalowitz.github.io/skytwin/architecture.html) and [reference](https://jayzalowitz.github.io/skytwin/reference.html) |
+
+## Why people may want this
+
+SkyTwin is for people who want to inspect the decision layer before they hand a system any authority. Its intended model is useful when you want all of the following in one place:
+
+- **A memory that can be examined.** Preferences carry evidence, confidence, provenance, and version history instead of being hidden in an opaque chat history.
+- **Automation that has to justify itself.** Candidate actions are checked for policy, trust tier, spend, risk, reversibility, and origin before an execution path is considered.
+- **A useful answer even when the answer is “stop.”** The system is designed to explain what happened, what evidence it considered, and what a person can correct.
+- **A local-first choice.** On-device reasoning and an explicitly selected hosted provider are distinct modes; a local choice is not silently rerouted over the network.
+- **Source you can inspect and adapt.** SkyTwin is Apache-2.0 licensed and has human-facing guides alongside machine-readable references.
+
+## What you can evaluate today
+
+> **Current supported preview:** use the isolated, account-free fictional-data sample in current source. It is the recommended way to evaluate the interaction model, explanations, controls, and boundaries without giving SkyTwin an inbox, credentials, or a provider key. Published unsigned technical-preview installers predate portions of this guarded sample path.
+
+Google and Microsoft account connections are unavailable on the supported surface. SkyTwin does not ship a managed Google OAuth client, and operator/BYO Google remains unsupported until its callback, client-generation, capability, ownership, and secret-custody gates are complete. Known account-backed email/calendar actions are denied before adapter preparation or dispatch while this boundary is active. Stale account capability rows and imported account-backed tool bundles are also withheld from activation. Connector code in the source tree is not a support claim.
 
 The source tree also contains a default-off Gmail archive proposal experiment
 (`SKYTWIN_GMAIL_ARCHIVE_ENABLED=true`) for unsupported account-connected
@@ -36,6 +52,36 @@ approval or rejection, but the response deliberately reports
 `execution: null`: no Gmail mutation caller, recovery worker, or feedback
 projection is wired into runtime yet. Enabling the flag is not an execution or
 release-support claim.
+
+## Start safely in a few minutes
+
+You do not need to connect an inbox, share credentials, or enable an AI provider
+to understand the project. Start with the fictional-data sample in current
+source. It lets you inspect a decision, its explanation, the approval controls,
+and the safety boundaries without external effects.
+
+1. **Choose source over an older download.** The latest source contains the
+   guarded sample path; published unsigned technical-preview installers predate
+   portions of it. The [Start guide](https://jayzalowitz.github.io/skytwin/start.html)
+   explains what the installer changes locally.
+2. **Look at fictional data first.** The sample is intentionally separate from
+   real accounts. Its product views are read-only; its approve/reject/correct
+   interactions are session-local simulations with no provider, connector, or
+   execution-adapter effects.
+3. **Read why an action stopped.** A candidate action is evaluated against
+   policy, trust, spend, risk, reversibility, and provenance. A model suggestion
+   is never the authority to run work.
+4. **Keep the boundary explicit.** Local reasoning does not fall through to a
+   hosted provider. A hosted provider is an explicit network choice. The
+   verified-private boundary admits only explicit interactive TrustedRouter
+   calls after SkyTwin verifies fresh same-session gateway attestation and an
+   exact-byte confidential-route receipt; NEAR AI remains unavailable.
+
+For a plain-language walkthrough, begin with [how to use the fictional sample](https://jayzalowitz.github.io/skytwin/how-to-use.html), then use the [documentation site](https://jayzalowitz.github.io/skytwin/docs.html):
+[how to start](https://jayzalowitz.github.io/skytwin/start.html),
+[how safety works](https://jayzalowitz.github.io/skytwin/safety.html),
+[where inference runs](https://jayzalowitz.github.io/skytwin/inference.html),
+and the [five-minute fictional-data demo](https://jayzalowitz.github.io/skytwin/demo.html).
 
 ## How It Works
 
@@ -415,9 +461,16 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 | Document | What's Inside |
 |----------|---------------|
+| [How to Use the Fictional Sample](https://jayzalowitz.github.io/skytwin/how-to-use.html) | A plain-language, screenshot-led tour of the current source development sample. It identifies its fictional data and distinguishes it from published technical-preview installers. |
+| [FAQ and Glossary](https://jayzalowitz.github.io/skytwin/faq.html) | Direct answers and defined terms for preview status, safety, privacy, inference, agents, and the release boundary. |
+| [Data and Memory Guide](https://jayzalowitz.github.io/skytwin/data.html) | Current storage disclosure, credential separation, backup/restore semantics, memory backends, and control boundaries. |
+| [Integration Status](https://jayzalowitz.github.io/skytwin/integrations.html) | What is available in the fictional sample, how local MCP and admitted execution differ, and which connector or DXT surfaces remain unavailable or forward-looking. |
+| [Troubleshooting](https://jayzalowitz.github.io/skytwin/troubleshooting.html) | Source-run baseline checks, migrations, seeding, local build recovery, ports, and safe issue-reporting guidance. |
+| [Documentation Site](https://jayzalowitz.github.io/skytwin/docs.html) | Human evaluation guides plus architecture, safety, inference/privacy, MCP-agent, operations, release-evidence, and contribution references. The Pages site is source-first; GitHub remains canonical for implementation details. |
+| [Versioned Workflows](https://jayzalowitz.github.io/skytwin/workflows.html) | Public guide to teaching, replaying, explicitly activating, immutably revising, and rolling back the current read-only signal-digest workflow; the full source contract remains in [Adaptive Workflows](./docs/adaptive-workflows.md). |
 | [The Deck](https://jayzalowitz.github.io/skytwin/deck.html) | 22 slides: every capability claim paired with the mechanism that constrains it. Each claim-and-gate slide carries a collapsible source block citing the file and lines it came from; the "why now" and positioning slides cite external sources instead, and three narrative slides carry no citation block ([source](./docs/deck.html)) |
 | [Product Spec](./docs/product-spec.md) | Vision, target user, operating principles, example workflows |
-| [Adaptive Workflows](./docs/adaptive-workflows.md) | Teach, replay, activate, revise, roll back, and operate immutable signal-digest workflows |
+| [Adaptive Workflows](./docs/adaptive-workflows.md) | Canonical source contract for immutable signal-digest workflows, model qualification, exact run evidence, backup/restore, and CockroachDB invariants |
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
 | [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, decision-event capture, developer verifier, trust boundary, and current UI/export limitations |

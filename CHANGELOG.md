@@ -1,5 +1,50 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.105.0] - 2026-09-16
+
+### Added
+
+- **You can evaluate SkyTwin from a public, source-grounded documentation site
+  before connecting an account.** New start, walkthrough, workflow, inference,
+  data, integration, safety, operations, contributor, agent, FAQ, glossary, and
+  reference pages explain the fictional sample and link back to canonical
+  source contracts. Fresh audited captures show onboarding, briefing, decision
+  history, settings, and the fail-closed Watches cold start.
+- **Pull requests now produce the same viewable Pages payload the project would
+  publish.** The documentation preview builds Jekyll output from the synthetic
+  merge commit, rejects source or artifact symlinks, excludes internal evidence
+  files, checks public semantics and local links, and uploads only the bounded
+  static site plus its manifest.
+
+### Changed
+
+- **The public guides now reflect current adaptive-workflow, inference, memory,
+  and CockroachDB boundaries.** They distinguish ordinary local inference from
+  workflow-authoring qualification, interactive fail-closed TrustedRouter from
+  unavailable NEAR AI, SkyTwin's CRDB-native gbrain-compatible backend from the
+  opt-in upstream CLI adapter, and portable workflow state from installation-
+  local Watch run evidence.
+
+### Fixed (post-review)
+
+- **The disposable sample no longer makes credential-inventory or OAuth-status
+  requests it is not authorized to read.** Its dashboard substitutes explicit
+  empty credential states while normal user profiles retain all three requests;
+  a regression test covers both sides of the boundary.
+- **The walkthrough no longer implies that sample credentials can open Settings
+  or Watches.** It directs evaluators to leave the sample and select the seeded
+  development profile before inspecting full-product controls.
+- **The preview workflow and public claims now pass their executable gates.** A
+  malformed shell terminator was corrected, backup v6 no longer claims to carry
+  exact Watch run evidence, and README describes the admitted interactive
+  TrustedRouter path instead of declaring every attested route unavailable.
+- **Twin MCP guidance and results now expose their real boundary.** A dispatched
+  registered handler attempts a provenance write, but schema-invalid, unknown,
+  or scope-hidden calls never reach that hook. The proposal tool reports its
+  record as non-executing instead of claiming it entered the approval queue,
+  and memory results mask exact PII-named fields plus embedded email addresses
+  without promising a general free-text secret scanner.
+
 ## [0.6.104.0] - 2026-09-16
 
 ### Added

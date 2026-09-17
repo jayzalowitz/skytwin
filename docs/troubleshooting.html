@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Troubleshooting a local source run — SkyTwin</title>
+    <meta
+      name="description"
+      content="Practical checks for installing, running, building, and evaluating SkyTwin from source."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/troubleshooting.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a href="start.html">Start</a><a href="how-to-use.html">How to use</a
+          ><a href="docs.html">Docs</a><a href="agents.html">Agents</a
+          ><a class="keep" href="https://github.com/jayzalowitz/skytwin"
+            >GitHub</a
+          >
+        </div>
+      </div>
+    </nav>
+    <main class="wrap page">
+      <aside class="toc">
+        <p>Troubleshooting</p>
+        <a href="#baseline">Baseline checks</a
+        ><a href="#database">Database and seed</a
+        ><a href="#build">Build outputs</a
+        ><a href="#ports">Ports and services</a
+        ><a href="#report">Before reporting</a>
+      </aside>
+      <article class="content">
+        <p class="eyebrow">Source-run troubleshooting</p>
+        <span class="status">Developer workflow</span>
+        <h1>Prove the local boundary before debugging the product.</h1>
+        <p class="lede">
+          These are source-development checks, not instructions for a supported
+          installer. Keep real accounts disconnected while you diagnose a local
+          run.
+        </p>
+        <h2 id="baseline">Baseline checks</h2>
+        <ol class="steps">
+          <li>
+            <strong>Confirm the toolchain.</strong> Use Node 20 or newer and the
+            repository’s pnpm workspace. Install dependencies with
+            <code>pnpm install</code>.
+          </li>
+          <li>
+            <strong>Build before a broad dev run.</strong> A serial build avoids
+            a documented local Turbo race on generated database declarations.
+            <pre><code>pnpm build --concurrency=1</code></pre>
+          </li>
+          <li>
+            <strong>Start only what you need.</strong> For a dashboard
+            evaluation, the API and web app can be run individually after the
+            build.
+            <pre><code>pnpm --filter @skytwin/api dev<br>pnpm --filter @skytwin/web dev</code></pre>
+          </li>
+        </ol>
+        <h2 id="database">Database and fictional sample</h2>
+        <p>
+          Run migrations before seeding. The sample is a development fixture
+          with fictional people and records, separate from the packaged
+          read-only sample authority.
+        </p>
+        <pre><code>pnpm db:migrate<br>pnpm db:seed</code></pre>
+        <p>
+          If seeding fails because a table is missing, migrations did not
+          finish. Re-run the migration command and verify its successful
+          completion before starting another seed. Do not create tables
+          manually.
+        </p>
+        <h2 id="build">Stale local build outputs</h2>
+        <p>
+          After rebasing, a package can have an old local
+          <code>dist/</code> directory even when its source export is correct.
+          If TypeScript says a shared type is missing, rebuild that package and
+          inspect the generated output:
+        </p>
+        <pre><code>rm -rf packages/shared-types/dist packages/shared-types/tsconfig.tsbuildinfo<br>pnpm --filter @skytwin/shared-types build<br>grep '&lt;EXPORT_NAME&gt;' packages/shared-types/dist/index.js</code></pre>
+        <p>
+          If a full build reports an API declaration mismatch that clearly
+          exists in <code>packages/db</code>, use the serial build above. This
+          local-worktree workaround does not weaken CI’s clean-install check.
+        </p>
+        <h2 id="ports">Ports and services</h2>
+        <p>
+          The local API health endpoint is
+          <code>http://localhost:3100/api/health</code>; the dashboard normally
+          serves from <code>http://localhost:3200</code>. If a port is already
+          occupied, stop the conflicting local process or use the documented
+          development port overrides. Do not point a troubleshooting run at
+          production data or a remote database.
+        </p>
+        <h2 id="report">Before reporting an issue</h2>
+        <p>
+          Include the exact command, the first error, your OS and Node version,
+          and whether the fictional sample or a real account was involved.
+          Remove tokens, cookies, database URLs, private records, and
+          screenshots containing personal data. For release claims, compare the
+          observation with the <a href="release.html">release guide</a> and
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
+            >claim ledger</a
+          >.
+        </p>
+        <p class="footnotes">
+          <a href="start.html">Start guide</a> ·
+          <a href="operations.html">Operations</a> ·
+          <a href="contributing.html">Contributing</a>
+        </p>
+      </article>
+    </main>
+    <footer class="wrap">
+      <p>
+        SkyTwin is Apache-2.0 open source. Questions or security reports:
+        <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue</a
+        >.
+      </p>
+    </footer>
+  </body>
+</html>

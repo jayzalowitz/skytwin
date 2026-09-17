@@ -380,6 +380,8 @@ function formatDashboardTime(d) {
 }
 
 export async function renderDashboard(container, userId) {
+  const tourMode = isSampleMode();
+
   // Fast-changing data — refetched on every render because SSE updates
   // and user action move them around constantly.
   // Slow-changing data — wrapped in slowFetch so a 4s first-scan tick or
@@ -394,9 +396,9 @@ export async function renderDashboard(container, userId) {
     slowFetch(`skill-gaps-${userId}`, fetchSkillGaps, [userId]),
     fetchTrustProgress(userId),
     slowFetch(`learned-${userId}`, fetchLearned, [userId]),
-    slowFetch('unmet-creds', fetchUnmetCredentials, []),
-    slowFetch(`oauth-google-${userId}`, fetchOAuthStatus, [userId, 'google']),
-    slowFetch('creds-status', fetchCredentialsStatus, []),
+    tourMode ? Promise.resolve({ unmet: [] }) : slowFetch('unmet-creds', fetchUnmetCredentials, []),
+    tourMode ? Promise.resolve({ connected: false, scopes: [] }) : slowFetch(`oauth-google-${userId}`, fetchOAuthStatus, [userId, 'google']),
+    tourMode ? Promise.resolve({ google: { configured: false } }) : slowFetch('creds-status', fetchCredentialsStatus, []),
     fetchBriefing(userId),
     fetchLatestTwinBriefing(userId, 'daily').catch(() => null),
     slowFetch(`lifebooks-${userId}`, fetchLifebooks, [userId]),
@@ -460,8 +462,6 @@ export async function renderDashboard(container, userId) {
   const overallConf = conf?.overallConfidence ?? 0;
   const confLabel = overallConf >= 75 ? 'Very confident' : overallConf >= 50 ? 'Getting there' : overallConf >= 25 ? 'Still learning' : 'Just started';
   const confClass = overallConf >= 75 ? 'high' : overallConf >= 50 ? 'moderate' : overallConf >= 25 ? 'low' : 'speculative';
-
-  const tourMode = isSampleMode();
 
   // First-run "needs a brain" prompt. Two prerequisites are cheap and
   // already known here: tour mode (always-off) and recentDecisions

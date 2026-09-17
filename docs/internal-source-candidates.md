@@ -83,7 +83,9 @@ A compatible local model and llama.cpp runtime are separate prerequisites and
 are not bundled. Hosted providers remain opt-in. Local-first must not be
 shortened to offline, no-cloud, or no-network: configured integrations, model
 downloads, updates, and diagnostics may use the network. Verified-private
-inference remains unavailable until its production provider and verifier exist.
+inference is provider-specific: explicit interactive TrustedRouter calls are
+admitted only after the pinned same-session verifier and exact-byte receipt
+checks pass, while NEAR AI remains verification-pending and unavailable.
 
 The machine-checked beta claim ledger stays authoritative. A source candidate
 does not change claim states, supported platforms, stop-ship conditions, signing

@@ -424,7 +424,7 @@ const CANONICAL_STOP_SHIP_CONDITIONS = new Map([
     {
       owner: "inference-security",
       condition:
-        "On-device, verified-private, and conventional provider modes are explicit; verified-private admission remains unavailable until a production attestation-backed provider and verifier persist independently verifiable receipts",
+        "On-device, verified-private, and conventional provider modes are explicit; the release-wide verified-private claim remains blocked until a tagged production build proves credentialed provider verification, independently verifiable receipt persistence, and stable receipt export",
     },
   ],
   [
@@ -689,6 +689,11 @@ const CANONICAL_PUBLIC_BINARY_ASSETS = new Map([
   ["apps/mobile/assets/icon.png", "reviewed-no-text"],
   ["apps/mobile/assets/notification-icon.png", "reviewed-no-text"],
   ["apps/mobile/assets/splash.png", "reviewed-no-text"],
+  ["docs/assets/demo-current/approvals-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/decisions-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/onboarding-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/settings-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/watches-source-demo.png", "reviewed-current-source"],
   ["docs/screenshots/approvals.png", "prohibited-stale"],
   ["docs/screenshots/briefing.png", "prohibited-stale"],
   ["docs/screenshots/dashboard.png", "prohibited-stale"],
@@ -730,6 +735,26 @@ const CANONICAL_PUBLIC_BINARY_DIGESTS = new Map([
   [
     "apps/mobile/assets/splash.png",
     "5588814424f5655372944a711bb59e5a58e18ef8adef5571372ee407115e3c5a",
+  ],
+  [
+    "docs/assets/demo-current/approvals-source-demo.png",
+    "5a6c80819fda559a7efd01065d76c04985561eeefa888a04d82f6845d0f03192",
+  ],
+  [
+    "docs/assets/demo-current/decisions-source-demo.png",
+    "68d2ef656e1c1469a1925b686c9580c3bbe6641bef115281dfc1caf648111be1",
+  ],
+  [
+    "docs/assets/demo-current/onboarding-source-demo.png",
+    "9f2334502c9739dfdd36d0e0fd951552122e09159f3db04106d012b38d9e9b73",
+  ],
+  [
+    "docs/assets/demo-current/settings-source-demo.png",
+    "68829335df381ca57eae2211c4d59065a40f200abc5a920cd91946335210a1b4",
+  ],
+  [
+    "docs/assets/demo-current/watches-source-demo.png",
+    "f001a766a4f301c9ce38823fe0f4494d8d9c4607e423fecfa6c6329b751756fd",
   ],
   [
     "docs/screenshots/approvals.png",
@@ -4591,7 +4616,7 @@ export function validateLedgerShape(
 
   const binaryEntries = asArray(ledger?.publicBinaryAssets);
   if (
-    ledger?.binaryAssetAudit?.reviewedOn !== "2026-09-10" ||
+    ledger?.binaryAssetAudit?.reviewedOn !== "2026-09-16" ||
     ledger?.binaryAssetAudit?.method !==
       "Tesseract OCR plus human inspection at each recorded SHA-256; any byte change requires a new review" ||
     !isNonEmptyString(ledger?.binaryAssetAudit?.scope)

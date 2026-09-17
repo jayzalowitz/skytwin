@@ -34,7 +34,14 @@ baseurl: /skytwin
 # contradicting account of the same facts on the same origin. Keep them
 # GitHub-only.
 exclude:
+  # Technical Markdown stays on GitHub. Keep this glob current as new source
+  # references are added; the Pages site is the reviewed HTML surface.
+  - "*.md"
   - screenshots
+  - public-docs.test.mjs
+  - beta-claim-ledger.json
+  - grafana
+  - security
   - architecture-philosophy.md
   - cockroach-architecture.md
   - decision-engine.md
