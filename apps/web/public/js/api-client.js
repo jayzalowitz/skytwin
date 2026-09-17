@@ -878,9 +878,15 @@ export async function fetchAdaptiveWorkflowReadiness(userId) {
   }
 }
 
-export function createAdaptiveSignalDigestDraft(userId, description, allowClarification = true) {
+export function createAdaptiveSignalDigestDraft(
+  userId,
+  description,
+  allowClarification = true,
+  idempotencyKey,
+) {
   return fetchJSON(`${API}/adaptive-workflows/${encodeURIComponent(userId)}/signal-digest-drafts`, {
     method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
     body: JSON.stringify({ description, allowClarification }),
   });
 }
@@ -897,21 +903,35 @@ export function fetchAdaptiveWorkflowResumableDraft(userId) {
   );
 }
 
-export function createAdaptiveWorkflowRevision(userId, workflowId, parentVersionId, payload) {
+export function createAdaptiveWorkflowRevision(
+  userId,
+  workflowId,
+  parentVersionId,
+  payload,
+  idempotencyKey,
+) {
   return fetchJSON(
     `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/revisions`,
     {
       method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
       body: JSON.stringify({ parentVersionId, payload }),
     },
   );
 }
 
-export function createAdaptiveWorkflowFeedbackRevision(userId, workflowId, parentVersionId, feedback) {
+export function createAdaptiveWorkflowFeedbackRevision(
+  userId,
+  workflowId,
+  parentVersionId,
+  feedback,
+  idempotencyKey,
+) {
   return fetchJSON(
     `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/feedback-revisions`,
     {
       method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
       body: JSON.stringify({ parentVersionId, feedback }),
     },
   );

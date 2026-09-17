@@ -12,6 +12,7 @@ const PROPOSAL_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000005';
 const EVENT_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000006';
 const REVISION_VERSION_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000007';
 const REVISION_PROPOSAL_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000008';
+const MUTATION_ID = 'aaaaaaaa-bbbb-cccc-dddd-000000000009';
 
 const now = new Date('2026-09-16T12:00:00.000Z');
 const payload = {
@@ -123,6 +124,7 @@ async function request(
   method: string,
   path: string,
   body?: unknown,
+  includeIdempotencyKey = true,
 ): Promise<{ status: number; body: unknown }> {
   return new Promise((resolve, reject) => {
     const server = app.listen(0, () => {
@@ -132,7 +134,13 @@ async function request(
         reject(new Error('Could not determine test server port'));
         return;
       }
-      const options: RequestInit = { method, headers: { 'Content-Type': 'application/json' } };
+      const options: RequestInit = {
+        method,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(includeIdempotencyKey ? { 'Idempotency-Key': MUTATION_ID } : {}),
+        },
+      };
       if (body !== undefined) options.body = JSON.stringify(body);
       fetch(`http://127.0.0.1:${address.port}${path}`, options)
         .then(async (response) => {
@@ -229,6 +237,19 @@ describe('adaptive workflow routes', () => {
       { description: '  ' },
     );
     expect(response.status).toBe(400);
+    expect(service.authorSignalDigestDraft).not.toHaveBeenCalled();
+  });
+
+  it('requires a durable mutation identity before invoking authoring', async () => {
+    const response = await request(
+      buildApp(service),
+      'POST',
+      `/api/adaptive-workflows/${USER_ID}/signal-digest-drafts`,
+      { description: 'Every morning summarize Gmail invoices.' },
+      false,
+    );
+    expect(response.status).toBe(400);
+    expect(response.body).toEqual({ error: 'Idempotency-Key must be a UUID' });
     expect(service.authorSignalDigestDraft).not.toHaveBeenCalled();
   });
 
@@ -355,6 +376,7 @@ describe('adaptive workflow routes', () => {
       workflowId: WORKFLOW_ID,
       parentVersionId: VERSION_ID,
       payload: revisionPayload,
+      idempotencyKey: MUTATION_ID,
     });
   });
 
@@ -392,6 +414,7 @@ describe('adaptive workflow routes', () => {
       workflowId: WORKFLOW_ID,
       parentVersionId: VERSION_ID,
       feedback: 'Also include receipts.',
+      idempotencyKey: MUTATION_ID,
     });
 
     const rejected = await request(
@@ -693,7 +716,9 @@ describe('adaptive workflow service composition', () => {
       }),
     };
     const repository = {
-      createDraftWithProposal: vi.fn().mockResolvedValue({ workflow, version, proposal }),
+      createDraftWithProposal: vi.fn().mockResolvedValue({
+        success: true, workflow, version, proposal,
+      }),
       createVersionWithProposal: vi.fn(),
       getForUser: vi.fn(), listForUser: vi.fn(), getVersionForUser: vi.fn(),
       listVersionsForUser: vi.fn(), listProposalsForUser: vi.fn(),
@@ -721,6 +746,7 @@ describe('adaptive workflow service composition', () => {
     const result = await service.authorSignalDigestDraft({
       userId: USER_ID,
       description: 'Every morning summarize Gmail invoices.',
+      idempotencyKey: MUTATION_ID,
     });
 
     expect(result).toMatchObject({
@@ -827,6 +853,7 @@ describe('adaptive workflow service composition', () => {
       workflowId: WORKFLOW_ID,
       parentVersionId: VERSION_ID,
       payload: revisionPayload,
+      idempotencyKey: MUTATION_ID,
     });
 
     expect(result).toMatchObject({
@@ -897,7 +924,9 @@ describe('adaptive workflow service composition', () => {
       }),
     };
     const repository = {
-      createDraftWithProposal: vi.fn().mockResolvedValue({ workflow, version, proposal }),
+      createDraftWithProposal: vi.fn().mockResolvedValue({
+        success: true, workflow, version, proposal,
+      }),
       createVersionWithProposal: vi.fn(),
       getForUser: vi.fn(), listForUser: vi.fn(), getVersionForUser: vi.fn(),
       listVersionsForUser: vi.fn(),
@@ -915,6 +944,7 @@ describe('adaptive workflow service composition', () => {
     await expect(service.authorSignalDigestDraft({
       userId: USER_ID,
       description: 'Every morning summarize Gmail invoices.',
+      idempotencyKey: MUTATION_ID,
     })).resolves.toMatchObject({
       success: true,
       proposal: { id: PROPOSAL_ID },

@@ -13,6 +13,7 @@ import {
   createAdaptiveWorkflowFeedbackRevision,
   activateAdaptiveWorkflow,
   rollbackAdaptiveWorkflow,
+  createClientRequestId,
   escapeHtml,
   renderApiError,
   wireApiRetry,
@@ -49,7 +50,18 @@ let _state = {
   rollbackError: '',
   deleteConfirmation: null,
   deleteError: '',
+  authoringMutation: null,
 };
+
+function authoringMutationKey(kind, fingerprint) {
+  if (_state.authoringMutation?.kind === kind
+      && _state.authoringMutation.fingerprint === fingerprint) {
+    return _state.authoringMutation.key;
+  }
+  const mutation = { kind, fingerprint, key: createClientRequestId() };
+  _state.authoringMutation = mutation;
+  return mutation.key;
+}
 
 function getCurrentUserId() {
   return getEffectiveUserId() || _state.userId || '';
@@ -102,6 +114,7 @@ function ensureListener() {
     _state.previewError = '';
     _state.clarificationQuestion = '';
     _state.warning = '';
+    _state.authoringMutation = null;
     persistComposerDraft(getCurrentUserId(), _state.draftText);
   });
 
@@ -164,6 +177,7 @@ function ensureListener() {
       _state.previewError = '';
       _state.clarificationQuestion = '';
       _state.warning = '';
+      _state.authoringMutation = null;
       persistComposerDraft(getCurrentUserId(), text);
       paint();
       focusComposer();
@@ -200,6 +214,7 @@ export async function renderWatches(container, userId) {
     _state.rollbackError = '';
     _state.deleteConfirmation = null;
     _state.deleteError = '';
+    _state.authoringMutation = null;
     _interactionRevision += 1;
   }
   // A route re-entry invalidates every earlier generation. Do not carry an
@@ -849,6 +864,7 @@ function resetComposer({ preservePrimaryDraft = false } = {}) {
   _state.previewError = '';
   _state.clarificationQuestion = '';
   _state.warning = '';
+  _state.authoringMutation = null;
   _state.editingWatchId = null;
   clearAdaptiveEdit(userId);
   if (!preservePrimaryDraft) writeDraft(userId, '');
@@ -909,6 +925,10 @@ async function handleAdaptiveAuthor(text) {
       userId,
       text,
       _state.clarificationCount === 0,
+      authoringMutationKey(
+        'initial',
+        JSON.stringify([text, _state.clarificationCount === 0]),
+      ),
     );
     if (!isOperationCurrent(operation)) return;
     if (!result?.success) {
@@ -917,6 +937,7 @@ async function handleAdaptiveAuthor(text) {
       throw error;
     }
     _state.adaptiveCandidate = adaptiveCandidateFromResult(result, 'initial');
+    _state.authoringMutation = null;
     _state.clarificationCount = 0;
     _state.clarificationQuestion = '';
   } catch (err) {
@@ -950,6 +971,10 @@ async function handleAdaptiveRevision(text) {
       edit.workflowId,
       edit.parentVersionId,
       text,
+      authoringMutationKey(
+        'feedback',
+        JSON.stringify([edit.workflowId, edit.parentVersionId, text]),
+      ),
     );
     if (!isOperationCurrent(operation)) return;
     if (!result?.success) {
@@ -958,6 +983,7 @@ async function handleAdaptiveRevision(text) {
       throw error;
     }
     _state.adaptiveCandidate = adaptiveCandidateFromResult(result, 'revision');
+    _state.authoringMutation = null;
     _state.clarificationQuestion = '';
   } catch (err) {
     if (!isOperationCurrent(operation)) return;

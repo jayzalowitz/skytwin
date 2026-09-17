@@ -247,6 +247,7 @@ export {
   watchRepository,
   watchRunRepository,
   workflowRepository,
+  WorkflowProposalIdempotencyConflictError,
   workflowWatchProjectionRepository,
   legacyWatchWorkflowReconciliationRepository,
   executionAdmissionRepository,

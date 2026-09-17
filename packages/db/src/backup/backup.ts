@@ -94,7 +94,8 @@ import { databaseSafeInteger } from '../repositories/database-values.js';
  * makes older readers reject archives they would otherwise accept while
  * silently dropping user-authored behavior.
  */
-export const BACKUP_SCHEMA_VERSION = 5;
+export const BACKUP_SCHEMA_VERSION = 6;
+const WORKFLOW_BACKUP_SCHEMA_VERSION = 5;
 const EXECUTION_BACKUP_SCHEMA_VERSION = 4;
 const INGEST_BACKUP_SCHEMA_VERSION = 3;
 const RECEIPT_BACKUP_SCHEMA_VERSION = 2;
@@ -169,6 +170,8 @@ export interface WorkflowProposalBackupRecord {
   baseVersionId: string | null;
   proposedVersionId: string;
   kind: WorkflowProposalKind;
+  idempotencyKey: string | null;
+  requestHash: string | null;
   createdAt: string;
 }
 
@@ -233,7 +236,7 @@ export interface BackupData {
   twinProfileVersions: TwinProfileVersionRow[];
   preferences: PreferenceRow[];
   decisions: DecisionBundle[];
-  /** Required in schema v5. Older archives omit adaptive workflows entirely. */
+  /** Required since schema v5. Older archives omit adaptive workflows entirely. */
   workflows?: WorkflowBackupBundle[];
   /**
    * Connector identities, OAuth credentials, cursors, raw signals, and Gmail
@@ -360,6 +363,8 @@ interface WorkflowProposalBackupRow {
   base_version_id: string | null;
   proposed_version_id: string;
   kind: WorkflowProposalKind;
+  idempotency_key: string | null;
+  request_hash: string | null;
   created_at: Date;
 }
 
@@ -473,6 +478,8 @@ async function collectWorkflows(client: PoolClient, userId: string): Promise<Wor
       baseVersionId: proposal.base_version_id,
       proposedVersionId: proposal.proposed_version_id,
       kind: proposal.kind,
+      idempotencyKey: proposal.idempotency_key ?? null,
+      requestHash: proposal.request_hash ?? null,
       createdAt: proposal.created_at.toISOString(),
     })),
     activationEvents: (eventsByWorkflow.get(workflow.id) ?? []).map((event) => ({
@@ -807,17 +814,18 @@ function validateWorkflowBackups(
   uuid: RegExp,
 ): string[] {
   const problems: string[] = [];
-  const carriesWorkflows = data.schemaVersion === BACKUP_SCHEMA_VERSION;
+  const carriesWorkflows = data.schemaVersion === BACKUP_SCHEMA_VERSION
+    || data.schemaVersion === WORKFLOW_BACKUP_SCHEMA_VERSION;
   const knownOlderSchema = data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
     data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION ||
     data.schemaVersion === RECEIPT_BACKUP_SCHEMA_VERSION ||
     data.schemaVersion === LEGACY_BACKUP_SCHEMA_VERSION;
   if (carriesWorkflows && !Array.isArray(data.workflows)) {
-    return [`workflows is required by schema version ${BACKUP_SCHEMA_VERSION}`];
+    return [`workflows is required by schema version ${data.schemaVersion}`];
   }
   if (knownOlderSchema && data.workflows !== undefined &&
       (!Array.isArray(data.workflows) || data.workflows.length > 0)) {
-    return [`workflows requires schema version ${BACKUP_SCHEMA_VERSION}`];
+    return [`workflows requires schema version ${WORKFLOW_BACKUP_SCHEMA_VERSION} or later`];
   }
   if (!Array.isArray(data.workflows)) return problems;
 
@@ -941,6 +949,16 @@ function validateWorkflowBackups(
       }
       const proposal = rawProposal as unknown as WorkflowProposalBackupRecord;
       proposals.push(proposal);
+      const idempotencyKey = proposal.idempotencyKey ?? null;
+      const requestHash = proposal.requestHash ?? null;
+      const idempotencyShapeValid =
+        (idempotencyKey === null && requestHash === null)
+        || (typeof idempotencyKey === 'string' && uuid.test(idempotencyKey)
+          && typeof requestHash === 'string' && /^[0-9a-f]{64}$/u.test(requestHash));
+      const currentIdempotencyFieldsPresent =
+        data.schemaVersion !== BACKUP_SCHEMA_VERSION
+        || (Object.hasOwn(rawProposal, 'idempotencyKey')
+          && Object.hasOwn(rawProposal, 'requestHash'));
       const proposedVersion = versionById.get(proposal.proposedVersionId);
       const proposalBaseShapeValid =
         ((proposal.kind === 'initial' || proposal.kind === 'import')
@@ -953,7 +971,7 @@ function validateWorkflowBackups(
           !proposedVersion || proposedVersion.parentVersionId !== proposal.baseVersionId ||
           proposedVersions.has(proposal.proposedVersionId) ||
           !['initial', 'edit', 'feedback', 'import'].includes(proposal.kind) ||
-          !proposalBaseShapeValid ||
+          !proposalBaseShapeValid || !idempotencyShapeValid || !currentIdempotencyFieldsPresent ||
           !isIsoInstant(proposal.createdAt)) {
         problems.push(`${prefix}.proposals[${proposalIndex}] has invalid linkage or ownership`);
       }
@@ -1151,6 +1169,7 @@ export function validateBackupData(value: unknown): string[] {
         problems.push(`decisions[${index}].executionPlans is not an array`);
       }
       const carriesExecutionMetadata = data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+        data.schemaVersion === WORKFLOW_BACKUP_SCHEMA_VERSION ||
         data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION;
       if (!carriesExecutionMetadata && bundle.executionPlans !== undefined) {
         problems.push(
@@ -1192,6 +1211,7 @@ export function validateBackupData(value: unknown): string[] {
         problems.push(`decisions[${index}] has inconsistent outcome linkage`);
       }
       if ((data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+          data.schemaVersion === WORKFLOW_BACKUP_SCHEMA_VERSION ||
           data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
           data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION ||
           data.schemaVersion === RECEIPT_BACKUP_SCHEMA_VERSION) &&
@@ -1246,6 +1266,7 @@ export function validateBackupData(value: unknown): string[] {
         }
       }
       const carriesIngestState = data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+        data.schemaVersion === WORKFLOW_BACKUP_SCHEMA_VERSION ||
         data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
         data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION;
       if (carriesIngestState && bundle.ingestState === undefined) {
@@ -1562,6 +1583,7 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
   const data = value as BackupData;
 
   if (data.schemaVersion !== BACKUP_SCHEMA_VERSION &&
+      data.schemaVersion !== WORKFLOW_BACKUP_SCHEMA_VERSION &&
       data.schemaVersion !== EXECUTION_BACKUP_SCHEMA_VERSION &&
       data.schemaVersion !== INGEST_BACKUP_SCHEMA_VERSION &&
       data.schemaVersion !== RECEIPT_BACKUP_SCHEMA_VERSION &&
@@ -1569,7 +1591,7 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
     return {
       success: false,
       reason: 'unsupported_schema',
-      message: `backup schema version ${data.schemaVersion} is not supported by this build (expected ${LEGACY_BACKUP_SCHEMA_VERSION}, ${RECEIPT_BACKUP_SCHEMA_VERSION}, ${INGEST_BACKUP_SCHEMA_VERSION}, ${EXECUTION_BACKUP_SCHEMA_VERSION}, or ${BACKUP_SCHEMA_VERSION})`,
+      message: `backup schema version ${data.schemaVersion} is not supported by this build (expected ${LEGACY_BACKUP_SCHEMA_VERSION}, ${RECEIPT_BACKUP_SCHEMA_VERSION}, ${INGEST_BACKUP_SCHEMA_VERSION}, ${EXECUTION_BACKUP_SCHEMA_VERSION}, ${WORKFLOW_BACKUP_SCHEMA_VERSION}, or ${BACKUP_SCHEMA_VERSION})`,
     };
   }
 
@@ -1652,8 +1674,8 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         await client.query(
           `INSERT INTO workflow_proposals (
              id, workflow_id, user_id, base_version_id,
-             proposed_version_id, kind, created_at
-           ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+             proposed_version_id, kind, idempotency_key, request_hash, created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [
             proposal.id,
             proposal.workflowId,
@@ -1661,6 +1683,8 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
             proposal.baseVersionId,
             proposal.proposedVersionId,
             proposal.kind,
+            proposal.idempotencyKey ?? null,
+            proposal.requestHash ?? null,
             proposal.createdAt,
           ],
         );
@@ -1953,6 +1977,7 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
             // V4 carries only sanitized plan metadata. Older archives retain
             // replay classification in the ingest guard without a dangling FK.
             (data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+              data.schemaVersion === WORKFLOW_BACKUP_SCHEMA_VERSION ||
               data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION)
               ? o.execution_plan_id ?? null
               : null,
@@ -1963,6 +1988,7 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
       }
       const state = bundle.ingestState;
       const carriesIngestState = data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+        data.schemaVersion === WORKFLOW_BACKUP_SCHEMA_VERSION ||
         data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
         data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION;
       if (carriesIngestState &&

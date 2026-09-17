@@ -11,7 +11,10 @@ vi.mock('../connection.js', () => ({
   withTransaction: withTransactionMock,
 }));
 
-const { workflowRepository } = await import('../repositories/workflow-repository.js');
+const {
+  workflowRepository,
+  WorkflowProposalIdempotencyConflictError,
+} = await import('../repositories/workflow-repository.js');
 
 const now = new Date('2026-09-16T12:00:00.000Z');
 const userId = '10000000-0000-4000-8000-000000000001';
@@ -123,6 +126,90 @@ describe('workflowRepository', () => {
       kind: 'initial',
     });
     expect(withTransactionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns the original draft after an ambiguous response retry with the same mutation', async () => {
+    const key = '40000000-0000-4000-8000-000000000001';
+    const draftWorkflow = { ...workflowRow, active_version_id: null };
+    let proposalRow: Record<string, unknown> | null = null;
+    clientQueryMock.mockImplementation(async (sql: string, params: unknown[]) => {
+      if (sql.includes('INSERT INTO workflows')) {
+        return { rows: [{ ...draftWorkflow, id: params[0] as string }] };
+      }
+      if (sql.includes('INSERT INTO workflow_versions')) return { rows: [{
+        id: params[0], workflow_id: params[1], user_id: params[2], version_number: 1,
+        provider_key: params[4], provider_schema_version: params[5],
+        canonical_payload: JSON.parse(params[6] as string), content_hash: params[7],
+        parent_version_id: null, authoring_metadata: JSON.parse(params[9] as string),
+        inference_metadata: null, created_at: now,
+      }] };
+      if (sql.includes('INSERT INTO workflow_proposals')) {
+        proposalRow = {
+          id: params[0], workflow_id: params[1], user_id: params[2],
+          base_version_id: null, proposed_version_id: params[3], kind: params[4],
+          idempotency_key: params[5], request_hash: params[6], created_at: now,
+        };
+        throw Object.assign(new Error('response lost after a concurrent commit'), { code: '23505' });
+      }
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+    queryMock.mockImplementation(async (sql: string) => {
+      if (sql.includes('FROM workflow_proposals')) return { rows: [proposalRow] };
+      if (sql.includes('FROM workflows')) return { rows: [draftWorkflow] };
+      if (sql.includes('FROM workflow_versions')) return { rows: [{
+        id: proposalRow?.['proposed_version_id'], workflow_id: workflowId, user_id: userId,
+        version_number: 1, provider_key: 'signal_digest.v1', provider_schema_version: '1',
+        canonical_payload: { keywords: ['invoice'] }, content_hash: 'a'.repeat(64),
+        parent_version_id: null, authoring_metadata: authoring,
+        inference_metadata: null, created_at: now,
+      }] };
+      throw new Error(`unexpected SQL: ${sql}`);
+    });
+
+    const created = await workflowRepository.createDraftWithProposal({
+      userId,
+      providerKey: 'signal_digest.v1',
+      providerSchemaVersion: '1',
+      payload: { keywords: ['invoice'] },
+      authoring,
+      idempotencyKey: key,
+      requestFingerprint: 'same request',
+    });
+
+    expect(created).toMatchObject({
+      workflow: { id: workflowId },
+      version: { versionNumber: 1 },
+      proposal: { kind: 'initial' },
+    });
+    expect(queryMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('rejects reuse of a proposal mutation key for different request bytes', async () => {
+    const key = '40000000-0000-4000-8000-000000000002';
+    withTransactionMock.mockRejectedValue(
+      Object.assign(new Error('unique conflict'), { code: '23505' }),
+    );
+    queryMock.mockResolvedValue({ rows: [{
+      id: '50000000-0000-4000-8000-000000000001',
+      workflow_id: workflowId,
+      user_id: userId,
+      base_version_id: null,
+      proposed_version_id: targetVersionId,
+      kind: 'initial',
+      idempotency_key: key,
+      request_hash: 'f'.repeat(64),
+      created_at: now,
+    }] });
+
+    await expect(workflowRepository.createDraftWithProposal({
+      userId,
+      providerKey: 'signal_digest.v1',
+      providerSchemaVersion: '1',
+      payload: { keywords: ['invoice'] },
+      authoring,
+      idempotencyKey: key,
+      requestFingerprint: 'different request',
+    })).rejects.toBeInstanceOf(WorkflowProposalIdempotencyConflictError);
   });
 
   it('reuses stable workflow/version IDs across bounded serialization retries', async () => {

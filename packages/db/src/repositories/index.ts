@@ -192,7 +192,10 @@ export type {
 export { approvalRepository } from './approval-repository.js';
 export { patternRepository } from './pattern-repository.js';
 
-export { workflowRepository } from './workflow-repository.js';
+export {
+  workflowRepository,
+  WorkflowProposalIdempotencyConflictError,
+} from './workflow-repository.js';
 export type {
   CreateWorkflowDraftInput,
   CreateWorkflowDraftWithProposalInput,

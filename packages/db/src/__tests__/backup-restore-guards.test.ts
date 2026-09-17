@@ -215,6 +215,8 @@ function workflowBundle(): Record<string, unknown> {
       baseVersionId: null,
       proposedVersionId: versionId,
       kind: 'initial',
+      idempotencyKey: null,
+      requestHash: null,
       createdAt: '2026-06-15T00:00:30.000Z',
     }],
     activationEvents: [{
@@ -289,6 +291,8 @@ function signalDigestWorkflowBundle(
       baseVersionId: null,
       proposedVersionId: versionId,
       kind: 'initial',
+      idempotencyKey: null,
+      requestHash: null,
       createdAt: '2026-06-15T00:00:30.000Z',
     }],
     activationEvents: [{
@@ -971,7 +975,29 @@ describe('validateBackupData', () => {
     }
   });
 
-  it('requires workflow data only in schema v5 and keeps v4 readable', () => {
+  it('requires proposal idempotency state in current backups and rejects half-bound keys', () => {
+    const missing = validPayload();
+    const missingBundle = workflowBundle();
+    const missingProposal = (missingBundle['proposals'] as Array<Record<string, unknown>>)[0]!;
+    delete missingProposal['idempotencyKey'];
+    delete missingProposal['requestHash'];
+    missing['workflows'] = [missingBundle];
+    expect(validateBackupData(missing)).toContain(
+      'workflows[0].proposals[0] has invalid linkage or ownership',
+    );
+
+    const halfBound = validPayload();
+    const halfBoundBundle = workflowBundle();
+    const halfBoundProposal = (halfBoundBundle['proposals'] as Array<Record<string, unknown>>)[0]!;
+    halfBoundProposal['idempotencyKey'] = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
+    halfBoundProposal['requestHash'] = null;
+    halfBound['workflows'] = [halfBoundBundle];
+    expect(validateBackupData(halfBound)).toContain(
+      'workflows[0].proposals[0] has invalid linkage or ownership',
+    );
+  });
+
+  it('requires workflow data since schema v5 and keeps v4 readable', () => {
     const missing = validPayload();
     delete missing['workflows'];
     expect(validateBackupData(missing)).toContain(
@@ -985,8 +1011,17 @@ describe('validateBackupData', () => {
 
     v4['workflows'] = [workflowBundle()];
     expect(validateBackupData(v4)).toContain(
-      `workflows requires schema version ${BACKUP_SCHEMA_VERSION}`,
+      'workflows requires schema version 5 or later',
     );
+
+    const v5 = validPayload();
+    v5['schemaVersion'] = 5;
+    const v5Bundle = workflowBundle();
+    const v5Proposal = (v5Bundle['proposals'] as Array<Record<string, unknown>>)[0]!;
+    delete v5Proposal['idempotencyKey'];
+    delete v5Proposal['requestHash'];
+    v5['workflows'] = [v5Bundle];
+    expect(validateBackupData(v5)).toEqual([]);
   });
 
   it('accepts a well-formed payload', () => {

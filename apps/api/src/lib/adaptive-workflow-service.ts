@@ -1,6 +1,7 @@
 import {
   signalRepository,
   userRepository,
+  WorkflowProposalIdempotencyConflictError,
   workflowRepository,
   workflowWatchProjectionRepository,
 } from '@skytwin/db';
@@ -114,7 +115,8 @@ export type AuthorSignalDigestDraftResult =
     };
   }
   | { success: false; kind: 'authoring'; failure: Exclude<SignalDigestAuthoringResult, { success: true }> }
-  | { success: false; kind: 'compile'; issues: Extract<SignalDigestCompileResult, { ok: false }>['issues'] };
+  | { success: false; kind: 'compile'; issues: Extract<SignalDigestCompileResult, { ok: false }>['issues'] }
+  | { success: false; kind: 'idempotency'; reason: 'idempotency_conflict' };
 
 export type CreateWorkflowRevisionResult =
   | {
@@ -135,7 +137,11 @@ export type CreateWorkflowRevisionResult =
   | {
     success: false;
     kind: 'create_version';
-    reason: 'workflow_not_found' | 'parent_version_not_found' | 'active_version_conflict';
+    reason:
+      | 'workflow_not_found'
+      | 'parent_version_not_found'
+      | 'active_version_conflict'
+      | 'idempotency_conflict';
   };
 
 export type CreateWorkflowFeedbackRevisionResult =
@@ -362,6 +368,7 @@ export function createAdaptiveWorkflowService(
     userId: string;
     description: string;
     allowClarification?: boolean;
+    idempotencyKey: string;
   }): Promise<AuthorSignalDigestDraftResult> {
     const authored = await authoring.authorSignalDigest(input.userId, input.description, {
       allowClarification: input.allowClarification,
@@ -377,15 +384,29 @@ export function createAdaptiveWorkflowService(
     const compiled = compile(signalDigestPayload(authored, locale.timezone ?? 'UTC'));
     if (!compiled.ok) return { success: false, kind: 'compile', issues: compiled.issues };
 
-    const created = await repository.createDraftWithProposal({
-      userId: input.userId,
-      providerKey: compiled.artifact.providerKey,
-      providerSchemaVersion: compiled.artifact.providerSchemaVersion,
-      payload: canonicalPayload(compiled),
-      authoring: { version: 1, source: 'llm_assisted', sourceReferences: [] },
-      inference: inferenceMetadata(authored),
-      kind: 'initial',
-    });
+    let created: Awaited<ReturnType<WorkflowRepositoryPort['createDraftWithProposal']>>;
+    try {
+      created = await repository.createDraftWithProposal({
+        userId: input.userId,
+        providerKey: compiled.artifact.providerKey,
+        providerSchemaVersion: compiled.artifact.providerSchemaVersion,
+        payload: canonicalPayload(compiled),
+        authoring: { version: 1, source: 'llm_assisted', sourceReferences: [] },
+        inference: inferenceMetadata(authored),
+        kind: 'initial',
+        idempotencyKey: input.idempotencyKey,
+        requestFingerprint: JSON.stringify({
+          operation: 'signal_digest_draft',
+          description: input.description,
+          allowClarification: input.allowClarification ?? true,
+        }),
+      });
+    } catch (error) {
+      if (error instanceof WorkflowProposalIdempotencyConflictError) {
+        return { success: false, kind: 'idempotency', reason: 'idempotency_conflict' };
+      }
+      throw error;
+    }
     if (created.version.contentHash !== compiled.artifact.contentHash) {
       throw new Error('workflow_compiler_persistence_hash_mismatch');
     }
@@ -416,6 +437,8 @@ export function createAdaptiveWorkflowService(
     proposalKind?: 'edit' | 'feedback';
     authoringSource?: 'user' | 'llm_assisted';
     inference?: WorkflowInferenceMetadataV1 | null;
+    idempotencyKey: string;
+    requestFingerprint?: string;
   }): Promise<CreateWorkflowRevisionResult> {
     const parent = await loadCompiledVersion(
       input.userId,
@@ -456,6 +479,13 @@ export function createAdaptiveWorkflowService(
       },
       inference: input.inference ?? null,
       kind: input.proposalKind ?? 'edit',
+      idempotencyKey: input.idempotencyKey,
+      requestFingerprint: input.requestFingerprint ?? JSON.stringify({
+        operation: 'workflow_revision',
+        workflowId: input.workflowId,
+        parentVersionId: input.parentVersionId,
+        payload: candidatePayload,
+      }),
     });
     if (!created.success) return { success: false, kind: 'create_version', reason: created.reason };
     if (created.version.contentHash !== candidate.artifact.contentHash) {
@@ -479,6 +509,7 @@ export function createAdaptiveWorkflowService(
     workflowId: string;
     parentVersionId: string;
     feedback: string;
+    idempotencyKey: string;
   }): Promise<CreateWorkflowFeedbackRevisionResult> {
     const parent = await loadCompiledVersion(
       input.userId,
@@ -505,6 +536,13 @@ export function createAdaptiveWorkflowService(
       proposalKind: 'feedback',
       authoringSource: 'llm_assisted',
       inference: inferenceMetadata(authored),
+      idempotencyKey: input.idempotencyKey,
+      requestFingerprint: JSON.stringify({
+        operation: 'workflow_feedback_revision',
+        workflowId: input.workflowId,
+        parentVersionId: input.parentVersionId,
+        feedback: input.feedback,
+      }),
     });
   }
 

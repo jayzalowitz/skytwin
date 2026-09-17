@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import type { Request } from 'express';
 import { bindUserIdParamOwnership } from '../middleware/require-ownership.js';
 import {
   bindUserIdParamValidator,
@@ -72,6 +73,11 @@ function hasExactKeys(value: Record<string, unknown>, expected: readonly string[
     && actual.every((key, index) => key === wanted[index]);
 }
 
+function mutationIdempotencyKey(req: Request): string | null {
+  const key = req.get('idempotency-key');
+  return isValidUserId(key) ? key : null;
+}
+
 export function createAdaptiveWorkflowsRouter(
   dependencies: AdaptiveWorkflowsRouterDependencies = {},
 ): Router {
@@ -93,6 +99,11 @@ export function createAdaptiveWorkflowsRouter(
 
   router.post('/:userId/signal-digest-drafts', async (req, res, next) => {
     try {
+      const idempotencyKey = mutationIdempotencyKey(req);
+      if (!idempotencyKey) {
+        res.status(400).json({ error: 'Idempotency-Key must be a UUID' });
+        return;
+      }
       const body = req.body as { description?: unknown; allowClarification?: unknown } | undefined;
       const description = body?.description;
       if (typeof description !== 'string' || !description.trim()) {
@@ -107,12 +118,15 @@ export function createAdaptiveWorkflowsRouter(
         userId: req.params['userId']!,
         description,
         allowClarification: body?.allowClarification ?? true,
+        idempotencyKey,
       });
       if (!result.success) {
         if (result.kind === 'authoring') {
           res.status(authoringFailureStatus(result.failure.state)).json(result);
         } else if (result.kind === 'compile') {
           res.status(422).json(result);
+        } else if (result.kind === 'idempotency') {
+          res.status(409).json(result);
         } else {
           res.status(500).json(result);
         }
@@ -155,6 +169,11 @@ export function createAdaptiveWorkflowsRouter(
 
   router.post('/:userId/:workflowId/revisions', async (req, res, next) => {
     try {
+      const idempotencyKey = mutationIdempotencyKey(req);
+      if (!idempotencyKey) {
+        res.status(400).json({ error: 'Idempotency-Key must be a UUID' });
+        return;
+      }
       if (!isPlainRecord(req.body)
           || !hasExactKeys(req.body, ['parentVersionId', 'payload'])
           || !isValidUserId(req.body['parentVersionId'])
@@ -169,6 +188,7 @@ export function createAdaptiveWorkflowsRouter(
         workflowId: req.params['workflowId']!,
         parentVersionId: req.body['parentVersionId'],
         payload: req.body['payload'],
+        idempotencyKey,
       });
       if (!result.success) {
         if (result.kind === 'transition') {
@@ -176,7 +196,10 @@ export function createAdaptiveWorkflowsRouter(
         } else if (result.kind === 'compile') {
           res.status(422).json(result);
         } else if (result.kind === 'create_version') {
-          res.status(result.reason === 'active_version_conflict' ? 409 : 404).json(result);
+          res.status(
+            result.reason === 'active_version_conflict'
+              || result.reason === 'idempotency_conflict' ? 409 : 404,
+          ).json(result);
         } else {
           res.status(500).json(result);
         }
@@ -190,6 +213,11 @@ export function createAdaptiveWorkflowsRouter(
 
   router.post('/:userId/:workflowId/feedback-revisions', async (req, res, next) => {
     try {
+      const idempotencyKey = mutationIdempotencyKey(req);
+      if (!idempotencyKey) {
+        res.status(400).json({ error: 'Idempotency-Key must be a UUID' });
+        return;
+      }
       if (!isPlainRecord(req.body)
           || !hasExactKeys(req.body, ['parentVersionId', 'feedback'])
           || !isValidUserId(req.body['parentVersionId'])
@@ -205,6 +233,7 @@ export function createAdaptiveWorkflowsRouter(
         workflowId: req.params['workflowId']!,
         parentVersionId: req.body['parentVersionId'],
         feedback: req.body['feedback'],
+        idempotencyKey,
       });
       if (!result.success) {
         if (result.kind === 'authoring') {
@@ -214,7 +243,10 @@ export function createAdaptiveWorkflowsRouter(
         } else if (result.kind === 'compile') {
           res.status(422).json(result);
         } else if (result.kind === 'create_version') {
-          res.status(result.reason === 'active_version_conflict' ? 409 : 404).json(result);
+          res.status(
+            result.reason === 'active_version_conflict'
+              || result.reason === 'idempotency_conflict' ? 409 : 404,
+          ).json(result);
         } else {
           res.status(500).json(result);
         }

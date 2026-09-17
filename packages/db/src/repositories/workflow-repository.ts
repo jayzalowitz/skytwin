@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import {
   assertWorkflowProviderIdentity,
@@ -49,6 +49,8 @@ interface WorkflowProposalRow {
   base_version_id: string | null;
   proposed_version_id: string;
   kind: WorkflowProposalKind;
+  idempotency_key: string | null;
+  request_hash: string | null;
   created_at: Date;
 }
 
@@ -75,6 +77,8 @@ export interface CreateWorkflowDraftInput {
 
 export interface CreateWorkflowDraftWithProposalInput extends CreateWorkflowDraftInput {
   kind?: Extract<WorkflowProposalKind, 'initial' | 'import'>;
+  idempotencyKey?: string;
+  requestFingerprint?: string;
 }
 
 interface CreateWorkflowVersionInput {
@@ -89,13 +93,28 @@ interface CreateWorkflowVersionInput {
 
 export interface CreateWorkflowVersionWithProposalInput extends CreateWorkflowVersionInput {
   kind: Extract<WorkflowProposalKind, 'edit' | 'feedback'>;
+  idempotencyKey?: string;
+  requestFingerprint?: string;
+}
+
+export class WorkflowProposalIdempotencyConflictError extends Error {
+  readonly code = 'WORKFLOW_PROPOSAL_IDEMPOTENCY_CONFLICT';
+
+  constructor() {
+    super('Workflow proposal idempotency key was reused for a different request');
+    this.name = 'WorkflowProposalIdempotencyConflictError';
+  }
 }
 
 export type CreateWorkflowVersionWithProposalResult =
   | { success: true; version: AdaptiveWorkflowVersion; proposal: AdaptiveWorkflowProposal }
   | {
     success: false;
-    reason: 'workflow_not_found' | 'parent_version_not_found' | 'active_version_conflict';
+    reason:
+      | 'workflow_not_found'
+      | 'parent_version_not_found'
+      | 'active_version_conflict'
+      | 'idempotency_conflict';
   };
 
 interface PreparedVersion {
@@ -174,6 +193,22 @@ function prepareVersion(input: {
     authoring: snapshotWorkflowAuthoringMetadata(input.authoring),
     inference: snapshotWorkflowInferenceMetadata(input.inference),
   };
+}
+
+function requestHash(fingerprint: string): string {
+  return createHash('sha256').update(fingerprint, 'utf8').digest('hex');
+}
+
+async function existingProposalForMutation(
+  userId: string,
+  idempotencyKey: string,
+): Promise<WorkflowProposalRow | null> {
+  const result = await query<WorkflowProposalRow>(
+    `SELECT * FROM workflow_proposals
+      WHERE user_id = $1 AND idempotency_key = $2`,
+    [userId, idempotencyKey],
+  );
+  return result.rows[0] ?? null;
 }
 
 async function withSerializableRetry<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -264,37 +299,77 @@ export const workflowRepository = {
   }> {
     assertWorkflowProviderIdentity(input.providerKey, input.providerSchemaVersion);
     const prepared = prepareVersion(input);
+    const mutationHash = input.idempotencyKey
+      ? requestHash(input.requestFingerprint ?? '')
+      : null;
     const workflowId = randomUUID();
     const versionId = randomUUID();
     const proposalId = randomUUID();
-    return withSerializableRetry(async (client) => {
-      const inserted = await client.query<WorkflowRow>(
-        `INSERT INTO workflows (id, user_id, provider_key)
-         VALUES ($1, $2, $3)
-         RETURNING *`,
-        [workflowId, input.userId, input.providerKey],
-      );
-      const workflow = inserted.rows[0]!;
-      const version = await insertVersion(client, {
-        id: versionId,
-        workflow,
-        versionNumber: 1,
-        parentVersionId: null,
-        prepared,
+    try {
+      return await withSerializableRetry(async (client) => {
+        const inserted = await client.query<WorkflowRow>(
+          `INSERT INTO workflows (id, user_id, provider_key)
+           VALUES ($1, $2, $3)
+           RETURNING *`,
+          [workflowId, input.userId, input.providerKey],
+        );
+        const workflow = inserted.rows[0]!;
+        const version = await insertVersion(client, {
+          id: versionId,
+          workflow,
+          versionNumber: 1,
+          parentVersionId: null,
+          prepared,
+        });
+        const proposal = await client.query<WorkflowProposalRow>(
+          `INSERT INTO workflow_proposals
+             (id, workflow_id, user_id, base_version_id, proposed_version_id, kind,
+              idempotency_key, request_hash)
+           VALUES ($1, $2, $3, NULL, $4, $5, $6, $7)
+           RETURNING *`,
+          [
+            proposalId,
+            workflowId,
+            input.userId,
+            versionId,
+            input.kind ?? 'initial',
+            input.idempotencyKey ?? null,
+            mutationHash,
+          ],
+        );
+        return {
+          workflow: toWorkflow(workflow),
+          version,
+          proposal: toProposal(proposal.rows[0]!),
+        };
       });
-      const proposal = await client.query<WorkflowProposalRow>(
-        `INSERT INTO workflow_proposals
-           (id, workflow_id, user_id, base_version_id, proposed_version_id, kind)
-         VALUES ($1, $2, $3, NULL, $4, $5)
-         RETURNING *`,
-        [proposalId, workflowId, input.userId, versionId, input.kind ?? 'initial'],
-      );
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== '23505') throw error;
+      if (!input.idempotencyKey || !mutationHash) throw error;
+      const proposal = await existingProposalForMutation(input.userId, input.idempotencyKey);
+      if (!proposal || proposal.request_hash !== mutationHash) {
+        throw new WorkflowProposalIdempotencyConflictError();
+      }
+      const [workflowResult, versionResult] = await Promise.all([
+        query<WorkflowRow>('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [
+          proposal.workflow_id,
+          input.userId,
+        ]),
+        query<WorkflowVersionRow>(
+          `SELECT * FROM workflow_versions
+            WHERE id = $1 AND workflow_id = $2 AND user_id = $3`,
+          [proposal.proposed_version_id, proposal.workflow_id, input.userId],
+        ),
+      ]);
+      const workflow = workflowResult.rows[0];
+      const version = versionResult.rows[0];
+      if (!workflow || !version) throw new Error('workflow_idempotency_record_incomplete');
       return {
         workflow: toWorkflow(workflow),
-        version,
-        proposal: toProposal(proposal.rows[0]!),
+        version: toVersion(version),
+        proposal: toProposal(proposal),
       };
-    });
+    }
   },
 
   /** Persist an active-lineage revision and its review proposal atomically. */
@@ -302,9 +377,13 @@ export const workflowRepository = {
     input: CreateWorkflowVersionWithProposalInput,
   ): Promise<CreateWorkflowVersionWithProposalResult> {
     const prepared = prepareVersion(input);
+    const mutationHash = input.idempotencyKey
+      ? requestHash(input.requestFingerprint ?? '')
+      : null;
     const versionId = randomUUID();
     const proposalId = randomUUID();
-    return withSerializableRetry(async (client) => {
+    try {
+      return await withSerializableRetry(async (client) => {
       const owned = await client.query<WorkflowRow>(
         `SELECT * FROM workflows
           WHERE id = $1 AND user_id = $2
@@ -343,17 +422,47 @@ export const workflowRepository = {
       });
       const proposal = await client.query<WorkflowProposalRow>(
         `INSERT INTO workflow_proposals
-           (id, workflow_id, user_id, base_version_id, proposed_version_id, kind)
-         VALUES ($1, $2, $3, $4, $5, $6)
+           (id, workflow_id, user_id, base_version_id, proposed_version_id, kind,
+            idempotency_key, request_hash)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          RETURNING *`,
-        [proposalId, input.workflowId, input.userId, input.parentVersionId, versionId, input.kind],
+        [
+          proposalId,
+          input.workflowId,
+          input.userId,
+          input.parentVersionId,
+          versionId,
+          input.kind,
+          input.idempotencyKey ?? null,
+          mutationHash,
+        ],
       );
       return {
         success: true,
         version,
         proposal: toProposal(proposal.rows[0]!),
       };
-    });
+      });
+    } catch (error) {
+      if ((error as { code?: unknown } | null)?.code !== '23505') throw error;
+      if (!input.idempotencyKey || !mutationHash) throw error;
+      const proposal = await existingProposalForMutation(input.userId, input.idempotencyKey);
+      if (!proposal || proposal.request_hash !== mutationHash
+          || proposal.workflow_id !== input.workflowId) {
+        return { success: false, reason: 'idempotency_conflict' };
+      }
+      const version = await query<WorkflowVersionRow>(
+        `SELECT * FROM workflow_versions
+          WHERE id = $1 AND workflow_id = $2 AND user_id = $3`,
+        [proposal.proposed_version_id, input.workflowId, input.userId],
+      );
+      if (!version.rows[0]) throw new Error('workflow_idempotency_record_incomplete');
+      return {
+        success: true,
+        version: toVersion(version.rows[0]),
+        proposal: toProposal(proposal),
+      };
+    }
   },
 
   async getForUser(id: string, userId: string): Promise<AdaptiveWorkflow | null> {

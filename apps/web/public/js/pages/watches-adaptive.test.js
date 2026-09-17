@@ -20,6 +20,7 @@ const api = vi.hoisted(() => ({
 
 vi.mock('../api-client.js', () => ({
   ...api,
+  createClientRequestId: () => 'aaaaaaaa-bbbb-4ccc-8ddd-000000000001',
   escapeHtml: (value) => {
     const node = document.createElement('div');
     node.textContent = String(value ?? '');
@@ -133,7 +134,12 @@ describe('adaptive Watches authoring', () => {
     input.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
     await tick();
 
-    expect(api.createAdaptiveSignalDigestDraft).toHaveBeenCalledWith('user-ready', input.value, true);
+    expect(api.createAdaptiveSignalDigestDraft).toHaveBeenCalledWith(
+      'user-ready',
+      input.value,
+      true,
+      'aaaaaaaa-bbbb-4ccc-8ddd-000000000001',
+    );
     expect(container.textContent).toContain('2Caught');
     expect(container.textContent).toContain('10Ignored');
     expect(container.textContent).toContain('Recent real signals');
@@ -370,6 +376,7 @@ describe('adaptive Watches authoring', () => {
       'workflow-1',
       'version-1',
       'Every morning summarize invoice and receipt email',
+      'aaaaaaaa-bbbb-4ccc-8ddd-000000000001',
     );
     expect(container.textContent).toContain('What changed');
     expect(container.textContent).toContain('broadens what the Watch can match');
