@@ -79,7 +79,7 @@ describe('LlamaCppTextBackend', () => {
     expect(mockSpawn).not.toHaveBeenCalled();
   });
 
-  it('passes prompt and options to llama-cli and returns stdout', async () => {
+  it('passes prompt and options to llama-completion and returns stdout', async () => {
     const child = makeChild();
     mockSpawn.mockReturnValue(child as never);
 
@@ -108,6 +108,30 @@ describe('LlamaCppTextBackend', () => {
     expect(args).toContain('--no-display-prompt');
     expect(args).toContain('--single-turn');
     expect(args).not.toContain('-no-cnv');
+  });
+
+  it('enforces schema-constrained output with reasoning disabled', async () => {
+    const child = makeChild();
+    mockSpawn.mockReturnValue(child as never);
+    const port = new LlamaCppTextBackend({
+      binaryPath: '/usr/bin/llama-completion',
+      modelPath: '/models/qwen3.gguf',
+    });
+
+    const schema = '{"type":"object"}';
+    const promise = port.generate('strict prompt', {
+      jsonSchema: schema,
+      disableReasoning: true,
+    });
+    child.stdout.emit('data', Buffer.from('<think>\n\n</think>\n{"ok":true}'));
+    child.emit('close', 0);
+
+    await expect(promise).resolves.toBe('{"ok":true}');
+    const [, args] = mockSpawn.mock.calls[0]!;
+    expect(args).toEqual(expect.arrayContaining([
+      '--reasoning', 'off', '--reasoning-format', 'deepseek',
+      '--json-schema', schema,
+    ]));
   });
 
   it('strips llama.cpp end-of-text markers from output', async () => {
@@ -151,7 +175,7 @@ describe('LlamaCppTextBackend', () => {
     });
     const promise = port.generate('hi');
     child.emit('error', new Error('ENOENT'));
-    await expect(promise).rejects.toThrow(/failed to spawn llama-cli.*ENOENT/);
+    await expect(promise).rejects.toThrow(/failed to spawn llama-completion.*ENOENT/);
   });
 
   it('kills child and rejects on timeout', async () => {

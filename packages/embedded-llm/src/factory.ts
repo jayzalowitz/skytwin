@@ -94,6 +94,9 @@ export async function createEmbeddedTextPort(
               exactBytes: inspected.model.exactBytes,
               sha256: inspected.model.sha256,
             },
+            workflowAuthoringQualified:
+              inspected.model.workflowAuthoring.status === "qualified" &&
+              runtimeBuild === inspected.model.workflowAuthoring.evaluatedRuntimeBuild,
           }
         : {}),
   });

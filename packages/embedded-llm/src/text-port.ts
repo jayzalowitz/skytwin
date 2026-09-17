@@ -11,6 +11,8 @@ export interface EmbeddedTextCapabilities {
   readonly artifactSha256?: string | null;
   /** Exact runtime build observed when the port was constructed. */
   readonly runtimeVersion?: string | null;
+  /** Managed model gate status for immutable workflow authoring. */
+  readonly workflowAuthoringQualified?: boolean;
   readonly unavailableReason?: EmbeddedTextUnavailableReason;
 }
 
@@ -32,7 +34,12 @@ export interface EmbeddedTextPort {
   readonly capabilities: EmbeddedTextCapabilities;
   generate(
     prompt: string,
-    opts?: { maxTokens?: number; temperature?: number },
+    opts?: {
+      maxTokens?: number;
+      temperature?: number;
+      jsonSchema?: string;
+      disableReasoning?: boolean;
+    },
   ): Promise<string>;
 }
 
@@ -50,13 +57,19 @@ export class NullEmbeddedTextPort implements EmbeddedTextPort {
       contextWindow: null,
       artifactSha256: null,
       runtimeVersion: null,
+      workflowAuthoringQualified: false,
       ...(reason === undefined ? {} : { unavailableReason: reason }),
     };
   }
 
   async generate(
     _prompt: string,
-    _opts?: { maxTokens?: number; temperature?: number },
+    _opts?: {
+      maxTokens?: number;
+      temperature?: number;
+      jsonSchema?: string;
+      disableReasoning?: boolean;
+    },
   ): Promise<string> {
     throw new NotAvailableError('llama');
   }

@@ -22,6 +22,7 @@ export interface LlamaCppBackendOptions {
   threads?: number;
   verifiedModel?: { exactBytes: number; sha256: string };
   runtimeBuild?: number;
+  workflowAuthoringQualified?: boolean;
   spawnProcess?: typeof spawn;
 }
 
@@ -52,12 +53,18 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
       contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
       artifactSha256: opts.verifiedModel?.sha256 ?? null,
       runtimeVersion: this.runtimeBuild === null ? null : `llama.cpp-b${this.runtimeBuild}`,
+      workflowAuthoringQualified: opts.workflowAuthoringQualified ?? false,
     };
   }
 
   async generate(
     prompt: string,
-    opts: { maxTokens?: number; temperature?: number } = {},
+    opts: {
+      maxTokens?: number;
+      temperature?: number;
+      jsonSchema?: string;
+      disableReasoning?: boolean;
+    } = {},
   ): Promise<string> {
     if (
       this.runtimeBuild !== null &&
@@ -79,6 +86,12 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
       '--no-warmup',
       '--single-turn',
     ];
+    if (opts.disableReasoning === true) {
+      args.push('--reasoning', 'off', '--reasoning-format', 'deepseek');
+    }
+    if (opts.jsonSchema !== undefined) {
+      args.push('--json-schema', opts.jsonSchema);
+    }
     if (this.threads !== null) {
       args.push('-t', String(this.threads));
     }
@@ -113,7 +126,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
         if (settled) return;
         settled = true;
         child.kill('SIGKILL');
-        reject(new Error(`llama-cli timed out after ${this.timeoutMs}ms`));
+        reject(new Error(`llama-completion timed out after ${this.timeoutMs}ms`));
       }, this.timeoutMs);
 
       child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
@@ -123,7 +136,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        reject(new Error(`failed to spawn llama-cli: ${err.message}`));
+        reject(new Error(`failed to spawn llama-completion: ${err.message}`));
       });
 
       child.on('close', (code) => {
@@ -132,13 +145,20 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
         clearTimeout(timer);
         if (code !== 0) {
           const tail = stderr.split('\n').slice(-5).join('\n').trim();
-          reject(new Error(`llama-cli exited with code ${code ?? 'null'}: ${tail || 'no stderr'}`));
+          reject(new Error(`llama-completion exited with code ${code ?? 'null'}: ${tail || 'no stderr'}`));
           return;
         }
-        resolve(stripEndOfTextMarker(stdout).trim());
+        const output = opts.disableReasoning === true
+          ? stripEmptyReasoningBlock(stdout)
+          : stdout;
+        resolve(stripEndOfTextMarker(output).trim());
       });
     });
   }
+}
+
+function stripEmptyReasoningBlock(text: string): string {
+  return text.replace(/^\s*<think>\s*<\/think>\s*/iu, '');
 }
 
 let managedModelHashTail: Promise<void> = Promise.resolve();
