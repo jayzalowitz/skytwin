@@ -235,7 +235,7 @@ describe('adaptive Watches authoring', () => {
   });
 
   it('asks one authoring clarification without losing the draft or AI readiness', async () => {
-    api.createAdaptiveSignalDigestDraft.mockRejectedValue(Object.assign(
+    api.createAdaptiveSignalDigestDraft.mockRejectedValueOnce(Object.assign(
       new Error('Clarification required'),
       {
         responseBody: {
@@ -245,7 +245,20 @@ describe('adaptive Watches authoring', () => {
           },
         },
       },
-    ));
+    )).mockResolvedValueOnce({
+      success: true,
+      workflow: { id: 'workflow-clarified', activeVersionId: null },
+      version: { id: 'version-clarified', versionNumber: 1 },
+      proposal: { id: 'proposal-clarified' },
+      preview: {
+        routineSpec: SPEC,
+        replay: {
+          dataAccess: { status: 'available', synthetic: false, recordsEvaluated: 1 },
+          simulation: { caughtCount: 1, ignoredCount: 0, examples: [] },
+          synthesis: { available: false, text: 'AI summary unavailable' },
+        },
+      },
+    });
 
     const container = document.getElementById('page-content');
     await renderWatches(container, 'user-clarify');
@@ -262,6 +275,32 @@ describe('adaptive Watches authoring', () => {
     expect(container.querySelector('[data-region="watch-input"]').value).toBe(input.value);
     expect(document.activeElement?.getAttribute('data-region')).toBe('watch-input');
     expect(localStorage.getItem('skytwin_adaptive_watch_draft_user-clarify')).toBe(input.value);
+
+    const answerInput = container.querySelector('[data-region="watch-input"]');
+    answerInput.value = 'Messages from the controller team.';
+    answerInput.dispatchEvent(new Event('input', { bubbles: true }));
+    expect(container.textContent).toContain('Which finance team or sender should this Watch match?');
+    expect(container.textContent).toContain('Answer the clarification');
+    answerInput.closest('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    await tick();
+
+    expect(api.createAdaptiveSignalDigestDraft).toHaveBeenNthCalledWith(
+      2,
+      'user-clarify',
+      [
+        'Original request:',
+        'Summarize finance email every morning',
+        '',
+        'Clarification question:',
+        'Which finance team or sender should this Watch match?',
+        '',
+        'User answer:',
+        'Messages from the controller team.',
+      ].join('\n'),
+      false,
+      'aaaaaaaa-bbbb-4ccc-8ddd-000000000001',
+    );
+    expect(container.textContent).toContain('Proposed version 1');
   });
 
   it('drops a late authoring response after the current user changes', async () => {

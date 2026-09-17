@@ -35,6 +35,7 @@ let _state = {
   preview: null,
   previewError: '',
   clarificationQuestion: '',
+  clarificationContext: null,
   warning: '',
   readiness: { state: 'loading' },
   adaptiveCandidate: null,
@@ -112,7 +113,7 @@ function ensureListener() {
     _state.preview = null;
     _state.adaptiveCandidate = null;
     _state.previewError = '';
-    _state.clarificationQuestion = '';
+    if (!_state.clarificationContext) _state.clarificationQuestion = '';
     _state.warning = '';
     _state.authoringMutation = null;
     persistComposerDraft(getCurrentUserId(), _state.draftText);
@@ -176,6 +177,8 @@ function ensureListener() {
       _state.adaptiveCandidate = null;
       _state.previewError = '';
       _state.clarificationQuestion = '';
+      _state.clarificationContext = null;
+      _state.clarificationCount = 0;
       _state.warning = '';
       _state.authoringMutation = null;
       persistComposerDraft(getCurrentUserId(), text);
@@ -199,6 +202,8 @@ export async function renderWatches(container, userId) {
     _state.preview = null;
     _state.adaptiveCandidate = null;
     _state.clarificationQuestion = '';
+    _state.clarificationContext = null;
+    _state.clarificationCount = 0;
     _state.adaptiveEdit = storedEdit ? {
       workflowId: storedEdit.workflowId,
       parentVersionId: storedEdit.parentVersionId,
@@ -312,6 +317,9 @@ function paint({ focusSelector = '' } = {}) {
 }
 
 function composerDescription() {
+  if (_state.clarificationContext) {
+    return 'Answer the one missing detail. SkyTwin will combine it with your original request before preparing the preview.';
+  }
   if (_state.adaptiveEdit) {
     return 'Review the changed schedule and matching scope before activating a new immutable version.';
   }
@@ -322,6 +330,7 @@ function composerDescription() {
 }
 
 function composerLabel() {
+  if (_state.clarificationContext) return 'Answer the clarification';
   if (_state.adaptiveEdit) return 'Describe the updated Watch';
   if (_state.editingWatchId) return 'Edit deterministic Watch';
   if (_state.readiness.state === 'setup_required') return 'Deterministic Watch fallback';
@@ -863,6 +872,7 @@ function resetComposer({ preservePrimaryDraft = false } = {}) {
   _state.clarificationCount = 0;
   _state.previewError = '';
   _state.clarificationQuestion = '';
+  _state.clarificationContext = null;
   _state.warning = '';
   _state.authoringMutation = null;
   _state.editingWatchId = null;
@@ -882,7 +892,7 @@ async function handlePreview(text) {
   _state.preview = null;
   _state.adaptiveCandidate = null;
   _state.previewError = '';
-  _state.clarificationQuestion = '';
+  _state.clarificationQuestion = _state.clarificationContext?.question ?? '';
   _state.warning = '';
   if (!text) {
     _state.previewError = 'Add a watch request first.';
@@ -918,16 +928,30 @@ async function handleDeterministicPreview(text) {
 async function handleAdaptiveAuthor(text) {
   const userId = getCurrentUserId();
   const operation = captureOperation(userId, true);
+  const clarification = _state.clarificationContext;
+  const requestText = clarification
+    ? [
+        'Original request:',
+        clarification.description,
+        '',
+        'Clarification question:',
+        clarification.question,
+        '',
+        'User answer:',
+        text,
+      ].join('\n')
+    : text;
+  const allowClarification = clarification === null;
   _state.busy = 'authoring';
   paint();
   try {
     const result = await createAdaptiveSignalDigestDraft(
       userId,
-      text,
-      _state.clarificationCount === 0,
+      requestText,
+      allowClarification,
       authoringMutationKey(
         'initial',
-        JSON.stringify([text, _state.clarificationCount === 0]),
+        JSON.stringify([requestText, allowClarification]),
       ),
     );
     if (!isOperationCurrent(operation)) return;
@@ -940,6 +964,7 @@ async function handleAdaptiveAuthor(text) {
     _state.authoringMutation = null;
     _state.clarificationCount = 0;
     _state.clarificationQuestion = '';
+    _state.clarificationContext = null;
   } catch (err) {
     if (!isOperationCurrent(operation)) return;
     const failure = err?.responseBody?.failure;
@@ -947,11 +972,19 @@ async function handleAdaptiveAuthor(text) {
     if (failure?.state === 'clarification_required') {
       _state.clarificationCount += 1;
       _state.clarificationQuestion = message;
+      _state.clarificationContext = {
+        description: clarification?.description ?? text,
+        question: failure.question,
+      };
       _state.previewError = '';
     } else {
       if (failure?.state) _state.readiness = failure;
       _state.clarificationQuestion = '';
       _state.previewError = message;
+      if (failure?.state && !failure.retryable) {
+        _state.clarificationContext = null;
+        _state.clarificationCount = 0;
+      }
     }
   } finally {
     if (isOperationCurrent(operation)) _state.busy = '';
