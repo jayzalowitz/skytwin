@@ -28,7 +28,7 @@ jobs:
           if [[ -n "$symlinks" ]]; then
             printf 'Pages source must not contain symlinks:\n%s\n' "$symlinks" >&2
             exit 1
-          }
+          fi
 
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v5
 

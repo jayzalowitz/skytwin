@@ -139,9 +139,10 @@
           Restore refuses to overwrite an existing user and preserves restored
           decisions as non-replay history rather than queued work. Backup
           schema v6 also carries versioned workflows, immutable versions,
-          proposals, activation history, run evidence, and the active Watch
-          projection. Restore validates ownership, hashes, lineage, transitions,
-          and projection pins before one transaction writes any of that state.
+          proposals, activation history, and the active Watch projection.
+          Watch run history and exact run evidence remain installation-local.
+          Restore validates ownership, hashes, lineage, transitions, and
+          projection pins before one transaction writes any portable state.
         </p>
         <pre><code>export SKYTWIN_BACKUP_PASSPHRASE='use-a-long-passphrase'<br>pnpm --filter @skytwin/db backup export --user &lt;userId&gt; --out my-twin.stbk<br>pnpm --filter @skytwin/db backup restore my-twin.stbk</code></pre>
         <p>

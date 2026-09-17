@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 const root = process.cwd();
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const normalized = (value) => value.replace(/\s+/g, " ");
+const readme = read("README.md");
 const index = read("docs/index.html");
 const start = read("docs/start.html");
 const agents = read("docs/agents.html");
@@ -175,6 +176,13 @@ describe("public developer-preview documentation", () => {
     expect(llms).toContain(
       "does not itself make a SkyTwin inference call confidential",
     );
+    expect(normalized(readme)).toContain(
+      "verified-private boundary admits only explicit interactive TrustedRouter calls",
+    );
+    expect(readme).toContain("NEAR AI remains unavailable");
+    expect(readme).not.toContain(
+      "Remote attested inference is unavailable until SkyTwin can verify it itself",
+    );
     for (const path of [
       "agents.html",
       "docs.html",
@@ -228,6 +236,12 @@ describe("public developer-preview documentation", () => {
       "maintained embedded model is available for ordinary local inference but is not qualified for workflow authoring",
     );
     expect(normalized(read("docs/data.html"))).toContain("Backup schema v6");
+    expect(normalized(read("docs/data.html"))).toContain(
+      "Watch run history and exact run evidence remain installation-local",
+    );
+    expect(normalized(read("docs/data.html"))).not.toContain(
+      "activation history, run evidence, and the active Watch projection",
+    );
     expect(normalized(read("docs/architecture.html"))).toContain(
       "/api/adaptive-workflows/:userId/signal-digest-drafts",
     );

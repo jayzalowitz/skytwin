@@ -72,8 +72,10 @@ and the safety boundaries without external effects.
    policy, trust, spend, risk, reversibility, and provenance. A model suggestion
    is never the authority to run work.
 4. **Keep the boundary explicit.** Local reasoning does not fall through to a
-   hosted provider. A hosted provider is an explicit network choice. Remote
-   attested inference is unavailable until SkyTwin can verify it itself.
+   hosted provider. A hosted provider is an explicit network choice. The
+   verified-private boundary admits only explicit interactive TrustedRouter
+   calls after SkyTwin verifies fresh same-session gateway attestation and an
+   exact-byte confidential-route receipt; NEAR AI remains unavailable.
 
 For a plain-language walkthrough, begin with [how to use the fictional sample](https://jayzalowitz.github.io/skytwin/how-to-use.html), then use the [documentation site](https://jayzalowitz.github.io/skytwin/docs.html):
 [how to start](https://jayzalowitz.github.io/skytwin/start.html),
