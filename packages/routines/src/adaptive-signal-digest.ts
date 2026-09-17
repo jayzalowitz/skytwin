@@ -447,7 +447,7 @@ export function signalDigestV1ContentHash(payload: SignalDigestV1Payload): strin
  * The provider payload remains canonical and immutable; only the runtime view
  * expands source aliases and routes hostname-shaped domains to sender matching.
  */
-function projectSignalDigestFilterForRuntime(filter: RoutineFilter): RoutineFilter {
+export function projectSignalDigestFilterForRuntime(filter: RoutineFilter): RoutineFilter {
   const sources = (filter.sources ?? []).flatMap((source) =>
     source === 'calendar' ? ['google_calendar', 'outlook_calendar'] : [source],
   );

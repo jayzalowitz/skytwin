@@ -9,6 +9,7 @@ import {
   compileSignalDigestV1,
   computeNextRun,
   diffSignalDigestV1,
+  projectSignalDigestFilterForRuntime,
   SIGNAL_DIGEST_V1_PROVIDER_KEY,
   SIGNAL_DIGEST_V1_SCHEMA_VERSION,
   simulateSignalDigestV1,
@@ -263,6 +264,7 @@ export function createAdaptiveWorkflowService(
   async function replaysForCandidates(
     userId: string,
     candidates: readonly SignalDigestV1Payload[],
+    options: { includeSynthesis?: boolean } = {},
   ): Promise<WorkflowCandidateReplay[]> {
     const window = replayWindow();
     const locale = await userLocales.getLocale(userId).catch(() => ({
@@ -318,7 +320,9 @@ export function createAdaptiveWorkflowService(
     return Promise.all(candidates.map(async (candidate) => {
       const replay = simulate(candidate, records);
       const simulation = replay.ok ? replay.result : null;
-      const requestedSources = new Set(candidate.filter.sources ?? []);
+      const requestedSources = new Set(
+        projectSignalDigestFilterForRuntime(candidate.filter).sources ?? [],
+      );
       const sourceReady = records.some((record) => {
         if (requestedSources.size === 0) return true;
         if (typeof record !== 'object' || record === null || Array.isArray(record)) return false;
@@ -329,7 +333,7 @@ export function createAdaptiveWorkflowService(
         available: false,
         text: AI_SUMMARY_UNAVAILABLE,
       };
-      if (simulation) {
+      if (simulation && options.includeSynthesis !== false) {
         try {
           synthesis = await authoring.summarizeSignalDigestReplay(userId, {
             summaryInstruction: candidate.summaryInstruction,
@@ -697,7 +701,11 @@ export function createAdaptiveWorkflowService(
     const compiled = candidates.compiled;
     const proposedPayload = canonicalPayload(compiled);
     if (candidates.workflow.activeVersionId === null) {
-      const [replay] = await replaysForCandidates(userId, [proposedPayload]);
+      const [replay] = await replaysForCandidates(
+        userId,
+        [proposedPayload],
+        { includeSynthesis: false },
+      );
       return {
         kind: 'initial' as const,
         workflow: candidates.workflow,
@@ -720,10 +728,11 @@ export function createAdaptiveWorkflowService(
     if (!parentVersion) return null;
     const authoritativeDiff = diff(parentVersion.canonicalPayload, proposedPayload);
     if (!authoritativeDiff.ok) return null;
-    const [beforeReplay, afterReplay] = await replaysForCandidates(userId, [
-      authoritativeDiff.before,
-      authoritativeDiff.after,
-    ]);
+    const [beforeReplay, afterReplay] = await replaysForCandidates(
+      userId,
+      [authoritativeDiff.before, authoritativeDiff.after],
+      { includeSynthesis: false },
+    );
     return {
       kind: 'revision' as const,
       workflow: candidates.workflow,

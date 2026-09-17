@@ -219,9 +219,9 @@ export function createWatchesRouter(): Router {
       const rows = await watchRunRepository.listForWatch(watchId, userId, limit);
       const runs = rows.map((run) => ({
         ...run,
-        // The repository verifies this bounded retained snapshot against its
-        // commitment before returning it. matched_count remains the exact full
-        // result count, including matches deliberately omitted from JSONB.
+        // The repository verifies the stored snapshot against the commitment
+        // format for that row. v2 commits the complete matched set, while the
+        // JSONB sample remains bounded; matched_count is always the full count.
         evidence_retained_count: run.evidence_snapshot.length,
         evidence_truncated: run.matched_count > run.evidence_snapshot.length,
         evidence_snapshot: run.evidence_snapshot.slice(0, MAX_RETURNED_RUN_EVIDENCE),

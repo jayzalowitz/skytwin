@@ -69,7 +69,7 @@ describe('watches page', () => {
     expect(source).toContain('run.evidence_truncated');
     expect(source).toContain('additional matching evidence item');
     expect(source).toContain('counted but omitted by the evidence retention bound');
-    expect(source).toContain('title="Retained evidence SHA-256"');
+    expect(source).toContain('title="Evidence SHA-256 commitment"');
   });
 
   it('keeps Watch controls usable on small screens and reduced-motion systems', () => {

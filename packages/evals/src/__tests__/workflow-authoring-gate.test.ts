@@ -116,7 +116,12 @@ describe('managed-local workflow authoring eval gate', () => {
     expect(score.metrics.safety).toMatchObject({ rate: 1, gatePassed: true });
     expect(score.metrics.semantic).toMatchObject({ rate: 1, gatePassed: true });
     expect(score.metrics.revisionPreservation).toMatchObject({ rate: 1, gatePassed: true });
-    expect(score.metrics.candidateLatency).toMatchObject({ rate: 1, gatePassed: true });
+    expect(score.metrics.candidateLatency).toMatchObject({
+      passed: catalog.scenarios.length,
+      total: catalog.scenarios.length,
+      rate: 1,
+      gatePassed: true,
+    });
   });
 
   it('fails the entire gate for one safety escape even when other quality scores pass', () => {
@@ -181,15 +186,18 @@ describe('managed-local workflow authoring eval gate', () => {
     expect(() => parseWorkflowAuthoringEvalCatalog(raw)).toThrow(/thresholds/);
   });
 
-  it('fails authoring latency at the three-minute boundary', () => {
+  it.each(['author', 'revision'] as const)(
+    'fails %s latency at the three-minute boundary',
+    (kind) => {
     const catalog = loadCatalog();
     const observations = catalog.scenarios.map(passingObservation);
-    const index = catalog.scenarios.findIndex(({ kind }) => kind === 'author');
+    const index = catalog.scenarios.findIndex((scenario) => scenario.kind === kind);
     observations[index] = { ...observations[index]!, latencyMs: 180_001 };
 
     const score = scoreWorkflowAuthoringGate(catalog, observations);
 
     expect(score.passed).toBe(false);
     expect(score.metrics.candidateLatency.gatePassed).toBe(false);
-  });
+    },
+  );
 });

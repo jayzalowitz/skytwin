@@ -534,18 +534,19 @@ describe('adaptive workflow service composition', () => {
       listProposalsForUser: vi.fn().mockResolvedValue([proposal]),
       listActivationEventsForUser: vi.fn().mockResolvedValue([]),
     };
+    const authoring = {
+      probeReadiness: vi.fn(), authorSignalDigest: vi.fn(), reviseSignalDigest: vi.fn(),
+      summarizeSignalDigestReplay: vi.fn().mockResolvedValue({
+        available: false, text: 'AI summary unavailable',
+      }),
+    };
     const service = createAdaptiveWorkflowService({
       repository,
       signals: { listInWindowBounded: vi.fn().mockResolvedValue({
         records: [], totalCount: 0, truncated: false,
       }) },
       userLocales: { getLocale: vi.fn().mockResolvedValue({ language: 'en', timezone: 'UTC' }) },
-      authoring: {
-        probeReadiness: vi.fn(), authorSignalDigest: vi.fn(), reviseSignalDigest: vi.fn(),
-        summarizeSignalDigestReplay: vi.fn().mockResolvedValue({
-          available: false, text: 'AI summary unavailable',
-        }),
-      },
+      authoring,
       now: () => now,
     });
 
@@ -559,6 +560,7 @@ describe('adaptive workflow service composition', () => {
         replay: { dataAccess: { kind: 'real_signals', synthetic: false } },
       },
     });
+    expect(authoring.summarizeSignalDigestReplay).not.toHaveBeenCalled();
   });
 
   it('does not resume a proposal that was consumed before a rollback', async () => {
@@ -803,6 +805,93 @@ describe('adaptive workflow service composition', () => {
       new Date('2026-09-16T12:00:00.000Z'),
       2_000,
     );
+  });
+
+  it('treats real provider calendar signals as ready for the canonical calendar source', async () => {
+    const calendarPayload = {
+      ...payload,
+      filter: { ...payload.filter, sources: ['calendar'] },
+    };
+    const calendarCompiled = compileSignalDigestV1(calendarPayload);
+    if (!calendarCompiled.ok) throw new Error('calendar test payload must compile');
+    const calendarVersion = {
+      ...version,
+      canonicalPayload: calendarPayload,
+      contentHash: calendarCompiled.artifact.contentHash,
+    };
+    const authoring = {
+      probeReadiness: vi.fn(),
+      reviseSignalDigest: vi.fn(),
+      summarizeSignalDigestReplay: vi.fn().mockResolvedValue({
+        available: false,
+        text: 'AI summary unavailable',
+      }),
+      authorSignalDigest: vi.fn().mockResolvedValue({
+        success: true,
+        readiness: 'ready',
+        intent: {
+          schemaVersion: 1,
+          intent: 'signal_digest',
+          name: calendarPayload.name,
+          cadence: calendarPayload.cadence,
+          hourOfDay: calendarPayload.hourOfDay,
+          dayOfWeek: null,
+          filter: calendarPayload.filter,
+          summaryInstruction: calendarPayload.summaryInstruction,
+        },
+        inference: {
+          provider: 'embedded', model: 'managed', reasoningMode: 'on_device',
+          runtimeVersion: 'llama.cpp-b5000', modelArtifactSha256: '5'.repeat(64),
+          prompt: { name: 'workflow-authoring-signal-digest', version: 1, sha256: '1'.repeat(64) },
+          schema: { name: 'signal-digest-intent', version: 1, sha256: '2'.repeat(64) },
+          inputSha256: '3'.repeat(64), outputSha256: '4'.repeat(64), repairCount: 0, latencyMs: 10,
+        },
+      }),
+    };
+    const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
+      createDraftWithProposal: vi.fn().mockResolvedValue({
+        workflow, version: calendarVersion, proposal,
+      }),
+      createVersionWithProposal: vi.fn(),
+      getForUser: vi.fn(), listForUser: vi.fn(), getVersionForUser: vi.fn(),
+      listVersionsForUser: vi.fn(), listProposalsForUser: vi.fn(),
+      listActivationEventsForUser: vi.fn(),
+    };
+    const service = createAdaptiveWorkflowService({
+      repository,
+      authoring,
+      signals: {
+        listInWindowBounded: vi.fn().mockResolvedValue({
+          records: [{
+            id: 'calendar-signal-1',
+            source: 'google_calendar',
+            timestamp: new Date('2026-09-16T11:00:00.000Z'),
+            data: { title: 'Customer renewal' },
+          }],
+          totalCount: 1,
+          truncated: false,
+        }),
+      },
+      now: () => new Date('2026-09-16T12:00:00.000Z'),
+    });
+
+    await expect(service.authorSignalDigestDraft({
+      userId: USER_ID,
+      description: 'Every morning summarize my calendar.',
+      idempotencyKey: MUTATION_ID,
+    })).resolves.toMatchObject({
+      success: true,
+      preview: {
+        replay: {
+          sourceReady: true,
+          dataAccess: {
+            requestedSources: ['calendar'],
+            observedSources: ['google_calendar'],
+          },
+        },
+      },
+    });
   });
 
   it('creates an immutable revision with authoritative diff and one shared real-data replay window', async () => {

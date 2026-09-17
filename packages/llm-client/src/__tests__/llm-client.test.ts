@@ -65,6 +65,7 @@ describe('LlmClient', () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -471,6 +472,35 @@ describe('LlmClient', () => {
 
       expect(result.content).toBe('Google to the rescue');
       expect(result.provider).toBe('google');
+    });
+
+    it('does not start a fallback provider after the total deadline expires', async () => {
+      vi.useFakeTimers();
+      const { LlmClient, AllProvidersFailedError } = await freshImport();
+      mockAnthropicGenerate.mockImplementation((
+        _apiKey: string,
+        _model: string,
+        _prompt: string,
+        options: GenerateOptions,
+      ) => new Promise((_resolve, reject) => {
+        setTimeout(() => reject(new Error('provider timeout')), options.timeoutMs);
+      }));
+      mockOpenaiGenerate.mockResolvedValue('must not run');
+      const client = LlmClient.forReasoningMode(
+        'bring_your_own_provider',
+        [anthropicProvider, openaiProvider],
+      );
+
+      const pending = client.generate('Help', {
+        invocationKind: 'interactive',
+        timeoutMs: 100,
+      });
+      const rejection = expect(pending).rejects.toThrow(AllProvidersFailedError);
+      await vi.advanceTimersByTimeAsync(100);
+
+      await rejection;
+      expect(mockAnthropicGenerate).toHaveBeenCalledOnce();
+      expect(mockOpenaiGenerate).not.toHaveBeenCalled();
     });
   });
 

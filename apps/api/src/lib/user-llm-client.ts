@@ -35,6 +35,8 @@ export type UserLlmClientResolution =
     state: 'ready';
     client: LlmClient;
     mode: ReasoningMode;
+    /** Credential-free snapshot of the admitted chain, in fallback order. */
+    configuredProviders?: readonly Readonly<Pick<ProviderEntry, 'name' | 'model'>>[];
     localReadiness?: EmbeddedProviderReadiness;
     /**
      * Deferred identity probe for the embedded provider. Mixed local chains
@@ -96,6 +98,8 @@ export async function resolveUserLlmClient(
       state: 'ready',
       client,
       mode: setting.mode,
+      configuredProviders: Object.freeze((providers as ProviderEntry[]).map((provider) =>
+        Object.freeze({ name: provider.name, model: provider.model }))),
       ...(localReadiness === undefined ? {} : { localReadiness }),
       ...(hasEmbedded
         ? { probeEmbeddedReadiness: probeEmbeddedProviderReadiness }

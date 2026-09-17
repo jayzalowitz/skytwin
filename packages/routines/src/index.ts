@@ -9,6 +9,7 @@ export {
   validateSignalDigestV1Payload,
   canonicalSignalDigestV1Json,
   signalDigestV1ContentHash,
+  projectSignalDigestFilterForRuntime,
   compileSignalDigestV1,
   diffSignalDigestV1,
   simulateSignalDigestV1,

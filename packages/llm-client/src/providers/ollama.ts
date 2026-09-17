@@ -231,6 +231,8 @@ export async function generate(
     // with the other providers.
     const data = await res.json() as {
       model?: unknown;
+      digest?: unknown;
+      provider_version?: unknown;
       message?: { content?: string };
       remote_host?: unknown;
       remote_model?: unknown;
@@ -250,18 +252,22 @@ export async function generate(
       return content;
     }
     if (serverVersionBefore === undefined || modelIdentityBefore === undefined
-        || typeof data.model !== 'string' || !data.model.trim()) {
+        || typeof data.model !== 'string' || !data.model.trim()
+        || typeof data.digest !== 'string' || !SHA256_PATTERN.test(data.digest)
+        || typeof data.provider_version !== 'string' || !data.provider_version.trim()) {
       throw new ProviderModePolicyError(
         'ollama_local_source_unverified',
-        'On-device Ollama response omitted its exact selected model identity',
+        'On-device Ollama response omitted its exact served model digest or runtime version',
         'ollama',
       );
     }
     const responseModel = data.model.trim();
-    if (!modelIdentityBefore.aliases.includes(canonicalModelReference(responseModel))) {
+    if (canonicalModelReference(responseModel) !== canonicalModelReference(requestModel)
+        || data.digest !== modelIdentityBefore.digest
+        || data.provider_version.trim() !== serverVersionBefore) {
       throw new ProviderModePolicyError(
         'ollama_local_source_unverified',
-        'On-device Ollama response model does not match the selected local model',
+        'On-device Ollama response identity does not match the selected local model and runtime',
         'ollama',
       );
     }
@@ -269,12 +275,12 @@ export async function generate(
     // the surrounding `/api/tags` snapshots additionally detect alias moves.
     const runningModelIdentity = await resolveExactLocalModel(
       baseUrl,
-      responseModel,
+      model,
       controller.signal,
       'ps',
     );
     const serverVersionAfter = await assertLocalSourceSelectorSupported(baseUrl, controller.signal);
-    const modelIdentityAfter = await resolveExactLocalModel(baseUrl, responseModel, controller.signal);
+    const modelIdentityAfter = await resolveExactLocalModel(baseUrl, model, controller.signal);
     if (serverVersionAfter !== serverVersionBefore
         || runningModelIdentity.digest !== modelIdentityBefore.digest
         || modelIdentityAfter.digest !== modelIdentityBefore.digest) {
@@ -286,11 +292,14 @@ export async function generate(
     }
     return {
       content,
-      resolvedModel: responseModel,
+      // Keep the configured logical model in SkyTwin metadata. `:local` is a
+      // request-scoped source selector, while the digest below is the exact
+      // artifact identity used for durable binding.
+      resolvedModel: model.trim(),
       runtimeIdentity: {
         provider: 'ollama',
-        serverVersion: serverVersionBefore,
-        modelDigestSha256: modelIdentityBefore.digest,
+        serverVersion: data.provider_version.trim(),
+        modelDigestSha256: data.digest,
       },
     } satisfies ExactOllamaProviderOutput;
   } finally {

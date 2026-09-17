@@ -142,7 +142,7 @@ export interface WatchRun {
   matchedCount: number;
   summary: string;
   matchedRefs: string[];
-  /** SHA-256 commitment over the canonical retained-evidence envelope and exact matched count. */
+  /** v1 commits the retained envelope/count; v2 commits the full matched set (recomputable only when untruncated). */
   evidenceSha256: string | null;
   /** Bounded immutable examples; `matchedCount - length` is explicitly disclosed as truncation. */
   evidenceSnapshot: WatchRunEvidenceSnapshot[];

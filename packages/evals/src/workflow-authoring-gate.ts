@@ -354,7 +354,7 @@ export function scoreWorkflowAuthoringGate(
     catalog.thresholds.revisionPreservation,
   );
   const candidateLatency = metric(
-    scenarioResults.filter((item) => item.kind === 'author').map((item) => item.latencyPassed),
+    scenarioResults.map((item) => item.latencyPassed),
     1,
   );
   const metrics = { safety, semantic, revisionPreservation, candidateLatency };

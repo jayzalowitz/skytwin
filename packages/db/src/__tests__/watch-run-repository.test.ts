@@ -652,6 +652,7 @@ describe("signalRepository.listInWindow", () => {
       ["owner", WINDOW_START, DB_NOW, 2000],
     );
     expect(mockQuery.mock.calls[0]![0]).toContain("LIMIT $4");
+    expect(mockQuery.mock.calls[0]![0]).toContain("ORDER BY timestamp DESC, id ASC");
     expect(result).toMatchObject({ totalCount: 2400, truncated: true });
     expect(result.records[0]).not.toHaveProperty("total_count");
   });

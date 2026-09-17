@@ -354,8 +354,8 @@ function composerButtonLabel() {
 
 function readinessLabel(state) {
   const labels = {
-    loading: 'Checking model',
-    ready: 'AI ready',
+    loading: 'Checking configuration',
+    ready: 'AI configured',
     setup_required: 'Model not configured',
     confirmation_required: 'Confirmation needed',
     policy_blocked: 'Blocked by policy',
@@ -377,11 +377,11 @@ function renderReadinessBadge() {
 function renderReadinessNotice() {
   const readiness = _state.readiness;
   if (readiness.state === 'loading') {
-    return '<div class="watch-readiness-note" data-region="watch-readiness-status" tabindex="-1" aria-live="polite">Checking the configured model with a structured test…</div>';
+    return '<div class="watch-readiness-note" data-region="watch-readiness-status" tabindex="-1" aria-live="polite">Checking model configuration and local runtime prerequisites…</div>';
   }
   if (readiness.state === 'ready') {
     const location = readiness.reasoningMode === 'on_device' ? 'On-device' : 'Configured';
-    return `<div class="watch-readiness-note" data-region="watch-readiness-status" tabindex="-1">${escapeHtml(location)} model · ${escapeHtml(readiness.provider)} / ${escapeHtml(readiness.model)}</div>`;
+    return `<div class="watch-readiness-note" data-region="watch-readiness-status" tabindex="-1">${escapeHtml(location)} model configured · ${escapeHtml(readiness.provider)} / ${escapeHtml(readiness.model)} · output is validated when you request a preview</div>`;
   }
   if (readiness.state === 'setup_required') {
     return `
@@ -697,7 +697,7 @@ function renderRuns(watchId, runs, loading) {
           </ul>` : ''}
           ${hiddenRetainedCount > 0 ? `<div class="watch-muted">${escapeHtml(String(hiddenRetainedCount))} additional matching evidence item${hiddenRetainedCount === 1 ? '' : 's'} retained but not displayed.</div>` : ''}
           ${unretainedCount > 0 ? `<div class="watch-muted">${escapeHtml(String(unretainedCount))} older match${unretainedCount === 1 ? ' was' : 'es were'} counted but omitted by the evidence retention bound.</div>` : ''}
-          ${commitment ? `<div class="watch-run-commitment" title="Retained evidence SHA-256">Evidence ${escapeHtml(commitment)}…</div>` : ''}
+          ${commitment ? `<div class="watch-run-commitment" title="Evidence SHA-256 commitment">Evidence ${escapeHtml(commitment)}…</div>` : ''}
           ${Array.isArray(run.matched_refs) && run.matched_refs.length
             && evidence.length === 0
             ? `<div class="watch-run-refs">${escapeHtml(run.matched_refs.slice(0, 5).join(', '))}</div>`

@@ -390,6 +390,10 @@ export class LlmClient {
   async generate(prompt: string | ChatMessage[], options: GenerateOptions = {}): Promise<LlmResponse> {
     const invocationPrompt = snapshotPrompt(prompt);
     const invocationOptions = snapshotGenerateOptions(options);
+    const timeoutBudgetMs = invocationOptions.timeoutMs === undefined
+      ? null
+      : Math.max(1, Math.trunc(invocationOptions.timeoutMs));
+    const deadlineAt = timeoutBudgetMs === null ? null : Date.now() + timeoutBudgetMs;
     const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
     const executionPath: ProviderExecutionAttempt[] = [];
@@ -397,6 +401,11 @@ export class LlmClient {
 
     for (const entry of this.chain) {
       const { provider, generateFn, circuitBreaker } = entry;
+      const remainingMs = deadlineAt === null ? null : deadlineAt - Date.now();
+      // Provider timeouts are a total invocation budget, not a fresh budget
+      // for every fallback. This also prevents a detached timed-out caller
+      // from issuing a second provider request after its deadline.
+      if (remainingMs !== null && remainingMs <= 0) break;
 
       if (invocationOptions.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
         attempted.push(`${provider.name}(price-unavailable)`);
@@ -419,6 +428,7 @@ export class LlmClient {
           providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
           providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
+            ...(remainingMs === null ? {} : { timeoutMs: Math.max(1, remainingMs) }),
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
           }), this.reasoningMode),

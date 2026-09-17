@@ -269,7 +269,7 @@ describe('adaptive Watches authoring', () => {
     await tick();
 
     expect(container.textContent).toContain('Which finance team or sender should this Watch match?');
-    expect(container.textContent).toContain('AI ready');
+    expect(container.textContent).toContain('AI configured');
     expect(container.querySelector('.watch-preview-clarification')?.getAttribute('role')).toBe('status');
     expect(container.querySelector('.watch-preview-error')).toBeNull();
     expect(container.querySelector('[data-region="watch-input"]').value).toBe(input.value);

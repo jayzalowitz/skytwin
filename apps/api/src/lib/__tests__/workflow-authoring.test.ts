@@ -64,6 +64,7 @@ function readyResolution(
       generate,
       hasProviders: true,
     } as unknown as LlmClient,
+    configuredProviders: [{ name: 'embedded', model: 'managed-local' }],
     ...(localReadiness === undefined ? {} : { localReadiness }),
     probeEmbeddedReadiness,
   };
@@ -546,6 +547,28 @@ describe('workflow authoring LLM boundary', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it.each([
+    [{ ...EXACT_EMBEDDED_READINESS, modelName: null }, 'artifact_unavailable'],
+    [{ ...EXACT_EMBEDDED_READINESS, artifactSha256: null }, 'artifact_unavailable'],
+    [{ ...EXACT_EMBEDDED_READINESS, runtimeVersion: null }, 'runtime_unavailable'],
+    [{ ...EXACT_EMBEDDED_READINESS, runtimeVersion: 'unreported' }, 'runtime_unavailable'],
+  ] as const)('fails readiness closed when an embedded identity is incomplete', async (
+    localReadiness,
+    expectedState,
+  ) => {
+    const generate = vi.fn();
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(
+        readyResolution(generate, 'on_device', localReadiness),
+      ),
+    });
+
+    await expect(service.probeReadiness('user-1')).resolves.toMatchObject({
+      state: expectedState,
+    });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it('lets the real-model gate measure an exact unqualified candidate without changing production admission', async () => {
     const unqualified = {
       ...EXACT_EMBEDDED_READINESS,
@@ -611,7 +634,7 @@ describe('workflow authoring LLM boundary', () => {
     expect(resolveClient).toHaveBeenCalledTimes(1);
   });
 
-  it('reports ready only after the configured provider passes the structured canary', async () => {
+  it('reports structural readiness without sending a model request', async () => {
     const generate = vi.fn().mockResolvedValue(response(JSON.stringify({
       ...VALID_INTENT,
       name: 'Weekday invoice digest',
@@ -626,12 +649,31 @@ describe('workflow authoring LLM boundary', () => {
       state: 'ready',
       reasoningMode: 'on_device',
       provider: 'embedded',
-      model: 'managed-local',
+      model: 'managed.gguf',
       runtimeVersion: 'llama.cpp-b5000',
       modelArtifactSha256: 'a'.repeat(64),
       promptVersion: 1,
       schemaVersion: 1,
     });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('reports released Ollama as unsupported without sending a model request', async () => {
+    const generate = vi.fn();
+    const resolution = readyResolution(generate, 'on_device');
+    if (resolution.state !== 'ready') throw new Error('expected ready resolution');
+    resolution.configuredProviders = [{ name: 'ollama', model: 'qwen3:8b' }];
+    delete resolution.probeEmbeddedReadiness;
+
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(resolution),
+    });
+    await expect(service.probeReadiness('user-1')).resolves.toMatchObject({
+      state: 'unsupported_model',
+      retryable: false,
+      reason: expect.stringContaining('do not bind'),
+    });
+    expect(generate).not.toHaveBeenCalled();
   });
 
   it('applies a minimal revision patch while preserving every unrelated field', async () => {

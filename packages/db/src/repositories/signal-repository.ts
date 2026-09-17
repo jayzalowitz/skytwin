@@ -250,7 +250,7 @@ export const signalRepository = {
       `SELECT signals.*, count(*) OVER () AS total_count
          FROM signals
         WHERE user_id = $1 AND timestamp > $2 AND timestamp <= $3
-        ORDER BY timestamp DESC
+        ORDER BY timestamp DESC, id ASC
         LIMIT $4`,
       [userId, windowStart, windowEnd, limit],
     );

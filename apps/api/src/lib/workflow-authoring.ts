@@ -876,33 +876,6 @@ async function inferenceRuntimeIdentity(
   };
 }
 
-function readinessFailureFromResult(
-  result: Exclude<SignalDigestAuthoringResult, { success: true }>,
-): WorkflowAuthoringFailure {
-  switch (result.state) {
-    case 'setup_required':
-      return { state: result.state, reason: result.reason, retryable: false };
-    case 'confirmation_required':
-      return { state: result.state, reason: result.reason, retryable: false };
-    case 'policy_blocked':
-      return { state: result.state, reason: result.reason, retryable: false };
-    case 'unsupported_model':
-      return { state: result.state, reason: result.reason, retryable: false };
-    case 'artifact_unavailable':
-      return { state: result.state, reason: result.reason, retryable: false };
-    case 'runtime_unavailable':
-      return { state: result.state, reason: result.reason, retryable: true };
-    case 'temporarily_unavailable':
-      return { state: result.state, reason: result.reason, retryable: true };
-    case 'clarification_required':
-      return {
-        state: 'unsupported_model',
-        reason: 'The configured model asked for clarification on the complete readiness canary.',
-        retryable: false,
-      };
-  }
-}
-
 async function runStructuredAuthoring(
   client: LlmClient,
   mode: ReasoningMode,
@@ -1148,27 +1121,117 @@ function createWorkflowAuthoringServiceInternal(
 
   async function probeReadiness(
     userId: string,
-    options: WorkflowAuthoringOptions = {},
+    _options: WorkflowAuthoringOptions = {},
   ): Promise<WorkflowAuthoringReadiness> {
-    const result = await authorSignalDigest(
-      userId,
-      'Every morning at 9, summarize Gmail messages containing the keyword invoice.',
-      options,
-    );
-    if (!result.success) {
-      return readinessFailureFromResult(result);
+    if (!isBoundedString(userId, 256)) {
+      return {
+        state: 'setup_required',
+        reason: 'A valid user is required for workflow authoring.',
+        retryable: false,
+      };
+    }
+    const resolution = await resolveClient(userId);
+    if (resolution.state !== 'ready') return failureFromResolution(resolution);
+
+    const configuredProviders = resolution.configuredProviders ?? [];
+    const firstProvider = configuredProviders[0];
+    const embeddedProvider = configuredProviders.find((provider) => provider.name === 'embedded');
+    let embeddedReadiness = resolution.localReadiness;
+    if (embeddedReadiness === undefined
+        && embeddedProvider !== undefined
+        && resolution.probeEmbeddedReadiness !== undefined) {
+      try {
+        embeddedReadiness = await resolution.probeEmbeddedReadiness(embeddedProvider.model);
+      } catch {
+        return {
+          state: 'runtime_unavailable',
+          reason: 'The embedded runtime readiness probe failed. No model request was sent.',
+          retryable: true,
+        };
+      }
+    }
+    if (embeddedReadiness !== undefined) {
+      const localFailure = failureFromLocalReadiness(
+        embeddedReadiness,
+        allowUnqualifiedManagedCandidate,
+      );
+      if (localFailure === null && embeddedReadiness.state === 'ready') {
+        const exactModelName = embeddedReadiness.modelName?.trim();
+        if (!exactModelName) {
+          return {
+            state: 'artifact_unavailable',
+            reason: 'The managed local model did not report an exact artifact name. Nothing was saved.',
+            retryable: false,
+          };
+        }
+        if (embeddedReadiness.artifactSha256 === null
+            || !SHA256_PATTERN.test(embeddedReadiness.artifactSha256)) {
+          return {
+            state: 'artifact_unavailable',
+            reason: 'The managed local model did not report an exact artifact digest. Nothing was saved.',
+            retryable: false,
+          };
+        }
+        const exactRuntimeVersion = embeddedReadiness.runtimeVersion?.trim();
+        if (!exactRuntimeVersion
+            || exactRuntimeVersion.length > 256
+            || exactRuntimeVersion === 'unreported') {
+          return {
+            state: 'runtime_unavailable',
+            reason: 'The embedded runtime did not report an exact build identity. Nothing was saved.',
+            retryable: true,
+          };
+        }
+        return {
+          state: 'ready',
+          reasoningMode: resolution.mode,
+          provider: 'embedded',
+          model: exactModelName,
+          runtimeVersion: exactRuntimeVersion,
+          modelArtifactSha256: embeddedReadiness.artifactSha256,
+          promptVersion: PROMPT_VERSION,
+          schemaVersion: SCHEMA_VERSION,
+        };
+      }
+      // A later remote provider can still be structurally ready in a mode
+      // that admits one. On-device Ollama is handled below because released
+      // servers do not attest the exact responder identity on /api/chat.
+      const laterNonLocal = configuredProviders.find((provider) =>
+        provider.name !== 'embedded' && provider.name !== 'ollama');
+      if (laterNonLocal === undefined) return localFailure!;
+      return {
+        state: 'ready',
+        reasoningMode: resolution.mode,
+        provider: laterNonLocal.name,
+        model: laterNonLocal.model,
+        runtimeVersion: 'provider-managed-unreported',
+        promptVersion: PROMPT_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+      };
+    }
+
+    if (firstProvider?.name === 'ollama' && resolution.mode === 'on_device') {
+      return {
+        state: 'unsupported_model',
+        reason: 'Released Ollama servers do not bind /api/chat responses to an exact served model digest and runtime version. Use a qualified embedded model or another admitted provider. No model request was sent.',
+        retryable: false,
+      };
+    }
+    if (firstProvider !== undefined) {
+      return {
+        state: 'ready',
+        reasoningMode: resolution.mode,
+        provider: firstProvider.name,
+        model: firstProvider.model,
+        runtimeVersion: 'provider-managed-unreported',
+        promptVersion: PROMPT_VERSION,
+        schemaVersion: SCHEMA_VERSION,
+      };
     }
     return {
-      state: 'ready',
-      reasoningMode: result.inference.reasoningMode,
-      provider: result.inference.provider,
-      model: result.inference.model,
-      runtimeVersion: result.inference.runtimeVersion,
-      ...(result.inference.modelArtifactSha256 === undefined
-        ? {}
-        : { modelArtifactSha256: result.inference.modelArtifactSha256 }),
-      promptVersion: result.inference.prompt.version,
-      schemaVersion: result.inference.schema.version,
+      state: 'policy_blocked',
+      reason: 'The configured provider chain could not be inspected safely. No model request was sent.',
+      retryable: false,
     };
   }
 

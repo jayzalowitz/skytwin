@@ -447,7 +447,12 @@ describe('Ollama provider — switched to /api/chat', () => {
     const digest = 'a'.repeat(64);
     const models = [{ name: 'llama-test:latest', model: 'llama-test:latest', digest }];
     const { spy, captured } = captureExactLocalOllamaFetch(
-      { model: 'llama-test:latest', message: { content: 'exact reply' } },
+      {
+        model: 'llama-test:local',
+        digest,
+        provider_version: '0.18.1',
+        message: { content: 'exact reply' },
+      },
       [models, models],
     );
     vi.stubGlobal('fetch', spy);
@@ -457,7 +462,7 @@ describe('Ollama provider — switched to /api/chat', () => {
       requireExactRuntimeIdentity: true,
     })).resolves.toEqual({
       content: 'exact reply',
-      resolvedModel: 'llama-test:latest',
+      resolvedModel: 'llama-test',
       runtimeIdentity: {
         provider: 'ollama',
         serverVersion: '0.18.1',
@@ -480,7 +485,12 @@ describe('Ollama provider — switched to /api/chat', () => {
       { name: 'private-alias:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) },
     ];
     const { spy, captured } = captureExactLocalOllamaFetch(
-      { model: 'llama-test:latest', message: { content: 'must not run' } },
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: '0.18.1',
+        message: { content: 'must not run' },
+      },
       [models],
     );
     vi.stubGlobal('fetch', spy);
@@ -504,7 +514,12 @@ describe('Ollama provider — switched to /api/chat', () => {
       ? [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) }]
       : firstModels;
     const { spy } = captureExactLocalOllamaFetch(
-      { model: 'llama-test:latest', message: { content: 'must not return' } },
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: versions[0],
+        message: { content: 'must not return' },
+      },
       [firstModels, secondModels],
       versions,
     );
@@ -524,7 +539,12 @@ describe('Ollama provider — switched to /api/chat', () => {
       { name: 'llama-test:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) },
     ];
     const { spy } = captureExactLocalOllamaFetch(
-      { model: 'llama-test:latest', message: { content: 'must not return' } },
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: '0.18.1',
+        message: { content: 'must not return' },
+      },
       [tagged, tagged],
       ['0.18.1', '0.18.1'],
       running,
@@ -535,6 +555,21 @@ describe('Ollama provider — switched to /api/chat', () => {
       reasoningMode: 'on_device',
       requireExactRuntimeIdentity: true,
     })).rejects.toThrow('changed during inference');
+  });
+
+  it('fails closed when Ollama does not attest the served digest in the chat response', async () => {
+    const digest = 'a'.repeat(64);
+    const models = [{ name: 'llama-test:latest', model: 'llama-test:latest', digest }];
+    const { spy } = captureExactLocalOllamaFetch(
+      { model: 'llama-test:local', message: { content: 'must not return' } },
+      [models, models],
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow('omitted its exact served model digest or runtime version');
   });
 
   it('rejects unexpected remote-execution metadata on an on-device response', async () => {
