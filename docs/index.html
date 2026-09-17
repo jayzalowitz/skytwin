@@ -6,7 +6,7 @@
     <title>SkyTwin — Personal AI. Your machine. Your rules.</title>
     <meta
       name="description"
-      content="Meet SkyTwin: an open-source, local-first personal AI project built around your preferences, explainable decisions, and control. Explore the fictional-data developer preview."
+      content="Meet SkyTwin: an open-source, local-first personal AI project built around your preferences, explainable decisions, and control. Download the desktop alpha or explore the latest source preview."
     />
     <meta
       property="og:title"
@@ -14,7 +14,7 @@
     />
     <meta
       property="og:description"
-      content="A personal twin you can inspect, teach, and build on. Explore the open-source developer preview with a screenshot-led tour."
+      content="A personal twin you can inspect, teach, and build on. Download the desktop alpha or explore the newest open-source preview."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://jayzalowitz.github.io/skytwin/" />
@@ -35,7 +35,9 @@
     </nav>
     <main id="main">
       <header class="wrap landing-hero">
-        <p class="kicker">Open-source personal AI · Apache 2.0</p>
+        <p class="kicker">
+          Open-source personal AI · Desktop alpha · Apache 2.0
+        </p>
         <h1>Personal AI.<br />Your machine.<br />Your rules.</h1>
         <p class="hero-lede">
           An assistant should learn what matters to you—not make you explain
@@ -43,14 +45,20 @@
           can inspect, decisions you can question, and boundaries you control.
         </p>
         <div class="actions">
-          <a class="button primary" href="how-to-use.html"
-            >See SkyTwin in action →</a
-          ><a class="button" href="start.html">Run the source</a>
+          <a
+            class="button primary"
+            href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+            >Download the desktop alpha ↗</a
+          ><a class="button" href="how-to-use.html">See SkyTwin in action</a>
         </div>
         <p class="preview-note">
-          <strong>Developer preview.</strong> Explore fictional data without an
-          account or AI key. Running it requires local source setup; real Google
-          and Microsoft connections are unavailable.
+          <strong>Usable alpha.</strong> Install the packaged app on Apple
+          Silicon macOS, x64 Windows, or x86-64 Linux—and, if you choose,
+          connect a real Gmail inbox from its desktop window with a Google OAuth
+          app you create. An already authenticated browser session can use the
+          same local dashboard; a fresh browser cannot inherit the desktop
+          session. It is unsigned and not the evidence-gated beta. The same
+          current build also offers the guarded account-free sample.
           <a href="#status">What’s ready today?</a>
         </p>
       </header>
@@ -127,50 +135,62 @@
 
       <section class="wrap story-section" id="evaluate">
         <div class="section-heading">
-          <p class="kicker">Start with a small, real experience</p>
-          <h2>Meet your twin.<br />Nothing to connect.</h2>
+          <p class="kicker">Choose how you want to try it</p>
+          <h2>Install. Connect.<br />Or explore safely.</h2>
           <p>
-            No inbox access. No provider key. No model download for the sample.
-            Start by seeing whether this feels like a better relationship with
-            software.
+            The downloadable alpha is a real desktop app. The current source
+            sample is newer and isolated from accounts. The browser tour needs
+            no installation at all.
           </p>
         </div>
         <ol class="tour-steps">
           <li>
             <span class="section-number">01</span>
-            <h3>Look around.</h3>
+            <h3>Open the real app.</h3>
             <p>
-              Read the screenshot-led tour in your browser. To try the app,
-              follow the source setup guide, then choose
-              <em>Just show me around</em>.
+              Download the desktop alpha for Apple Silicon Mac, x64 Windows, or
+              x86-64 Linux. It is an earlier unsigned build, so read the warning
+              and expect your OS to ask for confirmation. Its optional Google
+              setup can ingest a real Gmail inbox through the desktop dashboard.
+              The same UI is available at <code>localhost:3200</code> only after
+              that browser is authenticated.
             </p>
-            <a href="how-to-use.html">Take the guided tour →</a>
+            <a href="start.html#alpha">Choose an alpha installer →</a>
           </li>
           <li>
             <span class="section-number">02</span>
-            <h3>Ask “why this?”</h3>
+            <h3>Try the newest sample.</h3>
             <p>
-              Compare the fictional briefing, <em>Needs your OK</em>, and
-              <em>What happened</em>. Look at which situations need a person and
-              what information is shown.
+              Run current source, choose <em>Just show me around</em>, and
+              inspect the latest guarded fictional profile without an inbox,
+              provider key, or model download.
             </p>
-            <a href="how-to-use.html#screens">See the product screens →</a>
+            <a href="start.html#source">Run current source →</a>
           </li>
           <li>
             <span class="section-number">03</span>
-            <h3>Try a different answer.</h3>
+            <h3>Look before installing.</h3>
             <p>
-              The isolated simulation lets you approve, reject, or correct fixed
-              proposals. Changes last for that session only; they cannot contact
-              a provider or affect a real account.
+              Read the screenshot-led walkthrough, compare the briefing and
+              explanations, and decide whether the product is worth running.
             </p>
-            <a href="demo.html">Understand the sample →</a>
+            <a href="how-to-use.html">Take the guided tour →</a>
           </li>
         </ol>
         <div class="quiet-note">
-          The website is a guide, not a hosted app. The source installer can
-          install prerequisites and starts local services.
-          <a href="start.html">Read what setup changes before running it.</a>
+          <strong>Want to use your actual inbox?</strong> The alpha's
+          <em>Connect Gmail</em> wizard is available in its desktop window for
+          first-account setup and at
+          <code>http://localhost:3200/#/connect-gmail</code> for an already
+          authenticated browser. It walks you through
+          creating your own Google Cloud OAuth client for Gmail. Start with a
+          test account and read the credential/token-custody warning.
+          <a href="connect-gmail.html">Follow the real-inbox guide →</a>
+        </div>
+        <div class="quiet-note">
+          The alpha-0.6.106.0 release packages the current source with an Electron-compatible app version. It remains unsigned and
+          does not inherit the planned beta's evidence claims.
+          <a href="start.html">Compare both paths before choosing.</a>
         </div>
       </section>
 
@@ -331,16 +351,18 @@
           <p>
             The long-term goal is a personal twin that handles more of the
             routine, on your terms. Today, the supported entry point is a local,
-            fictional-data developer preview.
+            desktop alpha or a local, fictional-data developer preview.
           </p>
         </div>
         <dl class="release-facts">
           <div>
             <dt>Try today</dt>
             <dd>
-              Source-run sample, inspectable decisions and explanations, and
-              disposable approval/correction simulations. No real-account
-              effects.
+              A downloadable desktop alpha for Apple Silicon macOS, x64 Windows,
+              and x86-64 Linux, including an optional local-web Google path for
+              live Gmail and Calendar ingestion; plus the newer source-run sample with
+              inspectable decisions, explanations, and disposable
+              approval/correction simulations.
             </dd>
           </div>
           <div>
@@ -355,16 +377,17 @@
           <div>
             <dt>Not available yet</dt>
             <dd>
-              Supported Google/Microsoft account connections, general autonomous
-              personal-account workflows, a hosted service, or a supported
-              public-beta installer.
+              A supported managed SkyTwin Google OAuth service, a supported Microsoft
+              setup, general autonomous personal-account workflows, a hosted
+              service, or a supported public-beta installer. BYO Gmail remains
+              alpha/experimental and should begin with a test account.
             </dd>
           </div>
           <div>
             <dt>Release boundary</dt>
             <!-- prettier-ignore -->
             <dd>
-              Published installers predate the guarded account-free sample now in source. The planned <code>v0.7.0-beta</code> remains blocked by
+              The current unsigned alpha packages the guarded sample and BYO Google path. The planned <code>v0.7.0-beta</code> remains blocked by
               signing, notarization, clean-machine verification, and
               release-wide evidence. Source checks do not certify a downloadable
               artifact. The update client can check for artifacts, but
@@ -375,14 +398,15 @@
         <p>
           <a href="release.html">Full release status →</a> ·
           <a href="integrations.html">Integration status</a> ·
-          <a href="connect-gmail.html">Google access status</a> ·
+          <a href="connect-gmail.html">Connect your Gmail inbox</a> ·
           <a
             href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
             >Claim ledger</a
           >
           ·
-          <a href="https://github.com/jayzalowitz/skytwin/releases/latest"
-            >Download technical preview</a
+          <a
+            href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+            >Download technical preview — desktop alpha</a
           >
           (older artifacts; not the current sample)
         </p>
@@ -435,14 +459,14 @@
           Start with a fictional day. Decide what you would want it to learn.
         </p>
         <div class="actions">
-          <a class="button primary" href="how-to-use.html"
-            >Take the guided tour →</a
-          ><a class="button" href="https://github.com/jayzalowitz/skytwin"
-            >Explore the source ↗</a
-          >
+          <a
+            class="button primary"
+            href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+            >Download the alpha ↗</a
+          ><a class="button" href="how-to-use.html">Take the guided tour</a>
         </div>
         <p class="preview-note">
-          Screenshot-led walkthrough. No account needed to read it.
+          Prefer the tour or current source sample before adding personal data.
         </p>
       </section>
     </main>

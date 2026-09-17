@@ -183,6 +183,12 @@ async function handleOnboardingClick(e) {
       recordFirstRunChoice('about-me');
       transitionTo('about_me_choice');
       break;
+    case 'onb-connect-google':
+      if (typeof window.skyTwinDismissOnboarding === 'function') {
+        window.skyTwinDismissOnboarding();
+      }
+      window.location.hash = '#/connect-gmail';
+      break;
 
     // ── Shared "back to welcome" ────────────────────────────────────────────
     case 'onb-back-welcome':
@@ -402,9 +408,8 @@ function renderWelcome() {
       How would you like to start?
     </div>
 
-    <!-- The isolated sample is the preview's primary path. Google account
-         connections stay visible as an unavailable neutral state, never as
-         an action affordance. -->
+    <!-- Keep account-free exploration next to the real packaged first-use
+         path. Credential entry itself is authorized by Electron main. -->
     <div style="display:flex;flex-direction:column;gap:0.6rem;margin-bottom:1rem;">
       <button type="button" id="onb-tour-button" class="btn btn-primary btn-lg" disabled
               style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;"
@@ -417,13 +422,14 @@ function renderWelcome() {
         </div>
       </button>
 
-      <div style="display:flex;align-items:center;gap:0.75rem;padding:0.75rem;border:1px solid var(--border);border-radius:var(--radius-sm);background:var(--bg);color:var(--text-muted);">
+      <button type="button" class="btn btn-outline btn-lg" data-action="onb-connect-google"
+              style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;">
         <span style="font-size:1.2rem;" aria-hidden="true">✉</span>
         <div>
           <div style="font-weight:600;color:var(--text);">Gmail and Google Calendar</div>
-          <div style="font-size:0.78rem;">Unavailable in this preview. No account or credentials are needed for the sample.</div>
+          <div style="font-size:0.78rem;">Create your account with your own Google OAuth client.</div>
         </div>
-      </div>
+      </button>
     </div>
 
     <!-- Local-model recommendation: this endpoint can establish artifact fit,

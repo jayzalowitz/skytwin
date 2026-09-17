@@ -16,15 +16,18 @@ their other hand and read along.
 > release status and asset disposition; its beta status is currently blocked.
 
 > **Scope:** this operator script exercises the development seed after
-> `pnpm db:seed`; it is not a description of the currently published desktop
-> installers. Current source gives packaged builds a separate, short-lived,
+> `pnpm db:seed`; it covers the fictional-data path rather than BYO Google.
+> The current desktop alpha gives packaged builds a separate, short-lived,
 > account-free sample session. Its database-backed views remain read-only, while
 > a separate session-local simulation can approve, reject, correct, reset, and
 > learn from fixed fictional proposals. It cannot open settings, persist those
 > interactions, invoke providers or connectors, or run an execution adapter.
-> This isolated sample is the only supported preview path. Google and Microsoft
-> account connections are unavailable; do not use a real Gmail, Calendar,
-> Outlook, or Microsoft 365 account for this demo.
+> This script covers only the isolated sample. Do not connect a real Gmail,
+> Calendar, Outlook, or Microsoft 365 account while recording this demo. A
+> separate current desktop-alpha path can ingest a real Gmail inbox through
+> a user-created OAuth app; document that path with
+> [`connect-gmail.html`](./connect-gmail.html), not with this fictional-data
+> launch-evidence script.
 
 ---
 
@@ -39,8 +42,8 @@ You'll need:
   ```
   Then open `http://localhost:3200`.
 
-Use only fictional sample data. Real account connections and operator/BYO
-credential setup are unsupported in the current preview.
+Use only fictional sample data for this script. Real-account evaluation belongs
+to the separately documented BYO Gmail alpha/experimental path.
 
 ---
 
@@ -64,11 +67,8 @@ start.
   the dev "Switch user" button tells three different stories. No OAuth, no
   signal-ingestion wait. This is the demo path. (The showcase data lives in
   `packages/db/src/seeds/demo-showcase.ts`; counts move as we tune it.)
-Google connection is displayed as unavailable rather than as an additional
-path. Microsoft connection has no preview setup control; both providers remain
-outside the supported sample.
-Managed Google identity/Calendar is deferred, and BYO remains unsupported until
-the OAuth and credential-custody architecture gates are complete.
+  The same onboarding surface also links to BYO Google setup, but this script
+  deliberately chooses the sample. Microsoft has no packaged setup control.
 
 Under the sample choice, the app recommends a maintained local model for the machine
 (RAM-, architecture-, and disk-aware); "Change" opens Settings → AI. The model
@@ -133,11 +133,11 @@ a "why."
 Click any item on the "What's coming" card. The approval card expands. You
 see:
 
-- **What the twin wants to do** — one short sentence. E.g. *"Label the
-  Linear newsletter as 'newsletter' and archive it."*
+- **What the twin wants to do** — one short sentence. E.g. _"Label the
+  Linear newsletter as 'newsletter' and archive it."_
 - **Why it picked this** — a plain-English breakdown of the evidence. E.g.
-  *"You've archived every Linear digest for the last 6 weeks (12 of 12).
-  Confidence: high."*
+  _"You've archived every Linear digest for the last 6 weeks (12 of 12).
+  Confidence: high."_
 - **The two buttons** — "Yes, do it" and "Not this time." With an optional
   free-text "tell me why so I learn" field.
 
@@ -159,7 +159,7 @@ it learns from the no's.
 
 Find another item on "What's coming." This time, instead of clicking yes,
 type a one-line reason into the feedback field — something concrete, like
-*"This one's from a friend, not a newsletter."* Click **"Not this time."**
+_"This one's from a friend, not a newsletter."_ Click **"Not this time."**
 
 The card collapses. The next time a similar-shaped signal arrives, the twin
 weighs that note as evidence. Open the **What I've learned** page to see
@@ -189,8 +189,8 @@ Click **Settings** in the sidebar. Four controls worth pointing out:
   rungs from "Just watch" through "Full autopilot." Default is "Ask me
   first," meaning every action queues for approval. Below the buttons,
   expand **"What does it take to move up?"** — concrete bullets like
-  *"20 approvals in a row, ≥85% approval ratio, at least 3 days in
-  current tier."* (The values mirror `PROMOTION_THRESHOLDS` from
+  _"20 approvals in a row, ≥85% approval ratio, at least 3 days in
+  current tier."_ (The values mirror `PROMOTION_THRESHOLDS` from
   `packages/shared-types/src/policy.ts` exactly; the engine and the
   copy can't drift, locked by `promotion-thresholds-shape.test.ts`.)
 - **"Spending guardrails"** — per-action and daily caps in dollars.
@@ -233,15 +233,15 @@ saying exactly that actions now require review.
 
 ## Time budget
 
-| Step | Target | Cumulative |
-|---|---|---|
-| 1. Cold load | 30s | 0:30 |
-| 2. Empty dashboard | 45s | 1:15 |
-| 3. Connect / seed | 45s | 2:00 |
-| 4. Approve | 60s | 3:00 |
-| 5. Reject | 45s | 3:45 |
-| 6. Settings | 45s | 4:30 |
-| 7. Pause | 30s | 5:00 |
+| Step               | Target | Cumulative |
+| ------------------ | ------ | ---------- |
+| 1. Cold load       | 30s    | 0:30       |
+| 2. Empty dashboard | 45s    | 1:15       |
+| 3. Connect / seed  | 45s    | 2:00       |
+| 4. Approve         | 60s    | 3:00       |
+| 5. Reject          | 45s    | 3:45       |
+| 6. Settings        | 45s    | 4:30       |
+| 7. Pause           | 30s    | 5:00       |
 
 If you're running long on any step, the steps to compress in this order are:
 3 (skip if using the sample profile), 5 (a single sentence is enough — the

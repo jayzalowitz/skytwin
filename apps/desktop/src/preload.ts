@@ -50,6 +50,13 @@ contextBridge.exposeInMainWorld('skytwinDesktop', {
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
 
   /**
+   * First-use BYO Google setup. Electron main binds the write to its current
+   * API child; no installation credential is exposed to the renderer.
+   */
+  bootstrapGoogleAccount: (input: { clientId: string; clientSecret: string; pendingKey: string }) =>
+    ipcRenderer.invoke('bootstrap-google-account', input) as Promise<{ ok: true }>,
+
+  /**
    * Credential-vault passphrase "remember on this device" (#401).
    *
    * The passphrase is encrypted by Electron safeStorage in the main process

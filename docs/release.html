@@ -1,9 +1,289 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Release evidence — SkyTwin</title><meta name="description" content="SkyTwin release claims, evidence gates, versioning, and the public-beta boundary."><link rel="canonical" href="https://jayzalowitz.github.io/skytwin/release.html"><link rel="stylesheet" href="guides.css"></head>
-<body><nav class="nav"><div class="wrap nav-inner"><a class="brand" href="index.html">SkyTwin</a><div class="nav-links"><a href="docs.html">Docs</a><a href="deck.html">Deck</a><a class="keep" href="https://github.com/jayzalowitz/skytwin">GitHub</a></div></div></nav><main class="wrap page"><aside class="toc"><p>Release evidence</p><a href="#status">Current status</a><a href="#source-preview">Source previews</a><a href="#claims">Claims, not vibes</a><a href="#gates">Public-beta gates</a><a href="#tag">Tagged workflow</a><a href="#review">How to review</a></aside><article class="content"><p class="eyebrow">Release evidence</p><h1>Know what you are downloading.</h1><p class="lede">SkyTwin separates source capability from public release support. A passing local build or an older artifact can be useful to inspect, but neither is enough to claim a supported public beta.</p><div class="callout danger"><strong>Current status:</strong> <code>v0.7.0-beta</code> is blocked in the authoritative <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a>. This page explains the gate; it does not override it.</div>
-<h2 id="status">What is available today</h2><p>The source tree and isolated fictional-data sample are the recommended evaluation surface. Published technical-preview installers are unsigned and predate portions of the guarded sample/source path. They must be read against their individual release notes. The project does not represent them as supported public-beta installers or as evidence that signing, notarization, updates, or clean-machine behavior are complete.</p>
-<h2 id="source-preview">Source previews: a snapshot you can build on</h2><p>A public <code>source-preview-YYYY-MM-DD</code> release is a dated snapshot of the source, published as a GitHub prerelease after source CI and documentation checks. Its only downloads are GitHub’s source ZIP and tar archives; it contains no packaged application, updater feed, signing proof, or beta certification. The internal source-candidate packager is not used for public releases.</p><p>Use the exact tag or commit from its release notes with the <a href="start.html">source setup guide</a>. Local development tools are required. Start with the fictional sample; supported Google and Microsoft connections remain unavailable. The desktop beta stays blocked independently. <a href="https://github.com/jayzalowitz/skytwin/releases">Browse releases →</a></p>
-<h2 id="claims">Claims are machine-checked contracts</h2><p>The release claim ledger assigns a status, evidence requirement, and owner/boundary to each public claim. The repository command below verifies consistency between release-facing copy and the ledger:</p><pre><code>pnpm claims:check</code></pre><p>It is necessary but not sufficient. It can validate that a claim is correctly marked blocked; it cannot create a signed artifact, a notarization result, a clean-machine run, a human usability observation, or third-party verification.</p>
-<h2 id="gates">Why the public beta remains gated</h2><table><thead><tr><th>Gate family</th><th>Why it matters</th><th>What cannot be substituted</th></tr></thead><tbody><tr><td>Signing and notarization</td><td>Users need an authenticated desktop artifact and platform trust evidence.</td><td>A source build, checksum alone, or an unsigned installer.</td></tr><tr><td>Clean-machine and packaged sample evidence</td><td>The claimed installer path must be proven on the actual artifact and operating system.</td><td>Unit tests against a repository checkout.</td></tr><tr><td>Release-wide safety/explanation evidence</td><td>The public support surface needs bounded, durable proof of its decision behavior.</td><td>A polished demo or one correctly handled route.</td></tr><tr><td>Release artifact identity</td><td>Reports must bind to exact upload bytes, tag, commit, and platform-specific subjects.</td><td>A hand-authored report, a branch build, or detached logs.</td></tr></tbody></table>
-<h2 id="tag">What the tagged release workflow does</h2><ol class="steps"><li>Normalize the repository version to the ready ledger target in a pull request.</li><li>On a <code>v*</code> tag, build desktop artifacts and the release evidence material.</li><li>Bind reports, checksums, SBOM/provenance material, and platform subject identities to the uploaded assets.</li><li>Verify the exact manifest, tag-to-commit relationship, and evidence contract while the release is still an unpublished draft.</li><li>Only when the ledger is ready and all checks pass, make the draft release public.</li></ol><p>The release workflow is intentionally designed to stop before creating or publishing an eligible public artifact when open stop-ship gates exist.</p>
-<h2 id="review">How to review a candidate honestly</h2><ul><li>Read the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">claim ledger</a> first; it is the status source of truth.</li><li>Use <a href="deck.html">the evidence deck</a> for public claim-to-mechanism links, then inspect source and test evidence.</li><li>For an artifact, verify its release notes, checksums, signing/notarization status, and machine reports—not only a tag name.</li><li>For the developer preview, start from source and the fictional sample; do not connect a real account just to force a broader demo.</li></ul><p class="footnotes">Canonical detail: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/release-procedure.md">release procedure</a> · <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/sample-release-evidence.md">evidence record template</a>.</p></article></main><footer class="wrap"><p><a href="docs.html">All documentation</a> · <a href="start.html">Start locally</a> · <a href="privacy.html">Privacy</a></p></footer></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Release evidence — SkyTwin</title>
+    <meta
+      name="description"
+      content="SkyTwin release claims, evidence gates, versioning, and the public-beta boundary."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/release.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a href="docs.html">Docs</a><a href="deck.html">Deck</a
+          ><a class="keep" href="https://github.com/jayzalowitz/skytwin"
+            >GitHub</a
+          >
+        </div>
+      </div>
+    </nav>
+    <main class="wrap page">
+      <aside class="toc">
+        <p>Release evidence</p>
+        <a href="#status">Current status</a><a href="#alpha">Desktop alpha</a
+        ><a href="#source-preview">Source previews</a
+        ><a href="#claims">Claims, not vibes</a
+        ><a href="#gates">Public-beta gates</a><a href="#tag">Tagged workflow</a
+        ><a href="#review">How to review</a>
+      </aside>
+      <article class="content">
+        <p class="eyebrow">Release evidence</p>
+        <h1>Know what you are downloading.</h1>
+        <p class="lede">
+          SkyTwin separates a usable alpha, current source capability, and
+          public release support. You can install the app today without
+          pretending the evidence-gated beta is finished.
+        </p>
+        <div class="callout danger">
+          <strong>Current status:</strong> <code>v0.7.0-beta</code> is blocked
+          in the authoritative
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
+            >beta claim ledger</a
+          >. This page explains the gate; it does not override it.
+        </div>
+        <h2 id="status">What is available today</h2>
+        <p>
+          A downloadable desktop alpha is available for Apple Silicon macOS,
+          x64 Windows, and x86-64 Linux. It is a real packaged SkyTwin app, but it is
+          unsigned and packages current <code>0.6.106.0</code> source, including
+          the isolated fictional-data sample and advanced BYO Google setup.
+          It is not represented as a
+          supported public beta or as proof that signing, notarization, updates,
+          or clean-machine behavior are complete.
+        </p>
+        <h2 id="alpha">Desktop alpha: install and use the app</h2>
+        <p>
+          The
+          <a
+            href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+            ><code>alpha-0.6.106.0</code> desktop alpha release</a
+          >
+          packages the current code under an explicitly prerelease tag. Its
+          Electron-compatible application version is derived from the four-part
+          repository version. Open the release page for the available assets:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Platform</th>
+              <th>Alpha artifact</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>macOS · Apple Silicon</td>
+              <td>
+                <a
+                  href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                  >Current release assets</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>Windows · x64</td>
+              <td>
+                <a
+                  href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                  >Current release assets</a
+                >
+              </td>
+            </tr>
+            <tr>
+              <td>Linux · x86-64</td>
+              <td>
+                <a
+                  href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                  >AppImage, Debian, and RPM assets</a
+                >
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <p>
+          This alpha is not merely the fictional demo. It includes a five-step
+          <strong>Connect Gmail</strong> wizard in the desktop window. The same
+          page is served at
+          <code>http://localhost:3200/#/connect-gmail</code> for an already
+          authenticated browser session; a fresh browser does not inherit the
+          Electron session-token handoff. The wizard creates
+          and uses your own Google OAuth client for Gmail; a worker can ingest
+          live Gmail and Calendar signals. Follow the
+          <a href="connect-gmail.html">real-inbox setup guide</a> and start with
+          a test account; this older capability carries explicit plaintext
+          client-secret/token, provider-warning, and unsupported
+          Gmail/Calendar-mutation limitations.
+        </p>
+        <div class="callout warn">
+          <strong>Unsigned alpha:</strong> macOS Gatekeeper and Windows
+          SmartScreen warn on first launch. The release has no current
+          signing/notarization proof, update manifests,
+          checksums/SBOM/provenance bundle, or clean-machine evidence. It also
+          is not the gated beta. Use it to try the packaged application, or use
+          <a href="start.html#source">the same release source</a> when you want
+          to inspect and run the code directly.
+        </div>
+        <h2 id="source-preview">
+          Source previews: a snapshot you can build on
+        </h2>
+        <p>
+          A public <code>source-preview-YYYY-MM-DD</code> release is a dated
+          snapshot of the source, published as a GitHub prerelease after source
+          CI and documentation checks. Its only downloads are GitHub’s source
+          ZIP and tar archives; it contains no packaged application, updater
+          feed, signing proof, or beta certification. The internal
+          source-candidate packager is not used for public releases.
+        </p>
+        <p>
+          Use the exact tag or commit from its release notes with the
+          <a href="start.html">source setup guide</a>. Local development tools
+          are required. Start with the fictional sample; supported managed
+          Google and Microsoft connections remain outside this source snapshot. Advanced
+          users can separately use the current alpha's BYO Gmail wizard or
+          current source's exact experimental operator mode; neither changes the
+          beta evidence state. The desktop beta stays blocked independently.
+          <a href="https://github.com/jayzalowitz/skytwin/releases"
+            >Browse releases →</a
+          >
+        </p>
+        <h2 id="claims">Claims are machine-checked contracts</h2>
+        <p>
+          The release claim ledger assigns a status, evidence requirement, and
+          owner/boundary to each public claim. The repository command below
+          verifies consistency between release-facing copy and the ledger:
+        </p>
+        <pre><code>pnpm claims:check</code></pre>
+        <p>
+          It is necessary but not sufficient. It can validate that a claim is
+          correctly marked blocked; it cannot create a signed artifact, a
+          notarization result, a clean-machine run, a human usability
+          observation, or third-party verification.
+        </p>
+        <h2 id="gates">Why the public beta remains gated</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Gate family</th>
+              <th>Why it matters</th>
+              <th>What cannot be substituted</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Signing and notarization</td>
+              <td>
+                Users need an authenticated desktop artifact and platform trust
+                evidence.
+              </td>
+              <td>A source build, checksum alone, or an unsigned installer.</td>
+            </tr>
+            <tr>
+              <td>Clean-machine and packaged sample evidence</td>
+              <td>
+                The claimed installer path must be proven on the actual artifact
+                and operating system.
+              </td>
+              <td>Unit tests against a repository checkout.</td>
+            </tr>
+            <tr>
+              <td>Release-wide safety/explanation evidence</td>
+              <td>
+                The public support surface needs bounded, durable proof of its
+                decision behavior.
+              </td>
+              <td>A polished demo or one correctly handled route.</td>
+            </tr>
+            <tr>
+              <td>Release artifact identity</td>
+              <td>
+                Reports must bind to exact upload bytes, tag, commit, and
+                platform-specific subjects.
+              </td>
+              <td>A hand-authored report, a branch build, or detached logs.</td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="tag">What the tagged release workflow does</h2>
+        <ol class="steps">
+          <li>
+            Normalize the repository version to the ready ledger target in a
+            pull request.
+          </li>
+          <li>
+            On a <code>v*</code> tag, build desktop artifacts and the release
+            evidence material.
+          </li>
+          <li>
+            Bind reports, checksums, SBOM/provenance material, and platform
+            subject identities to the uploaded assets.
+          </li>
+          <li>
+            Verify the exact manifest, tag-to-commit relationship, and evidence
+            contract while the release is still an unpublished draft.
+          </li>
+          <li>
+            Only when the ledger is ready and all checks pass, make the draft
+            release public.
+          </li>
+        </ol>
+        <p>
+          The release workflow is intentionally designed to stop before creating
+          or publishing an eligible public artifact when open stop-ship gates
+          exist.
+        </p>
+        <h2 id="review">How to review a candidate honestly</h2>
+        <ul>
+          <li>
+            Read the
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
+              >claim ledger</a
+            >
+            first; it is the status source of truth.
+          </li>
+          <li>
+            Use <a href="deck.html">the evidence deck</a> for public
+            claim-to-mechanism links, then inspect source and test evidence.
+          </li>
+          <li>
+            For an artifact, verify its release notes, checksums,
+            signing/notarization status, and machine reports—not only a tag
+            name.
+          </li>
+          <li>
+            For the developer preview, start from source and the fictional
+            sample; do not connect a real account just to force a broader demo.
+          </li>
+        </ul>
+        <p class="footnotes">
+          Canonical detail:
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/release-procedure.md"
+            >release procedure</a
+          >
+          ·
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/sample-release-evidence.md"
+            >evidence record template</a
+          >.
+        </p>
+      </article>
+    </main>
+    <footer class="wrap">
+      <p>
+        <a href="docs.html">All documentation</a> ·
+        <a href="start.html">Start locally</a> ·
+        <a href="privacy.html">Privacy</a>
+      </p>
+    </footer>
+  </body>
+</html>

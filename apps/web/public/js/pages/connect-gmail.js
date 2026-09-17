@@ -1,10 +1,10 @@
 /**
- * Connect-Gmail preview boundary.
+ * BYO-Google connection wizard.
  *
- * The preview deliberately renders a neutral unavailable state and does
- * not wire the legacy account-connection wizard retained below. That keeps
- * credential entry and account synchronization outside the preview while
- * preserving the code for a later architecture-gated release.
+ * First-account credential entry is available only through the narrow
+ * Electron bridge. An authenticated browser session may use the ordinary
+ * protected credential route; an unauthenticated browser never receives a
+ * credential-write path.
  *
  * Singleton delegator: like every other page in this dashboard, the
  * click handler is wired ONCE with a module-level `_listenerWired`
@@ -14,7 +14,7 @@
  */
 
 import { escapeHtml, fetchJSON } from '../api-client.js';
-import { clearSampleSession } from '../sample-session.js';
+import { clearSampleSession, hasRealAuthentication } from '../sample-session.js';
 
 const KEY_USER_ID = 'skytwin_userId';
 const KEY_WIZARD_STEP = 'skytwin_connect_gmail_step';
@@ -274,26 +274,36 @@ async function submitCredentials() {
   }
   if (errEl) errEl.style.display = 'none';
 
-  // Legacy experimental handler retained without a rendered entry point.
-  // Do not use development authentication bypasses as a first-use bootstrap;
-  // a supported flow needs a separately reviewed, one-use authority design.
-  try {
-    await fetchJSON('/api/credentials/google', {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        credentials: {
-          client_id: clientId,
-          client_secret: clientSecret,
-        },
-      }),
-    });
-  } catch (err) {
-    if (errEl) {
-      errEl.textContent = `Couldn't save credentials: ${err instanceof Error ? err.message : String(err)}`;
-      errEl.style.display = 'block';
+  const realAuthentication = hasRealAuthentication();
+  // Ignore an orphaned user id unless a real bearer session accompanies it.
+  // Public user creation and stale localStorage must not turn first use into
+  // an authenticated credential write that predictably fails with 401.
+  const userId = realAuthentication ? localStorage.getItem(KEY_USER_ID) : null;
+  const desktopFirstUse = !realAuthentication && window.skytwinDesktop?.isDesktop &&
+    typeof window.skytwinDesktop?.bootstrapGoogleAccount === 'function';
+
+  // Existing owners use the normal session-authenticated credential route.
+  // A first owner goes through Electron main below; there is deliberately no
+  // unauthenticated HTTP credential-write fallback for a plain browser.
+  if (!desktopFirstUse) {
+    try {
+      await fetchJSON('/api/credentials/google', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          credentials: {
+            client_id: clientId,
+            client_secret: clientSecret,
+          },
+        }),
+      });
+    } catch (err) {
+      if (errEl) {
+        errEl.textContent = `Couldn't save credentials: ${err instanceof Error ? err.message : String(err)}`;
+        errEl.style.display = 'block';
+      }
+      return;
     }
-    return;
   }
 
   // Trigger the OAuth flow with Gmail scopes. The /authorize endpoint
@@ -314,13 +324,13 @@ async function submitCredentials() {
   // handoff. A renderer-side navigation to accounts.google.com is
   // blocked by Google as a "disallowed_useragent" (embedded UA) and
   // strands the user.
-  const userId = localStorage.getItem(KEY_USER_ID);
   try {
     const { startGoogleSignIn } = await import('../google-signin.js');
     const result = await startGoogleSignIn({
       userId: userId || null,
       newUser: !userId,
       include: 'gmail',
+      bootstrapCredentials: desktopFirstUse ? { clientId, clientSecret } : null,
       onComplete: (completion) => {
         // Desktop only — system-browser callback can't navigate the
         // renderer back. The poll fires here when /callback resolves.
@@ -385,11 +395,42 @@ async function rerender() {
 }
 
 export async function renderConnectGmail(container) {
+  const desktopFirstUse = !!(
+    window.skytwinDesktop?.isDesktop &&
+    typeof window.skytwinDesktop?.bootstrapGoogleAccount === 'function'
+  );
+  const usable = desktopFirstUse || hasRealAuthentication();
+  if (usable) {
+    wireDelegator();
+    const query = new URLSearchParams(window.location.hash.split('?')[1] ?? '');
+    const connected = query.get('connected') === 'google';
+    const account = query.get('account') ?? '';
+    if (connected) clearWizardState();
+    const step = STEPS[getCurrentStep() - 1] ?? STEPS[0];
+    const saved = hasRealAuthentication() ? await loadSavedCreds() : {};
+    container.innerHTML = `
+      <div class="cgm-wrap">
+        <div class="cgm-header">
+          <h1>Connect your Google account</h1>
+          <p>Use your own Google Cloud OAuth client. SkyTwin keeps the configured credentials in its local database and opens consent in your system browser.</p>
+        </div>
+        ${connected ? renderGoogleConnectedBanner(account) : ''}
+        ${renderProgressDots(step.n)}
+        ${connected ? renderDone() : renderStep(step, saved)}
+        <div class="card" style="margin-top:1rem;">
+          <div class="card-title">Prefer to explore first?</div>
+          <div class="card-subtitle" style="margin:.35rem 0 .75rem;">The fictional sample needs no account or Google credentials.</div>
+          <a class="btn btn-outline" href="#/sample">Open the sample</a>
+        </div>
+      </div>`;
+    injectStyles();
+    return;
+  }
   container.innerHTML = `
     <div class="cgm-wrap">
       <div class="cgm-header">
-        <h1>Google accounts are unavailable in this preview</h1>
-        <p>Gmail and Google Calendar connection, credential entry, and account synchronization are disabled on this surface.</p>
+        <h1>Open SkyTwin Desktop to create an account</h1>
+        <p>First-use Google credential setup is available only through the packaged desktop app. This browser has no installation authority.</p>
       </div>
       <div class="card">
         <div class="card-header">

@@ -1,25 +1,355 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Start locally — SkyTwin</title>
-  <meta name="description" content="A source-first developer-preview guide for running and evaluating SkyTwin locally.">
-  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/start.html">
-  <style>
-    :root{--bg:#0E0F13;--surface:#16181F;--border:#272B38;--text:#ECEDF1;--muted:#9CA0AE;--dim:#5E6374;--accent:#7C72E8;--accentHover:#9A92F2;--safe:#46C08A;--warn:#E7B14C}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 "Geist",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}a{color:var(--accent)}a:hover{color:var(--accentHover)}code,pre{font-family:"Geist Mono",ui-monospace,monospace}.wrap{max-width:860px;margin:auto;padding:0 1.4rem}.nav{position:sticky;top:0;background:rgba(14,15,19,.94);border-bottom:1px solid var(--border)}.nav .wrap{height:58px;display:flex;align-items:center;justify-content:space-between;gap:1rem}.nav a{text-decoration:none}.links{display:flex;gap:1rem;color:var(--muted);font-size:.9rem}.hero{padding:4rem 0 2.5rem}.eyebrow{color:var(--accent);font-size:.78rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase}h1{font-size:clamp(2.15rem,5vw,3.4rem);line-height:1.08;margin:.35rem 0 1rem}h2{margin:0 0 .5rem;font-size:1.55rem}section{padding:2.7rem 0;border-top:1px solid var(--border)}p,li{color:var(--muted)}.lede{font-size:1.16rem;max-width:44rem}.notice{padding:1rem 1.15rem;border-left:3px solid var(--warn);background:var(--surface);color:var(--muted)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:1rem}.card{padding:1.15rem;border:1px solid var(--border);border-radius:12px;background:var(--surface)}.card h3{margin:0;color:var(--text);font-size:1rem}.card p{margin:.45rem 0 0;font-size:.93rem}pre{padding:1rem;overflow:auto;border:1px solid var(--border);border-radius:10px;background:#101218;color:var(--text)}.ok{color:var(--safe);font-size:.78rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase}.no{color:var(--warn);font-size:.78rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase}@media(max-width:620px){.grid{grid-template-columns:1fr}.links{gap:.65rem;font-size:.8rem}}
-    body { overflow-wrap: anywhere; }
-    .nav .wrap { height: auto; min-height: 58px; flex-wrap: wrap; padding-block: 8px; }
-    .links { flex-wrap: wrap; }
-    .links a { display: inline-flex; align-items: center; min-height: 44px; }
-    :where(a, summary):focus-visible { outline: 2px solid var(--accentHover); outline-offset: 4px; }
-  </style>
-</head>
-<body>
-  <nav class="nav"><div class="wrap"><a href="index.html"><strong>SkyTwin</strong></a><div class="links"><a href="index.html">Overview</a><a href="docs.html">Docs</a><a href="agents.html">For agents</a><a href="reference.html">Reference</a><a href="demo.html">Demo</a><a href="https://github.com/jayzalowitz/skytwin">GitHub</a></div></div></nav>
-  <main class="wrap">
-    <header class="hero"><p class="eyebrow">Developer preview</p><h1>Start from source, with the boundary visible.</h1><p class="lede">This path is for evaluating the project locally. It starts local services and opens a dashboard; it is not a supported installer path or a hosted trial.</p></header>
-    <section><h2>Choose the right evaluation path</h2><div class="grid"><article class="card"><p class="ok">Recommended first</p><h3>Read and run the source tree</h3><p>Use the repository to inspect the decision/policy boundary and run development services. This is the current path for the latest code.</p></article><article class="card"><p class="no">Older artifacts</p><h3>Technical-preview installers</h3><p>Published installers are unsigned and predate the guarded account-free sample now in source. They are useful only when their release notes match the capability you want to inspect.</p></article></div></section>
-    <section><h2>Run a reviewed checkout</h2><p>The installer is a convenience route for its own moving <code>main</code> checkout. To inspect a specific source revision, start that checkout directly instead. This keeps the executable tree and the revision you reviewed the same.</p><pre><code>git clone https://github.com/jayzalowitz/skytwin.git
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Try SkyTwin — desktop alpha or current source</title>
+    <meta
+      name="description"
+      content="Download the usable SkyTwin desktop alpha for Apple Silicon macOS, x64 Windows, or x86-64 Linux, or run the newest source preview locally."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/start.html"
+    />
+    <style>
+      :root {
+        --bg: #0e0f13;
+        --surface: #16181f;
+        --border: #272b38;
+        --text: #ecedf1;
+        --muted: #9ca0ae;
+        --dim: #5e6374;
+        --accent: #7c72e8;
+        --accentHover: #9a92f2;
+        --safe: #46c08a;
+        --warn: #e7b14c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          16px/1.6 "Geist",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+      }
+      a {
+        color: var(--accent);
+      }
+      a:hover {
+        color: var(--accentHover);
+      }
+      code,
+      pre {
+        font-family: "Geist Mono", ui-monospace, monospace;
+      }
+      .wrap {
+        max-width: 860px;
+        margin: auto;
+        padding: 0 1.4rem;
+      }
+      .nav {
+        position: sticky;
+        top: 0;
+        background: rgba(14, 15, 19, 0.94);
+        border-bottom: 1px solid var(--border);
+      }
+      .nav .wrap {
+        height: 58px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+      }
+      .nav a {
+        text-decoration: none;
+      }
+      .links {
+        display: flex;
+        gap: 1rem;
+        color: var(--muted);
+        font-size: 0.9rem;
+      }
+      .hero {
+        padding: 4rem 0 2.5rem;
+      }
+      .eyebrow {
+        color: var(--accent);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+      h1 {
+        font-size: clamp(2.15rem, 5vw, 3.4rem);
+        line-height: 1.08;
+        margin: 0.35rem 0 1rem;
+      }
+      h2 {
+        margin: 0 0 0.5rem;
+        font-size: 1.55rem;
+      }
+      section {
+        padding: 2.7rem 0;
+        border-top: 1px solid var(--border);
+      }
+      p,
+      li {
+        color: var(--muted);
+      }
+      .lede {
+        font-size: 1.16rem;
+        max-width: 44rem;
+      }
+      .notice {
+        padding: 1rem 1.15rem;
+        border-left: 3px solid var(--warn);
+        background: var(--surface);
+        color: var(--muted);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+      }
+      .card {
+        padding: 1.15rem;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      .card h3 {
+        margin: 0;
+        color: var(--text);
+        font-size: 1rem;
+      }
+      .card p {
+        margin: 0.45rem 0 0;
+        font-size: 0.93rem;
+      }
+      pre {
+        padding: 1rem;
+        overflow: auto;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #101218;
+        color: var(--text);
+      }
+      .ok {
+        color: var(--safe);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+      .no {
+        color: var(--warn);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+      }
+      @media (max-width: 620px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .links {
+          gap: 0.65rem;
+          font-size: 0.8rem;
+        }
+      }
+      body {
+        overflow-wrap: anywhere;
+      }
+      .nav .wrap {
+        height: auto;
+        min-height: 58px;
+        flex-wrap: wrap;
+        padding-block: 8px;
+      }
+      .links {
+        flex-wrap: wrap;
+      }
+      .links a {
+        display: inline-flex;
+        align-items: center;
+        min-height: 44px;
+      }
+      :where(a, summary):focus-visible {
+        outline: 2px solid var(--accentHover);
+        outline-offset: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap">
+        <a href="index.html"><strong>SkyTwin</strong></a>
+        <div class="links">
+          <a href="index.html">Overview</a><a href="docs.html">Docs</a
+          ><a href="agents.html">For agents</a
+          ><a href="reference.html">Reference</a><a href="demo.html">Demo</a
+          ><a href="https://github.com/jayzalowitz/skytwin">GitHub</a>
+        </div>
+      </div>
+    </nav>
+    <main class="wrap">
+      <header class="hero">
+        <p class="eyebrow">Alpha + source preview</p>
+        <h1>Install the app, or run the newest source.</h1>
+        <p class="lede">
+          The desktop alpha is a real packaged SkyTwin app built from the
+          current source. It supports first-account setup with a Google OAuth
+          client you create and control; current source also includes a guarded
+          fictional sample when you prefer not to connect an inbox.
+        </p>
+      </header>
+      <section>
+        <h2>Choose the right path</h2>
+        <div class="grid">
+          <article class="card">
+            <p class="ok">Fastest hands-on path</p>
+            <h3>Download the desktop alpha</h3>
+            <p>
+              Open a packaged app on Apple Silicon macOS, x64 Windows, or x86-64
+              Linux. No repository checkout is required. The build is unsigned
+              and can connect your real Gmail inbox through the desktop-local
+              dashboard and your own Google OAuth app.
+            </p>
+          </article>
+          <article class="card">
+            <p class="ok">Newest capabilities</p>
+            <h3>Run the source tree</h3>
+            <p>
+              Use the repository to inspect the latest decision/policy boundary,
+              run the newest sample, or operate the same BYO Google flow locally.
+            </p>
+          </article>
+        </div>
+      </section>
+      <section id="alpha">
+        <h2>Download the desktop alpha</h2>
+        <p>
+          The
+          <a
+            href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+            >SkyTwin desktop alpha release</a
+          >
+          is usable software, not only the fictional demo. Pick the installer
+          for your operating system:
+        </p>
+        <div class="grid">
+          <article class="card">
+            <h3>macOS · Apple Silicon</h3>
+            <p>
+              <a
+                href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                >Open the current release</a
+              >. On first launch, right-click SkyTwin, choose
+              <strong>Open</strong>, then confirm <strong>Open</strong>.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Windows · x64</h3>
+            <p>
+              <a
+                href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                >Open the current release</a
+              >. If SmartScreen appears, choose <strong>More info</strong>, then
+              <strong>Run anyway</strong>.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Linux · x86-64 AppImage</h3>
+            <p>
+              <a
+                href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                >Open the current release</a
+              >
+              and make it executable using your desktop or
+              <code>chmod +x</code>.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Linux · x86-64 packages</h3>
+            <p>
+              Download the
+              <a
+                href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                >current release assets</a
+              >
+              or
+              <a
+                href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+                >release notes</a
+              >.
+            </p>
+          </article>
+        </div>
+        <div class="notice">
+          <strong>Alpha boundary:</strong> these artifacts are unsigned and have
+          no current notarization, clean-machine, or auto-update evidence. This
+          is an early public alpha, not a managed OAuth service or a Google
+          verification/signing claim. This is not a supported installer path
+          for the public beta. Read its
+          <a
+            href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+            >release notes</a
+          >
+          and avoid personal data while evaluating it.
+        </div>
+        <div class="card" style="margin-top: 1rem">
+          <p class="ok">Optional real-inbox mode</p>
+          <h3>Connect Gmail in the app or your browser</h3>
+          <p>
+            Start the alpha, then use <strong>Connect Gmail</strong> in its
+            desktop window for first-account setup. The same five-step local-web
+            wizard is served at
+            <code>http://localhost:3200/#/connect-gmail</code> for a browser that
+            already has a valid SkyTwin session. A fresh browser does not inherit
+            Electron's one-use session-token handoff. You create a
+            Web Application OAuth client in your own Google Cloud project, add
+            the two loopback callback URLs, paste the client ID and secret, and
+            approve the requested scopes. The worker can then ingest real Gmail
+            and Calendar signals.
+          </p>
+          <p>
+            This is advanced alpha functionality, not a managed SkyTwin OAuth
+            service. Start with a test account: the client secret and newly
+            authorized tokens are stored without app-level encryption in the
+            alpha's configured local database, Google testing-mode
+            grants can expire after seven days, and supported Gmail or Calendar
+            mutation is not part of this capability claim.
+          </p>
+          <p>
+            <a href="connect-gmail.html"
+              >Follow the exact Gmail setup guide →</a
+            >
+          </p>
+        </div>
+      </section>
+      <section id="source">
+        <h2>Run a reviewed source checkout</h2>
+        <p>
+          The source installer is a convenience route for its own moving
+          <code>main</code> checkout. To inspect a specific source revision,
+          start that checkout directly instead. This keeps the executable tree
+          and the revision you reviewed the same.
+        </p>
+        <div class="notice">
+          <strong>Prerequisites:</strong> install Node.js
+          <code>&gt;=20.19.4</code>, Corepack, pnpm, Git, and standard build tools
+          for your operating system before using the manual checkout commands.
+          The one-line installer below can provision supported prerequisites;
+          the reviewed-checkout path assumes they already exist.
+        </div>
+        <pre><code>git clone https://github.com/jayzalowitz/skytwin.git
 cd skytwin
 git checkout &lt;reviewed-commit&gt;
 pnpm install
@@ -30,9 +360,104 @@ cp .env.example .env
 pnpm db:migrate
 pnpm db:seed
 pnpm build --concurrency=1
-pnpm dev</code></pre><p>For an extracted, exact-commit source archive rather than a Git checkout, use <code>SKYTWIN_SOURCE_ARCHIVE=true ./install.sh</code> from the extracted directory. The one-line convenience form uses moving <code>main</code> and creates or updates its own checkout: <code>curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash</code>. Use it only when evaluating that moving source route, not when you need to run the revision you reviewed. Do not use either route on a machine where you cannot review or permit those local changes.</p></section>
-    <section><h2>What starts locally</h2><div class="grid"><article class="card"><h3>Dashboard and API</h3><p>The installer starts the local dashboard, API, worker, and CockroachDB-backed development environment. Health endpoints are documented in <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/operations.md">operations.md</a>.</p></article><article class="card"><h3>Models are not silently downloaded</h3><p>Managed local-model setup is a separate user action. A compatible runtime is required; if it is absent, model-backed reasoning remains unavailable rather than falling through to a hosted provider.</p></article><article class="card"><h3>Real accounts are not the preview</h3><p>The supported preview is the isolated fictional-data sample. Google and Microsoft account connections are unavailable on that surface.</p></article><article class="card"><h3>Network boundaries remain explicit</h3><p>Connected services, model downloads, configured hosted providers, and adapters can use the network. Read <a href="privacy.html">Privacy</a> before configuring any of them.</p></article></div></section>
-    <section><h2>Evaluate before you connect data</h2><ol><li>Read the <a href="demo.html">fictional-data demo</a> and use it to inspect approval/explanation behavior.</li><li>Read the <a href="agents.html">agent guide</a> if you plan to expose the MCP surface to another agent.</li><li>Review the <a href="privacy.html">privacy policy</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md">inference boundary</a> before adding a provider or account.</li><li>Use the dashboard controls to keep autonomy at the lowest useful level; do not treat an LLM suggestion as authorization.</li></ol><div class="notice"><strong>Release boundary:</strong> Signing, notarization, clean-machine evidence, and supported-installer validation remain release gates. See the machine-checked <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a>.</div></section>
-  </main>
-</body>
+pnpm dev</code></pre>
+        <p>
+          For an extracted, exact-commit source archive rather than a Git
+          checkout, use
+          <code>SKYTWIN_SOURCE_ARCHIVE=true ./install.sh</code> from the
+          extracted directory. The one-line convenience form uses moving
+          <code>main</code> and creates or updates its own checkout:
+          <code
+            >curl -fsSL
+            https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh
+            | bash</code
+          >. Use it only when evaluating that moving source route, not when you
+          need to run the revision you reviewed. Do not use either route on a
+          machine where you cannot review or permit those local changes.
+        </p>
+      </section>
+      <section>
+        <h2>What starts locally</h2>
+        <div class="grid">
+          <article class="card">
+            <h3>Dashboard and API</h3>
+            <p>
+              The installer starts the local dashboard, API, worker, and
+              CockroachDB-backed development environment. Health endpoints are
+              documented in
+              <a
+                href="https://github.com/jayzalowitz/skytwin/blob/main/docs/operations.md"
+                >operations.md</a
+              >.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Models are not silently downloaded</h3>
+            <p>
+              Managed local-model setup is a separate user action. A compatible
+              runtime is required; if it is absent, model-backed reasoning
+              remains unavailable rather than falling through to a hosted
+              provider.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Real accounts are explicit</h3>
+            <p>
+              Current source defaults to the isolated fictional-data sample.
+              Advanced operators can set
+              <code>SKYTWIN_GOOGLE_CONNECTION_MODE=experimental</code> before
+              starting source services to enable the retained BYO Google route.
+              Authorization happens in a normal browser and returns to the local
+              dashboard at <code>http://localhost:3200</code>; Electron is not
+              required. The current alpha exposes its Gmail wizard directly
+              in its window and serves the same route to an already authenticated
+              local browser; use the desktop window for first-account bootstrap.
+            </p>
+          </article>
+          <article class="card">
+            <h3>Network boundaries remain explicit</h3>
+            <p>
+              Connected services, model downloads, configured hosted providers,
+              and adapters can use the network. Read
+              <a href="privacy.html">Privacy</a> before configuring any of them.
+            </p>
+          </article>
+        </div>
+      </section>
+      <section>
+        <h2>Evaluate before you connect data</h2>
+        <ol>
+          <li>
+            Read the <a href="demo.html">fictional-data demo</a> and use it to
+            inspect approval/explanation behavior.
+          </li>
+          <li>
+            Read the <a href="agents.html">agent guide</a> if you plan to expose
+            the MCP surface to another agent.
+          </li>
+          <li>
+            Review the <a href="privacy.html">privacy policy</a> and
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md"
+              >inference boundary</a
+            >
+            before adding a provider or account.
+          </li>
+          <li>
+            Use the dashboard controls to keep autonomy at the lowest useful
+            level; do not treat an LLM suggestion as authorization.
+          </li>
+        </ol>
+        <div class="notice">
+          <strong>Release boundary:</strong> Signing, notarization,
+          clean-machine evidence, and supported-installer validation remain
+          release gates. See the machine-checked
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
+            >beta claim ledger</a
+          >.
+        </div>
+      </section>
+    </main>
+  </body>
 </html>

@@ -48,6 +48,7 @@ describe('onboarding accessibility contract', () => {
     expect(onboarding).not.toContain('function isOnWizard()');
     expect(onboarding).toContain('Just show me around');
     expect(onboarding).toContain('data-action="onb-start-tour"');
+    expect(onboarding).toContain('data-action="onb-connect-google"');
   });
 
   it('contains keyboard focus only while the visible dialog is active', () => {

@@ -7,14 +7,14 @@
   <meta name="description" content="SkyTwin terms of service. SkyTwin is Apache 2.0 licensed open-source software provided as-is, with no warranty.">
   <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/terms.html">
   <style>
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0b10; color: #e8e8ee; line-height: 1.65; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0b10; color: #e8e8ee; line-height: 1.65; overflow-wrap: anywhere; }
     .wrap { max-width: 760px; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
     h1 { font-size: 2.2rem; margin: 0 0 1rem; letter-spacing: -0.02em; }
     h2 { font-size: 1.3rem; margin: 2rem 0 0.75rem; letter-spacing: -0.01em; }
     p, li { font-size: 1.05rem; }
     .meta { color: #9b9bab; font-size: 0.95rem; margin: 0 0 2rem; }
-    a { color: #7c5cff; }
-    a:hover { color: #9d83ff; }
+    a { color: #7c72e8; }
+    a:hover { color: #9a92f2; }
     nav a { color: #9b9bab; font-size: 0.9rem; }
     footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #2a2a36; color: #9b9bab; font-size: 0.9rem; }
   </style>
@@ -32,8 +32,8 @@
     <p>Your use of SkyTwin's source code is governed by the <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE">Apache License 2.0</a>. These Terms of Service describe additional terms that apply when you use the official SkyTwin desktop technical preview. SkyTwin does not currently ship a supported public OAuth client for Google or Microsoft account sign-in.</p>
 
     <h2>3. Current preview and future account use</h2>
-    <p>The supported preview is an isolated, account-free sample. Google and Microsoft account connections are unavailable, and the preview does not ask for access to Gmail, Google Calendar, Google identity, Outlook, or Microsoft Graph. Existing source components and credentials from earlier development builds do not make real-account use supported.</p>
-    <p>Managed account access is deferred. A future operator/BYO flow will remain unsupported until its authorization, callback, ownership, scope, and secret-custody boundaries are complete and reviewed. If such a flow is enabled in a future release, use it only with accounts you own or are authorized to manage and follow the applicable provider terms. Google use will remain subject to <a href="https://policies.google.com/terms">Google's Terms of Service</a> and the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>.</p>
+    <p>The current unsigned alpha offers first-account creation through a user-created Google OAuth client in its desktop window; an already authenticated local browser can use the same dashboard, while a fresh browser cannot inherit the desktop session. The guarded fictional sample remains isolated and account-free. Microsoft remains disabled in packaged mode. These are BYO alpha paths, not a supported managed SkyTwin account service or Google verification claim.</p>
+    <p>Use a live-account path only with accounts you own or are authorized to manage and follow the applicable provider terms. For a user- or operator-supplied OAuth client, its scopes, secret custody, and provider publishing status are your responsibility. The alpha's historical bundled client ID is not a current support or verification claim. Google use is subject to <a href="https://policies.google.com/terms">Google's Terms of Service</a> and the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>.</p>
 
     <h2>4. No warranty</h2>
     <p>SkyTwin is provided "AS IS" without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, or non-infringement. The Apache 2.0 license terms apply. The author makes no representations about the reliability, accuracy, or availability of the software, and is not responsible for any decisions the software makes, executes, or recommends.</p>
@@ -45,7 +45,7 @@
     <p>To the maximum extent permitted by law, the author of SkyTwin shall not be liable for any direct, indirect, incidental, special, consequential, or exemplary damages arising from your use of the software, including but not limited to damages for loss of profits, goodwill, data, or other intangible losses, even if advised of the possibility of such damages.</p>
 
     <h2>7. Termination</h2>
-    <p>You may stop using SkyTwin at any time by quitting the app and deleting its local data. If an earlier development build was granted Google or Microsoft access, revoke that grant separately through the applicable provider's account-permission controls; for Google, use <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. The current preview does not provide a supported managed or operator/BYO account connection.</p>
+    <p>You may stop using SkyTwin at any time by quitting the app and deleting its local data. If any alpha or development build was granted Google or Microsoft access, revoke that grant separately through the applicable provider's account-permission controls; for Google, use <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a>. Deleting local data alone does not revoke provider-side access.</p>
 
     <h2>8. Changes</h2>
     <p>Material changes to these terms will be announced in the project CHANGELOG on GitHub and reflected here. This page is versioned in git alongside the source code.</p>

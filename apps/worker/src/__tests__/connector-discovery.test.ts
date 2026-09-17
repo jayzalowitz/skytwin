@@ -3,6 +3,7 @@ import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connector
 import {
   buildAccountConnectorTopology,
   buildUserOAuthConnectors,
+  isMicrosoftConnectionAdmitted,
   loadUserOAuthConnections,
 } from '../connector-discovery.js';
 
@@ -116,6 +117,24 @@ describe('buildUserOAuthConnectors', () => {
     expect(deps.createOutlookCalendarConnector).toHaveBeenCalledWith(deps.tokenStore);
   });
 
+  it('does not resolve retained Microsoft credentials in packaged Google-only mode', async () => {
+    const deps = dependencies({
+      googleConnectionMode: 'experimental',
+      hasGoogleToken: false,
+      hasMicrosoftToken: true,
+    });
+
+    const connectors = await buildUserOAuthConnectors({
+      ...deps.input,
+      ...deps,
+      googleOnly: true,
+    });
+
+    expect(connectors).toEqual([]);
+    expect(deps.resolveMicrosoftConfig).not.toHaveBeenCalled();
+    expect(deps.createTokenStore).not.toHaveBeenCalled();
+  });
+
   it('admits Google connectors only after exact experimental opt-in and usable config', async () => {
     const deps = dependencies({
       googleConnectionMode: 'experimental',
@@ -146,6 +165,14 @@ describe('buildUserOAuthConnectors', () => {
     expect(deps.createTokenStore).not.toHaveBeenCalled();
     expect(deps.createGmailConnector).not.toHaveBeenCalled();
     expect(deps.createGoogleCalendarConnector).not.toHaveBeenCalled();
+  });
+});
+
+describe('isMicrosoftConnectionAdmitted', () => {
+  it('requires source experimental mode and rejects packaged Google-only mode', () => {
+    expect(isMicrosoftConnectionAdmitted('disabled', false)).toBe(false);
+    expect(isMicrosoftConnectionAdmitted('experimental', false)).toBe(true);
+    expect(isMicrosoftConnectionAdmitted('experimental', true)).toBe(false);
   });
 });
 
