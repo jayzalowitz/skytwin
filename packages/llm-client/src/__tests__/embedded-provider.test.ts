@@ -24,6 +24,7 @@ beforeEach(() => {
       contextWindow: 4096,
       artifactSha256: 'a'.repeat(64),
       runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
     },
     generate: generateMock,
   });
@@ -48,7 +49,24 @@ describe('embedded provider', () => {
     expect(generateMock).toHaveBeenCalledWith(expect.any(String), {
       maxTokens: 64,
       temperature: 0.1,
+      jsonSchema: undefined,
+      disableReasoning: undefined,
     });
+  });
+
+  it('adds the no-think directive and passes structured-output controls', async () => {
+    generateMock.mockResolvedValue('{"ok":true}');
+    const schema = '{"type":"object"}';
+    await embeddedGenerate('', 'managed', 'strict', {
+      jsonSchema: schema,
+      disableReasoning: true,
+    });
+    const promptArg = generateMock.mock.calls[0]![0] as string;
+    expect(promptArg).toContain('/no_think\n\nassistant:');
+    expect(generateMock).toHaveBeenCalledWith(promptArg, expect.objectContaining({
+      jsonSchema: schema,
+      disableReasoning: true,
+    }));
   });
 
   it('renders ChatMessage[] as `role: content` blocks ending in `assistant:`', async () => {
@@ -104,6 +122,7 @@ describe('embedded provider', () => {
       modelName: 'fake.gguf',
       artifactSha256: 'a'.repeat(64),
       runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
     });
     expect(createPortMock).toHaveBeenCalledWith({});
   });
@@ -145,6 +164,7 @@ describe('embedded provider', () => {
           contextWindow: 4096,
           artifactSha256: 'b'.repeat(64),
           runtimeVersion: 'llama.cpp-b5001',
+          workflowAuthoringQualified: true,
         },
         generate: generateMock,
       });
@@ -157,6 +177,7 @@ describe('embedded provider', () => {
       modelName: 'ready.gguf',
       artifactSha256: 'b'.repeat(64),
       runtimeVersion: 'llama.cpp-b5001',
+      workflowAuthoringQualified: true,
     });
     expect(createPortMock).toHaveBeenCalledTimes(2);
   });

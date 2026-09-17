@@ -24,6 +24,8 @@ export type {
   InferenceTrace,
   LlmClientOptions,
   RejectedConfidentialVerification,
+  ExactOllamaProviderOutput,
+  ExactOllamaRuntimeIdentity,
   TrustedConfidentialVerification,
   VerifiedProviderOutput,
 } from './types.js';

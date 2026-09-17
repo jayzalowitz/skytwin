@@ -7,6 +7,7 @@ const mockAnthropicStream = vi.fn();
 const mockOpenaiGenerate = vi.fn();
 const mockGoogleGenerate = vi.fn();
 const mockOllamaGenerate = vi.fn();
+const mockEmbeddedGenerate = vi.fn();
 const mockTrustedRouterGenerate = vi.fn();
 
 vi.mock('../providers/anthropic.js', () => ({
@@ -23,6 +24,9 @@ vi.mock('../providers/google.js', () => ({
 }));
 vi.mock('../providers/ollama.js', () => ({
   generate: (...args: unknown[]) => mockOllamaGenerate(...args),
+}));
+vi.mock('../providers/embedded.js', () => ({
+  generate: (...args: unknown[]) => mockEmbeddedGenerate(...args),
 }));
 vi.mock('../providers/trustedrouter.js', () => ({
   generate: (...args: unknown[]) => mockTrustedRouterGenerate(...args),
@@ -56,6 +60,7 @@ describe('LlmClient', () => {
     mockOpenaiGenerate.mockReset();
     mockGoogleGenerate.mockReset();
     mockOllamaGenerate.mockReset();
+    mockEmbeddedGenerate.mockReset();
     mockTrustedRouterGenerate.mockReset();
   });
 
@@ -245,7 +250,12 @@ describe('LlmClient', () => {
         onInferenceTrace: (trace) => traces.push(trace),
         now: () => new Date('2026-09-10T00:00:00.000Z'),
       });
-      await client.generate('private prompt', { maxTokens: 12, invocationKind: 'interactive' });
+      await client.generate('private prompt', {
+        maxTokens: 12,
+        invocationKind: 'interactive',
+        jsonSchema: '{"type":"object"}',
+        disableReasoning: true,
+      });
       expect(traces).toHaveLength(1);
       expect(traces[0]).toMatchObject({
         execution: {
@@ -259,7 +269,12 @@ describe('LlmClient', () => {
         endpointIdentity: 'https://api.openai.com', cost: { basis: 'unknown' },
       });
       expect(Buffer.from(traces[0]!.request).toString()).toBe(
-        JSON.stringify({ prompt: 'private prompt', maxTokens: 12 }),
+        JSON.stringify({
+          prompt: 'private prompt',
+          maxTokens: 12,
+          jsonSchema: '{"type":"object"}',
+          disableReasoning: true,
+        }),
       );
       expect(Buffer.from(traces[0]!.response).toString()).toBe('cloud response');
       expect(traces[0]).not.toHaveProperty('verification');
@@ -709,6 +724,45 @@ describe('LlmClient', () => {
       });
     });
 
+    it('propagates exact identity from Ollama after embedded fallback', async () => {
+      const { LlmClient } = await freshImport();
+      const digest = 'a'.repeat(64);
+      mockEmbeddedGenerate.mockRejectedValue(new Error('embedded unavailable'));
+      mockOllamaGenerate.mockResolvedValue({
+        content: 'local fallback',
+        resolvedModel: 'qwen3:8b',
+        runtimeIdentity: {
+          provider: 'ollama',
+          serverVersion: '0.18.1',
+          modelDigestSha256: digest,
+        },
+      });
+      const client = LlmClient.forReasoningMode('on_device', [
+        { name: 'embedded', apiKey: '', model: 'managed' },
+        { name: 'ollama', apiKey: '', model: 'qwen3:8b' },
+      ], 'mixed-local-exact-identity');
+
+      await expect(client.generate('hello', {
+        invocationKind: 'interactive',
+        requireExactRuntimeIdentity: true,
+      })).resolves.toMatchObject({
+        content: 'local fallback',
+        provider: 'ollama',
+        model: 'qwen3:8b',
+        runtimeIdentity: {
+          provider: 'ollama',
+          serverVersion: '0.18.1',
+          modelDigestSha256: digest,
+        },
+        execution: {
+          executionPath: [
+            { provider: 'embedded', outcome: 'failed' },
+            { provider: 'ollama', outcome: 'succeeded' },
+          ],
+        },
+      });
+    });
+
     it('classifies remote Ollama in bring-your-own mode as conventional with unknown cost', async () => {
       const { LlmClient } = await freshImport();
       const traces: import('../types.js').InferenceTrace[] = [];
@@ -815,6 +869,30 @@ describe('LlmClient', () => {
       expect(mockAnthropicGenerate).toHaveBeenCalledOnce();
       expect(mockOpenaiGenerate).toHaveBeenCalledOnce();
       expect(Object.isFrozen(mockOpenaiGenerate.mock.calls[0]![3])).toBe(true);
+    });
+
+    it('preserves structured-output controls through the provider boundary', async () => {
+      const { LlmClient } = await freshImport();
+      const ollamaProvider: ProviderEntry = { name: 'ollama', apiKey: '', model: 'local-model' };
+      mockOllamaGenerate.mockResolvedValue('local');
+      const client = LlmClient.forReasoningMode(
+        'on_device', [ollamaProvider], 'user-structured-output',
+      );
+
+      await client.generate('write a workflow', {
+        jsonSchema: '{"type":"object"}',
+        disableReasoning: true,
+      });
+
+      expect(mockOllamaGenerate).toHaveBeenCalledWith(
+        '',
+        ollamaProvider.model,
+        'write a workflow',
+        expect.objectContaining({
+          jsonSchema: '{"type":"object"}',
+          disableReasoning: true,
+        }),
+      );
     });
 
     it('does not invoke an unknown-price provider for unattended reasoning', async () => {

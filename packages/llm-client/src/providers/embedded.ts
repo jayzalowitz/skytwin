@@ -21,6 +21,7 @@ export type EmbeddedProviderReadiness =
     modelName: string | null;
     artifactSha256: string | null;
     runtimeVersion: string | null;
+    workflowAuthoringQualified: boolean;
   }
   | {
     state: 'artifact_unavailable' | 'runtime_unavailable';
@@ -55,6 +56,8 @@ export async function probeEmbeddedProviderReadiness(
       modelName: port.capabilities.modelName,
       artifactSha256: port.capabilities.artifactSha256 ?? null,
       runtimeVersion: port.capabilities.runtimeVersion ?? null,
+      workflowAuthoringQualified:
+        port.capabilities.workflowAuthoringQualified ?? false,
     };
   }
   // Missing prerequisites can be installed while the API stays running.
@@ -94,7 +97,9 @@ function buildPrompt(prompt: string | ChatMessage[], options: GenerateOptions): 
   return messages
     .map((m) => `${m.role}: ${m.content}`)
     .join('\n\n')
-    .concat('\n\nassistant:');
+    .concat(options.disableReasoning === true
+      ? '\n\n/no_think\n\nassistant:'
+      : '\n\nassistant:');
 }
 
 /**
@@ -122,6 +127,8 @@ export async function generate(
   const text = await port.generate(buildPrompt(prompt, options), {
     maxTokens: options.maxTokens,
     temperature: options.temperature,
+    jsonSchema: options.jsonSchema,
+    disableReasoning: options.disableReasoning,
   });
   return text.trim();
 }

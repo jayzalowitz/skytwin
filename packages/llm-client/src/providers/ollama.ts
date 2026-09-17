@@ -1,5 +1,10 @@
 import { canonicalizeProviderBaseUrl, type ReasoningMode } from '@skytwin/shared-types';
-import type { ChatMessage, GenerateOptions } from '../types.js';
+import type {
+  ChatMessage,
+  ExactOllamaProviderOutput,
+  GenerateOptions,
+  ProviderGenerateOutput,
+} from '../types.js';
 import { toMessages } from '../messages.js';
 import { fetchCustomProviderUrl, type SafeProviderFetch } from '../url-validation.js';
 import { ollamaLocalModelReference, ProviderModePolicyError } from '../provider-privacy.js';
@@ -7,6 +12,12 @@ import { ollamaLocalModelReference, ProviderModePolicyError } from '../provider-
 // A literal loopback default cannot be redirected by a modified hosts file.
 const DEFAULT_URL = 'http://127.0.0.1:11434';
 const MIN_LOCAL_SOURCE_VERSION = Object.freeze([0, 18, 0] as const);
+const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
+
+interface OllamaModelIdentity {
+  readonly aliases: readonly string[];
+  readonly digest: string;
+}
 
 function supportsLocalSourceSelector(version: unknown): boolean {
   if (typeof version !== 'string') return false;
@@ -23,7 +34,7 @@ function supportsLocalSourceSelector(version: unknown): boolean {
 async function assertLocalSourceSelectorSupported(
   baseUrl: string,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<string> {
   let versionFetch: SafeProviderFetch | undefined;
   try {
     versionFetch = await fetchCustomProviderUrl(
@@ -39,6 +50,7 @@ async function assertLocalSourceSelectorSupported(
     if (!supportsLocalSourceSelector(body.version)) {
       throw new Error('version is older than 0.18.0 or malformed');
     }
+    return (body.version as string).trim();
   } catch (error) {
     if (error instanceof ProviderModePolicyError) throw error;
     throw new ProviderModePolicyError(
@@ -48,6 +60,68 @@ async function assertLocalSourceSelectorSupported(
     );
   } finally {
     await versionFetch?.close();
+  }
+}
+
+function canonicalModelReference(value: string): string {
+  const normalized = value.trim().toLowerCase();
+  const lastSlash = normalized.lastIndexOf('/');
+  const lastColon = normalized.lastIndexOf(':');
+  return lastColon > lastSlash ? normalized : `${normalized}:latest`;
+}
+
+async function resolveExactLocalModel(
+  baseUrl: string,
+  configuredModel: string,
+  signal: AbortSignal,
+  endpoint: 'tags' | 'ps' = 'tags',
+): Promise<OllamaModelIdentity> {
+  let identityFetch: SafeProviderFetch | undefined;
+  try {
+    identityFetch = await fetchCustomProviderUrl(
+      `${baseUrl}/api/${endpoint}`,
+      'ollama',
+      { method: 'GET', signal },
+    );
+    if (!identityFetch.response.ok) {
+      await identityFetch.response.body?.cancel().catch(() => undefined);
+      throw new Error(`${endpoint} endpoint returned ${identityFetch.response.status}`);
+    }
+    const body = await identityFetch.response.json() as { models?: unknown };
+    if (!Array.isArray(body.models)) throw new Error(`${endpoint} response is malformed`);
+
+    const requested = canonicalModelReference(configuredModel);
+    const matches: OllamaModelIdentity[] = [];
+    for (const candidate of body.models) {
+      if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
+        throw new Error(`${endpoint} entry is malformed`);
+      }
+      const record = candidate as Record<string, unknown>;
+      if (typeof record['name'] !== 'string' || !record['name'].trim()
+          || typeof record['model'] !== 'string' || !record['model'].trim()
+          || typeof record['digest'] !== 'string' || !SHA256_PATTERN.test(record['digest'])) {
+        throw new Error(`${endpoint} entry lacks an exact name, model, or SHA-256 digest`);
+      }
+      const aliases = [...new Set([
+        canonicalModelReference(record['name']),
+        canonicalModelReference(record['model']),
+      ])];
+      if (aliases.includes(requested)) {
+        matches.push({ aliases, digest: record['digest'] });
+      }
+    }
+    if (matches.length === 0) throw new Error(`selected model is absent from /api/${endpoint}`);
+    if (matches.length !== 1) throw new Error('selected model resolves ambiguously');
+    return matches[0]!;
+  } catch (error) {
+    if (error instanceof ProviderModePolicyError) throw error;
+    throw new ProviderModePolicyError(
+      'ollama_local_source_unverified',
+      `On-device Ollama model identity could not be verified (${error instanceof Error ? error.message : String(error)})`,
+      'ollama',
+    );
+  } finally {
+    await identityFetch?.close();
   }
 }
 
@@ -70,7 +144,7 @@ export async function generate(
     baseUrl?: string;
     reasoningMode?: ReasoningMode;
   } = {},
-): Promise<string> {
+): Promise<ProviderGenerateOutput> {
   const baseUrl = canonicalizeProviderBaseUrl(options.baseUrl) ?? DEFAULT_URL;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 30_000);
@@ -80,8 +154,13 @@ export async function generate(
     const requestModel = options.reasoningMode === 'on_device'
       ? ollamaLocalModelReference(model)
       : model;
+    let serverVersionBefore: string | undefined;
+    let modelIdentityBefore: OllamaModelIdentity | undefined;
     if (options.reasoningMode === 'on_device') {
-      await assertLocalSourceSelectorSupported(baseUrl, controller.signal);
+      serverVersionBefore = await assertLocalSourceSelectorSupported(baseUrl, controller.signal);
+      if (options.requireExactRuntimeIdentity) {
+        modelIdentityBefore = await resolveExactLocalModel(baseUrl, model, controller.signal);
+      }
     }
     // System prompt is supplied either via options.systemPrompt (legacy
     // path) or as a system-role message in the array (assistant package
@@ -126,6 +205,7 @@ export async function generate(
     // empty model output — return '' rather than undefined for symmetry
     // with the other providers.
     const data = await res.json() as {
+      model?: unknown;
       message?: { content?: string };
       remote_host?: unknown;
       remote_model?: unknown;
@@ -140,7 +220,54 @@ export async function generate(
         'ollama',
       );
     }
-    return data.message?.content ?? '';
+    const content = data.message?.content ?? '';
+    if (options.reasoningMode !== 'on_device' || !options.requireExactRuntimeIdentity) {
+      return content;
+    }
+    if (serverVersionBefore === undefined || modelIdentityBefore === undefined
+        || typeof data.model !== 'string' || !data.model.trim()) {
+      throw new ProviderModePolicyError(
+        'ollama_local_source_unverified',
+        'On-device Ollama response omitted its exact selected model identity',
+        'ollama',
+      );
+    }
+    const responseModel = data.model.trim();
+    if (!modelIdentityBefore.aliases.includes(canonicalModelReference(responseModel))) {
+      throw new ProviderModePolicyError(
+        'ollama_local_source_unverified',
+        'On-device Ollama response model does not match the selected local model',
+        'ollama',
+      );
+    }
+    // `/api/ps` identifies the manifest actually resident after this request;
+    // the surrounding `/api/tags` snapshots additionally detect alias moves.
+    const runningModelIdentity = await resolveExactLocalModel(
+      baseUrl,
+      responseModel,
+      controller.signal,
+      'ps',
+    );
+    const serverVersionAfter = await assertLocalSourceSelectorSupported(baseUrl, controller.signal);
+    const modelIdentityAfter = await resolveExactLocalModel(baseUrl, responseModel, controller.signal);
+    if (serverVersionAfter !== serverVersionBefore
+        || runningModelIdentity.digest !== modelIdentityBefore.digest
+        || modelIdentityAfter.digest !== modelIdentityBefore.digest) {
+      throw new ProviderModePolicyError(
+        'ollama_local_source_unverified',
+        'On-device Ollama runtime or selected model changed during inference',
+        'ollama',
+      );
+    }
+    return {
+      content,
+      resolvedModel: responseModel,
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: serverVersionBefore,
+        modelDigestSha256: modelIdentityBefore.digest,
+      },
+    } satisfies ExactOllamaProviderOutput;
   } finally {
     clearTimeout(timeout);
     await customFetch?.close();

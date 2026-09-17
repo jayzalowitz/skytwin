@@ -25,15 +25,26 @@ const EXACT_EMBEDDED_READINESS = {
   modelName: 'managed.gguf',
   artifactSha256: 'a'.repeat(64),
   runtimeVersion: 'llama.cpp-b5000',
+  workflowAuthoringQualified: true,
 } as const;
 
-function response(content: string, provider = 'embedded', model = 'managed-local') {
+function response(
+  content: string,
+  provider = 'embedded',
+  model = 'managed-local',
+  runtimeIdentity?: {
+    provider: 'ollama';
+    serverVersion: string;
+    modelDigestSha256: string;
+  },
+) {
   return {
     content,
     provider,
     model,
     latencyMs: 12,
     execution: {},
+    ...(runtimeIdentity === undefined ? {} : { runtimeIdentity }),
   };
 }
 
@@ -96,6 +107,9 @@ describe('workflow authoring LLM boundary', () => {
     expect(generate.mock.calls[0]?.[1]).toMatchObject({
       invocationKind: 'interactive',
       temperature: 0,
+      jsonSchema: expect.stringContaining('SignalDigestAuthoringV1'),
+      disableReasoning: true,
+      requireExactRuntimeIdentity: true,
     });
   });
 
@@ -107,6 +121,7 @@ describe('workflow authoring LLM boundary', () => {
         modelName: 'managed.gguf',
         artifactSha256: 'a'.repeat(64),
         runtimeVersion: 'llama.cpp-b5000',
+        workflowAuthoringQualified: true,
       })),
     });
 
@@ -143,6 +158,102 @@ describe('workflow authoring LLM boundary', () => {
         },
       });
     expect(probeEmbeddedReadiness).toHaveBeenCalledWith('managed');
+  });
+
+  it('pins identity from the Ollama responder after mixed-local fallback', async () => {
+    const digest = 'b'.repeat(64);
+    const generate = vi.fn().mockResolvedValue(response(
+      JSON.stringify(VALID_INTENT),
+      'ollama',
+      'qwen3:8b',
+      { provider: 'ollama', serverVersion: '0.18.1', modelDigestSha256: digest },
+    ));
+    const probeEmbeddedReadiness = vi.fn();
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(
+        readyResolution(generate, 'on_device', undefined, probeEmbeddedReadiness),
+      ),
+    });
+
+    await expect(service.authorSignalDigest('user-1', 'Summarize invoices daily.'))
+      .resolves.toMatchObject({
+        success: true,
+        inference: {
+          provider: 'ollama',
+          model: 'qwen3:8b',
+          runtimeVersion: 'ollama-0.18.1',
+          modelArtifactSha256: digest,
+        },
+      });
+    expect(probeEmbeddedReadiness).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['missing identity', undefined, 'runtime_unavailable'],
+    [
+      'malformed runtime',
+      { provider: 'ollama', serverVersion: 'unknown', modelDigestSha256: 'b'.repeat(64) },
+      'runtime_unavailable',
+    ],
+    [
+      'malformed digest',
+      { provider: 'ollama', serverVersion: '0.18.1', modelDigestSha256: 'short' },
+      'artifact_unavailable',
+    ],
+  ] as const)('fails closed for an on-device Ollama responder with %s', async (_label, identity, state) => {
+    const generate = vi.fn().mockResolvedValue(response(
+      JSON.stringify(VALID_INTENT),
+      'ollama',
+      'qwen3:8b',
+      identity,
+    ));
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(readyResolution(generate, 'on_device')),
+    });
+
+    await expect(service.authorSignalDigest('user-1', 'Summarize invoices daily.'))
+      .resolves.toMatchObject({ success: false, state });
+  });
+
+  it('leaves explicitly nonlocal Ollama workflow identity handling unchanged', async () => {
+    const generate = vi.fn().mockResolvedValue(response(
+      JSON.stringify(VALID_INTENT),
+      'ollama',
+      'operator-model',
+    ));
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(
+        readyResolution(generate, 'bring_your_own_provider'),
+      ),
+    });
+
+    await expect(service.authorSignalDigest('user-1', 'Summarize invoices daily.'))
+      .resolves.toMatchObject({
+        success: true,
+        inference: { runtimeVersion: 'provider-managed-unreported' },
+      });
+  });
+
+  it('rejects an unqualified embedded responder in a mixed local chain', async () => {
+    const generate = vi.fn().mockResolvedValue(
+      response(JSON.stringify(VALID_INTENT), 'embedded', 'managed'),
+    );
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(
+        readyResolution(
+          generate,
+          'on_device',
+          undefined,
+          vi.fn().mockResolvedValue({
+            ...EXACT_EMBEDDED_READINESS,
+            workflowAuthoringQualified: false,
+          }),
+        ),
+      ),
+    });
+
+    await expect(service.authorSignalDigest('user-1', 'Summarize invoices daily.'))
+      .resolves.toMatchObject({ success: false, state: 'unsupported_model' });
   });
 
   it.each([
@@ -413,6 +524,25 @@ describe('workflow authoring LLM boundary', () => {
     expect(generate).not.toHaveBeenCalled();
   });
 
+  it('rejects an unqualified managed model before invoking the canary', async () => {
+    const generate = vi.fn();
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(
+        readyResolution(generate, 'on_device', {
+          ...EXACT_EMBEDDED_READINESS,
+          workflowAuthoringQualified: false,
+        }),
+      ),
+    });
+
+    await expect(service.probeReadiness('user-1')).resolves.toMatchObject({
+      state: 'unsupported_model',
+      retryable: false,
+      reason: expect.stringContaining('quality gate'),
+    });
+    expect(generate).not.toHaveBeenCalled();
+  });
+
   it.each([
     ['no_provider', 'setup_required'],
     ['confirmation_required', 'confirmation_required'],
@@ -521,6 +651,11 @@ describe('workflow authoring LLM boundary', () => {
       },
     });
     expect(generate.mock.calls[0]?.[0]?.[0]?.content).toContain('Omitted fields are preserved');
+    expect(generate.mock.calls[0]?.[1]).toMatchObject({
+      jsonSchema: expect.stringContaining('SignalDigestRevisionPatchV1'),
+      disableReasoning: true,
+      requireExactRuntimeIdentity: true,
+    });
   });
 
   it('rejects revision authority fields and repairs only once', async () => {
@@ -590,6 +725,7 @@ describe('workflow authoring LLM boundary', () => {
     expect(generate.mock.calls[0]?.[1]).toMatchObject({
       invocationKind: 'interactive',
       temperature: 0,
+      requireExactRuntimeIdentity: true,
     });
     expect(generate.mock.calls[0]?.[0]?.[1]?.content).toContain('[redacted:email]');
     expect(generate.mock.calls[0]?.[0]?.[1]?.content).not.toContain('billing@example.com');
@@ -613,5 +749,27 @@ describe('workflow authoring LLM boundary', () => {
         totalCount: 0, caughtCount: 0, ignoredCount: 0, invalidCount: 0, examples: [],
       },
     })).resolves.toEqual({ available: false, text: 'AI summary unavailable' });
+  });
+
+  it('uses the deterministic replay fallback when Ollama identity is not exact', async () => {
+    const generate = vi.fn().mockResolvedValue(response(
+      JSON.stringify({ summary: 'Must not be admitted.' }),
+      'ollama',
+      'qwen3:8b',
+    ));
+    const service = createWorkflowAuthoringService({
+      resolveClient: vi.fn().mockResolvedValue(readyResolution(generate, 'on_device')),
+    });
+
+    await expect(service.summarizeSignalDigestReplay('user-1', {
+      summaryInstruction: 'Summarize invoices.',
+      replay: {
+        providerKey: 'signal_digest.v1', providerSchemaVersion: '1', contentHash: 'a'.repeat(64),
+        totalCount: 0, caughtCount: 0, ignoredCount: 0, invalidCount: 0, examples: [],
+      },
+    })).resolves.toEqual({ available: false, text: 'AI summary unavailable' });
+    expect(generate.mock.calls[0]?.[1]).toMatchObject({
+      requireExactRuntimeIdentity: true,
+    });
   });
 });
