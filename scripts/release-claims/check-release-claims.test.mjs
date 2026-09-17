@@ -664,7 +664,7 @@ jobs:
             pnpm claims:check -- --require-ready --preflight --tag "\${GITHUB_REF_NAME}" --commit "\${GITHUB_SHA}" --repository "\${GITHUB_REPOSITORY}" --run-id "\${GITHUB_RUN_ID}" --ref "\${GITHUB_REF}"
           fi
   desktop-mac:
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     outputs:
       dmg-artifact-id: \${{ steps.upload-macos-dmg.outputs.artifact-id }}
@@ -684,7 +684,7 @@ jobs:
         with:
           name: SkyTwin-macOS-zip
   desktop-windows:
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     outputs:
       installer-artifact-id: \${{ steps.upload-windows-installer.outputs.artifact-id }}
@@ -697,7 +697,7 @@ jobs:
         with:
           name: SkyTwin-Windows-installer
   desktop-linux:
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     outputs:
       appimage-artifact-id: \${{ steps.upload-linux-appimage.outputs.artifact-id }}
@@ -725,12 +725,12 @@ jobs:
         with:
           name: SkyTwin-Linux-rpm
   mobile-android:
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-24.04
     steps: []
   mobile-ios:
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: macos-15
     steps: []
@@ -2176,10 +2176,11 @@ ${step}`,
       const root = makeRoot();
       writeValidFixture(root);
       const path = join(root, ".github/workflows/build.yml");
-      const original = `  ${jobName}:\n    needs: [test, changes]\n    if: github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`;
+      const canonicalNeeds = "needs: [changes]";
+      const original = `  ${jobName}:\n    ${canonicalNeeds}\n    if: github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`;
       const mutated = original.replace(
         replacement.startsWith("needs:")
-          ? "needs: [test, changes]"
+          ? canonicalNeeds
           : `if: github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`,
         replacement,
       );
@@ -2188,7 +2189,7 @@ ${step}`,
         readFileSync(path, "utf8").replace(original, mutated),
       );
       expect(verifyCanonicalReleasePublisher(root)).toContain(
-        `${jobName} must require the successful release-artifact test gate and exact path-change condition`,
+        `${jobName} must remain an independent unsigned-alpha package job with the exact path-change condition`,
       );
     },
   );

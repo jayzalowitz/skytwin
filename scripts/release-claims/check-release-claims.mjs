@@ -2752,13 +2752,13 @@ release-claims-ci/release-safety-evidence.json
     const job = canonicalWorkflow.jobs?.[jobName];
     if (
       !isRecord(job) ||
-      JSON.stringify(job.needs) !== JSON.stringify(["test", "changes"]) ||
+      JSON.stringify(job.needs) !== JSON.stringify(["changes"]) ||
       job.if !==
         `github.event_name != 'pull_request' || needs.changes.outputs.${changeOutput} == 'true'`
     )
       addError(
         errors,
-        `${jobName} must require the successful release-artifact test gate and exact path-change condition`,
+        `${jobName} must remain an independent unsigned-alpha package job with the exact path-change condition`,
       );
   }
   const machineProducerJob =

@@ -60,7 +60,10 @@ jobs:
               - '.github/workflows/build.yml'
 
   # ──────────────────────────────────────────────
-  # Tests — gate all builds behind passing tests
+  # Release claims, safety, and tests. This remains a required CI signal for
+  # the evidence-gated beta, but unsigned alpha package jobs run independently
+  # so an unresolved claim or inventory report cannot suppress useful preview
+  # artifacts. `v*` publication still enforces --require-ready below.
   # ──────────────────────────────────────────────
   test:
     name: release-claim-ci
@@ -270,7 +273,7 @@ jobs:
   # ──────────────────────────────────────────────
   desktop-mac:
     name: Desktop — macOS (DMG + ZIP)
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: macos-latest
     outputs:
@@ -374,7 +377,7 @@ jobs:
 
   desktop-windows:
     name: Desktop — Windows (NSIS installer)
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: windows-latest
     outputs:
@@ -467,7 +470,7 @@ jobs:
 
   desktop-linux:
     name: Desktop — Linux (AppImage + deb + rpm)
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.desktop == 'true'
     runs-on: ubuntu-latest
     outputs:
@@ -650,7 +653,7 @@ jobs:
   # ──────────────────────────────────────────────
   mobile-android:
     name: Mobile — Android APK
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -712,7 +715,7 @@ jobs:
   # ──────────────────────────────────────────────
   mobile-ios:
     name: Mobile — iOS (simulator build)
-    needs: [test, changes]
+    needs: [changes]
     if: github.event_name != 'pull_request' || needs.changes.outputs.mobile == 'true'
     runs-on: macos-latest
     steps:
