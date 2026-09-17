@@ -31,7 +31,7 @@ import { bindUserIdParamValidator } from '../middleware/validate-uuid.js';
 
 const VALID_IRONCLAW_CHANNEL = /^[a-zA-Z0-9_.:-]{1,64}$/;
 const VALID_AI_PROVIDERS = new Set<AIProviderName>([
-  'anthropic', 'openai', 'google', 'ollama', 'embedded',
+  'anthropic', 'openai', 'google', 'ollama', 'embedded', 'trustedrouter', 'nearai',
 ]);
 
 function providerEntryFromRow(row: AIProviderSettingsRow): ProviderEntry | null {
@@ -48,9 +48,6 @@ function modePolicyError(
   mode: ReasoningMode,
   providers: readonly ProviderEntry[],
 ): string | null {
-  if (mode === 'verified_private_cloud') {
-    return 'Verified private cloud requires a verifier-owned provider adapter';
-  }
   if (providers.length === 0) return null;
   try {
     providersForReasoningMode(mode, providers);
@@ -588,7 +585,7 @@ export function createSettingsRouter(): Router {
         reasoningMode?: unknown;
       };
 
-      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama']);
+      const validProviders = new Set(['anthropic', 'openai', 'google', 'ollama', 'trustedrouter', 'nearai']);
       if (!validProviders.has(provider)) {
         res.status(400).json({ error: `Invalid provider: ${provider}` });
         return;

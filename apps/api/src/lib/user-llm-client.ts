@@ -11,7 +11,7 @@ import {
 } from '@skytwin/llm-client';
 
 const PROVIDER_NAMES = new Set<AIProviderName>([
-  'anthropic', 'openai', 'google', 'ollama', 'embedded',
+  'anthropic', 'openai', 'google', 'ollama', 'embedded', 'trustedrouter', 'nearai',
 ]);
 
 function isProviderName(value: string): value is AIProviderName {

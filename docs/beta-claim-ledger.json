@@ -678,7 +678,7 @@
       "id": "unproven-confidential-mode",
       "pattern": "confidential (?:inference|reasoning|AI) (?:is |comes )?(?:available|supported|enabled|ready|verified)",
       "flags": "i",
-      "reason": "Signed receipt primitives exist, but no production attestation-backed provider, pinned provider and recorder trust roots, provider-specific verification policy, or product receipt export path is wired"
+      "reason": "The TrustedRouter adapter exists, but broad release claims still require credentialed machine evidence, dynamic-price admission, pinned recorder/provider trust roots for independent export verification, and a product export path"
     },
     {
       "id": "unproven-universal-explanations",
@@ -791,7 +791,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "a467957416639e75f74f23c9282da447ab2f54f50a14919b599416dcab661434",
+          "sha256": "e13af43c7174ad670364c65a99db3aa2c764c0ff879c8bbdf2e6fa7ce1e2a1f8",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
@@ -965,12 +965,17 @@
       "scope": "Remote inference requests, endpoint/model identity, attestation freshness, request/response binding, persisted receipts, and fail-closed fallback behavior.",
       "owner": "inference-security",
       "state": "deferred",
-      "limitation": "Typed signed receipts, persistence, integrity verification, atomic decision-event capture, and a fail-closed NEAR client contract exist. Verified-private mode remains unavailable because no packaged verifier-owned transport, production-pinned trust roots and provider policy, runtime composition, or product receipt export path is wired.",
+      "limitation": "The settings-composed TrustedRouter adapter verifies a live same-socket gateway attestation and exact-byte confidential-route receipt against workload identity pinned in the SkyTwin build. NEAR AI remains visible but runtime-blocked because its public base-CVM evidence does not pin the dynamically selected model/proxy workload. The release-wide claim remains deferred because no credentialed tagged-build machine report, dynamic-price admission for unattended work, stable recorder/provider trust-root export flow, or product receipt export UI is proven.",
       "evidence": [
         {
-          "path": "packages/llm-client/src/index.ts",
-          "sha256": "850fe9f8f9c60901988326784ebfce6e805b78248d3154eb77cd774b26fcb420",
-          "why": "Exports provider modes and receipt emission primitives, while verified-private client construction remains unavailable"
+          "path": "packages/llm-client/src/providers/trustedrouter.ts",
+          "sha256": "b68961ed940cb1fcbe5a30913ae1ae530cce9942e5c797d265c7918afa17b910",
+          "why": "Implements the pinned same-socket gateway-attestation, exact-byte request/response receipt, and confidential-upstream verification path"
+        },
+        {
+          "path": "packages/llm-client/src/__tests__/trustedrouter-provider.test.ts",
+          "sha256": "27ddc3b41090117b1bfc7da8b176cea107782b81645f0172dd2ed5a7cb6f3d5d",
+          "why": "Exercises one-socket sequencing, exact-byte binding, and fail-closed receipt rejection"
         },
         {
           "path": "packages/shared-types/src/index.ts",
@@ -978,20 +983,37 @@
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         },
         {
-          "path": "packages/near-confidential/src/unavailable-transport.ts",
-          "sha256": "c960aee43f073ec2eeb152db869a31bc9a9173efe9eb55806754bda72f17b9a9",
-          "why": "Keeps the strict confidential client fail closed until a packaged verifier-owned transport exists"
+          "path": "packages/llm-client/src/providers/nearai.ts",
+          "sha256": "551b547ad1625b0dd23fcd21fdbd046b1741dfc8124d46278c7ea83ace9ff928",
+          "why": "Provides a final fail-before-transport boundary in addition to the mode-policy gate that prevents NEAR from entering the runtime chain"
         },
         {
-          "path": "packages/near-confidential/src/__tests__/runtime-unwired.test.ts",
-          "sha256": "ae784a4220e9db54b64bead819c8ed3fd514bb2f4351ece00b5c2b2fbe973206",
-          "why": "Proves application composition does not activate the unavailable confidential client"
+          "path": "packages/llm-client/src/__tests__/nearai-provider.test.ts",
+          "sha256": "45fa764bfd319e572ecd340f43e792e72bc7ee88094e310fad2a3cd38ea8213b",
+          "why": "Exercises the provider boundary's unconditional failure before any prompt transport"
+        },
+        {
+          "path": "packages/shared-types/src/inference-receipt.ts",
+          "sha256": "3c22bb94664fb56dd266a7e5d4b58cd86f423be11f78c45f0a037378293463bc",
+          "why": "Verifies provider-signed model and exact request/response hash tuples in exported confidential receipts"
         }
       ],
       "verification": [
         {
           "command": "rg -n -- \"InferenceReceipt|attestation|confidential inference\" packages apps",
-          "expected": "Receipt primitives are present, while no production verified-private provider or attestation policy is admitted"
+          "expected": "Only the pinned TrustedRouter verifier-owned adapter is admitted; NEAR AI and conventional providers remain excluded"
+        },
+        {
+          "command": "pnpm --filter @skytwin/shared-types test",
+          "expected": "Exact-byte receipt export, JWS and provider-signed-hash subjects, trust-root, and fail-closed verification tests pass"
+        },
+        {
+          "command": "pnpm --filter @skytwin/near-confidential test",
+          "expected": "Strict NEAR transport and client tests pass"
+        },
+        {
+          "command": "pnpm --filter @skytwin/llm-client test",
+          "expected": "TrustedRouter admission and staged-but-blocked NEAR adapter suites pass"
         }
       ]
     },
@@ -1006,7 +1028,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "1626ea00181c86059481269cb8c14da44e77f47380b3ccb8a4f4d1f83751f6f9",
+          "sha256": "80f373071e91120154dab615f02d1abb2d762a53ba311b5463bcfe7b0e0f49e6",
           "why": "Public disclosure names local-model, connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -1092,7 +1114,7 @@
         },
         {
           "path": "apps/web/public/js/pages/onboarding.js",
-          "sha256": "e831f1cb75fc632cf4ee0116e6869405c8a15cbd2da041079b18abbdd4e347c3",
+          "sha256": "56409d502a487de0d3c32ca25b228e75bab13e2fef770a8af255e54c70aef78e",
           "why": "Provides the real first-run sample control, session issuance flow, and sample-route transition"
         },
         {
@@ -1429,7 +1451,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "aec96ca799e53c332db7f9b9ff6de4af5a4865acbf861253cac625a88b91f6fd",
+          "sha256": "749fa9e77e509709e285c79b82741b061a84bd1ca34275e6108f75edd889d2b2",
           "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator, re-verifies the exact four-member safety artifact with both independent verifiers, emits the digest of the stable manifest bytes it checked, and validates every other bounded release material and source report binding at publication"
         }
       ],

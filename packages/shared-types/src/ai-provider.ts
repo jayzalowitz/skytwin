@@ -4,7 +4,14 @@
  * `embedded` runs llama.cpp via subprocess (no HTTP, no API key) using
  * `@skytwin/embedded-llm` — see `packages/llm-client/src/providers/embedded.ts`.
  */
-export type AIProviderName = 'anthropic' | 'openai' | 'google' | 'ollama' | 'embedded';
+export type AIProviderName =
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'ollama'
+  | 'embedded'
+  | 'trustedrouter'
+  | 'nearai';
 
 /**
  * A single provider configuration in the user's AI chain.
@@ -48,6 +55,12 @@ export const PROVIDER_MODELS: Record<AIProviderName, { id: string; label: string
   embedded: [
     { id: 'auto', label: 'Auto-detect (first GGUF in model dir)' },
   ],
+  trustedrouter: [
+    { id: 'trustedrouter/confidential', label: 'Confidential route (automatic model)' },
+  ],
+  nearai: [
+    { id: 'deepseek-ai/DeepSeek-V4-Flash', label: 'DeepSeek V4 Flash (direct TEE)' },
+  ],
 };
 
 /**
@@ -83,6 +96,20 @@ export const PROVIDER_INFO: Record<AIProviderName, { label: string; description:
     description:
       'Free, runs in-process via llama.cpp. Requires `llama-cli` on PATH and a GGUF model (auto-detected from SKYTWIN_LLAMA_MODELS or pinned via SKYTWIN_LLAMA_MODEL).',
     requiresApiKey: false,
+    requiresBaseUrl: false,
+  },
+  trustedrouter: {
+    label: 'TrustedRouter (verified private)',
+    description:
+      'Remote reasoning admitted only after SkyTwin verifies the live TLS-bound gateway attestation and an exact-byte inference receipt.',
+    requiresApiKey: true,
+    requiresBaseUrl: false,
+  },
+  nearai: {
+    label: 'NEAR AI (verification pending)',
+    description:
+      'Not currently available: the public base-CVM evidence does not pin the dynamically selected model and proxy workload.',
+    requiresApiKey: true,
     requiresBaseUrl: false,
   },
 };

@@ -782,6 +782,9 @@ importers:
 
   packages/llm-client:
     dependencies:
+      '@lore-hex/trusted-router':
+        specifier: github:Lore-Hex/trusted-router-js#2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb
+        version: https://codeload.github.com/Lore-Hex/trusted-router-js/tar.gz/2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb
       '@skytwin/core':
         specifier: workspace:*
         version: link:../core
@@ -1982,6 +1985,12 @@ packages:
 
   '@leichtgewicht/ip-codec@2.0.5':
     resolution: {integrity: sha512-Vo+PSpZG2/fmgmiNzYK9qWRh8h/CHrwD0mo1h1DzL4yzHNSfWYujGTYsWGreD000gcgmZ7K4Ys6Tx9TxtsKdDw==}
+
+  '@lore-hex/trusted-router@https://codeload.github.com/Lore-Hex/trusted-router-js/tar.gz/2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb':
+    resolution: {tarball: https://codeload.github.com/Lore-Hex/trusted-router-js/tar.gz/2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb}
+    version: 0.8.0
+    engines: {node: '>=20'}
+    hasBin: true
 
   '@malept/cross-spawn-promise@2.0.0':
     resolution: {integrity: sha512-1DpKU0Z5ThltBwjNySMC14g0CkbyhCaz9FkhxqNsZI6uAPJXFS8cMXlBKo26FJ8ZuW6S9GCMcR9IO5k2X5/9Fg==}
@@ -6480,6 +6489,8 @@ snapshots:
   '@keyv/serialize@1.1.1': {}
 
   '@leichtgewicht/ip-codec@2.0.5': {}
+
+  '@lore-hex/trusted-router@https://codeload.github.com/Lore-Hex/trusted-router-js/tar.gz/2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb': {}
 
   '@malept/cross-spawn-promise@2.0.0':
     dependencies:

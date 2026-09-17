@@ -946,6 +946,8 @@ const VERIFICATION_PACKAGE_FILTERS = new Set([
   "@skytwin/embedded-llm",
   "@skytwin/execution-router",
   "@skytwin/explanations",
+  "@skytwin/llm-client",
+  "@skytwin/near-confidential",
   "@skytwin/policy-engine",
   "@skytwin/shared-types",
   "@skytwin/worker",

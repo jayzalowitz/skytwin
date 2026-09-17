@@ -74,7 +74,39 @@ describe('per-user LLM composition root', () => {
     });
     await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
       state: 'policy_blocked', client: null,
-      reason: expect.stringMatching(/verifier-owned/i),
+      reason: expect.stringMatching(/no verifier-owned/i),
+    });
+  });
+
+  it('composes the verifier-owned TrustedRouter provider in private-cloud mode', async () => {
+    snapshotMock.mockResolvedValue({
+      providers: [{
+        ...localRow,
+        provider: 'trustedrouter',
+        api_key: 'secret',
+        model: 'trustedrouter/confidential',
+      }],
+      reasoningMode: { mode: 'verified_private_cloud', requires_confirmation: false },
+    });
+    await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
+      state: 'ready', client: { hasProviders: true }, mode: 'verified_private_cloud',
+    });
+  });
+
+  it('fails closed for a stored NEAR AI provider until dynamic workload verification ships', async () => {
+    snapshotMock.mockResolvedValue({
+      providers: [{
+        ...localRow,
+        provider: 'nearai',
+        api_key: 'secret',
+        model: 'deepseek-ai/DeepSeek-V4-Flash',
+      }],
+      reasoningMode: { mode: 'verified_private_cloud', requires_confirmation: false },
+    });
+    await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
+      state: 'policy_blocked',
+      client: null,
+      reason: expect.stringMatching(/dynamically selected inference workload/i),
     });
   });
 });

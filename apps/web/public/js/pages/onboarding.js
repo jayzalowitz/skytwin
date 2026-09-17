@@ -299,6 +299,12 @@ async function handleOnboardingClick(e) {
       }
       window.location.hash = '#/settings';
       break;
+    case 'onb-open-confidential-settings':
+      if (typeof window.skyTwinDismissOnboarding === 'function') {
+        window.skyTwinDismissOnboarding();
+      }
+      window.location.hash = '#/settings?setup=confidential';
+      break;
 
     // ── Tour mode ───────────────────────────────────────────────────────────
     case 'onb-start-tour': {
@@ -432,6 +438,16 @@ function renderWelcome() {
       <span aria-hidden="true">🔒</span>
       <span id="onb-ai-text">Checking which maintained local model fits this computer…</span>
     </div>
+
+    <button type="button" class="btn btn-outline btn-lg"
+            style="text-align:left;display:flex;align-items:center;gap:0.75rem;width:100%;margin-bottom:0.85rem;"
+            data-action="onb-open-confidential-settings">
+      <span style="font-size:1.1rem;" aria-hidden="true">◇</span>
+      <div>
+        <div style="font-weight:600;">Use verified private cloud</div>
+        <div style="font-size:0.76rem;opacity:0.8;">Configure TrustedRouter with live attestation and receipt checks. NEAR AI is shown in settings but remains unavailable pending complete workload verification.</div>
+      </div>
+    </button>
 
     <details style="margin-bottom:0.5rem;">
       <summary style="cursor:pointer;font-size:0.82rem;color:var(--text-muted);">More ways to start</summary>

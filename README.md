@@ -194,7 +194,7 @@ runtime plus verified model artifact, or a provider you configure. Power users c
 | `SKYTWIN_WITH_OLLAMA=true` | Install Ollama + pull the gemma4 model (~9.6GB). Without this opt-in, local inference requires a separately installed `llama.cpp` binary and compatible model. |
 | `SKYTWIN_DISABLE_EMBEDDED=1` | Skip the embedded LLM provider in the API's provider chain. Pair with hosted-only keys (e.g. `ANTHROPIC_API_KEY`) for reproducible evaluation runs. |
 | `SKYTWIN_LLAMA_MODEL=/path/model.gguf` | Opt into a user-managed model path. This explicit override bypasses the managed-model manifest and registry checks; the user is responsible for the artifact's provenance and compatibility. |
-| `SKYTWIN_REASONING_MODE` | Pin the environment-driven chain to `on_device` or `bring_your_own_provider`. Mixed local/remote chains require this explicit choice; `verified_private_cloud` remains unavailable until a verified adapter ships. |
+| `SKYTWIN_REASONING_MODE` | Pin the environment-driven chain to `on_device` or `bring_your_own_provider`. Mixed local/remote chains require this explicit choice. Verified private cloud is configured per user in Settings so its key and isolated provider snapshot are explicit. |
 | `SKYTWIN_CRDB_VERSION` | Pin a non-default CockroachDB version. Refresh the hash tables in `bin/skytwin-db` and `apps/desktop/scripts/build-single-binary.sh` together. |
 
 On-device Ollama requires Ollama 0.18 or newer. SkyTwin adds Ollama's
@@ -292,8 +292,8 @@ packages/
   policy-prompts/                 Versioned LLM prompts with JSON schema validation and deterministic fallbacks
   ironclaw-adapter/               Execution adapter with HMAC auth, retries, circuit breaker
   execution-router/               Adapter selection, fallback chains, risk modifiers, plugin discovery
-  llm-client/                     Unified LLM client — Anthropic / OpenAI / Google / Ollama / embedded
-  near-confidential/              Fail-closed contract for verified confidential inference (provider not yet enabled)
+  llm-client/                     Unified LLM client — local, conventional, and admitted TrustedRouter paths; NEAR represented but blocked
+  near-confidential/              Fail-closed NEAR verification contract; no transport is runtime-admitted
   embedded-llm/                   Local-first: llama.cpp text, whisper.cpp STT, Piper TTS — spawn-based
   explanations/                   Human-readable explanation generation
   connectors/                     Gmail / Google Calendar / Outlook mail+calendar / mock connectors; account providers disabled in supported preview
@@ -417,7 +417,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
 | [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, decision-event capture, developer verifier, trust boundary, and current UI/export limitations |
-| [Confidential Inference](./docs/confidential-inference.md) | Local-first admission plus fail-closed TrustedRouter and NEAR AI verifier requirements; remote confidential inference remains unavailable |
+| [Confidential Inference](./docs/confidential-inference.md) | Local-first admission, fail-closed TrustedRouter, and why NEAR AI remains verification-pending |
 | [Decision Engine](./docs/decision-engine.md) | Situation interpretation, risk assessment, confidence scoring |
 | [IronClaw Integration](./docs/ironclaw-integration.md) | Execution adapter, HMAC auth, failure handling |
 | [CockroachDB Architecture](./docs/cockroach-architecture.md) | Schema design, query patterns, versioning, receipt and effect boundaries |

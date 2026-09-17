@@ -53,6 +53,9 @@ describe('reasoningModeRepository', () => {
     expect(sql).toContain('127\\.0\\.0\\.1\\.?');
     expect(sql).toContain('6553[0-5]');
     expect(sql).toContain("model ~* '(^|/)[^/]*:(cloud|[^/:]*-cloud)");
+    expect(sql).toContain("provider <> 'trustedrouter'");
+    expect(sql).toContain('base_url IS NOT NULL');
+    expect(sql).toContain("model <> 'trustedrouter/confidential'");
     expect(sql).not.toContain('AND EXISTS');
     expect(sql).toContain('RETURNING *');
     expect(params).toEqual(['user-1', 'on_device']);

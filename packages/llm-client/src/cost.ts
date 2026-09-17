@@ -23,7 +23,7 @@ import type { AIProviderName } from '@skytwin/shared-types';
  * never under-estimating. The unit test enforces the invariant
  * `embedded === 0 AND ollama === 0`.
  */
-const RATE_DECICENTS_PER_M_TOKENS: Record<AIProviderName, { input: number; output: number }> = {
+const RATE_DECICENTS_PER_M_TOKENS: Partial<Record<AIProviderName, { input: number; output: number }>> = {
   // Conversion sanity check before adjusting any of these: 1 cent =
   // 10 deci-cents, so $0.80 = 80 cents = 800 deci-cents. A $0.80/1M
   // input rate stores as 800. An earlier draft of this table was off
@@ -40,6 +40,9 @@ const RATE_DECICENTS_PER_M_TOKENS: Record<AIProviderName, { input: number; outpu
   // Local-runtime providers carry zero per-token cost by definition.
   ollama: { input: 0, output: 0 },
   embedded: { input: 0, output: 0 },
+  // TrustedRouter publishes dynamic route-specific pricing. It is omitted
+  // here deliberately so this legacy estimator fails closed instead of
+  // inventing a static or zero rate.
 };
 
 /**

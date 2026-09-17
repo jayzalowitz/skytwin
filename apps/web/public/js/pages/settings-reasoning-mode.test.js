@@ -24,17 +24,18 @@ const connectGmailSource = readFileSync(
   'utf8',
 );
 const apiSource = readFileSync(resolve(process.cwd(), 'public/js/api-client.js'), 'utf8');
+const onboardingSource = readFileSync(resolve(process.cwd(), 'public/js/pages/onboarding.js'), 'utf8');
 const confidentialGuide = readFileSync(
   resolve(process.cwd(), '../../docs/confidential-inference.md'),
   'utf8',
 );
 
 describe('reasoning-location settings boundary', () => {
-  it('renders local, explicit-provider, unavailable-private, confirmation, and error states', () => {
+  it('renders local, explicit-provider, verified-private, confirmation, and error states', () => {
     expect(source).toContain('Where reasoning runs');
     expect(source).toContain('On this device');
     expect(source).toContain('My configured provider');
-    expect(source).toContain('Verified private cloud — unavailable');
+    expect(source).toContain('Verified private cloud');
     expect(source).toContain('Your earlier provider chain was ambiguous');
     expect(source).toContain('Could not load the reasoning-location boundary');
     expect(source).toContain('Draft only — this selection is not active until you press Save');
@@ -43,7 +44,10 @@ describe('reasoning-location settings boundary', () => {
     expect(source).toContain('TrustedRouter docs');
     expect(source).toContain('TrustedRouter live trust record');
     expect(source).toContain('NEAR AI verifier');
-    expect(source).toContain('no prompt is sent in verified-private mode');
+    expect(source).toContain('NEAR AI remains listed for transparency but unavailable');
+    expect(source).toContain('does not pin the dynamically selected inference workload');
+    expect(source).toContain('TrustedRouter (verified private)');
+    expect(source).toContain('NEAR AI (verification pending)');
   });
 
   it('keeps local setup as the default action and uses a singleton delegated handler', () => {
@@ -52,6 +56,15 @@ describe('reasoning-location settings boundary', () => {
     expect(source).toContain('openLocalInferenceSetup();');
     expect(source).toContain("addEventListener('skytwin:embedded-llm-ready'");
     expect(source).toContain('aria-live="polite"');
+  });
+
+  it('offers a first-run path that opens and preselects verified-private setup', () => {
+    expect(onboardingSource).toContain('Use verified private cloud');
+    expect(onboardingSource).toContain('data-action="onb-open-confidential-settings"');
+    expect(onboardingSource).toContain("#/settings?setup=confidential");
+    expect(source).toContain("new URLSearchParams(hashQuery).get('setup') === 'confidential'");
+    expect(source).not.toContain("aiProviders.push({\n        provider: 'trustedrouter'");
+    expect(source).toContain("'deepseek-ai/DeepSeek-V4-Flash'");
   });
 
   it('invalidates server-derived privacy metadata when its mode or model changes', () => {

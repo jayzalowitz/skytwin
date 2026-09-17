@@ -7,6 +7,7 @@ const mockAnthropicStream = vi.fn();
 const mockOpenaiGenerate = vi.fn();
 const mockGoogleGenerate = vi.fn();
 const mockOllamaGenerate = vi.fn();
+const mockTrustedRouterGenerate = vi.fn();
 
 vi.mock('../providers/anthropic.js', () => ({
   generate: (...args: unknown[]) => mockAnthropicGenerate(...args),
@@ -22,6 +23,9 @@ vi.mock('../providers/google.js', () => ({
 }));
 vi.mock('../providers/ollama.js', () => ({
   generate: (...args: unknown[]) => mockOllamaGenerate(...args),
+}));
+vi.mock('../providers/trustedrouter.js', () => ({
+  generate: (...args: unknown[]) => mockTrustedRouterGenerate(...args),
 }));
 
 /** Build an async iterable from a list of chunks for streaming-mock use. */
@@ -52,6 +56,7 @@ describe('LlmClient', () => {
     mockOpenaiGenerate.mockReset();
     mockGoogleGenerate.mockReset();
     mockOllamaGenerate.mockReset();
+    mockTrustedRouterGenerate.mockReset();
   });
 
   afterEach(() => {
@@ -565,6 +570,133 @@ describe('LlmClient', () => {
   });
 
   describe('reasoning mode boundary', () => {
+    it('records only verifier-owned exact bytes for a verified private response', async () => {
+      const { LlmClient } = await freshImport();
+      const traces: import('../types.js').InferenceTrace[] = [];
+      const requestBytes = Buffer.from('{"exact":"request"}');
+      const responseBytes = Buffer.from('{"exact":"response"}');
+      mockTrustedRouterGenerate.mockResolvedValue({
+        content: 'verified response',
+        requestBytes,
+        responseBytes,
+        endpointIdentity: 'https://api.trustedrouter.com/v1',
+        providerRequestId: 'chat-1',
+        resolvedModel: 'provider/private-model',
+        verification: {
+          outcome: 'verified',
+          inferenceId: 'chat-1',
+          attestationPolicyVersion: 'policy-1',
+          verifierVersion: 'verifier-1',
+          evidence: new Uint8Array([1]),
+          measurementIdentity: 'measurement-1',
+          responseSignature: {
+            algorithm: 'Ed25519', keyId: 'key-1', publicKeyPem: 'pem', signatureBase64: 'sig',
+          },
+          verifiedAt: '2026-09-16T00:00:00.000Z',
+          freshUntil: '2026-09-16T00:05:00.000Z',
+        },
+      });
+      const client = LlmClient.forReasoningMode(
+        'verified_private_cloud',
+        [{ name: 'trustedrouter', apiKey: 'secret', model: 'trustedrouter/confidential' }],
+        'private-user',
+        { onInferenceTrace: (trace) => traces.push(trace) },
+      );
+
+      const response = await client.generate('hello', { invocationKind: 'interactive' });
+
+      expect(response).toMatchObject({
+        content: 'verified response',
+        model: 'provider/private-model',
+        execution: {
+          reasoningMode: 'verified_private_cloud',
+          verificationStatus: 'verified',
+          request: { providerRequestId: 'chat-1' },
+        },
+      });
+      expect(traces[0]).toMatchObject({ status: 'verified', verification: { outcome: 'verified' } });
+      expect(Buffer.from(traces[0]!.request)).toEqual(requestBytes);
+      expect(Buffer.from(traces[0]!.response)).toEqual(responseBytes);
+    });
+
+    it('does not stream confidential text until the complete verified output is accepted', async () => {
+      const { LlmClient, AllProvidersFailedError } = await freshImport();
+      const traces: import('../types.js').InferenceTrace[] = [];
+      mockTrustedRouterGenerate.mockResolvedValue({
+        content: 'must not leak',
+        requestBytes: new Uint8Array(),
+        responseBytes: Buffer.from('{"response":true}'),
+        endpointIdentity: 'https://api.trustedrouter.com/v1',
+        providerRequestId: 'chat-invalid',
+        resolvedModel: 'provider/private-model',
+        verification: {
+          outcome: 'verified',
+          attestationPolicyVersion: 'policy-1',
+          verifierVersion: 'verifier-1',
+          evidence: new Uint8Array([1]),
+          measurementIdentity: 'measurement-1',
+          responseSignature: {
+            algorithm: 'Ed25519', keyId: 'key-1', publicKeyPem: 'pem', signatureBase64: 'sig',
+          },
+          verifiedAt: '2026-09-16T00:00:00.000Z',
+          freshUntil: '2026-09-16T00:05:00.000Z',
+        },
+      });
+      const client = LlmClient.forReasoningMode(
+        'verified_private_cloud',
+        [{ name: 'trustedrouter', apiKey: 'secret', model: 'trustedrouter/confidential' }],
+        'private-stream-invalid',
+        { onInferenceTrace: (trace) => traces.push(trace) },
+      );
+      const events: import('../types.js').LlmStreamEvent[] = [];
+
+      await expect(async () => {
+        for await (const event of client.generateStream('hello', { invocationKind: 'interactive' })) {
+          events.push(event);
+        }
+      }).rejects.toThrow(AllProvidersFailedError);
+
+      expect(events).toEqual([]);
+      expect(traces).toEqual([]);
+    });
+
+    it('records verified confidential evidence before releasing its buffered stream chunk', async () => {
+      const { LlmClient } = await freshImport();
+      const order: string[] = [];
+      mockTrustedRouterGenerate.mockResolvedValue({
+        content: 'verified stream',
+        requestBytes: Buffer.from('{"request":true}'),
+        responseBytes: Buffer.from('{"response":true}'),
+        endpointIdentity: 'https://api.trustedrouter.com/v1',
+        providerRequestId: 'chat-stream',
+        resolvedModel: 'provider/private-model',
+        verification: {
+          outcome: 'verified',
+          attestationPolicyVersion: 'policy-1',
+          verifierVersion: 'verifier-1',
+          evidence: new Uint8Array([1]),
+          measurementIdentity: 'measurement-1',
+          responseSignature: {
+            algorithm: 'Ed25519', keyId: 'key-1', publicKeyPem: 'pem', signatureBase64: 'sig',
+          },
+          verifiedAt: '2026-09-16T00:00:00.000Z',
+          freshUntil: '2026-09-16T00:05:00.000Z',
+        },
+      });
+      const client = LlmClient.forReasoningMode(
+        'verified_private_cloud',
+        [{ name: 'trustedrouter', apiKey: 'secret', model: 'trustedrouter/confidential' }],
+        'private-stream-valid',
+        { onInferenceTrace: () => order.push('trace') },
+      );
+
+      for await (const event of client.generateStream('hello', { invocationKind: 'interactive' })) {
+        order.push(event.type);
+      }
+
+      expect(order).toEqual(['trace', 'chunk', 'done']);
+    });
+
     it('constructs an on-device client only from local providers', async () => {
       const { LlmClient } = await freshImport();
       const local: ProviderEntry = { name: 'ollama', apiKey: '', model: 'qwen' };
