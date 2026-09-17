@@ -1,5 +1,36 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.103.1] - 2026-09-16
+
+### Fixed
+
+- **Desktop live integration checks now follow the hardened device-pairing
+  contract.** They verify that minting a pairing token requires an existing
+  human session and that the public consume route validates its one-time token,
+  instead of expecting the retired unauthenticated long-lived session flow.
+
+## [0.6.103.0] - 2026-09-16
+
+### Changed
+
+- **You can configure verified private-cloud reasoning from Settings or the
+  first-run screen.** TrustedRouter now verifies the live gateway and signed
+  response receipt against workload identity pinned in this SkyTwin build
+  before showing an answer. NEAR AI appears as verification-pending but remains
+  unavailable because its public evidence does not yet pin the dynamically
+  selected inference workload. All failure paths stop without falling back to
+  a conventional provider.
+
+### Fixed (post-review)
+
+- **TrustedRouter now accepts the only SDK status produced by its pinned-policy
+  verification path.** Compact receipts still require their signed attestation
+  hash and receipt-key workload binding to verify independently before output
+  is released.
+- **CockroachDB integration suites no longer compete for runner resources in
+  the package-wide test job.** Unit files still run in parallel, then the four
+  fresh-node integration files run serially in their own Vitest project.
+
 ## [Unreleased] — Fail-closed action entry paths
 
 ### Fixed (post-review)

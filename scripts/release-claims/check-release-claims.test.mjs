@@ -4218,6 +4218,16 @@ ${step}`,
       ),
     ).toBe(false);
     expect(
+      isAllowlistedVerificationCommand(
+        "pnpm --filter @skytwin/near-confidential test",
+      ),
+    ).toBe(true);
+    expect(
+      isAllowlistedVerificationCommand(
+        "pnpm --filter @skytwin/llm-client test",
+      ),
+    ).toBe(true);
+    expect(
       isAllowlistedVerificationCommand('rg -n -- "needle" README.md'),
     ).toBe(true);
     expect(

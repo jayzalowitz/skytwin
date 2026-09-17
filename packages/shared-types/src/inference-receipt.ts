@@ -33,6 +33,10 @@ export interface ReceiptSignatureV1 {
   keyId: string;
   publicKeyPem: string;
   signatureBase64: string;
+  /** Omitted means the signature subject is the exact response bytes. */
+  scheme?: 'jws_signing_input' | 'provider_signed_hashes';
+  /** Present when a verified provider payload binds the request/response hashes. */
+  signedPayloadBase64?: string;
 }
 
 /**
@@ -237,13 +241,24 @@ function isUuid(value: unknown): value is string {
 }
 
 function snapshotSignature(value: unknown): ReceiptSignatureV1 | null {
-  const record = exactOwnRecord(value, ['algorithm', 'keyId', 'publicKeyPem', 'signatureBase64']);
+  const record = exactOwnRecord(
+    value,
+    ['algorithm', 'keyId', 'publicKeyPem', 'signatureBase64'],
+    ['scheme', 'signedPayloadBase64'],
+  );
   if (!record || record['algorithm'] !== 'Ed25519' || !nonEmptyString(record['keyId']) ||
       !nonEmptyString(record['publicKeyPem']) || !parseEd25519PublicKey(record['publicKeyPem']) ||
       !nonEmptyString(record['signatureBase64']) ||
       decodeBase64(record['signatureBase64']) === null) return null;
+  const scheme = record['scheme'];
+  const signedPayloadBase64 = record['signedPayloadBase64'];
+  if ((scheme === undefined) !== (signedPayloadBase64 === undefined)) return null;
+  if (scheme !== undefined && scheme !== 'jws_signing_input' && scheme !== 'provider_signed_hashes') return null;
+  const signedPayload = signedPayloadBase64 === undefined ? null : decodeBase64(signedPayloadBase64);
+  if (signedPayloadBase64 !== undefined && (!signedPayload || signedPayload.byteLength > 1024 * 1024)) return null;
   return Object.freeze({ algorithm: 'Ed25519', keyId: record['keyId'], publicKeyPem: record['publicKeyPem'],
-    signatureBase64: record['signatureBase64'] });
+    signatureBase64: record['signatureBase64'],
+    ...(scheme === undefined ? {} : { scheme, signedPayloadBase64: signedPayloadBase64 as string }) });
 }
 
 function snapshotCost(value: unknown): InferenceCostV1 | null {
@@ -392,6 +407,48 @@ function decodeBase64(value: unknown): Buffer | null {
   return Buffer.from(value, 'base64');
 }
 
+function verifyJwsReceiptBindings(
+  signedPayload: Buffer,
+  receipt: InferenceReceiptV1,
+): boolean {
+  const signingInput = signedPayload.toString('ascii');
+  if (!Buffer.from(signingInput, 'ascii').equals(signedPayload)) return false;
+  const segments = signingInput.split('.');
+  if (segments.length !== 2 || segments.some((segment) => !/^[A-Za-z0-9_-]+$/.test(segment))) {
+    return false;
+  }
+  try {
+    const payloadBytes = Buffer.from(segments[1]!, 'base64url');
+    if (payloadBytes.toString('base64url') !== segments[1]) return false;
+    const payloadText = payloadBytes.toString('utf8');
+    if (!Buffer.from(payloadText, 'utf8').equals(payloadBytes)) return false;
+    const claims = JSON.parse(payloadText) as unknown;
+    if (!claims || typeof claims !== 'object' || Array.isArray(claims)) return false;
+    const record = claims as Record<string, unknown>;
+    const req = record['req'];
+    const resp = record['resp'];
+    const model = record['model'];
+    if (!req || typeof req !== 'object' || Array.isArray(req) ||
+        !resp || typeof resp !== 'object' || Array.isArray(resp) ||
+        !model || typeof model !== 'object' || Array.isArray(model)) return false;
+    const reqHash = (req as Record<string, unknown>)['hash'];
+    const respHash = (resp as Record<string, unknown>)['hash'];
+    const respOf = (resp as Record<string, unknown>)['of'];
+    const selectedModel = (model as Record<string, unknown>)['selected'];
+    if (typeof reqHash !== 'string' || typeof respHash !== 'string' ||
+        respOf !== 'body' || selectedModel !== receipt.model) return false;
+    const requestDigest = Buffer.from(reqHash, 'base64url');
+    const responseDigest = Buffer.from(respHash, 'base64url');
+    return requestDigest.byteLength === 32 && responseDigest.byteLength === 32 &&
+      requestDigest.toString('base64url') === reqHash &&
+      responseDigest.toString('base64url') === respHash &&
+      requestDigest.toString('hex') === receipt.requestSha256 &&
+      responseDigest.toString('hex') === receipt.responseSha256;
+  } catch {
+    return false;
+  }
+}
+
 function verifyExport(
   input: unknown,
   options: ReceiptVerificationOptions = {},
@@ -434,8 +491,27 @@ function verifyExport(
     if (sha256(evidence) !== receipt.evidenceSha256) return fail('EVIDENCE_HASH_MISMATCH', receipt.id);
     if (receipt.responseSignature.algorithm !== 'Ed25519') return fail('RESPONSE_SIGNATURE_INVALID', receipt.id);
     const responsePublicKey = parseEd25519PublicKey(receipt.responseSignature.publicKeyPem);
-    if (!responsePublicKey || !verify(null, response, responsePublicKey,
+    const signedPayload = receipt.responseSignature.scheme === 'jws_signing_input' ||
+      receipt.responseSignature.scheme === 'provider_signed_hashes'
+      ? decodeBase64(receipt.responseSignature.signedPayloadBase64)
+      : response;
+    if (!responsePublicKey || !signedPayload || !verify(null, signedPayload, responsePublicKey,
       Buffer.from(receipt.responseSignature.signatureBase64, 'base64'))) {
+      return fail('RESPONSE_SIGNATURE_INVALID', receipt.id);
+    }
+    if (receipt.responseSignature.scheme === 'provider_signed_hashes') {
+      const signedText = signedPayload.toString('utf8');
+      if (!Buffer.from(signedText, 'utf8').equals(signedPayload)) {
+        return fail('RESPONSE_SIGNATURE_INVALID', receipt.id);
+      }
+      const parts = signedText.split(':');
+      if (parts.length !== 3 || parts[0] !== receipt.model ||
+          parts[1] !== receipt.requestSha256 || parts[2] !== receipt.responseSha256) {
+        return fail('RESPONSE_SIGNATURE_INVALID', receipt.id);
+      }
+    }
+    if (receipt.responseSignature.scheme === 'jws_signing_input' &&
+        !verifyJwsReceiptBindings(signedPayload, receipt)) {
       return fail('RESPONSE_SIGNATURE_INVALID', receipt.id);
     }
     const verifiedAt = new Date(receipt.verifiedAt).getTime();

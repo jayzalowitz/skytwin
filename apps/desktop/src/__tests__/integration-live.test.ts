@@ -85,7 +85,7 @@ describe.runIf(webAvailable)('web dashboard proxy (desktop embeds this)', () => 
 });
 
 describe.runIf(serverAvailable)('session management (QR pairing flow)', () => {
-  it('POST /api/sessions without a real session returns 401 before validating input', async () => {
+  it('POST /api/sessions rejects an unauthenticated request before body validation', async () => {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -93,10 +93,10 @@ describe.runIf(serverAvailable)('session management (QR pairing flow)', () => {
     });
     expect(res.status).toBe(401);
     const body = await res.json() as Record<string, string>;
-    expect(body.error).toContain('Authentication required');
+    expect(body.error).toMatch(/authentication required|real session/i);
   });
 
-  it('POST /api/sessions does not mint a pairing token without a real session', async () => {
+  it('POST /api/sessions requires a real human session even for a valid-looking request', async () => {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -104,19 +104,28 @@ describe.runIf(serverAvailable)('session management (QR pairing flow)', () => {
     });
     expect(res.status).toBe(401);
     const body = await res.json() as Record<string, string>;
-    expect(body.error).toContain('Authentication required');
+    expect(body.error).toMatch(/authentication required|real session/i);
+  });
+
+  it('POST /api/sessions/pair/consume validates the public one-time pairing token', async () => {
+    const res = await fetch(`${API_BASE}/api/sessions/pair/consume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    const body = await res.json() as Record<string, string>;
+    expect(body.error).toContain('pairToken');
   });
 });
 
-describe.runIf(serverAvailable)('session auth middleware (mobile auth flow)', () => {
-  it('localhost requests bypass auth', async () => {
-    // Requests from localhost should pass without Bearer token
+describe.runIf(serverAvailable)('public health boundary', () => {
+  it('GET /api/health is reachable without a Bearer token', async () => {
     const res = await fetch(`${API_BASE}/api/health`);
     expect(res.ok).toBe(true);
   });
 
-  it('request without Bearer token from localhost still works', async () => {
-    // Localhost is trusted — this should succeed for any API route
+  it('GET /api/health/live is reachable without a Bearer token', async () => {
     const res = await fetch(`${API_BASE}/api/health/live`);
     expect(res.ok).toBe(true);
   });

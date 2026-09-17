@@ -18,6 +18,7 @@
     "lint": "tsc --noEmit"
   },
   "dependencies": {
+    "@lore-hex/trusted-router": "github:Lore-Hex/trusted-router-js#2aa1d1c36b758eb65caf6c931e58a82bc0dc53eb",
     "@skytwin/core": "workspace:*",
     "@skytwin/embedded-llm": "workspace:*",
     "@skytwin/shared-types": "workspace:*",

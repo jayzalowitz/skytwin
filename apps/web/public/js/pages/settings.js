@@ -135,11 +135,17 @@ export async function renderSettings(container, userId) {
       ? emailAttribution.text
       : `Sent by SkyTwin - the open-source digital twin: ${emailAttributionRepoUrl}`;
   const emailAttributionEnabled = emailAttribution.enabled !== false;
-  const aiProviders = settings?.aiProviders ?? [];
+  const aiProviders = (settings?.aiProviders ?? []).map((provider) => ({ ...provider }));
   _aiSettingsLoaded = settings !== null;
   _persistedReasoningMode = settings?.reasoningMode?.mode ?? null;
   _reasoningMode = _persistedReasoningMode ?? 'on_device';
   _reasoningModeRequiresConfirmation = settings?.reasoningMode?.requiresConfirmation === true;
+  const hashQuery = window.location.hash.split('?')[1] || '';
+  const confidentialSetupRequested = new URLSearchParams(hashQuery).get('setup') === 'confidential';
+  if (confidentialSetupRequested) {
+    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}#/settings`);
+    _reasoningMode = 'verified_private_cloud';
+  }
   const ironclawChannel = settings?.ironclawChannel ?? 'skytwin';
   const ironclawChannels = settings?.ironclawChannels ?? ['skytwin', 'telegram', 'discord', 'slack', 'signal'];
 
@@ -367,7 +373,7 @@ export async function renderSettings(container, userId) {
     </div>
     ` : ''}
 
-    <details class="card collapsible-card" id="ai-brain-card">
+    <details class="card collapsible-card" id="ai-brain-card" ${confidentialSetupRequested ? 'open' : ''}>
       <summary class="card-header collapsible-header">
         <span class="card-title">${aiProviders.length > 0 ? 'AI brain — connected providers' : 'AI brain — needed for Chat (optional otherwise)'}</span>
         <span class="collapse-icon"></span>
@@ -388,14 +394,7 @@ export async function renderSettings(container, userId) {
           ${renderProviderChain(aiProviders)}
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; align-items: center;">
-          <select class="form-input" id="add-provider-select" data-action="ai-add-provider" style="flex: 1;">
-            <option value="">+ Add a provider…</option>
-            <option value="anthropic">Anthropic (Claude)</option>
-            <option value="openai">OpenAI (GPT)</option>
-            <option value="google">Google (Gemini)</option>
-            <option value="ollama">Ollama (local-only in On this device mode)</option>
-            <option value="embedded">Embedded (requires llama.cpp + model)</option>
-          </select>
+          ${renderAddProviderSelect()}
         </div>
         <div style="margin-top: 0.75rem; display: flex; gap: 0.5rem; justify-content: space-between; align-items: center;">
           <div style="font-size: 0.75rem; color: var(--text-dim);">If no provider inside your selected boundary responds, your twin uses built-in rules. It never falls through to a different location.</div>
@@ -652,6 +651,12 @@ export async function renderSettings(container, userId) {
   `;
 
   ensureSettingsListener();
+
+  if (confidentialSetupRequested) {
+    requestAnimationFrame(() => {
+      document.getElementById('add-provider-select')?.focus();
+    });
+  }
 
   // UX review #7: mount the theme switcher inside the dedicated card.
   // Re-mounted on every render so the dropdown reflects the latest
@@ -910,7 +915,9 @@ function ensureSettingsListener() {
       return;
     }
     if (action === 'ai-reasoning-mode' && target instanceof HTMLSelectElement) {
-      if (target.value !== 'on_device' && target.value !== 'bring_your_own_provider') return;
+      if (target.value !== 'on_device'
+          && target.value !== 'bring_your_own_provider'
+          && target.value !== 'verified_private_cloud') return;
       _reasoningMode = target.value;
       _reasoningModeRequiresConfirmation = false;
       _aiChain.forEach((provider) => { provider.privacy = null; });
@@ -918,6 +925,8 @@ function ensureSettingsListener() {
       if (location) location.innerHTML = renderReasoningLocation();
       const chain = document.getElementById('ai-provider-chain');
       if (chain) chain.innerHTML = renderProviderChain(_aiChain);
+      const addProvider = document.getElementById('add-provider-select');
+      if (addProvider instanceof HTMLSelectElement) addProvider.outerHTML = renderAddProviderSelect();
       return;
     }
     if (action === 'ai-add-provider' && target instanceof HTMLSelectElement) {
@@ -1619,6 +1628,12 @@ const PROVIDER_MODELS = {
   embedded: [
     { id: 'auto', label: 'Auto-detect (first GGUF in model dir)' },
   ],
+  trustedrouter: [
+    { id: 'trustedrouter/confidential', label: 'Confidential route (automatic model)' },
+  ],
+  nearai: [
+    { id: 'deepseek-ai/DeepSeek-V4-Flash', label: 'DeepSeek V4 Flash (direct TEE)' },
+  ],
 };
 
 const PROVIDER_LABELS = {
@@ -1627,6 +1642,8 @@ const PROVIDER_LABELS = {
   google: 'Google (Gemini)',
   ollama: 'Ollama',
   embedded: 'Embedded (llama.cpp)',
+  trustedrouter: 'TrustedRouter (verified private)',
+  nearai: 'NEAR AI (verification pending)',
 };
 
 // #187 AC#6: providers that count as "Smarter" — i.e. external paid APIs
@@ -1728,6 +1745,24 @@ let _reasoningMode = 'on_device';
 let _persistedReasoningMode = null;
 let _reasoningModeRequiresConfirmation = false;
 
+function renderAddProviderSelect() {
+  return `
+    <select class="form-input" id="add-provider-select" data-action="ai-add-provider" style="flex: 1;">
+      <option value="">+ Add a provider…</option>
+      ${_reasoningMode === 'verified_private_cloud' ? `
+        <option value="trustedrouter">TrustedRouter (verified private)</option>
+        <option value="" disabled>NEAR AI (verification pending)</option>
+      ` : `
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="openai">OpenAI (GPT)</option>
+        <option value="google">Google (Gemini)</option>
+        <option value="ollama">Ollama (local-only in On this device mode)</option>
+        <option value="embedded">Embedded (requires llama.cpp + model)</option>
+      `}
+    </select>
+  `;
+}
+
 function renderReasoningLocation(settingsAvailable = true) {
   if (!settingsAvailable) {
     return `
@@ -1741,13 +1776,15 @@ function renderReasoningLocation(settingsAvailable = true) {
     ? 'This is the default boundary. SkyTwin admits only its embedded runtime or a source-qualified loopback Ollama model here. Managed local setup stays unavailable until its artifact and runtime pass verification; an explicitly configured local model remains local but is not represented as artifact-verified. This boundary never falls through to a remote provider.'
     : _reasoningMode === 'bring_your_own_provider'
       ? 'Prompts and responses may travel over the network to any enabled provider in this chain. Embedded inference is ineligible in this mode; Ollama may relay through its operator, so this mode treats it as potentially remote. This mode makes no confidential-computing claim.'
-      : 'This mode requires a successfully verified confidential-computing adapter for every request. No eligible adapter is available in this build.';
+      : 'SkyTwin sends a prompt only through the verifier-owned TrustedRouter adapter. It requires a fresh same-session gateway attestation and confidential-route receipt. NEAR AI is visible as a future option but remains unavailable because its current base-CVM evidence does not pin the dynamically selected inference workload. Any verification failure stops the request path without conventional fallback.';
   const hasUnsavedMode = _reasoningMode !== _persistedReasoningMode;
   const persistedLabel = _persistedReasoningMode === 'on_device'
     ? 'On this device'
     : _persistedReasoningMode === 'bring_your_own_provider'
       ? 'My configured provider'
-      : 'No confirmed location';
+      : _persistedReasoningMode === 'verified_private_cloud'
+        ? 'Verified private cloud'
+        : 'No confirmed location';
   const disclosure = hasUnsavedMode
     ? `Draft only — this selection is not active until you press Save. The active boundary remains “${persistedLabel}”. If saved: ${boundaryDescription}`
     : boundaryDescription;
@@ -1760,7 +1797,7 @@ function renderReasoningLocation(settingsAvailable = true) {
       <select id="ai-reasoning-mode" class="form-input" data-action="ai-reasoning-mode" aria-describedby="ai-reasoning-disclosure">
         <option value="on_device" ${_reasoningMode === 'on_device' ? 'selected' : ''}>On this device</option>
         <option value="bring_your_own_provider" ${_reasoningMode === 'bring_your_own_provider' ? 'selected' : ''}>My configured provider</option>
-        <option value="verified_private_cloud" ${_reasoningMode === 'verified_private_cloud' ? 'selected' : ''} disabled>Verified private cloud — unavailable</option>
+        <option value="verified_private_cloud" ${_reasoningMode === 'verified_private_cloud' ? 'selected' : ''}>Verified private cloud</option>
       </select>
       <div id="ai-reasoning-disclosure" style="font-size: 0.75rem; line-height: 1.45; color: var(--text-muted); margin-top: 0.5rem;">${disclosure}</div>
       ${localSetup}
@@ -1769,7 +1806,7 @@ function renderReasoningLocation(settingsAvailable = true) {
     <details style="margin: -0.25rem 0 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid var(--border); border-radius: 8px; background: var(--bg);">
       <summary style="cursor: pointer; font-size: 0.8rem; color: var(--text-muted);">Confidential remote inference options</summary>
       <div style="font-size: 0.75rem; line-height: 1.5; color: var(--text-muted); margin-top: 0.55rem;">
-        TrustedRouter and NEAR AI publish confidential-computing and attestation materials. SkyTwin does not enable either route merely because a key or endpoint is entered: this build has no verifier-owned remote adapter, so no prompt is sent in verified-private mode.
+        TrustedRouter is available through a verifier-owned adapter; a key alone is never enough. It requires a live same-connection gateway attestation, a SkyTwin-pinned workload identity, and a confidential-route receipt. NEAR AI remains listed for transparency but unavailable: the public evidence verifies a base CVM whose privileged compose manager can change the model and proxy workload, so SkyTwin cannot yet bind a call to a pinned inference workload.
         <div style="display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 0.45rem;">
           <a href="https://trustedrouter.com/docs" target="_blank" rel="noopener noreferrer">TrustedRouter docs</a>
           <a href="https://trust.trustedrouter.com/" target="_blank" rel="noopener noreferrer">TrustedRouter live trust record</a>
@@ -1795,6 +1832,13 @@ function renderReasoningLocation(settingsAvailable = true) {
  *     runtime picks up the first GGUF in the detected model directory.
  */
 function renderModeToggle(providers) {
+  if (_reasoningMode === 'verified_private_cloud') {
+    return `
+      <div style="padding:0.65rem 0.75rem;margin-bottom:0.75rem;border:1px solid var(--border);border-radius:8px;background:var(--bg);font-size:0.78rem;color:var(--text-muted);line-height:1.45;">
+        Verified-private mode currently uses only TrustedRouter's isolated verifier-owned path. NEAR AI remains unavailable pending dynamic-workload verification. This mode never falls through to the providers used by Smart or Smarter modes.
+      </div>
+    `;
+  }
   const mode = detectAIMode(providers);
   const hasSmarterCandidate = providers.some((p) => SMARTER_PROVIDERS.has(p.provider));
   const smartBoundaryReady = _reasoningMode === 'on_device'
@@ -1848,7 +1892,7 @@ function renderProviderChain(providers) {
   }
 
   return _aiChain.map((p, idx) => `
-    <div class="ai-provider-card" draggable="true" data-idx="${idx}"
+    <div class="ai-provider-card" draggable="true" data-idx="${idx}" data-provider="${escapeHtml(p.provider)}"
          data-region="ai-provider-card"
          style="display: flex; gap: 0.5rem; align-items: flex-start; padding: 0.75rem; background: var(--bg); border-radius: var(--radius-sm); margin-bottom: 0.5rem; border: 2px solid transparent; cursor: grab; transition: border-color 0.15s, opacity 0.15s;">
       <div style="display: flex; flex-direction: column; align-items: center; gap: 0.25rem; padding-top: 0.25rem; color: var(--text-dim); font-size: 0.75rem; user-select: none;">
@@ -1860,7 +1904,8 @@ function renderProviderChain(providers) {
           <span style="font-weight: 600; font-size: 0.9rem;">${escapeHtml(PROVIDER_LABELS[p.provider] || p.provider)}</span>
           <div style="display: flex; gap: 0.25rem; align-items: center;">
             <label style="font-size: 0.75rem; display: flex; align-items: center; gap: 0.25rem; cursor: pointer;">
-              <input type="checkbox" ${p.enabled !== false ? 'checked' : ''} data-action="ai-toggle-enabled">
+              <input type="checkbox" ${providerEnabledForMode(p) ? 'checked' : ''} data-action="ai-toggle-enabled"
+                     ${providerCompatibleWithMode(p) ? '' : 'disabled'}>
               on
             </label>
             <button class="btn btn-outline btn-sm" style="padding: 0.15rem 0.4rem; font-size: 0.7rem;" data-action="ai-test-provider" data-idx="${idx}">Test</button>
@@ -1897,6 +1942,16 @@ function renderProviderChain(providers) {
   `).join('');
 }
 
+function providerCompatibleWithMode(provider) {
+  return _reasoningMode === 'verified_private_cloud'
+    ? provider.provider === 'trustedrouter'
+    : provider.provider !== 'trustedrouter' && provider.provider !== 'nearai';
+}
+
+function providerEnabledForMode(provider) {
+  return providerCompatibleWithMode(provider) && provider.enabled !== false;
+}
+
 function renderProviderBoundary(provider) {
   const privacy = provider?.privacy;
   if (!privacy) return 'Boundary details will be available after this endpoint is validated and saved.';
@@ -1911,7 +1966,10 @@ function renderProviderBoundary(provider) {
     : privacy.pricing?.kind === 'unknown'
       ? 'price not established'
       : 'metered price';
-  return `${escapeHtml(location)} · ${escapeHtml(network)} · ${escapeHtml(price)}. ${escapeHtml(privacy.retention?.summary || '')}`;
+  const assurance = privacy.confidentiality === 'attested_tee'
+    ? 'attestation required for every response'
+    : null;
+  return `${escapeHtml(location)} · ${escapeHtml(network)} · ${escapeHtml(price)}${assurance ? ` · ${escapeHtml(assurance)}` : ''}. ${escapeHtml(privacy.retention?.summary || '')}`;
 }
 
 function getCurrentUserId() {
@@ -2002,7 +2060,10 @@ window.aiTestProvider = async function(idx, userId) {
     });
 
     if (result.success) {
-      resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--success);">Connected — ${escapeHtml(result.model)} responding in ~${result.latencyMs}ms</span>`;
+      const label = p.provider === 'trustedrouter'
+        ? `Verified confidential route — ${escapeHtml(result.model)} in ~${result.latencyMs}ms`
+        : `Connected — ${escapeHtml(result.model)} responding in ~${result.latencyMs}ms`;
+      resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--success);">${label}</span>`;
     } else {
       resultEl.innerHTML = `<span style="font-size: 0.75rem; color: var(--danger);">Failed: ${escapeHtml(result.error || 'Unknown error')}</span>`;
     }
@@ -2063,7 +2124,7 @@ window.switchAIBrainMode = async function(userId, target) {
       model: p.model,
       baseUrl: p.baseUrl,
       priority: i,
-      enabled: p.enabled !== false,
+      enabled: providerEnabledForMode(p),
     })), _reasoningMode);
     // Re-fetch from the server so the pill reflects the persisted state
     // (handles edge cases like an existing-but-disabled embedded entry
@@ -2102,7 +2163,7 @@ window.saveAIProvidersHandler = async function(userId) {
       model: p.model,
       baseUrl: p.baseUrl,
       priority: i,
-      enabled: p.enabled !== false,
+      enabled: providerEnabledForMode(p),
     })), _reasoningMode);
     if (btn) { btn.textContent = 'Saved!'; }
     setTimeout(async () => {
