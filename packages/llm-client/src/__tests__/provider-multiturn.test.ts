@@ -48,6 +48,34 @@ function captureVerifiedLocalOllamaFetch(
   return { spy, captured };
 }
 
+function captureExactLocalOllamaFetch(
+  chatResponseBody: unknown,
+  modelSnapshots: readonly unknown[],
+  versionSnapshots: readonly unknown[] = ['0.18.1', '0.18.1'],
+  runningModels: unknown = modelSnapshots[0],
+): { spy: typeof fetch; captured: CapturedRequest[] } {
+  const captured: CapturedRequest[] = [];
+  let versionIndex = 0;
+  let modelIndex = 0;
+  const spy = (async (input: string | URL | { url: string }, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+    const body = init?.body ? JSON.parse(init.body as string) : {};
+    captured.push({ url, body });
+    const responseBody = url.endsWith('/api/version')
+      ? { version: versionSnapshots[versionIndex++] }
+      : url.endsWith('/api/tags')
+        ? { models: modelSnapshots[modelIndex++] }
+        : url.endsWith('/api/ps')
+          ? { models: runningModels }
+          : chatResponseBody;
+    return new Response(JSON.stringify(responseBody), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  }) as typeof fetch;
+  return { spy, captured };
+}
+
 describe('Anthropic provider — multi-turn translation', () => {
   beforeEach(() => {
     vi.unstubAllGlobals();
@@ -305,6 +333,32 @@ describe('Ollama provider — switched to /api/chat', () => {
     expect(captured[1]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
   });
 
+  it('uses Ollama-native schema output and reasoning controls for workflows', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: '{"ok":true}' } });
+    vi.stubGlobal('fetch', spy);
+    const schema = { type: 'object', required: ['ok'], properties: { ok: { const: true } } };
+
+    await ollamaGenerate('', 'llama-test', 'return JSON', {
+      reasoningMode: 'on_device',
+      jsonSchema: JSON.stringify(schema),
+      disableReasoning: true,
+    });
+
+    expect(captured[1]!.body.format).toEqual(schema);
+    expect(captured[1]!.body.think).toBe(false);
+  });
+
+  it('rejects malformed workflow schemas before sending the prompt', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'must not run' } });
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      jsonSchema: 'not-json',
+    })).rejects.toThrow('valid JSON Schema object');
+    expect(captured.map(({ url }) => new URL(url).pathname)).toEqual(['/api/version']);
+  });
+
   it('canonicalizes a raw loopback base URL before appending API paths', async () => {
     const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);
@@ -387,6 +441,135 @@ describe('Ollama provider — switched to /api/chat', () => {
         'http://127.0.0.1:11434/api/version',
       ]);
     }
+  });
+
+  it('binds an untagged alias to one stable exact local runtime and model digest', async () => {
+    const digest = 'a'.repeat(64);
+    const models = [{ name: 'llama-test:latest', model: 'llama-test:latest', digest }];
+    const { spy, captured } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest,
+        provider_version: '0.18.1',
+        message: { content: 'exact reply' },
+      },
+      [models, models],
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).resolves.toEqual({
+      content: 'exact reply',
+      resolvedModel: 'llama-test',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.18.1',
+        modelDigestSha256: digest,
+      },
+    });
+    expect(captured.map(({ url }) => new URL(url).pathname)).toEqual([
+      '/api/version',
+      '/api/tags',
+      '/api/chat',
+      '/api/ps',
+      '/api/version',
+      '/api/tags',
+    ]);
+  });
+
+  it('fails closed when a local model alias resolves ambiguously', async () => {
+    const models = [
+      { name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) },
+      { name: 'private-alias:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) },
+    ];
+    const { spy, captured } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: '0.18.1',
+        message: { content: 'must not run' },
+      },
+      [models],
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow('resolves ambiguously');
+    expect(captured.map(({ url }) => new URL(url).pathname)).toEqual([
+      '/api/version',
+      '/api/tags',
+    ]);
+  });
+
+  it.each([
+    ['malformed digest', [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'short' }], ['0.18.1', '0.18.1']],
+    ['changed digest', [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) }], ['0.18.1', '0.18.1']],
+    ['changed runtime', [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) }], ['0.18.1', '0.18.2']],
+  ] as const)('fails closed on an unstable or %s identity', async (label, firstModels, versions) => {
+    const secondModels = label === 'changed digest'
+      ? [{ name: 'llama-test:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) }]
+      : firstModels;
+    const { spy } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: versions[0],
+        message: { content: 'must not return' },
+      },
+      [firstModels, secondModels],
+      versions,
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow(/identity|changed/u);
+  });
+
+  it('rejects a served manifest digest that differs from the stable alias snapshots', async () => {
+    const tagged = [
+      { name: 'llama-test:latest', model: 'llama-test:latest', digest: 'a'.repeat(64) },
+    ];
+    const running = [
+      { name: 'llama-test:latest', model: 'llama-test:latest', digest: 'b'.repeat(64) },
+    ];
+    const { spy } = captureExactLocalOllamaFetch(
+      {
+        model: 'llama-test:local',
+        digest: 'a'.repeat(64),
+        provider_version: '0.18.1',
+        message: { content: 'must not return' },
+      },
+      [tagged, tagged],
+      ['0.18.1', '0.18.1'],
+      running,
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow('changed during inference');
+  });
+
+  it('fails closed when Ollama does not attest the served digest in the chat response', async () => {
+    const digest = 'a'.repeat(64);
+    const models = [{ name: 'llama-test:latest', model: 'llama-test:latest', digest }];
+    const { spy } = captureExactLocalOllamaFetch(
+      { model: 'llama-test:local', message: { content: 'must not return' } },
+      [models, models],
+    );
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      requireExactRuntimeIdentity: true,
+    })).rejects.toThrow('omitted its exact served model digest or runtime version');
   });
 
   it('rejects unexpected remote-execution metadata on an on-device response', async () => {

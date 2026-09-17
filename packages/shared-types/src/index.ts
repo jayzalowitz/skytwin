@@ -21,8 +21,38 @@ export type {
   RoutineSpec,
   Routine,
   Watch,
+  WatchRun,
+  WatchRunEvidenceSnapshot,
+  WatchRunSynthesisMetadata,
+  WatchProjectionPin,
   RoutineParseResult,
 } from './routine.js';
+
+export {
+  MAX_WORKFLOW_PAYLOAD_BYTES,
+  MAX_WORKFLOW_PAYLOAD_DEPTH,
+  assertWorkflowProviderIdentity,
+  canonicalizeWorkflowPayload,
+  snapshotWorkflowAuthoringMetadata,
+  snapshotWorkflowInferenceMetadata,
+  workflowVersionContentHash,
+} from './adaptive-workflow.js';
+export type {
+  AdaptiveWorkflow,
+  AdaptiveWorkflowProposal,
+  AdaptiveWorkflowVersion,
+  WorkflowActivationEvent,
+  WorkflowActivationKind,
+  WorkflowAuthoringMetadataV1,
+  WorkflowAuthoringSource,
+  WorkflowInferenceMetadataV1,
+  WorkflowJsonObject,
+  WorkflowJsonPrimitive,
+  WorkflowJsonValue,
+  WorkflowProposalKind,
+  WorkflowSourceReferenceKind,
+  WorkflowSourceReferenceV1,
+} from './adaptive-workflow.js';
 
 export type {
   TwinProfile,

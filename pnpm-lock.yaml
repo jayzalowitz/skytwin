@@ -566,6 +566,9 @@ importers:
       '@skytwin/policy-engine':
         specifier: workspace:*
         version: link:../policy-engine
+      '@skytwin/routines':
+        specifier: workspace:*
+        version: link:../routines
       '@skytwin/shared-types':
         specifier: workspace:*
         version: link:../shared-types

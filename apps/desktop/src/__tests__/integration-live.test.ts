@@ -103,6 +103,8 @@ describe.runIf(serverAvailable)('session management (QR pairing flow)', () => {
       body: JSON.stringify({ userId: 'test-user-1', deviceName: 'Test Phone' }),
     });
     expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, string>;
+    expect(body.error).toMatch(/authentication required|real session/i);
   });
 
   it('POST /api/sessions/pair/consume validates the public one-time pairing token', async () => {

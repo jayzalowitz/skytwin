@@ -18,6 +18,7 @@ const ACTIONS = new Set(['digest', 'notify']);
 const FILTER_FIELDS = ['sources', 'fromContains', 'keywords', 'domains'] as const;
 const MAX_FILTER_ENTRIES = 50;
 const MAX_ENTRY_LEN = 200;
+const MAX_RETURNED_RUN_EVIDENCE = 5;
 
 /**
  * Sanitize a caller-supplied `filter` down to the known `RoutineFilter` shape:
@@ -215,7 +216,16 @@ export function createWatchesRouter(): Router {
         res.status(404).json({ error: 'Watch not found.' });
         return;
       }
-      const runs = await watchRunRepository.listForWatch(watchId, userId, limit);
+      const rows = await watchRunRepository.listForWatch(watchId, userId, limit);
+      const runs = rows.map((run) => ({
+        ...run,
+        // The repository verifies the stored snapshot against the commitment
+        // format for that row. v2 commits the complete matched set, while the
+        // JSONB sample remains bounded; matched_count is always the full count.
+        evidence_retained_count: run.evidence_snapshot.length,
+        evidence_truncated: run.matched_count > run.evidence_snapshot.length,
+        evidence_snapshot: run.evidence_snapshot.slice(0, MAX_RETURNED_RUN_EVIDENCE),
+      }));
       res.json({ runs });
     } catch (err) {
       next(err);

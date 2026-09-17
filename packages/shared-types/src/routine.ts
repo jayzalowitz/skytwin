@@ -3,7 +3,9 @@
  * twin should watch for on a schedule ("every morning, summarize my calendar
  * conflicts and anything from my biggest client"). The chat front door parses
  * that into a structured `RoutineSpec`; the worker schedules it; each firing is
- * recorded with an `ExplanationRecord`.
+ * recorded as a durable `WatchRun` whose immutable evidence refs and summary
+ * form the run explanation. Decision actions use `ExplanationRecord`; Watches
+ * remain a separate read-only primitive.
  *
  * v1 is deliberately READ-ONLY. A routine summarizes / notifies on matching
  * signals — it never takes an outbound or destructive action on its own.
@@ -72,14 +74,99 @@ export interface Routine extends RoutineSpec {
   nextRunAt: Date | null;
 }
 
+/** Immutable workflow-version identity copied onto a compiled Watch projection. */
+export interface WatchProjectionPin {
+  workflowId: string;
+  workflowVersionId: string;
+  workflowProviderKey: string;
+  workflowProviderSchemaVersion: string;
+  contentHash: string;
+  projectionVersion: number;
+}
+
 /**
  * A persisted **Watch** — the stored form of a no-code routine (a read-only
- * signal watcher). Structurally identical to `Routine`; the distinct name keeps
- * it clear at the storage / API layer (`watches` table, `/api/watches`) that
- * this is the no-code, read-only feature, NOT the IronClaw cron `/api/routines`
- * execution primitive.
+ * signal watcher). Legacy/user-authored Watches have null projection fields;
+ * adaptive Watches carry the complete pin, enforced atomically by the DB.
  */
-export type Watch = Routine;
+export interface Watch extends Routine {
+  workflowId: string | null;
+  workflowVersionId: string | null;
+  workflowProviderKey: string | null;
+  workflowProviderSchemaVersion: string | null;
+  contentHash: string | null;
+  projectionVersion: number | null;
+}
+
+/** Bounded, immutable evidence retained with a Watch firing after source TTL expiry. */
+export interface WatchRunEvidenceSnapshot {
+  signalId: string;
+  source: string;
+  timestamp: string;
+  title: string;
+  from: string;
+  /** Commits the exact predicate text without duplicating its potentially sensitive body. */
+  matchTextSha256: string;
+}
+
+/** Sanitized provenance for the prose attached to an adaptive Watch run. */
+export type WatchRunSynthesisMetadata =
+  | {
+    state: 'generated';
+    provider: string;
+    model: string;
+    reasoningMode: 'on_device' | 'verified_private_cloud' | 'bring_your_own_provider';
+    runtimeVersion: string;
+    modelArtifactSha256?: string;
+    summaryInstructionSha256: string;
+  }
+  | {
+    state: 'unavailable';
+    reason:
+      | 'not_configured'
+      | 'policy_blocked'
+      | 'provider_failed'
+      | 'runtime_identity_changed'
+      | 'invalid_output'
+      | 'no_matches';
+    summaryInstructionSha256: string;
+  };
+
+/** Durable, user-visible record of one Watch firing. Worker leases stay internal. */
+export interface WatchRun {
+  id: string;
+  watchId: string;
+  userId: string;
+  ranAt: Date;
+  action: RoutineActionKind;
+  matchedCount: number;
+  summary: string;
+  matchedRefs: string[];
+  /** v1 commits the retained envelope/count; v2 commits the full matched set (recomputable only when untruncated). */
+  evidenceSha256: string | null;
+  /** Bounded immutable examples; `matchedCount - length` is explicitly disclosed as truncation. */
+  evidenceSnapshot: WatchRunEvidenceSnapshot[];
+  scheduleRevision: string;
+  scheduledFor: Date;
+  windowStart: Date;
+  windowEnd: Date;
+  watchSpec: RoutineSpec;
+  /** Exact immutable provider payload for adaptive runs; null for legacy Watches. */
+  workflowPayloadSnapshot: Record<string, unknown> | null;
+  workflowInferenceSnapshot: import('./adaptive-workflow.js').WorkflowInferenceMetadataV1 | null;
+  synthesisMetadata: WatchRunSynthesisMetadata | null;
+  status: 'pending' | 'processing' | 'completed' | 'failed';
+  attemptCount: number;
+  completedAt: Date | null;
+  failedAt: Date | null;
+  lastError: string | null;
+  workflowId: string | null;
+  workflowVersionId: string | null;
+  workflowProviderKey: string | null;
+  workflowProviderSchemaVersion: string | null;
+  contentHash: string | null;
+  projectionVersion: number | null;
+}
 
 /**
  * Result of parsing a natural-language ask into a `RoutineSpec`.

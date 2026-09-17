@@ -42,6 +42,16 @@ users
   |-- 1:N --→ feedback_events
   |-- 1:N --→ execution_admission_barriers
   |-- 1:N --→ credential_dispatch_leases
+  |-- 1:N --→ workflows
+
+workflows
+  |-- 1:N --→ workflow_versions (immutable lineage)
+  |-- 1:N --→ workflow_proposals (review + idempotency)
+  |-- 1:N --→ workflow_activation_events (append-only pointer history)
+  |-- 0:1 --→ watches (active compiled projection)
+
+workflow_versions
+  |-- 0:N --→ watch_runs (exact version, payload, compiler, and evidence pins)
 
 decisions
   |-- 1:N --→ candidate_actions
@@ -105,7 +115,11 @@ memory_rooms
 | `assistant_messages` | Chat turns; new writes carry owner-scoped request identity and processing metadata, with owner equality enforced against the parent thread | Once per logical turn | Thread history and completed retry replay |
 | `execution_plans` | Admitted execution plans for a specific adapter path | On admitted execution preparation | Status tracking and reconciliation |
 | `watches` | No-code routines (#519) — read-only signal watchers (digest/notify on a schedule) | On create / edit / pause | Per-user listing, scheduler `listDue` |
-| `watch_runs` | Durable scheduled slots created before an exact-window signal read, with database-clock leases, retries, and any resulting summary | Every due slot, including zero-match audit slots | Worker claims; positive history projection; bounded zero-match audit retention |
+| `workflows` | Stable owner-scoped workflow identity and atomic active-version pointer | First proposal; every activation/rollback updates its pointer by serializable compare-and-swap | Authoring, version history, Watch projection |
+| `workflow_versions` | Immutable provider payload, lineage, canonical hash, and sanitized inference metadata | Every accepted initial/edit/feedback/import proposal | Review, replay, compilation, rollback, exact run pins |
+| `workflow_proposals` | Review boundary joining a base and proposed version, including durable request idempotency | Every proposed initial version or correction | Lost-response replay, explicit activation, audit |
+| `workflow_activation_events` | Append-only activation/rollback transition with monotonic per-workflow sequence | Every explicit activation or rollback | Audit, concurrent pointer fencing, restore |
+| `watch_runs` | Durable scheduled slots created before an exact-window signal read, with database-clock leases, retries, exact workflow/version/compiler/evidence pins, and any resulting summary | Every due slot, including zero-match audit slots | Worker claims; positive history projection; bounded zero-match audit retention |
 | `execution_results` | Results from IronClaw | On execution completion | Audit, failure analysis |
 | `explanation_records` | Human-readable explanations | Per-decision | User review, audit |
 | `inference_receipts` | Signed reasoning-path records for completed decision-event model calls, ordered by durable capture completion | Atomic batch finalization before approval or execution | Owner-scoped metadata read, backup, audit |
@@ -168,7 +182,11 @@ JSONB gives flexibility without schema migrations for every new field, while rem
 
 ### Timestamps
 
-All tables include `created_at TIMESTAMPTZ`. Mutable tables also include `updated_at TIMESTAMPTZ`. Timestamps use `TIMESTAMPTZ` (timezone-aware) to avoid timezone ambiguity.
+Time-bearing tables use `TIMESTAMPTZ` for timezone-aware instants. Many durable
+records expose `created_at`, and mutable resources commonly expose `updated_at`,
+but operational/link tables use purpose-specific fields such as `recorded_at`,
+`scheduled_for`, or `completed_at`; the schema does not impose one timestamp
+pair on every table.
 
 ## Role as Durable Operational Memory
 
@@ -182,7 +200,12 @@ CockroachDB is not just "the database." It is the **durable operational memory b
 
 4. **Explanation records are institutional memory.** They document why supported decision paths reached recorded outcomes. Release-wide coverage remains under audit; without it, the system cannot claim a complete audit trail.
 
-This is why CockroachDB's durability guarantees matter. Data is replicated across nodes (in production). Transactions are serializable. Write-ahead logging ensures crash consistency. The system treats data loss as a catastrophic failure, not a recoverable inconvenience.
+This is why CockroachDB's durability guarantees matter. SkyTwin's current
+supported desktop preview runs a single local node, so it does not claim
+multi-node availability. CockroachDB still provides serializable transactions
+and crash-consistent storage locally; a future multi-node deployment can add
+replication as an operator concern. The system treats data loss as a
+catastrophic failure, not a recoverable inconvenience.
 
 ## Data Patterns
 
@@ -349,17 +372,11 @@ Critical for safety. Must be atomic.
 
 -- 1. Check current daily spend
 SELECT COALESCE(SUM(
-  CASE WHEN ca.estimated_cost IS NOT NULL
-       THEN ca.estimated_cost
-       ELSE 0
-  END
-), 0) as daily_spend
-FROM decisions d
-JOIN decision_outcomes do ON do.decision_id = d.id
-JOIN candidate_actions ca ON ca.id = do.selected_action_id
-WHERE d.user_id = $1
-  AND d.timestamp > now() - INTERVAL '24 hours'
-  AND do.auto_executed = true;
+  COALESCE(actual_cost_cents, estimated_cost_cents)
+), 0) AS daily_spend_cents
+FROM spend_records
+WHERE user_id = $1
+  AND recorded_at >= now() - ($2::INT * INTERVAL '1 hour');
 
 -- 2. If daily_spend + proposed_cost <= daily_limit, proceed
 -- 3. Record the new execution
@@ -466,12 +483,17 @@ caller kernel, recovery worker, and feedback projection remain unwired.
 
 ## Event Storage Design
 
-Events (decisions) are append-only. We do not update or delete decision records. This supports:
+Events (decisions) are append-only during normal operation and are removed only
+by owner deletion. This supports:
 
-- **Replay:** Re-run any historical event through the current pipeline
+- **Reconstruction:** Inspect historical twin/preference state without replaying effects
 - **Audit:** Complete, unmodified record of what happened
 - **Debugging:** "What did the system see at time T?"
 - **Training:** Historical decisions are training data for twin model improvements
+
+The current `TemporalReplayEngine` reconstructs twin and preference state only;
+it does not rerun the decision engine. Historical effect replay is never an
+automatic consequence of reading these records.
 
 ### Retention Strategy
 
@@ -479,18 +501,18 @@ Events are retained based on type:
 
 | Data Type | Retention | Rationale |
 |-----------|----------|-----------|
-| Decisions | Indefinite | Core audit and replay data |
-| Candidate actions | Indefinite | Needed for explanation and analysis |
-| Decision outcomes | Indefinite | Core audit data |
-| Execution plans/results | Indefinite | Needed for rollback and audit |
-| Explanation records | Indefinite | User-facing audit trail |
-| Feedback events | Indefinite | Twin model provenance |
-| Twin profile versions | Indefinite | Historical reconstruction |
-| Raw event payloads | 90 days, then summarize | Can be large; summaries retain essential data |
+| Decisions | Until user deletion | Core audit and reconstruction data |
+| Candidate actions | Until user deletion | Needed for explanation and analysis |
+| Decision outcomes | Until user deletion | Core audit data |
+| Execution plans/results | Until user deletion | Needed for rollback and audit |
+| Explanation records | Until user deletion | User-facing audit trail |
+| Feedback events | Until user deletion | Twin model provenance |
+| Twin profile versions | Until user deletion | Historical reconstruction |
+| Raw event payloads | Until user deletion | No automatic 90-day summarization job exists today |
 
 ### Partitioning Consideration
 
-For high-volume deployments, the `decisions` table may benefit from range partitioning by `timestamp`:
+For high-volume deployments, the `decisions` table may benefit from range partitioning by `created_at`:
 
 ```sql
 CREATE TABLE decisions (
@@ -546,48 +568,37 @@ Every version records why it was created:
 
 ### Primary Access Patterns and Their Indexes
 
+The checked-in schema currently includes these access paths (names are omitted
+where CockroachDB derives them for inline indexes):
+
 ```sql
--- User lookup (authentication, context loading)
--- Covered by PRIMARY KEY on users(id) and UNIQUE on users(email)
-
--- Twin profile by user
-CREATE INDEX idx_twin_profiles_user ON twin_profiles (user_id);
-
--- Preferences by user and domain
-CREATE INDEX idx_preferences_user_domain ON preferences (user_id, domain, updated_at DESC);
-
--- Twin versions for historical reconstruction
-CREATE INDEX idx_twin_versions_profile_time ON twin_profile_versions (profile_id, created_at DESC);
-
--- Decisions by user and time (most common query pattern)
-CREATE INDEX idx_decisions_user_time ON decisions (user_id, created_at DESC);
-
--- Decisions by situation type (for evals and analytics)
-CREATE INDEX idx_decisions_situation ON decisions (situation_type, created_at DESC);
-
--- Approval requests by user and status
-CREATE INDEX idx_approvals_user_status ON approval_requests (user_id, status, requested_at ASC);
-
--- Feedback events by user and time
-CREATE INDEX idx_feedback_user_time ON feedback_events (user_id, created_at DESC);
-
--- Active policies by user
-CREATE INDEX idx_policies_user_active ON action_policies (user_id) WHERE is_active = true;
-
--- Execution results by plan (for status checks)
--- Covered by execution_results(execution_plan_id) if it's a UNIQUE or FK index
-
--- Spend tracking: decisions with auto-executed outcomes in the last 24 hours
-CREATE INDEX idx_decisions_user_recent ON decisions (user_id, timestamp DESC)
-  WHERE timestamp > now() - INTERVAL '24 hours';
+twin_profiles UNIQUE (user_id)
+preferences (user_id, domain)
+twin_profile_versions UNIQUE (profile_id, version)
+decisions (user_id, created_at DESC)
+decisions (user_id, domain, created_at DESC)
+approval_requests (user_id, status)
+approval_requests UNIQUE (decision_id)
+feedback_events (user_id, created_at DESC)
+feedback_events (decision_id)
+feedback_events UNIQUE (approval_request_id)
+action_policies (user_id, domain)
+execution_results UNIQUE (plan_id)
+spend_records (user_id, recorded_at DESC)
 ```
+
+The authoritative definitions live in
+[`packages/db/src/schemas/schema.sql`](../packages/db/src/schemas/schema.sql)
+and later migrations. Check those files and the repository query shape before
+adding or changing an index.
 
 ### Partial Indexes
 
-CockroachDB supports partial indexes (indexes with WHERE clauses). These are used for:
-- Active policies only (`WHERE is_active = true`)
-- Pending approvals only (`WHERE status = 'pending'`)
-- Recent decisions for spend tracking
+CockroachDB supports partial indexes (indexes with `WHERE` clauses). SkyTwin
+uses them only where a checked-in migration defines a stable predicate, such
+as unrevoked sessions, pending approval expiry, non-null approval batches, and
+pending brain-page embeddings. The base policy and approval owner/status
+lookups are ordinary indexes.
 
 Partial indexes reduce index size and improve write performance for large tables.
 
@@ -704,6 +715,10 @@ packages/db/src/migrations/
   002-add-api-key.sql
   ...
   094-account-signal-persistence.sql
+  095-adaptive-workflow-foundation.sql
+  096-watch-workflow-version-pins.sql
+  097-workflow-proposal-idempotency.sql
+  098-watch-full-evidence-commitments.sql
   ...
 ```
 
@@ -727,7 +742,12 @@ authority before every write.
 ### CockroachDB-Specific Considerations
 
 - **No ALTER TYPE for enums.** CockroachDB doesn't support adding values to existing enums the same way Postgres does. Use STRING columns with application-level validation instead of database enums.
-- **No advisory locks.** CockroachDB doesn't support `pg_advisory_lock`. The migration runner uses a `SELECT FOR UPDATE` on the `schema_migrations` table to prevent concurrent migration runs.
+- **No advisory locks or migration ledger.** CockroachDB does not support
+  `pg_advisory_lock`, and this runner does not pretend a nonexistent
+  `schema_migrations` row can serialize it. Desktop startup owns one fixed
+  migration connection and revalidates process authority before writes;
+  operators must not launch competing manual migration runs. Rerun safety is
+  provided by the reviewed idempotent DDL/error boundary described above.
 - **Index creation is online.** CockroachDB creates indexes without locking the table, so index migrations don't cause downtime.
 
 ## Why NOT Vector Storage as Primary
@@ -751,16 +771,22 @@ These are relational database workloads. Trying to force them into a vector stor
 
 ### Embeddings as Supplement
 
-That said, embeddings and vector search could supplement the structured twin model in the future:
+Embeddings already supplement the structured twin model through the CRDB-native
+gbrain-compatible backend:
+
+- `brain_pages.embedding` stores portable `FLOAT8[]` vectors.
+- `brain_pages.content_tsv` supports lexical retrieval.
+- `@skytwin/memory-gbrain-crdb-adapter` fuses both ranked lists with RRF.
+
+Current and future consumers include:
 
 - **Semantic preference matching:** "Does the user have a preference that's *similar to* this new situation?" Vector search over preference descriptions could find approximate matches when exact key lookup fails.
 - **Event similarity:** "Has the user seen an event *like* this before?" Embedding recent events and finding similar historical events could improve situation interpretation.
 - **Communication style:** Embedding the user's past communications to generate stylistically consistent draft replies.
 
-If vector search is added, it would be implemented as:
-- A separate index (possibly pgvector in CockroachDB, or an external vector store)
-- Queried *in addition to* the structured twin lookup, not instead of it
-- Results used to inform confidence, not to replace explicit preference data
+This retrieval remains additive to structured lookups and informs context or
+confidence rather than replacing explicit preferences. The supported CRDB path
+does not require pgvector or a second database.
 
 The principle: **structured data for structured decisions; embeddings for fuzzy matching when structured lookup finds nothing.**
 
@@ -768,10 +794,12 @@ The principle: **structured data for structured decisions; embeddings for fuzzy 
 
 ### Richer Memory Model
 
-The current schema supports preferences, inferences, and evidence. Future extensions might include:
-- **Episodic memory:** "The user went to Denver last March and had a bad experience at the airport hotel." Narrative memories tied to specific events.
+The current schema already includes MemPalace `episodic_memories`, gbrain-compatible
+`brain_episodes`, temporal knowledge triples, and a twin `temporal_profile`.
+Future extensions might include:
 - **Goal modeling:** "The user is trying to reduce their subscription spending." Higher-level objectives inferred from patterns.
-- **Temporal patterns:** "The user is more conservative about spending at the end of the month." Time-based behavioral patterns.
+- **Cross-memory reconciliation:** explain and resolve conflicting episodic,
+  graph, and profile facts without silently overwriting provenance.
 
 The schema design accommodates these by using JSONB for extensible fields (`domain_heuristics`, `routines`) and by keeping the version history system generic enough to capture any twin state change.
 

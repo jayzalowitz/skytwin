@@ -36,6 +36,7 @@
     "@skytwin/decision-engine": "workspace:*",
     "@skytwin/explanations": "workspace:*",
     "@skytwin/policy-engine": "workspace:*",
+    "@skytwin/routines": "workspace:*",
     "@skytwin/shared-types": "workspace:*",
     "@skytwin/twin-model": "workspace:*",
     "pg": "^8.23.0"

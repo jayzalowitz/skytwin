@@ -12,6 +12,7 @@ import type {
   EmbeddedTextPort,
 } from './text-port.js';
 import { computeFileHandleSha256 } from './managed-model-store.js';
+import { detectLlamaCppBuild } from './runtime-compatibility.js';
 
 export interface LlamaCppBackendOptions {
   binaryPath: string;
@@ -20,6 +21,8 @@ export interface LlamaCppBackendOptions {
   timeoutMs?: number;
   threads?: number;
   verifiedModel?: { exactBytes: number; sha256: string };
+  runtimeBuild?: number;
+  workflowAuthoringQualified?: boolean;
   spawnProcess?: typeof spawn;
 }
 
@@ -33,6 +36,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
   private readonly timeoutMs: number;
   private readonly threads: number | null;
   private readonly verifiedModel: LlamaCppBackendOptions['verifiedModel'];
+  private readonly runtimeBuild: number | null;
   private readonly spawnProcess: typeof spawn;
 
   constructor(opts: LlamaCppBackendOptions) {
@@ -41,18 +45,33 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.threads = opts.threads ?? null;
     this.verifiedModel = opts.verifiedModel;
+    this.runtimeBuild = opts.runtimeBuild ?? null;
     this.spawnProcess = opts.spawnProcess ?? spawn;
     this.capabilities = {
       available: true,
       modelName: basename(opts.modelPath),
       contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      artifactSha256: opts.verifiedModel?.sha256 ?? null,
+      runtimeVersion: this.runtimeBuild === null ? null : `llama.cpp-b${this.runtimeBuild}`,
+      workflowAuthoringQualified: opts.workflowAuthoringQualified ?? false,
     };
   }
 
   async generate(
     prompt: string,
-    opts: { maxTokens?: number; temperature?: number } = {},
+    opts: {
+      maxTokens?: number;
+      temperature?: number;
+      jsonSchema?: string;
+      disableReasoning?: boolean;
+    } = {},
   ): Promise<string> {
+    if (
+      this.runtimeBuild !== null &&
+      detectLlamaCppBuild(this.binaryPath) !== this.runtimeBuild
+    ) {
+      throw new Error('llama.cpp runtime build changed after readiness was established');
+    }
     const verifiedIdentity = this.verifiedModel
       ? await verifyModelForLaunch(this.modelPath, this.verifiedModel)
       : null;
@@ -67,6 +86,12 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
       '--no-warmup',
       '--single-turn',
     ];
+    if (opts.disableReasoning === true) {
+      args.push('--reasoning', 'off', '--reasoning-format', 'deepseek');
+    }
+    if (opts.jsonSchema !== undefined) {
+      args.push('--json-schema', opts.jsonSchema);
+    }
     if (this.threads !== null) {
       args.push('-t', String(this.threads));
     }
@@ -101,7 +126,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
         if (settled) return;
         settled = true;
         child.kill('SIGKILL');
-        reject(new Error(`llama-cli timed out after ${this.timeoutMs}ms`));
+        reject(new Error(`llama-completion timed out after ${this.timeoutMs}ms`));
       }, this.timeoutMs);
 
       child.stdout?.on('data', (chunk) => { stdout += chunk.toString('utf8'); });
@@ -111,7 +136,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        reject(new Error(`failed to spawn llama-cli: ${err.message}`));
+        reject(new Error(`failed to spawn llama-completion: ${err.message}`));
       });
 
       child.on('close', (code) => {
@@ -120,13 +145,20 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
         clearTimeout(timer);
         if (code !== 0) {
           const tail = stderr.split('\n').slice(-5).join('\n').trim();
-          reject(new Error(`llama-cli exited with code ${code ?? 'null'}: ${tail || 'no stderr'}`));
+          reject(new Error(`llama-completion exited with code ${code ?? 'null'}: ${tail || 'no stderr'}`));
           return;
         }
-        resolve(stripEndOfTextMarker(stdout).trim());
+        const output = opts.disableReasoning === true
+          ? stripEmptyReasoningBlock(stdout)
+          : stdout;
+        resolve(stripEndOfTextMarker(output).trim());
       });
     });
   }
+}
+
+function stripEmptyReasoningBlock(text: string): string {
+  return text.replace(/^\s*<think>\s*<\/think>\s*/iu, '');
 }
 
 let managedModelHashTail: Promise<void> = Promise.resolve();

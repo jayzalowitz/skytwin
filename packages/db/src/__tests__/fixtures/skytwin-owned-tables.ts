@@ -38,5 +38,6 @@ export const SKYTWIN_OWNED_TABLES = [
   'twin_exports', 'twin_feedback_applications', 'twin_profile_versions', 'twin_profiles',
   'user_credential_vault_meta', 'user_onboarding_state', 'user_risk_profiles',
   'user_source_key_registry', 'users', 'watch_runs', 'watches', 'worker_dead_letter',
-  'worker_generation_authority',
+  'worker_generation_authority', 'workflow_activation_events', 'workflow_proposals',
+  'workflow_versions', 'workflows',
 ] as const;

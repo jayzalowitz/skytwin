@@ -1,10 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { ClaimedWatchSlot, SignalRow } from '@skytwin/db';
-import type { Watch } from '@skytwin/shared-types';
+import type { Watch, WatchRunEvidenceSnapshot } from '@skytwin/shared-types';
 import {
   shouldRunWatchScheduler,
   toMatchable,
   evaluateWatch,
+  embeddedRuntimeIdentityMatches,
+  ollamaRuntimeIdentityMatches,
+  parseWatchSynthesis,
   runWatchSchedulerJob,
   WATCH_SCHEDULER_INTERVAL_MS,
 } from '../jobs/watch-scheduler.js';
@@ -24,6 +27,12 @@ function watch(over: Partial<Watch> = {}): Watch {
     updatedAt: new Date('2026-07-01T00:00:00Z'),
     lastRunAt: null,
     nextRunAt: new Date('2026-07-05T08:00:00Z'),
+    workflowId: null,
+    workflowVersionId: null,
+    workflowProviderKey: null,
+    workflowProviderSchemaVersion: null,
+    contentHash: null,
+    projectionVersion: null,
     ...over,
   };
 }
@@ -104,6 +113,26 @@ describe('evaluateWatch', () => {
     const r = evaluateWatch(watch(), many, windowStart, windowEnd);
     expect(r.matchedCount).toBe(250);
     expect(r.matchedRefs).toHaveLength(200);
+    expect(r.evidenceSha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('commits omitted matches so equal samples and counts cannot collide', () => {
+    const retained = Array.from({ length: 200 }, (_, index) => signal({
+      id: `kept-${String(index).padStart(3, '0')}`,
+      timestamp: new Date(windowEnd.getTime() - index),
+    }));
+    const left = evaluateWatch(watch(), [
+      ...retained,
+      signal({ id: 'omitted-left', timestamp: new Date(windowStart.getTime() + 1) }),
+    ], windowStart, windowEnd);
+    const right = evaluateWatch(watch(), [
+      ...retained,
+      signal({ id: 'omitted-right', timestamp: new Date(windowStart.getTime() + 1) }),
+    ], windowStart, windowEnd);
+
+    expect(left.matchedCount).toBe(201);
+    expect(left.evidenceSnapshot).toEqual(right.evidenceSnapshot);
+    expect(left.evidenceSha256).not.toBe(right.evidenceSha256);
   });
 
   it('a notify watch summarizes tersely', () => {
@@ -115,6 +144,123 @@ describe('evaluateWatch', () => {
     const r = evaluateWatch(watch(), [signal({ data: { from: 'nobody@x.com' } })], windowStart, windowEnd);
     expect(r.matchedCount).toBe(0);
     expect(r.summary).toBe('');
+  });
+});
+
+describe('parseWatchSynthesis', () => {
+  it('accepts only bounded JSON prose citing evidence from the admitted set', () => {
+    expect(parseWatchSynthesis('{"summary":"Invoice due [signal-1]."}', new Set(['signal-1'])))
+      .toBe('Invoice due [signal-1].');
+    expect(parseWatchSynthesis('{"summary":"Invoice due."}', new Set(['signal-1']))).toBeNull();
+    expect(parseWatchSynthesis('{"summary":"Invoice due [invented]."}', new Set(['signal-1'])))
+      .toBeNull();
+  });
+});
+
+describe('embeddedRuntimeIdentityMatches', () => {
+  const pinned = {
+    runtimeVersion: 'llama.cpp-b5000',
+    modelArtifactSha256: 'a'.repeat(64),
+  };
+
+  it('requires the exact managed artifact digest and llama.cpp build', () => {
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
+    })).toBe(true);
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'b'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
+    })).toBe(false);
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5001',
+      workflowAuthoringQualified: true,
+    })).toBe(false);
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'runtime_unavailable',
+      reason: 'runtime_binary_missing',
+    })).toBe(false);
+  });
+
+  it('never treats legacy wildcard pins as an exact embedded identity', () => {
+    const readiness = {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+      workflowAuthoringQualified: true,
+    } as const;
+
+    expect(embeddedRuntimeIdentityMatches({
+      runtimeVersion: 'unreported',
+      modelArtifactSha256: 'a'.repeat(64),
+    }, readiness)).toBe(false);
+    expect(embeddedRuntimeIdentityMatches({
+      runtimeVersion: 'llama.cpp-b5000',
+    }, readiness)).toBe(false);
+  });
+});
+
+describe('ollamaRuntimeIdentityMatches', () => {
+  const pinned = {
+    runtimeVersion: 'ollama-0.12.3',
+    modelArtifactSha256: 'a'.repeat(64),
+  };
+
+  it('requires the exact responding server version and manifest digest', () => {
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(true);
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.4',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(false);
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'b'.repeat(64),
+      },
+    })).toBe(false);
+  });
+
+  it('rejects missing identity, provider fallback, and legacy wildcard pins', () => {
+    expect(ollamaRuntimeIdentityMatches(pinned, { provider: 'ollama' })).toBe(false);
+    expect(ollamaRuntimeIdentityMatches(pinned, {
+      provider: 'embedded',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(false);
+    expect(ollamaRuntimeIdentityMatches({ runtimeVersion: 'ollama-0.12.3' }, {
+      provider: 'ollama',
+      runtimeIdentity: {
+        provider: 'ollama',
+        serverVersion: '0.12.3',
+        modelDigestSha256: 'a'.repeat(64),
+      },
+    })).toBe(false);
   });
 });
 
@@ -140,6 +286,15 @@ describe('runWatchSchedulerJob', () => {
       windowEnd: NOW,
       leaseToken: 'lease-1',
       attemptCount: 1,
+      workflowId: null,
+      workflowVersionId: null,
+      workflowProviderKey: null,
+      workflowProviderSchemaVersion: null,
+      contentHash: null,
+      projectionVersion: null,
+      workflowPayloadSnapshot: null,
+      workflowInferenceSnapshot: null,
+      summaryInstruction: null,
       ...over,
     };
   }
@@ -155,25 +310,207 @@ describe('runWatchSchedulerJob', () => {
     };
   }
 
+  function signalRepoWith(responses: Array<SignalRow[] | Error>) {
+    const visitInWindowPages = vi.fn(async (
+      _userId: string,
+      _windowStart: Date,
+      _windowEnd: Date,
+      _pageSize: number,
+      visit: (records: readonly SignalRow[]) => void | Promise<void>,
+    ) => {
+      const response = responses.shift() ?? [];
+      if (response instanceof Error) throw response;
+      await visit(response);
+    });
+    return { visitInWindowPages };
+  }
+
   it('claims and completes a durable slot when its persisted window matches', async () => {
     const slot = claimedSlot();
     const runRepo = runRepoWith([slot, null]);
-    const listInWindow = vi.fn().mockResolvedValue([
+    const signalRepo = signalRepoWith([[
       signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
-    ]);
+    ]]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow },
+      signalRepo,
     });
-    expect(listInWindow).toHaveBeenCalledWith(slot.userId, WINDOW_START, NOW);
+    expect(signalRepo.visitInWindowPages).toHaveBeenCalledWith(
+      slot.userId,
+      WINDOW_START,
+      NOW,
+      500,
+      expect.any(Function),
+    );
     expect(runRepo.completeSlot).toHaveBeenCalledWith({
       id: slot.id,
       leaseToken: slot.leaseToken,
       matchedCount: 1,
       summary: expect.stringContaining('Q3 budget'),
       matchedRefs: ['a'],
+      evidenceSnapshot: [expect.objectContaining({ signalId: 'a', title: 'Q3 budget' })],
+      evidenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      synthesisMetadata: null,
     });
     expect(runRepo.pruneZeroMatchSlots).toHaveBeenCalledWith(30, 100);
+  });
+
+  it('counts every paged match while retaining only a bounded evidence snapshot', async () => {
+    const slot = claimedSlot();
+    const runRepo = runRepoWith([slot, null]);
+    const firstPage = Array.from({ length: 150 }, (_, index) => signal({
+      id: `first-${String(index).padStart(3, '0')}`,
+      timestamp: new Date(NOW.getTime() - index),
+    }));
+    const secondPage = Array.from({ length: 100 }, (_, index) => signal({
+      id: `second-${String(index).padStart(3, '0')}`,
+      timestamp: new Date(NOW.getTime() - 1_000 - index),
+    }));
+    const visitInWindowPages = vi.fn(async (
+      _userId: string,
+      _windowStart: Date,
+      _windowEnd: Date,
+      _pageSize: number,
+      visit: (records: readonly SignalRow[]) => void | Promise<void>,
+    ) => {
+      await visit(firstPage);
+      await visit(secondPage);
+    });
+
+    await runWatchSchedulerJob({ runRepo, signalRepo: { visitInWindowPages } });
+
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      matchedCount: 250,
+      matchedRefs: expect.any(Array),
+      evidenceSnapshot: expect.any(Array),
+      evidenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      summary: expect.stringMatching(/^250 updates:/),
+    }));
+    const completion = runRepo.completeSlot.mock.calls[0]![0];
+    expect(completion.matchedRefs).toHaveLength(200);
+    expect(completion.evidenceSnapshot).toHaveLength(200);
+    expect(completion.matchedRefs).toEqual(
+      completion.evidenceSnapshot.map((item: WatchRunEvidenceSnapshot) => item.signalId),
+    );
+  });
+
+  it('labels deterministic adaptive output when unattended AI synthesis is unavailable', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1',
+      workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1',
+      workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64),
+      projectionVersion: 1,
+      workflowPayloadSnapshot: {},
+      summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: signalRepoWith([[
+        signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
+      ]]),
+      synthesize: vi.fn().mockResolvedValue({
+        text: null,
+        metadata: {
+          state: 'unavailable', reason: 'provider_failed',
+          summaryInstructionSha256: 'b'.repeat(64),
+        },
+      }),
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.stringMatching(/^AI summary unavailable — .*Q3 budget/),
+      matchedRefs: ['a'],
+      synthesisMetadata: expect.objectContaining({ state: 'unavailable', reason: 'provider_failed' }),
+    }));
+  });
+
+  it('persists generated AI prose and its provider provenance for adaptive runs', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1', workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1', workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64), projectionVersion: 1,
+      workflowPayloadSnapshot: {}, summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    const synthesize = vi.fn().mockResolvedValue({
+      text: 'One finance update [a].',
+      metadata: {
+        state: 'generated', provider: 'embedded', model: 'managed', reasoningMode: 'on_device',
+        runtimeVersion: 'unreported',
+        summaryInstructionSha256: 'c'.repeat(64),
+      },
+    });
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: signalRepoWith([[
+        signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
+      ]]),
+      synthesize,
+    });
+    expect(synthesize).toHaveBeenCalledWith(
+      slot,
+      [expect.objectContaining({ signalId: 'a' })],
+      1,
+    );
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      summary: 'One finance update [a].',
+      synthesisMetadata: expect.objectContaining({ state: 'generated', provider: 'embedded' }),
+    }));
+  });
+
+  it('records an explicit adaptive explanation when a pinned run has no matches', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1',
+      workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1',
+      workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64),
+      projectionVersion: 1,
+      workflowPayloadSnapshot: {},
+      summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: signalRepoWith([[]]),
+      synthesize: vi.fn().mockResolvedValue({
+        text: null,
+        metadata: {
+          state: 'unavailable', reason: 'no_matches',
+          summaryInstructionSha256: 'd'.repeat(64),
+        },
+      }),
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      id: slot.id,
+      matchedCount: 0,
+      summary: 'AI summary unavailable — No matching signals.',
+      matchedRefs: [],
+    }));
+  });
+
+  it('falls back deterministically instead of retrying the slot when synthesis throws', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1', workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1', workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64), projectionVersion: 1,
+      workflowPayloadSnapshot: {}, summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: signalRepoWith([[
+        signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
+      ]]),
+      synthesize: vi.fn().mockRejectedValue(new Error('model offline')),
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.stringMatching(/^AI summary unavailable —/),
+      synthesisMetadata: expect.objectContaining({ state: 'unavailable', reason: 'provider_failed' }),
+    }));
+    expect(runRepo.failSlot).not.toHaveBeenCalled();
   });
 
   it('completes zero-match slots so the persisted schedule has no gaps', async () => {
@@ -181,7 +518,7 @@ describe('runWatchSchedulerJob', () => {
     const runRepo = runRepoWith([slot, null]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([]) },
+      signalRepo: signalRepoWith([[]]),
     });
     expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
       id: slot.id,
@@ -196,7 +533,7 @@ describe('runWatchSchedulerJob', () => {
     runRepo.completeSlot.mockResolvedValue(false);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow: vi.fn().mockResolvedValue([signal()]) },
+      signalRepo: signalRepoWith([[signal()]]),
     });
     expect(runRepo.completeSlot).toHaveBeenCalledTimes(1);
     expect(runRepo.failSlot).not.toHaveBeenCalled();
@@ -208,25 +545,31 @@ describe('runWatchSchedulerJob', () => {
       windowEnd: new Date('2026-07-05T08:45:00Z'),
     });
     const runRepo = runRepoWith([slot, null]);
-    const listInWindow = vi.fn().mockResolvedValue([]);
+    const signalRepo = signalRepoWith([[]]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow },
+      signalRepo,
     });
-    expect(listInWindow).toHaveBeenCalledWith(slot.userId, slot.windowStart, slot.windowEnd);
+    expect(signalRepo.visitInWindowPages).toHaveBeenCalledWith(
+      slot.userId,
+      slot.windowStart,
+      slot.windowEnd,
+      500,
+      expect.any(Function),
+    );
   });
 
   it('records a failed attempt and continues to the next durable slot', async () => {
     const bad = claimedSlot({ id: 'bad-slot', leaseToken: 'bad-lease' });
     const good = claimedSlot({ id: 'good-slot', leaseToken: 'good-lease' });
     const runRepo = runRepoWith([bad, good, null]);
-    const listInWindow = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('signal read failed'))
-      .mockResolvedValueOnce([signal({ id: 'a' })]);
+    const signalRepo = signalRepoWith([
+      new Error('signal read failed'),
+      [signal({ id: 'a' })],
+    ]);
     await runWatchSchedulerJob({
       runRepo,
-      signalRepo: { listInWindow },
+      signalRepo,
     });
     expect(runRepo.failSlot).toHaveBeenCalledWith({
       id: bad.id,

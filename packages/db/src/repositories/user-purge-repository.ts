@@ -59,7 +59,7 @@ export class ActiveExecutionAdmissionError extends Error {
  * Each statement uses `$1` for the user id. The `table` field is the
  * key under which the row count is reported.
  */
-const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
+const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string; prepareSql?: string }> = [
   // ── 1. Leaves that chain off decisions / execution_plans / twin_profiles
   //       (FK via non-user-id columns — would block the user delete
   //       cascade if left in place)
@@ -131,6 +131,28 @@ const DELETE_PLAN: ReadonlyArray<{ table: string; sql: string }> = [
   {
     table: 'preference_history',
     sql: 'DELETE FROM preference_history WHERE user_id = $1',
+  },
+  // Adaptive workflow history is counted explicitly instead of disappearing
+  // behind the final users cascade. Clear the active pointer before removing
+  // immutable versions so the owner-safe circular FK remains satisfied.
+  {
+    table: 'workflow_activation_events',
+    prepareSql: `UPDATE workflows
+                   SET active_version_id = NULL, active_activation_event_id = NULL
+                 WHERE user_id = $1`,
+    sql: 'DELETE FROM workflow_activation_events WHERE user_id = $1',
+  },
+  {
+    table: 'workflow_proposals',
+    sql: 'DELETE FROM workflow_proposals WHERE user_id = $1',
+  },
+  {
+    table: 'workflow_versions',
+    sql: 'DELETE FROM workflow_versions WHERE user_id = $1',
+  },
+  {
+    table: 'workflows',
+    sql: 'DELETE FROM workflows WHERE user_id = $1',
   },
   // Connector evidence is operational state, not part of the user's portable
   // twin. Delete it explicitly so purge counts are auditable and no FK cascade
@@ -255,7 +277,8 @@ async function purgeUserWithClient(client: PoolClient, userId: string): Promise<
   };
   let total = oauthFence.pendingAuthorizationsDeleted;
   let userExisted = false;
-  for (const { table, sql } of DELETE_PLAN) {
+  for (const { table, sql, prepareSql } of DELETE_PLAN) {
+    if (prepareSql) await client.query(prepareSql, [userId]);
     const n = await execAndCount(client, sql, userId);
     counts[table] = n;
     total += n;

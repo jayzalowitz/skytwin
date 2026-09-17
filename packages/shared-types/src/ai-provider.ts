@@ -94,7 +94,7 @@ export const PROVIDER_INFO: Record<AIProviderName, { label: string; description:
   embedded: {
     label: 'Embedded (llama.cpp)',
     description:
-      'Free, runs in-process via llama.cpp. Requires `llama-cli` on PATH and a GGUF model (auto-detected from SKYTWIN_LLAMA_MODELS or pinned via SKYTWIN_LLAMA_MODEL).',
+      'Free, runs locally via llama.cpp. Requires `llama-completion` on PATH and a GGUF model (auto-detected from SKYTWIN_LLAMA_MODELS or pinned via SKYTWIN_LLAMA_MODEL).',
     requiresApiKey: false,
     requiresBaseUrl: false,
   },

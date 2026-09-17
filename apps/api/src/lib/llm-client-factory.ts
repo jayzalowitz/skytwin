@@ -27,7 +27,7 @@
  * Hosted providers are included when their API key is set. Ollama is
  * included when OLLAMA_BASE_URL is non-empty. The `embedded` provider
  * (llama.cpp via subprocess) is included when SKYTWIN_LLAMACPP_BIN
- * points at a real binary OR `llama-cli` is on PATH AND a *.gguf
+ * points at a real generation binary OR `llama-completion` is on PATH AND a *.gguf
  * model is discoverable — that's the path grandma uses without ever
  * signing up for an API key.
  *
@@ -39,7 +39,7 @@
 
 import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { clearEmbeddedPortCache, LlmClient } from '@skytwin/llm-client';
 import type { ProviderEntry } from '@skytwin/llm-client';
@@ -157,20 +157,20 @@ function buildModeScopedClient(
 }
 
 /**
- * The `embedded` provider spawns `llama-cli` per request against a local
+ * The `embedded` provider spawns `llama-completion` per request against a local
  * GGUF model. We only add it to the chain when BOTH the binary and a
  * model are present — having only one or the other guarantees every
  * call throws (binary missing → spawn ENOENT; model missing →
  * NullEmbeddedTextPort throws NotAvailableError).
  *
- * Most developers have `llama-cli` on PATH via Homebrew or similar but
+ * Most developers have llama.cpp tools on PATH via Homebrew or similar but
  * no SkyTwin model installed, so the old "binary present = available"
  * gate was wrong for them.
  *
  * Detection mirrors `@skytwin/embedded-llm`'s runtime-detector:
  *   Binary:
  *     - Prefer SKYTWIN_LLAMACPP_BIN if it points at an existing file.
- *     - Otherwise probe PATH for `llama-cli` (Unix) / `llama-cli.exe` (Win).
+ *     - Otherwise probe PATH for `llama-completion`.
  *   Model:
  *     - Prefer SKYTWIN_LLAMA_MODEL if it points at an existing file.
  *     - Otherwise require the verified managed manifest and artifact.
@@ -195,10 +195,14 @@ function isEmbeddedRuntimeAvailable(
 
 function hasLlamaBinary(env: Record<string, string | undefined>): boolean {
   const explicit = env["SKYTWIN_LLAMACPP_BIN"];
-  if (explicit && existsSync(explicit)) return true;
+  if (explicit && existsSync(explicit)) {
+    if (!/^llama-cli(?:\.exe)?$/iu.test(basename(explicit))) return true;
+    const extension = basename(explicit).toLowerCase().endsWith('.exe') ? '.exe' : '';
+    return existsSync(join(dirname(explicit), `llama-completion${extension}`));
+  }
 
   const probeCmd =
-    process.platform === "win32" ? "where llama-cli" : "which llama-cli";
+    process.platform === "win32" ? "where llama-completion" : "which llama-completion";
   try {
     execSync(probeCmd, { stdio: "ignore", timeout: 3000 });
     return true;

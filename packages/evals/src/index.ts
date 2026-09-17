@@ -49,6 +49,20 @@ export {
   type EvalSuite,
 } from './continuous-runner.js';
 
+// Managed-local adaptive-workflow quality gate
+export {
+  WORKFLOW_AUTHORING_GATE_SCHEMA_VERSION,
+  parseWorkflowAuthoringEvalCatalog,
+  scoreWorkflowAuthoringGate,
+  type WorkflowAuthoringEvalCatalog,
+  type WorkflowAuthoringGateScore,
+  type WorkflowEvalMetric,
+  type WorkflowEvalObservation,
+  type WorkflowEvalScenario,
+  type WorkflowEvalScenarioResult,
+  type WorkflowIntentSnapshot,
+} from './workflow-authoring-gate.js';
+
 // Temporal replay
 export {
   TemporalReplayEngine,

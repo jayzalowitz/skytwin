@@ -11,11 +11,8 @@ export function parseLlamaCppBuild(output: string): number | null {
   return Number.isSafeInteger(build) && build > 0 ? build : null;
 }
 
-/** Unknown or old binaries fail closed for registry-managed artifacts. */
-export function isLlamaCppBuildCompatible(
-  binaryPath: string,
-  minimumBuild: number,
-): boolean {
+/** Read the installed runtime build once so callers can pin the exact value. */
+export function detectLlamaCppBuild(binaryPath: string): number | null {
   try {
     const result = spawnSync(binaryPath, ["--version"], {
       encoding: "utf8",
@@ -24,10 +21,18 @@ export function isLlamaCppBuildCompatible(
       maxBuffer: 1024 * 1024,
     });
     if (result.error || result.status !== 0 || result.signal !== null)
-      return false;
-    const build = parseLlamaCppBuild(`${result.stdout}\n${result.stderr}`);
-    return build !== null && build >= minimumBuild;
+      return null;
+    return parseLlamaCppBuild(`${result.stdout}\n${result.stderr}`);
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** Unknown or old binaries fail closed for registry-managed artifacts. */
+export function isLlamaCppBuildCompatible(
+  binaryPath: string,
+  minimumBuild: number,
+): boolean {
+  const build = detectLlamaCppBuild(binaryPath);
+  return build !== null && build >= minimumBuild;
 }

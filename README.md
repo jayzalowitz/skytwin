@@ -173,7 +173,7 @@ To stop later: `cd ~/skytwin && ./bin/skytwin-dev --stop`.
 **The first 60 seconds in a development/source run:**
 1. The dashboard opens. "Ask your twin" can show a predicted action, confidence, alternatives, and an explanation; the exact model-backed path depends on an available local runtime or provider, while deterministic fallbacks cover supported paths when no model responds.
 2. After `pnpm db:seed`, click **"Just show me around"** on the welcome screen to skip OAuth and use the development demo seed. Alex has recent decisions, a daily briefing, four pending approvals, "What I've learned", Capabilities, Search, and a trust bar climbing toward "handle most things". The development seed also includes Pat (a power user) and Carol (a brand-new user), so the dev "Switch user" button tells three stories. This development path can exercise mock approval actions; it is separate from the packaged build's read-only data authority and isolated, non-persistent simulation.
-3. The welcome screen recommends a local model from the machine's RAM, architecture, and free disk. The current maintained catalog contains one pinned Qwen2.5 1.5B Instruct Q4_K_M artifact (about 1.0 GiB). The artifact is downloaded on request and must pass exact-size, SHA-256, registry, and runtime-compatibility checks before automatic discovery will load it. A compatible llama.cpp binary remains a separate prerequisite. "Change" opens Settings → AI (and the local memory backend).
+3. The welcome screen recommends a local model from the machine's RAM, architecture, and free disk. The current maintained catalog contains one pinned Qwen2.5 1.5B Instruct Q4_K_M artifact (about 1.0 GiB). The artifact is downloaded on request and must pass exact-size, SHA-256, registry, and runtime-compatibility checks before automatic discovery will load it. A compatible llama.cpp binary remains a separate prerequisite. The artifact remains available for ordinary local inference but is not qualified for adaptive-workflow authoring because it did not clear the checked-in quality gate. "Change" opens Settings → AI (and the local memory backend).
 4. Want to look around first? Press **Esc**, click the **×** in the modal corner, or hit **Skip for now** — the dashboard chrome stays navigable behind the modal, and a "Sign in" button on the placeholder gets you back into the wizard whenever you're ready.
 5. Google and Microsoft account connection controls are intentionally unavailable in this preview.
    Real-account setup is not supported; use the isolated sample while the OAuth
@@ -200,8 +200,11 @@ runtime plus verified model artifact, or a provider you configure. Power users c
 On-device Ollama requires Ollama 0.18 or newer. SkyTwin adds Ollama's
 request-scoped `:local` source selector to every on-device call and never
 retries the unqualified model name; this prevents a loopback daemon from
-relaying a remote-backed model alias. For defense in depth, disable Ollama
-Cloud globally with `OLLAMA_NO_CLOUD=1` or `disable_ollama_cloud: true`.
+relaying a remote-backed model alias. General local chat is supported, but
+released Ollama builds do not attest the exact served digest/runtime on each
+chat response, so adaptive workflow authoring and summaries currently fail
+closed. For defense in depth, disable Ollama Cloud globally with
+`OLLAMA_NO_CLOUD=1` or `disable_ollama_cloud: true`.
 
 ### Manual setup
 
@@ -263,12 +266,12 @@ machine to verify the platform-specific bits (Homebrew, NSIS, etc.).
 ### Running Tests
 
 ```bash
-pnpm test   # 4,800+ tests across 400+ files in 30 packages + 8 apps
+pnpm test   # 4,800+ tests across 400+ files in 31 packages + 8 apps
 ```
 
 ## Architecture
 
-SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 30 packages and 8 apps:
+SkyTwin is a TypeScript monorepo (pnpm + Turborepo) with 31 packages and 8 apps:
 
 ```
 apps/
@@ -305,10 +308,10 @@ packages/
   dxt/                            Serializes/deserializes DXT artifacts (packed MCP server configs)
   observability/                  In-memory metrics + ring-buffered rollup for the capability loop
   registry-client/                Loads curated MCP registry entries with OAuth quirks and service lookup
-  routines/                       No-code Watches: plain-language → read-only digest/notify with scheduler, run history, briefing/chat/web surfaces
+  routines/                       Typed read-only Watch providers: canonical payloads, compilation, replay, semantic diff, and run evidence
   mempalace/                      Legacy memory: episodic, knowledge graph, 4-layer retrieval (opt-in backend)
   memory-port/                    Backend-agnostic MemoryPort interface + capability negotiation
-  memory-gbrain/                  Default gbrain-compatible backend on CRDB; optional upstream CLI adapter
+  memory-gbrain/                  Default gbrain-compatible backend on CRDB; upstream CLI interoperability adapter (never runtime-selected)
   memory-gbrain-crdb-adapter/     CRDB driver for gbrain — tier-weighted RRF, pin/hide, embedding providers
   memory-hybrid/                  Composes any two MemoryPort impls — per-capability read routing
   memory-mempalace/               MemoryPort adapter for the legacy mempalace classes
@@ -414,6 +417,7 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 |----------|---------------|
 | [The Deck](https://jayzalowitz.github.io/skytwin/deck.html) | 22 slides: every capability claim paired with the mechanism that constrains it. Each claim-and-gate slide carries a collapsible source block citing the file and lines it came from; the "why now" and positioning slides cite external sources instead, and three narrative slides carry no citation block ([source](./docs/deck.html)) |
 | [Product Spec](./docs/product-spec.md) | Vision, target user, operating principles, example workflows |
+| [Adaptive Workflows](./docs/adaptive-workflows.md) | Teach, replay, activate, revise, roll back, and operate immutable signal-digest workflows |
 | [Technical Spec](./docs/technical-spec.md) | Architecture, data flow, API endpoints, database schema |
 | [Safety Model](./docs/safety-model.md) | Threat model, trust tiers, defense layers, safety philosophy |
 | [Inference Receipts](./docs/inference-receipts.md) | Versioned receipt contract, decision-event capture, developer verifier, trust boundary, and current UI/export limitations |
@@ -453,11 +457,12 @@ outside the beta support boundary.
 - "Ask your twin" widget on the dashboard — type any situation, get a predicted action with reasoning and confidence, no accounts required
 - A fully populated development demo seed with mock approval actions, plus a separate guarded sample session for packaged desktop builds. Its database-backed surface is read-only; a dedicated simulation can approve, reject, or correct fixed proposals and demonstrate session-local learning without invoking real connectors, providers, credentials, or execution adapters. Current published installers predate this packaged sample path.
 - Inbox-Intelligence briefing — a daily/weekly digest that splits **to-dos (act)** from **topics (FYI)**, cites the source signal behind every item, persists memory-derived action opportunities, routes them through policy plus IronClaw/OpenClaw/Direct execution, reports queued/executed/blocked/learning-needed outcomes, and offers a "Power view" toggle for the technical detail behind each call
+- Versioned signal-digest workflows — teach a read-only Watch in plain language, resolve at most one missing detail, replay the candidate against real owner-scoped signals, explicitly activate an immutable version, propose a minimal correction, compare the replay, and atomically roll back. Every adaptive run pins the exact version, compiled payload, complete-evidence commitment, bounded display snapshot, and the version's sanitized inference identity when model-assisted (or an explicit no-inference state for user-authored revisions); deterministic matching remains available when summary generation does not.
 - Full decision pipeline: signal → interpret → decide → policy check → execute/escalate → explain → learn
 - Mode-scoped model reasoning: on-device embedded/Ollama or an explicitly selected provider chain, with fallback contained inside the selected location boundary, request-scoped local-only enforcement for Ollama, and deterministic rules when no eligible provider responds
 - Twin model with versioned profiles, confidence scoring, and preference learning
 - Policy engine with spend limits, trust tiers, and domain-specific rules
-- Swappable memory backend: SkyTwin's gbrain-compatible implementation is the default, running vector + tsvector RRF directly on CRDB; the real upstream gbrain CLI remains an explicit opt-in adapter because its PostgreSQL/pgvector runtime is not CRDB-compatible and is never auto-selected. Optional hybrid mode adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
+- Swappable memory backend: SkyTwin's gbrain-compatible implementation is the default, running vector + tsvector RRF directly on CRDB. Upstream gbrain v0.50.5.0 supports PGLite and PostgreSQL, not CockroachDB; its unchanged schema/runtime fails the supported CRDB path on PostgreSQL-specific DDL/functions, and its CLI does not implement SkyTwin's complete write, episode, and graph contract. The real CLI integration is therefore only a programmatic interoperability adapter and is not selected by SkyTwin's runtime factory. Optional hybrid mode adds the legacy spatial Memory Palace (#197). Selectable per-installation via `MEMORY_BACKEND` and per-user via the dashboard. See [`docs/memory-swap.md`](./docs/memory-swap.md).
 - Web dashboard for reviewing decisions, managing preferences, configuring AI providers, and auditing
 - Desktop build targets for macOS, Windows, and Linux; current artifacts are unsigned and not yet in the beta support matrix
 - Mobile source/development app (iOS, Android) with QR pairing, push notifications, and voice capture that sends audio to the paired desktop for transcription

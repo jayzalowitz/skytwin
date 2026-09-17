@@ -11,7 +11,8 @@ single **encrypted** file and restores it onto a fresh install. It is the
 
 ## What the backup contains
 
-The backup is scoped to the data that *is* your twin:
+The backup is a portable, safety-preserving subset of the data that defines the
+twin and its immutable adaptive workflows. It is not a complete database dump:
 
 | Data | Source table(s) |
 |------|-----------------|
@@ -19,6 +20,7 @@ The backup is scoped to the data that *is* your twin:
 | Twin profile + its full version history | `twin_profiles`, `twin_profile_versions` |
 | Learned preferences | `preferences` |
 | Decisions (with candidate actions, outcomes, explanations, inference receipts, and portable non-replay state) | `decisions`, `candidate_actions`, `decision_outcomes`, `explanation_records`, `inference_receipts`, `inference_receipt_completions`, `decision_ingest_guards` |
+| Adaptive workflow definitions, immutable versions, proposals, activation history, and current version-bound Watch projection (compiled or explicit quarantine snapshot) | `workflows`, `workflow_versions`, `workflow_proposals`, `workflow_activation_events`, `watches` |
 
 ### What it deliberately does **not** contain
 
@@ -38,6 +40,19 @@ The backup is scoped to the data that *is* your twin:
   not an email address, provider token, or OAuth grant.
 - **Sessions, recovery codes, device-pairing state.** These are machine-local,
   not "your data."
+- **Raw signals and connector state.** Connected-account identities, cursors,
+  provider message references, and ingested signal bodies are tied to a live,
+  freshly authorized connector on the destination and are not portable.
+- **Watch run history and exact run evidence.** Workflow definitions and the
+  current compiled projection are portable; `watch_runs` and their evidence
+  snapshots remain installation-local operational history.
+- **Legacy mutable Watches.** Only a Watch projection bound to an exported
+  immutable workflow version is included. A legacy Watch without a provable
+  version relationship is not guessed into the archive.
+- **Memory, policy, and feedback stores.** `brain_*`, legacy Memory Palace,
+  action-policy, and feedback-event tables are outside the current archive
+  schema. Exporting the workflow foundation must not be read as a claim that
+  every owner-scoped table is already portable.
 
 ## Encryption
 
@@ -113,16 +128,17 @@ The schema version is checked before any write: an archive produced by a newer
 build (higher `BACKUP_SCHEMA_VERSION`) is rejected with `unsupported_schema`
 rather than partially imported.
 
-Schema version 2 adds inference receipts. Schema version 3 adds receipt-completion
-authority plus the autonomous-effect classification and any known terminal plan
-reference. Restored decisions are historical data, not queued work: every
-restored decision receives a `restored_non_replay` guard. Current builds still
-accept schema-version-1 and -2 archives and apply the same fail-safe tombstone;
-older builds reject newer schemas instead of silently dropping safety state.
-Current schema-version-3 exports order multi-call receipt batches with a durable
-capture ordinal. Earlier schema-version-3 archives that omit it remain valid and
-derive the ordinal from array order; duplicate receipt IDs or ordinals are
-rejected before the restore transaction begins.
+The current export schema is version 6. Version 2 added inference receipts;
+version 3 added receipt-completion/ingest authority; version 4 added sanitized
+execution-plan metadata and joined receipt state; version 5 added immutable
+workflows, versions, proposals, activation history, and exact Watch projections;
+version 6 binds retry-safe workflow proposals to an idempotency key and request
+hash. Current builds accept versions 1–6 and reconstruct only the state each
+schema can prove. Restored decisions are historical data, not queued work:
+every restored decision receives a `restored_non_replay` guard. Older builds
+reject newer schemas instead of silently dropping safety state. Duplicate
+receipt IDs/ordinals, workflow hashes, owner relationships, projection pins,
+or idempotency pairs are rejected before the restore transaction begins.
 
 ## Exit codes
 

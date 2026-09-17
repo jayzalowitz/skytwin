@@ -20,6 +20,7 @@ export {
   NullEmbeddedTextPort,
   type EmbeddedTextPort,
   type EmbeddedTextCapabilities,
+  type EmbeddedTextUnavailableReason,
 } from "./text-port.js";
 
 export {
@@ -93,6 +94,7 @@ export {
 } from "./managed-model-store.js";
 
 export {
+  detectLlamaCppBuild,
   isLlamaCppBuildCompatible,
   parseLlamaCppBuild,
 } from "./runtime-compatibility.js";

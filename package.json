@@ -1,6 +1,6 @@
 {
   "name": "skytwin",
-  "version": "0.6.103.1",
+  "version": "0.6.104.0",
   "description": "A delegated judgment layer that builds a digital twin of your preferences and acts on your behalf — with safety constraints, explanations, and progressive trust.",
   "private": true,
   "repository": {
@@ -32,6 +32,7 @@
     "db:seed": "pnpm --filter @skytwin/db seed",
     "demo:fixture": "pnpm --filter @skytwin/db demo:fixture",
     "eval:adversarial": "pnpm --filter @skytwin/evals eval:adversarial",
+    "eval:workflow-authoring:managed": "pnpm --filter @skytwin/evals eval:workflow-authoring:managed",
     "verify:adversarial-evidence": "node scripts/release-evidence/verify-adversarial-evidence.mjs artifacts/adversarial-evidence.json",
     "desktop": "pnpm --filter skytwin-desktop start",
     "desktop:dev": "pnpm --filter skytwin-desktop dev",

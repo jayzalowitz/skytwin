@@ -19,6 +19,7 @@ import type {
   ProviderPricingSnapshot,
   ProviderGenerateOutput,
   VerifiedProviderOutput,
+  ExactOllamaProviderOutput,
 } from './types.js';
 import {
   generate as anthropicGenerate,
@@ -90,6 +91,7 @@ function makeFallbackStream(fn: ProviderGenerateFn): ProviderStreamFn {
 function isVerifiedProviderOutput(output: ProviderGenerateOutput): output is VerifiedProviderOutput {
   return typeof output === 'object'
     && output !== null
+    && 'requestBytes' in output
     && typeof output.content === 'string'
     && output.requestBytes instanceof Uint8Array
     && output.responseBytes instanceof Uint8Array
@@ -122,6 +124,22 @@ function isVerifiedProviderOutput(output: ProviderGenerateOutput): output is Ver
     && output.verification.responseSignature.publicKeyPem.length > 0
     && typeof output.verification.responseSignature.signatureBase64 === 'string'
     && output.verification.responseSignature.signatureBase64.length > 0;
+}
+
+function isExactOllamaProviderOutput(
+  output: ProviderGenerateOutput,
+): output is ExactOllamaProviderOutput {
+  return typeof output === 'object'
+    && output !== null
+    && 'runtimeIdentity' in output
+    && typeof output.content === 'string'
+    && typeof output.resolvedModel === 'string'
+    && output.resolvedModel.length > 0
+    && output.runtimeIdentity?.provider === 'ollama'
+    && typeof output.runtimeIdentity.serverVersion === 'string'
+    && output.runtimeIdentity.serverVersion.length > 0
+    && output.runtimeIdentity.serverVersion.length <= 256
+    && /^[a-f0-9]{64}$/u.test(output.runtimeIdentity.modelDigestSha256);
 }
 
 /**
@@ -176,6 +194,9 @@ function snapshotGenerateOptions(options: GenerateOptions): Readonly<GenerateOpt
     systemPrompt: options.systemPrompt,
     timeoutMs: options.timeoutMs,
     invocationKind: options.invocationKind,
+    jsonSchema: options.jsonSchema,
+    disableReasoning: options.disableReasoning,
+    requireExactRuntimeIdentity: options.requireExactRuntimeIdentity,
   });
 }
 
@@ -254,6 +275,11 @@ function canonicalLogicalInputBytes(
     ...(options.systemPrompt === undefined ? {} : { systemPrompt: options.systemPrompt }),
     ...(options.temperature === undefined ? {} : { temperature: options.temperature }),
     ...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+    ...(options.jsonSchema === undefined ? {} : { jsonSchema: options.jsonSchema }),
+    ...(options.disableReasoning === undefined ? {} : { disableReasoning: options.disableReasoning }),
+    ...(options.requireExactRuntimeIdentity === undefined
+      ? {}
+      : { requireExactRuntimeIdentity: options.requireExactRuntimeIdentity }),
   }), 'utf8');
 }
 
@@ -322,10 +348,11 @@ export class LlmClient {
   ): ProviderExecutionMetadata {
     const capabilities = providerPrivacyCapabilities(provider, this.reasoningMode);
     const verified = isVerifiedProviderOutput(output) ? output : null;
+    const exactOllama = isExactOllamaProviderOutput(output) ? output : null;
     return snapshotProviderExecutionMetadata({
       reasoningMode: this.reasoningMode,
       provider: provider.name,
-      model: verified?.resolvedModel ?? provider.model,
+      model: verified?.resolvedModel ?? exactOllama?.resolvedModel ?? provider.model,
       request: { invocationId, providerRequestId: verified?.providerRequestId ?? null },
       capabilities,
       verificationStatus: verified
@@ -363,6 +390,10 @@ export class LlmClient {
   async generate(prompt: string | ChatMessage[], options: GenerateOptions = {}): Promise<LlmResponse> {
     const invocationPrompt = snapshotPrompt(prompt);
     const invocationOptions = snapshotGenerateOptions(options);
+    const timeoutBudgetMs = invocationOptions.timeoutMs === undefined
+      ? null
+      : Math.max(1, Math.trunc(invocationOptions.timeoutMs));
+    const deadlineAt = timeoutBudgetMs === null ? null : Date.now() + timeoutBudgetMs;
     const logicalRequest = canonicalLogicalInputBytes(invocationPrompt, invocationOptions);
     const attempted: string[] = [];
     const executionPath: ProviderExecutionAttempt[] = [];
@@ -370,6 +401,11 @@ export class LlmClient {
 
     for (const entry of this.chain) {
       const { provider, generateFn, circuitBreaker } = entry;
+      const remainingMs = deadlineAt === null ? null : deadlineAt - Date.now();
+      // Provider timeouts are a total invocation budget, not a fresh budget
+      // for every fallback. This also prevents a detached timed-out caller
+      // from issuing a second provider request after its deadline.
+      if (remainingMs !== null && remainingMs <= 0) break;
 
       if (invocationOptions.invocationKind !== 'interactive' && !this.canRunUnattended(provider)) {
         attempted.push(`${provider.name}(price-unavailable)`);
@@ -392,6 +428,7 @@ export class LlmClient {
           providerGeneratePrompt(provider, invocationPrompt, this.reasoningMode),
           providerGenerateOptions(provider, Object.freeze({
             ...invocationOptions,
+            ...(remainingMs === null ? {} : { timeoutMs: Math.max(1, remainingMs) }),
             baseUrl: provider.baseUrl,
             reasoningMode: this.reasoningMode,
           }), this.reasoningMode),
@@ -402,6 +439,7 @@ export class LlmClient {
           { provider: provider.name, outcome: 'succeeded' as const },
         ];
         const execution = this.executionMetadata(provider, invocationId, successfulPath, output);
+        const exactOllama = isExactOllamaProviderOutput(output) ? output : null;
         this.recordSuccessfulInference(provider, logicalRequest, output, execution);
         circuitBreaker.recordSuccess();
         executionPath.push({ provider: provider.name, outcome: 'succeeded' });
@@ -412,6 +450,7 @@ export class LlmClient {
           model: execution.model,
           latencyMs: Date.now() - start,
           execution,
+          ...(exactOllama === null ? {} : { runtimeIdentity: exactOllama.runtimeIdentity }),
         };
       } catch (err) {
         if (!(err instanceof ProviderModePolicyError)) {

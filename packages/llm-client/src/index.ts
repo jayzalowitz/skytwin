@@ -24,6 +24,8 @@ export type {
   InferenceTrace,
   LlmClientOptions,
   RejectedConfidentialVerification,
+  ExactOllamaProviderOutput,
+  ExactOllamaRuntimeIdentity,
   TrustedConfidentialVerification,
   VerifiedProviderOutput,
 } from './types.js';
@@ -32,7 +34,11 @@ export type { SafeProviderFetch } from './url-validation.js';
 export { toMessages, splitSystemAndConversation } from './messages.js';
 export { estimateLlmCostCents, isZeroCostProvider } from './cost.js';
 export { redactPromptPii } from './redact.js';
-export { clearEmbeddedPortCache } from './providers/embedded.js';
+export {
+  clearEmbeddedPortCache,
+  probeEmbeddedProviderReadiness,
+  type EmbeddedProviderReadiness,
+} from './providers/embedded.js';
 export { emitInferenceReceipt } from './inference-receipt-emitter.js';
 export {
   snapshotInferenceTrace,

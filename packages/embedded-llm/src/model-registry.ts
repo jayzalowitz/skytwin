@@ -23,6 +23,15 @@ export interface ModelRuntimeCompatibility {
   sourceUrl: string;
   modelUsageUrl: string;
 }
+export interface WorkflowAuthoringQualification {
+  /** Only a model that clears the checked-in v1 gate may author workflows. */
+  status: "qualified" | "unqualified";
+  gateVersion: 1;
+  catalogVersion: "v1";
+  /** Exact llama.cpp build used for the recorded quality decision. */
+  evaluatedRuntimeBuild: number;
+  rationale: string;
+}
 export interface ModelEntry {
   id: string;
   displayName: string;
@@ -42,6 +51,7 @@ export interface ModelEntry {
   sha256: string;
   license: ModelLicense;
   runtime: ModelRuntimeCompatibility;
+  workflowAuthoring: WorkflowAuthoringQualification;
   version: number;
 }
 export interface RegistryValidationError {
@@ -176,13 +186,25 @@ export function validateModelRegistry(
       entry.supportedArchitectures.length === 0
     )
       fail(index, "hardware", "RAM and architecture guidance required");
+    if (
+      entry.workflowAuthoring.gateVersion !== 1 ||
+      entry.workflowAuthoring.catalogVersion !== "v1" ||
+      !Number.isSafeInteger(entry.workflowAuthoring.evaluatedRuntimeBuild) ||
+      entry.workflowAuthoring.evaluatedRuntimeBuild <= 0 ||
+      entry.workflowAuthoring.rationale.trim().length === 0
+    )
+      fail(
+        index,
+        "workflowAuthoring",
+        "must carry a v1 qualification decision and evidence rationale",
+      );
   });
   if (entries.length === 0)
     fail(-1, "registry", "must contain at least one artifact");
   return { valid: errors.length === 0, errors };
 }
 
-const source: ModelArtifactSource = Object.freeze({
+const qwen25Source: ModelArtifactSource = Object.freeze({
   repository: "Qwen/Qwen2.5-1.5B-Instruct-GGUF",
   revision: "91cad51170dc346986eccefdc2dd33a9da36ead9",
   filename: "qwen2.5-1.5b-instruct-q4_k_m.gguf",
@@ -207,8 +229,8 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = Object.freeze([
     quantization: "Q4_K_M",
     minimumRamBytes: 4 * 1024 ** 3,
     supportedArchitectures: Object.freeze(["arm64", "x64"] as const),
-    source,
-    downloadUrl: source.downloadUrl,
+    source: qwen25Source,
+    downloadUrl: qwen25Source.downloadUrl,
     sha256: "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
     license: Object.freeze({
       spdxId: "Apache-2.0",
@@ -225,6 +247,14 @@ export const MODEL_REGISTRY: readonly ModelEntry[] = Object.freeze([
         "https://github.com/ggml-org/llama.cpp/commit/c02e5ab2a675c8bc1abc8b1e4cb6a93b26bdcce7",
       modelUsageUrl:
         "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/README.md#quickstart",
+    }),
+    workflowAuthoring: Object.freeze({
+      status: "unqualified",
+      gateVersion: 1,
+      catalogVersion: "v1",
+      evaluatedRuntimeBuild: 9080,
+      rationale:
+        "The real 32-case v1 gate failed semantic accuracy and revision thresholds; retain this model for general local inference only.",
     }),
     version: 1,
   }),

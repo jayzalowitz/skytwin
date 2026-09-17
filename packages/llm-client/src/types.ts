@@ -35,7 +35,22 @@ export interface VerifiedProviderOutput {
   readonly verification: TrustedConfidentialVerification;
 }
 
-export type ProviderGenerateOutput = string | VerifiedProviderOutput;
+export interface ExactOllamaRuntimeIdentity {
+  readonly provider: 'ollama';
+  /** Exact version string reported before and after this inference. */
+  readonly serverVersion: string;
+  /** Full SHA-256 manifest digest selected for this inference. */
+  readonly modelDigestSha256: string;
+}
+
+/** Ollama output bound to a stable local server/model identity. */
+export interface ExactOllamaProviderOutput {
+  readonly content: string;
+  readonly resolvedModel: string;
+  readonly runtimeIdentity: ExactOllamaRuntimeIdentity;
+}
+
+export type ProviderGenerateOutput = string | VerifiedProviderOutput | ExactOllamaProviderOutput;
 
 export interface RejectedConfidentialVerification {
   outcome: 'verification_failed' | 'verification_unavailable' | 'verification_stale';
@@ -106,6 +121,12 @@ export interface GenerateOptions {
   timeoutMs?: number;
   /** User-present calls may use explicitly selected providers with unknown price. */
   invocationKind?: 'interactive' | 'unattended';
+  /** Provider-neutral structured-output hint; embedded llama.cpp enforces it. */
+  jsonSchema?: string;
+  /** Suppress model reasoning tokens for strict machine-readable responses. */
+  disableReasoning?: boolean;
+  /** Fail local providers closed unless the exact responding runtime/model is identified. */
+  requireExactRuntimeIdentity?: boolean;
 }
 
 /**
@@ -118,6 +139,8 @@ export interface LlmResponse {
   latencyMs: number;
   /** Additive provenance for routing, spend and future receipt persistence. */
   execution: ProviderExecutionMetadata;
+  /** Present only when the responding local provider returned an exact identity. */
+  runtimeIdentity?: ExactOllamaRuntimeIdentity;
 }
 
 /**

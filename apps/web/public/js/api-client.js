@@ -107,7 +107,7 @@ function authHeaders() {
  * developers / log analysis (do NOT render to users by default).
  */
 export class ApiError extends Error {
-  constructor({ kind, friendlyMessage, serverMessage, status, code, help, docs }) {
+  constructor({ kind, friendlyMessage, serverMessage, status, code, help, docs, responseBody }) {
     super(friendlyMessage);
     this.name = 'ApiError';
     this.kind = kind;
@@ -121,6 +121,9 @@ export class ApiError extends Error {
     this.code = code ?? '';
     this.help = help ?? '';
     this.docs = docs ?? '';
+    // Structured error payload for narrowly-scoped recovery UIs. Never render
+    // this object directly; pages may read known fields such as `readiness`.
+    this.responseBody = responseBody ?? null;
   }
 }
 
@@ -150,7 +153,7 @@ async function classifyHttpError(res) {
       friendlyMessage: "Can't reach SkyTwin right now. We'll keep trying.",
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -163,7 +166,7 @@ async function classifyHttpError(res) {
       friendlyMessage: serverMessage,
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -173,7 +176,7 @@ async function classifyHttpError(res) {
       friendlyMessage: 'Your session expired. Sign in again to continue.',
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -183,7 +186,7 @@ async function classifyHttpError(res) {
       friendlyMessage: "We couldn't find that.",
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -197,7 +200,7 @@ async function classifyHttpError(res) {
       friendlyMessage: serverMessage,
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -213,7 +216,7 @@ async function classifyHttpError(res) {
         friendlyMessage: serverMessage,
         serverMessage,
         status: res.status,
-        code, help, docs,
+        code, help, docs, responseBody: body,
       });
     }
     return new ApiError({
@@ -221,7 +224,7 @@ async function classifyHttpError(res) {
       friendlyMessage: "Something went wrong on our end. Please try again.",
       serverMessage,
       status: res.status,
-      code, help, docs,
+      code, help, docs, responseBody: body,
     });
   }
 
@@ -230,7 +233,7 @@ async function classifyHttpError(res) {
     friendlyMessage: 'Something went wrong. Please try again.',
     serverMessage,
     status: res.status,
-    code, help, docs,
+    code, help, docs, responseBody: body,
   });
 }
 
@@ -860,6 +863,92 @@ export function deleteWatch(userId, watchId) {
 export function fetchWatchRuns(userId, watchId, limit = 10) {
   const q = new URLSearchParams({ limit: String(limit) });
   return fetchJSON(`${API}/watches/${encodeURIComponent(userId)}/${encodeURIComponent(watchId)}/runs?${q}`);
+}
+
+// ── Adaptive workflows (versioned, explicit activation) ──────────────
+
+export async function fetchAdaptiveWorkflowReadiness(userId) {
+  try {
+    return await fetchJSON(`${API}/adaptive-workflows/${encodeURIComponent(userId)}/readiness`);
+  } catch (error) {
+    // Non-ready states deliberately use 4xx/5xx status codes while still
+    // carrying a typed readiness object the UI can recover and render.
+    if (error?.responseBody?.readiness) return error.responseBody;
+    throw error;
+  }
+}
+
+export function createAdaptiveSignalDigestDraft(
+  userId,
+  description,
+  allowClarification = true,
+  idempotencyKey,
+) {
+  return fetchJSON(`${API}/adaptive-workflows/${encodeURIComponent(userId)}/signal-digest-drafts`, {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
+    body: JSON.stringify({ description, allowClarification }),
+  });
+}
+
+export function fetchAdaptiveWorkflowDetail(userId, workflowId) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}`,
+  );
+}
+
+export function fetchAdaptiveWorkflowResumableDraft(userId) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/resumable-draft`,
+  );
+}
+
+export function createAdaptiveWorkflowRevision(
+  userId,
+  workflowId,
+  parentVersionId,
+  payload,
+  idempotencyKey,
+) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/revisions`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
+      body: JSON.stringify({ parentVersionId, payload }),
+    },
+  );
+}
+
+export function createAdaptiveWorkflowFeedbackRevision(
+  userId,
+  workflowId,
+  parentVersionId,
+  feedback,
+  idempotencyKey,
+) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/feedback-revisions`,
+    {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey ?? createClientRequestId() },
+      body: JSON.stringify({ parentVersionId, feedback }),
+    },
+  );
+}
+
+export function activateAdaptiveWorkflow(userId, workflowId, activation) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/activate`,
+    { method: 'POST', body: JSON.stringify(activation) },
+  );
+}
+
+export function rollbackAdaptiveWorkflow(userId, workflowId, rollback) {
+  return fetchJSON(
+    `${API}/adaptive-workflows/${encodeURIComponent(userId)}/${encodeURIComponent(workflowId)}/rollback`,
+    { method: 'POST', body: JSON.stringify(rollback) },
+  );
 }
 
 // ── Assistant (issue #135 phase 1) ────────────────────

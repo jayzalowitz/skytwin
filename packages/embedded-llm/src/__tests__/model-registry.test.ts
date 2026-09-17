@@ -27,7 +27,17 @@ describe("MODEL_REGISTRY", () => {
       expect(m.exactBytes).toBeGreaterThan(0);
       expect(m.approxBytes).toBe(m.exactBytes);
       expect(m.contextWindow).toBeGreaterThan(0);
+      expect(m.workflowAuthoring.evaluatedRuntimeBuild).toBeGreaterThan(0);
+      expect(m.workflowAuthoring.rationale.length).toBeGreaterThan(0);
     }
+  });
+
+  it("does not qualify a managed artifact until the real gate passes", () => {
+    const qualified = MODEL_REGISTRY.filter(
+      (model) => model.workflowAuthoring.status === "qualified",
+    );
+    expect(qualified).toHaveLength(0);
+    expect(MODEL_REGISTRY[0]?.workflowAuthoring.rationale).toMatch(/failed/i);
   });
 });
 
@@ -242,5 +252,14 @@ describe("validateModelRegistry", () => {
         "license.url",
       ]),
     );
+  });
+
+  it("rejects an incomplete workflow-authoring qualification", () => {
+    const valid = MODEL_REGISTRY[0]!;
+    const result = validateModelRegistry([{
+      ...valid,
+      workflowAuthoring: { ...valid.workflowAuthoring, rationale: "" },
+    }]);
+    expect(result.errors.map((error) => error.field)).toContain("workflowAuthoring");
   });
 });

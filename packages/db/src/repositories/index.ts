@@ -192,6 +192,27 @@ export type {
 export { approvalRepository } from './approval-repository.js';
 export { patternRepository } from './pattern-repository.js';
 
+export {
+  workflowRepository,
+  WorkflowProposalIdempotencyConflictError,
+} from './workflow-repository.js';
+export type {
+  CreateWorkflowDraftInput,
+  CreateWorkflowDraftWithProposalInput,
+  CreateWorkflowVersionWithProposalInput,
+  CreateWorkflowVersionWithProposalResult,
+} from './workflow-repository.js';
+export { workflowWatchProjectionRepository } from './workflow-watch-projection-repository.js';
+export type {
+  MaterializeWorkflowVersionInput,
+  MaterializeWorkflowVersionResult,
+} from './workflow-watch-projection-repository.js';
+export { legacyWatchWorkflowReconciliationRepository } from './legacy-watch-workflow-reconciliation-repository.js';
+export type {
+  ReconcileLegacyWatchWorkflowsInput,
+  ReconcileLegacyWatchWorkflowsResult,
+} from './legacy-watch-workflow-reconciliation-repository.js';
+
 export { executionRepository } from './execution-repository.js';
 export { rollbackAdmissionRepository } from './rollback-admission-repository.js';
 export type {
@@ -437,9 +458,14 @@ export type {
 export { watchRepository } from './watch-repository.js';
 export type { WatchRow, CreateWatchInput } from './watch-repository.js';
 
-export { watchRunRepository } from './watch-run-repository.js';
+export {
+  createWatchRunEvidenceCommitment,
+  watchRunEvidenceSha256,
+  watchRunRepository,
+} from './watch-run-repository.js';
 export type {
   WatchRunRow,
+  WatchRunEvidenceCommitment,
   WatchSlotStatus,
   ClaimedWatchSlot,
   ClaimNextWatchSlotInput,

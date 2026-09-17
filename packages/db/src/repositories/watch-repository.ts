@@ -1,6 +1,13 @@
-import { query } from '../connection.js';
-import type { Watch, RoutineSpec, RoutineStatus } from '@skytwin/shared-types';
+import { query, withTransaction } from '../connection.js';
+import type {
+  Watch,
+  RoutineSpec,
+  RoutineStatus,
+} from '@skytwin/shared-types';
 import { randomUUID } from 'node:crypto';
+import { databaseNullableSafeInteger } from './database-values.js';
+
+const LEGACY_WATCH_QUARANTINE_PROVIDER_KEY = 'legacy_watch.quarantine.v1';
 
 /**
  * Repository for **watches** — the persisted form of no-code routines (#519).
@@ -15,8 +22,8 @@ export interface WatchRow {
   name: string;
   source_text: string;
   cadence: string;
-  hour_of_day: number | null;
-  day_of_week: number | null;
+  hour_of_day: number | string | null;
+  day_of_week: number | string | null;
   filter: Record<string, unknown> | null;
   action: string;
   status: string;
@@ -25,6 +32,12 @@ export interface WatchRow {
   last_run_at: Date | null;
   next_run_at: Date | null;
   schedule_revision: string;
+  workflow_id: string | null;
+  workflow_version_id: string | null;
+  workflow_provider_key: string | null;
+  workflow_provider_schema_version: string | null;
+  content_hash: string | null;
+  projection_version: number | string | null;
 }
 
 function isFilterNarrowed(spec: RoutineSpec): boolean {
@@ -42,14 +55,20 @@ function storedFilter(spec: RoutineSpec): Required<RoutineSpec['filter']> {
 }
 
 function rowToWatch(r: WatchRow): Watch {
+  const hourOfDay = databaseNullableSafeInteger(r.hour_of_day, 'watches.hour_of_day');
+  const dayOfWeek = databaseNullableSafeInteger(r.day_of_week, 'watches.day_of_week');
+  const projectionVersion = databaseNullableSafeInteger(
+    r.projection_version,
+    'watches.projection_version',
+  );
   return {
     id: r.id,
     userId: r.user_id,
     name: r.name,
     sourceText: r.source_text,
     cadence: r.cadence as Watch['cadence'],
-    ...(r.hour_of_day !== null ? { hourOfDay: r.hour_of_day } : {}),
-    ...(r.day_of_week !== null ? { dayOfWeek: r.day_of_week } : {}),
+    ...(hourOfDay !== null ? { hourOfDay } : {}),
+    ...(dayOfWeek !== null ? { dayOfWeek } : {}),
     filter: (r.filter ?? {}) as Watch['filter'],
     action: r.action as Watch['action'],
     status: r.status as RoutineStatus,
@@ -57,6 +76,12 @@ function rowToWatch(r: WatchRow): Watch {
     updatedAt: r.updated_at,
     lastRunAt: r.last_run_at,
     nextRunAt: r.next_run_at,
+    workflowId: r.workflow_id ?? null,
+    workflowVersionId: r.workflow_version_id ?? null,
+    workflowProviderKey: r.workflow_provider_key ?? null,
+    workflowProviderSchemaVersion: r.workflow_provider_schema_version ?? null,
+    contentHash: r.content_hash ?? null,
+    projectionVersion,
   };
 }
 
@@ -79,7 +104,8 @@ export const watchRepository = {
     const nextRunAt = status === 'active' ? (input.nextRunAt ?? new Date()) : null;
     const result = await query<WatchRow>(
       `INSERT INTO watches
-         (user_id, name, source_text, cadence, hour_of_day, day_of_week, filter, action, status, next_run_at)
+       (user_id, name, source_text, cadence, hour_of_day, day_of_week, filter,
+          action, status, next_run_at)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
@@ -134,6 +160,16 @@ export const watchRepository = {
             OR jsonb_array_length(filter->'keywords') > 0
             OR jsonb_array_length(filter->'domains') > 0
           )
+          AND (
+            $3 <> 'active'
+            OR workflow_id IS NULL
+            OR EXISTS (
+              SELECT 1 FROM workflows
+               WHERE workflows.id = watches.workflow_id
+                 AND workflows.user_id = watches.user_id
+                 AND workflows.active_version_id = watches.workflow_version_id
+            )
+          )
       RETURNING *`,
       [id, userId, status, effectiveNext, randomUUID()],
     );
@@ -153,6 +189,7 @@ export const watchRepository = {
               filter = $7, action = $8, source_text = COALESCE($9, source_text),
               schedule_revision = $11, updated_at = now()
         WHERE id = $1 AND user_id = $2
+          AND workflow_id IS NULL
           AND (status <> 'active' OR $10 = true)
       RETURNING *`,
       [
@@ -173,11 +210,51 @@ export const watchRepository = {
   },
 
   async delete(id: string, userId: string): Promise<boolean> {
-    const result = await query<{ id: string }>(
-      `DELETE FROM watches WHERE id = $1 AND user_id = $2 RETURNING id`,
-      [id, userId],
-    );
-    return result.rows.length > 0;
+    return withTransaction(async (client) => {
+      const target = await client.query<{
+        id: string;
+        workflow_id: string | null;
+        workflow_provider_key: string | null;
+      }>(
+        `SELECT id, workflow_id, workflow_provider_key
+           FROM watches
+          WHERE id = $1 AND user_id = $2
+          FOR UPDATE`,
+        [id, userId],
+      );
+      const watch = target.rows[0];
+      if (!watch) return false;
+
+      if (watch.workflow_id === null) {
+        const deleted = await client.query<{ id: string }>(
+          `DELETE FROM watches
+            WHERE id = $1 AND user_id = $2 AND workflow_id IS NULL
+          RETURNING id`,
+          [id, userId],
+        );
+        return deleted.rows.length > 0;
+      }
+
+      // Versioned workflows are immutable and must not be removed through the
+      // legacy Watch endpoint. The sole exception is an inactive quarantine
+      // workflow created when a legacy Watch cannot be compiled safely. Delete
+      // the owning workflow so its version and Watch projection cascade as one
+      // operation, while re-checking the quarantine/no-active-version boundary
+      // atomically in the DELETE itself.
+      if (watch.workflow_provider_key !== LEGACY_WATCH_QUARANTINE_PROVIDER_KEY) {
+        return false;
+      }
+      const deleted = await client.query<{ id: string }>(
+        `DELETE FROM workflows
+          WHERE id = $1
+            AND user_id = $2
+            AND provider_key = $3
+            AND active_version_id IS NULL
+        RETURNING id`,
+        [watch.workflow_id, userId, LEGACY_WATCH_QUARANTINE_PROVIDER_KEY],
+      );
+      return deleted.rows.length > 0;
+    });
   },
 
 };

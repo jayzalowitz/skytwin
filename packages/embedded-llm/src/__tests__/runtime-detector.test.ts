@@ -51,7 +51,7 @@ describe('detectEmbeddedRuntimes', () => {
   });
 
   it('prefers SKYTWIN_LLAMACPP_BIN env var over PATH lookup when the path exists', async () => {
-    process.env['SKYTWIN_LLAMACPP_BIN'] = '/opt/local/bin/llama-cli';
+    process.env['SKYTWIN_LLAMACPP_BIN'] = '/opt/local/bin/llama-completion';
     mockExistsSync.mockReturnValue(true);
     // execSync should NOT be called for llama when env var is set and path exists.
     mockExecSync.mockImplementation(() => {
@@ -61,11 +61,11 @@ describe('detectEmbeddedRuntimes', () => {
     const result = await detectEmbeddedRuntimes();
 
     expect(result.llamaCpp.available).toBe(true);
-    expect(result.llamaCpp.binaryPath).toBe('/opt/local/bin/llama-cli');
+    expect(result.llamaCpp.binaryPath).toBe('/opt/local/bin/llama-completion');
   });
 
   it('returns available:false when SKYTWIN_LLAMACPP_BIN is set but path does not exist', async () => {
-    process.env['SKYTWIN_LLAMACPP_BIN'] = '/nonexistent/llama-cli';
+    process.env['SKYTWIN_LLAMACPP_BIN'] = '/nonexistent/llama-completion';
     mockExistsSync.mockReturnValue(false);
     mockExecSync.mockImplementation(() => {
       throw new Error('not found');
@@ -80,7 +80,7 @@ describe('detectEmbeddedRuntimes', () => {
   it('detects all three runtimes as available when all binaries are present in PATH', async () => {
     mockExecSync.mockImplementation((cmd: unknown) => {
       const cmdStr = String(cmd);
-      if (cmdStr.includes('llama-cli')) return Buffer.from('/usr/local/bin/llama-cli\n');
+      if (cmdStr.includes('llama-completion')) return Buffer.from('/usr/local/bin/llama-completion\n');
       if (cmdStr.includes('whisper-cli')) return Buffer.from('/usr/local/bin/whisper-cli\n');
       if (cmdStr.includes('piper')) return Buffer.from('/usr/local/bin/piper\n');
       throw new Error('unknown');
@@ -89,7 +89,7 @@ describe('detectEmbeddedRuntimes', () => {
     const result = await detectEmbeddedRuntimes();
 
     expect(result.llamaCpp.available).toBe(true);
-    expect(result.llamaCpp.binaryPath).toBe('/usr/local/bin/llama-cli');
+    expect(result.llamaCpp.binaryPath).toBe('/usr/local/bin/llama-completion');
     expect(result.whisper.available).toBe(true);
     expect(result.whisper.binaryPath).toBe('/usr/local/bin/whisper-cli');
     expect(result.piper.available).toBe(true);
