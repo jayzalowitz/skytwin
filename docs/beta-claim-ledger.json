@@ -816,7 +816,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "26b937a6058bc1c2eb0b44cec6c6f838fc41cace20c27998cb4571ca5d2cf654",
+          "sha256": "9aae7a2f3fc74770a0e19863885dacee31907881aa3ec4ea8dbcf610cc85e2e7",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
