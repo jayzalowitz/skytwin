@@ -6,7 +6,7 @@
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
-<img src="https://img.shields.io/github/package-json/v/jayzalowitz/skytwin?color=brightgreen&label=version" alt="Version">
+<a href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"><img src="https://img.shields.io/badge/current%20alpha-0.6.106.0-7C72E8.svg" alt="Current release: SkyTwin alpha 0.6.106.0"></a>
 <a href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"><img src="https://img.shields.io/badge/download-desktop%20alpha-7C72E8.svg" alt="Download the SkyTwin desktop alpha"></a>
 <img src="https://img.shields.io/badge/release-alpha%20%2B%20source%20preview-lightgrey.svg" alt="Release status: desktop alpha and source preview">
 
