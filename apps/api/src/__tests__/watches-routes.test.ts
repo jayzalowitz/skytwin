@@ -230,12 +230,25 @@ describe('watches routes', () => {
           matched_count: 2,
           summary: 'Matched 2 signals',
           matched_refs: ['sig-1', 'sig-2'],
+          evidence_snapshot: Array.from({ length: 8 }, (_, index) => ({
+            signalId: `sig-${index + 1}`,
+            source: 'gmail',
+            timestamp: '2026-07-06T09:00:00.000Z',
+            title: `Signal ${index + 1}`,
+            from: 'finance@example.com',
+            matchTextSha256: 'a'.repeat(64),
+          })),
         },
       ]);
       const res = await request(buildApp(), 'GET', `/api/watches/${USER}/${WATCH}/runs?limit=5`);
       expect(res.status).toBe(200);
       expect(mockWatchRunRepository.listForWatch).toHaveBeenCalledWith(WATCH, USER, 5);
-      expect((res.body as { runs: unknown[] }).runs).toHaveLength(1);
+      const runs = (res.body as {
+        runs: Array<{ evidence_snapshot: unknown[]; evidence_retained_count: number }>;
+      }).runs;
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.evidence_snapshot).toHaveLength(5);
+      expect(runs[0]?.evidence_retained_count).toBe(8);
     });
 
     it('404s run history for a watch the user does not own', async () => {

@@ -1,11 +1,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { snapshotMock } = vi.hoisted(() => ({
+const { snapshotMock, readinessMock } = vi.hoisted(() => ({
   snapshotMock: vi.fn(),
+  readinessMock: vi.fn(),
 }));
 
 vi.mock('@skytwin/db', () => ({
   aiProviderRepository: { getReasoningSnapshotForUser: snapshotMock },
+}));
+vi.mock('@skytwin/llm-client', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@skytwin/llm-client')>()),
+  probeEmbeddedProviderReadiness: readinessMock,
 }));
 
 import { resolveUserLlmClient } from '../user-llm-client.js';
@@ -18,6 +23,7 @@ const localRow = {
 
 describe('per-user LLM composition root', () => {
   beforeEach(() => {
+    readinessMock.mockReset().mockResolvedValue({ state: 'ready' });
     snapshotMock.mockReset().mockResolvedValue({
       providers: [localRow],
       reasoningMode: {
@@ -30,7 +36,41 @@ describe('per-user LLM composition root', () => {
   it('builds a mode-scoped client from enabled settings', async () => {
     await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
       state: 'ready', client: { hasProviders: true }, mode: 'on_device',
+      localReadiness: { state: 'ready' },
     });
+    expect(readinessMock).toHaveBeenCalledWith('managed');
+  });
+
+  it.each([
+    ['artifact_missing', 'artifact_unavailable'],
+    ['artifact_invalid', 'artifact_unavailable'],
+    ['runtime_binary_missing', 'runtime_unavailable'],
+    ['runtime_incompatible', 'runtime_unavailable'],
+  ] as const)('preserves embedded %s readiness as %s', async (reason, state) => {
+    readinessMock.mockResolvedValue({ state, reason });
+
+    await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
+      state: 'ready',
+      localReadiness: { state, reason },
+    });
+  });
+
+  it('does not let an unavailable embedded provider mask an Ollama fallback canary', async () => {
+    snapshotMock.mockResolvedValue({
+      providers: [
+        localRow,
+        { ...localRow, id: 'provider-2', provider: 'ollama', model: 'qwen2.5', base_url: 'http://127.0.0.1:11434' },
+      ],
+      reasoningMode: {
+        user_id: 'user-1', mode: 'on_device', requires_confirmation: false,
+        created_at: new Date(), updated_at: new Date(),
+      },
+    });
+
+    await expect(resolveUserLlmClient('user-1')).resolves.toMatchObject({
+      state: 'ready', client: { hasProviders: true }, mode: 'on_device',
+    });
+    expect(readinessMock).not.toHaveBeenCalled();
   });
 
   it('does not route while a legacy mixed chain awaits confirmation', async () => {

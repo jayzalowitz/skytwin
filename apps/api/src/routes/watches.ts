@@ -18,6 +18,7 @@ const ACTIONS = new Set(['digest', 'notify']);
 const FILTER_FIELDS = ['sources', 'fromContains', 'keywords', 'domains'] as const;
 const MAX_FILTER_ENTRIES = 50;
 const MAX_ENTRY_LEN = 200;
+const MAX_RETURNED_RUN_EVIDENCE = 5;
 
 /**
  * Sanitize a caller-supplied `filter` down to the known `RoutineFilter` shape:
@@ -215,7 +216,15 @@ export function createWatchesRouter(): Router {
         res.status(404).json({ error: 'Watch not found.' });
         return;
       }
-      const runs = await watchRunRepository.listForWatch(watchId, userId, limit);
+      const rows = await watchRunRepository.listForWatch(watchId, userId, limit);
+      const runs = rows.map((run) => ({
+        ...run,
+        // The database retains the exact evidence snapshot so its commitment can
+        // be audited. Keep the routine history response bounded for browsers;
+        // matched_count still describes the full retained snapshot.
+        evidence_retained_count: run.evidence_snapshot.length,
+        evidence_snapshot: run.evidence_snapshot.slice(0, MAX_RETURNED_RUN_EVIDENCE),
+      }));
       res.json({ runs });
     } catch (err) {
       next(err);

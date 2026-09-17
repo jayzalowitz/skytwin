@@ -102,6 +102,16 @@ export function assistantPendingRequestKey(userId) {
   return `skytwin_assistant_pending_request_${userId}`;
 }
 
+/** Durable first-run adaptive Watch draft. Cleared only after activation. */
+export function adaptiveWatchDraftKey(userId) {
+  return `skytwin_adaptive_watch_draft_${userId}`;
+}
+
+/** Typed immutable-lineage context for an in-progress adaptive Watch correction. */
+export function adaptiveWatchEditKey(userId) {
+  return `skytwin_adaptive_watch_edit_${userId}`;
+}
+
 // ── Sweep helpers ──────────────────────────────────────────────────────
 
 /**

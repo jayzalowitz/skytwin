@@ -5,6 +5,8 @@ import {
   shouldRunWatchScheduler,
   toMatchable,
   evaluateWatch,
+  embeddedRuntimeIdentityMatches,
+  parseWatchSynthesis,
   runWatchSchedulerJob,
   WATCH_SCHEDULER_INTERVAL_MS,
 } from '../jobs/watch-scheduler.js';
@@ -24,6 +26,12 @@ function watch(over: Partial<Watch> = {}): Watch {
     updatedAt: new Date('2026-07-01T00:00:00Z'),
     lastRunAt: null,
     nextRunAt: new Date('2026-07-05T08:00:00Z'),
+    workflowId: null,
+    workflowVersionId: null,
+    workflowProviderKey: null,
+    workflowProviderSchemaVersion: null,
+    contentHash: null,
+    projectionVersion: null,
     ...over,
   };
 }
@@ -118,6 +126,48 @@ describe('evaluateWatch', () => {
   });
 });
 
+describe('parseWatchSynthesis', () => {
+  it('accepts only bounded JSON prose citing evidence from the admitted set', () => {
+    expect(parseWatchSynthesis('{"summary":"Invoice due [signal-1]."}', new Set(['signal-1'])))
+      .toBe('Invoice due [signal-1].');
+    expect(parseWatchSynthesis('{"summary":"Invoice due."}', new Set(['signal-1']))).toBeNull();
+    expect(parseWatchSynthesis('{"summary":"Invoice due [invented]."}', new Set(['signal-1'])))
+      .toBeNull();
+  });
+});
+
+describe('embeddedRuntimeIdentityMatches', () => {
+  const pinned = {
+    runtimeVersion: 'llama.cpp-b5000',
+    modelArtifactSha256: 'a'.repeat(64),
+  };
+
+  it('requires the exact managed artifact digest and llama.cpp build', () => {
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+    })).toBe(true);
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'b'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+    })).toBe(false);
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'ready',
+      modelName: 'managed.gguf',
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5001',
+    })).toBe(false);
+    expect(embeddedRuntimeIdentityMatches(pinned, {
+      state: 'runtime_unavailable',
+      reason: 'runtime_binary_missing',
+    })).toBe(false);
+  });
+});
+
 describe('runWatchSchedulerJob', () => {
   const NOW = new Date('2026-07-05T09:00:00Z');
   const WINDOW_START = new Date('2026-07-05T07:00:00Z');
@@ -140,6 +190,15 @@ describe('runWatchSchedulerJob', () => {
       windowEnd: NOW,
       leaseToken: 'lease-1',
       attemptCount: 1,
+      workflowId: null,
+      workflowVersionId: null,
+      workflowProviderKey: null,
+      workflowProviderSchemaVersion: null,
+      contentHash: null,
+      projectionVersion: null,
+      workflowPayloadSnapshot: null,
+      workflowInferenceSnapshot: null,
+      summaryInstruction: null,
       ...over,
     };
   }
@@ -172,8 +231,130 @@ describe('runWatchSchedulerJob', () => {
       matchedCount: 1,
       summary: expect.stringContaining('Q3 budget'),
       matchedRefs: ['a'],
+      evidenceSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      evidenceSnapshot: [expect.objectContaining({ signalId: 'a', title: 'Q3 budget' })],
+      synthesisMetadata: null,
     });
     expect(runRepo.pruneZeroMatchSlots).toHaveBeenCalledWith(30, 100);
+  });
+
+  it('labels deterministic adaptive output when unattended AI synthesis is unavailable', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1',
+      workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1',
+      workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64),
+      projectionVersion: 1,
+      workflowPayloadSnapshot: {},
+      summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow: vi.fn().mockResolvedValue([
+        signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
+      ]) },
+      synthesize: vi.fn().mockResolvedValue({
+        text: null,
+        metadata: {
+          state: 'unavailable', reason: 'provider_failed',
+          summaryInstructionSha256: 'b'.repeat(64),
+        },
+      }),
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.stringMatching(/^AI summary unavailable — .*Q3 budget/),
+      matchedRefs: ['a'],
+      synthesisMetadata: expect.objectContaining({ state: 'unavailable', reason: 'provider_failed' }),
+    }));
+  });
+
+  it('persists generated AI prose and its provider provenance for adaptive runs', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1', workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1', workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64), projectionVersion: 1,
+      workflowPayloadSnapshot: {}, summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    const synthesize = vi.fn().mockResolvedValue({
+      text: 'One finance update [a].',
+      metadata: {
+        state: 'generated', provider: 'embedded', model: 'managed', reasoningMode: 'on_device',
+        runtimeVersion: 'unreported',
+        summaryInstructionSha256: 'c'.repeat(64),
+      },
+    });
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow: vi.fn().mockResolvedValue([
+        signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
+      ]) },
+      synthesize,
+    });
+    expect(synthesize).toHaveBeenCalledWith(
+      slot,
+      [expect.objectContaining({ signalId: 'a' })],
+      1,
+    );
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      summary: 'One finance update [a].',
+      synthesisMetadata: expect.objectContaining({ state: 'generated', provider: 'embedded' }),
+    }));
+  });
+
+  it('records an explicit adaptive explanation when a pinned run has no matches', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1',
+      workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1',
+      workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64),
+      projectionVersion: 1,
+      workflowPayloadSnapshot: {},
+      summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow: vi.fn().mockResolvedValue([]) },
+      synthesize: vi.fn().mockResolvedValue({
+        text: null,
+        metadata: {
+          state: 'unavailable', reason: 'no_matches',
+          summaryInstructionSha256: 'd'.repeat(64),
+        },
+      }),
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      id: slot.id,
+      matchedCount: 0,
+      summary: 'AI summary unavailable — No matching signals.',
+      matchedRefs: [],
+    }));
+  });
+
+  it('falls back deterministically instead of retrying the slot when synthesis throws', async () => {
+    const slot = claimedSlot({
+      workflowId: 'workflow-1', workflowVersionId: 'version-1',
+      workflowProviderKey: 'signal_digest.v1', workflowProviderSchemaVersion: '1',
+      contentHash: 'a'.repeat(64), projectionVersion: 1,
+      workflowPayloadSnapshot: {}, summaryInstruction: 'Summarize matches.',
+    });
+    const runRepo = runRepoWith([slot, null]);
+    await runWatchSchedulerJob({
+      runRepo,
+      signalRepo: { listInWindow: vi.fn().mockResolvedValue([
+        signal({ id: 'a', timestamp: new Date('2026-07-05T08:00:00Z') }),
+      ]) },
+      synthesize: vi.fn().mockRejectedValue(new Error('model offline')),
+    });
+    expect(runRepo.completeSlot).toHaveBeenCalledWith(expect.objectContaining({
+      summary: expect.stringMatching(/^AI summary unavailable —/),
+      synthesisMetadata: expect.objectContaining({ state: 'unavailable', reason: 'provider_failed' }),
+    }));
+    expect(runRepo.failSlot).not.toHaveBeenCalled();
   });
 
   it('completes zero-match slots so the persisted schedule has no gaps', async () => {

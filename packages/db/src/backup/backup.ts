@@ -30,16 +30,35 @@
 
 import { query, withTransaction } from '../connection.js';
 import {
+  assertWorkflowProviderIdentity,
+  canonicalizeWorkflowPayload,
   joinedDecisionReceiptArtifactDigest,
   joinedDecisionReceiptContentDigest,
   joinedDecisionReceiptRevisionDigest,
   isDecisionReceiptEventKey,
   snapshotInferenceReceipt,
+  snapshotWorkflowAuthoringMetadata,
+  snapshotWorkflowInferenceMetadata,
+  workflowVersionContentHash,
   preservesJoinedDecisionReceiptLinks,
   normalizeDecisionReceiptSequence,
   verifyInferenceReceiptSeal,
   verifyJoinedDecisionReceiptChain,
 } from '@skytwin/shared-types';
+import type {
+  RoutineFilter,
+  RoutineSpec,
+  RoutineStatus,
+  WorkflowAuthoringMetadataV1,
+  WorkflowInferenceMetadataV1,
+  WorkflowJsonObject,
+  WorkflowProposalKind,
+} from '@skytwin/shared-types';
+import {
+  compileSignalDigestV1,
+  SIGNAL_DIGEST_V1_PROVIDER_KEY,
+  SIGNAL_DIGEST_V1_SCHEMA_VERSION,
+} from '@skytwin/routines';
 import type {
   CandidateActionRow,
   DecisionOutcomeRow,
@@ -67,13 +86,16 @@ import {
   parseGmailArchiveReconciliationExplanationEvidence,
 } from '../repositories/gmail-archive-reconciliation-repository.js';
 import { GMAIL_ARCHIVE_RECOVERY_GRACE_SECONDS } from '../repositories/gmail-archive-recovery-policy.js';
+import { databaseSafeInteger } from '../repositories/database-values.js';
 
 /**
- * V4 adds portable, sanitized execution-plan metadata and joined receipt
- * history. Keeping this distinct from v3 makes older readers reject archives
- * they would otherwise accept while silently dropping those integrity links.
+ * V5 adds immutable adaptive workflows, sanitized authoring/inference
+ * metadata, proposals, and activation history. Keeping this distinct from v4
+ * makes older readers reject archives they would otherwise accept while
+ * silently dropping user-authored behavior.
  */
-export const BACKUP_SCHEMA_VERSION = 4;
+export const BACKUP_SCHEMA_VERSION = 5;
+const EXECUTION_BACKUP_SCHEMA_VERSION = 4;
 const INGEST_BACKUP_SCHEMA_VERSION = 3;
 const RECEIPT_BACKUP_SCHEMA_VERSION = 2;
 const LEGACY_BACKUP_SCHEMA_VERSION = 1;
@@ -115,6 +137,92 @@ export interface DecisionBundle {
   };
 }
 
+export interface WorkflowBackupRecord {
+  id: string;
+  userId: string;
+  providerKey: string;
+  activeVersionId: string | null;
+  activeActivationEventId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowVersionBackupRecord {
+  id: string;
+  workflowId: string;
+  userId: string;
+  versionNumber: number;
+  providerKey: string;
+  providerSchemaVersion: string;
+  canonicalPayload: WorkflowJsonObject;
+  contentHash: string;
+  parentVersionId: string | null;
+  authoring: WorkflowAuthoringMetadataV1;
+  inference: WorkflowInferenceMetadataV1 | null;
+  createdAt: string;
+}
+
+export interface WorkflowProposalBackupRecord {
+  id: string;
+  workflowId: string;
+  userId: string;
+  baseVersionId: string | null;
+  proposedVersionId: string;
+  kind: WorkflowProposalKind;
+  createdAt: string;
+}
+
+export interface WorkflowActivationBackupRecord {
+  id: string;
+  workflowId: string;
+  userId: string;
+  previousVersionId: string | null;
+  activatedVersionId: string;
+  proposalId: string | null;
+  kind: 'activate' | 'rollback';
+  eventSequence: number;
+  createdAt: string;
+}
+
+/** Portable scheduler state for the single Watch compiled from an active workflow. */
+export interface WorkflowWatchProjectionBackupRecord {
+  /** Distinguishes compiler-verifiable projections from fail-closed durable snapshots. */
+  kind: 'compiled_signal_digest.v1' | 'quarantined_watch_snapshot.v1';
+  id: string;
+  workflowId: string;
+  workflowVersionId: string;
+  userId: string;
+  providerKey: string;
+  providerSchemaVersion: string;
+  contentHash: string;
+  projectionVersion: number;
+  sourceText: string;
+  status: RoutineStatus;
+  scheduleRevision: string;
+  createdAt: string;
+  updatedAt: string;
+  lastRunAt: string | null;
+  nextRunAt: string | null;
+  /** Exact stored Watch fields. Required so quarantine does not lose the original inert state. */
+  snapshot: {
+    name: string;
+    cadence: RoutineSpec['cadence'];
+    hourOfDay: number | null;
+    dayOfWeek: number | null;
+    filter: Required<RoutineFilter>;
+    action: RoutineSpec['action'];
+  };
+}
+
+export interface WorkflowBackupBundle {
+  workflow: WorkflowBackupRecord;
+  versions: WorkflowVersionBackupRecord[];
+  proposals: WorkflowProposalBackupRecord[];
+  activationEvents: WorkflowActivationBackupRecord[];
+  /** Null for inactive or non-Watch workflow providers. */
+  watchProjection: WorkflowWatchProjectionBackupRecord | null;
+}
+
 /** The full exported payload for one user. */
 export interface BackupData {
   schemaVersion: number;
@@ -125,6 +233,8 @@ export interface BackupData {
   twinProfileVersions: TwinProfileVersionRow[];
   preferences: PreferenceRow[];
   decisions: DecisionBundle[];
+  /** Required in schema v5. Older archives omit adaptive workflows entirely. */
+  workflows?: WorkflowBackupBundle[];
   /**
    * Connector identities, OAuth credentials, cursors, raw signals, and Gmail
    * message references are intentionally excluded.
@@ -194,6 +304,7 @@ export async function collectBackup(userId: string): Promise<CollectBackupResult
   ).rows;
 
     const decisions = await collectDecisions(client, userId);
+    const workflows = await collectWorkflows(client, userId);
 
     const data: BackupData = {
       schemaVersion: BACKUP_SCHEMA_VERSION,
@@ -203,6 +314,7 @@ export async function collectBackup(userId: string): Promise<CollectBackupResult
       twinProfileVersions,
       preferences,
       decisions,
+      workflows,
     };
     const problems = validateBackupData(data);
     if (problems.length > 0) {
@@ -214,6 +326,222 @@ export async function collectBackup(userId: string): Promise<CollectBackupResult
     }
     return { success: true as const, data };
   });
+}
+
+interface WorkflowBackupRow {
+  id: string;
+  user_id: string;
+  provider_key: string;
+  active_version_id: string | null;
+  active_activation_event_id: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
+interface WorkflowVersionBackupRow {
+  id: string;
+  workflow_id: string;
+  user_id: string;
+  version_number: number | string;
+  provider_key: string;
+  provider_schema_version: string;
+  canonical_payload: WorkflowJsonObject;
+  content_hash: string;
+  parent_version_id: string | null;
+  authoring_metadata: WorkflowAuthoringMetadataV1;
+  inference_metadata: WorkflowInferenceMetadataV1 | null;
+  created_at: Date;
+}
+
+interface WorkflowProposalBackupRow {
+  id: string;
+  workflow_id: string;
+  user_id: string;
+  base_version_id: string | null;
+  proposed_version_id: string;
+  kind: WorkflowProposalKind;
+  created_at: Date;
+}
+
+interface WorkflowActivationBackupRow {
+  id: string;
+  workflow_id: string;
+  user_id: string;
+  previous_version_id: string | null;
+  activated_version_id: string;
+  proposal_id: string | null;
+  kind: 'activate' | 'rollback';
+  event_sequence: number | string;
+  created_at: Date;
+}
+
+interface WorkflowWatchProjectionBackupRow {
+  id: string;
+  user_id: string;
+  name: string;
+  source_text: string;
+  cadence: RoutineSpec['cadence'];
+  hour_of_day: number | string | null;
+  day_of_week: number | string | null;
+  filter: Required<RoutineFilter>;
+  action: RoutineSpec['action'];
+  status: RoutineStatus;
+  created_at: Date;
+  updated_at: Date;
+  last_run_at: Date | null;
+  next_run_at: Date | null;
+  schedule_revision: string;
+  workflow_id: string;
+  workflow_version_id: string;
+  workflow_provider_key: string;
+  workflow_provider_schema_version: string;
+  content_hash: string;
+  projection_version: number | string;
+}
+
+async function collectWorkflows(client: PoolClient, userId: string): Promise<WorkflowBackupBundle[]> {
+  const workflows = (await client.query<WorkflowBackupRow>(
+    `SELECT * FROM workflows WHERE user_id = $1 ORDER BY created_at ASC, id ASC`,
+    [userId],
+  )).rows;
+  if (workflows.length === 0) return [];
+  const workflowIds = workflows.map((workflow) => workflow.id);
+  const versions = (await client.query<WorkflowVersionBackupRow>(
+    `SELECT * FROM workflow_versions
+      WHERE user_id = $1 AND workflow_id = ANY($2)
+      ORDER BY workflow_id ASC, version_number ASC`,
+    [userId, workflowIds],
+  )).rows;
+  const proposals = (await client.query<WorkflowProposalBackupRow>(
+    `SELECT * FROM workflow_proposals
+      WHERE user_id = $1 AND workflow_id = ANY($2)
+      ORDER BY workflow_id ASC, created_at ASC, id ASC`,
+    [userId, workflowIds],
+  )).rows;
+  const activationEvents = (await client.query<WorkflowActivationBackupRow>(
+    `SELECT * FROM workflow_activation_events
+      WHERE user_id = $1 AND workflow_id = ANY($2)
+      ORDER BY workflow_id ASC, event_sequence ASC`,
+    [userId, workflowIds],
+  )).rows;
+  const watchProjections = (await client.query<WorkflowWatchProjectionBackupRow>(
+    `SELECT id, user_id, name, source_text, cadence, hour_of_day, day_of_week,
+            filter, action, status, created_at, updated_at,
+            last_run_at, next_run_at, schedule_revision, workflow_id,
+            workflow_version_id, workflow_provider_key,
+            workflow_provider_schema_version, content_hash, projection_version
+       FROM watches
+      WHERE user_id = $1 AND workflow_id = ANY($2)
+      ORDER BY workflow_id ASC`,
+    [userId, workflowIds],
+  )).rows;
+  const versionsByWorkflow = groupBy(versions, (version) => version.workflow_id);
+  const proposalsByWorkflow = groupBy(proposals, (proposal) => proposal.workflow_id);
+  const eventsByWorkflow = groupBy(activationEvents, (event) => event.workflow_id);
+  const projectionsByWorkflow = groupBy(watchProjections, (projection) => projection.workflow_id);
+  return workflows.map((workflow) => ({
+    workflow: {
+      id: workflow.id,
+      userId: workflow.user_id,
+      providerKey: workflow.provider_key,
+      activeVersionId: workflow.active_version_id,
+      activeActivationEventId: workflow.active_activation_event_id,
+      createdAt: workflow.created_at.toISOString(),
+      updatedAt: workflow.updated_at.toISOString(),
+    },
+    versions: (versionsByWorkflow.get(workflow.id) ?? []).map((version) => ({
+      id: version.id,
+      workflowId: version.workflow_id,
+      userId: version.user_id,
+      versionNumber: databaseSafeInteger(
+        version.version_number,
+        'workflow_versions.version_number',
+      ),
+      providerKey: version.provider_key,
+      providerSchemaVersion: version.provider_schema_version,
+      canonicalPayload: version.canonical_payload,
+      contentHash: version.content_hash,
+      parentVersionId: version.parent_version_id,
+      authoring: version.authoring_metadata,
+      inference: version.inference_metadata,
+      createdAt: version.created_at.toISOString(),
+    })),
+    proposals: (proposalsByWorkflow.get(workflow.id) ?? []).map((proposal) => ({
+      id: proposal.id,
+      workflowId: proposal.workflow_id,
+      userId: proposal.user_id,
+      baseVersionId: proposal.base_version_id,
+      proposedVersionId: proposal.proposed_version_id,
+      kind: proposal.kind,
+      createdAt: proposal.created_at.toISOString(),
+    })),
+    activationEvents: (eventsByWorkflow.get(workflow.id) ?? []).map((event) => ({
+      id: event.id,
+      workflowId: event.workflow_id,
+      userId: event.user_id,
+      previousVersionId: event.previous_version_id,
+      activatedVersionId: event.activated_version_id,
+      proposalId: event.proposal_id,
+      kind: event.kind,
+      eventSequence: databaseSafeInteger(event.event_sequence, 'workflow_activation_events.event_sequence'),
+      createdAt: event.created_at.toISOString(),
+    })),
+    watchProjection: (() => {
+      const projections = projectionsByWorkflow.get(workflow.id) ?? [];
+      if (projections.length > 1) {
+        throw new Error(`workflow ${workflow.id} has more than one Watch projection`);
+      }
+      const projection = projections[0];
+      if (!projection) return null;
+      const pinnedVersion = (versionsByWorkflow.get(workflow.id) ?? []).find(
+        (version) => version.id === projection.workflow_version_id,
+      );
+      const compiled = workflow.provider_key === SIGNAL_DIGEST_V1_PROVIDER_KEY && pinnedVersion
+        ? compileSignalDigestV1(pinnedVersion.canonical_payload)
+        : null;
+      const isCompilerVerified = compiled?.ok === true
+        && pinnedVersion?.provider_schema_version === SIGNAL_DIGEST_V1_SCHEMA_VERSION
+        && compiled.artifact.contentHash === pinnedVersion.content_hash
+        && compiled.artifact.contentHash === projection.content_hash;
+      return {
+        kind: isCompilerVerified
+          ? 'compiled_signal_digest.v1' as const
+          : 'quarantined_watch_snapshot.v1' as const,
+        id: projection.id,
+        workflowId: projection.workflow_id,
+        workflowVersionId: projection.workflow_version_id,
+        userId: projection.user_id,
+        providerKey: projection.workflow_provider_key,
+        providerSchemaVersion: projection.workflow_provider_schema_version,
+        contentHash: projection.content_hash,
+        projectionVersion: databaseSafeInteger(
+          projection.projection_version,
+          'watches.projection_version',
+        ),
+        sourceText: projection.source_text,
+        status: projection.status,
+        scheduleRevision: projection.schedule_revision,
+        createdAt: projection.created_at.toISOString(),
+        updatedAt: projection.updated_at.toISOString(),
+        lastRunAt: projection.last_run_at?.toISOString() ?? null,
+        nextRunAt: projection.next_run_at?.toISOString() ?? null,
+        snapshot: {
+          name: projection.name,
+          cadence: projection.cadence,
+          hourOfDay: projection.hour_of_day === null ? null : databaseSafeInteger(
+            projection.hour_of_day,
+            'watches.hour_of_day',
+          ),
+          dayOfWeek: projection.day_of_week === null ? null : databaseSafeInteger(
+            projection.day_of_week,
+            'watches.day_of_week',
+          ),
+          filter: projection.filter,
+          action: projection.action,
+        },
+      };
+    })(),
+  }));
 }
 
 async function collectDecisions(client: PoolClient, userId: string): Promise<DecisionBundle[]> {
@@ -373,6 +701,415 @@ function groupBy<T, K>(rows: T[], keyOf: (row: T) => K): Map<K, T[]> {
   return map;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isIsoInstant(value: unknown): value is string {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
+const FORBIDDEN_WORKFLOW_PAYLOAD_KEYS = new Set([
+  'apikey', 'accesstoken', 'refreshtoken', 'oauthtoken', 'password', 'secret',
+  'credential', 'credentials', 'authorization', 'sourcebody', 'messagebody',
+  'rawevent', 'rawsource', 'requestbody', 'responsebody', 'prompt', 'response',
+  'chainofthought',
+]);
+const LEGACY_WATCH_QUARANTINE_PROVIDER_KEY = 'legacy_watch.quarantine.v1';
+
+function isBoundedStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= 50 && value.every((entry) =>
+    typeof entry === 'string' && Buffer.byteLength(entry, 'utf8') <= 200);
+}
+
+function isWatchSnapshot(value: unknown): value is WorkflowWatchProjectionBackupRecord['snapshot'] {
+  if (!isRecord(value) || !isRecord(value.filter)) return false;
+  const hourValid = value.hourOfDay === null ||
+    (Number.isSafeInteger(value.hourOfDay) && Number(value.hourOfDay) >= 0 && Number(value.hourOfDay) <= 23);
+  const dayValid = value.dayOfWeek === null ||
+    (Number.isSafeInteger(value.dayOfWeek) && Number(value.dayOfWeek) >= 0 && Number(value.dayOfWeek) <= 6);
+  return typeof value.name === 'string' && Buffer.byteLength(value.name, 'utf8') <= 4_096 &&
+    (value.cadence === 'hourly' || value.cadence === 'daily' || value.cadence === 'weekly') &&
+    hourValid && dayValid &&
+    isBoundedStringList(value.filter.sources) &&
+    isBoundedStringList(value.filter.fromContains) &&
+    isBoundedStringList(value.filter.keywords) &&
+    isBoundedStringList(value.filter.domains) &&
+    (value.action === 'digest' || value.action === 'notify');
+}
+
+function routineSnapshot(spec: RoutineSpec): WorkflowWatchProjectionBackupRecord['snapshot'] {
+  return {
+    name: spec.name,
+    cadence: spec.cadence,
+    hourOfDay: spec.hourOfDay ?? null,
+    dayOfWeek: spec.dayOfWeek ?? null,
+    filter: {
+      sources: spec.filter.sources ?? [],
+      fromContains: spec.filter.fromContains ?? [],
+      keywords: spec.filter.keywords ?? [],
+      domains: spec.filter.domains ?? [],
+    },
+    action: spec.action,
+  };
+}
+
+function signalDigestQuarantineSnapshot(): WorkflowWatchProjectionBackupRecord['snapshot'] {
+  return {
+    name: 'Workflow projection unavailable',
+    cadence: 'hourly',
+    hourOfDay: null,
+    dayOfWeek: null,
+    filter: { sources: [], fromContains: [], keywords: [], domains: [] },
+    action: 'digest',
+  };
+}
+
+function watchSnapshotsEqual(
+  left: WorkflowWatchProjectionBackupRecord['snapshot'],
+  right: WorkflowWatchProjectionBackupRecord['snapshot'],
+): boolean {
+  const hasExactKeys = (value: object, keys: string[]): boolean => {
+    const actual = Object.keys(value).sort();
+    const expected = [...keys].sort();
+    return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+  };
+  const listsEqual = (leftList: string[], rightList: string[]): boolean =>
+    leftList.length === rightList.length && leftList.every(
+      (entry, index) => entry === rightList[index],
+    );
+  return hasExactKeys(left, [
+    'name', 'cadence', 'hourOfDay', 'dayOfWeek', 'filter', 'action',
+  ]) && hasExactKeys(left.filter, [
+    'sources', 'fromContains', 'keywords', 'domains',
+  ]) && left.name === right.name && left.cadence === right.cadence &&
+    left.hourOfDay === right.hourOfDay && left.dayOfWeek === right.dayOfWeek &&
+    left.action === right.action &&
+    listsEqual(left.filter.sources, right.filter.sources) &&
+    listsEqual(left.filter.fromContains, right.filter.fromContains) &&
+    listsEqual(left.filter.keywords, right.filter.keywords) &&
+    listsEqual(left.filter.domains, right.filter.domains);
+}
+
+function containsForbiddenWorkflowPayloadKey(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(containsForbiddenWorkflowPayloadKey);
+  if (!isRecord(value)) return false;
+  return Object.entries(value).some(([key, child]) => {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return FORBIDDEN_WORKFLOW_PAYLOAD_KEYS.has(normalized) ||
+      containsForbiddenWorkflowPayloadKey(child);
+  });
+}
+
+function validateWorkflowBackups(
+  data: Partial<BackupData>,
+  ownerId: unknown,
+  uuid: RegExp,
+): string[] {
+  const problems: string[] = [];
+  const carriesWorkflows = data.schemaVersion === BACKUP_SCHEMA_VERSION;
+  const knownOlderSchema = data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
+    data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION ||
+    data.schemaVersion === RECEIPT_BACKUP_SCHEMA_VERSION ||
+    data.schemaVersion === LEGACY_BACKUP_SCHEMA_VERSION;
+  if (carriesWorkflows && !Array.isArray(data.workflows)) {
+    return [`workflows is required by schema version ${BACKUP_SCHEMA_VERSION}`];
+  }
+  if (knownOlderSchema && data.workflows !== undefined &&
+      (!Array.isArray(data.workflows) || data.workflows.length > 0)) {
+    return [`workflows requires schema version ${BACKUP_SCHEMA_VERSION}`];
+  }
+  if (!Array.isArray(data.workflows)) return problems;
+
+  const workflowIds = new Set<string>();
+  const globalVersionIds = new Set<string>();
+  const globalProposalIds = new Set<string>();
+  const globalEventIds = new Set<string>();
+  for (const [workflowIndex, bundle] of data.workflows.entries()) {
+    const prefix = `workflows[${workflowIndex}]`;
+    if (!isRecord(bundle) || !isRecord(bundle.workflow) ||
+        !Array.isArray(bundle.versions) || !Array.isArray(bundle.proposals) ||
+        !Array.isArray(bundle.activationEvents) || !('watchProjection' in bundle) ||
+        (bundle.watchProjection !== null && !isRecord(bundle.watchProjection))) {
+      problems.push(`${prefix} is malformed`);
+      continue;
+    }
+    const workflow = bundle.workflow as unknown as WorkflowBackupRecord;
+    let providerIdentityValid = true;
+    try {
+      assertWorkflowProviderIdentity(workflow.providerKey, 'v1');
+    } catch {
+      providerIdentityValid = false;
+    }
+    if (!uuid.test(workflow.id) || workflowIds.has(workflow.id) ||
+        !sameUuid(workflow.userId, ownerId) || !providerIdentityValid ||
+        (workflow.activeVersionId !== null && !uuid.test(workflow.activeVersionId)) ||
+        (workflow.activeActivationEventId !== null && !uuid.test(workflow.activeActivationEventId)) ||
+        ((workflow.activeVersionId === null) !== (workflow.activeActivationEventId === null)) ||
+        !isIsoInstant(workflow.createdAt) || !isIsoInstant(workflow.updatedAt)) {
+      problems.push(`${prefix}.workflow has invalid identity or ownership`);
+    }
+    workflowIds.add(workflow.id);
+
+    const versions: WorkflowVersionBackupRecord[] = [];
+    const versionById = new Map<string, WorkflowVersionBackupRecord>();
+    const versionIntegrityById = new Map<string, {
+      portableHashValid: boolean;
+      providerCompileValid: boolean;
+    }>();
+    const versionNumbers = new Set<number>();
+    for (const [versionIndex, rawVersion] of bundle.versions.entries()) {
+      const versionPrefix = `${prefix}.versions[${versionIndex}]`;
+      if (!isRecord(rawVersion)) {
+        problems.push(`${versionPrefix} is malformed`);
+        continue;
+      }
+      const version = rawVersion as unknown as WorkflowVersionBackupRecord;
+      versions.push(version);
+      let contentValid = true;
+      let portableHashValid = false;
+      let providerCompileValid = true;
+      try {
+        assertWorkflowProviderIdentity(version.providerKey, version.providerSchemaVersion);
+        const canonicalPayload = canonicalizeWorkflowPayload(version.canonicalPayload);
+        portableHashValid = workflowVersionContentHash({
+              providerKey: version.providerKey,
+              providerSchemaVersion: version.providerSchemaVersion,
+              canonicalPayload,
+            }) === version.contentHash;
+        if (containsForbiddenWorkflowPayloadKey(canonicalPayload)) {
+          contentValid = false;
+        }
+        if (version.providerKey === SIGNAL_DIGEST_V1_PROVIDER_KEY) {
+          if (version.providerSchemaVersion !== SIGNAL_DIGEST_V1_SCHEMA_VERSION) {
+            providerCompileValid = false;
+          } else {
+            const compiled = compileSignalDigestV1(canonicalPayload);
+            if (!compiled.ok || compiled.artifact.contentHash !== version.contentHash) {
+              providerCompileValid = false;
+            }
+          }
+        }
+        snapshotWorkflowAuthoringMetadata(version.authoring);
+        snapshotWorkflowInferenceMetadata(version.inference);
+      } catch {
+        contentValid = false;
+      }
+      if (!uuid.test(version.id) || globalVersionIds.has(version.id) ||
+          versionById.has(version.id) || !sameUuid(version.workflowId, workflow.id) ||
+          !sameUuid(version.userId, ownerId) || version.providerKey !== workflow.providerKey ||
+          !Number.isSafeInteger(version.versionNumber) || version.versionNumber < 1 ||
+          versionNumbers.has(version.versionNumber) ||
+          (version.parentVersionId !== null && !uuid.test(version.parentVersionId)) ||
+          !isIsoInstant(version.createdAt) || !contentValid) {
+        problems.push(`${versionPrefix} has invalid content, identity, or ownership`);
+      }
+      if (typeof version.id === 'string') {
+        globalVersionIds.add(version.id);
+        versionById.set(version.id, version);
+        versionIntegrityById.set(version.id, { portableHashValid, providerCompileValid });
+      }
+      versionNumbers.add(version.versionNumber);
+    }
+    const orderedVersions = [...versions].sort((left, right) => {
+      const leftNumber = Number.isSafeInteger(left.versionNumber)
+        ? left.versionNumber : Number.MAX_SAFE_INTEGER;
+      const rightNumber = Number.isSafeInteger(right.versionNumber)
+        ? right.versionNumber : Number.MAX_SAFE_INTEGER;
+      return leftNumber - rightNumber;
+    });
+    if (orderedVersions.length === 0 || orderedVersions.some((version, index) =>
+      version.versionNumber !== index + 1 ||
+      (index === 0
+        ? version.parentVersionId !== null
+        : version.parentVersionId === null ||
+          (versionById.get(version.parentVersionId)?.versionNumber ?? Number.MAX_SAFE_INTEGER) >=
+            version.versionNumber))) {
+      problems.push(`${prefix}.versions has invalid lineage`);
+    }
+    if (workflow.activeVersionId !== null && !versionById.has(workflow.activeVersionId)) {
+      problems.push(`${prefix}.workflow active version is not in its version set`);
+    }
+
+    const proposals: WorkflowProposalBackupRecord[] = [];
+    const proposalById = new Map<string, WorkflowProposalBackupRecord>();
+    const proposedVersions = new Set<string>();
+    for (const [proposalIndex, rawProposal] of bundle.proposals.entries()) {
+      if (!isRecord(rawProposal)) {
+        problems.push(`${prefix}.proposals[${proposalIndex}] is malformed`);
+        continue;
+      }
+      const proposal = rawProposal as unknown as WorkflowProposalBackupRecord;
+      proposals.push(proposal);
+      const proposedVersion = versionById.get(proposal.proposedVersionId);
+      const proposalBaseShapeValid =
+        ((proposal.kind === 'initial' || proposal.kind === 'import')
+          && proposal.baseVersionId === null)
+        || ((proposal.kind === 'edit' || proposal.kind === 'feedback')
+          && proposal.baseVersionId !== null);
+      if (!uuid.test(proposal.id) || globalProposalIds.has(proposal.id) ||
+          !sameUuid(proposal.workflowId, workflow.id) || !sameUuid(proposal.userId, ownerId) ||
+          (proposal.baseVersionId !== null && !versionById.has(proposal.baseVersionId)) ||
+          !proposedVersion || proposedVersion.parentVersionId !== proposal.baseVersionId ||
+          proposedVersions.has(proposal.proposedVersionId) ||
+          !['initial', 'edit', 'feedback', 'import'].includes(proposal.kind) ||
+          !proposalBaseShapeValid ||
+          !isIsoInstant(proposal.createdAt)) {
+        problems.push(`${prefix}.proposals[${proposalIndex}] has invalid linkage or ownership`);
+      }
+      if (typeof proposal.id === 'string') {
+        globalProposalIds.add(proposal.id);
+        proposalById.set(proposal.id, proposal);
+      }
+      if (typeof proposal.proposedVersionId === 'string') {
+        proposedVersions.add(proposal.proposedVersionId);
+      }
+    }
+
+    const events: WorkflowActivationBackupRecord[] = [];
+    for (const [eventIndex, rawEvent] of bundle.activationEvents.entries()) {
+      if (!isRecord(rawEvent)) {
+        problems.push(`${prefix}.activationEvents[${eventIndex}] is malformed`);
+        continue;
+      }
+      events.push(rawEvent as unknown as WorkflowActivationBackupRecord);
+    }
+    events.sort((left, right) => {
+      const leftSequence = Number.isSafeInteger(left.eventSequence)
+        ? left.eventSequence : Number.MAX_SAFE_INTEGER;
+      const rightSequence = Number.isSafeInteger(right.eventSequence)
+        ? right.eventSequence : Number.MAX_SAFE_INTEGER;
+      return leftSequence - rightSequence;
+    });
+    let activeVersionId: string | null = null;
+    const previouslyActive = new Set<string>();
+    const consumedProposalIds = new Set<string>();
+    for (const [eventIndex, event] of events.entries()) {
+      const proposal = event.proposalId === null ? null : proposalById.get(event.proposalId);
+      const proposalAlreadyConsumed = event.proposalId !== null &&
+        consumedProposalIds.has(event.proposalId);
+      const linkageValid = uuid.test(event.id) && !globalEventIds.has(event.id) &&
+        Number.isSafeInteger(event.eventSequence) && event.eventSequence === eventIndex + 1 &&
+        sameUuid(event.workflowId, workflow.id) && sameUuid(event.userId, ownerId) &&
+        event.previousVersionId === activeVersionId && versionById.has(event.activatedVersionId) &&
+        event.activatedVersionId !== event.previousVersionId && isIsoInstant(event.createdAt) &&
+        !proposalAlreadyConsumed &&
+        ((event.kind === 'activate' && proposal !== undefined && proposal !== null &&
+          proposal.proposedVersionId === event.activatedVersionId &&
+          proposal.baseVersionId === event.previousVersionId) ||
+         (event.kind === 'rollback' && event.proposalId === null &&
+          previouslyActive.has(event.activatedVersionId)));
+      if (!linkageValid) {
+        problems.push(`${prefix}.activationEvents[${eventIndex}] has invalid transition or ownership`);
+      }
+      if (typeof event.id === 'string') globalEventIds.add(event.id);
+      if (typeof event.proposalId === 'string') consumedProposalIds.add(event.proposalId);
+      if (typeof event.activatedVersionId === 'string') {
+        previouslyActive.add(event.activatedVersionId);
+        activeVersionId = event.activatedVersionId;
+      }
+    }
+    if (activeVersionId !== workflow.activeVersionId) {
+      problems.push(`${prefix}.activationEvents do not resolve to the active version`);
+    }
+    const finalActivationEventId = events.at(-1)?.id ?? null;
+    if (!((finalActivationEventId === null && workflow.activeActivationEventId === null) ||
+          sameUuid(finalActivationEventId, workflow.activeActivationEventId))) {
+      problems.push(`${prefix}.activationEvents do not resolve to the active activation event`);
+    }
+
+    const rawProjection = bundle.watchProjection;
+    const knownWatchProvider = workflow.providerKey === SIGNAL_DIGEST_V1_PROVIDER_KEY;
+    if (rawProjection === null) {
+      if (knownWatchProvider && workflow.activeVersionId !== null) {
+        problems.push(`${prefix}.watchProjection is required for the active signal digest`);
+      }
+      for (const [versionIndex, version] of versions.entries()) {
+        const integrity = versionIntegrityById.get(version.id);
+        if (!integrity?.portableHashValid || !integrity.providerCompileValid) {
+          problems.push(`${prefix}.versions[${versionIndex}] has invalid content, identity, or ownership`);
+        }
+      }
+      continue;
+    }
+    const projection = rawProjection as unknown as WorkflowWatchProjectionBackupRecord;
+    const pinnedVersion = typeof projection.workflowVersionId === 'string'
+      ? versionById.get(projection.workflowVersionId)
+      : undefined;
+    const activeVersion = workflow.activeVersionId === null ? undefined
+      : versionById.get(workflow.activeVersionId);
+    let projectionMatchesCompiledVersion = false;
+    if (knownWatchProvider && activeVersion
+        && activeVersion.providerSchemaVersion === SIGNAL_DIGEST_V1_SCHEMA_VERSION) {
+      const compiled = compileSignalDigestV1(activeVersion.canonicalPayload);
+      projectionMatchesCompiledVersion = compiled.ok
+        && projection.providerKey === compiled.artifact.providerKey
+        && projection.providerSchemaVersion === compiled.artifact.providerSchemaVersion
+        && projection.contentHash === compiled.artifact.contentHash
+        && projection.projectionVersion === compiled.artifact.projectionVersion
+        && isWatchSnapshot(projection.snapshot)
+        && watchSnapshotsEqual(projection.snapshot, routineSnapshot(compiled.artifact.routineSpec));
+    }
+    const validStatus = projection.status === 'active' || projection.status === 'paused'
+      || projection.status === 'draft';
+    const validScheduleState = validStatus && (projection.status === 'active'
+      ? isIsoInstant(projection.nextRunAt)
+      : projection.nextRunAt === null);
+    const commonProjectionValid = uuid.test(projection.id) &&
+        sameUuid(projection.workflowId, workflow.id) &&
+        sameUuid(projection.userId, ownerId) && pinnedVersion !== undefined &&
+        projection.providerKey === pinnedVersion.providerKey &&
+        projection.providerSchemaVersion === pinnedVersion.providerSchemaVersion &&
+        projection.contentHash === pinnedVersion.contentHash &&
+        projection.projectionVersion === 1 &&
+        typeof projection.sourceText === 'string' && projection.sourceText.trim().length > 0 &&
+        Buffer.byteLength(projection.sourceText, 'utf8') <= 4_096;
+    const commonRuntimeValid = uuid.test(projection.scheduleRevision) &&
+        isIsoInstant(projection.createdAt) && isIsoInstant(projection.updatedAt) &&
+        (projection.lastRunAt === null || isIsoInstant(projection.lastRunAt)) &&
+        validScheduleState && isWatchSnapshot(projection.snapshot);
+    const isCompiledProjection = projection.kind === 'compiled_signal_digest.v1' &&
+      knownWatchProvider && workflow.activeVersionId !== null && activeVersion !== undefined &&
+      sameUuid(projection.workflowVersionId, workflow.activeVersionId) &&
+      projectionMatchesCompiledVersion;
+    const pinnedIntegrity = pinnedVersion
+      ? versionIntegrityById.get(pinnedVersion.id)
+      : undefined;
+    const isLegacyQuarantine = projection.kind === 'quarantined_watch_snapshot.v1' &&
+      workflow.providerKey === LEGACY_WATCH_QUARANTINE_PROVIDER_KEY &&
+      workflow.activeVersionId === null && projection.status !== 'active' &&
+      projection.nextRunAt === null && pinnedVersion?.providerKey === LEGACY_WATCH_QUARANTINE_PROVIDER_KEY &&
+      pinnedIntegrity?.portableHashValid === true;
+    const isSignalDigestQuarantine = projection.kind === 'quarantined_watch_snapshot.v1' &&
+      knownWatchProvider && workflow.activeVersionId !== null &&
+      sameUuid(projection.workflowVersionId, workflow.activeVersionId) &&
+      projection.status === 'paused' && projection.nextRunAt === null &&
+      projection.sourceText.startsWith('Projection quarantined: ') &&
+      isWatchSnapshot(projection.snapshot) &&
+      watchSnapshotsEqual(projection.snapshot, signalDigestQuarantineSnapshot()) &&
+      pinnedIntegrity !== undefined &&
+      (!pinnedIntegrity.portableHashValid || !pinnedIntegrity.providerCompileValid);
+    const quarantineVersionId = isLegacyQuarantine || isSignalDigestQuarantine
+      ? projection.workflowVersionId
+      : null;
+    if (!commonProjectionValid || !commonRuntimeValid ||
+        (!isCompiledProjection && !isLegacyQuarantine && !isSignalDigestQuarantine)) {
+      problems.push(`${prefix}.watchProjection has invalid state, identity, or version pin`);
+    }
+    for (const [versionIndex, version] of versions.entries()) {
+      const integrity = versionIntegrityById.get(version.id);
+      const explicitQuarantineException = quarantineVersionId !== null &&
+        sameUuid(version.id, quarantineVersionId) &&
+        (isSignalDigestQuarantine || (isLegacyQuarantine && integrity?.portableHashValid === true));
+      if ((!integrity?.portableHashValid || !integrity.providerCompileValid) &&
+          !explicitQuarantineException) {
+        problems.push(`${prefix}.versions[${versionIndex}] has invalid content, identity, or ownership`);
+      }
+    }
+  }
+  return problems;
+}
+
 /**
  * Minimal structural validation of a decoded payload before we trust it enough
  * to write to the DB. We do NOT trust the archive's contents — it may have been
@@ -413,8 +1150,12 @@ export function validateBackupData(value: unknown): string[] {
       if (bundle.executionPlans !== undefined && !Array.isArray(bundle.executionPlans)) {
         problems.push(`decisions[${index}].executionPlans is not an array`);
       }
-      if (data.schemaVersion !== BACKUP_SCHEMA_VERSION && bundle.executionPlans !== undefined) {
-        problems.push(`decisions[${index}].executionPlans requires schema version ${BACKUP_SCHEMA_VERSION}`);
+      const carriesExecutionMetadata = data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+        data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION;
+      if (!carriesExecutionMetadata && bundle.executionPlans !== undefined) {
+        problems.push(
+          `decisions[${index}].executionPlans requires schema version ${EXECUTION_BACKUP_SCHEMA_VERSION} or later`,
+        );
       }
       const plans = Array.isArray(bundle.executionPlans) ? bundle.executionPlans : [];
       const planIds = new Set(plans.map((plan) => plan && typeof plan === 'object' ? plan.id : undefined));
@@ -437,7 +1178,7 @@ export function validateBackupData(value: unknown): string[] {
           !Array.isArray(plan.steps) || plan.steps.length !== 0 ||
           (plan.action_id !== null && !candidateIds.has(plan.action_id))) ||
           planIds.size !== plans.length ||
-          (data.schemaVersion === BACKUP_SCHEMA_VERSION &&
+          (carriesExecutionMetadata &&
             bundle.outcome?.execution_plan_id && !planIds.has(bundle.outcome.execution_plan_id))) {
         problems.push(`decisions[${index}] has inconsistent execution linkage`);
       }
@@ -445,12 +1186,13 @@ export function validateBackupData(value: unknown): string[] {
           !uuid.test(bundle.outcome.id) || bundle.outcome.decision_id !== bundle.decision.id ||
           (bundle.outcome.selected_action_id !== null &&
             !candidateIds.has(bundle.outcome.selected_action_id)) ||
-          (data.schemaVersion === BACKUP_SCHEMA_VERSION &&
+          (carriesExecutionMetadata &&
             bundle.outcome.execution_plan_id !== null &&
             !planIds.has(bundle.outcome.execution_plan_id)))) {
         problems.push(`decisions[${index}] has inconsistent outcome linkage`);
       }
       if ((data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+          data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
           data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION ||
           data.schemaVersion === RECEIPT_BACKUP_SCHEMA_VERSION) &&
           bundle.inferenceReceipts === undefined) {
@@ -504,13 +1246,14 @@ export function validateBackupData(value: unknown): string[] {
         }
       }
       const carriesIngestState = data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+        data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
         data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION;
       if (carriesIngestState && bundle.ingestState === undefined) {
         problems.push(`decisions[${index}].ingestState is required by schema version ${data.schemaVersion}`);
       }
       if ((data.schemaVersion === LEGACY_BACKUP_SCHEMA_VERSION ||
           data.schemaVersion === RECEIPT_BACKUP_SCHEMA_VERSION) && bundle.ingestState !== undefined) {
-        problems.push(`decisions[${index}].ingestState requires schema version ${BACKUP_SCHEMA_VERSION}`);
+        problems.push(`decisions[${index}].ingestState requires schema version ${INGEST_BACKUP_SCHEMA_VERSION} or later`);
       }
       if (bundle.ingestState !== undefined && bundle.ingestState !== null) {
         const state = bundle.ingestState;
@@ -531,7 +1274,7 @@ export function validateBackupData(value: unknown): string[] {
               (typeof state.sourceExecutionPlanId !== 'string' ||
                 !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
                   .test(state.sourceExecutionPlanId) ||
-                (data.schemaVersion === BACKUP_SCHEMA_VERSION &&
+                (carriesExecutionMetadata &&
                   !planIds.has(state.sourceExecutionPlanId)))) ||
             (state.receiptCaptureComplete &&
               (typeof state.receiptExplanationId !== 'string' ||
@@ -541,10 +1284,12 @@ export function validateBackupData(value: unknown): string[] {
           problems.push(`decisions[${index}].ingestState has inconsistent linkage or classification`);
         }
       }
-      if (data.schemaVersion !== BACKUP_SCHEMA_VERSION && bundle.joinedReceipt !== undefined) {
-        problems.push(`decisions[${index}].joinedReceipt requires schema version ${BACKUP_SCHEMA_VERSION}`);
+      if (!carriesExecutionMetadata && bundle.joinedReceipt !== undefined) {
+        problems.push(
+          `decisions[${index}].joinedReceipt requires schema version ${EXECUTION_BACKUP_SCHEMA_VERSION} or later`,
+        );
       }
-      if (data.schemaVersion === BACKUP_SCHEMA_VERSION && bundle.joinedReceipt !== undefined) {
+      if (carriesExecutionMetadata && bundle.joinedReceipt !== undefined) {
         if (!bundle.joinedReceipt || typeof bundle.joinedReceipt !== 'object' ||
             !bundle.joinedReceipt.root || typeof bundle.joinedReceipt.root !== 'object' ||
             !Array.isArray(bundle.joinedReceipt.revisions) ||
@@ -790,6 +1535,7 @@ export function validateBackupData(value: unknown): string[] {
   if (!Array.isArray(data.twinProfileVersions)) {
     problems.push('twinProfileVersions is not an array');
   }
+  problems.push(...validateWorkflowBackups(data, data.user?.id, uuid));
   return problems;
 }
 
@@ -816,13 +1562,14 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
   const data = value as BackupData;
 
   if (data.schemaVersion !== BACKUP_SCHEMA_VERSION &&
+      data.schemaVersion !== EXECUTION_BACKUP_SCHEMA_VERSION &&
       data.schemaVersion !== INGEST_BACKUP_SCHEMA_VERSION &&
       data.schemaVersion !== RECEIPT_BACKUP_SCHEMA_VERSION &&
       data.schemaVersion !== LEGACY_BACKUP_SCHEMA_VERSION) {
     return {
       success: false,
       reason: 'unsupported_schema',
-      message: `backup schema version ${data.schemaVersion} is not supported by this build (expected ${LEGACY_BACKUP_SCHEMA_VERSION}, ${RECEIPT_BACKUP_SCHEMA_VERSION}, ${INGEST_BACKUP_SCHEMA_VERSION}, or ${BACKUP_SCHEMA_VERSION})`,
+      message: `backup schema version ${data.schemaVersion} is not supported by this build (expected ${LEGACY_BACKUP_SCHEMA_VERSION}, ${RECEIPT_BACKUP_SCHEMA_VERSION}, ${INGEST_BACKUP_SCHEMA_VERSION}, ${EXECUTION_BACKUP_SCHEMA_VERSION}, or ${BACKUP_SCHEMA_VERSION})`,
     };
   }
 
@@ -838,8 +1585,10 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         if (existing.rows[0]) return false;
     const u = data.user;
     await client.query(
-      `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, ironclaw_channel, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      `INSERT INTO users (
+         id, email, name, trust_tier, autonomy_settings, ironclaw_channel,
+         execution_authority_revision, language, timezone, created_at, updated_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::UUID, gen_random_uuid()), $8, $9, $10, $11)`,
       [
         u.id,
         u.email,
@@ -847,11 +1596,159 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
         u.trust_tier,
         JSON.stringify(u.autonomy_settings ?? {}),
         u.ironclaw_channel ?? null,
+        u.execution_authority_revision ?? null,
+        u.language ?? null,
+        u.timezone ?? null,
         u.created_at,
         u.updated_at,
       ],
     );
     bump('users');
+
+    for (const bundle of data.workflows ?? []) {
+      const workflow = bundle.workflow;
+      await client.query(
+        `INSERT INTO workflows
+           (id, user_id, provider_key, active_version_id, created_at, updated_at)
+         VALUES ($1,$2,$3,NULL,$4,$5)`,
+        [
+          workflow.id,
+          workflow.userId,
+          workflow.providerKey,
+          workflow.createdAt,
+          workflow.updatedAt,
+        ],
+      );
+      bump('workflows');
+
+      for (const version of [...bundle.versions].sort(
+        (left, right) => left.versionNumber - right.versionNumber,
+      )) {
+        await client.query(
+          `INSERT INTO workflow_versions (
+             id, workflow_id, user_id, version_number, provider_key,
+             provider_schema_version, canonical_payload, content_hash,
+             parent_version_id, authoring_metadata, inference_metadata, created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7::JSONB,$8,$9,$10::JSONB,$11::JSONB,$12)`,
+          [
+            version.id,
+            version.workflowId,
+            version.userId,
+            version.versionNumber,
+            version.providerKey,
+            version.providerSchemaVersion,
+            JSON.stringify(version.canonicalPayload),
+            version.contentHash,
+            version.parentVersionId,
+            JSON.stringify(version.authoring),
+            version.inference === null ? null : JSON.stringify(version.inference),
+            version.createdAt,
+          ],
+        );
+        bump('workflow_versions');
+      }
+
+      for (const proposal of bundle.proposals) {
+        await client.query(
+          `INSERT INTO workflow_proposals (
+             id, workflow_id, user_id, base_version_id,
+             proposed_version_id, kind, created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+          [
+            proposal.id,
+            proposal.workflowId,
+            proposal.userId,
+            proposal.baseVersionId,
+            proposal.proposedVersionId,
+            proposal.kind,
+            proposal.createdAt,
+          ],
+        );
+        bump('workflow_proposals');
+      }
+
+      const orderedActivationEvents = [...bundle.activationEvents].sort(
+        (left, right) => left.eventSequence - right.eventSequence,
+      );
+      for (const event of orderedActivationEvents) {
+        await client.query(
+          `INSERT INTO workflow_activation_events (
+             id, workflow_id, user_id, previous_version_id,
+             activated_version_id, proposal_id, kind, event_sequence, created_at
+           ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+          [
+            event.id,
+            event.workflowId,
+            event.userId,
+            event.previousVersionId,
+            event.activatedVersionId,
+            event.proposalId,
+            event.kind,
+            event.eventSequence,
+            event.createdAt,
+          ],
+        );
+        bump('workflow_activation_events');
+      }
+
+      if (workflow.activeVersionId !== null) {
+        const activeActivationEventId = workflow.activeActivationEventId;
+        if (!activeActivationEventId) {
+          throw new Error(`workflow ${workflow.id} active activation event is missing during restore`);
+        }
+        const activated = await client.query(
+          `UPDATE workflows
+              SET active_version_id = $3, active_activation_event_id = $4
+            WHERE id = $1 AND user_id = $2
+              AND active_version_id IS NULL AND active_activation_event_id IS NULL`,
+          [workflow.id, workflow.userId, workflow.activeVersionId, activeActivationEventId],
+        );
+        if (activated.rowCount !== 1) {
+          throw new Error(`workflow ${workflow.id} active version could not be linked during restore`);
+        }
+      }
+
+      const projection = bundle.watchProjection;
+      if (projection !== null) {
+        const spec = projection.snapshot;
+        await client.query(
+          `INSERT INTO watches (
+             id, user_id, name, source_text, cadence, hour_of_day, day_of_week,
+             filter, action, status, created_at, updated_at, last_run_at,
+             next_run_at, schedule_revision, workflow_id, workflow_version_id,
+             workflow_provider_key, workflow_provider_schema_version,
+             content_hash, projection_version
+           ) VALUES (
+             $1,$2,$3,$4,$5,$6,$7,$8::JSONB,$9,$10,$11,$12,$13,$14,$15,$16,$17,
+             $18,$19,$20,$21
+           )`,
+          [
+            projection.id,
+            projection.userId,
+            spec.name,
+            projection.sourceText,
+            spec.cadence,
+            spec.hourOfDay,
+            spec.dayOfWeek,
+            JSON.stringify(spec.filter),
+            spec.action,
+            projection.status,
+            projection.createdAt,
+            projection.updatedAt,
+            projection.lastRunAt,
+            projection.nextRunAt,
+            projection.scheduleRevision,
+            projection.workflowId,
+            projection.workflowVersionId,
+            projection.providerKey,
+            projection.providerSchemaVersion,
+            projection.contentHash,
+            projection.projectionVersion,
+          ],
+        );
+        bump('watches');
+      }
+    }
 
     if (data.twinProfile) {
       const p = data.twinProfile;
@@ -1055,7 +1952,8 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
             o.confidence,
             // V4 carries only sanitized plan metadata. Older archives retain
             // replay classification in the ingest guard without a dangling FK.
-            data.schemaVersion === BACKUP_SCHEMA_VERSION
+            (data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+              data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION)
               ? o.execution_plan_id ?? null
               : null,
             o.created_at,
@@ -1065,6 +1963,7 @@ export async function restoreBackup(value: unknown): Promise<RestoreBackupResult
       }
       const state = bundle.ingestState;
       const carriesIngestState = data.schemaVersion === BACKUP_SCHEMA_VERSION ||
+        data.schemaVersion === EXECUTION_BACKUP_SCHEMA_VERSION ||
         data.schemaVersion === INGEST_BACKUP_SCHEMA_VERSION;
       if (carriesIngestState &&
           state?.receiptCaptureComplete && state.receiptExplanationId) {

@@ -1,6 +1,7 @@
 import {
   createEmbeddedTextPort,
   type EmbeddedTextPort,
+  type EmbeddedTextUnavailableReason,
 } from '@skytwin/embedded-llm';
 import type { ChatMessage, GenerateOptions } from '../types.js';
 import { toMessages } from '../messages.js';
@@ -14,6 +15,24 @@ import { toMessages } from '../messages.js';
  */
 const PORT_CACHE = new Map<string, Promise<EmbeddedTextPort>>();
 
+export type EmbeddedProviderReadiness =
+  | {
+    state: 'ready';
+    modelName: string | null;
+    artifactSha256: string | null;
+    runtimeVersion: string | null;
+  }
+  | {
+    state: 'artifact_unavailable' | 'runtime_unavailable';
+    reason: EmbeddedTextUnavailableReason | 'embedded_port_unavailable';
+  };
+
+function explicitModelPath(model: string | undefined): string | undefined {
+  return model && model !== '' && model !== 'auto' && model !== 'default' && model !== 'managed'
+    ? model
+    : undefined;
+}
+
 function getPort(modelPath: string | undefined): Promise<EmbeddedTextPort> {
   const key = modelPath ?? '__auto__';
   let cached = PORT_CACHE.get(key);
@@ -22,6 +41,32 @@ function getPort(modelPath: string | undefined): Promise<EmbeddedTextPort> {
     PORT_CACHE.set(key, cached);
   }
   return cached;
+}
+
+/** Reuse the generation port cache so readiness never re-hashes a managed artifact. */
+export async function probeEmbeddedProviderReadiness(
+  model: string | undefined,
+): Promise<EmbeddedProviderReadiness> {
+  const modelPath = explicitModelPath(model);
+  const port = await getPort(modelPath);
+  if (port.capabilities.available) {
+    return {
+      state: 'ready',
+      modelName: port.capabilities.modelName,
+      artifactSha256: port.capabilities.artifactSha256 ?? null,
+      runtimeVersion: port.capabilities.runtimeVersion ?? null,
+    };
+  }
+  // Missing prerequisites can be installed while the API stays running.
+  // Do not let a cached Null port make the user-facing Retry button stale.
+  PORT_CACHE.delete(modelPath ?? '__auto__');
+  const reason = port.capabilities.unavailableReason ?? 'embedded_port_unavailable';
+  return {
+    state: reason === 'artifact_missing' || reason === 'artifact_invalid'
+      ? 'artifact_unavailable'
+      : 'runtime_unavailable',
+    reason,
+  };
 }
 
 /**
@@ -72,8 +117,7 @@ export async function generate(
   prompt: string | ChatMessage[],
   options: GenerateOptions & { baseUrl?: string } = {},
 ): Promise<string> {
-  const modelPath =
-    model && model !== '' && model !== 'auto' && model !== 'default' ? model : undefined;
+  const modelPath = explicitModelPath(model);
   const port = await getPort(modelPath);
   const text = await port.generate(buildPrompt(prompt, options), {
     maxTokens: options.maxTokens,

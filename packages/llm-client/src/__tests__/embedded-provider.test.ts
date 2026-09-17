@@ -8,6 +8,7 @@ import { createEmbeddedTextPort } from '@skytwin/embedded-llm';
 import {
   clearEmbeddedPortCache,
   generate as embeddedGenerate,
+  probeEmbeddedProviderReadiness,
 } from '../providers/embedded.js';
 
 const createPortMock = vi.mocked(createEmbeddedTextPort);
@@ -17,7 +18,13 @@ beforeEach(() => {
   generateMock.mockReset();
   createPortMock.mockReset();
   createPortMock.mockResolvedValue({
-    capabilities: { available: true, modelName: 'fake.gguf', contextWindow: 4096 },
+    capabilities: {
+      available: true,
+      modelName: 'fake.gguf',
+      contextWindow: 4096,
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+    },
     generate: generateMock,
   });
   clearEmbeddedPortCache();
@@ -89,6 +96,69 @@ describe('embedded provider', () => {
     generateMock.mockResolvedValue('ok');
     await embeddedGenerate('', 'auto', 'hi');
     expect(createPortMock).toHaveBeenCalledWith({});
+  });
+
+  it('treats the persisted managed sentinel as automatic discovery', async () => {
+    await expect(probeEmbeddedProviderReadiness('managed')).resolves.toEqual({
+      state: 'ready',
+      modelName: 'fake.gguf',
+      artifactSha256: 'a'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5000',
+    });
+    expect(createPortMock).toHaveBeenCalledWith({});
+  });
+
+  it.each([
+    ['artifact_missing', 'artifact_unavailable'],
+    ['artifact_invalid', 'artifact_unavailable'],
+    ['runtime_binary_missing', 'runtime_unavailable'],
+    ['runtime_incompatible', 'runtime_unavailable'],
+  ] as const)('preserves %s as %s readiness', async (reason, state) => {
+    createPortMock.mockResolvedValue({
+      capabilities: {
+        available: false,
+        modelName: null,
+        contextWindow: null,
+        unavailableReason: reason,
+      },
+      generate: generateMock,
+    });
+
+    await expect(probeEmbeddedProviderReadiness('auto')).resolves.toEqual({ state, reason });
+  });
+
+  it('re-probes after an unavailable result so runtime installation is visible', async () => {
+    createPortMock
+      .mockResolvedValueOnce({
+        capabilities: {
+          available: false,
+          modelName: null,
+          contextWindow: null,
+          unavailableReason: 'runtime_binary_missing',
+        },
+        generate: generateMock,
+      })
+      .mockResolvedValueOnce({
+        capabilities: {
+          available: true,
+          modelName: 'ready.gguf',
+          contextWindow: 4096,
+          artifactSha256: 'b'.repeat(64),
+          runtimeVersion: 'llama.cpp-b5001',
+        },
+        generate: generateMock,
+      });
+
+    await expect(probeEmbeddedProviderReadiness('auto')).resolves.toMatchObject({
+      state: 'runtime_unavailable',
+    });
+    await expect(probeEmbeddedProviderReadiness('auto')).resolves.toEqual({
+      state: 'ready',
+      modelName: 'ready.gguf',
+      artifactSha256: 'b'.repeat(64),
+      runtimeVersion: 'llama.cpp-b5001',
+    });
+    expect(createPortMock).toHaveBeenCalledTimes(2);
   });
 
   it('caches the port across calls with the same model key', async () => {

@@ -12,6 +12,7 @@ import type {
   EmbeddedTextPort,
 } from './text-port.js';
 import { computeFileHandleSha256 } from './managed-model-store.js';
+import { detectLlamaCppBuild } from './runtime-compatibility.js';
 
 export interface LlamaCppBackendOptions {
   binaryPath: string;
@@ -20,6 +21,7 @@ export interface LlamaCppBackendOptions {
   timeoutMs?: number;
   threads?: number;
   verifiedModel?: { exactBytes: number; sha256: string };
+  runtimeBuild?: number;
   spawnProcess?: typeof spawn;
 }
 
@@ -33,6 +35,7 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
   private readonly timeoutMs: number;
   private readonly threads: number | null;
   private readonly verifiedModel: LlamaCppBackendOptions['verifiedModel'];
+  private readonly runtimeBuild: number | null;
   private readonly spawnProcess: typeof spawn;
 
   constructor(opts: LlamaCppBackendOptions) {
@@ -41,11 +44,14 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.threads = opts.threads ?? null;
     this.verifiedModel = opts.verifiedModel;
+    this.runtimeBuild = opts.runtimeBuild ?? null;
     this.spawnProcess = opts.spawnProcess ?? spawn;
     this.capabilities = {
       available: true,
       modelName: basename(opts.modelPath),
       contextWindow: opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+      artifactSha256: opts.verifiedModel?.sha256 ?? null,
+      runtimeVersion: this.runtimeBuild === null ? null : `llama.cpp-b${this.runtimeBuild}`,
     };
   }
 
@@ -53,6 +59,12 @@ export class LlamaCppTextBackend implements EmbeddedTextPort {
     prompt: string,
     opts: { maxTokens?: number; temperature?: number } = {},
   ): Promise<string> {
+    if (
+      this.runtimeBuild !== null &&
+      detectLlamaCppBuild(this.binaryPath) !== this.runtimeBuild
+    ) {
+      throw new Error('llama.cpp runtime build changed after readiness was established');
+    }
     const verifiedIdentity = this.verifiedModel
       ? await verifyModelForLaunch(this.modelPath, this.verifiedModel)
       : null;

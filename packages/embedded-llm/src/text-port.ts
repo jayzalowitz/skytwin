@@ -7,7 +7,19 @@ export interface EmbeddedTextCapabilities {
   readonly available: boolean;
   readonly modelName: string | null;
   readonly contextWindow: number | null;
+  /** Digest verified again at the runtime launch boundary. */
+  readonly artifactSha256?: string | null;
+  /** Exact runtime build observed when the port was constructed. */
+  readonly runtimeVersion?: string | null;
+  readonly unavailableReason?: EmbeddedTextUnavailableReason;
 }
+
+/** Machine-readable reason an embedded text port could not be constructed. */
+export type EmbeddedTextUnavailableReason =
+  | 'artifact_missing'
+  | 'artifact_invalid'
+  | 'runtime_binary_missing'
+  | 'runtime_incompatible';
 
 /**
  * Port interface for embedded text generation (llama.cpp).
@@ -29,11 +41,18 @@ export interface EmbeddedTextPort {
  * Every method call throws a typed NotAvailableError.
  */
 export class NullEmbeddedTextPort implements EmbeddedTextPort {
-  readonly capabilities: EmbeddedTextCapabilities = {
-    available: false,
-    modelName: null,
-    contextWindow: null,
-  };
+  readonly capabilities: EmbeddedTextCapabilities;
+
+  constructor(reason?: EmbeddedTextUnavailableReason) {
+    this.capabilities = {
+      available: false,
+      modelName: null,
+      contextWindow: null,
+      artifactSha256: null,
+      runtimeVersion: null,
+      ...(reason === undefined ? {} : { unavailableReason: reason }),
+    };
+  }
 
   async generate(
     _prompt: string,

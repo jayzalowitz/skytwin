@@ -85,39 +85,26 @@ describe.runIf(webAvailable)('web dashboard proxy (desktop embeds this)', () => 
 });
 
 describe.runIf(serverAvailable)('session management (QR pairing flow)', () => {
-  it('POST /api/sessions without userId returns 400', async () => {
+  it('POST /api/sessions without a real session returns 401 before validating input', async () => {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
     });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(401);
     const body = await res.json() as Record<string, string>;
-    expect(body.error).toContain('userId');
+    expect(body.error).toContain('Authentication required');
   });
 
-  it('POST /api/sessions creates session and returns QR URL (may fail without DB)', async () => {
+  it('POST /api/sessions does not mint a pairing token without a real session', async () => {
     const res = await fetch(`${API_BASE}/api/sessions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ userId: 'test-user-1', deviceName: 'Test Phone' }),
     });
-    // This will 500 without CockroachDB — but we verify the request format is accepted
-    if (res.ok) {
-      const body = await res.json() as Record<string, unknown>;
-      expect(body).toHaveProperty('sessionId');
-      expect(body).toHaveProperty('token');
-      expect(body).toHaveProperty('qrUrl');
-      expect(body).toHaveProperty('expiresAt');
-      // QR URL format validation
-      const qrUrl = body.qrUrl as string;
-      expect(qrUrl).toContain('skytwin.local');
-      expect(qrUrl).toContain('token=');
-      expect(qrUrl).toContain('userId=');
-    } else {
-      // Expected to fail without DB — verify it's a server error not a client error
-      expect(res.status).toBeGreaterThanOrEqual(500);
-    }
+    expect(res.status).toBe(401);
+    const body = await res.json() as Record<string, string>;
+    expect(body.error).toContain('Authentication required');
   });
 });
 

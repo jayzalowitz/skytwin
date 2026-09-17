@@ -9,6 +9,10 @@ import {
 } from './storage-keys.js';
 import {
   endSampleSimulation,
+  fetchAdaptiveWorkflowReadiness,
+  createAdaptiveSignalDigestDraft,
+  activateAdaptiveWorkflow,
+  rollbackAdaptiveWorkflow,
   fetchJSON,
   resolveAssistantRequestIdentity,
   shouldRetireAssistantRequestIdentity,
@@ -44,6 +48,61 @@ describe('api client', () => {
       removeItem: vi.fn((key) => sampleValues.delete(key)),
     });
     vi.restoreAllMocks();
+  });
+
+  it('recovers typed non-ready model state from the readiness endpoint', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      readiness: {
+        state: 'runtime_unavailable',
+        reason: 'local runtime unavailable',
+        retryable: true,
+      },
+    }), {
+      status: 503,
+      headers: { 'Content-Type': 'application/json' },
+    })));
+
+    await expect(fetchAdaptiveWorkflowReadiness('user-1')).resolves.toEqual({
+      readiness: expect.objectContaining({ state: 'runtime_unavailable', retryable: true }),
+    });
+  });
+
+  it('sends bounded authoring and explicit activation identities to adaptive workflow routes', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () =>
+      new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await createAdaptiveSignalDigestDraft('user one', 'Every morning summarize invoices');
+    await activateAdaptiveWorkflow('user one', 'workflow one', {
+      versionId: 'version-1',
+      proposalId: 'proposal-1',
+      expectedActiveVersionId: null,
+    });
+    await rollbackAdaptiveWorkflow('user one', 'workflow one', {
+      versionId: 'version-0',
+      expectedActiveVersionId: 'version-1',
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/adaptive-workflows/user%20one/signal-digest-drafts');
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      description: 'Every morning summarize invoices',
+      allowClarification: true,
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      '/api/adaptive-workflows/user%20one/workflow%20one/activate',
+    );
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+      versionId: 'version-1', proposalId: 'proposal-1', expectedActiveVersionId: null,
+    });
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      '/api/adaptive-workflows/user%20one/workflow%20one/rollback',
+    );
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      versionId: 'version-0', expectedActiveVersionId: 'version-1',
+    });
   });
 
   it('treats 204 No Content as a successful empty response', () => {

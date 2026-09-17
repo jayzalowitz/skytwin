@@ -54,6 +54,7 @@ import { createCrisisModesRouter } from './routes/crisis-modes.js';
 import { createConnectorsRouter } from './routes/connectors.js';
 import { createAdminDlqRouter } from './routes/admin-dlq.js';
 import { createEmbeddedLlmRouter } from './routes/embedded-llm.js';
+import { createAdaptiveWorkflowsRouter } from './routes/adaptive-workflows.js';
 import {
   createPromotionOffersRouter,
   startPromotionOffersSweeper,
@@ -68,6 +69,7 @@ import {
   matchesDemoFixtureIncarnation,
 } from './auth/demo-session.js';
 import { MetricsRollupService, sharedMetricsCollector } from '@skytwin/observability';
+import { startLegacyWatchWorkflowReconciliation } from './legacy-watch-workflow-reconciliation.js';
 
 const config = loadConfig();
 
@@ -367,6 +369,7 @@ app.use('/api/search', sessionAuth, requireOwnership, requestContext, createSear
 app.use('/api/credentials', sessionAuth, requireOwnership, requestContext, createCredentialsRouter());
 app.use('/api/routines', sessionAuth, requireOwnership, requestContext, createRoutinesRouter());
 app.use('/api/watches', sessionAuth, requireOwnership, requestContext, createWatchesRouter());
+app.use('/api/adaptive-workflows', sessionAuth, requireOwnership, requestContext, createAdaptiveWorkflowsRouter());
 app.use(
   '/api/v1/demo/simulation',
   createDemoSimulationRouter(
@@ -438,6 +441,7 @@ app.use(
 // and `listen()`.
 const port = config.apiPort;
 let server: ReturnType<typeof app.listen>;
+let stopLegacyWatchWorkflowReconciliation: (() => void) | null = null;
 
 const STARTUP_HANG_MS = 30_000;
 const startupHangTimer = setTimeout(() => {
@@ -494,6 +498,11 @@ startupHangTimer.unref();
     // already-connected tabs. The sweeper's interval is unref'd so
     // the process can exit cleanly.
     startPromotionOffersSweeper();
+    // The database is already healthy here. Reconcile in bounded background
+    // batches so a large legacy population never delays the listening socket.
+    stopLegacyWatchWorkflowReconciliation = startLegacyWatchWorkflowReconciliation({
+      logger: log,
+    });
   });
 })();
 
@@ -530,6 +539,7 @@ function handleShutdown(signal: string): void {
   log.info(`Received ${signal}, shutting down gracefully...`);
   stopMdnsAdvertisement();
   stopPromotionOffersSweeper();
+  stopLegacyWatchWorkflowReconciliation?.();
   if (metricsRollupTimer) clearInterval(metricsRollupTimer);
   // Force exit after 25s if connections don't drain (e.g. SSE keep-alive).
   // Set below K8s default terminationGracePeriodSeconds (30s) so we clean up

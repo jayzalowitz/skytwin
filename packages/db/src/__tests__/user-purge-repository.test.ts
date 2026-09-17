@@ -80,6 +80,10 @@ describe('userPurgeRepository.purgeUser', () => {
       entity_codes: 2,
       knowledge_triples: 0,
       preference_history: 2,
+      workflow_activation_events: 3,
+      workflow_proposals: 2,
+      workflow_versions: 4,
+      workflows: 1,
       users: 1,
     });
 
@@ -91,7 +95,13 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(result.counts['users']).toBe(1);
     // Total sums every table's count (including the user row itself).
     expect(result.counts['preference_history']).toBe(2);
-    expect(result.total).toBe(1 + 3 + 5 + 2 + 7 + 4 + 11 + 1 + 2 + 0 + 2 + 1);
+    expect(result.counts['workflow_activation_events']).toBe(3);
+    expect(result.counts['workflow_proposals']).toBe(2);
+    expect(result.counts['workflow_versions']).toBe(4);
+    expect(result.counts['workflows']).toBe(1);
+    expect(result.total).toBe(
+      1 + 3 + 5 + 2 + 7 + 4 + 11 + 1 + 2 + 0 + 2 + 3 + 2 + 4 + 1 + 1
+    );
   });
 
   it('returns userExisted=false when the final DELETE FROM users hit zero rows', async () => {
@@ -146,6 +156,24 @@ describe('userPurgeRepository.purgeUser', () => {
     expect(indexOf('DELETE FROM preference_history')).toBeLessThan(
       indexOf('DELETE FROM users'),
     );
+    expect(indexOf('DELETE FROM workflow_activation_events')).toBeLessThan(
+      indexOf('DELETE FROM workflow_versions'),
+    );
+    expect(indexOf('DELETE FROM workflow_proposals')).toBeLessThan(
+      indexOf('DELETE FROM workflow_versions'),
+    );
+    expect(indexOf('DELETE FROM workflow_versions')).toBeLessThan(
+      indexOf('DELETE FROM workflows'),
+    );
+    expect(indexOf('DELETE FROM workflows')).toBeLessThan(indexOf('DELETE FROM users'));
+    const pointerClear = mockClient.query.mock.calls.findIndex((call) => {
+      const sql = String(call[0]);
+      return sql.includes('UPDATE workflows') && sql.includes('active_version_id = NULL');
+    });
+    const versionDelete = mockClient.query.mock.calls.findIndex((call) =>
+      String(call[0]).includes('DELETE FROM workflow_versions'));
+    expect(pointerClear).toBeGreaterThan(0);
+    expect(pointerClear).toBeLessThan(versionDelete);
   });
 
   it('wraps the entire chain in a BEGIN/COMMIT transaction', async () => {

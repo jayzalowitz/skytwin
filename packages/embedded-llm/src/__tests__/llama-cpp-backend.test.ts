@@ -8,9 +8,14 @@ vi.mock('node:fs', async (importOriginal) => ({
   readdirSync: vi.fn(),
   statSync: vi.fn(),
 }));
+vi.mock('../runtime-compatibility.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../runtime-compatibility.js')>()),
+  detectLlamaCppBuild: vi.fn(),
+}));
 
 import { spawn } from 'node:child_process';
 import { existsSync, readdirSync, statSync } from 'node:fs';
+import { detectLlamaCppBuild } from '../runtime-compatibility.js';
 
 import {
   findFirstGgufModel,
@@ -21,6 +26,7 @@ const mockSpawn = vi.mocked(spawn);
 const mockExistsSync = vi.mocked(existsSync);
 const mockReaddirSync = vi.mocked(readdirSync);
 const mockStatSync = vi.mocked(statSync);
+const mockRuntimeBuild = vi.mocked(detectLlamaCppBuild);
 
 interface FakeChild extends EventEmitter {
   stdout: EventEmitter;
@@ -38,6 +44,7 @@ function makeChild(): FakeChild {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockRuntimeBuild.mockReturnValue(5_000);
 });
 
 describe('LlamaCppTextBackend', () => {
@@ -58,6 +65,18 @@ describe('LlamaCppTextBackend', () => {
       contextWindow: 32_768,
     });
     expect(port.capabilities.contextWindow).toBe(32_768);
+  });
+
+  it('fails closed when the runtime build changes after readiness', async () => {
+    mockRuntimeBuild.mockReturnValue(5_001);
+    const port = new LlamaCppTextBackend({
+      binaryPath: '/usr/bin/llama-cli',
+      modelPath: '/models/qwen.gguf',
+      runtimeBuild: 5_000,
+    });
+
+    await expect(port.generate('hello')).rejects.toThrow(/runtime build changed/);
+    expect(mockSpawn).not.toHaveBeenCalled();
   });
 
   it('passes prompt and options to llama-cli and returns stdout', async () => {

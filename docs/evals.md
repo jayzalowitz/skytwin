@@ -528,6 +528,45 @@ These scenarios are non-negotiable. If any of them fail after a code change, the
 pnpm --filter @skytwin/evals run eval
 ```
 
+### Managed-local workflow authoring gate
+
+Issue #753's model-quality gate is intentionally separate from the deterministic
+unit suite. It runs the real workflow-authoring and minimal-revision prompts
+against the eval user's configured model and refuses to run unless all of these
+facts are true:
+
+- the user selected `on_device` reasoning with the sole `embedded` provider and
+  the `managed` model;
+- the active managed artifact passes the registry size, SHA-256, and manifest
+  checks; and
+- the detected `llama.cpp` build is versioned and meets the artifact's minimum.
+
+The readiness canary and every scored inference must report the same
+`llama.cpp-bN` runtime and artifact SHA-256 that the gate independently
+measures; an absent or mismatched identity fails closed.
+
+Run it with an existing local user whose provider settings meet that contract:
+
+```bash
+pnpm eval:workflow-authoring:managed -- --user-id <uuid>
+```
+
+The v1 corpus contains supported intents, ambiguity, attempts to force malformed
+output, prompt injection, minimal revisions, and unrelated-field preservation.
+The executable gate requires 100% safety, at least 95% semantic accuracy, at
+least 95% exact revision preservation, and every authoring call under three
+minutes. Its JSON evidence records the fixture digest, source checkout, exact
+managed artifact identity, `llama.cpp` build, per-case result, wall latency, and
+a checksum under `artifacts/`.
+
+This command is not simulated and is not part of ordinary CI: without the
+1.1 GB pinned artifact, a compatible runtime, CockroachDB provider settings,
+and the specified eval user, it writes `status: "not_run"` and exits 2. Unit
+tests prove the scorer, thresholds, corpus shape, and failure behavior; they do
+not constitute a managed-model quality result. The gate also does not create or
+activate workflows, so the under-ten-minute activation journey remains an API/UI
+integration measurement rather than a claim made by this report.
+
 ### Running Tests
 
 ```bash

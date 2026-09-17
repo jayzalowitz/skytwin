@@ -6,6 +6,8 @@ import type { AIProviderName, ReasoningMode } from '@skytwin/shared-types';
 import {
   LlmClient,
   ProviderModePolicyError,
+  probeEmbeddedProviderReadiness,
+  type EmbeddedProviderReadiness,
   type LlmClientOptions,
   type ProviderEntry,
 } from '@skytwin/llm-client';
@@ -29,7 +31,12 @@ function toProvider(row: AIProviderSettingsRow): ProviderEntry | null {
 }
 
 export type UserLlmClientResolution =
-  | { state: 'ready'; client: LlmClient; mode: ReasoningMode }
+  | {
+    state: 'ready';
+    client: LlmClient;
+    mode: ReasoningMode;
+    localReadiness?: EmbeddedProviderReadiness;
+  }
   | {
     state: 'no_provider' | 'confirmation_required' | 'policy_blocked';
     client: null;
@@ -66,15 +73,23 @@ export async function resolveUserLlmClient(
     };
   }
   try {
+    const client = LlmClient.forReasoningMode(
+      setting.mode,
+      providers as ProviderEntry[],
+      userId,
+      options,
+    );
+    // Only make the embedded probe authoritative when it is the sole admitted
+    // provider. A configured Ollama fallback must still get its real canary.
+    const embeddedOnly = providers.length === 1 && providers[0]?.name === 'embedded';
+    const localReadiness = embeddedOnly
+      ? await probeEmbeddedProviderReadiness(providers[0]?.model)
+      : undefined;
     return {
       state: 'ready',
-      client: LlmClient.forReasoningMode(
-        setting.mode,
-        providers as ProviderEntry[],
-        userId,
-        options,
-      ),
+      client,
       mode: setting.mode,
+      ...(localReadiness === undefined ? {} : { localReadiness }),
     };
   } catch (error) {
     if (error instanceof ProviderModePolicyError) {

@@ -1,6 +1,13 @@
 import type { PoolClient } from 'pg';
 import { query } from '../connection.js';
 import type { SignalRow } from '../types.js';
+import { databaseSafeInteger } from './database-values.js';
+
+export interface BoundedSignalWindow {
+  records: SignalRow[];
+  totalCount: number;
+  truncated: boolean;
+}
 
 export interface CreateSignalInput {
   userId: string;
@@ -182,6 +189,31 @@ export const signalRepository = {
       [userId, windowStart, windowEnd],
     );
     return result.rows;
+  },
+
+  /** Bounded replay window with an exact pre-limit count from the same query snapshot. */
+  async listInWindowBounded(
+    userId: string,
+    windowStart: Date,
+    windowEnd: Date,
+    limit: number,
+  ): Promise<BoundedSignalWindow> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+      throw new TypeError('Signal window limit must be an integer between 1 and 10000');
+    }
+    const result = await query<SignalRow & { total_count: number | string }>(
+      `SELECT signals.*, count(*) OVER () AS total_count
+         FROM signals
+        WHERE user_id = $1 AND timestamp > $2 AND timestamp <= $3
+        ORDER BY timestamp DESC
+        LIMIT $4`,
+      [userId, windowStart, windowEnd, limit],
+    );
+    const totalCount = result.rows[0]
+      ? databaseSafeInteger(result.rows[0].total_count, 'signals.total_count')
+      : 0;
+    const records = result.rows.map(({ total_count: _totalCount, ...row }) => row);
+    return { records, totalCount, truncated: totalCount > records.length };
   },
 
   async getById(id: string): Promise<SignalRow | null> {

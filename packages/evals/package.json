@@ -18,7 +18,8 @@
     "test:vitest": "vitest run --exclude '**/dist/**'",
     "lint": "tsc --noEmit",
     "eval": "pnpm eval:adversarial",
-    "eval:adversarial": "tsx src/adversarial-cli.ts"
+    "eval:adversarial": "tsx src/adversarial-cli.ts",
+    "eval:workflow-authoring:managed": "tsx src/workflow-authoring-gate-cli.ts"
   },
   "dependencies": {
     "@skytwin/decision-engine": "workspace:*",

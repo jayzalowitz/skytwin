@@ -21,6 +21,11 @@ export {
 export type {
   BackupData,
   DecisionBundle,
+  WorkflowActivationBackupRecord,
+  WorkflowBackupBundle,
+  WorkflowBackupRecord,
+  WorkflowProposalBackupRecord,
+  WorkflowVersionBackupRecord,
   CollectBackupResult,
   RestoreBackupResult,
   RestoreSummary,
