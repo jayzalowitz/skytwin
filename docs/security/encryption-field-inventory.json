@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "status": "architecture-decision-only",
-  "asOfMigration": "094-account-signal-persistence.sql",
+  "asOfMigration": "098-watch-full-evidence-commitments.sql",
   "sourceSchema": [
     "packages/db/src/schemas/schema.sql",
     "packages/db/src/migrations/*.sql"
@@ -4172,6 +4172,7 @@
           "packages/db/src/repositories/gmail-archive-claim-repository.ts",
           "packages/db/src/repositories/gmail-archive-preparation-repository.ts",
           "packages/db/src/repositories/inference-receipt-repository.ts",
+          "packages/db/src/repositories/legacy-watch-workflow-reconciliation-repository.ts",
           "packages/db/src/repositories/mcp-server-changelog-repository.ts",
           "packages/db/src/repositories/oauth-repository.ts",
           "packages/db/src/repositories/policy-repository.ts",
@@ -4240,9 +4241,13 @@
           "classification": "deferred_source",
           "columns": [
             "action",
+            "evidence_snapshot",
             "last_error",
             "matched_refs",
             "summary",
+            "synthesis_metadata",
+            "workflow_inference_snapshot",
+            "workflow_payload_snapshot",
             "watch_spec"
           ],
           "currentProtection": "Plaintext in CockroachDB today.",
@@ -4256,10 +4261,14 @@
           "columns": [
             "attempt_count",
             "completed_at",
+            "content_hash",
+            "evidence_commitment_version",
+            "evidence_sha256",
             "failed_at",
             "id",
             "lease_expires_at",
             "matched_count",
+            "projection_version",
             "ran_at",
             "schedule_revision",
             "scheduled_for",
@@ -4267,7 +4276,11 @@
             "user_id",
             "watch_id",
             "window_end",
-            "window_start"
+            "window_start",
+            "workflow_id",
+            "workflow_provider_key",
+            "workflow_provider_schema_version",
+            "workflow_version_id"
           ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
@@ -4292,11 +4305,14 @@
       "table": "watches",
       "owner": "user",
       "boundary": {
-        "current": "repository_sql",
+        "current": "mixed_repository_and_direct_sql",
         "target": "user_broker_gateway",
         "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/legacy-watch-workflow-reconciliation-repository.ts",
           "packages/db/src/repositories/watch-repository.ts",
-          "packages/db/src/repositories/watch-run-repository.ts"
+          "packages/db/src/repositories/watch-run-repository.ts",
+          "packages/db/src/repositories/workflow-watch-projection-repository.ts"
         ]
       },
       "groups": [
@@ -4318,16 +4334,22 @@
           "classification": "locally_exposed_metadata",
           "columns": [
             "cadence",
+            "content_hash",
             "created_at",
             "day_of_week",
             "hour_of_day",
             "id",
             "last_run_at",
             "next_run_at",
+            "projection_version",
             "schedule_revision",
             "status",
             "updated_at",
-            "user_id"
+            "user_id",
+            "workflow_id",
+            "workflow_provider_key",
+            "workflow_provider_schema_version",
+            "workflow_version_id"
           ],
           "currentProtection": "Locally readable identifier, status, counter, timestamp, enum, linkage, or cryptographic metadata.",
           "targetProtection": "Remain locally readable for joins, scheduling, lifecycle, observability, and deletion; disclose inference leakage.",
@@ -4336,6 +4358,171 @@
         }
       ],
       "ownershipNotes": "Direct user ownership through user_id."
+    },
+    {
+      "table": "workflows",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/legacy-watch-workflow-reconciliation-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/watch-repository.ts",
+          "packages/db/src/repositories/watch-run-repository.ts",
+          "packages/db/src/repositories/workflow-repository.ts",
+          "packages/db/src/repositories/workflow-watch-projection-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "active_activation_event_id",
+            "active_version_id",
+            "created_at",
+            "id",
+            "provider_key",
+            "updated_at",
+            "user_id"
+          ],
+          "currentProtection": "Locally readable workflow identity, provider routing key, active immutable-version pointers, ownership linkage, and timestamps.",
+          "targetProtection": "Remain locally readable for owner-bound routing, activation integrity, lifecycle, backup, reconciliation, and deletion; disclose workflow/provider inference leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "The workflow identity and active pointers are required to select and verify the exact immutable version without decrypting its source-bearing definition."
+        }
+      ],
+      "ownershipNotes": "Direct user ownership through user_id; active pointers are constrained to versions and activation events owned by the same workflow and user."
+    },
+    {
+      "table": "workflow_versions",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/legacy-watch-workflow-reconciliation-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/watch-run-repository.ts",
+          "packages/db/src/repositories/workflow-repository.ts",
+          "packages/db/src/repositories/workflow-watch-projection-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "deferred_source",
+          "columns": [
+            "authoring_metadata",
+            "canonical_payload",
+            "inference_metadata"
+          ],
+          "currentProtection": "Canonical user-authored workflow definitions and authoring/inference provenance are plaintext JSONB in CockroachDB today.",
+          "targetProtection": "Per-user, per-purpose versioned AES-256-GCM envelopes with authenticated workflow, version, provider, and column context.",
+          "migrationStage": "slice-5-remaining-user-content",
+          "rationale": "Workflow definitions and generation provenance may contain user instructions, learned preferences, model output, or source-derived content and must be treated as protected source data.",
+          "searchableDerivatives": []
+        },
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "content_hash",
+            "created_at",
+            "id",
+            "parent_version_id",
+            "provider_key",
+            "provider_schema_version",
+            "user_id",
+            "version_number",
+            "workflow_id"
+          ],
+          "currentProtection": "Locally readable immutable-version identity, parent linkage, provider/schema pins, content commitment, owner linkage, counter, and timestamp.",
+          "targetProtection": "Remain locally readable for exact-version selection, integrity checks, ordering, joins, projection, backup, and deletion; disclose workflow/provider and equality leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Exact immutable-version routing and content-integrity verification require these identifiers, pins, counters, and hashes without exposing the protected workflow payload."
+        }
+      ],
+      "ownershipNotes": "Child of a user-owned workflow; composite constraints bind every version and parent link to the same user and workflow."
+    },
+    {
+      "table": "workflow_proposals",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/legacy-watch-workflow-reconciliation-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/workflow-repository.ts",
+          "packages/db/src/repositories/workflow-watch-projection-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "base_version_id",
+            "created_at",
+            "id",
+            "idempotency_key",
+            "kind",
+            "proposed_version_id",
+            "user_id",
+            "workflow_id"
+          ],
+          "currentProtection": "Locally readable proposal identity, idempotency key, transition kind, immutable-version links, owner linkage, and timestamp.",
+          "targetProtection": "Remain locally readable for owner-bound proposal review, replay detection, one-shot activation, joins, backup, and deletion; disclose workflow and retry correlation leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "Proposal lifecycle and durable idempotency require stable identifiers and version links without decrypting the proposed workflow payload."
+        },
+        {
+          "classification": "one_way_secret",
+          "columns": ["request_hash"],
+          "currentProtection": "A one-way SHA-256 commitment to the canonical authoring request is stored; the request cannot be recovered from this field.",
+          "targetProtection": "Retain the one-way commitment for idempotent replay comparison while disclosing deterministic request-equality leakage.",
+          "migrationStage": "retain-one-way",
+          "rationale": "Lost-response retries compare the canonical request without persisting another recoverable copy of user-authored content."
+        }
+      ],
+      "ownershipNotes": "Child of a user-owned workflow; base and proposed versions are constrained to the same workflow and user."
+    },
+    {
+      "table": "workflow_activation_events",
+      "owner": "user",
+      "boundary": {
+        "current": "mixed_repository_and_direct_sql",
+        "target": "user_broker_gateway",
+        "auditedCallsites": [
+          "packages/db/src/backup/backup.ts",
+          "packages/db/src/repositories/legacy-watch-workflow-reconciliation-repository.ts",
+          "packages/db/src/repositories/user-purge-repository.ts",
+          "packages/db/src/repositories/workflow-repository.ts",
+          "packages/db/src/repositories/workflow-watch-projection-repository.ts"
+        ]
+      },
+      "groups": [
+        {
+          "classification": "locally_exposed_metadata",
+          "columns": [
+            "activated_version_id",
+            "created_at",
+            "event_sequence",
+            "id",
+            "kind",
+            "previous_version_id",
+            "proposal_id",
+            "user_id",
+            "workflow_id"
+          ],
+          "currentProtection": "Locally readable append-only activation identity, transition kind, sequence, immutable-version/proposal links, owner linkage, and timestamp.",
+          "targetProtection": "Remain locally readable for activation and rollback integrity, exact history replay, joins, reconciliation, backup, and deletion; disclose workflow lifecycle leakage.",
+          "migrationStage": "disclosed-local-metadata",
+          "rationale": "The append-only activation ledger must verify exact version transitions and one-shot proposals without decrypting workflow source content."
+        }
+      ],
+      "ownershipNotes": "Child of a user-owned workflow; all version, proposal, and active-pointer constraints bind the event to the same workflow and user."
     },
     {
       "table": "rollback_admissions",
