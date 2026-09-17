@@ -19,6 +19,28 @@ interface OllamaModelIdentity {
   readonly digest: string;
 }
 
+function structuredOutputFormat(jsonSchema: string | undefined): Record<string, unknown> | undefined {
+  if (jsonSchema === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonSchema) as unknown;
+  } catch {
+    throw new ProviderModePolicyError(
+      'ollama_structured_output_invalid',
+      'Ollama structured output requires a valid JSON Schema object',
+      'ollama',
+    );
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new ProviderModePolicyError(
+      'ollama_structured_output_invalid',
+      'Ollama structured output requires a valid JSON Schema object',
+      'ollama',
+    );
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function supportsLocalSourceSelector(version: unknown): boolean {
   if (typeof version !== 'string') return false;
   const match = version.trim().match(/^(\d+)\.(\d+)\.(\d+)(?:$|[-+])/);
@@ -175,6 +197,7 @@ export async function generate(
     messages.push(...inputMessages);
 
     const requestUrl = `${baseUrl}/api/chat`;
+    const format = structuredOutputFormat(options.jsonSchema);
     const requestInit = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -182,6 +205,8 @@ export async function generate(
         model: requestModel,
         messages,
         stream: false,
+        ...(format === undefined ? {} : { format }),
+        ...(options.disableReasoning === true ? { think: false } : {}),
         options: {
           temperature: options.temperature ?? 0.3,
           num_predict: options.maxTokens ?? 1024,

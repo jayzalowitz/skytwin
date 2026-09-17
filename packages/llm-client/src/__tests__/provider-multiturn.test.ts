@@ -333,6 +333,32 @@ describe('Ollama provider — switched to /api/chat', () => {
     expect(captured[1]!.body.messages).toEqual([{ role: 'user', content: 'hello' }]);
   });
 
+  it('uses Ollama-native schema output and reasoning controls for workflows', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: '{"ok":true}' } });
+    vi.stubGlobal('fetch', spy);
+    const schema = { type: 'object', required: ['ok'], properties: { ok: { const: true } } };
+
+    await ollamaGenerate('', 'llama-test', 'return JSON', {
+      reasoningMode: 'on_device',
+      jsonSchema: JSON.stringify(schema),
+      disableReasoning: true,
+    });
+
+    expect(captured[1]!.body.format).toEqual(schema);
+    expect(captured[1]!.body.think).toBe(false);
+  });
+
+  it('rejects malformed workflow schemas before sending the prompt', async () => {
+    const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'must not run' } });
+    vi.stubGlobal('fetch', spy);
+
+    await expect(ollamaGenerate('', 'llama-test', 'private prompt', {
+      reasoningMode: 'on_device',
+      jsonSchema: 'not-json',
+    })).rejects.toThrow('valid JSON Schema object');
+    expect(captured.map(({ url }) => new URL(url).pathname)).toEqual(['/api/version']);
+  });
+
   it('canonicalizes a raw loopback base URL before appending API paths', async () => {
     const { spy, captured } = captureVerifiedLocalOllamaFetch({ message: { content: 'ok' } });
     vi.stubGlobal('fetch', spy);

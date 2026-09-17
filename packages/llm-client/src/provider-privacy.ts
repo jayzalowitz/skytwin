@@ -16,6 +16,7 @@ export type ProviderModePolicyErrorCode =
   | 'non_loopback_local_endpoint'
   | 'ollama_cloud_model'
   | 'ollama_local_source_unverified'
+  | 'ollama_structured_output_invalid'
   | 'verification_adapter_required';
 
 export class ProviderModePolicyError extends Error {
