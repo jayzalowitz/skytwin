@@ -32,7 +32,7 @@ import {
   CockroachWrappedKeyStore,
   loadSourceKeyRegistryPort,
 } from './crdb-wrapped-key-store.js';
-import { installVaultNavigationGuards } from './vault-renderer-security.js';
+import { installVaultNavigationGuards, isTrustedDashboardUrl } from './vault-renderer-security.js';
 import { collectPackagedSampleRendererProof } from './release-evidence-renderer.js';
 
 // Recovery wrappers are held in CockroachDB through a narrow, lazily loaded
@@ -395,6 +395,41 @@ ipcMain.handle('open-external', async (_event, url: string) => {
   if (typeof url === 'string' && /^https?:\/\//.test(url)) {
     await shell.openExternal(url);
   }
+});
+ipcMain.handle('bootstrap-google-account', async (event, input: unknown) => {
+  if (!isTrustedDashboardUrl(event.senderFrame?.url ?? '')) {
+    throw new Error('Google setup is available only from the local SkyTwin dashboard.');
+  }
+  if (!input || typeof input !== 'object') throw new Error('Google setup details are required.');
+  const value = input as Record<string, unknown>;
+  if (
+    typeof value['clientId'] !== 'string' ||
+    typeof value['clientSecret'] !== 'string' ||
+    typeof value['pendingKey'] !== 'string'
+  ) {
+    throw new Error('Google setup details are invalid.');
+  }
+  const clientId = value['clientId'].trim();
+  const clientSecret = value['clientSecret'].trim();
+  const pendingKey = value['pendingKey'];
+  if (
+    !clientId.endsWith('.apps.googleusercontent.com') || clientId.length > 512 ||
+    clientSecret.length < 8 || clientSecret.length > 512 ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(pendingKey)
+  ) {
+    throw new Error('Google setup details are invalid.');
+  }
+  const result = await serviceManager.bootstrapGoogleAccount({
+    clientId,
+    clientSecret,
+    pendingKey,
+  });
+  const target = new URL(result.url);
+  if (target.protocol !== 'https:' || target.hostname !== 'accounts.google.com') {
+    throw new Error('The local API returned an invalid Google authorization URL.');
+  }
+  await shell.openExternal(target.toString());
+  return { ok: true as const };
 });
 ipcMain.handle('pause-twin', async () => {
   // User-initiated pause — clear the controller's auto-paused flag so

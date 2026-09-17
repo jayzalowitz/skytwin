@@ -45,14 +45,16 @@
             All the detail is here—at your pace.
           </p>
           <div class="actions">
-            <a class="button primary" href="how-to-use.html"
-              >My first five minutes →</a
-            ><a class="button" href="#build">I’m here to build</a>
+            <a
+              class="button primary"
+              href="https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0"
+              >Download the desktop alpha ↗</a
+            ><a class="button" href="how-to-use.html">My first five minutes</a>
           </div>
           <p class="preview-note">
-            <strong>Developer preview.</strong> Start with fictional data, not a
-            real inbox. The source-run sample is the supported entry point; no
-            account or model key is needed for that tour.
+            <strong>Two ways to try it.</strong> The current packaged desktop
+            alpha is unsigned and includes both BYO Google setup for a live
+            Gmail inbox and the account-free fictional sample.
             <a href="#status">See current limits.</a>
           </p>
         </header>
@@ -60,11 +62,33 @@
           <p class="kicker">01 · Get to know SkyTwin</p>
           <h2>Start here. No jargon required.</h2>
           <p>
-            See what a personal twin could do for you, then try the
-            fictional-data sample. The tour is readable in your browser; running
-            the app requires a local source setup.
+            See what a personal twin could do for you, download the packaged
+            alpha, or try the newest fictional-data sample. The tour is readable
+            in your browser; the alpha needs no source checkout.
           </p>
           <ul class="guide-list">
+            <li>
+              <a href="start.html#alpha"
+                ><div>
+                  <strong>Install the desktop alpha</strong
+                  ><span
+                    >Direct downloads for Apple Silicon macOS, Windows, and
+                    Linux, with unsigned-build warnings and exact limits.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="connect-gmail.html"
+                ><div>
+                  <strong>Connect a real Gmail inbox</strong
+                  ><span
+                    >Create your own Google OAuth app, paste its credentials in
+                    the alpha wizard, and understand the privacy limits.</span
+                  >
+                </div></a
+              >
+            </li>
             <li>
               <a href="how-to-use.html"
                 ><div>
@@ -301,8 +325,8 @@
                 ><div>
                   <strong>Check release readiness</strong
                   ><span
-                    >Why a source preview is not a certified public beta;
-                    signing, artifact, and evidence gates.</span
+                    >What the desktop alpha is, why a source preview is
+                    different, and which beta evidence gates remain.</span
                   >
                 </div></a
               >
@@ -321,10 +345,10 @@
             <li>
               <a href="connect-gmail.html"
                 ><div>
-                  <strong>Check Google access status</strong
+                  <strong>Set up BYO Google access</strong
                   ><span
-                    >Why real Google accounts remain unavailable on the
-                    supported preview surface.</span
+                    >Exact Google Cloud steps, requested scopes, what live inbox
+                    access does, and the alpha security boundary.</span
                   >
                 </div></a
               >
@@ -469,13 +493,17 @@
             real-account connection.
           </p>
           <p>
-            Older unsigned installers predate the current guarded sample. Google
-            and Microsoft real-account connections are unavailable on the
-            supported preview. Signing, notarization, clean-machine
-            verification, and release-wide evidence remain gates for the planned
+            The current unsigned desktop alpha is available for Mac, Windows,
+            and Linux with both the guarded sample and an optional self-created
+            Google OAuth path for a real Gmail inbox. Source operators retain
+            the Google path behind an exact experimental opt-in. There is no
+            supported managed SkyTwin Google service or supported Microsoft
+            setup. Signing, notarization, clean-machine verification,
+            and release-wide evidence remain gates for the planned
             <code>v0.7.0-beta</code>. There is no hosted service.
           </p>
           <p>
+            <a href="start.html#alpha">Download alpha</a> ·
             <a href="release.html">Release guide</a> ·
             <a
               href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"

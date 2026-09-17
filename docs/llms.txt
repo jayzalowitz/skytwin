@@ -1,11 +1,14 @@
 # SkyTwin
 
-> Open-source, local-first decision software. This is a developer preview, not
-> a supported public-beta installer or hosted service.
+> Open-source, local-first decision software. A usable, unsigned desktop alpha
+> and a newer source preview are available; neither is a supported public beta
+> or hosted service.
 
 ## Start here
 
 - [Overview](https://jayzalowitz.github.io/skytwin/): product boundary, source-first evaluation path, architecture, and public limitations.
+- [Desktop alpha](https://jayzalowitz.github.io/skytwin/start.html#alpha): direct Apple Silicon macOS, x64 Windows, and x86-64 Linux installers, first-launch warning steps, version identity, and limits.
+- [Connect a real Gmail inbox](https://jayzalowitz.github.io/skytwin/connect-gmail.html): local web-interface and desktop entry points, self-created Google OAuth app walkthrough, experimental source configuration, exact scopes, and credential limitations.
 - [Start locally](https://jayzalowitz.github.io/skytwin/start.html): prerequisites, source installation, and evaluation boundary.
 - [Fictional-sample walkthrough](https://jayzalowitz.github.io/skytwin/how-to-use.html): plain-language tour with current source-run screenshots and no-account boundary.
 - [FAQ](https://jayzalowitz.github.io/skytwin/faq.html): preview, privacy, inference, action, agent, and release questions answered with qualified boundaries.
@@ -49,7 +52,7 @@
 ## Current preview limits
 
 - The isolated account-free sample uses fictional data and no external effects.
-- Published unsigned technical-preview installers predate parts of the guarded sample/source path. Check each release note for exact contents.
-- Google and Microsoft real-account connections are unavailable on the supported preview surface.
+- The current desktop alpha is unsigned and packages the current `0.6.106.0` source under the `alpha-0.6.106.0` prerelease tag; check the release notes for exact contents and platform assets.
+- Real Gmail ingestion is available through the current alpha's local Connect Gmail wizard (desktop window for first-account setup, or `localhost:3200` from an already authenticated browser session) or the exact `SKYTWIN_GOOGLE_CONNECTION_MODE=experimental` source operator mode. Both paths require a user-created Google Web Application OAuth client. This is not a supported managed or currently verified SkyTwin OAuth service; packaged Microsoft account creation remains disabled.
 - Storage encryption and supported-installer evidence are incomplete; consult Privacy and the beta claim ledger before handling personal data.
 - A provider name, HTTPS URL, API key, receipt, or external trust portal does not itself make a SkyTwin inference call confidential.

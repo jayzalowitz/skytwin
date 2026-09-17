@@ -11,16 +11,15 @@
 
 This report is the output of a full launch-readiness pass: every open GitHub issue audited against the actual code (not the issue narrative), the whole app built/tested/linted, and the running dashboard QA'd against the [master pre-launch epic #357](https://github.com/jayzalowitz/skytwin/issues/357) launch criteria. It pairs with [`launch-plan.md`](./launch-plan.md) (the procurement/sequencing plan). Its checkmarks record the development/source revision named above; they are not certification of a later packaged artifact or the current published release.
 
-## 2026-09-13 packaged-sample release boundary
+## 2026-09-17 alpha release boundary
 
 Current source adds a guarded account-free packaged demo: a short-lived credential bound to one reserved fictional identity and an explicit read allowlist. Its database-backed product surface is deliberately read-only. Approve, reject, correct, reset, and learn interactions run only in a separate loopback-only simulation with bounded in-memory state. The simulation uses the real policy and explanation logic but cannot open settings, mutate the database, invoke connectors or providers, access credentials, or reach execution adapters. Browser authority is scoped to one tab. The service worker applies case-insensitive API route semantics, bypasses all `/api/v1/demo` traffic, and also bypasses normal product routes carrying the sample bearer credential or EventSource query token. It discards stored writes that fail the current replay policy. Source of truth: `apps/api/src/services/sample-simulation.ts`, `apps/web/public/js/sample-session.js`, `apps/web/public/js/pwa/sw-policy.js`, and `apps/web/public/sw.js`.
 
-The currently published installers predate this packaged sample path. The
-account-free desktop launch still requires fresh verified artifacts, signing,
-production key management, packaged sample/model evidence, release evals, and
-the invited-tester bake recorded in the claim ledger. Google OAuth review and
-mobile/store distribution are deferred post-launch; they do not block this
-account-free candidate.
+The current unsigned <code>0.6.106.0</code> alpha packages this sample alongside
+an advanced BYO Google first-account path. It does not satisfy the beta ledger:
+signing, production key management, clean-machine evidence, release evals, and
+the invited-tester bake remain outstanding. Google managed-client review and
+mobile/store distribution are deferred; Microsoft stays blocked in the package.
 
 The older Gmail-connect criteria, OAuth blocker classification, and submission
 advice retained in the dated audit below are superseded by this boundary. They
@@ -100,9 +99,9 @@ items in this historical inventory are explicitly non-blocking and deferred.
 |---|---|---|
 | 1 | Download a signed `.dmg`/`.exe`/store build | ⛔ external — certs (#368/#359), store accounts (#369) |
 | 2 | Install without Gatekeeper/SmartScreen warnings | ⛔ external — certs |
-| 3 | Reach a meaningful state ≤60s | 🟡 development tour verified; current source adds an interactive packaged sample, but published installers predate it and a fresh artifact still needs validation |
-| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | Superseded for the account-free launch. The isolated packaged sample is the only supported preview path; fresh artifact evidence remains required. |
-| 5 | A real decision in the queue ≤5 min of connecting Gmail | Superseded for the account-free launch. Connected-account development results are not launch evidence. |
+| 3 | Reach a meaningful state ≤60s | 🟡 source and focused tests cover the packaged sample and BYO setup; clean-machine artifact evidence remains a beta gate |
+| 4 | Connect Gmail **or** "Try with a sample profile" → decisions | 🟡 both paths ship in the unsigned alpha; fresh beta-grade artifact evidence remains required |
+| 5 | A real decision in the queue ≤5 min of connecting Gmail | 🟡 live connector path ships as advanced alpha; this dated audit is not beta evidence |
 | 6 | Understand *why* each decision was made | ✅ development/connected flow verified; current packaged-sample source can inspect allowlisted decision and explanation views |
 | 7 | Approve/reject without confusion | 🟡 connected/development controls and microcopy were verified; current source adds isolated packaged approve/reject/correct interactions, but a fresh artifact still needs validation |
 | 8 | Find a whole-system pause control | 🟡 partial — the global **Pause everything** button stops MCP capability servers only; Settings **Pause auto-execution** routes actions to review while signal sync continues; the desktop tray stops the packaged worker and suppresses delayed replacement, containing partial generations during recovery. No single control currently stops every subsystem. |

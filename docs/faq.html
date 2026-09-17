@@ -48,7 +48,7 @@
         <details open>
           <summary>Can I try it without connecting an account?</summary>
           <p>
-            Yes. Current source includes an isolated fictional-data sample. It
+            Yes. The current alpha includes an isolated fictional-data sample. It
             is the supported evaluation surface: no Gmail, Microsoft, or other
             account is required; sample interactions have no provider,
             connector, or execution-adapter effect. Start with the
@@ -56,12 +56,21 @@
           </p>
         </details>
         <details>
-          <summary>Should I use a published desktop installer?</summary>
+          <summary>Can I install a real desktop app now?</summary>
           <p>
-            Not for the guarded sample evaluation. Older unsigned
-            technical-preview installers predate parts of the current source
-            path. The <a href="start.html">source guide</a> explains the local
-            development route and the release boundary.
+            Yes. The <a href="start.html#alpha">desktop alpha</a> is a usable
+            packaged app for Apple Silicon macOS, x64 Windows, and x86-64 Linux. It is
+            unsigned, so macOS Gatekeeper or Windows SmartScreen will warn, and
+            it predates parts of the current source path. It also includes a
+            five-step wizard for connecting a real Gmail inbox through a Google
+            OAuth app you create. Use the app window for first-account setup. An
+            already authenticated browser session can use the same local page at
+            <code>http://localhost:3200/#/connect-gmail</code>, but a fresh browser
+            does not inherit the desktop session. Use it for the
+            fastest hands-on experience;
+            use <a href="start.html#source">current source</a> for the newest
+            guarded fictional sample. Neither is a managed OAuth service or
+            supported public beta.
           </p>
         </details>
         <details>
@@ -129,14 +138,18 @@
             When does SkyTwin call remote inference verified-private?
           </summary>
           <p>
-            Only an explicit interactive TrustedRouter call whose pinned
-            SkyTwin adapter verifies fresh same-session gateway attestation and
-            an exact-byte confidential-route receipt earns that label today.
+            Only an explicit interactive TrustedRouter call whose pinned SkyTwin
+            adapter verifies fresh same-session gateway attestation and an
+            exact-byte confidential-route receipt earns that label today.
             Failure returns no content and never falls back to a conventional
             provider. NEAR AI remains verification-pending and unavailable
             because its reviewed evidence does not pin the dynamically selected
-            model/proxy workload. See the <a href="inference.html">review
-            checklist</a> and <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md">canonical boundary</a>.
+            model/proxy workload. See the
+            <a href="inference.html">review checklist</a> and
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md"
+              >canonical boundary</a
+            >.
           </p>
         </details>
         <h2 id="actions">Actions &amp; agents</h2>
@@ -163,10 +176,19 @@
         <details>
           <summary>Are Gmail or Microsoft connections available?</summary>
           <p>
-            No on the supported preview. The source tree contains connector and
-            experimental code, but code presence is not a support claim.
-            Account-backed capabilities are denied before adapter preparation or
-            dispatch while the boundary is active.
+            Gmail is available as an advanced BYO path. The historical desktop
+            alpha includes a wizard in its app window for creating and using
+            your own Google OAuth client for Gmail. An authenticated local
+            browser session can use the same page; current source can enable the retained live connector with
+            <code>SKYTWIN_GOOGLE_CONNECTION_MODE=experimental</code> plus
+            operator-supplied credentials. This can ingest a real inbox and
+            Calendar; it is not a supported managed or currently verified
+            SkyTwin OAuth service. The alpha also contains a historical
+            SkyTwin-team client ID for initial identity and Calendar access.
+            Start with a test account and follow the
+            <a href="connect-gmail.html">Gmail setup and privacy guide</a>.
+            Microsoft implementation code is retained behind the source flag,
+            but there is no equivalent supported setup claim.
           </p>
         </details>
         <h2 id="release">Release status</h2>

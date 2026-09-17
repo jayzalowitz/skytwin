@@ -1,71 +1,424 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Google connection status — SkyTwin</title>
-  <meta name="description" content="Google connection is unavailable in the supported SkyTwin technical preview; use the isolated account-free sample.">
-  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/connect-gmail.html">
-  <style>
-    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0b10; color: #e8e8ee; line-height: 1.65; }
-    .wrap { max-width: 760px; margin: 0 auto; padding: 3rem 1.5rem 4rem; }
-    h1 { font-size: 2rem; margin: 0 0 0.5rem; letter-spacing: -0.02em; }
-    h2 { font-size: 1.25rem; margin: 2rem 0 0.5rem; }
-    .meta { color: #9b9bab; font-size: 0.95rem; margin: 0 0 2rem; }
-    a { color: #7c5cff; }
-    a:hover { color: #9d83ff; }
-    nav a { color: #9b9bab; font-size: 0.9rem; }
-    ol { padding-left: 1.5rem; }
-    li { margin-bottom: 0.75rem; }
-    code { font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; background: #16161e; padding: 0.1rem 0.4rem; border-radius: 0.3rem; font-size: 0.92em; }
-    .callout {
-      background: rgba(124,92,255,0.1); border-left: 4px solid #7c5cff;
-      padding: 1rem 1.25rem; border-radius: 0.4rem; margin: 1.5rem 0;
-    }
-    .warn { background: rgba(255,180,80,0.1); border-left-color: #ffb450; }
-    .step {
-      background: #16161e; border: 1px solid #2a2a36;
-      padding: 1.2rem 1.5rem; border-radius: 0.6rem; margin: 1rem 0;
-    }
-    .step h2 { margin-top: 0; }
-    footer { margin-top: 3rem; padding-top: 1.5rem; border-top: 1px solid #2a2a36; color: #9b9bab; font-size: 0.9rem; }
-  </style>
-</head>
-<body>
-  <div class="wrap">
-    <nav><a href="index.html">← Back to SkyTwin</a></nav>
-    <h1>Google connection is unavailable</h1>
-    <p class="meta">The supported SkyTwin technical preview is an isolated, account-free sample. It does not connect Gmail, Google Calendar, or Google identity.</p>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Connect a real Gmail inbox — SkyTwin</title>
+    <meta
+      name="description"
+      content="Connect a real Gmail inbox to the SkyTwin desktop alpha with a Google OAuth app you create and control, or configure the retained experimental source path."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/connect-gmail.html"
+    />
+    <style>
+      :root {
+        --bg: #0e0f13;
+        --surface: #16181f;
+        --border: #272b38;
+        --text: #ecedf1;
+        --muted: #9ca0ae;
+        --accent: #7c72e8;
+        --accentHover: #9a92f2;
+        --warn: #e7b14c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font:
+          16px/1.65 "Geist",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
+        overflow-wrap: anywhere;
+      }
+      .wrap {
+        max-width: 820px;
+        margin: 0 auto;
+        padding: 3rem 1.5rem 4rem;
+      }
+      nav {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+        margin-bottom: 2rem;
+      }
+      nav a {
+        min-height: 44px;
+        display: inline-flex;
+        align-items: center;
+      }
+      h1 {
+        font-size: clamp(2.1rem, 6vw, 3.4rem);
+        line-height: 1.08;
+        letter-spacing: -0.03em;
+        margin: 0.25rem 0 1rem;
+      }
+      h2 {
+        font-size: 1.35rem;
+        margin: 0 0 0.5rem;
+      }
+      h3 {
+        margin: 0 0 0.4rem;
+      }
+      p,
+      li {
+        color: var(--muted);
+      }
+      a {
+        color: var(--accent);
+      }
+      a:hover {
+        color: var(--accentHover);
+      }
+      code,
+      pre {
+        font-family: "Geist Mono", ui-monospace, monospace;
+      }
+      code {
+        background: #101218;
+        padding: 0.1rem 0.35rem;
+        border-radius: 4px;
+      }
+      pre {
+        background: #101218;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 1rem;
+        overflow: auto;
+        color: var(--text);
+      }
+      .eyebrow {
+        color: var(--accent);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.09em;
+        text-transform: uppercase;
+      }
+      .lede {
+        font-size: 1.13rem;
+        max-width: 46rem;
+      }
+      .callout,
+      .step,
+      .path {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 1.2rem 1.35rem;
+        margin: 1rem 0;
+      }
+      .callout {
+        border-left: 3px solid var(--warn);
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1rem;
+        margin: 1.5rem 0;
+      }
+      .path strong {
+        display: block;
+        color: var(--text);
+        margin-bottom: 0.35rem;
+      }
+      .step-number {
+        color: var(--accent);
+        font-size: 0.78rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      footer {
+        margin-top: 3rem;
+        padding-top: 1.5rem;
+        border-top: 1px solid var(--border);
+        font-size: 0.9rem;
+      }
+      :where(a, summary):focus-visible {
+        outline: 2px solid var(--accentHover);
+        outline-offset: 4px;
+      }
+      @media (max-width: 680px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="wrap">
+      <nav>
+        <a href="index.html">← SkyTwin</a><a href="start.html">Start</a
+        ><a href="privacy.html">Privacy</a><a href="docs.html">All docs</a>
+      </nav>
+      <p class="eyebrow">Advanced alpha capability</p>
+      <h1>Yes, SkyTwin can run from a real Gmail inbox.</h1>
+      <p class="lede">
+        Use a Google OAuth app you create and control. The current
+        <code>alpha-0.6.106.0</code> release includes the setup wizard in its desktop
+        window and serves the same page to authenticated local-browser sessions;
+        current source retains the live connectors behind an explicit
+        experimental operator flag.
+      </p>
 
-    <div class="callout warn">
-      <strong>Do not create or paste Google credentials for this preview.</strong>
-      Source components from earlier development work do not constitute a
-      supported connection flow, and setting environment variables does not
-      change the packaged preview boundary. Existing stored credentials or
-      tokens are retained rather than silently deleted, but disabled paths do
-      not use them.
-    </div>
+      <div class="grid">
+        <article class="path">
+          <strong>Packaged alpha · desktop first</strong>
+          <p>
+            Download and start the current alpha, then open
+            <em>Connect Gmail</em> in the desktop window. This is the reliable
+            first-account path because Electron completes a one-use session
+            handoff after Google consent. SkyTwin also serves the same page at
+            <code>http://localhost:3200/#/connect-gmail</code>, but a fresh
+            browser does not inherit that session; use the browser page only
+            from an already paired or authenticated browser session.
+          </p>
+          <a href="start.html#alpha"
+            >Download for Apple Silicon Mac, x64 Windows, or x86-64 Linux →</a
+          >
+        </article>
+        <article class="path">
+          <strong>Current source</strong>
+          <p>
+            Supply the same Web Application client as environment configuration
+            and opt in with
+            <code>SKYTWIN_GOOGLE_CONNECTION_MODE=experimental</code>.
+          </p>
+          <a href="#source">Configure current source →</a>
+        </article>
+      </div>
 
-    <div class="step">
-      <h2>What you can use now</h2>
-      <p>Choose the account-free sample in the desktop onboarding flow. It uses fictional data and a session-local interaction surface that cannot reach connectors, credentials, providers, execution adapters, or external effects.</p>
-    </div>
+      <div class="callout">
+        <strong>Use a test Google account first.</strong>
+        <p>
+          The desktop alpha is unsigned. Its
+          Google client secret is stored without app-level encryption in
+          SkyTwin's configured database. The alpha's OAuth callback also writes
+          access and refresh tokens to plaintext token columns, regardless of
+          Credential Vault state. The requested Google scopes authorize more
+          than the runtime capability claimed here: use the feature for live
+          Gmail and Calendar ingestion, not as evidence of supported send,
+          archive, or Calendar-mutation behavior.
+        </p>
+      </div>
 
-    <div class="step">
-      <h2>What remains before real Google access</h2>
-      <p>Managed Google identity and Calendar are deferred. Operator/BYO Google is also unsupported until SkyTwin has one reviewed client-generation authority across authorization, callback, token refresh, connector admission, ownership, exact granted capabilities, and action execution.</p>
-      <p>Secret custody is part of that gate. The existing credential-writer disclosure is: <strong>Stored without app-level encryption in SkyTwin's configured database</strong>. A supported path must define migration and locked-key behavior rather than treating a five-minute credential walkthrough as sufficient.</p>
-    </div>
+      <section>
+        <div class="step">
+          <p class="step-number">Step 1</p>
+          <h2>Create a Google Cloud project</h2>
+          <p>
+            Open
+            <a
+              href="https://console.cloud.google.com/projectcreate"
+              target="_blank"
+              rel="noreferrer"
+              >Google Cloud project creation</a
+            >, create a project such as <code>my-skytwin</code>, and select it.
+          </p>
+        </div>
+        <div class="step">
+          <p class="step-number">Step 2</p>
+          <h2>Enable Gmail and Calendar APIs</h2>
+          <p>
+            Enable the
+            <a
+              href="https://console.cloud.google.com/apis/library/gmail.googleapis.com"
+              target="_blank"
+              rel="noreferrer"
+              >Gmail API</a
+            >
+            and
+            <a
+              href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"
+              target="_blank"
+              rel="noreferrer"
+              >Google Calendar API</a
+            >
+            for that project.
+          </p>
+        </div>
+        <div class="step">
+          <p class="step-number">Step 3</p>
+          <h2>Configure the OAuth consent screen</h2>
+          <ol>
+            <li>
+              Open
+              <a
+                href="https://console.cloud.google.com/auth/branding"
+                target="_blank"
+                rel="noreferrer"
+                >Google Auth Platform</a
+              >.
+            </li>
+            <li>
+              Use <strong>External</strong> audience, name the app, and add your
+              own address as support and developer email.
+            </li>
+            <li>Add the Gmail account you will connect as a test user.</li>
+            <li>
+              If the project stays in Testing, expect the authorization to
+              expire after seven days. Publishing it to Production can make a
+              personal grant durable, but Google may continue to show an
+              unverified-app warning.
+            </li>
+          </ol>
+        </div>
+        <div class="step">
+          <p class="step-number">Step 4</p>
+          <h2>Create a Web Application OAuth client</h2>
+          <ol>
+            <li>
+              Open
+              <a
+                href="https://console.cloud.google.com/apis/credentials"
+                target="_blank"
+                rel="noreferrer"
+                >Credentials</a
+              >
+              and choose <strong>Create credentials → OAuth client ID</strong>.
+            </li>
+            <li>Select <strong>Web application</strong>, not Desktop app.</li>
+            <li>Add both authorized redirect URIs:</li>
+          </ol>
+          <pre><code>http://localhost:3100/api/oauth/google/callback
+http://127.0.0.1:3100/api/oauth/google/callback</code></pre>
+          <p>
+            Copy the generated client ID and client secret. Never post the
+            secret in an issue, log, screenshot, or support message.
+          </p>
+        </div>
+        <div class="step">
+          <p class="step-number">Step 5 · Packaged alpha</p>
+          <h2>Paste, consent, and let the inbox sync</h2>
+          <p>
+            Keep the alpha running. Open SkyTwin's
+            <strong>Connect Gmail</strong> page inside the desktop window. Paste
+            the client ID and secret, choose
+            <strong>Save &amp; connect Gmail</strong>, and finish Google's consent
+            screen in your system browser. The desktop receives the one-use
+            completion handoff and stores its session before returning to the
+            dashboard. An already authenticated browser session may use the same
+            UI at <code>http://localhost:3200/#/connect-gmail</code>; simply
+            opening that URL in a fresh browser does not transfer the desktop
+            session and protected credential writes will return 401. The worker
+            then uses Gmail's History API to ingest live inbox signals. Initial
+            signals should begin appearing after the next polling cycle.
+          </p>
+        </div>
+      </section>
 
-    <div class="step">
-      <h2>Google requirements still apply later</h2>
-      <p>A future BYO or managed flow will remain subject to Google's publishing status, tester restrictions, warning, token-expiry, user-data, verification, and any assigned security-assessment requirements. A successful personal test is not evidence that Google approved a SkyTwin-managed client. See the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/google-verification.md">deferred Google integration plan</a> and Google's current <a href="https://developers.google.com/terms/api-services-user-data-policy" target="_blank" rel="noreferrer">API Services User Data Policy</a>.</p>
-    </div>
+      <section id="source">
+        <h2>Current-source operator setup</h2>
+        <p>
+          Current source defaults closed. Put the following values in your local
+          <code>.env</code> before starting SkyTwin:
+        </p>
+        <pre><code>SKYTWIN_GOOGLE_CONNECTION_MODE=experimental
+GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=your-client-secret
+GOOGLE_REDIRECT_URI=http://localhost:3100/api/oauth/google/callback</code></pre>
+        <p>
+          Then run migrations and start the normal source services. The exact
+          <code>experimental</code> value is required; credentials alone do not
+          enable account routes. In current source the self-service credential
+          wizard is intentionally hidden, so operator environment configuration
+          is the coherent path.
+        </p>
+        <p>
+          To create the first user and request the Gmail scope tier, open this
+          local API URL after the services are healthy:
+        </p>
+        <pre><code>http://localhost:3100/api/oauth/google/authorize?newUser=true&amp;include=gmail</code></pre>
+        <p>
+          The endpoint returns JSON containing a Google <code>url</code>. Copy
+          that URL into your browser, complete consent, and let the callback
+          return you to the local web dashboard at
+          <code>http://localhost:3200</code>. You can use the dashboard in an
+          ordinary browser; Electron is not required for this source path. This
+          manual handoff is necessary because the current-source Connect screen
+          deliberately continues to show the account-free preview boundary even
+          when the operator flag is enabled.
+          For an existing authenticated user, use the same endpoint with
+          <code>userId=&lt;that-user-id&gt;</code> instead of
+          <code>newUser=true</code>.
+        </p>
+      </section>
 
-    <footer>
-      <p>Last updated: 2026-09-14.</p>
-      <p>Source for this page: <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/connect-gmail.html">docs/connect-gmail.html</a> in the SkyTwin repository.</p>
-    </footer>
-  </div>
-</body>
+      <section>
+        <h2>What access SkyTwin requests</h2>
+        <ul>
+          <li>
+            <code>openid</code>, <code>email</code>, and <code>profile</code> to
+            bind the grant to the Google identity.
+          </li>
+          <li>
+            <code>calendar.readonly</code> and <code>calendar.events</code> for
+            Calendar data. Google's grant permits viewing and editing events on
+            calendars the account can access.
+          </li>
+          <li>
+            <code>gmail.readonly</code> and <code>gmail.modify</code> when the
+            BYO Gmail path is selected. Google's <code>gmail.modify</code> grant
+            permits reading, composing, and sending mail in addition to changing
+            mailbox state.
+          </li>
+        </ul>
+        <p>
+          Those descriptions state the maximum authority Google grants, not the
+          SkyTwin behavior supported by this release. SkyTwin's claimed live
+          path reads Gmail metadata and message content, ingests Calendar
+          context, maintains an account-bound history cursor, refreshes OAuth
+          tokens, and records connector health. It does not claim supported
+          Gmail sending or archiving, or supported Calendar mutation. Do not
+          assume that an approved proposal changed the provider.
+        </p>
+      </section>
+
+      <section>
+        <h2>Disconnect or recover</h2>
+        <p>
+          Revoke the grant at
+          <a
+            href="https://myaccount.google.com/permissions"
+            target="_blank"
+            rel="noreferrer"
+            >Google Account → Third-party access</a
+          >. If Google reports <code>invalid_grant</code>, reconnect;
+          testing-mode expiry, password/security changes, or manual revocation
+          can invalidate the refresh token.
+        </p>
+        <p>
+          A successful personal BYO connection is not evidence that Google
+          approved a SkyTwin-managed client. See the
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/google-verification.md"
+            >managed-client verification plan</a
+          >, <a href="privacy.html">privacy details</a>, and Google's
+          <a
+            href="https://developers.google.com/terms/api-services-user-data-policy"
+            target="_blank"
+            rel="noreferrer"
+            >API Services User Data Policy</a
+          >.
+        </p>
+      </section>
+
+      <footer>
+        <p>
+          Last updated: 2026-09-17. Source:
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/connect-gmail.html"
+            >docs/connect-gmail.html</a
+          >.
+        </p>
+      </footer>
+    </main>
+  </body>
 </html>
