@@ -643,7 +643,7 @@
       "id": "packaged-sample-shipped",
       "pattern": "packaged (?:builds?|installers?|artifacts?) (?:ship|include|offer)s? (?:an? |the )?(?:account-free |fully populated )?sample",
       "flags": "i",
-      "reason": "Current source contains a guarded packaged sample path, but no published artifact or tagged clean-machine evidence proves that path"
+      "reason": "The unsigned alpha may expose the sample, but the supported beta claim still requires tagged clean-machine evidence"
     },
     {
       "id": "supported-installer-available",
@@ -661,7 +661,7 @@
       "id": "packaged-sample-account-free",
       "pattern": "No account or inbox needed[ —-]+explore with a sample profile",
       "flags": "i",
-      "reason": "Published installers predate the guarded packaged sample path in current source, and tagged clean-machine evidence is absent"
+      "reason": "The unsigned alpha is not the supported beta and tagged clean-machine evidence is absent"
     },
     {
       "id": "unverified-self-update",
@@ -766,7 +766,7 @@
     {
       "id": "landing-sample-boundary",
       "path": "docs/index.html",
-      "exact": "Published installers predate the guarded account-free sample now in source."
+      "exact": "The alpha-0.6.106.0 release packages the current source with an Electron-compatible app version."
     },
     {
       "id": "landing-update-boundary",
@@ -816,7 +816,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "9aae7a2f3fc74770a0e19863885dacee31907881aa3ec4ea8dbcf610cc85e2e7",
+          "sha256": "95a0f2c3ac57b99af81698c6ad1fe7202e6fe932ed4bb1e88b67b97324a384ec",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
@@ -879,7 +879,7 @@
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "7d2cee87b9fdfb76253a8dd8c6c53f9d896a804cbb93341f6b249ffd9b5ba26e",
+          "sha256": "d007553f3d663c3504d0548d08a116165e436ebac8d52e0432090271cd196c81",
           "why": "Attaches strict cross-process broker lifecycle plumbing while immutable empty production grants prevent worker key delivery or cryptographic source-field use"
         }
       ],
@@ -1053,7 +1053,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "9f0b1b544cce7840a43c20ad808ef9c204cd32e78920d15e0b9ef67c2ebb2f37",
+          "sha256": "697377ed32887de0eb44d67311447c43686106f094e10b333fe3f414889f6f5c",
           "why": "Public disclosure names local-model, connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {
@@ -1129,17 +1129,17 @@
         },
         {
           "path": "apps/desktop/src/main.ts",
-          "sha256": "a3dd02b543616f655b2cc1690dfc3e152c166ce1a4764c06a25fbcf636b0acc3",
+          "sha256": "eab90d77b3ee1108b66a02745fd7f54f25b42b769a0ae94857161cab69ebfc88",
           "why": "Invokes renderer proof collection only for the verifier-provided evidence environment"
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "cfa343401c0b67f6c9f8578a474a46fa0def6bd0e8f87f37d3da15716d9e0240",
+          "sha256": "3be2f619cb5c2712265881e39665c2421d93f41c87a4e770810a93068ff18a5c",
           "why": "Keeps renderer-proof authority out of API, web, and worker child environments"
         },
         {
           "path": "apps/web/public/js/pages/onboarding.js",
-          "sha256": "15071f6cfcdd6912a0218be51f067445d65ef9b57a42b86701d3279676c90ffb",
+          "sha256": "5555cf08d99553dd069924d1b50b97af4bbd28dcf9bb76e2f949cd9bcf314ed9",
           "why": "Provides the real first-run sample control, session issuance flow, and sample-route transition"
         },
         {
@@ -1167,11 +1167,11 @@
     {
       "id": "connectors.account-free-boundary",
       "category": "connectors",
-      "statement": "The supported preview blocks Google and Microsoft account connection and connector paths while preserving an explicit source-development experimental opt-in.",
-      "scope": "OAuth authorization, callback, status, account mutation, credential mutation and synchronization, connector discovery and startup, capability admission, worker activity, and packaged desktop child configuration for Google- and Microsoft-backed integrations.",
+      "statement": "The unsigned alpha preserves an account-free sample, admits Google only through an explicit user-controlled OAuth bootstrap, and blocks packaged Microsoft account and connector paths.",
+      "scope": "Google desktop bootstrap, OAuth authorization and callback, credential mutation, connector discovery and startup, packaged Microsoft rejection, source experimental opt-in, and the isolated sample path.",
       "owner": "connectors",
       "state": "limited",
-      "limitation": "The disabled boundary is implemented and tested in source, but exact-candidate CI evidence is not yet present. Direct provider access under the exact experimental source-development opt-in is outside required public-preview support.",
+      "limitation": "The packaged Google path requires a user-created OAuth client and stores first-account credentials and tokens without app-layer encryption. It is not a managed or Google-verified OAuth service. Exact-candidate CI evidence is not yet present, and Microsoft remains unavailable in packaged mode.",
       "evidence": [
         {
           "path": "packages/shared-types/src/google-preview-boundary.ts",
@@ -1180,28 +1180,28 @@
         },
         {
           "path": "apps/api/src/routes/oauth.ts",
-          "sha256": "59bf0d6999022f89a27c27447d5e8c4fe73a9ec602988fd123fb3234abf9705c",
-          "why": "OAuth routes reject disabled Google and Microsoft paths before configuration, token, database, or provider effects"
+          "sha256": "03b1f5269a4f91001315982f168c956267b782876ca633a36753626646fcddd3",
+          "why": "The API verifies the short-lived desktop Google bootstrap before atomic credential writes and rejects packaged browser bootstrap and Microsoft routes"
         },
         {
           "path": "apps/worker/src/index.ts",
-          "sha256": "7d2cee87b9fdfb76253a8dd8c6c53f9d896a804cbb93341f6b249ffd9b5ba26e",
-          "why": "Worker connector discovery and execution admission apply the account-free boundary before connector construction or dispatch, while worker source-key broker grants remain empty"
+          "sha256": "d007553f3d663c3504d0548d08a116165e436ebac8d52e0432090271cd196c81",
+          "why": "Worker discovery admits explicitly configured Google connections while rejecting retained Microsoft credentials in packaged Google-only mode"
         },
         {
           "path": "apps/desktop/src/service-manager.ts",
-          "sha256": "cfa343401c0b67f6c9f8578a474a46fa0def6bd0e8f87f37d3da15716d9e0240",
-          "why": "Packaged desktop children pin disabled account mode, clear bundled Google client authority and Microsoft credential inputs, clear filesystem plugin authority, keep worker source-key grants empty, and allow only exact live human API-session grants that no repository consumes"
+          "sha256": "3be2f619cb5c2712265881e39665c2421d93f41c87a4e770810a93068ff18a5c",
+          "why": "Packaged desktop children pin BYO Google plus packaged-Google-only mode and keep the per-generation bootstrap signing secret out of renderer, web, and worker environments"
         }
       ],
       "verification": [
         {
           "command": "pnpm --filter @skytwin/api test -- src/__tests__/oauth-google-disabled.test.ts src/__tests__/oauth-microsoft.test.ts src/__tests__/credentials-routes.test.ts src/__tests__/capabilities-routes.test.ts src/__tests__/execution-setup.test.ts",
-          "expected": "API account authorization, credential, capability, and execution-admission paths fail closed in the supported mode while exact experimental source opt-in remains available"
+          "expected": "The desktop Google bootstrap is signature-, body-, expiry-, and nonce-bound; public packaged bootstrap and all packaged Microsoft routes fail closed"
         },
         {
           "command": "pnpm --filter @skytwin/worker test -- src/__tests__/connector-discovery.test.ts src/__tests__/execution-account-boundary.test.ts src/__tests__/changelog-poll.test.ts src/__tests__/federation-sync.test.ts src/__tests__/briefing-generator.test.ts src/__tests__/briefing-generator-adaptive.test.ts src/__tests__/promotion-eligibility-check.test.ts",
-          "expected": "Worker credential discovery, connector construction, execution admission, changelog polling, federation, briefing, and promotion activity cannot consume retained account-backed authority while disabled"
+          "expected": "Worker discovery accepts admitted Google grants but cannot consume retained Microsoft credentials in packaged Google-only mode"
         },
         {
           "command": "pnpm --filter @skytwin/shared-types test -- src/__tests__/google-preview-boundary.test.ts",
@@ -1213,7 +1213,7 @@
         },
         {
           "command": "pnpm --filter skytwin-desktop test -- src/__tests__/service-manager-env.test.ts",
-          "expected": "Packaged child environments keep both account providers disabled and do not expose their credentials"
+          "expected": "Packaged child environments admit BYO Google, block Microsoft, and do not expose desktop bootstrap signing authority outside the API child"
         }
       ]
     },
@@ -1476,7 +1476,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "a3c464d4faa45082d83f5dee11a4f4d1b694fb5feb65ad89d49f965285ff8c9c",
+          "sha256": "ec7df38f7390355325edb04940b73cd05a8ea7af0df757b812278e2dfec925fd",
           "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator; enforces the audited inventory for every public visual binary; re-verifies the exact four-member safety artifact with both independent verifiers; emits the digest of the stable manifest bytes it checked; and validates every other bounded release material and source report binding at publication"
         }
       ],

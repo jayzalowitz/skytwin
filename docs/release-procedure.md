@@ -17,15 +17,55 @@ an installer release and not a certification that the beta ledger is ready.
   assets; do not attach binaries, updater manifests, internal source candidates,
   or unverified machine reports.
 - Explain that local development tools are required. Recommend the isolated
-  fictional sample and disclose unavailable supported Google/Microsoft account
-  connections. State that signing, notarization, clean-machine verification, and
-  release-wide evidence remain incomplete for the public beta.
+  fictional sample by default and distinguish it from the separately labeled
+  historical BYO Gmail alpha and exact experimental source-operator mode. State
+  that no managed Google/Microsoft connection service exists and that signing,
+  notarization, clean-machine verification, and release-wide evidence remain
+  incomplete for the public beta.
 - Keep `VERSION`, the claim ledger, the `v*` publisher, and all application safety
   gates unchanged. A source snapshot does not satisfy any installer-release gate.
 
 Internal source candidates described below remain non-public evaluation
 materials. Do not upload them as source-preview assets. Publication still needs
 explicit maintainer authority; this procedure does not grant it.
+
+## Existing desktop alpha
+
+The public [`v0.6.58.0` release](https://github.com/jayzalowitz/skytwin/releases/tag/v0.6.58.0)
+is the downloadable **desktop alpha**. It contains usable packaged applications
+for Apple Silicon macOS, x64 Windows, and x86-64 Linux. It is distinct from both the
+date-based source preview and the planned evidence-gated public beta. The
+packaged services also expose their local dashboard at
+`http://localhost:3200` while the alpha is running.
+
+- The release tag is `v0.6.58.0`, while the asset names and packaged application
+  version are `0.3.0`. That mismatch is historical: this older packaging path
+  used the fixed desktop placeholder before version derivation was repaired.
+- The alpha is unsigned. It has no current notarization proof, signed update
+  manifests, published checksum/SBOM/provenance set, or clean-machine evidence.
+  macOS Gatekeeper and Windows SmartScreen therefore warn on first launch.
+- The alpha predates the guarded account-free sample, verified managed-model
+  delivery work, and other current-source changes. Its own release notes define
+  its contents; current source documentation must not be projected backward onto
+  those binaries.
+- The alpha includes a local-web Gmail wizard in its desktop window and, for an
+  already authenticated browser session, at
+  `http://localhost:3200/#/connect-gmail`, plus a live Gmail/Calendar connector.
+  It embeds a historical SkyTwin-team client ID for initial identity/Calendar
+  authorization and requires a user-created client when Gmail is selected.
+  Document that real-inbox capability together with its unsigned-build,
+  plaintext client-secret/token custody, testing-mode expiry, and unsupported
+  Gmail/Calendar-mutation limitations; do not erase it merely because the later
+  beta candidate defaults account-free.
+- Label the GitHub release as a prerelease and not the latest stable release.
+  Keep direct documentation links pinned to the exact tag. Do not move the tag,
+  replace its assets, or treat it as satisfying any beta-claim-ledger gate.
+
+The alpha is appropriate when someone wants to try a real packaged SkyTwin app
+or connect a test Gmail inbox without a source checkout. Current source remains
+the right path for evaluating the newest behavior and guarded fictional sample;
+its retained live-account implementation requires exact experimental opt-in and
+operator-supplied OAuth configuration.
 
 ## Supported desktop beta
 
@@ -203,7 +243,7 @@ of these subjects fails the final gate.
 
 How to cut a public SkyTwin release. This is the **current, accurate** flow as of 2026-09-14 — the old `.github/workflows/release.yml` was deleted in #356; **`.github/workflows/build.yml` is now the only publisher** (its `release` job). Source of truth: `.github/workflows/build.yml` (the `release:` job, `if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`).
 
-Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the *first* public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
+Pairs with [`launch-plan.md`](./launch-plan.md) (what blocks the _first_ public launch) and [`launch-readiness-report.md`](./launch-readiness-report.md) (current blocker status).
 
 ---
 
@@ -224,8 +264,9 @@ Every open stop-ship condition in the claim ledger must be closed with its
 required evidence; none may be accepted as an informal exception. Signing and
 clean-artifact verification remain release gates. Google and Microsoft account
 connections are outside this account-free release; provider review and any
-operator/BYO account work are deferred post-launch concerns, not onboarding
-constraints for this candidate.
+managed-client work are deferred post-launch concerns, not onboarding constraints
+for this candidate. This beta boundary does not negate the historical alpha's
+BYO Gmail wizard or the retained experimental source mode.
 
 ---
 
@@ -234,7 +275,7 @@ constraints for this candidate.
 `build.yml` triggers on `push: tags: ['v*']`. The relevant jobs:
 
 1. **`test`** + **`changes`** — gate the build (the desktop/mobile jobs `needs: [test, changes]`). The general eval workflow remains separate, but a `v*` tag now reruns the exact v1 adversarial catalog, independently verifies it, and adds a bounded release-safety sidecar to `release-claims-ci`. The final publication verifier consumes and independently re-verifies that exact sidecar, but it still discloses four explanation-coverage gaps and therefore does not close the release-evals stop-ship.
-2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only *build + validate* packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
+2. **`desktop-mac` / `desktop-windows` / `desktop-linux`** — each job first runs `.github/scripts/derive-app-version.sh` (exports `APP_VERSION`; see [Version bumps](#version-bumps)), then `pnpm --filter skytwin-desktop run package:<os> --publish never "--config.extraMetadata.version=${APP_VERSION}"`. `--publish never` is deliberate: these jobs only _build + validate_ packageability and upload the artifacts; they do not publish (see the comments in `build.yml`). `--config.extraMetadata.version` is what stamps the real version onto the artifacts and the `latest*.yml` manifests.
 3. **`mobile-android` / `mobile-ios`** — Android `.apk` + an unsigned iOS simulator `.app` zip.
 4. **`release`** (`needs:` `test`, the three desktop jobs, and the verified evidence aggregator) — when the ledger is ready, verifies the evidence contract, creates an unpublished prerelease draft containing only the canonical desktop artifacts, update manifests, one CI result plus twelve machine reports (thirteen durable report files total), the three adversarial/release-safety sidecars, checksum/SBOM/instruction/provenance sidecars, and the evidence manifest, then runs `publish-verified-draft.mjs`. That script consumes the creator action's numeric release ID and the checker's exact manifest digest, requires the exact expected asset-name/digest set, independently dereferences the release tag to the triggering commit, and proves that commit is an ancestor of the current `main` branch before it changes the draft to public. The open stop-ship conditions currently prevent this path from creating a draft or publishing those assets.
 
@@ -404,7 +445,7 @@ Until then, macOS Gatekeeper / Windows SmartScreen warn on first launch (the REA
 
 ### 2. Auto-update manifests are generated by the tagged path — but the path is live only after signing (#370)
 
-`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the tagged `release` job is designed to attach the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests electron-updater polls (electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). This describes the release path, not the currently published technical-preview assets: the beta gate is blocked and no qualifying tagged release is published. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so *discovery* could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
+`electron-updater` is wired client-side (`apps/desktop/src/auto-update.ts`), and the tagged `release` job is designed to attach the `latest-mac.yml` / `latest.yml` / `latest-linux.yml` manifests electron-updater polls (electron-builder generates them under `--publish never`, and the three desktop jobs collect them as artifacts). This describes the release path, not the currently published technical-preview assets: the beta gate is blocked and no qualifying tagged release is published. The **user-facing update surface now exists too**: `AutoUpdateController.start()` subscribes to electron-updater's lifecycle events and the dashboard shows a bottom banner (downloading → "Update ready to install" with a Restart-to-update button), plus a "Check for Updates…" menu item for an on-demand poll. A second, separately-fatal half of this is also fixed: the manifests used to be stamped with the frozen `0.3.0` placeholder, so _discovery_ could never succeed no matter what was attached. CI now injects a derived version (see [How the desktop app version is derived](#how-the-desktop-app-version-is-derived)).
 
 The remaining catch: electron-updater verifies the downloaded update's signature and **refuses an unsigned payload** (fails safe). Until code signing lands (gap 1 / #368 / #359), the banner surfaces "downloading" but the install step can't complete on an unsigned build. Once a qualifying release exists, verify with `gh release view <tag> --json assets` that all three `latest*.yml` are attached, and that the asset filenames carry the derived version (e.g. `SkyTwin-0.6.10100-arm64.dmg`), not `0.3.0`.
 
@@ -414,8 +455,12 @@ The supported `v0.7.0-beta` candidate is an account-free sample. It ships no
 supported Google or Microsoft connection path, and neither Google verification
 nor an operator/BYO OAuth client is part of its launch procedure. The exact
 `SKYTWIN_GOOGLE_CONNECTION_MODE=experimental` source-development opt-in can
-exercise retained provider implementations, but that unsupported path is not
-release evidence and must not be enabled in packaged artifacts.
+exercise retained provider implementations with an operator-supplied client,
+but that experimental path is not beta release evidence and must not be enabled
+in beta artifacts. Separately, the historical <code>v0.6.58.0</code> alpha did
+ship a Gmail wizard in its desktop window and serve that page to already
+authenticated local-browser sessions; its existence must remain documented even
+though it does not satisfy this candidate's gates.
 
 Future managed Google work, including applicable brand, sensitive-scope, Gmail,
 and security-assessment requirements, remains tracked separately in #351 and the
@@ -431,7 +476,7 @@ secret-custody boundaries before a later release can support them.
 
 ### How the desktop app version is derived
 
-electron-builder **rejects** a four-segment version, so `apps/desktop/package.json` cannot simply mirror `VERSION`. It carries a fixed placeholder (`0.3.0`) that exists only so local `pnpm --filter skytwin-desktop package:mac` works with no setup — **do not** hand-bump it. From #31 until this was fixed, that placeholder was also what shipped: electron-builder stamps artifact filenames *and* the `latest*.yml` update manifests from it, so every release published `0.3.0`, and electron-updater's semver compare against an installed `0.3.0` answered "no update available" forever. Auto-update could never fire.
+electron-builder **rejects** a four-segment version, so `apps/desktop/package.json` cannot simply mirror `VERSION`. It carries a fixed placeholder (`0.3.0`) that exists only so local `pnpm --filter skytwin-desktop package:mac` works with no setup — **do not** hand-bump it. From #31 until this was fixed, that placeholder was also what shipped: electron-builder stamps artifact filenames _and_ the `latest*.yml` update manifests from it, so every release published `0.3.0`, and electron-updater's semver compare against an installed `0.3.0` answered "no update available" forever. Auto-update could never fire.
 
 CI now derives a real three-segment version from `VERSION` and injects it at package time:
 

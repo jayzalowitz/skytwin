@@ -1,6 +1,6 @@
 import { fork, spawn, execSync, type ChildProcess } from 'child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'fs';
-import { randomBytes, randomUUID } from 'crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'crypto';
 import { isAbsolute, join, relative, sep } from 'path';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
@@ -26,6 +26,12 @@ export interface ServiceStatus {
   cockroach: ProcessState;
   overall: 'healthy' | 'degraded' | 'failed';
 }
+
+export interface GoogleBootstrapInput {
+  clientId: string;
+  clientSecret: string;
+  pendingKey: string;
+}
 interface ManagedProcess {
   process: ChildProcess | null;
   status: ProcessState;
@@ -38,6 +44,7 @@ interface ApiGeneration {
   readonly generation: number;
   readonly process: ChildProcess;
   readonly instanceCapability: string;
+  readonly desktopBootstrapSecret: string;
   readonly ingestCredential: string;
   readonly workerAuthorityId: string;
   readonly workerAuthoritySecret: string;
@@ -639,6 +646,7 @@ export class ServiceManager {
     delete inheritedEnv['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'];
     if (app.isPackaged) {
       delete inheritedEnv['SKYTWIN_API_INSTANCE_CAPABILITY'];
+      delete inheritedEnv['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET'];
       delete inheritedEnv['SKYTWIN_SERVICE_TOKEN'];
       delete inheritedEnv['SKYTWIN_WORKER_GENERATION_ID'];
       delete inheritedEnv['SKYTWIN_WORKER_GENERATION_SECRET'];
@@ -653,12 +661,14 @@ export class ServiceManager {
       // the purpose of the all-in-one bundle.
       USE_MOCK_IRONCLAW: process.env['USE_MOCK_IRONCLAW'] ?? 'true',
       NODE_ENV: 'production',
-      // Google account connections are outside the packaged preview boundary.
-      // Pin this after inherited environment so a launcher shell cannot opt the
-      // API or worker into the experimental source-development path.
+      // The packaged alpha admits the BYO-Google path. Pin this after inherited
+      // environment so a launcher shell cannot choose the account boundary;
+      // first-use credential custody is still authorized by Electron main's
+      // dedicated per-generation bootstrap signature, not by this mode flag.
       SKYTWIN_GOOGLE_CONNECTION_MODE: app.isPackaged
-        ? 'disabled'
+        ? 'experimental'
         : process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] ?? 'disabled',
+      SKYTWIN_PACKAGED_GOOGLE_ONLY: app.isPackaged ? 'true' : 'false',
       // Filesystem plugins are executable authority. Packaged children do not
       // inherit an operator shell path; source development remains configurable.
       ...(app.isPackaged ? { ADAPTER_PLUGIN_DIR: '' } : {}),
@@ -704,11 +714,12 @@ export class ServiceManager {
     };
   }
 
-  private apiEnv(instanceCapability: string): Record<string, string> {
+  private apiEnv(instanceCapability: string, desktopBootstrapSecret = randomBytes(32).toString('hex')): Record<string, string> {
     const baseEnv = this.getEnv();
     const env: Record<string, string> = {
       ...baseEnv,
       SKYTWIN_API_INSTANCE_CAPABILITY: instanceCapability,
+      SKYTWIN_DESKTOP_BOOTSTRAP_SECRET: desktopBootstrapSecret,
       // Packaged worker authority is generation-scoped. Source-development
       // workers can outlive an API-only restart, so they retain the stable
       // operator/per-install credential from getEnv().
@@ -737,12 +748,14 @@ export class ServiceManager {
       throw new Error('Packaged worker startup requires the current API generation');
     }
     delete env['SKYTWIN_API_INSTANCE_CAPABILITY'];
+    delete env['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET'];
     return env;
   }
 
   private webEnv(): Record<string, string> {
     const env = this.getEnv();
     delete env['SKYTWIN_API_INSTANCE_CAPABILITY'];
+    delete env['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET'];
     delete env['SKYTWIN_SERVICE_TOKEN'];
     delete env['SKYTWIN_WORKER_GENERATION_ID'];
     delete env['SKYTWIN_WORKER_GENERATION_SECRET'];
@@ -1574,7 +1587,8 @@ export class ServiceManager {
     let generation: ApiGeneration | null = null;
     try {
       const instanceCapability = randomBytes(32).toString('hex');
-      const environment = this.apiEnv(instanceCapability);
+      const desktopBootstrapSecret = randomBytes(32).toString('hex');
+      const environment = this.apiEnv(instanceCapability, desktopBootstrapSecret);
       const ingestCredential = environment['SKYTWIN_SERVICE_TOKEN'];
       const apiProcess = fork(apiEntry, [], {
         env: environment,
@@ -1585,6 +1599,7 @@ export class ServiceManager {
         generation: ++this.nextApiGeneration,
         process: apiProcess,
         instanceCapability,
+        desktopBootstrapSecret,
         ingestCredential,
         workerAuthorityId: randomUUID(),
         workerAuthoritySecret: randomBytes(32).toString('hex'),
@@ -2445,6 +2460,53 @@ export class ServiceManager {
       cockroach: cockroachState,
       overall,
     };
+  }
+
+  /**
+   * Ask the exact packaged API child owned by this Electron process to stage
+   * BYO Google credentials and mint the first-use OAuth URL. The renderer gets
+   * neither the dedicated per-generation bootstrap secret nor a general
+   * privileged fetch.
+   */
+  async bootstrapGoogleAccount(input: GoogleBootstrapInput): Promise<{ url: string }> {
+    if (!app.isPackaged) {
+      throw new Error('Desktop Google bootstrap is available only in a packaged app.');
+    }
+    const generation = this.apiGeneration;
+    if (!generation || !this.isApiGenerationReady(generation) || !(await this.verifyOwnedApi(generation))) {
+      throw new Error('The local SkyTwin API could not be verified. Restart SkyTwin and try again.');
+    }
+    const path = '/api/oauth/google/desktop-bootstrap';
+    const body = JSON.stringify(input);
+    const expires = String(Date.now() + 15_000);
+    const nonce = randomUUID();
+    const bodyHash = createHash('sha256').update(body).digest('hex');
+    const signature = createHmac('sha256', generation.desktopBootstrapSecret)
+      .update(`POST\n${path}\n${bodyHash}\n${expires}\n${nonce}`)
+      .digest('hex');
+    const { response, payload } = await fetchJsonBounded<{ url?: unknown; error?: unknown }>(
+      `http://127.0.0.1:3100${path}`,
+      {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-skytwin-bootstrap-expires': expires,
+          'x-skytwin-bootstrap-nonce': nonce,
+          'x-skytwin-bootstrap-signature': signature,
+        },
+        body,
+      },
+      5_000,
+      [generation.controller.signal],
+    );
+    if (!response.ok || typeof payload?.url !== 'string') {
+      const reason = typeof payload?.error === 'string' ? payload.error : 'Google setup could not start.';
+      throw new Error(reason);
+    }
+    if (!this.isApiGenerationReady(generation)) {
+      throw new Error('The local SkyTwin API changed while setup was starting. Try again.');
+    }
+    return { url: payload.url };
   }
 
   getUptime(): number {

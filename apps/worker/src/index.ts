@@ -54,7 +54,11 @@ import { createWorkerGenerationAdmission, isWorkerGenerationRevoked } from './ge
 import { forwardSignalToApi as forwardSignalUnderAdmission } from './signal-forwarder.js';
 import { createWorkerLifecycle } from './worker-lifecycle.js';
 import { installGenerationFetch } from './generation-fetch.js';
-import { buildAccountConnectorTopology, loadUserOAuthConnections } from './connector-discovery.js';
+import {
+  buildAccountConnectorTopology,
+  isMicrosoftConnectionAdmitted,
+  loadUserOAuthConnections,
+} from './connector-discovery.js';
 import { buildSignalIngestPayload } from './signal-ingest-payload.js';
 import { connectorHealthName, connectorRuntimeKey, sameConnectorTopology } from './connector-runtime-key.js';
 
@@ -417,7 +421,13 @@ async function resolveGoogleConfig(): Promise<GoogleOAuthConfig | null> {
  * the bundled PKCE-only default. Returns null when no client is configured.
  */
 async function resolveMicrosoftConfig(): Promise<MicrosoftOAuthConfig | null> {
-  if (config.googleConnectionMode !== 'experimental') return null;
+  // Clearing Microsoft env values is not enough because a prior build may
+  // have left a client id and verified refresh token in CockroachDB. Reject
+  // packaged Google-only mode before reading any retained credential rows.
+  if (!isMicrosoftConnectionAdmitted(
+    config.googleConnectionMode,
+    process.env['SKYTWIN_PACKAGED_GOOGLE_ONLY'] === 'true',
+  )) return null;
 
   const DEFAULT_REDIRECT = 'http://localhost:3100/api/oauth/microsoft/callback';
   let clientId = process.env['MICROSOFT_CLIENT_ID'] ?? '';

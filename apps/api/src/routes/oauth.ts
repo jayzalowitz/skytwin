@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { createHmac, timingSafeEqual, randomUUID } from 'crypto';
+import { createHash, createHmac, timingSafeEqual, randomUUID } from 'crypto';
 import { createLogger } from '@skytwin/core';
 import { loadConfig } from '@skytwin/config';
 import { encryptColumn, readColumn, withTransaction } from '@skytwin/db';
@@ -73,6 +73,57 @@ export const PENDING_POLL_RATE_LIMIT_WINDOW_MS = 60 * 1000;
 export const NEW_USER_RATE_LIMIT_MAX_BUCKETS = 5_000;
 const newUserRateBuckets = new Map<string, { count: number; resetAt: number }>();
 const pendingPollRateBuckets = new Map<string, { count: number; resetAt: number }>();
+const desktopBootstrapNonces = new Map<string, number>();
+const DESKTOP_BOOTSTRAP_NONCE_CAP = 1_000;
+const DESKTOP_BOOTSTRAP_PATH = '/api/oauth/google/desktop-bootstrap';
+const DESKTOP_BOOTSTRAP_MAX_FUTURE_MS = 30_000;
+
+function authorizeDesktopBootstrap(body: unknown, headers: Record<string, string | string[] | undefined>):
+  { ok: true } | { ok: false; reason: 'unauthorized' | 'replayed' } {
+  const secret = process.env['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET'] ?? '';
+  const expiresRaw = headers['x-skytwin-bootstrap-expires'];
+  const nonceRaw = headers['x-skytwin-bootstrap-nonce'];
+  const signatureRaw = headers['x-skytwin-bootstrap-signature'];
+  const expires = typeof expiresRaw === 'string' ? Number(expiresRaw) : NaN;
+  const nonce = typeof nonceRaw === 'string' ? nonceRaw : '';
+  const signature = typeof signatureRaw === 'string' ? signatureRaw : '';
+  const now = Date.now();
+  if (
+    secret.length < 32 ||
+    process.env['DESKTOP_MODE'] !== 'true' ||
+    !Number.isSafeInteger(expires) ||
+    expires < now ||
+    expires > now + DESKTOP_BOOTSTRAP_MAX_FUTURE_MS ||
+    !isValidPendingKey(nonce) ||
+    !/^[a-f0-9]{64}$/.test(signature)
+  ) return { ok: false, reason: 'unauthorized' };
+
+  for (const [seenNonce, seenExpiry] of desktopBootstrapNonces) {
+    if (seenExpiry < now) desktopBootstrapNonces.delete(seenNonce);
+  }
+  if (desktopBootstrapNonces.has(nonce)) return { ok: false, reason: 'replayed' };
+  while (desktopBootstrapNonces.size >= DESKTOP_BOOTSTRAP_NONCE_CAP) {
+    const oldest = desktopBootstrapNonces.keys().next().value;
+    if (oldest === undefined) break;
+    desktopBootstrapNonces.delete(oldest);
+  }
+
+  const serialized = JSON.stringify(body);
+  const bodyHash = createHash('sha256').update(serialized).digest('hex');
+  const expected = createHmac('sha256', secret)
+    .update(`POST\n${DESKTOP_BOOTSTRAP_PATH}\n${bodyHash}\n${expires}\n${nonce}`)
+    .digest('hex');
+  if (!timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(signature, 'hex'))) {
+    return { ok: false, reason: 'unauthorized' };
+  }
+  desktopBootstrapNonces.set(nonce, expires);
+  return { ok: true };
+}
+
+export const _authorizeDesktopBootstrapForTests = authorizeDesktopBootstrap;
+export function _resetDesktopBootstrapNoncesForTests(): void {
+  desktopBootstrapNonces.clear();
+}
 
 function evictExpiredBuckets(buckets: Map<string, { count: number; resetAt: number }>, now: number): void {
   for (const [ip, bucket] of buckets) {
@@ -281,6 +332,13 @@ function signStatePayload(payload: string, expiresAtMs: number): string {
 class InvalidStateError extends Error {
   constructor(reason: string) {
     super(`Invalid OAuth state: ${reason}`);
+  }
+}
+
+class DesktopBootstrapCompleteError extends Error {
+  constructor() {
+    super('Desktop first-use setup is already complete.');
+    this.name = 'DesktopBootstrapCompleteError';
   }
 }
 
@@ -747,6 +805,116 @@ async function consumePkceVerifier(state: string): Promise<string | undefined> {
 export function createOAuthRouter(): Router {
   const router = Router();
 
+  /**
+   * Electron-only first-use bridge for the packaged BYO-Google flow.
+   *
+   * The renderer never receives either per-spawn secret. Electron main proves
+   * the API listener belongs to its current child generation, then signs one
+   * body/path/expiry/nonce tuple with a separate bootstrap secret. This keeps
+   * credential writes off the unauthenticated web surface while still letting
+   * a machine with no user/session create its first account from Google's
+   * verified identity.
+   */
+  router.post('/google/desktop-bootstrap', async (req, res, next) => {
+    try {
+      const socketAddress = req.socket.remoteAddress ?? '';
+      const loopback = socketAddress === '127.0.0.1' || socketAddress === '::1' || socketAddress === '::ffff:127.0.0.1';
+      const authority = loopback
+        ? authorizeDesktopBootstrap(req.body, req.headers)
+        : { ok: false as const, reason: 'unauthorized' as const };
+      if (!authority.ok) {
+        if (authority.reason === 'replayed') {
+          res.status(409).json({ error: 'Desktop first-use request was already used.', code: 'DESKTOP_BOOTSTRAP_REPLAYED' });
+          return;
+        }
+        res.status(403).json({ error: 'Desktop first-use authority required.' });
+        return;
+      }
+      if (loadConfig().googleConnectionMode !== 'experimental') {
+        res.status(503).json({ error: 'Google connection is disabled.', code: 'GOOGLE_CONNECTION_DISABLED' });
+        return;
+      }
+
+      const body = req.body as {
+        clientId?: unknown;
+        clientSecret?: unknown;
+        pendingKey?: unknown;
+      };
+      const clientId = typeof body.clientId === 'string' ? body.clientId.trim() : '';
+      const clientSecret = typeof body.clientSecret === 'string' ? body.clientSecret.trim() : '';
+      const pendingKey = typeof body.pendingKey === 'string' ? body.pendingKey : '';
+      if (!clientId.endsWith('.apps.googleusercontent.com') || clientId.length > 512) {
+        res.status(400).json({ error: 'Enter a valid Google OAuth client ID.' });
+        return;
+      }
+      if (clientSecret.length < 8 || clientSecret.length > 512) {
+        res.status(400).json({ error: 'Enter a valid Google OAuth client secret.' });
+        return;
+      }
+      if (!isValidPendingKey(pendingKey)) {
+        res.status(400).json({ error: 'A valid desktop pending key is required.' });
+        return;
+      }
+
+      // Commit the credential pair together. A crash after only client_id (or
+      // only client_secret) would strand first use behind a misleading
+      // "configured" state and could select the wrong OAuth exchange mode.
+      await withTransaction(async (client) => {
+        const completed = await client.query<{ complete: boolean }>(
+          `SELECT (
+             EXISTS (
+               SELECT 1 FROM oauth_tokens AS t
+               JOIN users AS u ON u.id = t.user_id
+               WHERE t.provider = 'google' AND u.is_demo = false
+                 AND t.dispatch_state = 'active'
+                 AND (t.refresh_token IS NOT NULL OR t.encrypted_refresh_token IS NOT NULL)
+             ) OR
+             EXISTS (
+               SELECT 1 FROM sessions AS s
+               JOIN users AS u ON u.id = s.user_id
+               WHERE s.expires_at >= now() AND u.is_demo = false
+             )
+           ) AS complete`,
+        );
+        if (completed.rows[0]?.complete) {
+          throw new DesktopBootstrapCompleteError();
+        }
+        await client.query(
+          `INSERT INTO service_credentials (service, credential_key, credential_value, label)
+           VALUES ('google', 'client_id', $1, 'client_id'),
+                  ('google', 'client_secret', $2, 'client_secret')
+           ON CONFLICT (service, credential_key) DO UPDATE SET
+             credential_value = EXCLUDED.credential_value,
+             label = EXCLUDED.label,
+             ironclaw_synced_at = NULL,
+             updated_at = now()`,
+          [clientId, clientSecret],
+        );
+      });
+
+      const expiresAtMs = Date.now() + STATE_TTL_MS;
+      const authorizationId = await oauthRepository.issueNewUserAuthorization('google', new Date(expiresAtMs));
+      const state = signStatePayload(
+        `new|ng=${authorizationId}|desktop|next=connect-gmail|key=${pendingKey}`,
+        expiresAtMs,
+      );
+      const scopes = resolveRequestedScopes({ source: 'user-supplied', includeGmail: true }).scopes;
+      const url = generateAuthUrl(
+        { clientId, clientSecret, redirectUri: loadConfig().googleRedirectUri },
+        scopes,
+        state,
+      );
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ url });
+    } catch (error) {
+      if (error instanceof DesktopBootstrapCompleteError) {
+        res.status(409).json({ error: 'First-use setup is already complete.', code: 'DESKTOP_BOOTSTRAP_COMPLETE' });
+        return;
+      }
+      next(error);
+    }
+  });
+
   // The release-candidate surface is account-free by default. Keep this
   // guard ahead of both authentication and every provider-specific handler so
   // stale callbacks, pending handoffs, and stored token rows cannot revive a
@@ -765,11 +933,16 @@ export function createOAuthRouter(): Router {
       next();
       return;
     }
-    if (loadConfig().googleConnectionMode === 'experimental') {
+    const microsoft = provider.toLowerCase() !== 'google';
+    // Packaged alpha enables only the reviewed BYO-Google path. Reusing the
+    // source-development Google mode must not accidentally revive Microsoft.
+    if (
+      loadConfig().googleConnectionMode === 'experimental' &&
+      (!microsoft || process.env['SKYTWIN_PACKAGED_GOOGLE_ONLY'] !== 'true')
+    ) {
       next();
       return;
     }
-    const microsoft = provider.toLowerCase() !== 'google';
     res.status(503).json({
       error: `${microsoft ? 'Microsoft account' : 'Google'} connection is unavailable in this preview.`,
       code: microsoft ? 'MICROSOFT_CONNECTION_DISABLED' : 'GOOGLE_CONNECTION_DISABLED',
@@ -827,6 +1000,13 @@ export function createOAuthRouter(): Router {
   router.get('/google/authorize', async (req, res, next) => {
     try {
       const newUser = req.query['newUser'] === 'true';
+      if (newUser && process.env['SKYTWIN_PACKAGED_GOOGLE_ONLY'] === 'true') {
+        res.status(403).json({
+          error: 'Create the first account from the SkyTwin desktop setup.',
+          code: 'DESKTOP_BOOTSTRAP_REQUIRED',
+        });
+        return;
+      }
 
       // Rate-limit the public new-user variant by IP. The authenticated
       // path is already gated by sessionAuth so it's implicitly throttled

@@ -324,7 +324,7 @@ const CANONICAL_READINESS_CLAIM_DIGESTS = new Map([
   ],
   [
     "connectors.account-free-boundary",
-    "e3f0588457c718052eafe53d42aa3f094412b1d6a1325bf90625a9870ec3835b",
+    "86c579731da9979c15d4e24a58e6849095d9a65bad552f1a62c1f9d4ddeed1e9",
   ],
   [
     "models.verified-delivery",
@@ -936,7 +936,7 @@ const CANONICAL_APPROVED_STATEMENT_DIGESTS = new Map([
   ],
   [
     "landing-sample-boundary",
-    "031b068eb9ec1158fe3ee885888a44e957ddfffcdcdf5503d1a2571d4c8f3708",
+    "375443183ce9dcfe395f3d3f49d9c181c93636ce2e4aa197a4f620315ae78da7",
   ],
   [
     "landing-update-boundary",

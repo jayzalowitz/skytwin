@@ -3,6 +3,7 @@ import type { GoogleOAuthConfig, MicrosoftOAuthConfig } from '@skytwin/connector
 
 export interface UserOAuthConnectorDiscovery<TTokenStore, TConnector> {
   googleConnectionMode: GoogleConnectionMode;
+  googleOnly?: boolean;
   hasGoogleToken: boolean;
   hasMicrosoftToken: boolean;
   resolveGoogleConfig(): Promise<GoogleOAuthConfig | null>;
@@ -15,6 +16,14 @@ export interface UserOAuthConnectorDiscovery<TTokenStore, TConnector> {
   createGoogleCalendarConnector(tokenStore: TTokenStore): TConnector;
   createOutlookMailConnector(tokenStore: TTokenStore): TConnector;
   createOutlookCalendarConnector(tokenStore: TTokenStore): TConnector;
+}
+
+/** Packaged BYO-Google releases must not revive retained Microsoft grants. */
+export function isMicrosoftConnectionAdmitted(
+  googleConnectionMode: GoogleConnectionMode,
+  googleOnly: boolean,
+): boolean {
+  return googleConnectionMode === 'experimental' && !googleOnly;
 }
 
 /**
@@ -72,7 +81,8 @@ export async function buildUserOAuthConnectors<TTokenStore, TConnector>(
   const googleConfig = input.hasGoogleToken && input.googleConnectionMode === 'experimental'
     ? await input.resolveGoogleConfig()
     : null;
-  const microsoftConfig = input.hasMicrosoftToken && input.googleConnectionMode === 'experimental'
+  const microsoftConfig = input.hasMicrosoftToken &&
+    isMicrosoftConnectionAdmitted(input.googleConnectionMode, input.googleOnly === true)
     ? await input.resolveMicrosoftConfig()
     : null;
 

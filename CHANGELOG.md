@@ -1,5 +1,32 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.106.0] - 2026-09-17
+
+### Added
+
+- **New users can create their first local SkyTwin account from the packaged
+  desktop app using a Google OAuth client they create and control.** A five-step
+  Connect Gmail wizard performs a desktop-only bootstrap, opens Google's consent
+  screen, and returns to a one-use local session. Once authenticated, the same
+  dashboard is available at `http://localhost:3200`.
+- **The current unsigned desktop alpha now has a truthful public launch path.**
+  README and the Pages handbook lead with the packaged app, retain the isolated
+  fictional-data sample, explain real-inbox setup in human terms, and link the
+  `alpha-0.6.106.0` prerelease without presenting it as the gated beta.
+
+### Security
+
+- **First-account setup is bound to the desktop instance and current service
+  generation.** The API accepts a short-lived, nonce-protected HMAC over the
+  exact method, path, and request body; Electron validates the requesting
+  dashboard origin; credentials are written atomically; and bootstrap closes
+  after a real Google grant or non-demo session exists.
+- **Packaged Microsoft account creation and worker discovery remain disabled.**
+  The alpha admits only the documented BYO Google path. Google client secrets
+  and newly authorized tokens still use plaintext local database storage in
+  this alpha, so the documentation directs evaluators to use a test account and
+  does not claim managed OAuth, signing, notarization, or Google verification.
+
 ## [0.6.105.0] - 2026-09-16
 
 ### Added
@@ -26,7 +53,6 @@ All notable changes to SkyTwin will be documented in this file.
   local Watch run evidence.
 
 ### Fixed (post-review)
-
 - **The disposable sample no longer makes credential-inventory or OAuth-status
   requests it is not authorized to read.** Its dashboard substitutes explicit
   empty credential states while normal user profiles retain all three requests;

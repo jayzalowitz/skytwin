@@ -1,21 +1,23 @@
 # Google integration — deferred verification and architecture plan
 
-## Current supported boundary
+## Current release boundaries
 
-The supported SkyTwin technical preview is an isolated, account-free sample.
-Google connection is unavailable on that surface: it does not offer Google
-identity, Calendar, or Gmail authorization, and it does not ship a
-SkyTwin-managed Google OAuth client.
+The supported SkyTwin beta candidate remains gated separately. The current
+unsigned `0.6.106.0` alpha offers a packaged BYO Google path beside its isolated
+account-free sample; it does not ship a SkyTwin-managed Google OAuth client.
 
-Operator or bring-your-own (BYO) Google configuration is also unsupported.
-Client credentials or older token rows do not opt the packaged preview into
-Google access. Existing stored material is retained rather than silently
-deleted, but the disabled runtime must not use it.
+The current alpha exposes its wizard in the desktop window and to a local
+browser that already has a valid SkyTwin session. A fresh browser has no
+installation bootstrap authority. The user creates and supplies a Google Web
+Application OAuth client; consent opens in the system browser. Source operators
+can also enable the provider implementation with the exact
+`SKYTWIN_GOOGLE_CONNECTION_MODE=experimental` opt-in. Neither path is evidence
+of Google approval or a supported managed-client service.
 
 This page records future work. It is not a setup guide, an approval claim, or
 evidence that a personal OAuth test is suitable for release.
 
-## Why connection remains disabled
+## Why managed connection remains deferred
 
 Removing a default client ID is not enough to make BYO safe. Before real Google
 access is supported, the same reviewed authority must cover:
@@ -57,7 +59,8 @@ send scope. A denied or absent capability must prevent construction, polling,
 refresh, and actions for that capability rather than merely producing provider
 errors afterward.
 
-These are intended scopes, not scopes available in the supported preview.
+These scopes are used by the BYO alpha/experimental path. They are not available
+to the account-free beta candidate and are not a managed-client support claim.
 
 ## External Google requirements
 
@@ -92,7 +95,8 @@ candidate artifact must all describe the same reviewed implementation.
 
 ## Preview demonstration
 
-The only supported preview demonstration is the account-free sample described
+The beta launch-evidence demonstration is the account-free sample described
 in [`demo.md`](./demo.md). It uses fictional data and has no OAuth, connector,
 credential, provider, or external-action path. Do not record a real-account
-Google flow as launch evidence while this boundary is disabled.
+Google flow as beta-candidate evidence. Real-inbox evaluators should instead use
+the separately labeled [`connect-gmail.html`](./connect-gmail.html) alpha guide.

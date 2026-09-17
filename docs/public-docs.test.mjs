@@ -45,8 +45,49 @@ describe("public developer-preview documentation", () => {
     expect(release).toContain("no packaged application");
     expect(release).toContain("desktop beta stays blocked independently");
     expect(procedure).toContain("Never move an existing tag");
-    expect(procedure).toContain("automatic source ZIP/tar archives are the only assets");
-    expect(procedure).toContain("Keep `VERSION`, the claim ledger, the `v*` publisher");
+    expect(procedure).toContain(
+      "automatic source ZIP/tar archives are the only assets",
+    );
+    expect(procedure).toContain(
+      "Keep `VERSION`, the claim ledger, the `v*` publisher",
+    );
+  });
+
+  it("publishes the usable desktop alpha without presenting it as the beta", () => {
+    const release = normalized(read("docs/release.html"));
+    expect(index).toContain(
+      "https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0",
+    );
+    expect(index).toContain("Download the desktop alpha");
+    expect(start).toContain('id="alpha"');
+    expect(start).toContain(
+      "https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0",
+    );
+    expect(start).toContain("Windows · x64");
+    expect(start).toContain("Linux · x86-64 AppImage");
+    expect(start).toContain("Linux · x86-64 packages");
+    expect(release).toContain('id="alpha"');
+    expect(release).toContain("real packaged SkyTwin app");
+    expect(release).toContain("Unsigned alpha");
+    expect(release).toContain("supported public beta");
+    expect(readme).toContain("## Quick Start");
+    expect(readme).toContain("### Download the desktop alpha");
+    expect(readme.indexOf("### Download the desktop alpha")).toBeLessThan(
+      readme.indexOf("### Build from source"),
+    );
+    expect(llms).toContain("Desktop alpha");
+    expect(index).toContain("local-web Google path");
+    expect(readme).toContain("connect a real Gmail inbox");
+    const connectGmail = read("docs/connect-gmail.html");
+    expect(connectGmail).toContain(
+      "SKYTWIN_GOOGLE_CONNECTION_MODE=experimental",
+    );
+    expect(connectGmail).toContain("desktop window");
+    expect(connectGmail).toContain("one-use session");
+    expect(connectGmail).toContain("http://localhost:3200/#/connect-gmail");
+    expect(connectGmail).toContain("gmail.readonly");
+    expect(connectGmail).toContain("gmail.modify");
+    expect(connectGmail).toContain("reading, composing, and sending mail");
   });
 
   it("leads with the product and keeps the complete handbook discoverable", () => {
@@ -69,11 +110,11 @@ describe("public developer-preview documentation", () => {
       index.indexOf("</header>"),
     );
     expect(hero).toContain('href="how-to-use.html"');
-    expect(hero).toContain('href="start.html"');
-    expect(hero).toContain("Developer preview");
     expect(hero).toContain(
-      "real Google and Microsoft connections are unavailable",
+      "https://github.com/jayzalowitz/skytwin/releases/tag/alpha-0.6.106.0",
     );
+    expect(hero).toContain("Usable alpha");
+    expect(hero).toContain("connect a real Gmail inbox");
     expect(hero).not.toContain("releases/latest");
     expect(index).toContain(
       'src="assets/demo-current/approvals-source-demo.png"',
@@ -210,16 +251,12 @@ describe("public developer-preview documentation", () => {
   });
 
   it("keeps source evaluation and release boundaries explicit", () => {
-    expect(index).toContain(
-      "Published installers predate the guarded account-free sample now in source.",
-    );
+    expect(index).toContain("packages the current source");
     expect(index).toContain("v0.7.0-beta");
-    expect(start).toContain("not a supported installer path");
+    expect(normalized(start)).toContain("not a supported installer path");
     expect(start).toContain("git checkout &lt;reviewed-commit&gt;");
     expect(start).toContain("SKYTWIN_SOURCE_ARCHIVE=true ./install.sh");
-    expect(start).toContain(
-      "Google and Microsoft account connections are unavailable",
-    );
+    expect(start).toContain("SKYTWIN_GOOGLE_CONNECTION_MODE=experimental");
     expect(agents).toContain("Do not execute around policy.");
     expect(agents).toContain("Missing action provenance is");
     expect(agents).toContain(
@@ -238,7 +275,7 @@ describe("public developer-preview documentation", () => {
     expect(read("docs/twin-mcp-protocol.md")).toContain(
       'status: "recorded_non_executing"',
     );
-    expect(howToUse).toContain("fictional sample data");
+    expect(normalized(howToUse)).toContain("fictional sample data");
     expect(normalized(howToUse)).toContain(
       "Settings and Watches are deliberately outside its narrow authority",
     );

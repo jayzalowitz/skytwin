@@ -24,13 +24,14 @@ function between(source, startMarker, endMarker) {
 }
 
 describe('Google preview UI boundary', () => {
-  it('keeps the isolated onboarding sample primary and Google neutral', () => {
+  it('keeps the isolated onboarding sample primary beside packaged Google setup', () => {
     const source = pageSource('onboarding');
     const welcome = between(source, 'function renderWelcome()', 'function renderEmailChoice()');
     const staleEmailStep = between(source, 'function renderEmailChoice()', 'function renderComputerChoice()');
 
     expect(welcome).toContain('id="onb-tour-button" class="btn btn-primary');
-    expect(welcome).toContain('Unavailable in this preview');
+    expect(welcome).toContain('data-action="onb-connect-google"');
+    expect(welcome).toContain('Create your account with your own Google OAuth client.');
     expect(welcome).not.toContain('data-action="onb-choose-email"');
     expect(welcome).not.toContain('data-action="onb-choose-about-me"');
     expect(staleEmailStep).toContain('Gmail and Google Calendar are unavailable');

@@ -14,9 +14,9 @@ import { tmpdir } from 'os';
  *  2. `SKYTWIN_DEV_AUTH_BYPASS` is pinned to `'false'` AFTER the
  *     `...process.env` spread, so a developer's shell bypass can never be
  *     inherited into a packaged build.
- *  3. Packaged children are pinned to the account-free connection mode and
- *     receive no Microsoft, bundled/default provider, or plugin-directory
- *     authority.
+ *  3. Packaged children are pinned to the BYO-Google connection mode and
+ *     receive no shell-provided Microsoft, bundled/default provider, or
+ *     plugin-directory authority.
  */
 
 const userDataDir = mkdtempSync(join(tmpdir(), 'skytwin-sm-env-'));
@@ -60,6 +60,7 @@ describe('ServiceManager.getEnv()', () => {
   const saved = {
     SKYTWIN_DEV_AUTH_BYPASS: process.env['SKYTWIN_DEV_AUTH_BYPASS'],
     SKYTWIN_SERVICE_TOKEN: process.env['SKYTWIN_SERVICE_TOKEN'],
+    SKYTWIN_DESKTOP_BOOTSTRAP_SECRET: process.env['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET'],
     SKYTWIN_RELEASE_EVIDENCE_NONCE: process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'],
     SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE: process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'],
     SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF: process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'],
@@ -73,12 +74,14 @@ describe('ServiceManager.getEnv()', () => {
     MICROSOFT_TENANT: process.env['MICROSOFT_TENANT'],
     SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID: process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'],
     ADAPTER_PLUGIN_DIR: process.env['ADAPTER_PLUGIN_DIR'],
+    SKYTWIN_PACKAGED_GOOGLE_ONLY: process.env['SKYTWIN_PACKAGED_GOOGLE_ONLY'],
   };
 
   beforeEach(() => {
     setPackaged(false);
     delete process.env['SKYTWIN_DEV_AUTH_BYPASS'];
     delete process.env['SKYTWIN_SERVICE_TOKEN'];
+    delete process.env['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET'];
     delete process.env['SKYTWIN_RELEASE_EVIDENCE_NONCE'];
     delete process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE'];
     delete process.env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF'];
@@ -92,6 +95,7 @@ describe('ServiceManager.getEnv()', () => {
     delete process.env['MICROSOFT_TENANT'];
     delete process.env['SKYTWIN_DEFAULT_MICROSOFT_CLIENT_ID'];
     delete process.env['ADAPTER_PLUGIN_DIR'];
+    delete process.env['SKYTWIN_PACKAGED_GOOGLE_ONLY'];
     rmSync(join(userDataDir, 'secrets'), { recursive: true, force: true });
   });
 
@@ -149,7 +153,7 @@ describe('ServiceManager.getEnv()', () => {
     expect(env['NODE_ENV']).toBe('production');
   });
 
-  it('forces packaged children into disabled Google mode despite inherited opt-in and credentials', () => {
+  it('pins packaged children to BYO Google mode without inheriting provider authority', () => {
     setPackaged(true);
     process.env['SKYTWIN_GOOGLE_CONNECTION_MODE'] = 'experimental';
     process.env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID'] = 'launcher-default-client';
@@ -164,7 +168,8 @@ describe('ServiceManager.getEnv()', () => {
 
     const env = envOf(new ServiceManager());
 
-    expect(env['SKYTWIN_GOOGLE_CONNECTION_MODE']).toBe('disabled');
+    expect(env['SKYTWIN_GOOGLE_CONNECTION_MODE']).toBe('experimental');
+    expect(env['SKYTWIN_PACKAGED_GOOGLE_ONLY']).toBe('true');
     expect(env['SKYTWIN_DEFAULT_GOOGLE_CLIENT_ID']).toBe('');
     // Operator credentials may remain inherited, but cannot enable Google: the
     // typed mode above is the downstream runtime authority.
@@ -214,6 +219,20 @@ describe('ServiceManager.getEnv()', () => {
     expect(env['SKYTWIN_RELEASE_EVIDENCE_NONCE']).toBe('api-attribution');
     expect(env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_NONCE']).toBeUndefined();
     expect(env['SKYTWIN_RELEASE_EVIDENCE_RENDERER_PROOF']).toBeUndefined();
+  });
+
+  it('keeps the desktop bootstrap secret out of inherited and web environments', () => {
+    setPackaged(true);
+    process.env['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET'] = 'launcher-controlled';
+    const manager = new ServiceManager();
+    const base = envOf(manager);
+    const api = apiEnvOf(manager);
+    const web = (manager as unknown as { webEnv(): Record<string, string> }).webEnv();
+
+    expect(base['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET']).toBeUndefined();
+    expect(api['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET']).toMatch(/^[0-9a-f]{64}$/);
+    expect(api['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET']).not.toBe('launcher-controlled');
+    expect(web['SKYTWIN_DESKTOP_BOOTSTRAP_SECRET']).toBeUndefined();
   });
 });
 

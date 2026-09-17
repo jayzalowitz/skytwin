@@ -58,6 +58,10 @@ function generatePendingKey() {
  * @param {boolean} [opts.newUser]      Start the new-user (auto-create from verified email) flow.
  * @param {string|null} [opts.next]     Dashboard deep-link to land on post-callback (e.g. 'connect-gmail'). Server whitelists the value.
  * @param {string|null} [opts.include]  Scope-tier opt-in (currently only 'gmail'). When set, the connect-gmail wizard's BYO OAuth path can request the restricted Gmail scopes on the user's own client.
+ * @param {{clientId: string, clientSecret: string}|null} [opts.bootstrapCredentials]
+ *     Desktop-only first-use credentials. They cross the context bridge to
+ *     Electron main and are never written through an unauthenticated HTTP
+ *     endpoint.
  * @param {(result: { connected: boolean, sessionToken?: string|null, userId?: string, accountEmail?: string, scopes?: string[], nextHash?: string|null }) => void} [opts.onComplete]
  *     Desktop only — called when polling resolves (existing-user or
  *     newUser flow). `{ connected: false }` on timeout. For the newUser
@@ -68,7 +72,7 @@ function generatePendingKey() {
  *     caller is already signed in via QR pairing or web redirect).
  * @returns {Promise<{ status: 'redirecting' | 'polling' | 'error', error?: string, code?: string, help?: string }>}
  */
-export async function startGoogleSignIn({ userId = null, newUser = false, next = null, include = null, onComplete } = {}) {
+export async function startGoogleSignIn({ userId = null, newUser = false, next = null, include = null, bootstrapCredentials = null, onComplete } = {}) {
   const desktop = isDesktopApp();
   if (!newUser && !userId) {
     return {
@@ -82,6 +86,26 @@ export async function startGoogleSignIn({ userId = null, newUser = false, next =
   // flows don't need this — the post-callback redirect carries the
   // userId in the URL.
   const pendingKey = desktop && newUser ? generatePendingKey() : null;
+
+  if (bootstrapCredentials) {
+    if (!desktop || !newUser || !pendingKey || typeof window.skytwinDesktop?.bootstrapGoogleAccount !== 'function') {
+      return { status: 'error', error: 'First-use Google setup must be started from the SkyTwin desktop app.' };
+    }
+    try {
+      await window.skytwinDesktop.bootstrapGoogleAccount({
+        clientId: bootstrapCredentials.clientId,
+        clientSecret: bootstrapCredentials.clientSecret,
+        pendingKey,
+      });
+      if (typeof onComplete === 'function') pollUntilPendingResolved(pendingKey, onComplete);
+      return { status: 'polling' };
+    } catch (err) {
+      return {
+        status: 'error',
+        error: err?.message || 'Could not start first-use Google setup.',
+      };
+    }
+  }
   let data;
   try {
     // Both branches go through getGoogleAuthUrl -> fetchJSON so error

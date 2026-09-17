@@ -62,11 +62,29 @@
               <td>Available and account-free.</td>
             </tr>
             <tr>
-              <td>Gmail and Microsoft accounts</td>
-              <td>Connector architecture and source tests.</td>
+              <td>Gmail and Google Calendar</td>
               <td>
-                Unavailable. The preview does not request account access or ship
-                a managed OAuth client.
+                Live connectors in the historical desktop alpha and exact
+                experimental source mode; the alpha wizard is available in its
+                window and to an already authenticated local-browser session;
+                connector architecture and tests.
+              </td>
+              <td>
+                Available as advanced Google setup. The alpha contains a
+                historical SkyTwin-team client ID for initial identity/Calendar
+                authorization and requires a user-created client for Gmail;
+                current source uses an operator-created client. No supported
+                managed SkyTwin client; credential and unsigned-alpha
+                limitations apply.
+                <a href="connect-gmail.html">Setup guide.</a>
+              </td>
+            </tr>
+            <tr>
+              <td>Microsoft accounts</td>
+              <td>Retained Outlook/Graph implementation and source tests.</td>
+              <td>
+                Experimental source implementation only; no equivalent supported
+                setup path or managed OAuth client.
               </td>
             </tr>
             <tr>
@@ -104,9 +122,9 @@
         <h2 id="mcp">Local MCP is scoped, not delegated autonomy</h2>
         <p>
           The Twin MCP server is a local, token-scoped surface for agents. A
-          safe agent reads context and may record an action proposal with
-          source and reasoning. The current proposal path is inspection-only:
-          it neither runs policy evaluation nor creates an actionable approval
+          safe agent reads context and may record an action proposal with source
+          and reasoning. The current proposal path is inspection-only: it
+          neither runs policy evaluation nor creates an actionable approval
           request. An agent must not bypass policy, fabricate provenance, or
           reinterpret that record as permission.
         </p>
