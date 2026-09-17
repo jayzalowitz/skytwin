@@ -97,6 +97,16 @@ export interface CreateWorkflowVersionWithProposalInput extends CreateWorkflowVe
   requestFingerprint?: string;
 }
 
+export type WorkflowProposalMutationLookup =
+  | { state: 'not_found' }
+  | { state: 'conflict' }
+  | {
+    state: 'found';
+    workflow: AdaptiveWorkflow;
+    version: AdaptiveWorkflowVersion;
+    proposal: AdaptiveWorkflowProposal;
+  };
+
 export class WorkflowProposalIdempotencyConflictError extends Error {
   readonly code = 'WORKFLOW_PROPOSAL_IDEMPOTENCY_CONFLICT';
 
@@ -199,6 +209,23 @@ function requestHash(fingerprint: string): string {
   return createHash('sha256').update(fingerprint, 'utf8').digest('hex');
 }
 
+function mutationIdentity(input: {
+  idempotencyKey?: string;
+  requestFingerprint?: string;
+}): { idempotencyKey: string; requestHash: string } | null {
+  const hasKey = input.idempotencyKey !== undefined;
+  const hasFingerprint = input.requestFingerprint !== undefined;
+  if (hasKey !== hasFingerprint) {
+    throw new TypeError('Workflow mutation idempotency key and request fingerprint must be provided together');
+  }
+  return hasKey
+    ? {
+      idempotencyKey: input.idempotencyKey!,
+      requestHash: requestHash(input.requestFingerprint!),
+    }
+    : null;
+}
+
 async function existingProposalForMutation(
   userId: string,
   idempotencyKey: string,
@@ -209,6 +236,36 @@ async function existingProposalForMutation(
     [userId, idempotencyKey],
   );
   return result.rows[0] ?? null;
+}
+
+async function findProposalMutation(
+  userId: string,
+  idempotencyKey: string,
+  fingerprint: string,
+): Promise<WorkflowProposalMutationLookup> {
+  const proposal = await existingProposalForMutation(userId, idempotencyKey);
+  if (!proposal) return { state: 'not_found' };
+  if (proposal.request_hash !== requestHash(fingerprint)) return { state: 'conflict' };
+  const [workflowResult, versionResult] = await Promise.all([
+    query<WorkflowRow>('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [
+      proposal.workflow_id,
+      userId,
+    ]),
+    query<WorkflowVersionRow>(
+      `SELECT * FROM workflow_versions
+        WHERE id = $1 AND workflow_id = $2 AND user_id = $3`,
+      [proposal.proposed_version_id, proposal.workflow_id, userId],
+    ),
+  ]);
+  const workflow = workflowResult.rows[0];
+  const version = versionResult.rows[0];
+  if (!workflow || !version) throw new Error('workflow_idempotency_record_incomplete');
+  return {
+    state: 'found',
+    workflow: toWorkflow(workflow),
+    version: toVersion(version),
+    proposal: toProposal(proposal),
+  };
 }
 
 async function withSerializableRetry<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -264,6 +321,15 @@ async function insertVersion(
 }
 
 export const workflowRepository = {
+  /** Resolve a prior mutation before repeating expensive or nondeterministic authoring. */
+  async findProposalMutationForUser(
+    userId: string,
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): Promise<WorkflowProposalMutationLookup> {
+    return findProposalMutation(userId, idempotencyKey, requestFingerprint);
+  },
+
   async createDraft(input: CreateWorkflowDraftInput): Promise<{
     workflow: AdaptiveWorkflow;
     version: AdaptiveWorkflowVersion;
@@ -299,9 +365,7 @@ export const workflowRepository = {
   }> {
     assertWorkflowProviderIdentity(input.providerKey, input.providerSchemaVersion);
     const prepared = prepareVersion(input);
-    const mutationHash = input.idempotencyKey
-      ? requestHash(input.requestFingerprint ?? '')
-      : null;
+    const identity = mutationIdentity(input);
     const workflowId = randomUUID();
     const versionId = randomUUID();
     const proposalId = randomUUID();
@@ -333,8 +397,8 @@ export const workflowRepository = {
             input.userId,
             versionId,
             input.kind ?? 'initial',
-            input.idempotencyKey ?? null,
-            mutationHash,
+            identity?.idempotencyKey ?? null,
+            identity?.requestHash ?? null,
           ],
         );
         return {
@@ -345,29 +409,19 @@ export const workflowRepository = {
       });
     } catch (error) {
       if ((error as { code?: unknown } | null)?.code !== '23505') throw error;
-      if (!input.idempotencyKey || !mutationHash) throw error;
-      const proposal = await existingProposalForMutation(input.userId, input.idempotencyKey);
-      if (!proposal || proposal.request_hash !== mutationHash) {
+      if (!identity) throw error;
+      const existing = await findProposalMutation(
+        input.userId,
+        identity.idempotencyKey,
+        input.requestFingerprint!,
+      );
+      if (existing.state !== 'found') {
         throw new WorkflowProposalIdempotencyConflictError();
       }
-      const [workflowResult, versionResult] = await Promise.all([
-        query<WorkflowRow>('SELECT * FROM workflows WHERE id = $1 AND user_id = $2', [
-          proposal.workflow_id,
-          input.userId,
-        ]),
-        query<WorkflowVersionRow>(
-          `SELECT * FROM workflow_versions
-            WHERE id = $1 AND workflow_id = $2 AND user_id = $3`,
-          [proposal.proposed_version_id, proposal.workflow_id, input.userId],
-        ),
-      ]);
-      const workflow = workflowResult.rows[0];
-      const version = versionResult.rows[0];
-      if (!workflow || !version) throw new Error('workflow_idempotency_record_incomplete');
       return {
-        workflow: toWorkflow(workflow),
-        version: toVersion(version),
-        proposal: toProposal(proposal),
+        workflow: existing.workflow,
+        version: existing.version,
+        proposal: existing.proposal,
       };
     }
   },
@@ -377,9 +431,7 @@ export const workflowRepository = {
     input: CreateWorkflowVersionWithProposalInput,
   ): Promise<CreateWorkflowVersionWithProposalResult> {
     const prepared = prepareVersion(input);
-    const mutationHash = input.idempotencyKey
-      ? requestHash(input.requestFingerprint ?? '')
-      : null;
+    const identity = mutationIdentity(input);
     const versionId = randomUUID();
     const proposalId = randomUUID();
     try {
@@ -433,8 +485,8 @@ export const workflowRepository = {
           input.parentVersionId,
           versionId,
           input.kind,
-          input.idempotencyKey ?? null,
-          mutationHash,
+          identity?.idempotencyKey ?? null,
+          identity?.requestHash ?? null,
         ],
       );
       return {
@@ -445,22 +497,19 @@ export const workflowRepository = {
       });
     } catch (error) {
       if ((error as { code?: unknown } | null)?.code !== '23505') throw error;
-      if (!input.idempotencyKey || !mutationHash) throw error;
-      const proposal = await existingProposalForMutation(input.userId, input.idempotencyKey);
-      if (!proposal || proposal.request_hash !== mutationHash
-          || proposal.workflow_id !== input.workflowId) {
+      if (!identity) throw error;
+      const existing = await findProposalMutation(
+        input.userId,
+        identity.idempotencyKey,
+        input.requestFingerprint!,
+      );
+      if (existing.state !== 'found' || existing.workflow.id !== input.workflowId) {
         return { success: false, reason: 'idempotency_conflict' };
       }
-      const version = await query<WorkflowVersionRow>(
-        `SELECT * FROM workflow_versions
-          WHERE id = $1 AND workflow_id = $2 AND user_id = $3`,
-        [proposal.proposed_version_id, input.workflowId, input.userId],
-      );
-      if (!version.rows[0]) throw new Error('workflow_idempotency_record_incomplete');
       return {
         success: true,
-        version: toVersion(version.rows[0]),
-        proposal: toProposal(proposal),
+        version: existing.version,
+        proposal: existing.proposal,
       };
     }
   },

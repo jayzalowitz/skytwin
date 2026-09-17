@@ -63,6 +63,7 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
   let databaseUrl: string;
   let sql: Client;
   let closePool: () => Promise<void>;
+  let databaseQuery: typeof import('../connection.js')['query'];
   let collectBackup: typeof import('../backup/backup.js')['collectBackup'];
   let restoreBackup: typeof import('../backup/backup.js')['restoreBackup'];
   let workflowRepository: typeof import('../repositories/workflow-repository.js')['workflowRepository'];
@@ -115,6 +116,7 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
       '089-watch-scheduled-slots.sql',
       '095-adaptive-workflow-foundation.sql',
       '096-watch-workflow-version-pins.sql',
+      '097-workflow-proposal-idempotency.sql',
     ]) {
       const migration = readFileSync(new URL(`../migrations/${filename}`, import.meta.url), 'utf8');
       for (const statement of splitSqlStatements(migration)) await sql.query(statement);
@@ -123,6 +125,7 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
     process.env['DATABASE_URL'] = databaseUrl;
     const connection = await import('../connection.js');
     closePool = connection.closePool;
+    databaseQuery = connection.query;
     ({ collectBackup, restoreBackup } = await import('../backup/backup.js'));
     ({ workflowRepository } = await import('../repositories/workflow-repository.js'));
     ({ workflowWatchProjectionRepository } = await import(
@@ -157,7 +160,7 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
     if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
   }, 35_000);
 
-  it('round-trips a paused Watch without making it due', async () => {
+  it('round-trips a paused Watch through v6 and restores a v5 proposal without idempotency state', async () => {
     const userId = '10000000-0000-4000-8000-000000000001';
     await sql.query(
       `INSERT INTO users (id, email, name, trust_tier, autonomy_settings, timezone)
@@ -188,6 +191,8 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
         source: 'user',
         sourceReferences: [{ kind: 'message', id: 'message-1' }],
       },
+      idempotencyKey: '40000000-0000-4000-8000-000000000001',
+      requestFingerprint: 'backup-v6-idempotency',
     });
     const projected = await workflowWatchProjectionRepository.materializeVersion({
       userId,
@@ -213,6 +218,11 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
 
     const backup = await collectBackup(userId);
     if (!backup.success) throw new Error(backup.message);
+    expect(backup.data.schemaVersion).toBe(6);
+    expect(backup.data.workflows?.[0]?.proposals[0]).toMatchObject({
+      idempotencyKey: '40000000-0000-4000-8000-000000000001',
+      requestHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(backup.data.workflows?.[0]?.watchProjection).toMatchObject({
       id: projected.watchId,
       status: 'paused',
@@ -256,6 +266,40 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
     expect(restored.rows[0]?.created_at.toISOString()).toBe('2026-09-16T08:00:00.000Z');
     expect(restored.rows[0]?.updated_at.toISOString()).toBe('2026-09-16T10:00:00.000Z');
     expect(restored.rows[0]?.last_run_at?.toISOString()).toBe('2026-09-16T09:00:00.000Z');
+
+    const restoredV6Proposal = await sql.query<{
+      idempotency_key: string | null;
+      request_hash: string | null;
+    }>(
+      'SELECT idempotency_key, request_hash FROM workflow_proposals WHERE id = $1',
+      [draft.proposal.id],
+    );
+    expect(restoredV6Proposal.rows[0]).toMatchObject({
+      idempotency_key: '40000000-0000-4000-8000-000000000001',
+      request_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+
+    const v5 = structuredClone(backup.data) as typeof backup.data;
+    v5.schemaVersion = 5;
+    for (const bundle of v5.workflows ?? []) {
+      for (const restoredProposal of bundle.proposals) {
+        delete (restoredProposal as Partial<typeof restoredProposal>).idempotencyKey;
+        delete (restoredProposal as Partial<typeof restoredProposal>).requestHash;
+      }
+    }
+    await sql.query('DELETE FROM users WHERE id = $1', [userId]);
+    await expect(restoreBackup(v5)).resolves.toMatchObject({
+      success: true,
+      summary: { counts: { watches: 1 } },
+    });
+    const restoredV5Proposal = await sql.query<{
+      idempotency_key: string | null;
+      request_hash: string | null;
+    }>(
+      'SELECT idempotency_key, request_hash FROM workflow_proposals WHERE id = $1',
+      [draft.proposal.id],
+    );
+    expect(restoredV5Proposal.rows[0]).toEqual({ idempotency_key: null, request_hash: null });
   }, 30_000);
 
   it('round-trips a quarantined invalid legacy Watch with its exact original spec', async () => {
@@ -277,6 +321,13 @@ describe.runIf(cockroachAvailable)('adaptive workflow backup on live CockroachDB
         keywords: ['invoice'], domains: ['finance'],
       })],
     );
+    // Cockroach parallel commits can leave the direct client's write intent
+    // unresolved briefly. Resolve it from the repository pool before testing
+    // the reconciler's intentional FOR UPDATE SKIP LOCKED claim.
+    await expect(databaseQuery<{ id: string }>(
+      'SELECT id FROM watches WHERE id = $1',
+      [watchId],
+    )).resolves.toMatchObject({ rows: [{ id: watchId }] });
     await expect(reconcileLegacyWatches.reconcileBatch({ limit: 1 })).resolves.toMatchObject({
       legacyWatchesMigrated: 1,
     });

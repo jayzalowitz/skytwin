@@ -88,6 +88,7 @@ describe.runIf(cockroachAvailable)('workflowRepository on live CockroachDB', () 
       '089-watch-scheduled-slots.sql',
       '095-adaptive-workflow-foundation.sql',
       '096-watch-workflow-version-pins.sql',
+      '097-workflow-proposal-idempotency.sql',
     ]) {
       const migration = readFileSync(
         new URL(`../migrations/${filename}`, import.meta.url),
@@ -123,6 +124,50 @@ describe.runIf(cockroachAvailable)('workflowRepository on live CockroachDB', () 
     }
     if (dataRoot) rmSync(dataRoot, { recursive: true, force: true });
   }, 35_000);
+
+  it('returns one durable draft for concurrent retries with the same idempotency key', async () => {
+    const idempotencyKey = '40000000-0000-4000-8000-000000000097';
+    const input = {
+      userId: '10000000-0000-4000-8000-000000000001',
+      providerKey: 'signal_digest.v1',
+      providerSchemaVersion: '1',
+      payload: {
+        name: 'Concurrent invoice digest', cadence: 'daily' as const,
+        hourOfDay: 9, timezone: 'UTC', action: 'digest' as const,
+        filter: { sources: ['gmail'], fromContains: [], keywords: ['invoice'], domains: [] },
+        summaryInstruction: 'Summarize concurrent invoice matches.',
+      },
+      authoring: {
+        version: 1 as const,
+        source: 'user' as const,
+        sourceReferences: [],
+      },
+      kind: 'initial' as const,
+      idempotencyKey,
+      requestFingerprint: 'same concurrent request',
+    };
+
+    const [left, right] = await Promise.all([
+      workflowRepository.createDraftWithProposal(input),
+      workflowRepository.createDraftWithProposal(input),
+    ]);
+
+    expect(right).toMatchObject({
+      workflow: { id: left.workflow.id },
+      version: { id: left.version.id },
+      proposal: { id: left.proposal.id },
+    });
+    const persisted = await getPool().query<{ proposals: string; workflows: string; versions: string }>(
+      `SELECT
+         count(*)::STRING AS proposals,
+         count(DISTINCT workflow_id)::STRING AS workflows,
+         count(DISTINCT proposed_version_id)::STRING AS versions
+       FROM workflow_proposals
+       WHERE user_id = $1 AND idempotency_key = $2`,
+      [input.userId, idempotencyKey],
+    );
+    expect(persisted.rows[0]).toEqual({ proposals: '1', workflows: '1', versions: '1' });
+  });
 
   it('admits one concurrent activation, audits it once, and rolls back to an activated version', async () => {
     const authoring = {

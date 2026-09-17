@@ -35,6 +35,7 @@ import {
 
 type WorkflowRepositoryPort = Pick<
   typeof workflowRepository,
+  | 'findProposalMutationForUser'
   | 'createDraftWithProposal'
   | 'createVersionWithProposal'
   | 'getForUser'
@@ -364,12 +365,103 @@ export function createAdaptiveWorkflowService(
     return authoring.probeReadiness(userId);
   }
 
+  type FoundMutation = Extract<
+    Awaited<ReturnType<WorkflowRepositoryPort['findProposalMutationForUser']>>,
+    { state: 'found' }
+  >;
+
+  async function draftResultFromMutation(
+    userId: string,
+    found: FoundMutation,
+  ): Promise<AuthorSignalDigestDraftResult> {
+    const persisted = compile(found.version.canonicalPayload);
+    if (!persisted.ok || persisted.artifact.contentHash !== found.version.contentHash) {
+      throw new Error('workflow_idempotency_record_invalid');
+    }
+    const payload = canonicalPayload(persisted);
+    const [replay] = await replaysForCandidates(userId, [payload]);
+    return {
+      success: true,
+      workflow: found.workflow,
+      version: found.version,
+      proposal: found.proposal,
+      preview: {
+        summaryInstruction: payload.summaryInstruction,
+        summaryInstructionPersisted: true,
+        routineSpec: persisted.artifact.routineSpec,
+        contentHash: persisted.artifact.contentHash,
+        watchProjection: 'not_materialized',
+        replay: replay!,
+      },
+    };
+  }
+
+  async function revisionResultFromMutation(input: {
+    userId: string;
+    workflowId: string;
+    parentVersionId: string;
+    found: FoundMutation;
+  }): Promise<CreateWorkflowRevisionResult> {
+    if (input.found.workflow.id !== input.workflowId
+        || input.found.version.parentVersionId !== input.parentVersionId) {
+      return { success: false, kind: 'create_version', reason: 'idempotency_conflict' };
+    }
+    const parent = await loadCompiledVersion(
+      input.userId,
+      input.workflowId,
+      input.parentVersionId,
+    );
+    if (!parent.success) return { success: false, kind: 'transition', failure: parent };
+    const persisted = compile(input.found.version.canonicalPayload);
+    if (!persisted.ok || persisted.artifact.contentHash !== input.found.version.contentHash) {
+      throw new Error('workflow_idempotency_record_invalid');
+    }
+    const candidatePayload = canonicalPayload(persisted);
+    const authoritativeDiff = diff(parent.version.canonicalPayload, candidatePayload);
+    if (!authoritativeDiff.ok) {
+      return {
+        success: false,
+        kind: 'transition',
+        failure: { success: false, reason: 'invalid_version' },
+      };
+    }
+    const [beforeReplay, afterReplay] = await replaysForCandidates(input.userId, [
+      authoritativeDiff.before,
+      authoritativeDiff.after,
+    ]);
+    return {
+      success: true,
+      workflow: input.found.workflow,
+      parentVersion: parent.version,
+      version: input.found.version,
+      proposal: input.found.proposal,
+      diff: authoritativeDiff.diff,
+      replay: { before: beforeReplay!, after: afterReplay! },
+      activePointerMoved: false,
+    };
+  }
+
   async function authorSignalDigestDraft(input: {
     userId: string;
     description: string;
     allowClarification?: boolean;
     idempotencyKey: string;
   }): Promise<AuthorSignalDigestDraftResult> {
+    const requestFingerprint = JSON.stringify({
+      operation: 'signal_digest_draft',
+      description: input.description,
+      allowClarification: input.allowClarification ?? true,
+    });
+    const prior = await repository.findProposalMutationForUser(
+      input.userId,
+      input.idempotencyKey,
+      requestFingerprint,
+    );
+    if (prior.state === 'conflict') {
+      return { success: false, kind: 'idempotency', reason: 'idempotency_conflict' };
+    }
+    if (prior.state === 'found') return draftResultFromMutation(input.userId, prior);
+
     const authored = await authoring.authorSignalDigest(input.userId, input.description, {
       allowClarification: input.allowClarification,
     });
@@ -395,11 +487,7 @@ export function createAdaptiveWorkflowService(
         inference: inferenceMetadata(authored),
         kind: 'initial',
         idempotencyKey: input.idempotencyKey,
-        requestFingerprint: JSON.stringify({
-          operation: 'signal_digest_draft',
-          description: input.description,
-          allowClarification: input.allowClarification ?? true,
-        }),
+        requestFingerprint,
       });
     } catch (error) {
       if (error instanceof WorkflowProposalIdempotencyConflictError) {
@@ -407,26 +495,7 @@ export function createAdaptiveWorkflowService(
       }
       throw error;
     }
-    if (created.version.contentHash !== compiled.artifact.contentHash) {
-      throw new Error('workflow_compiler_persistence_hash_mismatch');
-    }
-
-    const [replay] = await replaysForCandidates(input.userId, [canonicalPayload(compiled)]);
-
-    return {
-      success: true,
-      workflow: created.workflow,
-      version: created.version,
-      proposal: created.proposal,
-      preview: {
-        summaryInstruction: authored.intent.summaryInstruction,
-        summaryInstructionPersisted: true,
-        routineSpec: compiled.artifact.routineSpec,
-        contentHash: compiled.artifact.contentHash,
-        watchProjection: 'not_materialized',
-        replay: replay!,
-      },
-    };
+    return draftResultFromMutation(input.userId, { state: 'found', ...created });
   }
 
   async function createRevision(input: {
@@ -489,7 +558,17 @@ export function createAdaptiveWorkflowService(
     });
     if (!created.success) return { success: false, kind: 'create_version', reason: created.reason };
     if (created.version.contentHash !== candidate.artifact.contentHash) {
-      throw new Error('workflow_compiler_persistence_hash_mismatch');
+      return revisionResultFromMutation({
+        userId: input.userId,
+        workflowId: input.workflowId,
+        parentVersionId: input.parentVersionId,
+        found: {
+          state: 'found',
+          workflow: parent.workflow,
+          version: created.version,
+          proposal: created.proposal,
+        },
+      });
     }
 
     return {
@@ -511,6 +590,23 @@ export function createAdaptiveWorkflowService(
     feedback: string;
     idempotencyKey: string;
   }): Promise<CreateWorkflowFeedbackRevisionResult> {
+    const requestFingerprint = JSON.stringify({
+      operation: 'workflow_feedback_revision',
+      workflowId: input.workflowId,
+      parentVersionId: input.parentVersionId,
+      feedback: input.feedback,
+    });
+    const prior = await repository.findProposalMutationForUser(
+      input.userId,
+      input.idempotencyKey,
+      requestFingerprint,
+    );
+    if (prior.state === 'conflict') {
+      return { success: false, kind: 'create_version', reason: 'idempotency_conflict' };
+    }
+    if (prior.state === 'found') {
+      return revisionResultFromMutation({ ...input, found: prior });
+    }
     const parent = await loadCompiledVersion(
       input.userId,
       input.workflowId,
@@ -537,12 +633,7 @@ export function createAdaptiveWorkflowService(
       authoringSource: 'llm_assisted',
       inference: inferenceMetadata(authored),
       idempotencyKey: input.idempotencyKey,
-      requestFingerprint: JSON.stringify({
-        operation: 'workflow_feedback_revision',
-        workflowId: input.workflowId,
-        parentVersionId: input.parentVersionId,
-        feedback: input.feedback,
-      }),
+      requestFingerprint,
     });
   }
 

@@ -212,6 +212,21 @@ describe('workflowRepository', () => {
     })).rejects.toBeInstanceOf(WorkflowProposalIdempotencyConflictError);
   });
 
+  it.each([
+    { idempotencyKey: '40000000-0000-4000-8000-000000000003' },
+    { requestFingerprint: 'fingerprint without a key' },
+  ])('rejects a half-configured mutation identity before opening a transaction', async (identity) => {
+    await expect(workflowRepository.createDraftWithProposal({
+      userId,
+      providerKey: 'signal_digest.v1',
+      providerSchemaVersion: '1',
+      payload: { keywords: ['invoice'] },
+      authoring,
+      ...identity,
+    })).rejects.toThrow(/must be provided together/);
+    expect(withTransactionMock).not.toHaveBeenCalled();
+  });
+
   it('reuses stable workflow/version IDs across bounded serialization retries', async () => {
     const seenWorkflowIds: string[] = [];
     const seenVersionIds: string[] = [];

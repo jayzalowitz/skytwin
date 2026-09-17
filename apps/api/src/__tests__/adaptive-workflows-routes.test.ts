@@ -524,6 +524,7 @@ describe('adaptive workflow routes', () => {
 describe('adaptive workflow service composition', () => {
   it('rebuilds the newest unactivated proposal from durable workflow state', async () => {
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn(),
       createVersionWithProposal: vi.fn(),
       getForUser: vi.fn(),
@@ -563,6 +564,7 @@ describe('adaptive workflow service composition', () => {
   it('does not resume a proposal that was consumed before a rollback', async () => {
     const rolledBackWorkflow = { ...workflow, activeVersionId: VERSION_ID };
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn(),
       createVersionWithProposal: vi.fn(),
       getForUser: vi.fn(),
@@ -610,6 +612,7 @@ describe('adaptive workflow service composition', () => {
       proposedVersionId: badVersion.id, createdAt: new Date(now.getTime() + 2_000),
     };
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn(), createVersionWithProposal: vi.fn(), getForUser: vi.fn(),
       listForUser: vi.fn().mockResolvedValue([badWorkflow, workflow]), getVersionForUser: vi.fn(),
       listVersionsForUser: vi.fn(async (workflowId: string) =>
@@ -646,6 +649,7 @@ describe('adaptive workflow service composition', () => {
       updatedAt: new Date(now.getTime() + index + 1),
     }));
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn(), createVersionWithProposal: vi.fn(), getForUser: vi.fn(),
       listForUser: vi.fn().mockResolvedValue([...emptyWorkflows, workflow]),
       getVersionForUser: vi.fn(),
@@ -716,6 +720,7 @@ describe('adaptive workflow service composition', () => {
       }),
     };
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn().mockResolvedValue({
         success: true, workflow, version, proposal,
       }),
@@ -812,6 +817,7 @@ describe('adaptive workflow service composition', () => {
       }),
     };
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn(),
       createVersionWithProposal: vi.fn().mockResolvedValue({
         success: true,
@@ -924,6 +930,7 @@ describe('adaptive workflow service composition', () => {
       }),
     };
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn().mockResolvedValue({
         success: true, workflow, version, proposal,
       }),
@@ -969,8 +976,165 @@ describe('adaptive workflow service composition', () => {
     expect(repository.listProposalsForUser).not.toHaveBeenCalled();
   });
 
+  it('returns a durable initial mutation before repeating nondeterministic authoring', async () => {
+    const authorSignalDigest = vi.fn().mockRejectedValue(new Error('must not rerun inference'));
+    const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({
+        state: 'found', workflow, version, proposal,
+      }),
+      createDraftWithProposal: vi.fn(), createVersionWithProposal: vi.fn(),
+      getForUser: vi.fn(), listForUser: vi.fn(), getVersionForUser: vi.fn(),
+      listVersionsForUser: vi.fn(), listProposalsForUser: vi.fn(),
+      listActivationEventsForUser: vi.fn(),
+    };
+    const service = createAdaptiveWorkflowService({
+      repository,
+      authoring: {
+        authorSignalDigest,
+        reviseSignalDigest: vi.fn(),
+        probeReadiness: vi.fn(),
+        summarizeSignalDigestReplay: vi.fn().mockResolvedValue({
+          available: false, text: 'AI summary unavailable',
+        }),
+      },
+      signals: { listInWindowBounded: vi.fn().mockResolvedValue({
+        records: [], totalCount: 0, truncated: false,
+      }) },
+      now: () => now,
+    });
+
+    await expect(service.authorSignalDigestDraft({
+      userId: USER_ID,
+      description: 'Every morning summarize Gmail invoices.',
+      idempotencyKey: MUTATION_ID,
+    })).resolves.toMatchObject({
+      success: true,
+      workflow: { id: WORKFLOW_ID },
+      version: { id: VERSION_ID },
+      proposal: { id: PROPOSAL_ID },
+      preview: { contentHash: version.contentHash },
+    });
+    expect(authorSignalDigest).not.toHaveBeenCalled();
+    expect(repository.createDraftWithProposal).not.toHaveBeenCalled();
+  });
+
+  it('uses the persistence winner when a concurrent initial authoring result differs', async () => {
+    const competingPayload = {
+      ...payload,
+      name: 'Concurrent persisted digest',
+      filter: { ...payload.filter, keywords: ['invoice', 'receipt'] },
+    };
+    const competingCompiled = compileSignalDigestV1(competingPayload);
+    if (!competingCompiled.ok) throw new Error('competing payload must compile');
+    const competingVersion = {
+      ...version,
+      canonicalPayload: competingPayload,
+      contentHash: competingCompiled.artifact.contentHash,
+    };
+    const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
+      createDraftWithProposal: vi.fn().mockResolvedValue({
+        workflow, version: competingVersion, proposal,
+      }),
+      createVersionWithProposal: vi.fn(), getForUser: vi.fn(), listForUser: vi.fn(),
+      getVersionForUser: vi.fn(), listVersionsForUser: vi.fn(),
+      listProposalsForUser: vi.fn(), listActivationEventsForUser: vi.fn(),
+    };
+    const service = createAdaptiveWorkflowService({
+      repository,
+      authoring: {
+        authorSignalDigest: vi.fn().mockResolvedValue({
+          success: true,
+          readiness: 'ready',
+          intent: {
+            schemaVersion: 1, intent: 'signal_digest', name: payload.name,
+            cadence: payload.cadence, hourOfDay: payload.hourOfDay, dayOfWeek: null,
+            filter: payload.filter, summaryInstruction: payload.summaryInstruction,
+          },
+          inference: {
+            provider: 'embedded', model: 'managed', reasoningMode: 'on_device',
+            runtimeVersion: 'llama.cpp-b5000', modelArtifactSha256: '5'.repeat(64),
+            prompt: { name: 'workflow-authoring-signal-digest', version: 1, sha256: '1'.repeat(64) },
+            schema: { name: 'signal-digest-intent', version: 1, sha256: '2'.repeat(64) },
+            inputSha256: '3'.repeat(64), outputSha256: '4'.repeat(64),
+            repairCount: 0, latencyMs: 10,
+          },
+        }),
+        reviseSignalDigest: vi.fn(), probeReadiness: vi.fn(),
+        summarizeSignalDigestReplay: vi.fn().mockResolvedValue({
+          available: false, text: 'AI summary unavailable',
+        }),
+      },
+      signals: { listInWindowBounded: vi.fn().mockResolvedValue({
+        records: [], totalCount: 0, truncated: false,
+      }) },
+      now: () => now,
+    });
+
+    await expect(service.authorSignalDigestDraft({
+      userId: USER_ID,
+      description: 'Every morning summarize Gmail invoices.',
+      idempotencyKey: MUTATION_ID,
+    })).resolves.toMatchObject({
+      success: true,
+      version: { contentHash: competingCompiled.artifact.contentHash },
+      preview: {
+        summaryInstruction: competingPayload.summaryInstruction,
+        contentHash: competingCompiled.artifact.contentHash,
+        routineSpec: { name: 'Concurrent persisted digest' },
+      },
+    });
+  });
+
+  it('returns a durable feedback revision before repeating local inference', async () => {
+    const reviseSignalDigest = vi.fn().mockRejectedValue(new Error('must not rerun inference'));
+    const activeWorkflow = { ...workflow, activeVersionId: VERSION_ID };
+    const feedbackProposal = { ...revisionProposal, kind: 'feedback' as const };
+    const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({
+        state: 'found', workflow: activeWorkflow, version: revisionVersion,
+        proposal: feedbackProposal,
+      }),
+      createDraftWithProposal: vi.fn(), createVersionWithProposal: vi.fn(),
+      getForUser: vi.fn().mockResolvedValue(activeWorkflow), listForUser: vi.fn(),
+      getVersionForUser: vi.fn().mockResolvedValue(version),
+      listVersionsForUser: vi.fn(), listProposalsForUser: vi.fn(),
+      listActivationEventsForUser: vi.fn(),
+    };
+    const service = createAdaptiveWorkflowService({
+      repository,
+      authoring: {
+        authorSignalDigest: vi.fn(),
+        reviseSignalDigest,
+        probeReadiness: vi.fn(),
+        summarizeSignalDigestReplay: vi.fn().mockResolvedValue({
+          available: false, text: 'AI summary unavailable',
+        }),
+      },
+      signals: { listInWindowBounded: vi.fn().mockResolvedValue({
+        records: [], totalCount: 0, truncated: false,
+      }) },
+      now: () => now,
+    });
+
+    await expect(service.reviseFromFeedback({
+      userId: USER_ID,
+      workflowId: WORKFLOW_ID,
+      parentVersionId: VERSION_ID,
+      feedback: 'Also include receipts.',
+      idempotencyKey: MUTATION_ID,
+    })).resolves.toMatchObject({
+      success: true,
+      version: { id: REVISION_VERSION_ID },
+      proposal: { id: REVISION_PROPOSAL_ID, kind: 'feedback' },
+    });
+    expect(reviseSignalDigest).not.toHaveBeenCalled();
+    expect(repository.createVersionWithProposal).not.toHaveBeenCalled();
+  });
+
   it('atomically materializes the compiled version into Watch activation with the user timezone', async () => {
     const repository = {
+      findProposalMutationForUser: vi.fn().mockResolvedValue({ state: 'not_found' }),
       createDraftWithProposal: vi.fn(), createVersionWithProposal: vi.fn(),
       getForUser: vi.fn().mockResolvedValue(workflow),
       listForUser: vi.fn(),
