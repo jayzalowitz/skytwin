@@ -64,9 +64,15 @@ jobs:
             exit 1
           fi
 
-          forbidden="$(find _site -type f \( -name '*.md' -o -name '*.test.mjs' -o -path '*/screenshots/*' -o -name 'beta-claim-ledger.json' -o -path '*/grafana/*' -o -path '*/security/*' \) -print)"
-          if [[ -n "$forbidden" ]]; then
-            printf 'Built Pages artifact contains internal source files:\n%s\n' "$forbidden" >&2
+          unexpected="$(find _site -type f -print | while IFS= read -r file; do
+            relative="${file#_site/}"
+            case "$relative" in
+              agents.html|architecture.html|connect-gmail.html|contributing.html|data.html|deck.html|demo.html|docs.html|faq.html|glossary.html|how-to-use.html|index.html|inference.html|integrations.html|operations.html|privacy.html|reference.html|release.html|safety.html|start.html|terms.html|troubleshooting.html|workflows.html|guides.css|llms.txt|assets/css/style.css|assets/demo-current/*.png) ;;
+              *) printf '%s\n' "$file" ;;
+            esac
+          done)"
+          if [[ -n "$unexpected" ]]; then
+            printf 'Built Pages artifact contains files outside the public allowlist:\n%s\n' "$unexpected" >&2
             exit 1
           fi
 

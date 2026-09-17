@@ -178,7 +178,7 @@
         "id": "reasoning-mode-proof",
         "status": "open",
         "owner": "inference-security",
-        "condition": "On-device, verified-private, and conventional provider modes are explicit; verified-private admission remains unavailable until a production attestation-backed provider and verifier persist independently verifiable receipts"
+        "condition": "On-device, verified-private, and conventional provider modes are explicit; the release-wide verified-private claim remains blocked until a tagged production build proves credentialed provider verification, independently verifiable receipt persistence, and stable receipt export"
       },
       {
         "id": "signed-artifacts",
@@ -1476,7 +1476,7 @@
         },
         {
           "path": "scripts/release-claims/check-release-claims.mjs",
-          "sha256": "193256532ed83f76d5c377ebf692d6d321aca655d687035ab1380b9a4b8e8648",
+          "sha256": "a3c464d4faa45082d83f5dee11a4f4d1b694fb5feb65ad89d49f965285ff8c9c",
           "why": "Pins the CI producer sources, full-history checkout, runner, and sole result uploader alongside the materials producer and exact-ID signing report aggregator; enforces the audited inventory for every public visual binary; re-verifies the exact four-member safety artifact with both independent verifiers; emits the digest of the stable manifest bytes it checked; and validates every other bounded release material and source report binding at publication"
         }
       ],

@@ -14,6 +14,8 @@ const docsHome = read("docs/docs.html");
 const howToUse = read("docs/how-to-use.html");
 const faq = read("docs/faq.html");
 const workflows = read("docs/workflows.html");
+const demo = read("docs/demo.html");
+const claimLedger = read("docs/beta-claim-ledger.json");
 const docsRoot = resolve(root, "docs");
 const htmlFiles = readdirSync(docsRoot)
   .filter((file) => file.endsWith(".html"))
@@ -58,6 +60,10 @@ describe("public developer-preview documentation", () => {
           /^(?:mailto|tel|data):/i.test(value)
         )
           continue;
+
+        expect(value.split(/[?#]/, 1)[0].endsWith(".md"), `${page} -> ${value}`).toBe(
+          false,
+        );
 
         const [pathAndQuery = "", encodedFragment = ""] = value.split("#", 2);
         const pathPart = pathAndQuery.split("?", 1)[0];
@@ -149,6 +155,9 @@ describe("public developer-preview documentation", () => {
     );
     expect(agents).toContain("Do not execute around policy.");
     expect(agents).toContain("Missing action provenance is");
+    expect(agents).toContain(
+      "A failed audit write is logged but does not replace the tool's own result or error",
+    );
     expect(howToUse).toContain("fictional sample data");
     expect(normalized(howToUse)).toContain(
       "Settings and Watches are deliberately outside its narrow authority",
@@ -182,6 +191,12 @@ describe("public developer-preview documentation", () => {
     expect(readme).toContain("NEAR AI remains unavailable");
     expect(readme).not.toContain(
       "Remote attested inference is unavailable until SkyTwin can verify it itself",
+    );
+    expect(claimLedger).toContain(
+      "the release-wide verified-private claim remains blocked",
+    );
+    expect(claimLedger).not.toContain(
+      "verified-private admission remains unavailable",
     );
     for (const path of [
       "agents.html",
@@ -241,6 +256,9 @@ describe("public developer-preview documentation", () => {
     );
     expect(normalized(read("docs/data.html"))).not.toContain(
       "activation history, run evidence, and the active Watch projection",
+    );
+    expect(normalized(demo)).toContain(
+      "current-source captures published in the walkthrough and workflow guide were re-audited",
     );
     expect(normalized(read("docs/architecture.html"))).toContain(
       "/api/adaptive-workflows/:userId/signal-digest-drafts",

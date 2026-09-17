@@ -424,7 +424,7 @@ const CANONICAL_STOP_SHIP_CONDITIONS = new Map([
     {
       owner: "inference-security",
       condition:
-        "On-device, verified-private, and conventional provider modes are explicit; verified-private admission remains unavailable until a production attestation-backed provider and verifier persist independently verifiable receipts",
+        "On-device, verified-private, and conventional provider modes are explicit; the release-wide verified-private claim remains blocked until a tagged production build proves credentialed provider verification, independently verifiable receipt persistence, and stable receipt export",
     },
   ],
   [

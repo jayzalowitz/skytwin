@@ -39,7 +39,8 @@ function buildMcpServer(tokenCtx: ExternalAgentToken): McpServer {
       capabilities: { tools: {} },
       instructions:
         'SkyTwin Twin MCP server. Tools are filtered by your token scope. ' +
-        'Call whoami to see your identity. All tool calls are logged for audit.',
+        'Call whoami to see your identity. Every tool call attempts a provenance audit write; ' +
+        'an audit failure is logged without replacing the tool result.',
     },
   );
 
