@@ -1,5 +1,14 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.103.1] - 2026-09-16
+
+### Fixed
+
+- **Desktop live integration checks now follow the hardened device-pairing
+  contract.** They verify that minting a pairing token requires an existing
+  human session and that the public consume route validates its one-time token,
+  instead of expecting the retired unauthenticated long-lived session flow.
+
 ## [0.6.103.0] - 2026-09-16
 
 ### Changed
