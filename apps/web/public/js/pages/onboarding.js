@@ -10,8 +10,9 @@
  *   installing      → complete
  *
  * Singleton delegator: all click handling lives in handleOnboardingClick(),
- * wired ONCE with a _wizardListenerWired guard and gated on
- * window.location.hash === '' || '#/' (the overlay is always shown at root).
+ * wired ONCE with a _wizardListenerWired guard and gated by the visible
+ * onboarding overlay. The overlay can cover any deep-linked route on first
+ * launch, so the current hash must not disable its controls.
  *
  * No inline event handlers anywhere in this file — only data-action attributes.
  */
@@ -108,12 +109,6 @@ function getFirstRunChoice() {
   return (_wizardState && _wizardState.firstRunChoice) || 'about-me';
 }
 
-function isOnWizard() {
-  // The wizard overlay is shown at the root hash (empty or '#/').
-  const h = (window.location.hash || '').split('?')[0];
-  return h === '' || h === '#/' || h === '#';
-}
-
 function getCurrentUserId() {
   return getEffectiveUserId();
 }
@@ -129,9 +124,9 @@ function ensureWizardListener() {
 }
 
 async function handleOnboardingClick(e) {
-  if (!isOnWizard()) return;
-  // The route is authoritative; the overlay check handles a dismissed wizard
-  // that remains mounted at the root route.
+  // First-run onboarding is an application-level modal. It may be mounted over
+  // a deep link such as #/watches, so visibility is the authority rather than
+  // the route hash. The action namespace is private to this overlay.
   const overlay = document.getElementById('onboarding-overlay');
   if (!overlay || overlay.style.display === 'none') return;
 

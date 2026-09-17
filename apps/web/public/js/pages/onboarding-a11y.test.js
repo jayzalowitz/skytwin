@@ -44,6 +44,8 @@ describe('onboarding accessibility contract', () => {
 
   it('preserves delegated actions and the default sample path', () => {
     expect(onboarding).toContain('document.addEventListener(\'click\', handleOnboardingClick)');
+    expect(onboarding).toContain("const overlay = document.getElementById('onboarding-overlay')");
+    expect(onboarding).not.toContain('function isOnWizard()');
     expect(onboarding).toContain('Just show me around');
     expect(onboarding).toContain('data-action="onb-start-tour"');
   });
