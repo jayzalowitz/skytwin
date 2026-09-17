@@ -33,6 +33,11 @@ All notable changes to SkyTwin will be documented in this file.
   uses a serializable compare-and-swap, legacy Watches are reconciled without
   inventing historical attribution, and backup schema v6 validates complete
   workflow lineage before restore.
+- **First-run choices now work from deep links such as Watches.** The global
+  onboarding modal scopes its controls to the visible dialog instead of the
+  root route, so every choice responds from the page a user opened. Dismissing
+  preserves that page; starting the sample or setup navigates to its intended
+  destination.
 
 ## [0.6.103.1] - 2026-09-16
 

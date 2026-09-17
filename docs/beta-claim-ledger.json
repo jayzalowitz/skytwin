@@ -1114,7 +1114,7 @@
         },
         {
           "path": "apps/web/public/js/pages/onboarding.js",
-          "sha256": "56409d502a487de0d3c32ca25b228e75bab13e2fef770a8af255e54c70aef78e",
+          "sha256": "15071f6cfcdd6912a0218be51f067445d65ef9b57a42b86701d3279676c90ffb",
           "why": "Provides the real first-run sample control, session issuance flow, and sample-route transition"
         },
         {
