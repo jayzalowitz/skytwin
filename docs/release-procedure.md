@@ -1,5 +1,34 @@
 # Release Procedure
 
+## Public source previews
+
+A maintainer-authorized **source preview** can be published independently of the
+supported desktop beta. It is a named snapshot of the already-public source, not
+an installer release and not a certification that the beta ledger is ready.
+
+- Use a date-based `source-preview-YYYY-MM-DD` tag, with a numeric suffix if that
+  date is already taken. Never move an existing tag. This namespace does not
+  trigger the `v*` desktop publisher or its update feeds.
+- Tag the exact merged `main` commit after its PR's source CI and documentation
+  preview checks pass. Verify the published Pages site reflects the merged docs.
+- Publish as a GitHub **prerelease**, never as the latest stable installer release.
+  Include the exact source SHA, source setup guide, product tour, and limitations
+  in the release notes. GitHub's automatic source ZIP/tar archives are the only
+  assets; do not attach binaries, updater manifests, internal source candidates,
+  or unverified machine reports.
+- Explain that local development tools are required. Recommend the isolated
+  fictional sample and disclose unavailable supported Google/Microsoft account
+  connections. State that signing, notarization, clean-machine verification, and
+  release-wide evidence remain incomplete for the public beta.
+- Keep `VERSION`, the claim ledger, the `v*` publisher, and all application safety
+  gates unchanged. A source snapshot does not satisfy any installer-release gate.
+
+Internal source candidates described below remain non-public evaluation
+materials. Do not upload them as source-preview assets. Publication still needs
+explicit maintainer authority; this procedure does not grant it.
+
+## Supported desktop beta
+
 > **Beta truth gate:** [`beta-claim-ledger.json`](./beta-claim-ledger.json) is
 > the release-claim source of truth for `v0.7.0-beta`. Run `pnpm claims:check`
 > before cutting any candidate. Every release-producing `v*` tag additionally

@@ -1,328 +1,463 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>SkyTwin — open-source local-first decision software</title>
-  <meta name="description" content="SkyTwin is an open-source, local-first decision system. Start with the isolated account-free fictional-data sample; the planned public beta remains blocked by release evidence gates.">
-  <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/">
-  <meta property="og:title" content="SkyTwin — open-source local-first decision software">
-  <meta property="og:description" content="A source-first developer preview with fictional-data evaluation, policy gates, and explicit local and network boundaries.">
-  <meta property="og:type" content="website">
-  <meta property="og:url" content="https://jayzalowitz.github.io/skytwin/">
-  <!-- No external font fetch: the --font-* vars fall back to the system stack,
-       keeping this privacy-focused doc set free of third-party requests. Shares
-       the design system with demo.html so the Pages site reads as one product. -->
-  <style>
-    :root {
-      --bg: #0E0F13;
-      --surface: #16181F;
-      --elevated: #1D2029;
-      --border: #272B38;
-      --border-strong: #363B4C;
-      --text: #ECEDF1;
-      --text-muted: #9CA0AE;
-      --text-dim: #5E6374;
-      --accent: #7C72E8;
-      --accent-hover: #9A92F2;
-      --accent-soft: rgba(124,114,232,.16);
-      --safe: #46C08A;
-      --danger: #F26D5B;
-      --shadow: 0 24px 80px rgba(0, 0, 0, .32);
-      --font-ui: "Geist", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      /* Retained deliberately for a forthcoming line the twin actually speaks
-         (DESIGN.md:57-60). Not for headings — see the note on h1 below. */
-      --font-voice: "Fraunces", Georgia, serif;
-      --font-data: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font-ui);
-      line-height: 1.55;
-      -webkit-font-smoothing: antialiased;
-    }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { color: var(--accent-hover); }
-    code, pre { font-family: var(--font-data); }
-    .wrap { max-width: 960px; margin: 0 auto; padding: 0 1.5rem; }
-
-    /* Nav */
-    .nav { border-bottom: 1px solid var(--border); position: sticky; top: 0; background: rgba(14,15,19,.82); backdrop-filter: blur(10px); z-index: 10; }
-    .nav-inner { display: flex; align-items: center; justify-content: space-between; height: 60px; }
-    .brand { display: flex; align-items: center; gap: .55rem; color: var(--text); font-weight: 600; }
-    .brand-mark { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 700; }
-    .nav-links { display: flex; align-items: center; gap: 1.4rem; font-size: .95rem; }
-    .nav-links a { color: var(--text-muted); }
-    .nav-links a:hover { color: var(--text); }
-    .button { display: inline-block; padding: .55rem 1rem; border-radius: 9px; border: 1px solid var(--border-strong); color: var(--text); font-weight: 550; }
-    .button:hover { color: var(--text); border-color: var(--text-muted); }
-    .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-    .button.primary:hover { background: var(--accent-hover); color: #fff; }
-
-    /* Hero */
-    .hero { padding: 4.5rem 0 1rem; }
-    .eyebrow { color: var(--accent); font-weight: 600; font-size: .82rem; letter-spacing: .08em; text-transform: uppercase; margin: 0 0 1rem; }
-    /* DESIGN.md:57-60 scopes the voice face to the twin's own words and says
-       never for UI chrome; this headline is marketing chrome. It was set in
-       --font-voice at 400, which also disagreed with deck.html — a visitor going
-       site → deck saw the serif signature demoted with no explanation. Both pages
-       now set headings in --font-ui 600 and spend the serif only on a line the
-       twin speaks. (No voice line exists on this page yet; adding one is a copy
-       decision, not a CSS one.) */
-    h1 { font-family: var(--font-ui); font-weight: 600; font-size: clamp(2.4rem, 5vw, 3.6rem); line-height: 1.06; letter-spacing: -.015em; margin: 0 0 1.1rem; }
-    .lede { font-size: 1.2rem; color: var(--text-muted); max-width: 40rem; margin: 0 0 1.8rem; }
-    .actions { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
-    .actions .note { color: var(--text-dim); font-size: .85rem; margin-left: .3rem; }
-
-    /* Sections */
-    section { padding: 3.2rem 0; border-top: 1px solid var(--border); }
-    section.hero { border-top: 0; }
-    h2 { font-size: 1.6rem; letter-spacing: -.01em; margin: 0 0 .4rem; }
-    .section-lede { color: var(--text-muted); max-width: 42rem; margin: 0 0 1.6rem; }
-
-    /* Shots */
-    .shot { border: 1px solid var(--border); border-radius: 14px; box-shadow: var(--shadow); width: 100%; display: block; }
-    .shot-hero { margin-top: 2rem; }
-    .shot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.4rem; }
-    .shot-grid figure { margin: 0; }
-    .shot-grid figcaption { color: var(--text-dim); font-size: .82rem; margin-top: .5rem; }
-
-    /* Feature grid */
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1.4rem; }
-    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 1.3rem; }
-    .card h3 { margin: 0 0 .4rem; font-size: 1.06rem; }
-    .card p { margin: 0; color: var(--text-muted); font-size: .96rem; }
-    .card .tag { display: inline-block; font-size: .72rem; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--accent); margin-bottom: .5rem; }
-    .card.safe .tag { color: var(--safe); }
-
-    /* Developer-preview path: in-flow status and evaluation cues. These make
-       the launch boundary legible without hiding the caveats behind a modal. */
-    .status { display: inline-flex; align-items: center; gap: .45rem; padding: .35rem .65rem; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text-muted); font-size: .8rem; }
-    .status::before { content: ""; width: .48rem; height: .48rem; border-radius: 50%; background: var(--warning, #E7B14C); }
-    .path-grid, .boundary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 1.4rem; }
-    .step { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.35rem; }
-    .step-number { display: inline-grid; place-items: center; width: 1.65rem; height: 1.65rem; margin-bottom: .85rem; border-radius: 50%; background: var(--accent-soft); color: var(--accent-hover); font: 600 .78rem var(--font-data); }
-    .step h3, .boundary h3 { margin: 0 0 .45rem; font-size: 1.05rem; }
-    .step p, .boundary p { margin: 0; color: var(--text-muted); font-size: .94rem; }
-    .step code { display: block; margin-top: .9rem; padding: .7rem; overflow-x: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 7px; color: var(--text); font-size: .78rem; }
-    .boundary { padding: 1.2rem; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
-    .boundary .state { margin-bottom: .55rem; color: var(--safe); font: 500 .72rem var(--font-data); letter-spacing: .04em; text-transform: uppercase; }
-    .boundary.pending .state { color: var(--warning, #E7B14C); }
-    .boundary.network .state { color: var(--danger); }
-    .flow { display: grid; grid-template-columns: repeat(6, 1fr); gap: .55rem; margin-top: 1.4rem; align-items: stretch; }
-    .flow-node { position: relative; min-height: 7.2rem; padding: .85rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); font-size: .83rem; }
-    .flow-node strong { display: block; margin-bottom: .35rem; font-size: .9rem; }
-    .flow-node:not(:last-child)::after { content: "→"; position: absolute; right: -.55rem; top: 50%; z-index: 1; color: var(--text-dim); transform: translateY(-50%); }
-    .flow-node.gate { border-color: var(--accent); background: var(--accent-soft); }
-    .callout { margin-top: 1.25rem; padding: 1rem 1.1rem; border-left: 3px solid var(--accent); background: var(--surface); color: var(--text-muted); }
-    .facts { display: grid; grid-template-columns: 1.2fr .8fr; gap: 1rem; margin-top: 1.4rem; }
-    .facts details { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: .9rem 1rem; }
-    .facts summary { cursor: pointer; color: var(--text); font-weight: 600; }
-    .facts p, .facts ul { color: var(--text-muted); font-size: .94rem; }
-
-    /* Scopes table (Google OAuth review) */
-    .scopes { width: 100%; border-collapse: collapse; margin-top: 1.2rem; background: var(--surface); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-    .scopes th, .scopes td { padding: .8rem 1rem; text-align: left; border-bottom: 1px solid var(--border); font-size: .94rem; vertical-align: top; }
-    .scopes th { background: var(--accent-soft); font-weight: 600; }
-    .scopes tr:last-child td { border-bottom: 0; }
-    .scopes code { font-size: .84rem; color: var(--text); }
-
-    pre.code { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem; overflow-x: auto; font-size: .9rem; }
-    ul.links { margin: 1rem 0 0; padding-left: 1.1rem; }
-    ul.links li { margin: .35rem 0; color: var(--text-muted); }
-
-    footer { border-top: 1px solid var(--border); color: var(--text-dim); font-size: .9rem; padding: 2.4rem 0 3.5rem; }
-    footer a { color: var(--text-muted); }
-
-    @media (max-width: 680px) {
-      .grid, .shot-grid, .path-grid, .boundary-grid, .facts, .flow { grid-template-columns: 1fr; }
-      .flow-node { min-height: auto; }
-      .flow-node:not(:last-child)::after { content: "↓"; top: auto; right: 50%; bottom: -.8rem; transform: translateX(50%); }
-      .nav-links a:not(.button) { display: none; }
-    }
-  </style>
-</head>
-<body>
-  <nav class="nav">
-    <div class="wrap nav-inner">
-      <a class="brand" href="index.html" aria-label="SkyTwin home">
-        <span class="brand-mark">S</span><span>SkyTwin</span>
-      </a>
-      <div class="nav-links">
-        <a href="start.html">Start</a>
-        <a href="how-to-use.html">How to use</a>
-        <a href="docs.html">Docs</a>
-        <a href="agents.html">For agents</a>
-        <a href="reference.html">Reference</a>
-        <a href="demo.html">Demo</a>
-        <a href="deck.html">Deck</a>
-        <a href="connect-gmail.html">Google status</a>
-        <a href="https://github.com/jayzalowitz/skytwin">GitHub</a>
-        <a class="button primary" href="https://github.com/jayzalowitz/skytwin/releases/latest">Technical preview</a>
-      </div>
-    </div>
-  </nav>
-
-  <main>
-    <section class="hero wrap">
-      <p class="eyebrow">Open source · local-first · Apache 2.0</p>
-      <span class="status">Developer preview — source and fictional sample first</span>
-      <h1>Build a personal agent that can explain why it stopped.</h1>
-      <p class="lede">SkyTwin is an open-source, local-first decision system: it turns signals into candidate actions, runs policy and trust checks, and either asks for approval or records why it did not proceed. Start with the isolated account-free sample; it uses fictional decisions and has no external effects. The planned <code>v0.7.0-beta</code> remains blocked by the evidence and release gates in the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">beta claim ledger</a>.</p>
-      <div class="actions">
-        <a class="button primary" href="start.html">Start from source</a>
-        <a class="button" href="how-to-use.html">See the fictional-data demo</a>
-        <a class="button" href="agents.html">Read the agent guide</a>
-        <a class="button" href="https://github.com/jayzalowitz/skytwin">View source</a>
-        <span class="note"><a href="https://github.com/jayzalowitz/skytwin/releases/latest">Download technical preview</a> artifacts are older than the guarded source sample.</span>
-      </div>
-      <p class="section-lede">This is not a hosted service, a supported installer release, or a promise that a remote provider is private. It is a repository you can inspect, run locally, and challenge.</p>
-    </section>
-
-    <section class="wrap" id="evaluate">
-      <h2>Evaluate it in three honest steps</h2>
-      <p class="section-lede">The fastest path is source first. It makes the current boundary visible instead of asking you to trust a download badge.</p>
-      <div class="path-grid">
-        <article class="step"><span class="step-number">01</span><h3>Run the source tree</h3><p>macOS, Linux, or WSL. The installer bootstraps local dependencies, starts the API, worker, and dashboard, and opens the dashboard on localhost.</p><code>git clone https://github.com/jayzalowitz/skytwin.git<br>cd skytwin &amp;&amp; ./install.sh</code></article>
-        <article class="step"><span class="step-number">02</span><h3>Use fictional data first</h3><p>Inspect the account-free sample and its explanations before considering any private account or provider configuration. The sample is deliberately isolated and non-destructive.</p><a class="button" style="margin-top:.9rem" href="how-to-use.html">Walk the demo with fresh screenshots</a></article>
-        <article class="step"><span class="step-number">03</span><h3>Inspect the controls</h3><p>Read the policy, provenance, local-model, and provider-boundary documentation before enabling an integration. If a boundary is not proven, SkyTwin should make it unavailable.</p><a class="button" style="margin-top:.9rem" href="agents.html">Read machine-facing rules</a></article>
-      </div>
-      <div class="callout"><strong>Before you run it:</strong> this installer can install prerequisites and starts local services. It is a source/developer path, not a sandboxed browser demo. Read <a href="start.html">Start</a> for prerequisites, ports, data locations, and removal guidance.</div>
-    </section>
-
-    <section class="wrap">
-      <h2>It acts. It doesn't chat.</h2>
-      <p class="section-lede">SkyTwin's architecture is designed to interpret signals and propose or perform policy-gated actions. The current supported preview demonstrates that loop only with fictional sample data and session-local interactions.</p>
-      <div class="grid">
-        <div class="card">
-          <span class="tag">Briefing</span>
-          <h3>Act vs. catch-up, cited</h3>
-          <p>The Inbox-Intelligence digest splits the few things that need a decision from the topics you just want awareness of — grouped by matter, de-duplicated across signals, each line citing the email/event it came from.</p>
-        </div>
-        <div class="card">
-          <span class="tag">Decisions</span>
-          <h3>Recorded explanations</h3>
-          <p>Supported decision paths can record what happened, the evidence and preferences used, the selected action, and correction guidance. Release-wide coverage is still under audit.</p>
-        </div>
-        <div class="card safe">
-          <span class="tag">Safety</span>
-          <h3>Trust you grant, not assume</h3>
-          <p>New twins start in observe-only mode and earn autonomy through your feedback. Spend limits are hard caps. Untrusted-origin content can never auto-run destructive work. Settings can pause auto-execution and route otherwise allowed actions to you for approval.</p>
-        </div>
-        <div class="card">
-          <span class="tag">Local-first</span>
-          <h3>Local by default</h3>
-          <p>CockroachDB is bundled with the desktop app and its persistent database stays on your machine. Builds from current source can recommend and download a pinned local model only after you start the download; a compatible <code>llama.cpp</code> runtime remains separate. Connected services and configured hosted endpoints use the network. In the decision pipeline, email addresses are masked only in the raw-event and episodic-memory fragments before those fragments reach a provider; other prompt fragments are not covered by that masking. Turn on full-disk encryption (FileVault / BitLocker / LUKS); see the <a href="privacy.html#storage">privacy policy</a> for exactly what is and isn't encrypted at rest today.</p>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>SkyTwin — Personal AI. Your machine. Your rules.</title>
+    <meta
+      name="description"
+      content="Meet SkyTwin: an open-source, local-first personal AI project built around your preferences, explainable decisions, and control. Explore the fictional-data developer preview."
+    />
+    <meta
+      property="og:title"
+      content="SkyTwin — Personal AI. Your machine. Your rules."
+    />
+    <meta
+      property="og:description"
+      content="A personal twin you can inspect, teach, and build on. Explore the open-source developer preview with a screenshot-led tour."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://jayzalowitz.github.io/skytwin/" />
+    <link rel="canonical" href="https://jayzalowitz.github.io/skytwin/" />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body class="landing">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <nav class="nav" aria-label="Main navigation">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html" aria-label="SkyTwin home">SkyTwin</a>
+        <div class="nav-links">
+          <a class="keep" href="how-to-use.html">Take the tour</a
+          ><a class="keep" href="docs.html">Docs</a
+          ><a href="https://github.com/jayzalowitz/skytwin">GitHub ↗</a>
         </div>
       </div>
-    </section>
+    </nav>
+    <main id="main">
+      <header class="wrap landing-hero">
+        <p class="kicker">Open-source personal AI · Apache 2.0</p>
+        <h1>Personal AI.<br />Your machine.<br />Your rules.</h1>
+        <p class="hero-lede">
+          An assistant should learn what matters to you—not make you explain
+          yourself forever. SkyTwin is building a personal twin with memory you
+          can inspect, decisions you can question, and boundaries you control.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="how-to-use.html"
+            >See SkyTwin in action →</a
+          ><a class="button" href="start.html">Run the source</a>
+        </div>
+        <p class="preview-note">
+          <strong>Developer preview.</strong> Explore fictional data without an
+          account or AI key. Running it requires local source setup; real Google
+          and Microsoft connections are unavailable.
+          <a href="#status">What’s ready today?</a>
+        </p>
+      </header>
 
-    <section class="wrap" id="boundaries">
-      <h2>The important part is where it refuses to act</h2>
-      <p class="section-lede">A local-first label is not enough. The project separates local execution, ordinary network providers, and a provider-specific verified-private route—and does not silently cross between them.</p>
-      <div class="boundary-grid">
-        <article class="boundary"><p class="state">Default boundary</p><h3>On this device</h3><p>The embedded runtime and source-qualified loopback Ollama are the local route. Managed setup verifies the downloaded artifact; an explicit local model is still local, but is not represented as artifact-verified. No remote fallback.</p></article>
-        <article class="boundary network"><p class="state">Explicit opt-in</p><h3>My configured provider</h3><p>A chosen hosted provider may receive prompts under its own terms. This is a network boundary, not a confidential-computing claim, and it is never selected by a local failure.</p></article>
-        <article class="boundary pending"><p class="state">Interactive, fail-closed</p><h3>Verified private cloud</h3><p>TrustedRouter is admitted only for explicit interactive calls after same-session attestation and an exact-byte confidential-route receipt verify. Failure returns no content and never falls back. NEAR AI remains unavailable.</p></article>
-      </div>
-      <p class="section-lede" style="margin-top:1rem">Read the full <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/confidential-inference.md">confidential-inference boundary</a>, including the <a href="https://trust.trustedrouter.com/">TrustedRouter live trust record</a> and why provider evidence is not automatically a SkyTwin product claim.</p>
-    </section>
+      <figure class="wrap product-shot" id="tour">
+        <a
+          href="how-to-use.html"
+          aria-label="Open the screenshot-led SkyTwin walkthrough"
+          ><img
+            src="assets/demo-current/approvals-source-demo.png"
+            width="1440"
+            height="960"
+            fetchpriority="high"
+            alt="SkyTwin fictional sample dashboard: a briefing separates items needing a decision from things to catch up on."
+        /></a>
+        <figcaption>
+          <span>Inside SkyTwin</span> Actual source-run capture, September 16,
+          2026. Fictional sample data—not a connected inbox.
+          <a href="how-to-use.html#screens">Explore the screens →</a>
+        </figcaption>
+      </figure>
 
-    <section class="wrap" id="architecture">
-      <h2>A decision path with gates, not a prompt-to-action shortcut</h2>
-      <p class="section-lede">This is the contract to evaluate in the source. A candidate action is not executable merely because a model or connector suggested it.</p>
-      <div class="flow" role="img" aria-label="Signals become a decision context, candidate action, policy and provenance gate, approval or execution, explanation, then feedback">
-        <div class="flow-node"><strong>Signals</strong>Fictional sample or configured sources</div>
-        <div class="flow-node"><strong>Context</strong>Preferences, memory, confidence, and provenance</div>
-        <div class="flow-node"><strong>Candidate</strong>Risk assessment and reversibility are required</div>
-        <div class="flow-node gate"><strong>Policy gate</strong>Trust tier, spend, provenance, and injection checks</div>
-        <div class="flow-node"><strong>Approval / route</strong>Escalate, execute through an admitted adapter, or refuse</div>
-        <div class="flow-node"><strong>Explanation + feedback</strong>Record supported outcomes and learn from corrections</div>
-      </div>
-      <div class="facts">
-        <details open><summary>What an external agent may do</summary><p>The Twin MCP surface is scoped and token-gated. It can expose read-only context and propose actions for review; it is not a blanket authority to operate connected accounts. See the <a href="agents.html#connect">agent guide</a>.</p></details>
-        <details><summary>What an untrusted input cannot do</summary><p>Untrusted-origin destructive-shaped actions are escalated. Missing provenance fails safe to untrusted external; the action generator cannot self-assign trusted provenance. See the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/safety-model.md">safety model</a>.</p></details>
-      </div>
-    </section>
+      <section class="wrap story-section" id="why">
+        <div class="section-heading">
+          <p class="kicker">The idea</p>
+          <h2>Less starting over.<br />More understanding you.</h2>
+          <p>
+            Personal AI gets interesting when it has context. It gets useful
+            when you can see that context, correct it, and decide what it is
+            allowed to do.
+          </p>
+        </div>
+        <div class="benefit-list">
+          <article>
+            <span class="section-number">01</span>
+            <div>
+              <h3>A memory you can actually inspect.</h3>
+              <p>
+                Preferences are structured, versioned records with confidence
+                and supporting evidence. Investigate what your twin has learned
+                instead of treating a chat history as a personality.
+              </p>
+              <a href="data.html">How your twin remembers →</a>
+            </div>
+          </article>
+          <article>
+            <span class="section-number">02</span>
+            <div>
+              <h3>The reason, not just the recommendation.</h3>
+              <p>
+                See the situation, the proposed action, and why it needs your
+                attention. The sample puts fictional decisions and explanations
+                in front of you so you can judge the interaction for yourself.
+              </p>
+              <a href="how-to-use.html#walkthrough"
+                >Walk through a decision →</a
+              >
+            </div>
+          </article>
+          <article>
+            <span class="section-number">03</span>
+            <div>
+              <h3>Control that belongs to you.</h3>
+              <p>
+                The source pipeline checks policy, trust, risk, and spend before
+                admitting actions. New users start at observer. A model’s
+                suggestion does not grant permission to act.
+              </p>
+              <a href="safety.html">Understand the controls →</a>
+            </div>
+          </article>
+        </div>
+      </section>
 
-    <section class="wrap">
-      <h2>See it before you connect anything</h2>
-      <p class="section-lede">Current source includes a guarded account-free sample for packaged desktop builds, so a stranger can inspect fictional decisions and explanations without touching a private inbox. Product data remains read-only; approve, reject, correct, and learn interactions run only in a disposable session-local simulation with no external effects. Published installers predate the guarded account-free sample now in source. <a href="demo.html">See the demo boundaries and storyboard →</a></p>
-      <div class="shot-grid">
-        <figure><figcaption>Onboarding capture withheld pending replacement after the public-copy audit.</figcaption></figure>
-        <figure><figcaption>Approvals capture withheld pending replacement after the public-copy audit.</figcaption></figure>
-        <figure><figcaption>Settings capture withheld pending replacement after the public-copy audit.</figcaption></figure>
-        <figure><figcaption>Briefing capture withheld pending replacement after the public-copy audit.</figcaption></figure>
-      </div>
-    </section>
+      <section class="wrap story-section" id="evaluate">
+        <div class="section-heading">
+          <p class="kicker">Start with a small, real experience</p>
+          <h2>Meet your twin.<br />Nothing to connect.</h2>
+          <p>
+            No inbox access. No provider key. No model download for the sample.
+            Start by seeing whether this feels like a better relationship with
+            software.
+          </p>
+        </div>
+        <ol class="tour-steps">
+          <li>
+            <span class="section-number">01</span>
+            <h3>Look around.</h3>
+            <p>
+              Read the screenshot-led tour in your browser. To try the app,
+              follow the source setup guide, then choose
+              <em>Just show me around</em>.
+            </p>
+            <a href="how-to-use.html">Take the guided tour →</a>
+          </li>
+          <li>
+            <span class="section-number">02</span>
+            <h3>Ask “why this?”</h3>
+            <p>
+              Compare the fictional briefing, <em>Needs your OK</em>, and
+              <em>What happened</em>. Look at which situations need a person and
+              what information is shown.
+            </p>
+            <a href="how-to-use.html#screens">See the product screens →</a>
+          </li>
+          <li>
+            <span class="section-number">03</span>
+            <h3>Try a different answer.</h3>
+            <p>
+              The isolated simulation lets you approve, reject, or correct fixed
+              proposals. Changes last for that session only; they cannot contact
+              a provider or affect a real account.
+            </p>
+            <a href="demo.html">Understand the sample →</a>
+          </li>
+        </ol>
+        <div class="quiet-note">
+          The website is a guide, not a hosted app. The source installer can
+          install prerequisites and starts local services.
+          <a href="start.html">Read what setup changes before running it.</a>
+        </div>
+      </section>
 
-    <section class="wrap" id="docs">
-      <h2>Documentation for people and the agents they build</h2>
-      <p class="section-lede">The public Pages guides explain how to evaluate the project without assuming product context. The repository documents remain the source of truth for implementation details, tests, and release evidence.</p>
-      <div class="grid">
-        <div class="card safe"><span class="tag">No account needed</span><h3>Five-minute fictional-data tour</h3><p>See the source-run onboarding, briefing, decision history, and controls with plain-language instructions and current screenshots.</p><p style="margin-top:.7rem"><a href="how-to-use.html">Open the walkthrough →</a></p></div>
-        <div class="card safe"><span class="tag">Versioned behavior</span><h3>Teach one read-only Watch</h3><p>See how a signal digest is replayed before activation, revised without rewriting history, pinned at run time, and rolled back through CockroachDB.</p><p style="margin-top:.7rem"><a href="workflows.html">Read the workflow guide →</a></p></div>
-        <div class="card"><span class="tag">Plain language</span><h3>Questions, terms, and boundaries</h3><p>Get direct answers about preview status, privacy, inference, agents, and the words that determine whether anything can act.</p><p style="margin-top:.7rem"><a href="faq.html">Read the FAQ →</a> · <a href="glossary.html">glossary</a></p></div>
-        <div class="card safe"><span class="tag">Start here</span><h3>Human evaluation guide</h3><p>Prerequisites, transparent source install, local services, fictional-data sample, and the data/network boundaries to read before configuration.</p><p style="margin-top:.7rem"><a href="start.html">Open Start →</a></p></div>
-        <div class="card"><span class="tag">Ownership</span><h3>Data, memory, backup, and deletion</h3><p>Understand current storage disclosure, credential separation, memory backends, backup semantics, and user-control boundaries.</p><p style="margin-top:.7rem"><a href="data.html">Read the data guide →</a></p></div>
-        <div class="card"><span class="tag">Machine-facing</span><h3>Agent integration guide</h3><p>Scoped Twin MCP setup, proposal-versus-execution rules, provenance requirements, ambiguity handling, and sources to retrieve next.</p><p style="margin-top:.7rem"><a href="agents.html">Open agent guide →</a> · <a href="llms.txt">llms.txt</a></p></div>
-        <div class="card"><span class="tag">Integration boundary</span><h3>Connectors, MCP, adapters, and DXT</h3><p>See which surfaces are inspectable, what is unavailable, and why context access never grants execution authority.</p><p style="margin-top:.7rem"><a href="integrations.html">Read integration status →</a></p></div>
-        <div class="card"><span class="tag">Reference</span><h3>Architecture, operations, and evidence</h3><p>A navigable map of the technical specification, safety model, data boundaries, release evidence, troubleshooting, and source locations.</p><p style="margin-top:.7rem"><a href="reference.html">Open reference center →</a> · <a href="deck.html">evidence deck</a></p></div>
-        <div class="card"><span class="tag">When local setup fails</span><h3>Troubleshoot a source run</h3><p>Work through migrations, the fictional seed, stale local build output, services, ports, and a safe bug-report checklist.</p><p style="margin-top:.7rem"><a href="troubleshooting.html">Open troubleshooting →</a></p></div>
-        <div class="card"><span class="tag">Contribute</span><h3>Make a narrow, testable change</h3><p>Use issues and pull requests for feedback. Code that affects policy, privacy, or claims should include its tests and its relevant documentation boundary.</p><p style="margin-top:.7rem"><a href="https://github.com/jayzalowitz/skytwin/issues">Open issues →</a></p></div>
-      </div>
-    </section>
+      <section class="wrap story-section feature-story" id="workflows">
+        <div>
+          <p class="kicker">Beyond a one-off prompt</p>
+          <h2>Teach a routine.<br />Keep the final say.</h2>
+          <p>
+            A Watch is a read-only digest of signals you choose. The versioned
+            workflow in source lets you review a proposal, replay it against
+            recent signals, activate it explicitly, and return to a previous
+            version.
+          </p>
+          <p>
+            That is the direction: personal behavior you can improve without
+            losing the ability to understand what changed.
+          </p>
+          <a class="text-link" href="workflows.html"
+            >Explore versioned Watches →</a
+          >
+          <p class="preview-note">
+            <strong>Advanced source feature.</strong> Not part of the disposable
+            sample. AI authoring requires a qualified model/runtime; the
+            maintained embedded model and stock Ollama do not currently qualify.
+            Read-only digests do not send, delete, or spend.
+          </p>
+        </div>
+        <figure class="detail-shot">
+          <a
+            href="workflows.html"
+            aria-label="Read the versioned workflow guide"
+            ><img
+              src="assets/demo-current/watches-source-demo.png"
+              width="1440"
+              height="960"
+              loading="lazy"
+              alt="Watches in the seeded source-development profile: Model artifact unavailable, with AI preview disabled and a link to Settings."
+          /></a>
+          <figcaption>
+            Actual source state: a missing qualified model keeps AI authoring
+            unavailable. SkyTwin does not silently change providers.
+          </figcaption>
+        </figure>
+      </section>
 
-    <section class="wrap">
-      <h2>Google account access — unavailable in this preview</h2>
-      <p class="section-lede">The supported preview does not request Google identity, Calendar, or Gmail access and does not ship a managed Google OAuth client. Operator/BYO Google remains unsupported until authorization, callback, client-generation, ownership, exact-capability, and secret-custody gates are complete. The table below records the intended future minimum-scope design; it is not a list of scopes available in this preview.</p>
-      <table class="scopes">
-        <thead><tr><th>Scope</th><th>What it enables</th></tr></thead>
-        <tbody>
-          <tr><td><code>gmail.readonly</code><br><small>future optional Gmail</small></td><td>Would read inbox content for explicitly enabled mail features.</td></tr>
-          <tr><td><code>gmail.modify</code><br><small>future optional Gmail</small></td><td>Would support approved label, archive, and send operations. It remains separate from the default identity and Calendar capability set.</td></tr>
-          <tr><td><code>calendar.readonly</code><br><small>future explicit Calendar grant</small></td><td>Would read calendar context after the reviewed real-account gates land.</td></tr>
-          <tr><td><code>calendar.events</code><br><small>future explicit Calendar grant</small></td><td>Would support policy-gated Calendar changes only with the exact granted capability.</td></tr>
-          <tr><td><code>openid</code>, <code>email</code>, <code>profile</code><br><small>future identity baseline</small></td><td>Would identify the account associated with an owner-bound connection.</td></tr>
-          <tr><td><code>User.Read</code>, <code>Mail.Read</code>, <code>Calendars.Read</code>, <code>offline_access</code><br><small>source-development Microsoft capability</small></td><td>Implemented as a read-only source path behind the exact experimental account opt-in, but outside the supported sample-only preview.</td></tr>
-        </tbody>
-      </table>
-      <p style="margin-top:1rem;color:var(--text-muted);font-size:.95rem;">See the <a href="privacy.html">privacy policy</a>, <a href="connect-gmail.html">current Google status</a>, and <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/google-verification.md">deferred integration plan</a>. Do not create or paste Google credentials for this preview.</p>
-    </section>
+      <section class="wrap story-section" id="boundaries">
+        <div class="section-heading">
+          <p class="kicker">Choose where the thinking happens</p>
+          <h2>Local is a choice.<br />Not a cloud fallback.</h2>
+          <p>
+            Keep reasoning on your machine, or explicitly choose a remote route.
+            These are different boundaries—not interchangeable marketing labels.
+          </p>
+        </div>
+        <div class="route-list">
+          <article>
+            <p class="route-label">Default</p>
+            <div>
+              <h3>On this device</h3>
+              <p>
+                Use a compatible embedded runtime and model, or local-only
+                Ollama. Local failure never selects a remote provider. Setup
+                downloads are explicit; a working runtime and model are still
+                required.
+              </p>
+              <a href="inference.html">Local setup and model requirements →</a>
+            </div>
+          </article>
+          <article>
+            <p class="route-label">Verified route</p>
+            <div>
+              <h3>Verified private cloud</h3>
+              <p>
+                TrustedRouter is admitted only for explicit interactive calls
+                after SkyTwin verifies fresh same-session gateway attestation
+                and an exact-byte confidential-route receipt. Verification
+                failure returns no content and never falls back. NEAR AI remains
+                unavailable.
+              </p>
+              <a href="https://trust.trustedrouter.com/"
+                >TrustedRouter trust record ↗</a
+              >
+              · <a href="inference.html">SkyTwin’s verification boundary →</a>
+            </div>
+          </article>
+          <article>
+            <p class="route-label">Explicit opt-in</p>
+            <div>
+              <h3>Your configured provider</h3>
+              <p>
+                Bring a hosted provider under its own terms. Prompts cross the
+                network; this mode does not make a confidential-computing
+                promise.
+              </p>
+              <a href="inference.html">Compare inference modes →</a>
+            </div>
+          </article>
+        </div>
+        <div class="quiet-note">
+          <strong>Local reasoning is not a blanket privacy guarantee.</strong>
+          Storage, configured embeddings, and connected services have separate
+          boundaries. Some local records remain plaintext; use full-disk
+          encryption.
+          <a href="privacy.html#storage"
+            >Read the exact storage and network disclosure.</a
+          >
+        </div>
+      </section>
 
-    <section class="wrap">
-      <h2>Open source &amp; transparent</h2>
-      <p class="section-lede">Apache 2.0. Every line of the agent that reads your mail, the OAuth flow, and the policy engine that decides what auto-runs vs. asks first is on GitHub. The CHANGELOG records every behavior change; the architecture docs explain how decisions get made.</p>
-      <ul class="links">
-        <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/safety-model.md">Safety model</a> — threat model, trust tiers, defense layers</li>
-        <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/technical-spec.md">Technical spec</a> — architecture, data flow, schema</li>
-        <li><a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/product-spec.md">Product spec</a> — what we will and won't ship, and why</li>
-        <li><a href="demo.html">Demo storyboard</a> — and the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/demo.md">operator script</a> behind it</li>
-        <li><a href="start.html">Start locally</a> · <a href="agents.html">Agent guide</a> · <a href="reference.html">Reference center</a> · <a href="llms.txt">llms.txt</a></li>
-        <li><a href="privacy.html">Privacy policy</a> · <a href="terms.html">Terms of service</a></li>
-      </ul>
-    </section>
+      <section class="wrap story-section" id="docs">
+        <div class="section-heading">
+          <p class="kicker">Go as deep as you want</p>
+          <h2>A friendly front door.<br />The whole system behind it.</h2>
+          <p>
+            You do not need to understand the architecture to understand the
+            product. And if you want the architecture, we will not hide it from
+            you.
+          </p>
+        </div>
+        <div class="reading-paths">
+          <a href="docs.html#start"
+            ><span class="section-number">Start here</span>
+            <h3>I want to use it ↗</h3>
+            <p>
+              Tour, setup, everyday concepts, and answers in plain language.
+            </p></a
+          >
+          <a href="docs.html#control"
+            ><span class="section-number">Make it yours</span>
+            <h3>I care about control ↗</h3>
+            <p>
+              Memory, privacy, models, approvals, and what a Watch can do.
+            </p></a
+          >
+          <a href="docs.html#build"
+            ><span class="section-number">Build on it</span>
+            <h3>I develop tools or agents ↗</h3>
+            <p>
+              Scoped MCP, exact source references, APIs, operations, and
+              contribution guides.
+            </p></a
+          >
+        </div>
+        <p class="resource-line">
+          <a href="docs.html">All documentation</a> ·
+          <a href="faq.html">FAQ</a> · <a href="agents.html">Agent guide</a> ·
+          <a href="agents.html#connect">MCP setup</a> ·
+          <a href="reference.html">Technical reference</a> ·
+          <a href="llms.txt">llms.txt</a> ·
+          <a href="deck.html">Evidence deck</a>
+        </p>
+      </section>
 
-    <section class="wrap">
-      <h2>Install</h2>
-      <p class="section-lede">Current unsigned technical-preview artifacts (<code>.dmg</code> / <code>.exe</code> / <code>.AppImage</code> / <code>.deb</code> / <code>.rpm</code>) are available from <a href="https://github.com/jayzalowitz/skytwin/releases/latest">the latest release</a>, but they predate the guarded packaged sample described above. Check each release's notes for exact contents. The update client can check for new artifacts, but signed-update installation is not yet verified. Or build from source in one command on macOS / Linux / WSL:</p>
-      <pre class="code"><code>curl -fsSL https://raw.githubusercontent.com/jayzalowitz/skytwin/main/install.sh | bash</code></pre>
-      <p style="color:var(--text-dim);font-size:.88rem;margin-top:.8rem;">Technical-preview builds aren't code-signed, so macOS Gatekeeper / Windows SmartScreen will warn on first launch — right-click → Open (macOS) or More info → Run anyway (Windows). Signing, notarization, and clean-machine trust evidence remain stop-ship gates for the public beta.</p>
-    </section>
+      <section class="wrap story-section" id="status">
+        <div class="section-heading">
+          <p class="kicker">Where we are today</p>
+          <h2>Early. Open.<br />Specific about what works.</h2>
+          <p>
+            The long-term goal is a personal twin that handles more of the
+            routine, on your terms. Today, the supported entry point is a local,
+            fictional-data developer preview.
+          </p>
+        </div>
+        <dl class="release-facts">
+          <div>
+            <dt>Try today</dt>
+            <dd>
+              Source-run sample, inspectable decisions and explanations, and
+              disposable approval/correction simulations. No real-account
+              effects.
+            </dd>
+          </div>
+          <div>
+            <dt>Explore in source</dt>
+            <dd>
+              Versioned read-only Watches, local model setup, the verifier-owned
+              interactive TrustedRouter route, and a scoped Twin MCP interface.
+              Each has its own prerequisites. MCP proposals do not execute
+              actions or create actionable approvals.
+            </dd>
+          </div>
+          <div>
+            <dt>Not available yet</dt>
+            <dd>
+              Supported Google/Microsoft account connections, general autonomous
+              personal-account workflows, a hosted service, or a supported
+              public-beta installer.
+            </dd>
+          </div>
+          <div>
+            <dt>Release boundary</dt>
+            <!-- prettier-ignore -->
+            <dd>
+              Published installers predate the guarded account-free sample now in source. The planned <code>v0.7.0-beta</code> remains blocked by
+              signing, notarization, clean-machine verification, and
+              release-wide evidence. Source checks do not certify a downloadable
+              artifact. The update client can check for artifacts, but
+              signed-update installation is not yet verified.
+            </dd>
+          </div>
+        </dl>
+        <p>
+          <a href="release.html">Full release status →</a> ·
+          <a href="integrations.html">Integration status</a> ·
+          <a href="connect-gmail.html">Google access status</a> ·
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
+            >Claim ledger</a
+          >
+          ·
+          <a href="https://github.com/jayzalowitz/skytwin/releases/latest"
+            >Download technical preview</a
+          >
+          (older artifacts; not the current sample)
+        </p>
+        <details id="architecture">
+          <summary>For builders: trace the decision pipeline</summary>
+          <p>
+            Signals become context, then typed candidate actions. Policy checks
+            trust, spend, provenance, risk, and approvals before a route can
+            proceed. Supported paths record explanations and feedback;
+            release-wide coverage is still under audit. Missing provenance is
+            untrusted external—not an invitation for a model to assign itself
+            authority.
+          </p>
+          <p>
+            <a href="architecture.html">Architecture guide</a> ·
+            <a href="safety.html">Safety model</a> ·
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/technical-spec.md"
+              >Source specification</a
+            >
+          </p>
+        </details>
+        <details>
+          <summary>For contributors: help shape what comes next</summary>
+          <p>
+            SkyTwin is Apache-2.0 open source. Use it, inspect it, modify it,
+            and build on it. Try the sample, report a confusing interaction, or
+            contribute a narrow, tested improvement. Personal features are
+            intended to remain free; team and hosted offerings are future plans,
+            not products available today.
+          </p>
+          <p>
+            <a href="contributing.html">Contribution guide</a> ·
+            <a href="https://github.com/jayzalowitz/skytwin/issues"
+              >Issues and feedback</a
+            >
+            ·
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/product-spec.md"
+              >Product direction</a
+            >
+          </p>
+        </details>
+      </section>
 
-    <section class="wrap">
-      <h2>How this stays alive</h2>
-      <p class="section-lede"><strong>Free and open source forever for personal use.</strong> Future Team and Hosted tiers are planned for organizations that need shared policies, audit logs, or managed infrastructure — personal features will never be paywalled. No prices today: overpromising on a backlog we haven't shipped is the easiest trust to lose. Want one of the upcoming tiers? <a href="https://github.com/jayzalowitz/skytwin/issues">Open an issue</a> describing what your org needs and help shape what ships.</p>
-    </section>
-  </main>
-
-  <footer class="wrap">
-    <p>SkyTwin is an open-source personal-automation project by <a href="https://github.com/jayzalowitz">Jay Zalowitz</a>, licensed Apache 2.0.</p>
-    <p>Questions, security disclosures, or feedback: <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue on GitHub</a>.</p>
-    <p>Every claim on this page, paired with the code that constrains it: <a href="deck.html">read the deck</a>.</p>
-  </footer>
-</body>
+      <section class="wrap final-invitation">
+        <p class="kicker">Your next five minutes</p>
+        <h2>See what a personal twin<br />could feel like.</h2>
+        <p>
+          Start with a fictional day. Decide what you would want it to learn.
+        </p>
+        <div class="actions">
+          <a class="button primary" href="how-to-use.html"
+            >Take the guided tour →</a
+          ><a class="button" href="https://github.com/jayzalowitz/skytwin"
+            >Explore the source ↗</a
+          >
+        </div>
+        <p class="preview-note">
+          Screenshot-led walkthrough. No account needed to read it.
+        </p>
+      </section>
+    </main>
+    <footer class="wrap site-footer">
+      <p>
+        <strong>SkyTwin</strong> · Open-source personal AI by
+        <a href="https://github.com/jayzalowitz">Jay Zalowitz</a> · Apache 2.0
+      </p>
+      <nav aria-label="Footer">
+        <a href="docs.html">Documentation</a><a href="privacy.html">Privacy</a
+        ><a href="terms.html">Terms</a
+        ><a href="https://github.com/jayzalowitz/skytwin/blob/main/SECURITY.md"
+          >Report a vulnerability privately</a
+        >
+      </nav>
+    </footer>
+  </body>
 </html>

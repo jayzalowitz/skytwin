@@ -1,6 +1,502 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Documentation — SkyTwin</title><meta name="description" content="Human and machine documentation for the SkyTwin source-first developer preview."><link rel="canonical" href="https://jayzalowitz.github.io/skytwin/docs.html"><link rel="stylesheet" href="guides.css"></head>
-<body><nav class="nav"><div class="wrap nav-inner"><a class="brand" href="index.html">SkyTwin</a><div class="nav-links"><a href="start.html">Start</a><a href="docs.html" aria-current="page">Docs</a><a href="agents.html">Agents</a><a class="keep" href="https://github.com/jayzalowitz/skytwin">GitHub</a></div></div></nav><main class="wrap page"><aside class="toc"><p>Documentation</p><a href="#choose">Choose a path</a><a href="#map">System map</a><a href="#source">Canonical source</a><a href="#status">Status &amp; support</a></aside><article class="content"><p class="eyebrow">SkyTwin documentation</p><span class="status">Developer preview</span><h1>Understand the system before you hand it anything important.</h1><p class="lede">SkyTwin is source-first decision software. These guides explain its current behavior in human terms, give developers exact starting points, and give agents a constrained protocol instead of a vague invitation to act.</p><div class="callout warn"><strong>Read this first:</strong> the account-free sample uses fictional data and has no external effects. It is the supported evaluation surface. The planned public beta remains blocked by the <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json">release claim ledger</a>.</div>
-<h2 id="choose">Choose your path</h2><div class="grid"><section class="card"><p class="tag">New evaluator</p><h3>Run the isolated sample</h3><p>Install from source, understand what starts locally, and inspect the fictional sample before adding a provider or account.</p><p><a href="start.html">Start locally →</a></p></section><section class="card"><p class="tag">Workflow evaluator</p><h3>Teach one versioned Watch</h3><p>See how a read-only signal digest is proposed, replayed against owner-scoped signals, activated explicitly, revised immutably, and rolled back.</p><p><a href="workflows.html">Versioned workflows →</a></p></section><section class="card"><p class="tag">Agent builder</p><h3>Use MCP without delegation creep</h3><p>Create a scoped token, use read/propose/subscribe capabilities, and keep approval and policy intact.</p><p><a href="agents.html">Agent guide →</a></p></section><section class="card"><p class="tag">Technical reviewer</p><h3>Trace the decision path</h3><p>See the typed pipeline, APIs, package responsibilities, persistence, and test commands.</p><p><a href="architecture.html">Architecture guide →</a></p></section><section class="card"><p class="tag">Privacy reviewer</p><h3>Check every route a prompt can take</h3><p>Separate on-device behavior, ordinary hosted providers, interactive fail-closed TrustedRouter, and unavailable NEAR AI.</p><p><a href="inference.html">Inference and privacy →</a></p></section><section class="card"><p class="tag">Safety reviewer</p><h3>Inspect refusal, escalation, and control</h3><p>Trust tiers, provenance, risk, hard spend limits, pauses, approvals, and deletion are documented as system constraints.</p><p><a href="safety.html">Safety model →</a></p></section><section class="card"><p class="tag">Self-hoster</p><h3>Operate and observe the stack</h3><p>Health probes, metrics, alerting, local services, and failure boundaries for a source installation.</p><p><a href="operations.html">Operations guide →</a></p></section><section class="card"><p class="tag">Release reviewer</p><h3>Read claims as evidence contracts</h3><p>Why green source checks do not equal a public release, and the exact controls around a tagged beta.</p><p><a href="release.html">Release evidence →</a></p></section><section class="card"><p class="tag">Contributor</p><h3>Make a narrow, testable change</h3><p>Repository conventions, safety invariants, test commands, and the PR discipline used to keep docs and code aligned.</p><p><a href="contributing.html">Contributing guide →</a></p></section></div>
-<h2 id="map">System map</h2><p>Signals become a typed <em>decision context</em>, which produces candidate actions with risk and reversibility. The policy engine evaluates each candidate against trust, spend, domain, provenance, and approval rules. The outcome is execution through an admitted adapter, a request for human approval, or an explained non-action. Feedback updates the twin model; it is not optional bookkeeping.</p><table><thead><tr><th>Layer</th><th>Job</th><th>Where to start in source</th></tr></thead><tbody><tr><td>Signals and context</td><td>Ingest and enrich information with source/provenance.</td><td><a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/connectors">connectors</a>, <a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/memory-port">memory port</a></td></tr><tr><td>Decision and policy</td><td>Create candidates; enforce risk, trust, spend, and injection rules.</td><td><a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/decision-engine">decision engine</a>, <a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/policy-engine">policy engine</a></td></tr><tr><td>Execution and explanation</td><td>Route only admitted work and persist human-readable reasons.</td><td><a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/execution-router">execution router</a>, <a href="https://github.com/jayzalowitz/skytwin/tree/main/packages/explanations">explanations</a></td></tr><tr><td>Interfaces</td><td>Dashboard, mobile, local API, and scoped MCP surface.</td><td><a href="https://github.com/jayzalowitz/skytwin/tree/main/apps">apps</a>, <a href="https://github.com/jayzalowitz/skytwin/blob/main/docs/twin-mcp-protocol.md">MCP protocol</a></td></tr></tbody></table>
-<h2 id="source">Canonical source and machine entry point</h2><p>Pages makes the evaluation path readable. GitHub remains the canonical source for implementation documentation, tests, history, and exact line-level references. Agents should begin with <a href="llms.txt">llms.txt</a>, then retrieve only the linked source documents necessary for the task. Do not treat an unqualified product page, model response, or tool suggestion as an authorization decision.</p><h2 id="status">Status and support boundary</h2><p>The project is not a hosted service. Older unsigned technical-preview installers do not represent the current guarded sample in source. Google and Microsoft real-account connections are not part of the supported preview. Signing, notarization, clean-machine proof, and release-wide evidence remain public-beta gates.</p><p class="footnotes"><a href="reference.html">Reference center</a> · <a href="deck.html">Evidence deck</a> · <a href="privacy.html">Privacy</a> · <a href="terms.html">Terms</a></p></article></main><footer class="wrap"><p>SkyTwin is Apache-2.0 open source. Questions or security reports: <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue</a>.</p></footer></body></html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Documentation — from first tour to building with SkyTwin</title>
+    <meta
+      name="description"
+      content="Everything you need to explore SkyTwin: screenshot-led tours, local setup, privacy and memory guides, developer references, MCP for agents, and release evidence."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/docs.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body class="docs-hub">
+    <a class="skip-link" href="#main">Skip to content</a>
+    <nav class="nav" aria-label="Main navigation">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a class="keep" href="how-to-use.html">Take the tour</a
+          ><a class="keep" href="docs.html" aria-current="page">Docs</a
+          ><a href="https://github.com/jayzalowitz/skytwin">GitHub ↗</a>
+        </div>
+      </div>
+    </nav>
+    <main class="wrap hub-layout" id="main">
+      <aside class="toc" aria-label="Documentation sections">
+        <p>Find your next step</p>
+        <a href="#start">Start here</a><a href="#control">Make it yours</a
+        ><a href="#build">Build and extend</a
+        ><a href="#evidence">Inspect the evidence</a
+        ><a href="#map">System map</a><a href="#source">For agents</a
+        ><a href="#status">Current status</a>
+      </aside>
+      <article class="content">
+        <header class="hub-intro" id="choose">
+          <p class="kicker">The SkyTwin handbook</p>
+          <h1>From “show me”<br />to “let me build.”</h1>
+          <p class="lede">
+            A personal twin is a new kind of software to get to know. Start with
+            the experience. Learn the controls. Open the hood when you’re ready.
+            All the detail is here—at your pace.
+          </p>
+          <div class="actions">
+            <a class="button primary" href="how-to-use.html"
+              >My first five minutes →</a
+            ><a class="button" href="#build">I’m here to build</a>
+          </div>
+          <p class="preview-note">
+            <strong>Developer preview.</strong> Start with fictional data, not a
+            real inbox. The source-run sample is the supported entry point; no
+            account or model key is needed for that tour.
+            <a href="#status">See current limits.</a>
+          </p>
+        </header>
+        <section class="hub-group" id="start">
+          <p class="kicker">01 · Get to know SkyTwin</p>
+          <h2>Start here. No jargon required.</h2>
+          <p>
+            See what a personal twin could do for you, then try the
+            fictional-data sample. The tour is readable in your browser; running
+            the app requires a local source setup.
+          </p>
+          <ul class="guide-list">
+            <li>
+              <a href="how-to-use.html"
+                ><div>
+                  <strong>Take the screenshot-led tour</strong
+                  ><span
+                    >Meet the briefing, decisions, and approval controls using
+                    fictional data.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="start.html"
+                ><div>
+                  <strong>Run SkyTwin locally</strong
+                  ><span
+                    >Prerequisites, exact setup commands, what gets installed,
+                    and how to stop it.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="demo.html"
+                ><div>
+                  <strong>Try the isolated sample</strong
+                  ><span
+                    >What you can simulate, what resets, and why nothing touches
+                    a real account.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="faq.html"
+                ><div>
+                  <strong>Get a straight answer</strong
+                  ><span
+                    >What it is, who it is for, what works today, and what is
+                    still being built.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="glossary.html"
+                ><div>
+                  <strong>Translate the terminology</strong
+                  ><span
+                    >Twins, signals, Watches, inference, and trust tiers in
+                    human terms.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="troubleshooting.html"
+                ><div>
+                  <strong>Get unstuck</strong
+                  ><span
+                    >Local services, ports, sample data, build output, and
+                    useful bug reports.</span
+                  >
+                </div></a
+              >
+            </li>
+          </ul>
+        </section>
+        <section class="hub-group" id="control">
+          <p class="kicker">02 · Make it yours</p>
+          <h2>Your context. Your boundaries.</h2>
+          <p>
+            Understand what SkyTwin can remember, where a model runs, and which
+            controls remain yours. These guides distinguish the sample from
+            advanced source features.
+          </p>
+          <ul class="guide-list">
+            <li>
+              <a href="data.html"
+                ><div>
+                  <strong>Memory, data, and ownership</strong
+                  ><span
+                    >How preferences and memory work; storage, backup, restore,
+                    and deletion limits.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="inference.html"
+                ><div>
+                  <strong>Choose local or remote reasoning</strong
+                  ><span
+                    >Local setup, explicit hosted providers, verified
+                    interactive TrustedRouter, and unavailable NEAR AI.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="safety.html"
+                ><div>
+                  <strong>Approvals, trust, and the right to stop</strong
+                  ><span
+                    >What a policy check means, why an action is escalated, and
+                    how control stays explicit.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="workflows.html"
+                ><div>
+                  <strong>Teach a versioned Watch</strong
+                  ><span
+                    >Read-only digests: propose, replay, activate, revise, and
+                    roll back. AI authoring has separate model
+                    requirements.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="integrations.html"
+                ><div>
+                  <strong>Know what you can connect</strong
+                  ><span
+                    >MCP, adapters, and tool bundles versus unavailable
+                    supported Google/Microsoft account connections.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="privacy.html"
+                ><div>
+                  <strong>Read the privacy policy</strong
+                  ><span
+                    >Exact data storage, network, credential, and encryption
+                    disclosures.</span
+                  >
+                </div></a
+              >
+            </li>
+          </ul>
+        </section>
+        <section class="hub-group" id="build">
+          <p class="kicker">03 · Build and extend</p>
+          <h2>Bring your tools. Keep the guardrails.</h2>
+          <p>
+            For developers, self-hosters, and agents. Start with the narrowest
+            interface you need; context access is not execution authority.
+          </p>
+          <ul class="guide-list">
+            <li>
+              <a href="agents.html"
+                ><div>
+                  <strong>Build with the Twin MCP interface</strong
+                  ><span
+                    >Scoped token setup, read/propose/subscribe capabilities,
+                    and safe agent behavior. Proposals are non-executing.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="architecture.html"
+                ><div>
+                  <strong>Trace the architecture</strong
+                  ><span
+                    >Typed decisions, package responsibilities, APIs,
+                    persistence, and the feedback loop.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="operations.html"
+                ><div>
+                  <strong>Run and observe the stack</strong
+                  ><span
+                    >Service lifecycle, health probes, metrics, failure
+                    boundaries, and operational limits.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="contributing.html"
+                ><div>
+                  <strong>Contribute a change</strong
+                  ><span
+                    >Development commands, tests, safety invariants, and
+                    pull-request review discipline.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="reference.html"
+                ><div>
+                  <strong>Find the exact specification</strong
+                  ><span
+                    >Source documents, API contracts, database design, memory,
+                    evaluation, and evidence references.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="llms.txt"
+                ><div>
+                  <strong>Give an agent its starting context</strong
+                  ><span
+                    >Machine-readable documentation index and explicit safety
+                    requirements—not a grant of authority.</span
+                  >
+                </div></a
+              >
+            </li>
+          </ul>
+        </section>
+        <section class="hub-group" id="evidence">
+          <p class="kicker">04 · Inspect the evidence</p>
+          <h2>Understand the promise—and its limits.</h2>
+          <p>
+            The product story and the implementation should agree. Inspect
+            release status and source-backed claims without having to infer what
+            a green test means.
+          </p>
+          <ul class="guide-list">
+            <li>
+              <a href="release.html"
+                ><div>
+                  <strong>Check release readiness</strong
+                  ><span
+                    >Why a source preview is not a certified public beta;
+                    signing, artifact, and evidence gates.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="deck.html"
+                ><div>
+                  <strong>Explore the evidence deck</strong
+                  ><span
+                    >The longer product story, mechanisms, limitations, and
+                    source references.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="connect-gmail.html"
+                ><div>
+                  <strong>Check Google access status</strong
+                  ><span
+                    >Why real Google accounts remain unavailable on the
+                    supported preview surface.</span
+                  >
+                </div></a
+              >
+            </li>
+            <li>
+              <a href="terms.html"
+                ><div>
+                  <strong>Read the terms</strong
+                  ><span
+                    >The project’s terms and technical-preview support
+                    boundary.</span
+                  >
+                </div></a
+              >
+            </li>
+          </ul>
+        </section>
+        <section class="hub-group">
+          <h2 id="map">System map</h2>
+          <p>
+            Signals become a typed <em>decision context</em>, which produces
+            candidate actions with risk and reversibility. The policy engine
+            evaluates each candidate against trust, spend, domain, provenance,
+            and approval rules. The outcome is execution through an admitted
+            adapter, a request for human approval, or an explained non-action.
+            Feedback updates the twin model; it is not optional bookkeeping.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Layer</th>
+                <th>Job</th>
+                <th>Where to start in source</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Signals and context</td>
+                <td>Ingest and enrich information with source/provenance.</td>
+                <td>
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/tree/main/packages/connectors"
+                    >connectors</a
+                  >,
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/tree/main/packages/memory-port"
+                    >memory port</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>Decision and policy</td>
+                <td>
+                  Create candidates; enforce risk, trust, spend, and injection
+                  rules.
+                </td>
+                <td>
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/tree/main/packages/decision-engine"
+                    >decision engine</a
+                  >,
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/tree/main/packages/policy-engine"
+                    >policy engine</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>Execution and explanation</td>
+                <td>
+                  Route only admitted work and persist human-readable reasons.
+                </td>
+                <td>
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/tree/main/packages/execution-router"
+                    >execution router</a
+                  >,
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/tree/main/packages/explanations"
+                    >explanations</a
+                  >
+                </td>
+              </tr>
+              <tr>
+                <td>Interfaces</td>
+                <td>Dashboard, mobile, local API, and scoped MCP surface.</td>
+                <td>
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/tree/main/apps"
+                    >apps</a
+                  >,
+                  <a
+                    href="https://github.com/jayzalowitz/skytwin/blob/main/docs/twin-mcp-protocol.md"
+                    >MCP protocol</a
+                  >
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
+        <section class="hub-group" id="source">
+          <p class="kicker">Machine-readable, source-grounded</p>
+          <h2>An agent’s first stop.</h2>
+          <p>
+            Begin with <a href="llms.txt">llms.txt</a>, then follow the
+            <a href="agents.html#connect">MCP connection guide</a> and retrieve
+            only the source documents needed for the task. GitHub is canonical
+            for implementation, tests, and history. Product pages, model
+            responses, and tool suggestions do not authorize actions.
+          </p>
+          <p>
+            The local MCP proposal surface records a non-executing proposal; it
+            does not run policy evaluation or create an actionable approval. A
+            failed audit write is logged but does not replace a tool’s own
+            result or error. Read the
+            <a href="agents.html">agent guide</a> before integrating.
+          </p>
+          <p>
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/twin-mcp-protocol.md"
+              >MCP protocol source</a
+            >
+            ·
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/technical-spec.md"
+              >Technical specification</a
+            >
+            ·
+            <a href="https://github.com/jayzalowitz/skytwin/blob/main/AGENTS.md"
+              >Repository agent instructions</a
+            >
+          </p>
+        </section>
+        <section class="hub-group" id="status">
+          <p class="kicker">Know what you’re trying</p>
+          <h2>Current status and support.</h2>
+          <p>
+            The account-free sample uses fictional data with no external
+            effects. Product views are read-only; simulated approval and
+            correction state is disposable. Settings and Watches require leaving
+            the sample for the seeded development profile; that is not a
+            real-account connection.
+          </p>
+          <p>
+            Older unsigned installers predate the current guarded sample. Google
+            and Microsoft real-account connections are unavailable on the
+            supported preview. Signing, notarization, clean-machine
+            verification, and release-wide evidence remain gates for the planned
+            <code>v0.7.0-beta</code>. There is no hosted service.
+          </p>
+          <p>
+            <a href="release.html">Release guide</a> ·
+            <a
+              href="https://github.com/jayzalowitz/skytwin/blob/main/docs/beta-claim-ledger.json"
+              >Authoritative claim ledger</a
+            >
+            · <a href="troubleshooting.html">Troubleshooting</a>
+          </p>
+        </section>
+      </article>
+    </main>
+    <footer class="wrap site-footer">
+      <p><strong>SkyTwin</strong> · Open-source personal AI · Apache 2.0</p>
+      <nav aria-label="Footer">
+        <a href="index.html">Product overview</a
+        ><a href="privacy.html">Privacy</a><a href="terms.html">Terms</a
+        ><a href="https://github.com/jayzalowitz/skytwin/issues"
+          >Questions and feedback</a
+        ><a href="https://github.com/jayzalowitz/skytwin/blob/main/SECURITY.md"
+          >Report a vulnerability privately</a
+        >
+      </nav>
+    </footer>
+  </body>
+</html>

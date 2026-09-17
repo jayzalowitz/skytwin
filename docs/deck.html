@@ -325,7 +325,7 @@
        .status li, .cmd — is on the same 13px vertical rhythm (DESIGN.md line
        75), so five list types on adjacent slides read as one system. */
     .rows { border-top: 1px solid var(--border); margin: var(--sp-4) 0 0; }
-    .row { border-bottom: 1px solid var(--border); padding: 13px 0; }
+    .row { min-width: 0; overflow-wrap: anywhere; border-bottom: 1px solid var(--border); padding: 13px 0; }
     .row:last-child { border-bottom: 0; }
     /* Independent, numbered facts pair up two-across so a list of them costs
        one screen instead of two. Sequential prose never uses this. */

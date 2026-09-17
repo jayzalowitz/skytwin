@@ -2,7 +2,7 @@
 
 # SkyTwin
 
-**Open-source, local-first software for understanding and governing personal decision automation.**
+**Open-source personal AI. A digital twin that learns what matters to you, with you in control.**
 
 <a href="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml"><img src="https://github.com/jayzalowitz/skytwin/actions/workflows/build.yml/badge.svg" alt="Build"></a>
 <a href="https://github.com/jayzalowitz/skytwin/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue.svg" alt="License"></a>
@@ -14,68 +14,46 @@
 
 ---
 
-Most assistants start from zero every time. You repeat a preference, explain a risk tolerance, and then re-check whether an automated suggestion is safe. SkyTwin explores a different model: a personal decision system with explicit memory, policy checks, explanations, and controls.
+Imagine opening your day to a short list of what needs you, with the context already there: what happened, why it matters, and what your AI thinks you would want to do. Correct it once, and see what it learned.
 
-It builds a structured model of preferences, risk tolerances, and decision patterns—a **digital twin**—so a candidate action can be evaluated against what matters to its owner rather than a generic prompt. The intended product asks for confirmation when it should, and keeps a record of why it stopped or proceeded.
+That's the experience SkyTwin is building. Your **digital twin** is a growing model of your preferences, risk tolerance, and decision patterns. The goal is fewer repeated explanations and less routine decision work, with a visible reason behind each suggestion and clear limits on what it may do for you.
 
-**The core principle: ask the twin before asking the user.**
+If personal AI already appeals to you, SkyTwin gives you a way to explore the next question: how should an assistant learn your judgment, earn permission to act, and stay accountable as it improves? You can inspect its memory, correct its assumptions, choose where reasoning runs, and adapt the source.
 
-## Start with the right level of detail
+**[Explore SkyTwin](https://jayzalowitz.github.io/skytwin/) · [Take the five-minute tour](https://jayzalowitz.github.io/skytwin/how-to-use.html) · [Try it from source](https://jayzalowitz.github.io/skytwin/start.html)**
 
-| If you want to… | Start here | Then go deeper |
-|---|---|---|
-| Understand the idea without installing anything | [Documentation site](https://jayzalowitz.github.io/skytwin/) | [Plain-language FAQ](https://jayzalowitz.github.io/skytwin/faq.html) and [glossary](https://jayzalowitz.github.io/skytwin/glossary.html) |
-| See the product model safely | [Five-minute fictional-data walkthrough](https://jayzalowitz.github.io/skytwin/how-to-use.html) | [Safety model](https://jayzalowitz.github.io/skytwin/safety.html) and [data guide](https://jayzalowitz.github.io/skytwin/data.html) |
-| Run and inspect the source | [Source start guide](https://jayzalowitz.github.io/skytwin/start.html) | [Operations guide](https://jayzalowitz.github.io/skytwin/operations.html) and [troubleshooting](https://jayzalowitz.github.io/skytwin/troubleshooting.html) |
-| Extend it with tools or agents | [Agent and MCP guide](https://jayzalowitz.github.io/skytwin/agents.html) | [Architecture](https://jayzalowitz.github.io/skytwin/architecture.html) and [reference](https://jayzalowitz.github.io/skytwin/reference.html) |
+**Preview today:** explore the account-free fictional sample in current source. Google and Microsoft account connections are unavailable. Published unsigned installers are older than parts of this sample; start with the tour or source guide above.
 
-## Why people may want this
+[![SkyTwin source demo showing a fictional daily briefing, suggested next steps, and a navigation link to what the twin has learned](./docs/assets/demo-current/approvals-source-demo.png)](https://jayzalowitz.github.io/skytwin/how-to-use.html)
 
-SkyTwin is for people who want to inspect the decision layer before they hand a system any authority. Its intended model is useful when you want all of the following in one place:
+*Actual app screenshot from a source development run, using fictional sample data. The messages, account indicators, and “handled” counts illustrate the product; no real account is connected and no real task was executed.*
 
-- **A memory that can be examined.** Preferences carry evidence, confidence, provenance, and version history instead of being hidden in an opaque chat history.
-- **Automation that has to justify itself.** Candidate actions are checked for policy, trust tier, spend, risk, reversibility, and origin before an execution path is considered.
-- **A useful answer even when the answer is “stop.”** The system is designed to explain what happened, what evidence it considered, and what a person can correct.
-- **A local-first choice.** On-device reasoning and an explicitly selected hosted provider are distinct modes; a local choice is not silently rerouted over the network.
-- **Source you can inspect and adapt.** SkyTwin is Apache-2.0 licensed and has human-facing guides alongside machine-readable references.
+## A personal AI you can get to know
 
-## What you can evaluate today
+The core principle is **ask the twin before asking the user**. The intended experience brings a few things together:
 
-> **Current supported preview:** use the isolated, account-free fictional-data sample in current source. It is the recommended way to evaluate the interaction model, explanations, controls, and boundaries without giving SkyTwin an inbox, credentials, or a provider key. Published unsigned technical-preview installers predate portions of this guarded sample path.
+- **Know what needs you.** A briefing separates things to act on from things to catch up on, with the source behind each item.
+- **Stop repeating yourself.** Preferences have supporting evidence, confidence, and a history you can inspect. You can see what the twin believes and correct it.
+- **Understand the suggestion.** Review what happened, which preferences mattered, why an action was proposed, and how to change its mind.
+- **Give it room at your pace.** The policy model starts with suggestions and checks trust, spend, risk, reversibility, and origin before considering an action. You decide what authority to grant.
+- **Keep your choices yours.** Local reasoning is the default and does not silently fall back to a remote provider. Hosted reasoning is an explicit choice. The code is Apache-2.0 licensed.
 
-Google and Microsoft account connections are unavailable on the supported surface. SkyTwin does not ship a managed Google OAuth client, and operator/BYO Google remains unsupported until its callback, client-generation, capability, ownership, and secret-custody gates are complete. Known account-backed email/calendar actions are denied before adapter preparation or dispatch while this boundary is active. Stale account capability rows and imported account-backed tool bundles are also withheld from activation. Connector code in the source tree is not a support claim.
+The fictional sample lets you experience that review-and-correct loop today. Connected-account automation is the direction of the project; it is not available in the supported preview.
 
-The source tree also contains a default-off Gmail archive proposal experiment
-(`SKYTWIN_GMAIL_ARCHIVE_ENABLED=true`) for unsupported account-connected
-development. It can persist an owner-bound proposal and record an explicit
-approval or rejection, but the response deliberately reports
-`execution: null`: no Gmail mutation caller, recovery worker, or feedback
-projection is wired into runtime yet. Enabling the flag is not an execution or
-release-support claim.
+## Try the experience
 
-## Start safely in a few minutes
+Start with the [screenshot-led walkthrough](https://jayzalowitz.github.io/skytwin/how-to-use.html), or follow the [source start guide](https://jayzalowitz.github.io/skytwin/start.html) to explore the fictional sample yourself. You do not need an inbox, credentials, or an AI provider key.
 
-You do not need to connect an inbox, share credentials, or enable an AI provider
-to understand the project. Start with the fictional-data sample in current
-source. It lets you inspect a decision, its explanation, the approval controls,
-and the safety boundaries without external effects.
-
-1. **Choose source over an older download.** The latest source contains the
-   guarded sample path; published unsigned technical-preview installers predate
-   portions of it. The [Start guide](https://jayzalowitz.github.io/skytwin/start.html)
-   explains what the installer changes locally.
-2. **Look at fictional data first.** The sample is intentionally separate from
-   real accounts. Its product views are read-only; its approve/reject/correct
-   interactions are session-local simulations with no provider, connector, or
-   execution-adapter effects.
-3. **Read why an action stopped.** A candidate action is evaluated against
-   policy, trust, spend, risk, reversibility, and provenance. A model suggestion
-   is never the authority to run work.
-4. **Keep the boundary explicit.** Local reasoning does not fall through to a
-   hosted provider. A hosted provider is an explicit network choice. The
-   verified-private boundary admits only explicit interactive TrustedRouter
-   calls after SkyTwin verifies fresh same-session gateway attestation and an
-   exact-byte confidential-route receipt; NEAR AI remains unavailable.
+1. **Meet the sample twin.** Open the fictional profile's briefing and see what
+   needs a decision, alongside what is just useful to know.
+2. **Follow a suggestion.** Inspect a decision, the evidence behind it, and the
+   explanation of why it needs approval.
+3. **Try a correction.** Use the sample's simulated approve, reject, or correct
+   controls and see the session-local learning. The product views are read-only;
+   these interactions have no provider, connector, or execution-adapter effects.
+4. **Explore what it remembers.** Visit “What I've learned” to see the preferences
+   behind the suggestions. Think about which of your own routines you would want
+   a twin to learn.
 
 For a plain-language walkthrough, begin with [how to use the fictional sample](https://jayzalowitz.github.io/skytwin/how-to-use.html), then use the [documentation site](https://jayzalowitz.github.io/skytwin/docs.html):
 [how to start](https://jayzalowitz.github.io/skytwin/start.html),
@@ -83,61 +61,13 @@ For a plain-language walkthrough, begin with [how to use the fictional sample](h
 [where inference runs](https://jayzalowitz.github.io/skytwin/inference.html),
 and the [five-minute fictional-data demo](https://jayzalowitz.github.io/skytwin/demo.html).
 
-## How It Works
-
-This is the source architecture and intended connected-account pipeline. The
-supported preview feeds it only isolated fictional sample data; Google and
-Microsoft account connections are unavailable.
-
-```
-  Gmail, Calendar, etc.
-         │
-         ▼
-  ┌──────────────┐
-  │   Connectors  │  Ingest signals from your accounts
-  └──────┬───────┘
-         ▼
-  ┌──────────────┐
-  │   Decision    │  "What's happening? What would
-  │   Engine      │   the user want here?"
-  └──────┬───────┘
-         ▼
-  ┌──────────────┐
-  │  Twin Model   │  Your preferences, patterns,
-  │  + Memory     │  and episodic memory (gbrain default,
-  │               │  MemPalace optional)
-  └──────┬───────┘
-         ▼
-  ┌──────────────┐
-  │   Policy      │  Spend limits, trust tiers,
-  │   Engine      │  safety constraints
-  └──────┬───────┘
-         ▼
-    ┌────┴────┐
-    ▼         ▼
- Auto-     Escalate
- execute   with context
-    │         │
-    ▼         ▼
- Explain   You decide
-    │         │
-    └────┬────┘
-         ▼
-  ┌──────────────┐
-  │  Feedback     │  Your response trains the twin
-  │  Loop         │  to be better next time
-  └──────────────┘
-```
-
-Supported decision paths can persist explanation and feedback records. Release-wide coverage is still being audited before the public beta.
-
-## Illustrative Decision Scenarios
+## Where this is headed
 
 These examples explain the intended judgment model; they are not a list of
 workflows included in the current desktop artifacts. The beta release contract
 below limits launch support to workflows backed by tagged-artifact evidence.
 
-| Scenario | What SkyTwin Does |
+| Future scenario | Intended experience |
 |----------|-------------------|
 | **Newsletter arrives** | Your twin recognizes your archive pattern and proposes moving the message out of the Inbox. You confirm before the mailbox changes, and the explanation is logged. |
 | **Calendar conflict** | You always prioritize skip-level 1:1s over standups. Standup rescheduled with a note to the organizer. |
@@ -146,11 +76,11 @@ below limits launch support to workflows backed by tagged-artifact evidence.
 | **Flight booking** | Finds the United aisle seat, morning departure, direct, $380. At high trust: books it. At low trust: presents top 3 options. |
 | **Unknown sender email** | Low confidence. Escalates with a one-line summary so you can decide in 5 seconds instead of 5 minutes. |
 
-## What Makes This Different
+## What makes the twin yours
 
-**It's not a chatbot.** SkyTwin is operational, not conversational. It doesn't wait for you to type a prompt — it watches your connected accounts and acts when opportunities arise.
+**Conversation connects to decisions.** SkyTwin includes chat and an “Ask your twin” surface. Its broader goal is to bring the same personal context into briefings, suggestions, and eventually connected-account actions, so useful work can begin without a new prompt each time.
 
-**It earns trust incrementally.** New users start at `observer` — the system only suggests. As you approve and correct, it earns autonomy domain by domain. Trust in email triage doesn't mean trust with your calendar.
+**Trust grows domain by domain.** New users start at `observer` — the system only suggests. Its trust model lets approvals and corrections inform autonomy separately for each domain; trust in email triage need not imply trust with your calendar. See the [policy types](./packages/shared-types/src/policy.ts) and [policy engine](./packages/policy-engine/src/).
 
 **Safety constraints are the product.** Typed candidate-action paths through the policy engine apply spend limits, trust-tier gating, reversibility checks, and sensitivity classification; the release-wide entry-path inventory remains a beta gate. The system can be inspected, overridden, narrowed, and shut off at any time. [Read the full safety model →](./docs/safety-model.md)
 
@@ -160,43 +90,20 @@ below limits launch support to workflows backed by tagged-artifact evidence.
 
 **Memory knows who said what.** Signals from supported connectors arrive stamped with an authoring tier — content you wrote vs. a newsletter vs. an inbound stranger — and tier-weighted retrieval lets self-authored content outrank broadcast noise. The twin feels like it knows *you* instead of just having read your inbox.
 
+**You can teach a Watch.** The source includes versioned, read-only signal-digest workflows: describe what to watch for, replay a candidate, compare revisions, and explicitly activate or roll back a version. These are a separate development surface, outside the disposable sample credential. Model-assisted authoring requires a qualified model, artifact, and runtime build; the current catalog's downloadable model has not cleared that quality gate. [Explore Watches →](https://jayzalowitz.github.io/skytwin/workflows.html)
+
+## Go deeper when you're ready
+
+| If you want to… | Start here | Then go deeper |
+|---|---|---|
+| Understand the idea without installing anything | [Documentation site](https://jayzalowitz.github.io/skytwin/) | [Plain-language FAQ](https://jayzalowitz.github.io/skytwin/faq.html) and [glossary](https://jayzalowitz.github.io/skytwin/glossary.html) |
+| See the product model safely | [Five-minute fictional-data walkthrough](https://jayzalowitz.github.io/skytwin/how-to-use.html) | [Safety model](https://jayzalowitz.github.io/skytwin/safety.html) and [data guide](https://jayzalowitz.github.io/skytwin/data.html) |
+| Run and inspect the source | [Source start guide](https://jayzalowitz.github.io/skytwin/start.html) | [Operations guide](https://jayzalowitz.github.io/skytwin/operations.html) and [troubleshooting](https://jayzalowitz.github.io/skytwin/troubleshooting.html) |
+| Extend it with tools or agents | [Agent and MCP guide](https://jayzalowitz.github.io/skytwin/agents.html) | [Architecture](https://jayzalowitz.github.io/skytwin/architecture.html) and [reference](https://jayzalowitz.github.io/skytwin/reference.html) |
+
+The rest of this README covers installation, source architecture, deployment, and release status. The [full documentation index](#documentation) keeps every technical guide within reach.
+
 ## Quick Start
-
-### Download and install (no terminal)
-
-**[⬇ Download the latest release →](https://github.com/jayzalowitz/skytwin/releases/latest)**
-
-Current desktop artifacts bundle CockroachDB as a hash-verified native binary,
-but they are unsigned technical previews rather than supported public-beta
-installers. The tagged release path can generate and attach updater manifests,
-but no qualifying beta release is currently published; do not infer manifest
-presence or update support from the current preview. Check the release notes for
-the exact features in an artifact. In
-builds from current source, a local model and the `llama.cpp` runtime are not
-bundled: SkyTwin can recommend a maintained artifact for the machine and download
-it only after the user starts the install. A compatible runtime remains a separate
-prerequisite, while a hosted provider remains an explicit opt-in.
-
-> **Release boundary:** published installers currently predate the guarded,
-> account-free sample session and verified managed-model delivery in this source
-> tree. Check the release notes for the exact features in an artifact. Desktop
-> builds produced from current source
-> can open a short-lived sample whose database-backed surface remains read-only;
-> approve, reject, correct, and learn interactions run only in a separate,
-> session-local simulation that cannot reach providers or execution adapters.
-> Its browser credential is tab-scoped and [bypasses offline caching and replay](./apps/web/public/js/pwa/sw-policy.js).
-
-| OS | Installer on the release page |
-|----|-------------------------------|
-| **macOS** (Apple Silicon) | `SkyTwin-…-arm64.dmg` |
-| **Windows** | `SkyTwin.Setup.….exe` |
-| **Linux** | `SkyTwin-….AppImage`, `.deb`, or `.rpm` |
-
-> **⚠ Unsigned builds (for now).** Code-signing certs (Apple Developer + Windows EV) are a pending launch step, so your OS warns on first launch:
-> - **macOS:** right-click the app → **Open** → **Open** (clears Gatekeeper once).
-> - **Windows:** SmartScreen → **More info** → **Run anyway**.
->
-> Signing and notarization are stop-ship requirements for a supported public beta.
 
 ### Build from source (one-command, macOS / Linux / WSL)
 
@@ -314,6 +221,90 @@ machine to verify the platform-specific bits (Homebrew, NSIS, etc.).
 ```bash
 pnpm test   # 4,800+ tests across 400+ files in 31 packages + 8 apps
 ```
+
+### Older desktop technical-preview downloads
+
+**[View the latest published release →](https://github.com/jayzalowitz/skytwin/releases/latest)**
+
+Current desktop artifacts bundle CockroachDB as a hash-verified native binary,
+but they are unsigned technical previews rather than supported public-beta
+installers. The tagged release path can generate and attach updater manifests,
+but no qualifying beta release is currently published; do not infer manifest
+presence or update support from the current preview. Check the release notes for
+the exact features in an artifact. In
+builds from current source, a local model and the `llama.cpp` runtime are not
+bundled: SkyTwin can recommend a maintained artifact for the machine and download
+it only after the user starts the install. A compatible runtime remains a separate
+prerequisite, while a hosted provider remains an explicit opt-in.
+
+> **Release boundary:** published installers currently predate the guarded,
+> account-free sample session and verified managed-model delivery in this source
+> tree. Check the release notes for the exact features in an artifact. Desktop
+> builds produced from current source
+> can open a short-lived sample whose database-backed surface remains read-only;
+> approve, reject, correct, and learn interactions run only in a separate,
+> session-local simulation that cannot reach providers or execution adapters.
+> Its browser credential is tab-scoped and [bypasses offline caching and replay](./apps/web/public/js/pwa/sw-policy.js).
+
+| OS | Installer on the release page |
+|----|-------------------------------|
+| **macOS** (Apple Silicon) | `SkyTwin-…-arm64.dmg` |
+| **Windows** | `SkyTwin.Setup.….exe` |
+| **Linux** | `SkyTwin-….AppImage`, `.deb`, or `.rpm` |
+
+> **⚠ Unsigned builds (for now).** Code-signing certs (Apple Developer + Windows EV) are a pending launch step, so your OS warns on first launch:
+> - **macOS:** right-click the app → **Open** → **Open** (clears Gatekeeper once).
+> - **Windows:** SmartScreen → **More info** → **Run anyway**.
+>
+> Signing and notarization are stop-ship requirements for a supported public beta.
+
+## How It Works
+
+This is the source architecture and intended connected-account pipeline. The
+supported preview feeds it only isolated fictional sample data; Google and
+Microsoft account connections are unavailable.
+
+```
+  Gmail, Calendar, etc.
+         │
+         ▼
+  ┌──────────────┐
+  │   Connectors  │  Ingest signals from your accounts
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │   Decision    │  "What's happening? What would
+  │   Engine      │   the user want here?"
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │  Twin Model   │  Your preferences, patterns,
+  │  + Memory     │  and episodic memory (gbrain default,
+  │               │  MemPalace optional)
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐
+  │   Policy      │  Spend limits, trust tiers,
+  │   Engine      │  safety constraints
+  └──────┬───────┘
+         ▼
+    ┌────┴────┐
+    ▼         ▼
+ Auto-     Escalate
+ execute   with context
+    │         │
+    ▼         ▼
+ Explain   You decide
+    │         │
+    └────┬────┘
+         ▼
+  ┌──────────────┐
+  │  Feedback     │  Your response trains the twin
+  │  Loop         │  to be better next time
+  └──────────────┘
+```
+
+Supported decision paths can persist explanation and feedback records. Release-wide coverage is still being audited before the public beta.
 
 ## Architecture
 
@@ -483,6 +474,44 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 | [Launch-Readiness Report](./docs/launch-readiness-report.md) | Historical audit with a current account-free launch override; the claim ledger remains authoritative |
 | [Release Procedure](./docs/release-procedure.md) | How the evidence-gated tag workflow verifies and publishes a release |
 | [Beta Claim Ledger](./docs/beta-claim-ledger.json) | Machine-checked release contract, evidence, limitations, owners, and stop-ship status |
+
+## Current preview and account boundaries
+
+Public [source-preview snapshots](https://github.com/jayzalowitz/skytwin/releases)
+use date-based `source-preview-*` tags and contain source only, not desktop
+installers. They are a way to try an exact revision with local development tools;
+they do not certify the planned public beta. See the
+[release guide](https://jayzalowitz.github.io/skytwin/release.html#source-preview).
+
+The isolated, account-free fictional-data sample in current source is the
+supported preview. It lets you evaluate the interaction model, explanations,
+controls, and boundaries without giving SkyTwin an inbox, credentials, or a
+provider key. Published unsigned technical-preview installers predate portions
+of this guarded sample path.
+
+The [Start guide](https://jayzalowitz.github.io/skytwin/start.html) explains what
+the installer changes locally. The sample is intentionally separate from real
+accounts: its product views are read-only, and its approve/reject/correct
+interactions are session-local simulations with no provider, connector, or
+execution-adapter effects.
+
+A candidate action is evaluated against policy, trust, spend, risk,
+reversibility, and provenance. A model suggestion is never the authority to run
+work. Local reasoning does not fall through to a hosted provider. A hosted
+provider is an explicit network choice. The verified-private boundary admits
+only explicit interactive TrustedRouter calls after SkyTwin verifies fresh
+same-session gateway attestation and an exact-byte confidential-route receipt;
+NEAR AI remains unavailable.
+
+Google and Microsoft account connections are unavailable on the supported surface. SkyTwin does not ship a managed Google OAuth client, and operator/BYO Google remains unsupported until its callback, client-generation, capability, ownership, and secret-custody gates are complete. Known account-backed email/calendar actions are denied before adapter preparation or dispatch while this boundary is active. Stale account capability rows and imported account-backed tool bundles are also withheld from activation. Connector code in the source tree is not a support claim.
+
+The source tree also contains a default-off Gmail archive proposal experiment
+(`SKYTWIN_GMAIL_ARCHIVE_ENABLED=true`) for unsupported account-connected
+development. It can persist an owner-bound proposal and record an explicit
+approval or rejection, but the response deliberately reports
+`execution: null`: no Gmail mutation caller, recovery worker, or feedback
+projection is wired into runtime yet. Enabling the flag is not an execution or
+release-support claim.
 
 ## Project Status
 

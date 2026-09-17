@@ -1053,7 +1053,7 @@
       "evidence": [
         {
           "path": "docs/privacy.html",
-          "sha256": "80f373071e91120154dab615f02d1abb2d762a53ba311b5463bcfe7b0e0f49e6",
+          "sha256": "9f0b1b544cce7840a43c20ad808ef9c204cd32e78920d15e0b9ef67c2ebb2f37",
           "why": "Public disclosure names local-model, connector, hosted-provider, execution-adapter, federation, and diagnostic boundaries"
         },
         {

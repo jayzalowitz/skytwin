@@ -6,11 +6,11 @@ const root = process.cwd();
 const read = (path) => readFileSync(resolve(root, path), "utf8");
 const normalized = (value) => value.replace(/\s+/g, " ");
 const readme = read("README.md");
-const index = read("docs/index.html");
+const index = normalized(read("docs/index.html"));
 const start = read("docs/start.html");
 const agents = read("docs/agents.html");
 const llms = read("docs/llms.txt");
-const docsHome = read("docs/docs.html");
+const docsHome = normalized(read("docs/docs.html"));
 const howToUse = read("docs/how-to-use.html");
 const faq = read("docs/faq.html");
 const workflows = read("docs/workflows.html");
@@ -36,6 +36,74 @@ function ids(html) {
 }
 
 describe("public developer-preview documentation", () => {
+  it("separates public source snapshots from gated desktop releases", () => {
+    const release = normalized(read("docs/release.html"));
+    const procedure = normalized(read("docs/release-procedure.md"));
+    expect(release).toContain('id="source-preview"');
+    expect(release).toContain("source-preview-YYYY-MM-DD");
+    expect(release).toContain("GitHub prerelease");
+    expect(release).toContain("no packaged application");
+    expect(release).toContain("desktop beta stays blocked independently");
+    expect(procedure).toContain("Never move an existing tag");
+    expect(procedure).toContain("automatic source ZIP/tar archives are the only assets");
+    expect(procedure).toContain("Keep `VERSION`, the claim ledger, the `v*` publisher");
+  });
+
+  it("leads with the product and keeps the complete handbook discoverable", () => {
+    const sectionOrder = [
+      "why",
+      "evaluate",
+      "workflows",
+      "boundaries",
+      "docs",
+      "status",
+    ];
+    let previous = -1;
+    for (const id of sectionOrder) {
+      const position = index.indexOf(`id="${id}"`);
+      expect(position, `homepage section ${id}`).toBeGreaterThan(previous);
+      previous = position;
+    }
+    const hero = index.slice(
+      index.indexOf("<header"),
+      index.indexOf("</header>"),
+    );
+    expect(hero).toContain('href="how-to-use.html"');
+    expect(hero).toContain('href="start.html"');
+    expect(hero).toContain("Developer preview");
+    expect(hero).toContain(
+      "real Google and Microsoft connections are unavailable",
+    );
+    expect(hero).not.toContain("releases/latest");
+    expect(index).toContain(
+      'src="assets/demo-current/approvals-source-demo.png"',
+    );
+    expect(index).toContain("Fictional sample data—not a connected inbox");
+    expect(index).not.toContain("capture withheld");
+    for (const section of ["start", "control", "build", "evidence"]) {
+      expect(docsHome).toContain(`id="${section}"`);
+      expect(docsHome).toContain(`href="#${section}"`);
+    }
+    for (const page of htmlFiles.filter(
+      (page) => !["index.html", "docs.html"].includes(page),
+    )) {
+      expect(docsHome, `handbook links to ${page}`).toContain(`href="${page}"`);
+    }
+    expect(docsHome).toContain('href="llms.txt"');
+    for (const page of [index, docsHome]) {
+      expect(page.match(/<h1\b/g)).toHaveLength(1);
+      expect(page).toContain('class="skip-link" href="#main"');
+      expect(page).toContain('aria-label="Main navigation"');
+      expect(page).not.toMatch(/\bon(?:click|keydown|load)\s*=/i);
+    }
+    expect(readme.indexOf("Take the five-minute tour")).toBeLessThan(
+      readme.indexOf("## Architecture"),
+    );
+    expect(readme).toContain(
+      "./docs/assets/demo-current/approvals-source-demo.png",
+    );
+  });
+
   it("resolves every local page, asset, and fragment without leaving docs", () => {
     for (const page of htmlFiles) {
       const sourcePath = resolve(docsRoot, page);
@@ -61,9 +129,10 @@ describe("public developer-preview documentation", () => {
         )
           continue;
 
-        expect(value.split(/[?#]/, 1)[0].endsWith(".md"), `${page} -> ${value}`).toBe(
-          false,
-        );
+        expect(
+          value.split(/[?#]/, 1)[0].endsWith(".md"),
+          `${page} -> ${value}`,
+        ).toBe(false);
 
         const [pathAndQuery = "", encodedFragment = ""] = value.split("#", 2);
         const pathPart = pathAndQuery.split("?", 1)[0];
@@ -133,9 +202,7 @@ describe("public developer-preview documentation", () => {
     expect(howToUse).toContain(
       "assets/demo-current/onboarding-source-demo.png",
     );
-    expect(workflows).toContain(
-      "assets/demo-current/watches-source-demo.png",
-    );
+    expect(workflows).toContain("assets/demo-current/watches-source-demo.png");
     expect(index).toContain('href="faq.html"');
     expect(index).toContain('href="workflows.html"');
     expect(index).toContain("agents.html#connect");
@@ -161,9 +228,7 @@ describe("public developer-preview documentation", () => {
     expect(agents).toContain(
       "does not run policy evaluation or create an actionable approval request",
     );
-    expect(agents).toContain(
-      "other sensitive free text is returned as stored",
-    );
+    expect(agents).toContain("other sensitive free text is returned as stored");
     expect(read("docs/twin-mcp-protocol.md")).toContain(
       "Every dispatched registered handler attempts a provenance write",
     );
