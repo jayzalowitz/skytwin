@@ -791,7 +791,7 @@
         },
         {
           "path": "package.json",
-          "sha256": "6ffb2f2fad423636c913307036b43eef918a35f03a0cf0cd5919a949af4d1100",
+          "sha256": "26b937a6058bc1c2eb0b44cec6c6f838fc41cace20c27998cb4571ca5d2cf654",
           "why": "Root release metadata names Apache-2.0"
         }
       ],
@@ -911,12 +911,12 @@
       "evidence": [
         {
           "path": "apps/api/src/lib/llm-client-factory.ts",
-          "sha256": "dfcb0fffe3037788866274dfe2b1be16d623bf5de9d89babfd36bd184b95965f",
+          "sha256": "917e0e4d121131e23da5420c13b13a788b418f24565c2e4fea0bfcf1efd355af",
           "why": "Composes the persisted mode and admits embedded or locality-verified loopback Ollama only when their prerequisites pass"
         },
         {
           "path": "packages/embedded-llm/src/llama-cpp-backend.ts",
-          "sha256": "8a750000a799a7d8ae7b46982be11b59abff65c9044910deac4bf3823e65ded6",
+          "sha256": "1f025cc4802efe12092b49c4fc94f7bc5452251ba8773e3bd2842ca36db169dc",
           "why": "Spawns the compatible llama.cpp completion binary for one bounded non-interactive generation and returns only its generated text"
         },
         {
@@ -979,7 +979,7 @@
         },
         {
           "path": "packages/shared-types/src/index.ts",
-          "sha256": "6be9224be229c088133204103fee8e00958f7df52bd84ec040aa4e83a1936ab7",
+          "sha256": "db0db30751fd337ef474d093534eb2c5cd2ada458fa7343a291c0b95b7e0aa5f",
           "why": "Exports the signed inference-receipt contract and verifier used by the decision-event capture path"
         },
         {
@@ -1033,7 +1033,7 @@
         },
         {
           "path": "apps/api/src/lib/llm-client-factory.ts",
-          "sha256": "dfcb0fffe3037788866274dfe2b1be16d623bf5de9d89babfd36bd184b95965f",
+          "sha256": "917e0e4d121131e23da5420c13b13a788b418f24565c2e4fea0bfcf1efd355af",
           "why": "Provider factory permits hosted providers only when configured and defines local-first ordering"
         },
         {
@@ -1203,7 +1203,7 @@
       "evidence": [
         {
           "path": "packages/embedded-llm/src/model-registry.ts",
-          "sha256": "d6c45d4d75bd03110a9b141762a457db227bd541d924c522299371d846ae0b8d",
+          "sha256": "d72fe52a80ea8fffd534b01378e725d2960d5a7bc0ac8c68b46991f6a6d9eb31",
           "why": "The maintained registry pins model source, digest, size, license, compatibility, and lifecycle metadata"
         },
         {

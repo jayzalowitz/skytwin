@@ -481,7 +481,7 @@ The user can inspect:
 
 - Decision history: Retained indefinitely (needed for evals and audit)
 - Twin profile versions: Retained indefinitely (needed for historical reconstruction)
-- Raw events: Retained for 90 days, then summarized (configurable)
+- Raw events: Retained until explicit user deletion; no automatic 90-day summarization job exists today
 - Explanation records: Retained indefinitely
 - Feedback events: Retained indefinitely
 - Inference receipts: completed calls from successfully finalized decision-event

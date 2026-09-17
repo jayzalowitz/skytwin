@@ -1,5 +1,39 @@
 All notable changes to SkyTwin will be documented in this file.
 
+## [0.6.104.0] - 2026-09-16
+
+### Added
+
+- **You can teach SkyTwin a recurring read-only digest, replay it against real
+  evidence, and activate the exact version you reviewed.** The Watches page now
+  guides a plain-language request through one bounded clarification, immutable
+  proposals, cited replay, explicit activation, minimal feedback revisions,
+  semantic comparison, and atomic rollback. See
+  [Versioned adaptive workflows](./docs/adaptive-workflows.md) for the user flow,
+  API, runtime behavior, and backup boundary.
+- **Adaptive workflows remain local-first without pretending an unqualified
+  model is ready.** Managed artifacts must pass the checked-in safety,
+  semantic, revision-preservation, latency, artifact, and runtime-build gate
+  before they can author a workflow. The current pinned model remains usable
+  for ordinary local inference but fails closed for this feature. Ordinary
+  Ollama chat remains supported, while adaptive Ollama calls are staged and
+  fail closed until the runtime supplies response-bound digest/version
+  attestation.
+
+### Fixed (post-/review)
+
+- **Every adaptive run now stays bound to the version and evidence it actually
+  evaluated.** CockroachDB slots retain immutable workflow/compiler snapshots,
+  a commitment over the complete deterministic evidence set, and a bounded
+  display sample. Scheduled local summaries require the pinned embedded or
+  Ollama artifact/runtime identity and fall back to cited deterministic output
+  if that identity changes or inference is unavailable.
+- **Retries and upgrades no longer create ambiguous workflow history.** Draft
+  and revision mutations use durable owner-scoped idempotency keys, activation
+  uses a serializable compare-and-swap, legacy Watches are reconciled without
+  inventing historical attribution, and backup schema v6 validates complete
+  workflow lineage before restore.
+
 ## [0.6.103.1] - 2026-09-16
 
 ### Fixed
