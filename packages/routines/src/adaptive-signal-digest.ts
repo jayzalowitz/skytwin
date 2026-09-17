@@ -13,6 +13,7 @@ const MAX_FILTER_ENTRIES = 50;
 const MAX_FILTER_ENTRY_LENGTH = 200;
 const MAX_CITATION_TEXT_LENGTH = 240;
 const CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/u;
+const HOSTNAME_FILTER = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u;
 const SPEC_KEYS = new Set([
   'name',
   'cadence',
@@ -441,6 +442,27 @@ export function signalDigestV1ContentHash(payload: SignalDigestV1Payload): strin
   return createHash('sha256').update(identityBoundJson, 'utf8').digest('hex');
 }
 
+/**
+ * Translate provider vocabulary into the existing Watch predicate vocabulary.
+ * The provider payload remains canonical and immutable; only the runtime view
+ * expands source aliases and routes hostname-shaped domains to sender matching.
+ */
+function projectSignalDigestFilterForRuntime(filter: RoutineFilter): RoutineFilter {
+  const sources = (filter.sources ?? []).flatMap((source) =>
+    source === 'calendar' ? ['google_calendar', 'outlook_calendar'] : [source],
+  );
+  const senderDomains = (filter.domains ?? []).filter((domain) => HOSTNAME_FILTER.test(domain));
+  const topicalDomains = (filter.domains ?? []).filter((domain) => !HOSTNAME_FILTER.test(domain));
+  const uniqueSorted = (values: readonly string[]): string[] => [...new Set(values)].sort(lexicalCompare);
+
+  return {
+    sources: uniqueSorted(sources),
+    fromContains: uniqueSorted([...(filter.fromContains ?? []), ...senderDomains]),
+    keywords: [...(filter.keywords ?? [])],
+    domains: topicalDomains,
+  };
+}
+
 /** Compile a validated provider payload to the current Watch/RoutineSpec projection. */
 export function compileSignalDigestV1(input: unknown): SignalDigestCompileResult {
   const validation = validateSignalDigestV1Payload(input);
@@ -450,7 +472,7 @@ export function compileSignalDigestV1(input: unknown): SignalDigestCompileResult
     name: payload.name,
     cadence: payload.cadence,
     action: payload.action,
-    filter: payload.filter,
+    filter: projectSignalDigestFilterForRuntime(payload.filter),
     ...(payload.hourOfDay !== undefined ? { hourOfDay: payload.hourOfDay } : {}),
     ...(payload.dayOfWeek !== undefined ? { dayOfWeek: payload.dayOfWeek } : {}),
   };
@@ -699,6 +721,7 @@ export function simulateSignalDigestV1(
   const validation = validateSignalDigestV1Payload(payloadInput);
   if (!validation.ok) return validation;
   const payload = validation.payload;
+  const runtimeFilter = projectSignalDigestFilterForRuntime(payload.filter);
   const matched: NormalizedReplayRecord[] = [];
   let invalidCount = 0;
   for (const recordInput of records) {
@@ -707,7 +730,7 @@ export function simulateSignalDigestV1(
       invalidCount += 1;
       continue;
     }
-    if (matchesFilter(record.matchable, payload.filter)) matched.push(record);
+    if (matchesFilter(record.matchable, runtimeFilter)) matched.push(record);
   }
   matched.sort((a, b) => b.timestampMs - a.timestampMs || lexicalCompare(a.signalId, b.signalId));
   const examples = matched.slice(0, 3).map<SignalDigestReplayCitation>((record) => ({

@@ -228,6 +228,33 @@ describe('signal_digest.v1 canonical JSON, hashing, and compilation', () => {
     expect(Object.keys(result.artifact.routineSpec)).not.toContain('authority');
     expect(Object.keys(result.artifact.routineSpec)).not.toContain('steps');
   });
+
+  it('projects provider source aliases and sender domains without changing the canonical payload', () => {
+    const payload = basePayload({
+      filter: {
+        sources: ['calendar'],
+        fromContains: [],
+        keywords: ['travel'],
+        domains: ['airline.example', 'security'],
+      },
+    });
+    const result = compileSignalDigestV1(payload);
+    expect(result).toMatchObject({
+      ok: true,
+      artifact: {
+        routineSpec: {
+          filter: {
+            sources: ['google_calendar', 'outlook_calendar'],
+            fromContains: ['airline.example'],
+            keywords: ['travel'],
+            domains: ['security'],
+          },
+        },
+      },
+    });
+    if (!result.ok) return;
+    expect(JSON.parse(result.artifact.canonicalPayloadJson).filter).toEqual(payload.filter);
+  });
 });
 
 describe('signal_digest.v1 semantic diff', () => {
@@ -439,6 +466,45 @@ describe('signal_digest.v1 historical replay', () => {
     expect(result.result.examples[0]?.title).toBe('<img src=x onerror=alert(1)>');
     expect(result.result).not.toHaveProperty('action');
     expect(result.result).not.toHaveProperty('instructions');
+  });
+
+  it('replays calendar aliases and sender domains without matching body-only domain mentions', () => {
+    const payload = basePayload({
+      filter: { sources: ['calendar'], domains: ['airline.example'] },
+    });
+    const result = simulateSignalDigestV1(payload, [
+      {
+        id: 'google-calendar-sender-match',
+        source: 'google_calendar',
+        timestamp: '2026-09-03T00:00:00.000Z',
+        data: { organizer: 'travel@airline.example', title: 'Flight update' },
+      },
+      {
+        id: 'outlook-calendar-sender-match',
+        source: 'outlook_calendar',
+        timestamp: '2026-09-02T00:00:00.000Z',
+        data: { from: 'alerts@airline.example', title: 'Gate update' },
+      },
+      {
+        id: 'body-only-domain-mention',
+        source: 'google_calendar',
+        timestamp: '2026-09-01T00:00:00.000Z',
+        data: {
+          organizer: 'someone@unrelated.example',
+          title: 'Travel notes',
+          body: 'The itinerary links to airline.example.',
+        },
+      },
+    ]);
+    expect(result).toMatchObject({
+      ok: true,
+      result: { totalCount: 3, caughtCount: 2, ignoredCount: 1 },
+    });
+    if (!result.ok) return;
+    expect(result.result.examples.map((example) => example.signalId)).toEqual([
+      'google-calendar-sender-match',
+      'outlook-calendar-sender-match',
+    ]);
   });
 
   it('bounds citation text and handles malformed data without throwing', () => {
