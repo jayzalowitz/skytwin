@@ -36,7 +36,7 @@ describe("recommendLocalModel", () => {
       hw({ ramGB: 32, freeDiskGB: 8, ramBracket: "32gb-plus" }),
     );
     expect(rec.model).not.toBeNull();
-    // 9GB model + 3GB headroom = 12GB > 8GB free, so it cannot be the pick.
+    // The selected artifact plus 3GB headroom must fit the reported disk.
     expect((rec.model?.approxBytes ?? 0) / 1024 ** 3 + 3).toBeLessThanOrEqual(
       8,
     );

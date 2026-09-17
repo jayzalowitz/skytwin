@@ -132,7 +132,71 @@ describe("createEmbeddedTextPort", () => {
     expect(port.capabilities.modelName).toBe("qwen.gguf");
     expect(port.capabilities.artifactSha256).toBe(MODEL_REGISTRY[0]!.sha256);
     expect(port.capabilities.runtimeVersion).toBe("llama.cpp-b5000");
+    expect(port.capabilities.workflowAuthoringQualified).toBe(false);
     expect(mockInspectManaged).toHaveBeenCalledWith("/models");
+  });
+
+  it("exposes the managed model workflow-authoring qualification", async () => {
+    mockDetect.mockResolvedValue({
+      llamaCpp: {
+        available: true,
+        binaryPath: "/usr/bin/llama-completion",
+        modelDir: "/models",
+      },
+      whisper: { available: false, binaryPath: null, modelDir: null },
+      piper: { available: false, binaryPath: null, modelDir: null },
+    });
+    mockRuntimeBuild.mockReturnValue(9080);
+    const qualified = {
+      ...MODEL_REGISTRY[0]!,
+      workflowAuthoring: {
+        ...MODEL_REGISTRY[0]!.workflowAuthoring,
+        status: "qualified" as const,
+        evaluatedRuntimeBuild: 9080,
+      },
+    };
+    mockInspectManaged.mockResolvedValue({
+      state: "verified",
+      path: "/models/qwen3.gguf",
+      manifest: {} as never,
+      model: qualified,
+    });
+
+    const port = await createEmbeddedTextPort();
+
+    expect(port.capabilities.workflowAuthoringQualified).toBe(true);
+  });
+
+  it("does not extend workflow qualification to an unevaluated runtime build", async () => {
+    mockDetect.mockResolvedValue({
+      llamaCpp: {
+        available: true,
+        binaryPath: "/usr/bin/llama-completion",
+        modelDir: "/models",
+      },
+      whisper: { available: false, binaryPath: null, modelDir: null },
+      piper: { available: false, binaryPath: null, modelDir: null },
+    });
+    mockRuntimeBuild.mockReturnValue(9081);
+    const qualified = {
+      ...MODEL_REGISTRY[0]!,
+      workflowAuthoring: {
+        ...MODEL_REGISTRY[0]!.workflowAuthoring,
+        status: "qualified" as const,
+        evaluatedRuntimeBuild: 9080,
+      },
+    };
+    mockInspectManaged.mockResolvedValue({
+      state: "verified",
+      path: "/models/qwen3.gguf",
+      manifest: {} as never,
+      model: qualified,
+    });
+
+    const port = await createEmbeddedTextPort();
+
+    expect(port.capabilities.available).toBe(true);
+    expect(port.capabilities.workflowAuthoringQualified).toBe(false);
   });
 
   it("respects explicit overrides for binary and model", async () => {
