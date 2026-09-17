@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Data, memory, backup, and deletion — SkyTwin</title>
+    <meta
+      name="description"
+      content="How the SkyTwin source preview stores data, distinguishes credentials from twin state, and handles backup and restore."
+    />
+    <link
+      rel="canonical"
+      href="https://jayzalowitz.github.io/skytwin/data.html"
+    />
+    <link rel="stylesheet" href="guides.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="wrap nav-inner">
+        <a class="brand" href="index.html">SkyTwin</a>
+        <div class="nav-links">
+          <a href="start.html">Start</a><a href="how-to-use.html">How to use</a
+          ><a href="docs.html">Docs</a><a href="agents.html">Agents</a
+          ><a class="keep" href="https://github.com/jayzalowitz/skytwin"
+            >GitHub</a
+          >
+        </div>
+      </div>
+    </nav>
+    <main class="wrap page">
+      <aside class="toc">
+        <p>Data guide</p>
+        <a href="#map">What is stored</a><a href="#memory">Memory choices</a
+        ><a href="#backup">Backup &amp; restore</a
+        ><a href="#controls">Control boundaries</a>
+      </aside>
+      <article class="content">
+        <p class="eyebrow">Data and memory</p>
+        <span class="status">Source-review guidance</span>
+        <h1>Know which data boundary you are evaluating.</h1>
+        <p class="lede">
+          “Stored locally,” “encrypted,” “backed up,” and “deleted” are
+          different properties. This guide keeps them separate so a source
+          evaluator can make an informed choice.
+        </p>
+        <div class="callout warn">
+          <strong>Current disclosure:</strong> OAuth-token storage is mixed. The
+          credential vault can encrypt new or reconnected grants when it is
+          initialized and unlocked; without that state, legacy plaintext token
+          columns remain possible. Current local twin profile, preferences, and
+          textual memory should be treated as plaintext to anyone with access to
+          the CockroachDB files. Full-disk encryption is the practical
+          host-level protection today.
+        </div>
+        <h2 id="map">What is stored</h2>
+        <table>
+          <thead>
+            <tr>
+              <th>Kind</th>
+              <th>Purpose</th>
+              <th>Current boundary</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Profile and preferences</td>
+              <td>
+                Versioned model of stated preferences, confidence, and feedback.
+              </td>
+              <td>
+                Local CockroachDB data; see the privacy disclosure before adding
+                personal information.
+              </td>
+            </tr>
+            <tr>
+              <td>Decision records and explanations</td>
+              <td>
+                What the system considered, what stopped it, and how a person
+                can correct it.
+              </td>
+              <td>
+                Persisted for supported paths; release-wide explanation coverage
+                remains a beta gate.
+              </td>
+            </tr>
+            <tr>
+              <td>OAuth tokens and secrets</td>
+              <td>Credential material for a connector.</td>
+              <td>
+                Credential-vault envelope encryption when initialized and
+                unlocked; otherwise legacy plaintext token storage remains
+                possible. Real-account connectors are unavailable in the
+                supported preview.
+              </td>
+            </tr>
+            <tr>
+              <td>Inference receipts</td>
+              <td>Structured record of a completed inference attempt.</td>
+              <td>
+                Local records with intentionally constrained fields; read the
+                <a
+                  href="https://github.com/jayzalowitz/skytwin/blob/main/docs/inference-receipts.md"
+                  >receipt contract</a
+                >
+                for current limitations.
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <h2 id="memory">Memory choices</h2>
+        <p>
+          The default memory backend is SkyTwin's gbrain-compatible,
+          in-process CockroachDB implementation. It combines vector and text
+          search with reciprocal-rank fusion. Upstream gbrain itself supports
+          PGLite and PostgreSQL, not the supported CockroachDB path, and its CLI
+          adapter does not implement SkyTwin's complete write, episode, and
+          graph contract; SkyTwin therefore never selects that CLI adapter at
+          runtime. The optional hybrid mode pairs the CRDB-backed implementation
+          with the legacy mempalace adapter; mempalace alone remains selectable
+          for people who explicitly prefer its spatial model. These are source
+          configuration choices, not a promise of equivalent results across
+          backends.
+        </p>
+        <p>
+          For exact capability differences, migration semantics,
+          embedding-provider configuration, and database-gated verification, use
+          the
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/memory-swap.md"
+            >memory backend reference</a
+          >. A hosted embedding endpoint is a networked provider choice; a local
+          embedding server is a separately configured local service.
+        </p>
+        <h2 id="backup">Backup and restore</h2>
+        <p>
+          The source CLI exports one user’s twin data to a passphrase-protected
+          archive. It intentionally excludes OAuth tokens, dispatch leases,
+          callback fences, sessions, recovery codes, and device-pairing state.
+          Restore refuses to overwrite an existing user and preserves restored
+          decisions as non-replay history rather than queued work. Backup
+          schema v6 also carries versioned workflows, immutable versions,
+          proposals, activation history, run evidence, and the active Watch
+          projection. Restore validates ownership, hashes, lineage, transitions,
+          and projection pins before one transaction writes any of that state.
+        </p>
+        <pre><code>export SKYTWIN_BACKUP_PASSPHRASE='use-a-long-passphrase'<br>pnpm --filter @skytwin/db backup export --user &lt;userId&gt; --out my-twin.stbk<br>pnpm --filter @skytwin/db backup restore my-twin.stbk</code></pre>
+        <p>
+          Use the
+          <a
+            href="https://github.com/jayzalowitz/skytwin/blob/main/docs/backup-restore.md"
+            >backup and restore reference</a
+          >
+          before relying on this workflow. It documents format compatibility,
+          passphrase handling, exit behavior, and the fresh-install requirement.
+        </p>
+        <h2 id="controls">Control boundaries</h2>
+        <p>
+          Pause, approvals, audit history, and deletion are user-control
+          mechanisms; they are not proof that every stored field has the same
+          encryption, retention, or release-evidence status. Start with the
+          fictional sample, then read <a href="privacy.html">privacy</a>,
+          <a href="safety.html">safety</a>, and
+          <a href="release.html">release evidence</a> together before adding any
+          personal data.
+        </p>
+        <p class="footnotes">
+          <a href="faq.html">FAQ</a> ·
+          <a href="operations.html">Operations</a> ·
+          <a href="architecture.html">Architecture</a>
+        </p>
+      </article>
+    </main>
+    <footer class="wrap">
+      <p>
+        SkyTwin is Apache-2.0 open source. Questions or security reports:
+        <a href="https://github.com/jayzalowitz/skytwin/issues">open an issue</a
+        >.
+      </p>
+    </footer>
+  </body>
+</html>

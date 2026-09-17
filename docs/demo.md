@@ -181,8 +181,9 @@ Click **Settings** in the sidebar. Four controls worth pointing out:
 - **“Where reasoning runs”** — the explicit location selector. “On this
   device” admits only embedded inference and local-source-constrained Ollama;
   “My configured provider” may send prompts to the enabled endpoint. The
-  verified-private-cloud choice is visible but unavailable until each request
-  can be independently verified.
+  verified-private-cloud choice currently admits only explicit interactive
+  TrustedRouter calls whose same-session attestation and exact-byte receipt
+  pass; NEAR AI remains visible as verification-pending and unavailable.
 
 - **"How much should your twin do?"** — the trust tier selector. Five
   rungs from "Just watch" through "Full autopilot." Default is "Ask me

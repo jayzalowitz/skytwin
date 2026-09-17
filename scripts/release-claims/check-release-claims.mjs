@@ -689,6 +689,10 @@ const CANONICAL_PUBLIC_BINARY_ASSETS = new Map([
   ["apps/mobile/assets/icon.png", "reviewed-no-text"],
   ["apps/mobile/assets/notification-icon.png", "reviewed-no-text"],
   ["apps/mobile/assets/splash.png", "reviewed-no-text"],
+  ["docs/assets/demo-current/approvals-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/decisions-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/onboarding-source-demo.png", "reviewed-current-source"],
+  ["docs/assets/demo-current/settings-source-demo.png", "reviewed-current-source"],
   ["docs/screenshots/approvals.png", "prohibited-stale"],
   ["docs/screenshots/briefing.png", "prohibited-stale"],
   ["docs/screenshots/dashboard.png", "prohibited-stale"],
@@ -730,6 +734,22 @@ const CANONICAL_PUBLIC_BINARY_DIGESTS = new Map([
   [
     "apps/mobile/assets/splash.png",
     "5588814424f5655372944a711bb59e5a58e18ef8adef5571372ee407115e3c5a",
+  ],
+  [
+    "docs/assets/demo-current/approvals-source-demo.png",
+    "f294b6d94fcf56652bf5933fa0c56410d41cc4d5d1b0c17c788d329775f959f0",
+  ],
+  [
+    "docs/assets/demo-current/decisions-source-demo.png",
+    "aadd477d086922fd94635dddc3055abb2390749f9b55ec9a6ecd3bcc8e448f67",
+  ],
+  [
+    "docs/assets/demo-current/onboarding-source-demo.png",
+    "77a8a84677bb62bfe44a7ceb067245dfc41ca7d83c0561df38a8151534ca25bb",
+  ],
+  [
+    "docs/assets/demo-current/settings-source-demo.png",
+    "0ab23f7932fe607e485218fcd20953f56f4118040fb218b832bc5bc1d0126cfc",
   ],
   [
     "docs/screenshots/approvals.png",
@@ -4591,7 +4611,7 @@ export function validateLedgerShape(
 
   const binaryEntries = asArray(ledger?.publicBinaryAssets);
   if (
-    ledger?.binaryAssetAudit?.reviewedOn !== "2026-09-10" ||
+    ledger?.binaryAssetAudit?.reviewedOn !== "2026-09-16" ||
     ledger?.binaryAssetAudit?.method !==
       "Tesseract OCR plus human inspection at each recorded SHA-256; any byte change requires a new review" ||
     !isNonEmptyString(ledger?.binaryAssetAudit?.scope)
