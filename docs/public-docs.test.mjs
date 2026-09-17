@@ -36,6 +36,19 @@ function ids(html) {
 }
 
 describe("public developer-preview documentation", () => {
+  it("separates public source snapshots from gated desktop releases", () => {
+    const release = normalized(read("docs/release.html"));
+    const procedure = normalized(read("docs/release-procedure.md"));
+    expect(release).toContain('id="source-preview"');
+    expect(release).toContain("source-preview-YYYY-MM-DD");
+    expect(release).toContain("GitHub prerelease");
+    expect(release).toContain("no packaged application");
+    expect(release).toContain("desktop beta stays blocked independently");
+    expect(procedure).toContain("Never move an existing tag");
+    expect(procedure).toContain("automatic source ZIP/tar archives are the only assets");
+    expect(procedure).toContain("Keep `VERSION`, the claim ledger, the `v*` publisher");
+  });
+
   it("leads with the product and keeps the complete handbook discoverable", () => {
     const sectionOrder = [
       "why",

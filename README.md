@@ -477,6 +477,12 @@ Trust is **domain-specific**. You might be at `moderate_autonomy` for email but 
 
 ## Current preview and account boundaries
 
+Public [source-preview snapshots](https://github.com/jayzalowitz/skytwin/releases)
+use date-based `source-preview-*` tags and contain source only, not desktop
+installers. They are a way to try an exact revision with local development tools;
+they do not certify the planned public beta. See the
+[release guide](https://jayzalowitz.github.io/skytwin/release.html#source-preview).
+
 The isolated, account-free fictional-data sample in current source is the
 supported preview. It lets you evaluate the interaction model, explanations,
 controls, and boundaries without giving SkyTwin an inbox, credentials, or a
