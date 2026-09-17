@@ -20,7 +20,7 @@ export interface ProposeActionArgs {
  * not represent the record as actionable approval-queue work.
  *
  * The decision is flagged with origin=external_agent in its metadata so
- * the approval UI can surface the source agent prominently.
+ * decision-inspection surfaces can identify the source agent.
  */
 export async function proposeAction(
   userId: string,
