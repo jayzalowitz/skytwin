@@ -25,7 +25,7 @@ interface WorkflowAuthoringServicePort {
 }
 
 interface WorkflowAuthoringModule {
-  createWorkflowAuthoringService(): WorkflowAuthoringServicePort;
+  createWorkflowAuthoringCandidateEvaluationService(): WorkflowAuthoringServicePort;
 }
 
 interface EmbeddedLlmModule {
@@ -285,7 +285,7 @@ export async function runManagedLocalWorkflowGate(args = process.argv.slice(2)):
   }
 
   const authoringModule = await loadSourceModule<WorkflowAuthoringModule>('apps/api/src/lib/workflow-authoring.ts');
-  const service = authoringModule.createWorkflowAuthoringService();
+  const service = authoringModule.createWorkflowAuthoringCandidateEvaluationService();
   const readiness = await service.probeReadiness(parsed.userId);
   if (!isRecord(readiness) || readiness['state'] !== 'ready') {
     return notRun(parsed.outputPath, isRecord(readiness)

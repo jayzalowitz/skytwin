@@ -724,9 +724,10 @@ function failureFromResolution(resolution: Exclude<UserLlmClientResolution, { st
 
 function failureFromLocalReadiness(
   readiness: NonNullable<Extract<UserLlmClientResolution, { state: 'ready' }>['localReadiness']>,
+  allowUnqualifiedManagedCandidate = false,
 ): WorkflowAuthoringFailure | null {
   if (readiness.state === 'ready') {
-    return readiness.workflowAuthoringQualified
+    return readiness.workflowAuthoringQualified || allowUnqualifiedManagedCandidate
       ? null
       : {
           state: 'unsupported_model',
@@ -774,6 +775,7 @@ type InferenceRuntimeIdentity =
 async function inferenceRuntimeIdentity(
   resolution: ReadyUserLlmResolution,
   response: LlmResponse,
+  allowUnqualifiedManagedCandidate = false,
 ): Promise<InferenceRuntimeIdentity> {
   if (response.provider === 'ollama' && resolution.mode === 'on_device') {
     const identity = response.runtimeIdentity;
@@ -834,7 +836,7 @@ async function inferenceRuntimeIdentity(
   if (readiness.state !== 'ready') {
     return { ok: false, failure: failureFromLocalReadiness(readiness)! };
   }
-  if (!readiness.workflowAuthoringQualified) {
+  if (!readiness.workflowAuthoringQualified && !allowUnqualifiedManagedCandidate) {
     return {
       ok: false,
       failure: {
@@ -1051,7 +1053,10 @@ function normalizeTimeout(timeoutMs: number | undefined): number {
   return Math.max(1, Math.min(MAX_TIMEOUT_MS, Math.trunc(timeoutMs)));
 }
 
-export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDependencies = {}) {
+function createWorkflowAuthoringServiceInternal(
+  dependencies: WorkflowAuthoringDependencies,
+  allowUnqualifiedManagedCandidate: boolean,
+) {
   const resolveClient = dependencies.resolveClient ?? resolveUserLlmClient;
   const now = dependencies.now ?? Date.now;
 
@@ -1082,7 +1087,7 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
       return { success: false, ...failureFromResolution(resolution) };
     }
     const localFailure = resolution.localReadiness
-      ? failureFromLocalReadiness(resolution.localReadiness)
+      ? failureFromLocalReadiness(resolution.localReadiness, allowUnqualifiedManagedCandidate)
       : null;
     if (localFailure) return { success: false, ...localFailure };
     const attempt = await runStructuredAuthoring(
@@ -1113,7 +1118,11 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
     }
 
     const canonicalOutput = JSON.stringify(attempt.intent);
-    const runtimeIdentity = await inferenceRuntimeIdentity(resolution, attempt.response);
+    const runtimeIdentity = await inferenceRuntimeIdentity(
+      resolution,
+      attempt.response,
+      allowUnqualifiedManagedCandidate,
+    );
     if (!runtimeIdentity.ok) return { success: false, ...runtimeIdentity.failure };
     return {
       success: true,
@@ -1199,7 +1208,7 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
       return { success: false, ...failureFromResolution(resolution) };
     }
     const localFailure = resolution.localReadiness
-      ? failureFromLocalReadiness(resolution.localReadiness)
+      ? failureFromLocalReadiness(resolution.localReadiness, allowUnqualifiedManagedCandidate)
       : null;
     if (localFailure) return { success: false, ...localFailure };
     const attempt = await runStructuredRevision(
@@ -1212,7 +1221,11 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
     );
     if (!attempt.success) return attempt;
     const canonicalOutput = JSON.stringify(attempt.intent);
-    const runtimeIdentity = await inferenceRuntimeIdentity(resolution, attempt.response);
+    const runtimeIdentity = await inferenceRuntimeIdentity(
+      resolution,
+      attempt.response,
+      allowUnqualifiedManagedCandidate,
+    );
     if (!runtimeIdentity.ok) return { success: false, ...runtimeIdentity.failure };
     return {
       success: true,
@@ -1280,7 +1293,11 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
     }
     const resolution = await resolveClient(userId);
     if (resolution.state !== 'ready') return fallback;
-    if (resolution.localReadiness && failureFromLocalReadiness(resolution.localReadiness)) {
+    if (resolution.localReadiness
+        && failureFromLocalReadiness(
+          resolution.localReadiness,
+          allowUnqualifiedManagedCandidate,
+        )) {
       return fallback;
     }
 
@@ -1331,7 +1348,11 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
       return fallback;
     }
 
-    const runtimeIdentity = await inferenceRuntimeIdentity(resolution, response);
+    const runtimeIdentity = await inferenceRuntimeIdentity(
+      resolution,
+      response,
+      allowUnqualifiedManagedCandidate,
+    );
     if (!runtimeIdentity.ok) return fallback;
     const text = parseReplaySynthesis(response.content);
     if (text === null) return fallback;
@@ -1350,6 +1371,22 @@ export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDe
     probeReadiness,
     summarizeSignalDigestReplay,
   });
+}
+
+/** Production composition root: unqualified managed artifacts always fail closed. */
+export function createWorkflowAuthoringService(dependencies: WorkflowAuthoringDependencies = {}) {
+  return createWorkflowAuthoringServiceInternal(dependencies, false);
+}
+
+/**
+ * Real-model gate composition root. It relaxes only the registry admission bit
+ * so an exact candidate artifact/runtime can be measured before qualification.
+ * Exact artifact and runtime identity checks remain mandatory on every call.
+ */
+export function createWorkflowAuthoringCandidateEvaluationService(
+  dependencies: WorkflowAuthoringDependencies = {},
+) {
+  return createWorkflowAuthoringServiceInternal(dependencies, true);
 }
 
 export const workflowAuthoringService = createWorkflowAuthoringService();

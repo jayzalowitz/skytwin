@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import { AllProvidersFailedError, type LlmClient } from '@skytwin/llm-client';
 import type { ReasoningMode } from '@skytwin/shared-types';
 import type { UserLlmClientResolution } from '../user-llm-client.js';
-import { createWorkflowAuthoringService } from '../workflow-authoring.js';
+import {
+  createWorkflowAuthoringCandidateEvaluationService,
+  createWorkflowAuthoringService,
+} from '../workflow-authoring.js';
 
 const VALID_INTENT = {
   schemaVersion: 1,
@@ -541,6 +544,34 @@ describe('workflow authoring LLM boundary', () => {
       reason: expect.stringContaining('quality gate'),
     });
     expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('lets the real-model gate measure an exact unqualified candidate without changing production admission', async () => {
+    const unqualified = {
+      ...EXACT_EMBEDDED_READINESS,
+      workflowAuthoringQualified: false,
+    } as const;
+    const generate = vi.fn().mockResolvedValue(response(JSON.stringify(VALID_INTENT)));
+    const resolveClient = vi.fn().mockResolvedValue(
+      readyResolution(
+        generate,
+        'on_device',
+        unqualified,
+        vi.fn().mockResolvedValue(unqualified),
+      ),
+    );
+    const production = createWorkflowAuthoringService({ resolveClient });
+    const candidateGate = createWorkflowAuthoringCandidateEvaluationService({ resolveClient });
+
+    await expect(production.probeReadiness('user-1')).resolves.toMatchObject({
+      state: 'unsupported_model',
+    });
+    await expect(candidateGate.probeReadiness('user-1')).resolves.toMatchObject({
+      state: 'ready',
+      provider: 'embedded',
+      runtimeVersion: EXACT_EMBEDDED_READINESS.runtimeVersion,
+      modelArtifactSha256: EXACT_EMBEDDED_READINESS.artifactSha256,
+    });
   });
 
   it.each([
